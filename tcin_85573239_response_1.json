@@ -1,0 +1,2101 @@
+{
+  "data": {
+    "product": {
+      "__typename": "Product",
+      "tcin": "85573240",
+      "category": {
+        "parent_category_id": "root",
+        "name": "Health",
+        "breadcrumbs": [
+          {
+            "canonical_url": "/",
+            "category_id": "root",
+            "name": "target"
+          },
+          {
+            "canonical_url": "/c/health/-/N-5xu1n",
+            "category_id": "5xu1n",
+            "name": "Health"
+          }
+        ]
+      },
+      "sales_classification_nodes": {
+        "node_ids": [
+          "5xu1n",
+          "27ti1",
+          "1cv06"
+        ]
+      },
+      "ratings_and_reviews": {
+        "has_verified": false,
+        "statistics": {
+          "not_recommended_count": 0,
+          "question_count": 0,
+          "rating": {
+            "average": 4.67,
+            "count": 3,
+            "distribution": {
+              "rating1": 0,
+              "rating2": 0,
+              "rating3": 0,
+              "rating4": 1,
+              "rating5": 2
+            }
+          },
+          "recommended_count": 0,
+          "recommended_percentage": 0,
+          "review_count": 2
+        },
+        "most_recent": [
+          {
+            "id": "22df0b0c-7984-46ad-bca7-10f61be369d8",
+            "text": "[This review was collected as part of a promotion.] It is comfortable to be using it. I wish I had ordered two so one can be use while the other is cleaned and drying.",
+            "author": {
+              "nickname": "Anonymous",
+              "external_id": "dbcb5ad4-0595-5251-b0f5-d5ef4e970891"
+            },
+            "title": "Wrist Brace",
+            "rating": {
+              "value": 5.0,
+              "submitted_at": "2023-10-30T21:27:50.000Z"
+            }
+          },
+          {
+            "id": "73af9b4e-2bbe-40cf-bf75-e090c8dffa64",
+            "text": "These braces are great in so many ways. They are well made & reasonably priced. Also, they are comfortable & seem like they will be easy to clean.",
+            "author": {
+              "nickname": "Kayla",
+              "external_id": "a560b17a-25e4-5aca-8760-a2303ae7f60d"
+            },
+            "title": "Great Product Overall!",
+            "rating": {
+              "value": 5.0,
+              "submitted_at": "2018-05-24T10:12:22.000Z"
+            }
+          }
+        ]
+      },
+      "experiments_viewed": {
+        "xv": [
+          {
+            "xt": "9068f49b-2bb0-4e77-a577-d8457b985c36"
+          }
+        ]
+      },
+      "item": {
+        "product_classification": {
+          "item_type": {
+            "name": "Supports and Braces",
+            "type": "250921"
+          },
+          "product_type": 546,
+          "product_type_name": "HEALTH AND BEAUTY",
+          "purchase_behavior": "Frequency"
+        },
+        "compliance": {},
+        "disclaimer": {
+          "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+          "type": "Healthcare Disclaimer"
+        },
+        "enrichment": {
+          "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace/-/A-85573240",
+          "image_info": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image": {
+              "image_name": "GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c",
+              "url": "https://target.scene7.com/is/image/Target/GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c"
+            },
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+              }
+            ],
+            "alternate_images": [
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86",
+                "image_name": "GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_74296da5-d871-4cd1-afa5-893340e131d7",
+                "image_name": "GUEST_74296da5-d871-4cd1-afa5-893340e131d7"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                "image_name": "GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4",
+                "image_name": "GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+              }
+            ],
+            "swatch_image": {}
+          },
+          "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+          "images": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c",
+            "primary_image": "GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c",
+            "alternate_images": [
+              "GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86",
+              "GUEST_74296da5-d871-4cd1-afa5-893340e131d7",
+              "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+              "GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+              "GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+            ],
+            "alternate_image_urls": [
+              "https://target.scene7.com/is/image/Target/GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86",
+              "https://target.scene7.com/is/image/Target/GUEST_74296da5-d871-4cd1-afa5-893340e131d7",
+              "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+              "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+              "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+            ],
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+              }
+            ]
+          },
+          "return_policies": [
+            {
+              "user_type": "best_guest",
+              "day_count": 120
+            },
+            {
+              "user_type": "regular_guest",
+              "day_count": 90
+            }
+          ]
+        },
+        "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+        "fulfillment": {
+          "is_marketplace": true,
+          "purchase_limit": 20
+        },
+        "package_dimensions": {
+          "dimension_unit_of_measure": "INCH",
+          "weight_unit_of_measure": "POUND"
+        },
+        "product_description": {
+          "bullet_descriptions": [
+            "<B>Suggested Age:</B> 10 Years and Up",
+            "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+            "<B>Material:</B> Nylon, Polyester, Vinyl",
+            "<B>Care & Cleaning:</B> Hand Wash"
+          ],
+          "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+          "soft_bullets": {
+            "bullets": [
+              "Breathable, durable elastic material comfortably supports the wrist.",
+              "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+              "Stabilization and compression promote recovery.",
+              "Removable/adjustable palmar stay to support wrist in cock-up position.",
+              "Made in the USA: Adjustable thumb and wrist closures for easy application."
+            ],
+            "title": "highlights"
+          },
+          "title": "Swede-O Elastic Wrist Brace",
+          "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+        },
+        "product_vendors": [
+          {
+            "vendor_name": "Core Products International, Inc.",
+            "id": "10008520",
+            "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+          }
+        ],
+        "relationship_type_code": "VAP",
+        "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+        "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+        "cart_add_on_threshold": 35.0,
+        "handling": {
+          "import_designation_description": "made in the USA"
+        },
+        "merchandise_classification": {
+          "class_id": 7,
+          "department_id": 245,
+          "department_name": "OTC - HEALTH & SELF CARE"
+        },
+        "primary_brand": {
+          "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+          "linking_id": "q643le8eivr",
+          "name": "Swede-O"
+        },
+        "return_method": "Mail In or Store"
+      },
+      "price": {
+        "formatted_comparison_price": "$30.18",
+        "formatted_comparison_price_type": "reg",
+        "formatted_current_price": "$27.16",
+        "formatted_current_price_type": "sale",
+        "location_id": 3991,
+        "current_retail_min": 27.16,
+        "reg_retail_max": 30.18
+      },
+      "children": [
+        {
+          "__typename": "Product",
+          "tcin": "85573242",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-large-left/-/A-85573242",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86",
+                    "image_name": "GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_74296da5-d871-4cd1-afa5-893340e131d7",
+                    "image_name": "GUEST_74296da5-d871-4cd1-afa5-893340e131d7"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                    "image_name": "GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4",
+                    "image_name": "GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c",
+                "primary_image": "GUEST_daab0df0-6a92-4340-9676-d5aa0d3d358c",
+                "alternate_images": [
+                  "GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86",
+                  "GUEST_74296da5-d871-4cd1-afa5-893340e131d7",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                  "GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_849acddd-3cd8-4a50-96ed-04b34d081c86",
+                  "https://target.scene7.com/is/image/Target/GUEST_74296da5-d871-4cd1-afa5-893340e131d7",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                  "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_43e2f5be-98fa-4fe6-87f8-8fdf0230f3f4"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - Large - Left",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683388",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf411e1"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573239",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-xlarge-left/-/A-85573239",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_34aff163-ec45-49a8-877e-0c47487aa6f1",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_34aff163-ec45-49a8-877e-0c47487aa6f1"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d5d1f8ac-bbf5-4e9c-9a94-fb4aadacb007"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c",
+                    "image_name": "GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d",
+                    "image_name": "GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f",
+                    "image_name": "GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_d5d1f8ac-bbf5-4e9c-9a94-fb4aadacb007",
+                    "image_name": "GUEST_d5d1f8ac-bbf5-4e9c-9a94-fb4aadacb007"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_34aff163-ec45-49a8-877e-0c47487aa6f1",
+                "primary_image": "GUEST_34aff163-ec45-49a8-877e-0c47487aa6f1",
+                "alternate_images": [
+                  "GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c",
+                  "GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f",
+                  "GUEST_d5d1f8ac-bbf5-4e9c-9a94-fb4aadacb007"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c",
+                  "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f",
+                  "https://target.scene7.com/is/image/Target/GUEST_d5d1f8ac-bbf5-4e9c-9a94-fb4aadacb007"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d5d1f8ac-bbf5-4e9c-9a94-fb4aadacb007"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - XLarge -Left",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683395",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf41141"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573249",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-large-right/-/A-85573249",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_d6252f0e-e892-466b-8641-cf85b1f95c47",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_d6252f0e-e892-466b-8641-cf85b1f95c47"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e163ba17-3010-4e9a-8faa-9e0c90535b16"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_bbd1ba7c-da56-4efc-bff8-394ea876be33",
+                    "image_name": "GUEST_bbd1ba7c-da56-4efc-bff8-394ea876be33"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_f133a160-016f-4377-84c2-d6274fe62ef3",
+                    "image_name": "GUEST_f133a160-016f-4377-84c2-d6274fe62ef3"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                    "image_name": "GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e163ba17-3010-4e9a-8faa-9e0c90535b16",
+                    "image_name": "GUEST_e163ba17-3010-4e9a-8faa-9e0c90535b16"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_d6252f0e-e892-466b-8641-cf85b1f95c47",
+                "primary_image": "GUEST_d6252f0e-e892-466b-8641-cf85b1f95c47",
+                "alternate_images": [
+                  "GUEST_bbd1ba7c-da56-4efc-bff8-394ea876be33",
+                  "GUEST_f133a160-016f-4377-84c2-d6274fe62ef3",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                  "GUEST_e163ba17-3010-4e9a-8faa-9e0c90535b16"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_bbd1ba7c-da56-4efc-bff8-394ea876be33",
+                  "https://target.scene7.com/is/image/Target/GUEST_f133a160-016f-4377-84c2-d6274fe62ef3",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590",
+                  "https://target.scene7.com/is/image/Target/GUEST_e163ba17-3010-4e9a-8faa-9e0c90535b16"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e163ba17-3010-4e9a-8faa-9e0c90535b16"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e234e7aa-10f2-43e8-8b56-91cd37f2e590"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - Large - Right",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683333",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf4143c"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573243",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-medium-left/-/A-85573243",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_30892e16-3273-4a88-9b0e-51acfe0e794a",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_30892e16-3273-4a88-9b0e-51acfe0e794a"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_a6c113ad-af55-4372-ae83-6854eb39bb2d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e5652f94-b333-4fe9-88f8-c1ee6e806b58",
+                    "image_name": "GUEST_e5652f94-b333-4fe9-88f8-c1ee6e806b58"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e140851f-ec9f-41c6-9ee7-5c35e403484f",
+                    "image_name": "GUEST_e140851f-ec9f-41c6-9ee7-5c35e403484f"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143",
+                    "image_name": "GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_a6c113ad-af55-4372-ae83-6854eb39bb2d",
+                    "image_name": "GUEST_a6c113ad-af55-4372-ae83-6854eb39bb2d"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_30892e16-3273-4a88-9b0e-51acfe0e794a",
+                "primary_image": "GUEST_30892e16-3273-4a88-9b0e-51acfe0e794a",
+                "alternate_images": [
+                  "GUEST_e5652f94-b333-4fe9-88f8-c1ee6e806b58",
+                  "GUEST_e140851f-ec9f-41c6-9ee7-5c35e403484f",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143",
+                  "GUEST_a6c113ad-af55-4372-ae83-6854eb39bb2d"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_e5652f94-b333-4fe9-88f8-c1ee6e806b58",
+                  "https://target.scene7.com/is/image/Target/GUEST_e140851f-ec9f-41c6-9ee7-5c35e403484f",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143",
+                  "https://target.scene7.com/is/image/Target/GUEST_a6c113ad-af55-4372-ae83-6854eb39bb2d"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_a6c113ad-af55-4372-ae83-6854eb39bb2d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - Medium - Left",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683371",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf4127d"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573251",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-medium-right/-/A-85573251",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_74697b68-0694-498e-aa66-3f0faa7fbd64",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_74697b68-0694-498e-aa66-3f0faa7fbd64"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e9b52486-c40f-4f0a-9ddf-ad14ac9edeea"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_8b436da3-fe7f-43d5-bb11-b114a6289c3d",
+                    "image_name": "GUEST_8b436da3-fe7f-43d5-bb11-b114a6289c3d"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_c3986f15-b93f-49a0-bd5d-2be4f587699d",
+                    "image_name": "GUEST_c3986f15-b93f-49a0-bd5d-2be4f587699d"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143",
+                    "image_name": "GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e9b52486-c40f-4f0a-9ddf-ad14ac9edeea",
+                    "image_name": "GUEST_e9b52486-c40f-4f0a-9ddf-ad14ac9edeea"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_74697b68-0694-498e-aa66-3f0faa7fbd64",
+                "primary_image": "GUEST_74697b68-0694-498e-aa66-3f0faa7fbd64",
+                "alternate_images": [
+                  "GUEST_8b436da3-fe7f-43d5-bb11-b114a6289c3d",
+                  "GUEST_c3986f15-b93f-49a0-bd5d-2be4f587699d",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143",
+                  "GUEST_e9b52486-c40f-4f0a-9ddf-ad14ac9edeea"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_8b436da3-fe7f-43d5-bb11-b114a6289c3d",
+                  "https://target.scene7.com/is/image/Target/GUEST_c3986f15-b93f-49a0-bd5d-2be4f587699d",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143",
+                  "https://target.scene7.com/is/image/Target/GUEST_e9b52486-c40f-4f0a-9ddf-ad14ac9edeea"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e9b52486-c40f-4f0a-9ddf-ad14ac9edeea"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_56b985a1-8f08-40e6-83c3-e109b24d8143"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - Medium - Right",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683326",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf414da"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573244",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-small-left/-/A-85573244",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_6b2927cd-5831-4251-994a-b7e3d76a0be3",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_6b2927cd-5831-4251-994a-b7e3d76a0be3"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_10436ced-cf97-49a0-83d6-c713fd571301"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_362a7606-f560-4cf4-88ba-57c229847cc4",
+                    "image_name": "GUEST_362a7606-f560-4cf4-88ba-57c229847cc4"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_41a88c9c-af70-4ad7-a598-f03ba593cd8c",
+                    "image_name": "GUEST_41a88c9c-af70-4ad7-a598-f03ba593cd8c"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25",
+                    "image_name": "GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_10436ced-cf97-49a0-83d6-c713fd571301",
+                    "image_name": "GUEST_10436ced-cf97-49a0-83d6-c713fd571301"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_6b2927cd-5831-4251-994a-b7e3d76a0be3",
+                "primary_image": "GUEST_6b2927cd-5831-4251-994a-b7e3d76a0be3",
+                "alternate_images": [
+                  "GUEST_362a7606-f560-4cf4-88ba-57c229847cc4",
+                  "GUEST_41a88c9c-af70-4ad7-a598-f03ba593cd8c",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25",
+                  "GUEST_10436ced-cf97-49a0-83d6-c713fd571301"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_362a7606-f560-4cf4-88ba-57c229847cc4",
+                  "https://target.scene7.com/is/image/Target/GUEST_41a88c9c-af70-4ad7-a598-f03ba593cd8c",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25",
+                  "https://target.scene7.com/is/image/Target/GUEST_10436ced-cf97-49a0-83d6-c713fd571301"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_10436ced-cf97-49a0-83d6-c713fd571301"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - Small - Left",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683364",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf4131e"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573253",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-small-right/-/A-85573253",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_c524c2b2-d314-4e4a-b624-40049511d762"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_f83ff7a0-23bd-42cc-aab1-d7a083521f35",
+                    "image_name": "GUEST_f83ff7a0-23bd-42cc-aab1-d7a083521f35"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_294c5ca6-1570-4c33-9647-04ae43c8178c",
+                    "image_name": "GUEST_294c5ca6-1570-4c33-9647-04ae43c8178c"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25",
+                    "image_name": "GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_c524c2b2-d314-4e4a-b624-40049511d762",
+                    "image_name": "GUEST_c524c2b2-d314-4e4a-b624-40049511d762"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f",
+                "primary_image": "GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f",
+                "alternate_images": [
+                  "GUEST_f83ff7a0-23bd-42cc-aab1-d7a083521f35",
+                  "GUEST_294c5ca6-1570-4c33-9647-04ae43c8178c",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25",
+                  "GUEST_c524c2b2-d314-4e4a-b624-40049511d762"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_f83ff7a0-23bd-42cc-aab1-d7a083521f35",
+                  "https://target.scene7.com/is/image/Target/GUEST_294c5ca6-1570-4c33-9647-04ae43c8178c",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25",
+                  "https://target.scene7.com/is/image/Target/GUEST_c524c2b2-d314-4e4a-b624-40049511d762"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_c524c2b2-d314-4e4a-b624-40049511d762"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_bc7b7fb3-ff20-4cf8-89d9-449f60906e25"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - Small - Right",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683319",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf4155a"
+          }
+        },
+        {
+          "__typename": "Product",
+          "tcin": "85573248",
+          "item": {
+            "compliance": {
+              "is_proposition_65": true,
+              "proposition_65_warning_text": "WARNING:This product contains chemicals known to the State of California to cause cancer and birth defects or other reproductive harm. www.P65Warnings.ca.gov. www.p65warnings.ca.gov"
+            },
+            "disclaimer": {
+              "description": " Content on this site is for reference purposes only.  Target does not represent or warrant that the nutrition, ingredient, allergen and other product information on our Web or Mobile sites are accurate or complete, since this information comes from the product manufacturers.  On occasion, manufacturers may improve or change their product formulas and update their labels.  We recommend that you do not rely solely on the information presented on our Web or Mobile sites and that you review the product's label or contact the manufacturer directly if you have specific product concerns or questions.  If you have specific healthcare concerns or questions about the products displayed, please contact your licensed healthcare professional for advice or answers.",
+              "type": "Healthcare Disclaimer"
+            },
+            "enrichment": {
+              "buy_url": "https://www.target.com/p/swede-o-elastic-wrist-brace-xlarge-right/-/A-85573248",
+              "image_info": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image": {
+                  "image_name": "GUEST_19ac0f05-8cb7-420a-9c61-5bc7508bf131",
+                  "url": "https://target.scene7.com/is/image/Target/GUEST_19ac0f05-8cb7-420a-9c61-5bc7508bf131"
+                },
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_4744c78c-47ce-4d2b-af4b-8b63e05244cc"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f"
+                  }
+                ],
+                "alternate_images": [
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_c2d67769-e7d3-4200-87f4-ca6d48a4ae21",
+                    "image_name": "GUEST_c2d67769-e7d3-4200-87f4-ca6d48a4ae21"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_56139efb-e438-4bc3-9cea-f5fcfa5e6fda",
+                    "image_name": "GUEST_56139efb-e438-4bc3-9cea-f5fcfa5e6fda"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                    "image_name": "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f",
+                    "image_name": "GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f"
+                  },
+                  {
+                    "url": "https://target.scene7.com/is/image/Target/GUEST_4744c78c-47ce-4d2b-af4b-8b63e05244cc",
+                    "image_name": "GUEST_4744c78c-47ce-4d2b-af4b-8b63e05244cc"
+                  }
+                ],
+                "swatch_image": {}
+              },
+              "size_chart_fragment_url": "https://digitalcontent.target.com/itemcontent/sizecharts/htmlfragments/supports-and-braces/core-products-international/elastic-wrist-brace.html",
+              "images": {
+                "base_url": "//target.scene7.com/is/image/Target/",
+                "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_19ac0f05-8cb7-420a-9c61-5bc7508bf131",
+                "primary_image": "GUEST_19ac0f05-8cb7-420a-9c61-5bc7508bf131",
+                "alternate_images": [
+                  "GUEST_c2d67769-e7d3-4200-87f4-ca6d48a4ae21",
+                  "GUEST_56139efb-e438-4bc3-9cea-f5fcfa5e6fda",
+                  "GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f",
+                  "GUEST_4744c78c-47ce-4d2b-af4b-8b63e05244cc"
+                ],
+                "alternate_image_urls": [
+                  "https://target.scene7.com/is/image/Target/GUEST_c2d67769-e7d3-4200-87f4-ca6d48a4ae21",
+                  "https://target.scene7.com/is/image/Target/GUEST_56139efb-e438-4bc3-9cea-f5fcfa5e6fda",
+                  "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd",
+                  "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f",
+                  "https://target.scene7.com/is/image/Target/GUEST_4744c78c-47ce-4d2b-af4b-8b63e05244cc"
+                ],
+                "content_labels": [
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_d2a52f5e-45f5-4d2a-b4a8-93650626281f"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_eb0f1d4d-b5d6-4b08-aa0b-e954a5be454d"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_7935b688-dec2-4edc-9ea8-bf0dda23c51c"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_4744c78c-47ce-4d2b-af4b-8b63e05244cc"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_e98c6ea1-3f19-440e-8345-486d9861e5cd"
+                  },
+                  {
+                    "image_url": "https://target.scene7.com/is/image/Target/GUEST_a8c03066-4e83-4c03-84be-fe01cd0bd54f"
+                  }
+                ]
+              },
+              "return_policies": [
+                {
+                  "user_type": "best_guest",
+                  "day_count": 120
+                },
+                {
+                  "user_type": "regular_guest",
+                  "day_count": 90
+                }
+              ]
+            },
+            "environmental_segmentation": {
+              "is_hazardous_material": false
+            },
+            "formatted_return_method": "This item can be returned to any Target store or Target.com.",
+            "fulfillment": {
+              "is_marketplace": true,
+              "shipping_exclusion_codes": [
+                "American Samoa (see also separate entry under AS)",
+                "Guam (see also separate entry under GU)",
+                "Northern Mariana Islands",
+                "Puerto Rico (see also separate entry under PR)",
+                "United States Minor Outlying Islands",
+                "Virgin Islands, U.S.",
+                "APO/FPO",
+                "Alaska",
+                "Hawaii"
+              ],
+              "purchase_limit": 10
+            },
+            "package_dimensions": {
+              "depth": 2.0,
+              "dimension_unit_of_measure": "INCH",
+              "weight": 0.55,
+              "weight_unit_of_measure": "POUND",
+              "height": 16.0,
+              "width": 12.0
+            },
+            "product_description": {
+              "bullet_descriptions": [
+                "<B>Suggested Age:</B> 10 Years and Up",
+                "<B>Textile Material:</B> 33% Nylon, 33% Polyester, 33% Vinyl",
+                "<B>Package Quantity:</B> 1",
+                "<B>Material:</B> Nylon, Polyester, Vinyl",
+                "<B>Care & Cleaning:</B> Hand Wash"
+              ],
+              "downstream_description": "Constructed from a breathable material, the Swede-O Elastic Wrist Brace comfortably supports the wrist in a cock-up position. The contoured aluminum stay significantly reduces wrist motions, allowing the wrist to rest by minimizing motions that may aggravate nerves, tendons, or ligaments. Ideal for carpal tunnel syndrome, RSI, acute or chronic wrist pain. The adjustable thumb and wrist closures for easy application and a custom fit. The elastic webbing material stretches and contours to the natural shape of the wrist and hand for increased comfort and support. It is a breathable, durable elastic material. This support is ideal for carpal tunnel syndrome, RSI (Repetitive Stress Injuries), acute or chronic wrist pain or irritation, postoperative pain, post-traumatic pain, tendonitis, arthritis and osteoarthritis. Specify left or right hand when ordering, allows full use of fingers. Made in the USA and contains no latex. <br />\n<br />How to meaasure: evently around the wrist joint.<br />\n<ul><li>S: 5 1/2\"-6 1/2\" 14-17cm</li><li>M: 6 3.4\"-7 1/2\" 17-19cm/li>\n</li><li>L: 7 3/4\"-8 1/2\" 20-22cm/li>\n</li><li>XL: 8 3/4-9 1/2\" 22-24cm/li>\n</li></ul>",
+              "soft_bullets": {
+                "bullets": [
+                  "Breathable, durable elastic material comfortably supports the wrist.",
+                  "Reduces wrist motions which may contribute to carpal tunnel syndrome.",
+                  "Stabilization and compression promote recovery.",
+                  "Removable/adjustable palmar stay to support wrist in cock-up position.",
+                  "Made in the USA: Adjustable thumb and wrist closures for easy application."
+                ],
+                "title": "highlights"
+              },
+              "title": "Swede-O Elastic Wrist Brace - XLarge - Right",
+              "soft_bullet_description": "&bull; Breathable, durable elastic material comfortably supports the wrist.<br>&bull; Reduces wrist motions which may contribute to carpal tunnel syndrome.<br>&bull; Stabilization and compression promote recovery.<br>&bull; Removable/adjustable palmar stay to support wrist in cock-up position.<br>&bull; Made in the USA: Adjustable thumb and wrist closures for easy application."
+            },
+            "product_vendors": [
+              {
+                "vendor_name": "Core Products International, Inc.",
+                "id": "10008520",
+                "uri": "www.target.com/sp/core-products-international-inc/-/N-10008520"
+              }
+            ],
+            "relationship_type_code": "VC",
+            "return_policies_guest_message": "This item must be returned within 90 days of the date it was purchased in store, shipped, delivered by a Shipt shopper, or made ready for pickup.",
+            "return_policy_url": "https://help.target.com/help/subcategoryarticle?childcat=Return+policy&parentcat=Returns+%26+Exchanges&searchQuery=search+help",
+            "cart_add_on_threshold": 35.0,
+            "handling": {
+              "import_designation_description": "made in the USA"
+            },
+            "merchandise_classification": {
+              "class_id": 7,
+              "department_id": 245,
+              "department_name": "OTC - HEALTH & SELF CARE"
+            },
+            "primary_barcode": "782944683340",
+            "primary_brand": {
+              "canonical_url": "/b/swede-o/-/N-q643le8eivr",
+              "linking_id": "q643le8eivr",
+              "name": "Swede-O"
+            },
+            "product_classification": {
+              "product_type": 546,
+              "product_type_name": "HEALTH AND BEAUTY",
+              "purchase_behavior": "Frequency"
+            },
+            "return_method": "Mail in or Store"
+          },
+          "financing_options": {
+            "channel": "DIGITAL",
+            "providers": [
+              {
+                "finance_minimum_loan_amount": 30.0,
+                "finance_provider": "PayPal",
+                "financing_terms_url": "https://www.paypal.com/credit-presentment/lander/modal?client_id=AZ_XI7q1Eg3_B6ho8bkB1B06juS0UYjNs0hXDrDbxu4GzhtTUOj0xhb8VB0KigC5pV0Qljr95-Kp8JKE&amount=0&currency=USD&buyer_country=US&offer=PAY_LATER_SHORT_TERM&integrationType=API",
+                "financing_cell_header": "Pay in 4",
+                "financing_cell_body": "Pay in 4 interest-free payments on purchases of $30-$1,500",
+                "is_finance_eligible": true,
+                "is_finance_message_eligible": true
+              }
+            ]
+          },
+          "free_shipping": {
+            "enabled": false
+          },
+          "price": {
+            "current_retail": 27.16,
+            "display_was_now": false,
+            "formatted_comparison_price": "$30.18",
+            "formatted_comparison_price_type": "reg",
+            "formatted_current_price": "$27.16",
+            "formatted_current_price_type": "sale",
+            "reg_retail": 30.18,
+            "location_id": 3991,
+            "save_dollar": 3.02,
+            "save_percent": 10.0,
+            "external_system_id": "61b9003d34e3910cbdf413ad"
+          }
+        }
+      ]
+    }
+  },
+  "extensions": {
+    "experiments_viewed": [
+      {
+        "service": "redsky",
+        "tcin": "85573240",
+        "xv": [
+          {
+            "xt": "9068f49b-2bb0-4e77-a577-d8457b985c36"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Target Product Dashboard</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h1>Target Product Dashboard</h1>
+    <table>
+        <tr>
+            <th>TCIN</th>
+            <th>Product Name</th>
+            <th>Price</th>
+            <th>Seller</th>
+            <th>Stock Status</th>
+            <th>Link</th>
+        </tr>
+        {% for product in products %}
+        <tr>
+            <td>{{ product.tcin }}</td>
+            <td>{{ product.name }}</td>
+            <td>{{ product.price }}</td>
+            <td>{{ product.seller }}</td>
+            <td>{{ product.stock }}</td>
+            <td><a href="{{ product.link }}" target="_blank">View</a></td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
