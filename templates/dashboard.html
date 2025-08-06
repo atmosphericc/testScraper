@@ -570,7 +570,7 @@
                             <th>Price</th>
                             <th>Seller</th>
                             <th>Stock Status</th>
-                            <th>Pre-order</th>
+                            <!-- <th>Pre-order</th> -->
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -598,14 +598,14 @@
                                     {{ product.stock }}
                                 </span>
                             </td>
-                            <td>
+                            <!-- <td>
                                 {% if product.preorder %}
                                     <span class="preorder-badge">
                                         <i class="fas fa-rocket"></i>
                                         {{ product.preorder }}
                                     </span>
                                 {% endif %}
-                            </td>
+                            </td> -->
                             <td>
                                 <a href="{{ product.link }}" target="_blank" class="action-btn">
                                     <i class="fas fa-external-link-alt"></i>
