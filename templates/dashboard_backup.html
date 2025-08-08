@@ -1,4 +1,4 @@
- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -22,8 +22,6 @@
             --hover-shadow: 0 4px 16px rgba(0,0,0,0.15);
             --preorder-blue: #1976D2;
             --preorder-bg: #E3F2FD;
-            --buy-ready-green: #00C853;
-            --buy-ready-bg: #E8F5E9;
         }
 
         * {
@@ -123,7 +121,7 @@
 
         .dashboard-stats {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
             gap: 1.5rem;
             margin-bottom: 2rem;
         }
@@ -140,10 +138,6 @@
         .stat-card:hover {
             box-shadow: var(--hover-shadow);
             transform: translateY(-2px);
-        }
-
-        .stat-card.buy-ready {
-            border-left-color: var(--buy-ready-green);
         }
 
         .stat-header {
@@ -168,7 +162,6 @@
         .stat-icon.in-stock { background: var(--success-green); }
         .stat-icon.out-stock { background: var(--error-red); }
         .stat-icon.refresh { background: var(--neutral-gray); }
-        .stat-icon.buy-ready { background: var(--buy-ready-green); }
 
         .stat-value {
             font-size: 2rem;
@@ -261,14 +254,6 @@
             background: #FAFAFA;
         }
 
-        tr.buy-ready td {
-            background: var(--buy-ready-bg);
-        }
-
-        tr.buy-ready:hover td {
-            background: #C8E6C9;
-        }
-
         .product-info {
             display: flex;
             flex-direction: column;
@@ -287,21 +272,10 @@
             font-family: 'Courier New', monospace;
         }
 
-        .price-info {
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
-        }
-
         .price {
             font-size: 1.1rem;
             font-weight: 700;
             color: var(--target-red);
-        }
-
-        .max-price {
-            font-size: 0.8rem;
-            color: var(--text-light);
         }
 
         .seller-badge {
@@ -358,36 +332,19 @@
             color: var(--neutral-gray);
         }
 
-        .buy-status {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
-        .buy-badge {
+        .preorder-badge {
             display: inline-flex;
             align-items: center;
             gap: 0.5rem;
-            padding: 0.5rem 1rem;
+            padding: 0.4rem 0.8rem;
             border-radius: 20px;
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             font-weight: 600;
-        }
-
-        .buy-badge.ready {
-            background: var(--buy-ready-green);
-            color: white;
-        }
-
-        .buy-badge.not-ready {
-            background: var(--light-gray);
-            color: var(--text-light);
-        }
-
-        .buy-reason {
-            font-size: 0.75rem;
-            color: var(--text-light);
-            font-style: italic;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background: var(--preorder-bg);
+            color: var(--preorder-blue);
+            border: 1px solid rgba(25, 118, 210, 0.2);
         }
 
         .action-btn {
@@ -569,15 +526,6 @@
                 <div class="stat-value">{{ refresh_info.out_of_stock_count or 0 }}</div>
                 <div class="stat-label">Out of Stock</div>
             </div>
-            <div class="stat-card buy-ready">
-                <div class="stat-header">
-                    <div class="stat-icon buy-ready">
-                        <i class="fas fa-shopping-cart"></i>
-                    </div>
-                </div>
-                <div class="stat-value">{{ products|selectattr('want_to_buy', 'equalto', true)|list|length }}</div>
-                <div class="stat-label">Ready to Buy</div>
-            </div>
             <div class="stat-card">
                 <div class="stat-header">
                     <div class="stat-icon refresh">
@@ -596,8 +544,6 @@
             <div class="update-info">
                 <i class="fas fa-info-circle" style="color: var(--target-red);"></i>
                 <span>Last updated: <span class="update-time">{{ refresh_info.last_refresh or 'Never' }}</span></span>
-                <span style="margin-left: 1rem;">Success Rate: <strong>{{ refresh_info.success_rate or 'N/A' }}</strong></span>
-                <span style="margin-left: 1rem;">Speed: <strong>{{ refresh_info.timing_pattern or 'normal' }}</strong></span>
             </div>
             <div class="auto-refresh-indicator">
                 <div class="pulse"></div>
@@ -624,13 +570,13 @@
                             <th>Price</th>
                             <th>Seller</th>
                             <th>Stock Status</th>
-                            <th>Buy Status</th>
+                            <!-- <th>Pre-order</th> -->
                             <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for product in products %}
-                        <tr {% if product.want_to_buy %}class="buy-ready"{% endif %}>
+                        <tr>
                             <td>
                                 <div class="product-info">
                                     <div class="product-name">{{ product.name }}</div>
@@ -638,15 +584,12 @@
                                 </div>
                             </td>
                             <td>
-                                <div class="price-info">
-                                    <div class="price">{{ product.price }}</div>
-                                    <div class="max-price">Max: ${{ "%.2f"|format(product.max_price) }}</div>
-                                </div>
+                                <div class="price">{{ product.price }}</div>
                             </td>
                             <td>
                                 <span class="seller-badge {{ product.seller }}">
                                     <i class="fas fa-{{ 'store' if product.seller == 'target' else 'external-link-alt' if product.seller == 'third-party' else 'exclamation-triangle' }}"></i>
-                                    {{ product.seller.replace('-', ' ').title() }}
+                                    {{ product.seller.title() }}
                                 </span>
                             </td>
                             <td>
@@ -655,22 +598,14 @@
                                     {{ product.stock }}
                                 </span>
                             </td>
-                            <td>
-                                <div class="buy-status">
-                                    {% if product.want_to_buy %}
-                                        <span class="buy-badge ready">
-                                            <i class="fas fa-check-circle"></i>
-                                            READY TO BUY
-                                        </span>
-                                    {% else %}
-                                        <span class="buy-badge not-ready">
-                                            <i class="fas fa-ban"></i>
-                                            Not Ready
-                                        </span>
-                                    {% endif %}
-                                    <span class="buy-reason">{{ product.buy_decision }}</span>
-                                </div>
-                            </td>
+                            <!-- <td>
+                                {% if product.preorder %}
+                                    <span class="preorder-badge">
+                                        <i class="fas fa-rocket"></i>
+                                        {{ product.preorder }}
+                                    </span>
+                                {% endif %}
+                            </td> -->
                             <td>
                                 <a href="{{ product.link }}" target="_blank" class="action-btn">
                                     <i class="fas fa-external-link-alt"></i>

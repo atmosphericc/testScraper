@@ -1,0 +1,33 @@
+{
+  "products": [
+    {
+      "tcin": "94724987",
+      "name": "Test Product 1",
+      "max_price": 70.00,
+      "quantity": 1,
+      "enabled": true,
+      "notes": "Regular item"
+    },
+        {
+      "tcin": "94681785",
+      "name": "Test Product 2",
+      "max_price": 32.00,
+      "quantity": 1,
+      "enabled": true,
+      "notes": "Regular item"
+    },
+        {
+      "tcin": "94681770",
+      "name": "Test Product 3",
+      "max_price": 32.00,
+      "quantity": 1,
+      "enabled": true,
+      "notes": "Regular item"
+    }
+  ],
+  "settings": {
+    "only_target_direct": false,
+    "auto_buy_enabled": false,
+    "refresh_seconds": 300
+  }
+}

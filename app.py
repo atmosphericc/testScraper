@@ -6,6 +6,9 @@ from typing import List, Dict, Any
 from flask import Flask, render_template, redirect, url_for, flash
 from datetime import datetime
 
+# NEW IMPORT - Add this line
+from request_manager import TargetMonitor
+
 print("🚀 TARGET DASHBOARD - PRODUCTION VERSION 1.0")
 
 app = Flask(__name__)
@@ -13,38 +16,38 @@ app.secret_key = 'target-dashboard-secret-key-2025'
 
 # Configuration
 last_refresh_time = None
+config = {}  # ADD THIS - Initialize config globally
 
-def get_target_product_info(tcin: str) -> Dict[str, Any]:
+# INITIALIZE THE MONITOR - Add these lines
+monitor = TargetMonitor(use_proxies=False)
+print("📡 Request Manager initialized - No proxies (direct connection)")
+
+
+def load_product_config():
     """
-    Fetch product information from Target's Redsky API
+    Load product configuration from JSON file
     """
-    url = f"https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1?key=9f36aeafbe60771e321a7cc95a78140772ab3e96&tcin={tcin}&is_bot=false&store_id=865&pricing_store_id=865&has_pricing_store_id=true&has_financing_options=true&include_obsolete=true&visitor_id=0198538661860201B9F1AD74ED8A1AE4&skip_personalized=true&skip_variation_hierarchy=true&channel=WEB&page=%2Fp%2FA-{tcin}"
-    
-    headers = {
-        "accept": "application/json",
-        "accept-language": "en-US,en;q=0.9",
-        "origin": "https://www.target.com",
-        "referer": f"https://www.target.com/p/A-{tcin}",
-        "sec-ch-ua": '"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-site",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
-    }
-    
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print(f"❌ API Error for TCIN {tcin}: {e}")
-        return None
+        with open('product_config.json', 'r') as f:
+            config = json.load(f)
+            return config
+    except FileNotFoundError:
+        print("⚠️ product_config.json not found, using defaults")
+        # Fallback to your original hardcoded list
+        return {
+            "products": [
+                {"tcin": "1001304528", "max_price": 999.99, "quantity": 1, "enabled": True},
+                {"tcin": "94300069", "max_price": 999.99, "quantity": 1, "enabled": True},
+                # ... etc
+            ],
+            "settings": {"only_target_direct": False, "auto_buy_enabled": False}
+        }
 
-def process_target_product(tcin: str, api_response: Dict[str, Any]) -> Dict[str, Any]:
+
+def process_target_product(tcin: str, api_response: Dict[str, Any], max_price: float = 999.99, only_target_direct: bool = False) -> Dict[str, Any]:
     """
     BULLETPROOF: Stock detection based on actual API patterns - NO ARBITRARY DATES!
+    MODIFIED: Now includes max_price parameter for buy decisions
     
     Based on comprehensive API analysis:
     - Uses only reliable API signals that Target controls
@@ -94,7 +97,6 @@ def process_target_product(tcin: str, api_response: Dict[str, Any]) -> Dict[str,
             seller_type = "third-party"
             # Marketplace items with purchase limits are available
             available = purchase_limit > 0
-            want_to_buy = False  # Don't auto-buy third-party
             
         else:
             # TARGET DIRECT LOGIC: Multi-signal approach
@@ -143,8 +145,29 @@ def process_target_product(tcin: str, api_response: Dict[str, Any]) -> Dict[str,
                 # Fallback case
                 available = False
                 reason = "Default fallback"
-            
-            want_to_buy = available
+        
+        # Extract numeric price for comparison
+        if isinstance(current_price, (int, float)):
+            numeric_price = float(current_price)
+        else:
+            # Try to extract number from string like "$49.99"
+            import re
+            price_match = re.search(r'[\d.]+', str(current_price))
+            numeric_price = float(price_match.group()) if price_match else 999.99
+        
+        # Determine if we want to buy
+        want_to_buy = False
+        buy_decision_reason = ""
+        
+        if not available:
+            buy_decision_reason = "Out of stock"
+        elif numeric_price > max_price:
+            buy_decision_reason = f"Price ${numeric_price:.2f} exceeds max ${max_price:.2f}"
+        elif seller_type == "third-party" and only_target_direct:
+            buy_decision_reason = "Third-party seller (Target direct only)"
+        else:
+            want_to_buy = True
+            buy_decision_reason = f"✅ BUY - In stock at ${numeric_price:.2f} (max: ${max_price:.2f})"
         
         # Enhanced debug for specific TCINs
         if tcin in ["93859727", "94693225", "94300069", "94694203", "94881750"]:
@@ -156,7 +179,9 @@ def process_target_product(tcin: str, api_response: Dict[str, Any]) -> Dict[str,
             print(f"  Has eligibility rules: {has_eligibility_rules}")
             print(f"  Purchase date display active: {purchase_date_display_active}")
             print(f"  Has purchase date field: {has_purchase_date_field}")
-            print(f"  Current price: ${current_price}")
+            print(f"  Current price: ${numeric_price:.2f}")
+            print(f"  Max price: ${max_price:.2f}")
+            print(f"  💰 Buy Decision: {buy_decision_reason}")
             print(f"  🔍 Pre-order check - is_preorder: {is_preorder}, reason: '{preorder_reason}'")
             if is_preorder:
                 print(f"  🚀 PRE-ORDER DETECTED: {preorder_reason}")
@@ -183,22 +208,25 @@ def process_target_product(tcin: str, api_response: Dict[str, Any]) -> Dict[str,
                 print(f"  Decision: Marketplace with limit {purchase_limit} → {'IN STOCK' if available else 'OUT OF STOCK'}")
             
             print(f"  FINAL RESULT: {'AVAILABLE' if available else 'NOT AVAILABLE'}")
+            print(f"  WANT TO BUY: {want_to_buy}")
             print(f"  PREORDER STATUS: '{preorder_reason}' (is_preorder: {is_preorder})")
             print("="*60)
         
         # Format results
         stock_status = "In Stock" if available else "Out of Stock"
-        price_formatted = f"${current_price:.2f}" if isinstance(current_price, (int, float)) else str(current_price)
+        price_formatted = f"${numeric_price:.2f}" if isinstance(numeric_price, (int, float)) else str(current_price)
         product_url = f"https://www.target.com/p/-/A-{tcin}"
         
         return {
             "tcin": tcin,
             "name": name,
             "price": price_formatted,
+            "numeric_price": numeric_price,  # NEW: Add numeric price
             "seller": seller_type,
             "stock": stock_status,
             "link": product_url,
             "want_to_buy": want_to_buy,
+            "buy_decision": buy_decision_reason,  # NEW: Add decision reason
             "purchase_limit": purchase_limit,
             "preorder": preorder_reason if is_preorder else "",
             "status": "success"
@@ -212,76 +240,98 @@ def process_target_product(tcin: str, api_response: Dict[str, Any]) -> Dict[str,
             "tcin": tcin,
             "name": f"Error processing {tcin}",
             "price": "$0.00",
+            "numeric_price": 0,
             "seller": "error",
             "stock": "Error",
             "link": f"https://www.target.com/p/-/A-{tcin}",
             "want_to_buy": False,
+            "buy_decision": "Processing Error",
             "purchase_limit": 0,
             "preorder": "",
             "status": "error"
         }
 
-def fetch_product_data(tcin_list: List[str]) -> List[Dict[str, Any]]:
+
+def fetch_product_data(product_list: List[Dict], only_target_direct: bool = False) -> List[Dict[str, Any]]:
     """
-    PRODUCTION: Fetch and process multiple Target products
+    MODIFIED: Now accepts product config list instead of just TCINs
     """
     products = []
     
-    print(f"📊 Fetching data for {len(tcin_list)} products...")
+    # Filter to only enabled products
+    enabled_products = [p for p in product_list if p.get('enabled', True)]
     
-    for i, tcin in enumerate(tcin_list, 1):
-        print(f"Processing {i}/{len(tcin_list)}: {tcin}")
+    print(f"📊 Fetching data for {len(enabled_products)} enabled products...")
+    
+    for i, product_config in enumerate(enabled_products, 1):
+        tcin = product_config['tcin']
+        max_price = product_config.get('max_price', 999.99)
         
-        # Fetch raw data from Target API
-        api_response = get_target_product_info(tcin)
+        print(f"Processing {i}/{len(enabled_products)}: {tcin} (max: ${max_price:.2f})")
+        
+        # Use the monitor to get product info
+        api_response = monitor.get_product_info(tcin)
         
         if api_response:
-            # Process the business logic
-            product_info = process_target_product(tcin, api_response)
+            # Process with price threshold and pass only_target_direct setting
+            product_info = process_target_product(tcin, api_response, max_price, only_target_direct)
+            # Add config info to result
+            product_info['config_name'] = product_config.get('name', 'Unknown')
+            product_info['max_price'] = max_price
         else:
             # API failure fallback
             product_info = {
                 "tcin": tcin,
-                "name": f"API Error - TCIN {tcin}",
+                "name": product_config.get('name', f"API Error - TCIN {tcin}"),
                 "price": "$0.00",
+                "numeric_price": 0,
                 "seller": "error",
                 "stock": "API Error",
                 "link": f"https://www.target.com/p/-/A-{tcin}",
                 "want_to_buy": False,
+                "buy_decision": "API Error",
                 "purchase_limit": 0,
                 "preorder": "",
-                "status": "api_error"
+                "status": "api_error",
+                "max_price": max_price
             }
         
         products.append(product_info)
-        
-        # Rate limiting: Be respectful to Target's API
-        if i < len(tcin_list):
-            time.sleep(1.5)
+    
+    # Print buy summary
+    buy_ready = [p for p in products if p.get('want_to_buy', False)]
+    if buy_ready:
+        print(f"\n🎯 READY TO BUY: {len(buy_ready)} products")
+        for p in buy_ready:
+            print(f"  ✅ {p['tcin']}: {p['name'][:30]} at {p['price']}")
+    else:
+        print(f"\n❌ No products meet buy criteria")
+    
+    # Show stats
+    stats = monitor.request_manager.get_stats()
+    print(f"\n📈 Batch Complete - Stats:")
+    print(f"  Total Requests: {stats['total_requests']}")
+    print(f"  Success Rate: {stats['success_rate']:.1%}")
+    print(f"  Timing Pattern: {stats['current_pattern']}")
     
     return products
 
 def get_dashboard_data() -> List[Dict[str, Any]]:
     """
-    PRODUCTION: Get current dashboard data for business-critical TCINs
+    MODIFIED: Now loads from config file
     """
-    global last_refresh_time
+    global last_refresh_time, config
     
-    # Business-critical TCINs for inventory monitoring
-    tcin_list = [
-        "1001304528",  # Expected: third-party, in stock
-        "94300069",    # Expected: target, out of stock (street date)
-        "93859727",    # Expected: target, out of stock (street date)
-        "94694203",    # Expected: target, in stock
-        "1004021929",  # New: Pokemon SV10 Destined Rivals Sleeved Booster Pack
-        "94881750",
-        "94693225",
-        "14777416"
-    ]
+    # Load configuration
+    config = load_product_config()
     
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Fetching real-time inventory data...")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Loading config...")
+    print(f"  Found {len(config['products'])} products")
+    print(f"  {sum(1 for p in config['products'] if p.get('enabled', True))} enabled")
     
-    products = fetch_product_data(tcin_list)
+    # Pass the only_target_direct setting from config
+    only_target_direct = config.get('settings', {}).get('only_target_direct', False)
+    products = fetch_product_data(config['products'], only_target_direct)
     last_refresh_time = datetime.now()
     
     # Save data for audit trail
@@ -291,8 +341,11 @@ def get_dashboard_data() -> List[Dict[str, Any]]:
     # Business intelligence logging
     success_count = sum(1 for p in products if p['status'] == 'success')
     error_count = len(products) - success_count
+    buy_ready_count = sum(1 for p in products if p.get('want_to_buy', False))
     
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Inventory update complete: {success_count} success, {error_count} errors")
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Update complete:")
+    print(f"  {success_count} success, {error_count} errors")
+    print(f"  {buy_ready_count} ready to purchase")
     
     return products
 
@@ -305,11 +358,18 @@ def dashboard():
     try:
         products = get_dashboard_data()
         
+        # NEW: Add request statistics to dashboard
+        stats = monitor.request_manager.get_stats()
+        
         refresh_info = {
             'last_refresh': last_refresh_time.strftime('%Y-%m-%d %H:%M:%S') if last_refresh_time else 'Never',
             'total_products': len(products),
             'in_stock_count': sum(1 for p in products if p['stock'] == 'In Stock'),
-            'out_of_stock_count': sum(1 for p in products if p['stock'] == 'Out of Stock')
+            'out_of_stock_count': sum(1 for p in products if p['stock'] == 'Out of Stock'),
+            # NEW: Add request stats
+            'total_requests': stats['total_requests'],
+            'success_rate': f"{stats['success_rate']:.1%}" if stats['success_rate'] else "N/A",
+            'timing_pattern': stats['current_pattern']
         }
         
         return render_template('dashboard.html', products=products, refresh_info=refresh_info)
@@ -336,13 +396,32 @@ def refresh_data():
 def api_status():
     """
     PRODUCTION: API status endpoint for monitoring
+    MODIFIED: Now includes request manager stats
     """
+    stats = monitor.request_manager.get_stats()
     return {
         'status': 'operational',
         'last_refresh': last_refresh_time.isoformat() if last_refresh_time else None,
         'timestamp': datetime.now().isoformat(),
-        'version': '1.0'
+        'version': '1.0',
+        # NEW: Include request stats
+        'request_stats': stats
     }
+
+# NEW ROUTE: Speed control endpoint
+@app.route('/set_speed/<pattern>')
+def set_speed(pattern):
+    """
+    NEW: Control monitoring speed
+    Patterns: 'aggressive', 'normal', 'conservative', 'human'
+    """
+    valid_patterns = ['aggressive', 'normal', 'conservative', 'human']
+    if pattern in valid_patterns:
+        monitor.request_manager.set_timing_pattern(pattern)
+        flash(f"Speed set to {pattern} mode", "success")
+    else:
+        flash(f"Invalid pattern. Use: {', '.join(valid_patterns)}", "error")
+    return redirect(url_for('dashboard'))
 
 if __name__ == '__main__':
     # Production startup
@@ -360,6 +439,8 @@ if __name__ == '__main__':
     print("Real-time inventory monitoring system")
     print("Dashboard: http://localhost:5000")
     print("API Status: http://localhost:5000/api/status")
+    print("Speed Control: http://localhost:5000/set_speed/[pattern]")
+    print("  Patterns: aggressive, normal, conservative, human")
     print("="*60 + "\n")
     
     try:
