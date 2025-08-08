@@ -23,6 +23,14 @@
       "quantity": 1,
       "enabled": true,
       "notes": "Regular item"
+    },
+            {
+      "tcin": "94336414",
+      "name": "Test Product 4",
+      "max_price": 25.00,
+      "quantity": 1,
+      "enabled": true,
+      "notes": "Regular item"
     }
   ],
   "settings": {
