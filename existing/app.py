@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import html
 
 # Import request manager for smart retry logic
-from preserved.request_manager import TargetMonitor
+from request_manager import TargetMonitor
 
 print("🚀 TARGET DASHBOARD - PRODUCTION VERSION 1.0 (CONCURRENT)")
 
