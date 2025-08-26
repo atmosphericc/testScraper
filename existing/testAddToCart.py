@@ -25,7 +25,7 @@ async def run():
             await shipping_button.click(force=True)
             await page.wait_for_timeout(1000)
         except:
-            print("⚠️ Shipping button not found or already selected.")
+            print("Shipping button not found or already selected.")
 
         # Scroll to ensure button is in view
         await page.evaluate("window.scrollBy(0, window.innerHeight);")
@@ -36,9 +36,9 @@ async def run():
             add_btn = await page.wait_for_selector('button[id^="addToCartButtonOrTextIdFor"]', timeout=5000)
             await add_btn.scroll_into_view_if_needed()
             await add_btn.click(force=True)
-            print("✅ Clicked Add to Cart")
+            print("Clicked Add to Cart")
         except:
-            print("❌ Add to Cart button not found.")
+            print("Add to Cart button not found.")
             await browser.close()
             return
 
@@ -50,10 +50,22 @@ async def run():
 
         # Go to cart
         await page.goto("https://www.target.com/cart")
-        print("🛒 Redirected to cart")
+        print("Redirected to cart")
+        
+        # Wait for cart page to load
+        await page.wait_for_timeout(3000)
+        
+        # Click checkout button
+        try:
+            checkout_btn = await page.wait_for_selector('button[data-test="checkout-button"]', timeout=5000)
+            await checkout_btn.scroll_into_view_if_needed()
+            await checkout_btn.click(force=True)
+            print("Clicked Checkout button")
+        except:
+            print("Checkout button not found")
 
         # Wait forever for debugging
-        print("🧷 Staying open indefinitely for inspection...")
+        print("Staying open indefinitely for inspection...")
         await asyncio.Event().wait()
 
 asyncio.run(run())

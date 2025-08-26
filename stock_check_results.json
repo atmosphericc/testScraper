@@ -1,0 +1,98 @@
+[
+  {
+    "tcin": "94336414",
+    "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Prismatic Evolut...",
+    "price": "$24.99",
+    "available": false,
+    "stock": "Out of Stock",
+    "seller_type": "target",
+    "want_to_buy": false,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-94336414",
+    "status": "success"
+  },
+  {
+    "tcin": "1001304528",
+    "name": "Pokemon Scarlet & Violet 151 | Booster Pack",
+    "price": "$19.99",
+    "available": true,
+    "stock": "In Stock",
+    "seller_type": "third-party",
+    "want_to_buy": false,
+    "purchase_limit": 10,
+    "link": "https://www.target.com/p/A-1001304528",
+    "status": "success"
+  },
+  {
+    "tcin": "94681785",
+    "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014White Flare Boos...",
+    "price": "$31.99",
+    "available": false,
+    "stock": "Out of Stock",
+    "seller_type": "target",
+    "want_to_buy": false,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-94681785",
+    "status": "success"
+  },
+  {
+    "tcin": "94724987",
+    "name": "Pok\u00e9mon Trading Card Game: Blooming Waters Premium Collectio...",
+    "price": "$69.99",
+    "available": false,
+    "stock": "Out of Stock",
+    "seller_type": "target",
+    "want_to_buy": false,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-94724987",
+    "status": "success"
+  },
+  {
+    "tcin": "94681770",
+    "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Black Bolt Boost...",
+    "price": "$31.99",
+    "available": false,
+    "stock": "Out of Stock",
+    "seller_type": "target",
+    "want_to_buy": false,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-94681770",
+    "status": "success"
+  },
+  {
+    "tcin": "94300069",
+    "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014 Destined Rivals...",
+    "price": "$54.99",
+    "available": false,
+    "stock": "Out of Stock",
+    "seller_type": "target",
+    "want_to_buy": false,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-94300069",
+    "status": "success"
+  },
+  {
+    "tcin": "93859727",
+    "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014 Journey Togethe...",
+    "price": "$14.99",
+    "available": false,
+    "stock": "Out of Stock",
+    "seller_type": "target",
+    "want_to_buy": false,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-93859727",
+    "status": "success"
+  },
+  {
+    "tcin": "94694203",
+    "name": "Donkey Kong Bananza - Nintendo Switch 2",
+    "price": "$69.99",
+    "available": true,
+    "stock": "In Stock",
+    "seller_type": "target",
+    "want_to_buy": true,
+    "purchase_limit": 2,
+    "link": "https://www.target.com/p/A-94694203",
+    "status": "success"
+  }
+]
