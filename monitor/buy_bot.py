@@ -1,177 +1,119 @@
 #!/usr/bin/env python3
 """
-Buy Bot - Handles automated purchases when items come in stock
+Buy Bot - Automated purchase when items come in stock
 """
 
 import asyncio
 from playwright.async_api import async_playwright
-import os
-import sys
-import logging
 from pathlib import Path
+import logging
 from datetime import datetime
 
 class BuyBot:
-    def __init__(self, storage_path="../existing/target_storage.json", headless=True):
-        """Initialize the buy bot"""
-        self.storage_path = Path(storage_path)
-        self.headless = headless
+    def __init__(self):
+        # Path to saved session in existing folder
+        self.storage_path = Path("../existing/target_storage.json")
         
         # Setup logging
-        log_dir = Path("logs")
+        log_dir = Path("../logs")
         log_dir.mkdir(exist_ok=True)
         
-        self.logger = logging.getLogger('buy_bot')
+        self.logger = logging.getLogger('buybot')
         self.logger.setLevel(logging.INFO)
         
         fh = logging.FileHandler(log_dir / 'purchases.log', mode='a')
-        fh.setFormatter(logging.Formatter(
-            '%(asctime)s - BUY_BOT - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        ))
+        fh.setFormatter(logging.Formatter('%(asctime)s - BUYBOT - %(message)s'))
         self.logger.addHandler(fh)
     
     async def attempt_purchase(self, tcin: str, price: float) -> bool:
         """
-        Attempt to purchase a product
-        Returns True if successful, False otherwise
+        Try to buy a product
+        Returns True if successful
         """
-        start_time = datetime.now()
-        self.logger.info(f"Starting purchase attempt for TCIN {tcin} at ${price:.2f}")
+        self.logger.info(f"Starting purchase: TCIN {tcin} at ${price:.2f}")
         
         if not self.storage_path.exists():
-            self.logger.error(f"No saved session found at {self.storage_path}")
+            self.logger.error("No saved session found")
             return False
         
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(
-                    headless=self.headless,
-                    args=['--disable-blink-features=AutomationControlled']
-                )
+                # Launch browser (headless for speed)
+                browser = await p.chromium.launch(headless=True)
                 
                 # Load saved session
                 context = await browser.new_context(storage_state=str(self.storage_path))
                 page = await context.new_page()
-                
-                # Set reasonable timeout
                 page.set_default_timeout(10000)
                 
-                # Navigate to product
-                product_url = f"https://www.target.com/p/-/A-{tcin}"
-                self.logger.info(f"Navigating to {product_url}")
-                
-                await page.goto(product_url, wait_until='domcontentloaded')
+                # Go to product page
+                url = f"https://www.target.com/p/-/A-{tcin}"
+                await page.goto(url, wait_until='domcontentloaded')
                 await page.wait_for_timeout(2000)
                 
-                # Check if logged in
+                # Try shipping option
                 try:
-                    await page.wait_for_selector('[data-test="@web/AccountLink"]', timeout=2000)
-                    self.logger.info("User is logged in")
-                except:
-                    self.logger.warning("User may not be logged in")
-                
-                # Try to select shipping option
-                try:
-                    shipping_button = await page.wait_for_selector(
-                        'button[data-test="fulfillment-cell-shipping"]', 
-                        timeout=3000
-                    )
-                    await shipping_button.click()
+                    ship_btn = await page.wait_for_selector('button[data-test="fulfillment-cell-shipping"]', timeout=3000)
+                    await ship_btn.click()
                     await page.wait_for_timeout(1000)
-                    self.logger.info("Selected shipping option")
                 except:
-                    self.logger.info("Shipping option not found or already selected")
+                    pass  # Already selected or not available
                 
                 # Add to cart
                 try:
-                    add_button = await page.wait_for_selector(
-                        'button[id^="addToCartButtonOrTextIdFor"]',
-                        timeout=5000
-                    )
-                    await add_button.scroll_into_view_if_needed()
-                    await add_button.click()
-                    self.logger.info("Clicked add to cart")
-                    
+                    add_btn = await page.wait_for_selector('button[id^="addToCartButtonOrTextIdFor"]', timeout=5000)
+                    await add_btn.click()
                     await page.wait_for_timeout(2000)
-                    
-                except Exception as e:
-                    self.logger.error(f"Could not add to cart: {e}")
+                    self.logger.info(f"Added {tcin} to cart")
+                except:
+                    self.logger.error(f"Could not add {tcin} to cart")
                     await browser.close()
                     return False
                 
                 # Go to cart
                 await page.goto("https://www.target.com/cart")
                 await page.wait_for_timeout(2000)
-                self.logger.info("Navigated to cart")
                 
-                # Try to checkout
+                # Click checkout
                 try:
-                    checkout_button = await page.wait_for_selector(
-                        'button[data-test="checkout-button"]',
-                        timeout=5000
-                    )
+                    checkout_btn = await page.wait_for_selector('button[data-test="checkout-button"]', timeout=5000)
                     
-                    # If AUTO_CHECKOUT environment variable is set, actually click
+                    # Only actually checkout if AUTO_CHECKOUT=true
+                    import os
                     if os.environ.get('AUTO_CHECKOUT') == 'true':
-                        await checkout_button.click()
-                        self.logger.warning(f"CHECKOUT CLICKED for {tcin} at ${price:.2f}")
-                        
-                        # Would continue with checkout process here
+                        await checkout_btn.click()
+                        self.logger.warning(f"CHECKOUT CLICKED for {tcin}")
                         await page.wait_for_timeout(5000)
-                        
-                        # Save screenshot
-                        screenshot_path = f"logs/checkout_{tcin}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                        await page.screenshot(path=screenshot_path)
-                        self.logger.info(f"Screenshot saved: {screenshot_path}")
                     else:
-                        self.logger.info(f"Item in cart but AUTO_CHECKOUT not enabled")
-                        
-                        # Save screenshot of cart
-                        screenshot_path = f"logs/cart_{tcin}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                        await page.screenshot(path=screenshot_path)
+                        self.logger.info(f"Item {tcin} in cart (auto-checkout disabled)")
+                    
+                    # Save screenshot
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    screenshot = f"../logs/cart_{tcin}_{timestamp}.png"
+                    await page.screenshot(path=screenshot)
                     
                     await browser.close()
-                    
-                    elapsed = (datetime.now() - start_time).total_seconds()
-                    self.logger.info(f"Purchase process completed in {elapsed:.2f}s for {tcin}")
                     return True
                     
                 except Exception as e:
-                    self.logger.error(f"Checkout failed: {e}")
+                    self.logger.error(f"Checkout failed for {tcin}: {e}")
                     await browser.close()
                     return False
                     
         except Exception as e:
-            self.logger.error(f"Buy bot error for {tcin}: {e}", exc_info=True)
+            self.logger.error(f"Buy bot error: {e}")
             return False
-    
-    async def test_purchase(self, tcin: str):
-        """Test purchase flow without actually buying"""
-        print(f"Testing purchase flow for TCIN: {tcin}")
-        success = await self.attempt_purchase(tcin, 0.00)
-        
-        if success:
-            print("✓ Test completed successfully - item added to cart")
-        else:
-            print("✗ Test failed - check logs/purchases.log for details")
-        
-        return success
 
-
-async def main():
-    """Standalone test"""
-    if len(sys.argv) > 1:
-        tcin = sys.argv[1]
-    else:
-        tcin = "92800127"  # Default test product
+# Test function
+async def test():
+    """Test the buy bot"""
+    import sys
+    tcin = sys.argv[1] if len(sys.argv) > 1 else "92800127"
     
     print(f"Testing buy bot with TCIN: {tcin}")
-    print("Note: Set AUTO_CHECKOUT=true environment variable to actually checkout")
-    
-    bot = BuyBot(headless=False)  # Show browser for testing
-    await bot.test_purchase(tcin)
-
+    bot = BuyBot()
+    success = await bot.attempt_purchase(tcin, 99.99)
+    print(f"Result: {'Success' if success else 'Failed'}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(test())
