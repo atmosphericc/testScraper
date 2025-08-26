@@ -25,6 +25,7 @@ wheels/
 .installed.cfg
 *.egg
 target_products.json
+target_profile/
 
 .vscode/
 .idea/
