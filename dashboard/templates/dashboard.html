@@ -52,6 +52,9 @@
         }
         .badge.enabled { background: #00ff0033; color: #00ff00; }
         .badge.disabled { background: #ff000033; color: #ff0000; }
+        .badge.in-stock { background: #00ff0033; color: #00ff00; }
+        .badge.out-of-stock { background: #ff000033; color: #ff0000; }
+        .badge.unknown { background: #666633; color: #999; }
         .log-entry {
             font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.5rem;
             background: #0f0f0f; border-left: 3px solid #333; margin-bottom: 0.5rem;
@@ -68,6 +71,12 @@
         .alert { padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
         .alert.success { background: #00ff0033; border: 1px solid #00ff00; color: #00ff00; }
         .no-data { color: #666; text-align: center; padding: 2rem; }
+        .view-btn {
+            background: #cc0000; color: white; text-decoration: none;
+            padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85rem;
+            font-weight: bold; transition: background 0.2s;
+        }
+        .view-btn:hover { background: #990000; }
     </style>
     <script>
         setTimeout(() => location.reload(), 5000);
@@ -110,7 +119,16 @@
         </div>
         
         {% if status.in_stock_count > 0 %}
-        <div class="alert success">Items currently in stock detected!</div>
+        <div class="alert success">
+            Items currently in stock detected!
+            {% if status.stock_by_tcin %}
+                <br><small>Debug - TCINs marked as in stock: 
+                {% for tcin, stock_status in status.stock_by_tcin.items() %}
+                    {% if stock_status == 'IN_STOCK' %}{{ tcin }}{% if not loop.last %}, {% endif %}{% endif %}
+                {% endfor %}
+                </small>
+            {% endif %}
+        </div>
         {% endif %}
         
         <div class="products-section">
@@ -118,18 +136,38 @@
             {% if config.products %}
             <table>
                 <thead>
-                    <tr><th>TCIN</th><th>Name</th><th>Max Price</th><th>Status</th></tr>
+                    <tr><th>TCIN</th><th>Product Name</th><th>Max Price</th><th>Monitor Status</th><th>Stock Status</th><th>Actions</th></tr>
                 </thead>
                 <tbody>
                     {% for product in config.products %}
                     <tr>
                         <td><code>{{ product.tcin }}</code></td>
-                        <td>{{ product.name[:50] }}</td>
+                        <td>
+                            <div style="max-width: 300px;">
+                                {{ product.dynamic_name or product.name or 'Unknown Product' }}
+                            </div>
+                        </td>
                         <td>${{ "%.2f"|format(product.max_price) }}</td>
                         <td>
                             <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
                                 {{ 'ENABLED' if product.enabled else 'DISABLED' }}
                             </span>
+                        </td>
+                        <td>
+                            {% if product.tcin in status.stock_by_tcin %}
+                                {% if status.stock_by_tcin[product.tcin] == 'IN_STOCK' %}
+                                    <span class="badge in-stock">IN STOCK</span>
+                                {% else %}
+                                    <span class="badge out-of-stock">OUT OF STOCK</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="badge unknown">UNKNOWN</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="{{ product.url }}" target="_blank" class="view-btn">
+                                View on Target
+                            </a>
                         </td>
                     </tr>
                     {% endfor %}

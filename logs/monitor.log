@@ -31,3 +31,187 @@ Call log:
 2025-08-27 19:23:02,646 - monitor - INFO - Status - Cycle: 20 | Checks: 100 | In Stock: 0 | Active Purchases: 0
 2025-08-27 19:23:35,709 - monitor - INFO - Status - Cycle: 30 | Checks: 150 | In Stock: 0 | Active Purchases: 0
 2025-08-27 19:24:08,889 - monitor - INFO - Status - Cycle: 40 | Checks: 200 | In Stock: 0 | Active Purchases: 0
+2025-08-28 15:51:25,406 - monitor - INFO - ============================================================
+2025-08-28 15:51:25,406 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-28 15:51:25,406 - monitor - INFO - Mode: test
+2025-08-28 15:51:25,406 - monitor - INFO - ============================================================
+2025-08-28 15:51:25,406 - monitor - INFO - Validating session...
+2025-08-28 15:51:33,825 - session_manager - INFO - Session validated successfully
+2025-08-28 15:51:33,873 - monitor - INFO - Session valid - starting monitoring
+2025-08-28 15:51:34,450 - monitor - WARNING - IN STOCK: Test Product 1 at $69.99
+2025-08-28 15:51:34,450 - monitor - INFO - Initiating purchase for 94724987
+2025-08-28 15:51:34,450 - purchases - INFO - Starting purchase: 94724987 - $69.99 (max: $70.00)
+2025-08-28 15:51:34,465 - monitor - WARNING - IN STOCK: Test Product 3 at $31.99
+2025-08-28 15:51:34,465 - monitor - INFO - Initiating purchase for 94681770
+2025-08-28 15:51:34,465 - purchases - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 15:51:35,732 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-94724987
+2025-08-28 15:51:35,858 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-94681770
+2025-08-28 15:51:42,205 - buy_bot - INFO - Selected shipping option
+2025-08-28 15:51:50,777 - purchases - ERROR - Purchase attempt failed: Page.goto: Timeout 15000ms exceeded.
+Call log:
+  - navigating to "https://www.target.com/p/-/A-94724987", waiting until "domcontentloaded"
+
+2025-08-28 15:51:50,777 - monitor - WARNING - PURCHASE FAILED: 94724987 - exception
+2025-08-28 15:51:57,775 - purchases - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    28 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 15:51:58,087 - monitor - WARNING - PURCHASE FAILED: 94681770 - add_to_cart_failed
+2025-08-28 15:52:06,776 - monitor - INFO - Status - Cycle: 10 | Checks: 32 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:52:40,352 - monitor - INFO - Status - Cycle: 20 | Checks: 62 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:53:14,258 - monitor - INFO - Status - Cycle: 30 | Checks: 92 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:53:47,950 - monitor - INFO - Status - Cycle: 40 | Checks: 122 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:54:19,168 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 15:54:21,565 - monitor - INFO - Status - Cycle: 50 | Checks: 152 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:54:55,477 - monitor - INFO - Status - Cycle: 60 | Checks: 182 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:55:29,362 - monitor - INFO - Status - Cycle: 70 | Checks: 212 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:56:02,852 - monitor - INFO - Status - Cycle: 80 | Checks: 242 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:56:36,694 - monitor - INFO - Status - Cycle: 90 | Checks: 272 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:57:08,261 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 15:57:10,623 - monitor - INFO - Status - Cycle: 100 | Checks: 312 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:57:44,647 - monitor - INFO - Status - Cycle: 110 | Checks: 362 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:58:19,145 - monitor - INFO - Status - Cycle: 120 | Checks: 412 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:58:53,174 - monitor - INFO - Status - Cycle: 130 | Checks: 462 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:59:27,425 - monitor - INFO - Status - Cycle: 140 | Checks: 512 | In Stock: 2 | Active Purchases: 0
+2025-08-28 15:59:59,032 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:00:01,425 - monitor - INFO - Status - Cycle: 150 | Checks: 562 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:00:35,846 - monitor - INFO - Status - Cycle: 160 | Checks: 612 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:01:09,888 - monitor - INFO - Status - Cycle: 170 | Checks: 662 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:01:44,040 - monitor - INFO - Status - Cycle: 180 | Checks: 712 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:02:18,327 - monitor - INFO - Status - Cycle: 190 | Checks: 762 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:02:49,737 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:02:52,328 - monitor - INFO - Status - Cycle: 200 | Checks: 812 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:03:26,660 - monitor - INFO - Status - Cycle: 210 | Checks: 862 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:04:00,651 - monitor - INFO - Status - Cycle: 220 | Checks: 912 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:04:34,863 - monitor - INFO - Status - Cycle: 230 | Checks: 962 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:05:09,494 - monitor - INFO - Status - Cycle: 240 | Checks: 1012 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:05:41,087 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:05:44,052 - monitor - INFO - Status - Cycle: 250 | Checks: 1062 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:06:18,003 - monitor - INFO - Status - Cycle: 260 | Checks: 1112 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:06:52,085 - monitor - INFO - Status - Cycle: 270 | Checks: 1162 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:07:26,040 - monitor - INFO - Status - Cycle: 280 | Checks: 1212 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:07:58,312 - monitor - INFO - OUT OF STOCK: Test Product 3
+2025-08-28 16:08:00,259 - monitor - INFO - Status - Cycle: 290 | Checks: 1262 | In Stock: 1 | Active Purchases: 0
+2025-08-28 16:08:01,660 - monitor - WARNING - IN STOCK: Test Product 3 at $31.99
+2025-08-28 16:08:01,660 - monitor - INFO - Initiating purchase for 94681770
+2025-08-28 16:08:01,660 - purchases - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 16:08:02,451 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-94681770
+2025-08-28 16:08:08,266 - buy_bot - INFO - Selected shipping option
+2025-08-28 16:08:23,813 - purchases - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    28 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 16:08:24,097 - monitor - WARNING - PURCHASE FAILED: 94681770 - add_to_cart_failed
+2025-08-28 16:08:32,118 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:08:34,531 - monitor - INFO - Status - Cycle: 300 | Checks: 1303 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:09:08,562 - monitor - INFO - Status - Cycle: 310 | Checks: 1343 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:09:42,510 - monitor - INFO - Status - Cycle: 320 | Checks: 1383 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:10:16,463 - monitor - INFO - Status - Cycle: 330 | Checks: 1423 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:10:50,703 - monitor - INFO - Status - Cycle: 340 | Checks: 1463 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:11:22,350 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:11:24,708 - monitor - INFO - Status - Cycle: 350 | Checks: 1503 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:11:59,246 - monitor - INFO - Status - Cycle: 360 | Checks: 1543 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:12:33,847 - monitor - INFO - Status - Cycle: 370 | Checks: 1583 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:13:08,535 - monitor - INFO - Status - Cycle: 380 | Checks: 1623 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:13:42,613 - monitor - INFO - Status - Cycle: 390 | Checks: 1668 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:14:14,561 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:14:16,958 - monitor - INFO - Status - Cycle: 400 | Checks: 1718 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:14:50,889 - monitor - INFO - Status - Cycle: 410 | Checks: 1768 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:15:24,867 - monitor - INFO - Status - Cycle: 420 | Checks: 1818 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:15:58,885 - monitor - INFO - Status - Cycle: 430 | Checks: 1868 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:16:33,197 - monitor - INFO - Status - Cycle: 440 | Checks: 1918 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:17:04,814 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:17:07,182 - monitor - INFO - Status - Cycle: 450 | Checks: 1968 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:17:41,304 - monitor - INFO - Status - Cycle: 460 | Checks: 2018 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:18:15,518 - monitor - INFO - Status - Cycle: 470 | Checks: 2068 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:18:49,391 - monitor - INFO - Status - Cycle: 480 | Checks: 2118 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:19:23,455 - monitor - INFO - Status - Cycle: 490 | Checks: 2168 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:19:54,947 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:19:57,325 - monitor - INFO - Status - Cycle: 500 | Checks: 2218 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:20:31,348 - monitor - INFO - Status - Cycle: 510 | Checks: 2268 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:21:05,467 - monitor - INFO - Status - Cycle: 520 | Checks: 2318 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:21:33,831 - monitor - INFO - Validating session...
+2025-08-28 16:21:33,831 - monitor - INFO - Session still valid
+2025-08-28 16:21:39,611 - monitor - INFO - Status - Cycle: 530 | Checks: 2368 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:22:13,466 - monitor - INFO - Status - Cycle: 540 | Checks: 2418 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:22:37,440 - monitor - INFO - ============================================================
+2025-08-28 16:22:37,440 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-28 16:22:37,441 - monitor - INFO - Mode: test
+2025-08-28 16:22:37,441 - monitor - INFO - ============================================================
+2025-08-28 16:22:37,441 - monitor - INFO - Validating session...
+2025-08-28 16:22:41,726 - session_manager - INFO - Session validated successfully
+2025-08-28 16:22:41,777 - monitor - INFO - Session valid - starting monitoring
+2025-08-28 16:22:42,359 - monitor - WARNING - IN STOCK: Test Product 3 at $31.99
+2025-08-28 16:22:42,360 - monitor - INFO - Initiating purchase for 94681770
+2025-08-28 16:22:42,360 - purchases - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 16:22:42,373 - monitor - WARNING - IN STOCK: Test Product 1 at $69.99
+2025-08-28 16:22:42,373 - monitor - INFO - Initiating purchase for 94724987
+2025-08-28 16:22:42,374 - purchases - INFO - Starting purchase: 94724987 - $69.99 (max: $70.00)
+2025-08-28 16:22:43,587 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-94724987
+2025-08-28 16:22:43,713 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-94681770
+2025-08-28 16:22:44,919 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-28 16:22:47,293 - monitor - INFO - Status - Cycle: 550 | Checks: 2468 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:22:54,636 - buy_bot - INFO - Selected shipping option
+2025-08-28 16:22:54,693 - buy_bot - INFO - Selected shipping option
+2025-08-28 16:23:10,777 - purchases - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    21 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+
+2025-08-28 16:23:11,785 - purchases - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    23 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 16:23:15,162 - monitor - INFO - Status - Cycle: 10 | Checks: 32 | In Stock: 2 | Active Purchases: 2
+2025-08-28 16:23:21,879 - monitor - INFO - Status - Cycle: 560 | Checks: 2518 | In Stock: 2 | Active Purchases: 0
+2025-08-28 16:23:26,100 - monitor - WARNING - PURCHASE FAILED: 94681770 - add_to_cart_failed
+2025-08-28 16:23:26,132 - monitor - WARNING - PURCHASE FAILED: 94724987 - add_to_cart_failed
+2025-08-28 16:23:55,943 - monitor - INFO - Status - Cycle: 570 | Checks: 2568 | In Stock: 2 | Active Purchases: 0

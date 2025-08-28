@@ -5,3 +5,77 @@
 Call log:
   - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
 
+2025-08-28 15:51:34,450 - INFO - Starting purchase: 94724987 - $69.99 (max: $70.00)
+2025-08-28 15:51:34,465 - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 15:51:50,777 - ERROR - Purchase attempt failed: Page.goto: Timeout 15000ms exceeded.
+Call log:
+  - navigating to "https://www.target.com/p/-/A-94724987", waiting until "domcontentloaded"
+
+2025-08-28 15:51:57,775 - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    28 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 16:08:01,660 - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 16:08:23,813 - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    28 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 16:22:42,360 - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 16:22:42,374 - INFO - Starting purchase: 94724987 - $69.99 (max: $70.00)
+2025-08-28 16:23:10,777 - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    21 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+    - waiting for element to be visible, enabled and stable
+
+2025-08-28 16:23:11,785 - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    23 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
