@@ -2,3 +2,32 @@
 2025-08-26 15:55:39,507 - Cycle 10: 40 checks, 0 in stock
 2025-08-26 15:56:05,473 - Cycle 20: 80 checks, 0 in stock
 2025-08-26 15:56:05,474 - Loaded 4 products
+2025-08-27 19:10:32,474 - monitor - INFO - ============================================================
+2025-08-27 19:10:32,474 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-27 19:10:32,474 - monitor - INFO - Mode: test
+2025-08-27 19:10:32,474 - monitor - INFO - ============================================================
+2025-08-27 19:10:32,474 - monitor - INFO - Validating session...
+2025-08-27 19:10:35,581 - session_manager - INFO - Session validated successfully
+2025-08-27 19:10:35,640 - monitor - INFO - Session valid - starting monitoring
+2025-08-27 19:10:36,124 - monitor - WARNING - IN STOCK: Test Product 3 at $31.99
+2025-08-27 19:10:36,125 - monitor - INFO - Initiating purchase for 94681770
+2025-08-27 19:10:36,125 - purchases - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-27 19:10:36,578 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-94681770
+2025-08-27 19:10:43,631 - buy_bot - INFO - Shipping option not found or already selected
+2025-08-27 19:10:48,637 - purchases - ERROR - Could not add to cart: Page.wait_for_selector: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
+
+2025-08-27 19:10:48,774 - monitor - WARNING - PURCHASE FAILED: 94681770 - add_to_cart_failed
+2025-08-27 19:11:07,509 - monitor - INFO - Status - Cycle: 10 | Checks: 41 | In Stock: 1 | Active Purchases: 0
+2025-08-27 19:21:51,494 - monitor - INFO - ============================================================
+2025-08-27 19:21:51,495 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-27 19:21:51,495 - monitor - INFO - Mode: test
+2025-08-27 19:21:51,495 - monitor - INFO - ============================================================
+2025-08-27 19:21:51,495 - monitor - INFO - Validating session...
+2025-08-27 19:21:57,270 - session_manager - INFO - Session validated successfully
+2025-08-27 19:21:57,325 - monitor - INFO - Session valid - starting monitoring
+2025-08-27 19:22:29,607 - monitor - INFO - Status - Cycle: 10 | Checks: 50 | In Stock: 0 | Active Purchases: 0
+2025-08-27 19:23:02,646 - monitor - INFO - Status - Cycle: 20 | Checks: 100 | In Stock: 0 | Active Purchases: 0
+2025-08-27 19:23:35,709 - monitor - INFO - Status - Cycle: 30 | Checks: 150 | In Stock: 0 | Active Purchases: 0
+2025-08-27 19:24:08,889 - monitor - INFO - Status - Cycle: 40 | Checks: 200 | In Stock: 0 | Active Purchases: 0

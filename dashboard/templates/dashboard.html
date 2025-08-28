@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Target Monitor Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f; color: #e0e0e0; line-height: 1.6;
+        }
+        .header {
+            background: linear-gradient(135deg, #cc0000 0%, #990000 100%);
+            color: white; padding: 1.5rem; box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+        .status-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem; margin-bottom: 2rem;
+        }
+        .status-card {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+            padding: 1.5rem; transition: transform 0.2s;
+        }
+        .status-card:hover { transform: translateY(-2px); border-color: #cc0000; }
+        .status-card h3 {
+            color: #999; font-size: 0.9rem; margin-bottom: 0.5rem;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+        .status-card .value { font-size: 2rem; font-weight: bold; color: #fff; }
+        .status-card.active .value { color: #00ff00; }
+        .status-card.warning .value { color: #ffaa00; }
+        .products-section, .logs-section {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+            padding: 1.5rem; margin-bottom: 2rem;
+        }
+        .section-title {
+            font-size: 1.2rem; margin-bottom: 1rem; color: #cc0000;
+            border-bottom: 2px solid #cc0000; padding-bottom: 0.5rem;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left; padding: 0.75rem; background: #0f0f0f; color: #999;
+            font-weight: normal; text-transform: uppercase; font-size: 0.85rem;
+        }
+        td { padding: 0.75rem; border-top: 1px solid #333; }
+        tr:hover { background: #222; }
+        .badge {
+            display: inline-block; padding: 0.25rem 0.75rem; border-radius: 20px;
+            font-size: 0.85rem; font-weight: bold;
+        }
+        .badge.enabled { background: #00ff0033; color: #00ff00; }
+        .badge.disabled { background: #ff000033; color: #ff0000; }
+        .log-entry {
+            font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.5rem;
+            background: #0f0f0f; border-left: 3px solid #333; margin-bottom: 0.5rem;
+        }
+        .log-entry.success { border-left-color: #00ff00; background: #00ff0011; }
+        .log-entry.error { border-left-color: #ff0000; background: #ff000011; }
+        .log-entry.warning { border-left-color: #ffaa00; background: #ffaa0011; }
+        .refresh-btn {
+            background: #cc0000; color: white; border: none; padding: 0.75rem 2rem;
+            border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold;
+        }
+        .refresh-btn:hover { background: #990000; }
+        .timestamp { color: #666; font-size: 0.85rem; margin-top: 0.5rem; }
+        .alert { padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
+        .alert.success { background: #00ff0033; border: 1px solid #00ff00; color: #00ff00; }
+        .no-data { color: #666; text-align: center; padding: 2rem; }
+    </style>
+    <script>
+        setTimeout(() => location.reload(), 5000);
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.log-entry').forEach(entry => {
+                const text = entry.textContent;
+                if (text.includes('SUCCESS')) entry.classList.add('success');
+                else if (text.includes('FAILED') || text.includes('ERROR')) entry.classList.add('error');
+                else if (text.includes('IN STOCK')) entry.classList.add('warning');
+            });
+        });
+    </script>
+</head>
+<body>
+    <div class="header">
+        <div class="container">
+            <h1>Target Monitor Dashboard</h1>
+            <div class="timestamp">Last refresh: {{ timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+        </div>
+    </div>
+    
+    <div class="container">
+        <div class="status-grid">
+            <div class="status-card {{ 'active' if status.monitoring else '' }}">
+                <h3>Status</h3>
+                <div class="value">{{ 'MONITORING' if status.monitoring else 'STOPPED' }}</div>
+            </div>
+            <div class="status-card">
+                <h3>Total Checks</h3>
+                <div class="value">{{ status.total_checks }}</div>
+            </div>
+            <div class="status-card {{ 'warning' if status.in_stock_count > 0 else '' }}">
+                <h3>In Stock Now</h3>
+                <div class="value">{{ status.in_stock_count }}</div>
+            </div>
+            <div class="status-card">
+                <h3>Products</h3>
+                <div class="value">{{ config.products | length }}</div>
+            </div>
+        </div>
+        
+        {% if status.in_stock_count > 0 %}
+        <div class="alert success">Items currently in stock detected!</div>
+        {% endif %}
+        
+        <div class="products-section">
+            <h2 class="section-title">Monitored Products</h2>
+            {% if config.products %}
+            <table>
+                <thead>
+                    <tr><th>TCIN</th><th>Name</th><th>Max Price</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                    {% for product in config.products %}
+                    <tr>
+                        <td><code>{{ product.tcin }}</code></td>
+                        <td>{{ product.name[:50] }}</td>
+                        <td>${{ "%.2f"|format(product.max_price) }}</td>
+                        <td>
+                            <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
+                                {{ 'ENABLED' if product.enabled else 'DISABLED' }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <div class="no-data">No products configured</div>
+            {% endif %}
+        </div>
+        
+        {% if status.recent_stock %}
+        <div class="logs-section">
+            <h2 class="section-title">Recent Stock Alerts</h2>
+            {% for entry in status.recent_stock %}
+            <div class="log-entry">{{ entry }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        
+        {% if status.recent_purchases %}
+        <div class="logs-section">
+            <h2 class="section-title">Recent Purchase Attempts</h2>
+            {% for entry in status.recent_purchases %}
+            <div class="log-entry">{{ entry }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        
+        <div style="text-align: center; margin-top: 2rem;">
+            <button class="refresh-btn" onclick="location.reload()">Refresh Now</button>
+        </div>
+    </div>
+</body>
+</html>
