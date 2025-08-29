@@ -6,10 +6,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Set
 import sys
+import random
+import sqlite3
+import requests
 
 from stock_checker import StockChecker
 from buy_bot import BuyBot
 from session_manager import SessionManager
+from browser_profile_manager import BrowserProfileManager
+from config_watcher import HotReloadMonitor
 
 class TargetMonitor:
     def __init__(self, config_path="config/product_config.json"):
@@ -17,10 +22,31 @@ class TargetMonitor:
         self.load_config()
         self.setup_logging()
         
+        # Load enabled proxies
+        enabled_proxies = []
+        if 'proxies' in self.config:
+            enabled_proxies = [p for p in self.config['proxies'] if p.get('enabled', False)]
+        
         # Initialize components
         self.session_manager = SessionManager(self.config['settings']['session']['storage_path'])
-        self.stock_checker = StockChecker()
+        self.stock_checker = StockChecker(proxies=enabled_proxies)
         self.buy_bot = BuyBot(self.config['settings']['session']['storage_path'])
+        
+        # Set analytics callback for stock checker
+        self.stock_checker.record_proxy_analytics = self.record_analytics_proxy
+        
+        if enabled_proxies:
+            self.logger.info(f"Loaded {len(enabled_proxies)} enabled proxies for rotation")
+        else:
+            self.logger.info("No proxies enabled - using direct connection")
+        
+        # Initialize browser profile manager (4. Multiple Browser Profiles)
+        self.profile_manager = BrowserProfileManager(num_profiles=5)
+        self.logger.info(f"Created {len(self.profile_manager.profiles)} unique browser profiles")
+        
+        # Initialize hot reload monitor (6. Auto-Config Reloading)
+        self.hot_reload = HotReloadMonitor(self)
+        self.hot_reload.start_hot_reload()
         
         # Tracking
         self.purchase_cooldowns = {}  # tcin -> last_attempt_time
@@ -28,6 +54,10 @@ class TargetMonitor:
         self.session_checks = 0
         self.in_stock_items = set()
         self.active_purchases = set()  # TCINs currently being purchased
+        
+        # Dashboard Analytics Integration
+        self.dashboard_url = 'http://localhost:5000'  # Dashboard API endpoint
+        self.analytics_enabled = True
         
         # Rate limiting
         self.rate_limited = False
@@ -82,9 +112,39 @@ class TargetMonitor:
         
         return False
     
+    def record_analytics(self, endpoint: str, **data):
+        """Record analytics data to dashboard"""
+        if not self.analytics_enabled:
+            return
+            
+        try:
+            url = f"{self.dashboard_url}/api/{endpoint}"
+            requests.get(url, params=data, timeout=2)
+        except Exception as e:
+            # Silently fail - don't let analytics break monitoring
+            pass
+    
+    def record_analytics_proxy(self, proxy_host: str, success: bool, response_time: int = None, error: str = None):
+        """Record proxy performance analytics"""
+        if not self.analytics_enabled:
+            return
+            
+        try:
+            url = f"{self.dashboard_url}/api/record-proxy"
+            requests.get(url, params={
+                'proxy_host': proxy_host,
+                'success': success,
+                'response_time': response_time,
+                'error': error or ''
+            }, timeout=2)
+        except Exception:
+            # Silently fail - don't let analytics break monitoring
+            pass
+    
     async def check_and_buy(self, session: aiohttp.ClientSession, product: Dict):
         """Check stock and initiate purchase if available"""
         tcin = product['tcin']
+        product_name = product.get('name', 'Unknown Product')
         
         # Skip if currently being purchased
         if tcin in self.active_purchases:
@@ -95,9 +155,27 @@ class TargetMonitor:
         if self.is_in_cooldown(tcin):
             return
         
-        # Check stock
+        # SMART TIMING: Add unique delay per product to spread requests
+        product_index = next((i for i, p in enumerate(self.products) if p['tcin'] == tcin), 0)
+        stagger_delay = product_index * random.uniform(2, 5)  # 2-5 seconds per product
+        await asyncio.sleep(stagger_delay)
+        
+        # Check stock (with response time tracking)
+        start_time = asyncio.get_event_loop().time()
         result = await self.stock_checker.check_stock(session, tcin)
+        response_time = int((asyncio.get_event_loop().time() - start_time) * 1000)  # Convert to ms
+        
         self.total_checks += 1
+        
+        # Record stock check analytics
+        self.record_analytics('record-stock',
+            tcin=tcin,
+            name=product_name,
+            in_stock=result.get('available', False),
+            price=result.get('price'),
+            availability=result.get('availability_text', ''),
+            response_time=response_time
+        )
         
         # Handle rate limiting
         if result.get('status') == 'rate_limited':
@@ -125,14 +203,17 @@ class TargetMonitor:
     
     async def execute_purchase(self, tcin: str, stock_info: Dict):
         """Execute purchase attempt asynchronously"""
+        product_name = stock_info.get('name', 'Unknown')
+        price = stock_info.get('price', 0)
+        
         try:
             self.logger.info(f"Initiating purchase for {tcin}")
             
             # Prepare product info for buy bot
             product_info = {
                 'tcin': tcin,
-                'name': stock_info.get('name', 'Unknown'),
-                'price': stock_info.get('price', 0),
+                'name': product_name,
+                'price': price,
                 'max_price': stock_info.get('max_price', 999.99)
             }
             
@@ -142,16 +223,38 @@ class TargetMonitor:
             # Record attempt time
             self.purchase_cooldowns[tcin] = datetime.now()
             
+            # Record purchase analytics
+            success = result.get('success', False)
+            reason = result.get('reason', result.get('message', 'unknown'))
+            order_number = result.get('order_number')
+            
+            self.record_analytics('record-purchase',
+                tcin=tcin,
+                name=product_name,
+                success=success,
+                reason=reason,
+                price=price,
+                order_number=order_number or ''
+            )
+            
             # Log result
-            if result.get('success'):
-                self.logger.warning(f"PURCHASE SUCCESS: {tcin} - {result.get('message', '')}")
-                if result.get('order_number'):
-                    self.logger.warning(f"ORDER NUMBER: {result['order_number']}")
+            if success:
+                self.logger.warning(f"PURCHASE SUCCESS: {tcin} - {reason}")
+                if order_number:
+                    self.logger.warning(f"ORDER NUMBER: {order_number}")
             else:
-                self.logger.warning(f"PURCHASE FAILED: {tcin} - {result.get('reason', 'unknown')}")
+                self.logger.warning(f"PURCHASE FAILED: {tcin} - {reason}")
             
         except Exception as e:
             self.logger.error(f"Purchase error for {tcin}: {e}")
+            # Record failed purchase attempt
+            self.record_analytics('record-purchase',
+                tcin=tcin,
+                name=product_name,
+                success=False,
+                reason=f"Error: {str(e)}",
+                price=price
+            )
         finally:
             # Remove from active purchases
             self.active_purchases.discard(tcin)

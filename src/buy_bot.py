@@ -35,19 +35,60 @@ class BuyBot:
         
         try:
             async with async_playwright() as p:
-                # Launch browser (headless for speed)
+                # Launch browser with enhanced stealth
                 browser = await p.chromium.launch(
                     headless=True,
-                    args=['--disable-blink-features=AutomationControlled']
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-automation',
+                        '--disable-dev-shm-usage', 
+                        '--no-sandbox',
+                        '--disable-extensions',
+                        '--disable-plugins',
+                        '--disable-images',  # Faster loading
+                        '--disable-background-timer-throttling',
+                        '--disable-backgrounding-occluded-windows',
+                        '--disable-renderer-backgrounding',
+                        '--disable-features=TranslateUI',
+                        '--disable-component-extensions-with-background-pages',
+                    ]
                 )
                 
-                # Load saved session
+                # Load saved session with enhanced context
                 context = await browser.new_context(
                     storage_state=str(self.session_path),
-                    viewport={'width': 1920, 'height': 1080}
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+                    locale='en-US',
+                    timezone_id='America/New_York',
+                    extra_http_headers={
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Cache-Control': 'no-cache',
+                        'DNT': '1'
+                    }
                 )
                 
                 page = await context.new_page()
+                
+                # Remove automation indicators
+                await page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined,
+                    });
+                    
+                    window.chrome = {
+                        runtime: {},
+                    };
+                    
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5],
+                    });
+                    
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en'],
+                    });
+                """)
                 page.set_default_timeout(15000)  # 15 second timeout
                 
                 # Go directly to product page

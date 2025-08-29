@@ -1,0 +1,56 @@
+{
+  "profiles": [
+    {
+      "profile_id": "profile_000",
+      "resolution": [
+        1366,
+        768
+      ],
+      "os": "Windows",
+      "os_version": "11.0",
+      "chrome_version": 129,
+      "firefox_version": 128,
+      "timezone": "America/New_York",
+      "language": "en-US,en;q=0.8,es;q=0.6",
+      "device_memory": 8,
+      "hardware_concurrency": 12,
+      "usage_count": 0,
+      "last_used": 0
+    },
+    {
+      "profile_id": "profile_001",
+      "resolution": [
+        1536,
+        864
+      ],
+      "os": "Linux",
+      "os_version": "X11",
+      "chrome_version": 129,
+      "firefox_version": 128,
+      "timezone": "America/New_York",
+      "language": "en-US,en;q=0.9",
+      "device_memory": 16,
+      "hardware_concurrency": 16,
+      "usage_count": 0,
+      "last_used": 0
+    },
+    {
+      "profile_id": "profile_002",
+      "resolution": [
+        1366,
+        768
+      ],
+      "os": "Linux",
+      "os_version": "X11",
+      "chrome_version": 129,
+      "firefox_version": 128,
+      "timezone": "America/New_York",
+      "language": "en-US,en;q=0.9,fr;q=0.8",
+      "device_memory": 16,
+      "hardware_concurrency": 4,
+      "usage_count": 0,
+      "last_used": 0
+    }
+  ],
+  "created_time": 1756428250.9721658
+}

@@ -79,3 +79,47 @@ Call log:
      - retrying click action
        - waiting 500ms
 
+2025-08-28 18:52:36,322 - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 18:52:36,332 - INFO - Starting purchase: 94724987 - $69.99 (max: $70.00)
+2025-08-28 18:52:56,473 - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    28 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 18:52:56,659 - ERROR - Could not add to cart: ElementHandle.click: Timeout 15000ms exceeded.
+Call log:
+  - attempting click action
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+    - waiting 20ms
+    2 × waiting for element to be visible, enabled and stable
+      - element is not enabled
+    - retrying click action
+      - waiting 100ms
+    28 × waiting for element to be visible, enabled and stable
+       - element is not enabled
+     - retrying click action
+       - waiting 500ms
+
+2025-08-28 19:00:07,777 - INFO - Starting purchase: 94724987 - $69.99 (max: $70.00)
+2025-08-28 19:00:07,787 - INFO - Starting purchase: 94681770 - $31.99 (max: $32.00)
+2025-08-28 19:00:19,396 - ERROR - Could not add to cart: Page.wait_for_selector: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
+
+2025-08-28 19:00:19,519 - ERROR - Could not add to cart: Page.wait_for_selector: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
+

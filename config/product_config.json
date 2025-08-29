@@ -6,7 +6,9 @@
       "max_price": 70.00,
       "quantity": 1,
       "enabled": true,
-      "notes": "Regular item"
+      "priority": 1,
+      "check_frequency": 0.5,
+      "notes": "High priority - check every 30 seconds"
     },
         {
       "tcin": "94681785",
@@ -14,7 +16,9 @@
       "max_price": 32.00,
       "quantity": 1,
       "enabled": true,
-      "notes": "Regular item"
+      "priority": 2,
+      "check_frequency": 0.3,
+      "notes": "Medium priority - check every 50 seconds"
     },
         {
       "tcin": "94681770",
@@ -42,12 +46,35 @@
       "notes": "Regular item"
     }
   ],
+  "proxies": [
+    {
+      "host": "proxy1.example.com",
+      "port": 8080,
+      "username": "your_username",
+      "password": "your_password",
+      "protocol": "http",
+      "enabled": true,
+      "notes": "Example residential proxy - ENABLED FOR TESTING"
+    },
+    {
+      "host": "proxy2.example.com", 
+      "port": 8081,
+      "username": "your_username",
+      "password": "your_password",
+      "protocol": "http",
+      "enabled": true,
+      "notes": "Example residential proxy 2 - ENABLED FOR TESTING"
+    }
+  ],
   "settings": {
     "mode": "test",
     "rate_limit": {
-      "requests_per_second": 2,
-      "batch_size": 3,
-      "batch_delay_seconds": 1.5
+      "requests_per_second": 0.05,
+      "batch_size": 1,
+      "batch_delay_seconds": 30,
+      "smart_timing": true,
+      "session_rotation": true,
+      "proxy_rotation": true
     },
     "purchase": {
       "stop_after_success": false,

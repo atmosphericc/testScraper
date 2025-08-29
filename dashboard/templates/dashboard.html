@@ -77,17 +77,184 @@
             font-weight: bold; transition: background 0.2s;
         }
         .view-btn:hover { background: #990000; }
+        .alerts-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+        .alert-item {
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 1rem;
+            border-left: 4px solid #00ff00;
+        }
+        .proxy-stats-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1rem;
+        }
+        .proxy-stat-item {
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 1rem;
+            font-size: 0.9rem;
+        }
+        .chart-container {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            height: 400px;
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
-        setTimeout(() => location.reload(), 5000);
+        // Auto-refresh every 10 seconds instead of full page reload
+        let refreshInterval;
+        
+        async function fetchAnalytics() {
+            try {
+                const response = await fetch('/api/analytics');
+                const data = await response.json();
+                updateAnalyticsDisplay(data);
+            } catch (error) {
+                console.error('Failed to fetch analytics:', error);
+            }
+        }
+        
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                updateStatusDisplay(data);
+            } catch (error) {
+                console.error('Failed to fetch status:', error);
+            }
+        }
+        
+        async function fetchProxyStats() {
+            try {
+                const response = await fetch('/api/proxy-stats');
+                const data = await response.json();
+                updateProxyDisplay(data);
+            } catch (error) {
+                console.error('Failed to fetch proxy stats:', error);
+            }
+        }
+        
+        function updateAnalyticsDisplay(data) {
+            // Update analytics cards
+            const analyticsContainer = document.getElementById('analytics-container');
+            if (analyticsContainer && data.stock_analytics) {
+                analyticsContainer.innerHTML = `
+                    <div class="status-card">
+                        <h3>Checks (24h)</h3>
+                        <div class="value">${data.stock_analytics.total_checks_24h}</div>
+                    </div>
+                    <div class="status-card warning">
+                        <h3>Found In Stock (24h)</h3>
+                        <div class="value">${data.stock_analytics.in_stock_found_24h}</div>
+                    </div>
+                    <div class="status-card">
+                        <h3>Avg Response Time</h3>
+                        <div class="value">${data.stock_analytics.avg_response_time}ms</div>
+                    </div>
+                    <div class="status-card">
+                        <h3>Purchase Success Rate</h3>
+                        <div class="value">${data.purchase_analytics.success_rate}%</div>
+                    </div>
+                `;
+            }
+            
+            // Update recent stock alerts
+            if (data.recent_stock_alerts && data.recent_stock_alerts.length > 0) {
+                const alertsContainer = document.getElementById('recent-alerts');
+                if (alertsContainer) {
+                    alertsContainer.innerHTML = data.recent_stock_alerts.map(alert => `
+                        <div class="alert-item">
+                            <strong>${alert.product_name}</strong> (${alert.tcin}) - $${alert.price || 'N/A'}
+                            <br><small>${new Date(alert.timestamp).toLocaleString()}</small>
+                        </div>
+                    `).join('');
+                }
+            }
+        }
+        
+        function updateStatusDisplay(data) {
+            // Update main status indicators
+            const statusValue = document.querySelector('.status-card .value');
+            if (statusValue) {
+                statusValue.textContent = data.monitoring ? 'MONITORING' : 'STOPPED';
+            }
+            
+            const totalChecks = document.getElementById('total-checks');
+            if (totalChecks) totalChecks.textContent = data.total_checks;
+            
+            const inStockCount = document.getElementById('in-stock-count');
+            if (inStockCount) inStockCount.textContent = data.in_stock_count;
+        }
+        
+        function updateProxyDisplay(data) {
+            const proxyContainer = document.getElementById('proxy-stats');
+            if (proxyContainer && Object.keys(data).length > 0) {
+                proxyContainer.innerHTML = Object.entries(data).map(([host, stats]) => `
+                    <div class="proxy-stat-item">
+                        <strong>${host}</strong><br>
+                        Success Rate: ${stats.success_rate.toFixed(1)}% 
+                        (${stats.successful_requests}/${stats.total_requests})<br>
+                        Avg Response: ${stats.avg_response_time}ms
+                    </div>
+                `).join('');
+            }
+        }
+        
+        function startRealTimeUpdates() {
+            // Initial load
+            fetchAnalytics();
+            fetchStatus();
+            fetchProxyStats();
+            
+            // Set up intervals
+            refreshInterval = setInterval(() => {
+                fetchAnalytics();
+                fetchStatus();
+                fetchProxyStats();
+            }, 10000); // Update every 10 seconds
+        }
+        
+        function stopRealTimeUpdates() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        }
+        
         document.addEventListener('DOMContentLoaded', () => {
+            // Style log entries
             document.querySelectorAll('.log-entry').forEach(entry => {
                 const text = entry.textContent;
                 if (text.includes('SUCCESS')) entry.classList.add('success');
                 else if (text.includes('FAILED') || text.includes('ERROR')) entry.classList.add('error');
                 else if (text.includes('IN STOCK')) entry.classList.add('warning');
             });
+            
+            // Start real-time updates
+            startRealTimeUpdates();
+            
+            // Add visibility change handler to pause updates when tab is not visible
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    stopRealTimeUpdates();
+                } else {
+                    startRealTimeUpdates();
+                }
+            });
         });
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', stopRealTimeUpdates);
     </script>
 </head>
 <body>
@@ -106,15 +273,54 @@
             </div>
             <div class="status-card">
                 <h3>Total Checks</h3>
-                <div class="value">{{ status.total_checks }}</div>
+                <div class="value" id="total-checks">{{ status.total_checks }}</div>
             </div>
             <div class="status-card {{ 'warning' if status.in_stock_count > 0 else '' }}">
                 <h3>In Stock Now</h3>
-                <div class="value">{{ status.in_stock_count }}</div>
+                <div class="value" id="in-stock-count">{{ status.in_stock_count }}</div>
             </div>
             <div class="status-card">
                 <h3>Products</h3>
                 <div class="value">{{ config.products | length }}</div>
+            </div>
+        </div>
+        
+        <!-- Enhanced Analytics Section -->
+        <div class="products-section">
+            <h2 class="section-title">📊 Real-Time Analytics</h2>
+            <div class="status-grid" id="analytics-container">
+                <div class="status-card">
+                    <h3>Checks (24h)</h3>
+                    <div class="value">Loading...</div>
+                </div>
+                <div class="status-card">
+                    <h3>Found In Stock (24h)</h3>
+                    <div class="value">Loading...</div>
+                </div>
+                <div class="status-card">
+                    <h3>Avg Response Time</h3>
+                    <div class="value">Loading...</div>
+                </div>
+                <div class="status-card">
+                    <h3>Purchase Success Rate</h3>
+                    <div class="value">Loading...</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Recent Stock Alerts -->
+        <div class="products-section">
+            <h2 class="section-title">🚨 Recent Stock Alerts (24h)</h2>
+            <div id="recent-alerts" class="alerts-container">
+                Loading recent alerts...
+            </div>
+        </div>
+        
+        <!-- Proxy Performance -->
+        <div class="products-section">
+            <h2 class="section-title">🔄 Proxy Performance (24h)</h2>
+            <div id="proxy-stats" class="proxy-stats-container">
+                Loading proxy statistics...
             </div>
         </div>
         
