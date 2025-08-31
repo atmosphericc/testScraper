@@ -289,12 +289,17 @@ class HighSpeedStockChecker:
             eligibility = item.get('eligibility_rules', {})
             ship_to_guest = eligibility.get('ship_to_guest', {}).get('is_active', False)
             
-            # Commercial stock logic - optimized for drops
+            # FIXED Commercial stock logic - based on actual API analysis
+            # Key insight: OUT OF STOCK products have NO eligibility_rules at all
+            # IN STOCK products have eligibility_rules.ship_to_guest.is_active: true
+            
             if is_marketplace:
                 available = purchase_limit > 0
                 seller_type = "third-party"
             else:
-                available = ship_to_guest and purchase_limit >= 1  # Even 1 item = available
+                # Target direct - must have eligibility_rules AND ship_to_guest active
+                has_eligibility_rules = bool(item.get('eligibility_rules'))
+                available = has_eligibility_rules and ship_to_guest and purchase_limit >= 1
                 seller_type = "target"
             
             return {

@@ -344,3 +344,96 @@ Call log:
 2025-08-28 19:13:33,562 - monitor - INFO - Status - Cycle: 280 | Checks: 1212 | In Stock: 0 | Active Purchases: 0
 2025-08-28 19:14:07,239 - monitor - INFO - Status - Cycle: 290 | Checks: 1262 | In Stock: 0 | Active Purchases: 0
 2025-08-28 19:14:38,044 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-29 07:51:50,469 - asyncio - ERROR - Task exception was never retrieved
+future: <Task finished name='Task-8' coro=<TargetMonitor.validate_session_periodic() done, defined at /Users/Eric/Desktop/testScraper/src/monitor.py:169> exception=SystemExit(1)>
+Traceback (most recent call last):
+  File "/Users/Eric/Desktop/testScraper/run.py", line 77, in <module>
+    asyncio.run(main())
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/base_events.py", line 674, in run_until_complete
+    self.run_forever()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/base_events.py", line 641, in run_forever
+    self._run_once()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/base_events.py", line 1987, in _run_once
+    handle._run()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/asyncio/events.py", line 88, in _run
+    self._context.run(self._callback, *self._args)
+  File "/Users/Eric/Desktop/testScraper/src/monitor.py", line 182, in validate_session_periodic
+    self.rate_limited = True
+            ^^^^^^^^^^^
+SystemExit: 1
+2025-08-29 10:49:39,520 - monitor - INFO - Loaded 2 enabled proxies for rotation
+2025-08-29 10:49:39,522 - monitor - INFO - Created 5 unique browser profiles
+2025-08-29 10:49:39,522 - config_watcher - INFO - 🔥 Hot reload enabled - edit config while running!
+2025-08-29 10:49:39,522 - monitor - INFO - ============================================================
+2025-08-29 10:49:39,522 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-29 10:49:39,522 - monitor - INFO - Mode: test
+2025-08-29 10:49:39,522 - monitor - INFO - ============================================================
+2025-08-29 10:49:39,522 - monitor - INFO - Validating session...
+2025-08-29 10:49:39,523 - config_watcher - INFO - Started watching config file: config/product_config.json
+2025-08-29 10:49:39,523 - config_watcher - INFO - Config file changed - reloading...
+2025-08-29 10:49:39,523 - config_watcher - INFO - 🔄 Updated to 2 proxies
+2025-08-29 10:49:39,523 - config_watcher - INFO - ✅ Hot reload complete - monitor updated!
+2025-08-29 10:49:39,523 - config_watcher - INFO - ==================================================
+2025-08-29 10:49:39,523 - config_watcher - INFO - CONFIG RELOADED
+2025-08-29 10:49:39,523 - config_watcher - INFO - ==================================================
+2025-08-29 10:49:39,523 - config_watcher - INFO - ✅ Enabled products: 5
+2025-08-29 10:49:39,523 - config_watcher - INFO - 🔄 Enabled proxies: 2
+2025-08-29 10:49:39,523 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-29 10:49:39,523 - config_watcher - INFO - ==================================================
+2025-08-29 10:49:48,007 - session_manager - ERROR - Session invalid - could not find account element
+2025-08-29 10:49:48,077 - monitor - ERROR - Session invalid! Please run: python setup.py login
+2025-08-29 11:05:48,894 - monitor - INFO - Loaded 2 enabled proxies for rotation
+2025-08-29 11:05:48,895 - monitor - INFO - Created 5 unique browser profiles
+2025-08-29 11:05:48,895 - config_watcher - INFO - 🔥 Hot reload enabled - edit config while running!
+2025-08-29 11:05:48,895 - monitor - INFO - ============================================================
+2025-08-29 11:05:48,896 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-29 11:05:48,896 - monitor - INFO - Mode: test
+2025-08-29 11:05:48,896 - monitor - INFO - ============================================================
+2025-08-29 11:05:48,896 - monitor - INFO - Validating session...
+2025-08-29 11:05:48,896 - config_watcher - INFO - Started watching config file: config/product_config.json
+2025-08-29 11:05:48,896 - config_watcher - INFO - Config file changed - reloading...
+2025-08-29 11:05:48,897 - config_watcher - INFO - 🔄 Updated to 2 proxies
+2025-08-29 11:05:48,897 - config_watcher - INFO - ✅ Hot reload complete - monitor updated!
+2025-08-29 11:05:48,897 - config_watcher - INFO - ==================================================
+2025-08-29 11:05:48,897 - config_watcher - INFO - CONFIG RELOADED
+2025-08-29 11:05:48,897 - config_watcher - INFO - ==================================================
+2025-08-29 11:05:48,897 - config_watcher - INFO - ✅ Enabled products: 5
+2025-08-29 11:05:48,897 - config_watcher - INFO - 🔄 Enabled proxies: 2
+2025-08-29 11:05:48,897 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-29 11:05:48,897 - config_watcher - INFO - ==================================================
+2025-08-29 11:05:54,690 - session_manager - INFO - Session validated successfully
+2025-08-29 11:05:54,747 - monitor - INFO - Session valid - starting monitoring
+2025-08-29 11:07:39,550 - stock_checker - WARNING - Website checking failed for 94681770: Browser.close: Connection closed while reading from the driver, falling back to API
+2025-08-29 11:07:39,710 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=Error('net::ERR_ABORTED at https://www.target.com/p/-/A-94681770\nCall log:\n  - navigating to "https://www.target.com/p/-/A-94681770", waiting until "domcontentloaded"\n')>
+playwright._impl._errors.Error: net::ERR_ABORTED at https://www.target.com/p/-/A-94681770
+Call log:
+  - navigating to "https://www.target.com/p/-/A-94681770", waiting until "domcontentloaded"
+
+2025-08-29 11:07:41,306 - monitor - INFO - Loaded 2 enabled proxies for rotation
+2025-08-29 11:07:41,307 - monitor - INFO - Created 5 unique browser profiles
+2025-08-29 11:07:41,307 - config_watcher - INFO - 🔥 Hot reload enabled - edit config while running!
+2025-08-29 11:07:41,307 - monitor - INFO - ============================================================
+2025-08-29 11:07:41,307 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-29 11:07:41,308 - monitor - INFO - Mode: test
+2025-08-29 11:07:41,308 - monitor - INFO - ============================================================
+2025-08-29 11:07:41,308 - monitor - INFO - Validating session...
+2025-08-29 11:07:41,308 - config_watcher - INFO - Started watching config file: config/product_config.json
+2025-08-29 11:07:41,309 - config_watcher - INFO - Config file changed - reloading...
+2025-08-29 11:07:41,309 - config_watcher - INFO - 🔄 Updated to 2 proxies
+2025-08-29 11:07:41,309 - config_watcher - INFO - ✅ Hot reload complete - monitor updated!
+2025-08-29 11:07:41,309 - config_watcher - INFO - ==================================================
+2025-08-29 11:07:41,309 - config_watcher - INFO - CONFIG RELOADED
+2025-08-29 11:07:41,309 - config_watcher - INFO - ==================================================
+2025-08-29 11:07:41,310 - config_watcher - INFO - ✅ Enabled products: 5
+2025-08-29 11:07:41,310 - config_watcher - INFO - 🔄 Enabled proxies: 2
+2025-08-29 11:07:41,310 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-29 11:07:41,310 - config_watcher - INFO - ==================================================
+2025-08-29 11:07:47,162 - session_manager - INFO - Session validated successfully
+2025-08-29 11:07:47,234 - monitor - INFO - Session valid - starting monitoring

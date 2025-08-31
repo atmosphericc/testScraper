@@ -5,114 +5,470 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Target Monitor Dashboard</title>
     <style>
+        :root {
+            --primary-bg: #0d1117;
+            --secondary-bg: #161b22;
+            --card-bg: #21262d;
+            --border-color: #30363d;
+            --accent-color: #58a6ff;
+            --success-color: #3fb950;
+            --warning-color: #f78500;
+            --danger-color: #f85149;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+        }
+        
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f0f0f; color: #e0e0e0; line-height: 1.6;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background: var(--primary-bg);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
         }
+        
+        /* Header */
         .header {
-            background: linear-gradient(135deg, #cc0000 0%, #990000 100%);
-            color: white; padding: 1.5rem; box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            background: linear-gradient(135deg, var(--secondary-bg) 0%, var(--card-bg) 100%);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1.5rem 0;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
         }
-        .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+        
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--accent-color), var(--success-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .header-stats {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.875rem;
+        }
+        
+        .header-stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            opacity: 0.8;
+        }
+        
+        .header-stat-label {
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+        
+        .header-stat-value {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        
+        /* Container */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        /* Status Grid */
         .status-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1.5rem; margin-bottom: 2rem;
-        }
-        .status-card {
-            background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
-            padding: 1.5rem; transition: transform 0.2s;
-        }
-        .status-card:hover { transform: translateY(-2px); border-color: #cc0000; }
-        .status-card h3 {
-            color: #999; font-size: 0.9rem; margin-bottom: 0.5rem;
-            text-transform: uppercase; letter-spacing: 1px;
-        }
-        .status-card .value { font-size: 2rem; font-weight: bold; color: #fff; }
-        .status-card.active .value { color: #00ff00; }
-        .status-card.warning .value { color: #ffaa00; }
-        .products-section, .logs-section {
-            background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
-            padding: 1.5rem; margin-bottom: 2rem;
-        }
-        .section-title {
-            font-size: 1.2rem; margin-bottom: 1rem; color: #cc0000;
-            border-bottom: 2px solid #cc0000; padding-bottom: 0.5rem;
-        }
-        table { width: 100%; border-collapse: collapse; }
-        th {
-            text-align: left; padding: 0.75rem; background: #0f0f0f; color: #999;
-            font-weight: normal; text-transform: uppercase; font-size: 0.85rem;
-        }
-        td { padding: 0.75rem; border-top: 1px solid #333; }
-        tr:hover { background: #222; }
-        .badge {
-            display: inline-block; padding: 0.25rem 0.75rem; border-radius: 20px;
-            font-size: 0.85rem; font-weight: bold;
-        }
-        .badge.enabled { background: #00ff0033; color: #00ff00; }
-        .badge.disabled { background: #ff000033; color: #ff0000; }
-        .badge.in-stock { background: #00ff0033; color: #00ff00; }
-        .badge.out-of-stock { background: #ff000033; color: #ff0000; }
-        .badge.unknown { background: #666633; color: #999; }
-        .log-entry {
-            font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.5rem;
-            background: #0f0f0f; border-left: 3px solid #333; margin-bottom: 0.5rem;
-        }
-        .log-entry.success { border-left-color: #00ff00; background: #00ff0011; }
-        .log-entry.error { border-left-color: #ff0000; background: #ff000011; }
-        .log-entry.warning { border-left-color: #ffaa00; background: #ffaa0011; }
-        .refresh-btn {
-            background: #cc0000; color: white; border: none; padding: 0.75rem 2rem;
-            border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold;
-        }
-        .refresh-btn:hover { background: #990000; }
-        .timestamp { color: #666; font-size: 0.85rem; margin-top: 0.5rem; }
-        .alert { padding: 1rem; border-radius: 6px; margin-bottom: 1rem; }
-        .alert.success { background: #00ff0033; border: 1px solid #00ff00; color: #00ff00; }
-        .no-data { color: #666; text-align: center; padding: 2rem; }
-        .view-btn {
-            background: #cc0000; color: white; text-decoration: none;
-            padding: 0.5rem 1rem; border-radius: 4px; font-size: 0.85rem;
-            font-weight: bold; transition: background 0.2s;
-        }
-        .view-btn:hover { background: #990000; }
-        .alerts-container {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 1rem;
-        }
-        .alert-item {
-            background: #0f0f0f;
-            border: 1px solid #333;
-            border-radius: 6px;
-            padding: 1rem;
-            border-left: 4px solid #00ff00;
-        }
-        .proxy-stats-container {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 1rem;
-        }
-        .proxy-stat-item {
-            background: #0f0f0f;
-            border: 1px solid #333;
-            border-radius: 6px;
-            padding: 1rem;
-            font-size: 0.9rem;
-        }
-        .chart-container {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 1.5rem;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
             margin-bottom: 2rem;
-            height: 400px;
+        }
+        
+        .status-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.5rem;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+        
+        .status-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(88, 166, 255, 0.15);
+            border-color: var(--accent-color);
+        }
+        
+        .status-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent-color), var(--success-color));
+        }
+        
+        .status-card.warning::before {
+            background: var(--warning-color);
+        }
+        
+        .status-card.danger::before {
+            background: var(--danger-color);
+        }
+        
+        .status-card.success::before {
+            background: var(--success-color);
+        }
+        
+        .status-card-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        
+        .status-card-title {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .status-card-icon {
+            width: 24px;
+            height: 24px;
+            opacity: 0.6;
+        }
+        
+        .status-card-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.5rem;
+        }
+        
+        .status-card-subtitle {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+        
+        .status-card.active .status-card-value {
+            color: var(--success-color);
+        }
+        
+        .status-card.warning .status-card-value {
+            color: var(--warning-color);
+        }
+        
+        .status-card.danger .status-card-value {
+            color: var(--danger-color);
+        }
+        
+        /* Section */
+        .section {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            margin-bottom: 2rem;
+            overflow: hidden;
+        }
+        
+        .section-header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--secondary-bg);
+        }
+        
+        .section-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .section-content {
+            padding: 2rem;
+        }
+        
+        /* Table */
+        .table-container {
+            overflow-x: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--secondary-bg);
+        }
+        
+        th {
+            background: var(--primary-bg);
+            padding: 1rem;
+            text-align: left;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+        
+        tr:hover {
+            background: var(--card-bg);
+        }
+        
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        /* Badge */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.375rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            gap: 0.375rem;
+        }
+        
+        .badge.enabled {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+        
+        .badge.disabled {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+        
+        .badge.in-stock {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+        
+        .badge.out-of-stock {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+        
+        .badge.unknown {
+            background: rgba(139, 148, 158, 0.15);
+            color: var(--text-secondary);
+            border: 1px solid rgba(139, 148, 158, 0.3);
+        }
+        
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            gap: 0.5rem;
+        }
+        
+        .btn-primary {
+            background: var(--accent-color);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #4493e0;
+            transform: translateY(-1px);
+        }
+        
+        .btn-outline {
+            background: transparent;
+            color: var(--accent-color);
+            border: 1px solid var(--accent-color);
+        }
+        
+        .btn-outline:hover {
+            background: var(--accent-color);
+            color: white;
+        }
+        
+        /* Log entries */
+        .log-container {
+            max-height: 400px;
+            overflow-y: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--primary-bg);
+        }
+        
+        .log-entry {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-size: 0.8125rem;
+            padding: 0.75rem 1rem;
+            border-left: 3px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            line-height: 1.4;
+            transition: all 0.2s ease;
+        }
+        
+        .log-entry:hover {
+            background: var(--secondary-bg);
+        }
+        
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        
+        .log-entry.success {
+            border-left-color: var(--success-color);
+            background: rgba(63, 185, 80, 0.05);
+        }
+        
+        .log-entry.error {
+            border-left-color: var(--danger-color);
+            background: rgba(248, 81, 73, 0.05);
+        }
+        
+        .log-entry.warning {
+            border-left-color: var(--warning-color);
+            background: rgba(247, 133, 0, 0.05);
+        }
+        
+        /* Grid layouts */
+        .grid {
+            display: grid;
+            gap: 1.5rem;
+        }
+        
+        .grid-2 {
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        }
+        
+        .grid-3 {
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        }
+        
+        /* Alert */
+        .alert {
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid;
+            background: rgba(63, 185, 80, 0.1);
+            border-left-color: var(--success-color);
+            color: var(--success-color);
+        }
+        
+        .alert-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+        
+        /* Loading states */
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border-color);
+            border-radius: 50%;
+            border-top-color: var(--accent-color);
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+            
+            .header-content {
+                padding: 0 1rem;
+                flex-direction: column;
+                gap: 1rem;
+            }
+            
+            .header-stats {
+                gap: 1rem;
+            }
+            
+            .status-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .section-content {
+                padding: 1rem;
+            }
+        }
+        
+        /* Pulse animation for live data */
+        .pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--secondary-bg);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
-        // Auto-refresh every 10 seconds instead of full page reload
+        // Auto-refresh every 10 seconds
         let refreshInterval;
         
         async function fetchAnalytics() {
@@ -145,38 +501,44 @@
             }
         }
         
+        async function fetchLiveStockStatus() {
+            try {
+                const response = await fetch('/api/live-stock-status');
+                const data = await response.json();
+                updateStockStatusDisplay(data);
+            } catch (error) {
+                console.error('Failed to fetch live stock status:', error);
+            }
+        }
+        
         function updateAnalyticsDisplay(data) {
-            // Update analytics cards
-            const analyticsContainer = document.getElementById('analytics-container');
-            if (analyticsContainer && data.stock_analytics) {
-                analyticsContainer.innerHTML = `
-                    <div class="status-card">
-                        <h3>Checks (24h)</h3>
-                        <div class="value">${data.stock_analytics.total_checks_24h}</div>
-                    </div>
-                    <div class="status-card warning">
-                        <h3>Found In Stock (24h)</h3>
-                        <div class="value">${data.stock_analytics.in_stock_found_24h}</div>
-                    </div>
-                    <div class="status-card">
-                        <h3>Avg Response Time</h3>
-                        <div class="value">${data.stock_analytics.avg_response_time}ms</div>
-                    </div>
-                    <div class="status-card">
-                        <h3>Purchase Success Rate</h3>
-                        <div class="value">${data.purchase_analytics.success_rate}%</div>
-                    </div>
-                `;
+            if (data.stock_analytics) {
+                const elements = {
+                    'checks-24h': data.stock_analytics.total_checks_24h,
+                    'found-stock-24h': data.stock_analytics.in_stock_found_24h,
+                    'avg-response': data.stock_analytics.avg_response_time + 'ms',
+                    'purchase-success': data.purchase_analytics.success_rate + '%'
+                };
+                
+                Object.entries(elements).forEach(([id, value]) => {
+                    const element = document.getElementById(id);
+                    if (element) {
+                        element.textContent = value;
+                        element.classList.add('pulse');
+                        setTimeout(() => element.classList.remove('pulse'), 1000);
+                    }
+                });
             }
             
-            // Update recent stock alerts
+            // Update recent alerts
             if (data.recent_stock_alerts && data.recent_stock_alerts.length > 0) {
                 const alertsContainer = document.getElementById('recent-alerts');
                 if (alertsContainer) {
                     alertsContainer.innerHTML = data.recent_stock_alerts.map(alert => `
-                        <div class="alert-item">
-                            <strong>${alert.product_name}</strong> (${alert.tcin}) - $${alert.price || 'N/A'}
-                            <br><small>${new Date(alert.timestamp).toLocaleString()}</small>
+                        <div class="log-entry success">
+                            <strong>${alert.product_name}</strong> (${alert.tcin})
+                            ${alert.price ? `- $${alert.price}` : ''}
+                            <br><small style="opacity: 0.7">${new Date(alert.timestamp).toLocaleString()}</small>
                         </div>
                     `).join('');
                 }
@@ -184,45 +546,78 @@
         }
         
         function updateStatusDisplay(data) {
-            // Update main status indicators
-            const statusValue = document.querySelector('.status-card .value');
-            if (statusValue) {
-                statusValue.textContent = data.monitoring ? 'MONITORING' : 'STOPPED';
+            const statusElement = document.getElementById('status-value');
+            if (statusElement) {
+                statusElement.textContent = data.monitoring ? 'ACTIVE' : 'STOPPED';
+                statusElement.parentElement.className = data.monitoring ? 'status-card active' : 'status-card danger';
             }
             
-            const totalChecks = document.getElementById('total-checks');
-            if (totalChecks) totalChecks.textContent = data.total_checks;
+            const elements = {
+                'total-checks': data.total_checks,
+                'in-stock-count': data.in_stock_count
+            };
             
-            const inStockCount = document.getElementById('in-stock-count');
-            if (inStockCount) inStockCount.textContent = data.in_stock_count;
+            Object.entries(elements).forEach(([id, value]) => {
+                const element = document.getElementById(id);
+                if (element) element.textContent = value;
+            });
         }
         
         function updateProxyDisplay(data) {
             const proxyContainer = document.getElementById('proxy-stats');
             if (proxyContainer && Object.keys(data).length > 0) {
                 proxyContainer.innerHTML = Object.entries(data).map(([host, stats]) => `
-                    <div class="proxy-stat-item">
-                        <strong>${host}</strong><br>
-                        Success Rate: ${stats.success_rate.toFixed(1)}% 
-                        (${stats.successful_requests}/${stats.total_requests})<br>
-                        Avg Response: ${stats.avg_response_time}ms
+                    <div class="status-card">
+                        <div class="status-card-title">${host}</div>
+                        <div class="status-card-value" style="font-size: 1.5rem;">${stats.success_rate.toFixed(1)}%</div>
+                        <div class="status-card-subtitle">
+                            ${stats.successful_requests}/${stats.total_requests} requests<br>
+                            ${stats.avg_response_time}ms avg
+                        </div>
                     </div>
                 `).join('');
             }
         }
         
+        function updateStockStatusDisplay(data) {
+            // Update stock status badges in the products table
+            Object.entries(data).forEach(([tcin, stockInfo]) => {
+                const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
+                stockBadges.forEach(badge => {
+                    // Remove existing classes
+                    badge.classList.remove('in-stock', 'out-of-stock', 'unknown');
+                    
+                    // Add appropriate class and update text
+                    if (stockInfo.status === 'IN_STOCK') {
+                        badge.classList.add('in-stock');
+                        badge.textContent = 'IN STOCK';
+                    } else if (stockInfo.status === 'OUT_OF_STOCK') {
+                        badge.classList.add('out-of-stock');
+                        badge.textContent = 'OUT OF STOCK';
+                    } else {
+                        badge.classList.add('unknown');
+                        badge.textContent = 'ERROR';
+                    }
+                    
+                    // Add pulse animation to show it's been updated
+                    badge.classList.add('pulse');
+                    setTimeout(() => badge.classList.remove('pulse'), 1000);
+                });
+            });
+        }
+        
         function startRealTimeUpdates() {
-            // Initial load
             fetchAnalytics();
             fetchStatus();
             fetchProxyStats();
+            fetchLiveStockStatus();
             
-            // Set up intervals
             refreshInterval = setInterval(() => {
                 fetchAnalytics();
                 fetchStatus();
                 fetchProxyStats();
-            }, 10000); // Update every 10 seconds
+                fetchLiveStockStatus();
+            }, 30000); // Check stock every 30 seconds
         }
         
         function stopRealTimeUpdates() {
@@ -240,10 +635,9 @@
                 else if (text.includes('IN STOCK')) entry.classList.add('warning');
             });
             
-            // Start real-time updates
             startRealTimeUpdates();
             
-            // Add visibility change handler to pause updates when tab is not visible
+            // Pause updates when tab is not visible
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden) {
                     stopRealTimeUpdates();
@@ -251,159 +645,229 @@
                     startRealTimeUpdates();
                 }
             });
+            
+            // Update timestamp
+            const timestampElement = document.getElementById('last-update');
+            if (timestampElement) {
+                setInterval(() => {
+                    timestampElement.textContent = new Date().toLocaleTimeString();
+                }, 1000);
+            }
         });
         
-        // Cleanup on page unload
         window.addEventListener('beforeunload', stopRealTimeUpdates);
     </script>
 </head>
 <body>
     <div class="header">
-        <div class="container">
-            <h1>Target Monitor Dashboard</h1>
-            <div class="timestamp">Last refresh: {{ timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+        <div class="header-content">
+            <h1>🎯 Target Monitor Pro</h1>
+            <div class="header-stats">
+                <div class="header-stat">
+                    <div class="header-stat-label">Last Update</div>
+                    <div class="header-stat-value" id="last-update">{{ timestamp.strftime('%H:%M:%S') }}</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Products</div>
+                    <div class="header-stat-value">{{ config.products | length }}</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Status</div>
+                    <div class="header-stat-value" style="color: {{ 'var(--success-color)' if status.monitoring else 'var(--danger-color)' }}">
+                        {{ 'LIVE' if status.monitoring else 'OFF' }}
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     
     <div class="container">
+        <!-- Status Overview -->
         <div class="status-grid">
-            <div class="status-card {{ 'active' if status.monitoring else '' }}">
-                <h3>Status</h3>
-                <div class="value">{{ 'MONITORING' if status.monitoring else 'STOPPED' }}</div>
+            <div class="status-card {{ 'active' if status.monitoring else 'danger' }}">
+                <div class="status-card-title">System Status</div>
+                <div class="status-card-value" id="status-value">{{ 'ACTIVE' if status.monitoring else 'STOPPED' }}</div>
+                <div class="status-card-subtitle">{{ 'Monitoring products' if status.monitoring else 'System idle' }}</div>
             </div>
             <div class="status-card">
-                <h3>Total Checks</h3>
-                <div class="value" id="total-checks">{{ status.total_checks }}</div>
+                <div class="status-card-title">Total Checks</div>
+                <div class="status-card-value" id="total-checks">{{ status.total_checks }}</div>
+                <div class="status-card-subtitle">All-time requests</div>
             </div>
             <div class="status-card {{ 'warning' if status.in_stock_count > 0 else '' }}">
-                <h3>In Stock Now</h3>
-                <div class="value" id="in-stock-count">{{ status.in_stock_count }}</div>
+                <div class="status-card-title">In Stock Now</div>
+                <div class="status-card-value" id="in-stock-count">{{ status.in_stock_count }}</div>
+                <div class="status-card-subtitle">Available products</div>
             </div>
             <div class="status-card">
-                <h3>Products</h3>
-                <div class="value">{{ config.products | length }}</div>
+                <div class="status-card-title">Success Rate</div>
+                <div class="status-card-value" id="purchase-success">Loading...</div>
+                <div class="status-card-subtitle">Purchase attempts</div>
             </div>
         </div>
         
-        <!-- Enhanced Analytics Section -->
-        <div class="products-section">
-            <h2 class="section-title">📊 Real-Time Analytics</h2>
-            <div class="status-grid" id="analytics-container">
-                <div class="status-card">
-                    <h3>Checks (24h)</h3>
-                    <div class="value">Loading...</div>
-                </div>
-                <div class="status-card">
-                    <h3>Found In Stock (24h)</h3>
-                    <div class="value">Loading...</div>
-                </div>
-                <div class="status-card">
-                    <h3>Avg Response Time</h3>
-                    <div class="value">Loading...</div>
-                </div>
-                <div class="status-card">
-                    <h3>Purchase Success Rate</h3>
-                    <div class="value">Loading...</div>
-                </div>
+        <!-- Real-time Analytics -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">📊 Analytics (24h)</div>
             </div>
-        </div>
-        
-        <!-- Recent Stock Alerts -->
-        <div class="products-section">
-            <h2 class="section-title">🚨 Recent Stock Alerts (24h)</h2>
-            <div id="recent-alerts" class="alerts-container">
-                Loading recent alerts...
-            </div>
-        </div>
-        
-        <!-- Proxy Performance -->
-        <div class="products-section">
-            <h2 class="section-title">🔄 Proxy Performance (24h)</h2>
-            <div id="proxy-stats" class="proxy-stats-container">
-                Loading proxy statistics...
+            <div class="section-content">
+                <div class="status-grid">
+                    <div class="status-card">
+                        <div class="status-card-title">Stock Checks</div>
+                        <div class="status-card-value" id="checks-24h">Loading...</div>
+                        <div class="status-card-subtitle">Last 24 hours</div>
+                    </div>
+                    <div class="status-card warning">
+                        <div class="status-card-title">Found In Stock</div>
+                        <div class="status-card-value" id="found-stock-24h">Loading...</div>
+                        <div class="status-card-subtitle">Opportunities detected</div>
+                    </div>
+                    <div class="status-card">
+                        <div class="status-card-title">Avg Response</div>
+                        <div class="status-card-value" id="avg-response">Loading...</div>
+                        <div class="status-card-subtitle">API response time</div>
+                    </div>
+                </div>
             </div>
         </div>
         
         {% if status.in_stock_count > 0 %}
-        <div class="alert success">
-            Items currently in stock detected!
-            {% if status.stock_by_tcin %}
-                <br><small>Debug - TCINs marked as in stock: 
-                {% for tcin, stock_status in status.stock_by_tcin.items() %}
-                    {% if stock_status == 'IN_STOCK' %}{{ tcin }}{% if not loop.last %}, {% endif %}{% endif %}
-                {% endfor %}
-                </small>
+        <div class="alert">
+            <div class="alert-title">🚨 Items Currently In Stock!</div>
+            Purchase attempts should be in progress for available products.
+        </div>
+        {% endif %}
+        
+        <!-- Recent Stock Alerts -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">🚨 Recent Stock Alerts</div>
+            </div>
+            <div class="section-content">
+                <div class="log-container" id="recent-alerts">
+                    Loading recent alerts...
+                </div>
+            </div>
+        </div>
+        
+        <!-- Monitored Products -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">📦 Monitored Products</div>
+            </div>
+            <div class="section-content">
+                {% if config.products %}
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>TCIN</th>
+                                <th>Product Name</th>
+                                <th>Max Price</th>
+                                <th>Monitor</th>
+                                <th>Stock Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for product in config.products %}
+                            <tr data-tcin="{{ product.tcin }}">
+                                <td>
+                                    <code style="background: var(--secondary-bg); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem;">
+                                        {{ product.tcin }}
+                                    </code>
+                                </td>
+                                <td>
+                                    <div style="max-width: 350px; font-weight: 500;">
+                                        {{ product.dynamic_name or product.name or 'Unknown Product' }}
+                                    </div>
+                                </td>
+                                <td>
+                                    <span style="font-weight: 600; color: var(--success-color);">
+                                        ${{ "%.2f"|format(product.max_price) }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
+                                        {{ 'ENABLED' if product.enabled else 'DISABLED' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="badge stock-badge unknown">
+                                        <span class="loading"></span> CHECKING...
+                                    </span>
+                                </td>
+                                <td>
+                                    <a href="{{ product.url }}" target="_blank" class="btn btn-outline">
+                                        View Product
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                    No products configured for monitoring
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Proxy Performance -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">🔄 Proxy Performance</div>
+            </div>
+            <div class="section-content">
+                <div class="grid grid-3" id="proxy-stats">
+                    Loading proxy statistics...
+                </div>
+            </div>
+        </div>
+        
+        <!-- Recent Activity -->
+        {% if status.recent_stock or status.recent_purchases %}
+        <div class="grid grid-2">
+            {% if status.recent_stock %}
+            <div class="section">
+                <div class="section-header">
+                    <div class="section-title">📈 Recent Stock Changes</div>
+                </div>
+                <div class="section-content">
+                    <div class="log-container">
+                        {% for entry in status.recent_stock %}
+                        <div class="log-entry">{{ entry }}</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            
+            {% if status.recent_purchases %}
+            <div class="section">
+                <div class="section-header">
+                    <div class="section-title">🛒 Recent Purchases</div>
+                </div>
+                <div class="section-content">
+                    <div class="log-container">
+                        {% for entry in status.recent_purchases %}
+                        <div class="log-entry">{{ entry }}</div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
             {% endif %}
         </div>
         {% endif %}
         
-        <div class="products-section">
-            <h2 class="section-title">Monitored Products</h2>
-            {% if config.products %}
-            <table>
-                <thead>
-                    <tr><th>TCIN</th><th>Product Name</th><th>Max Price</th><th>Monitor Status</th><th>Stock Status</th><th>Actions</th></tr>
-                </thead>
-                <tbody>
-                    {% for product in config.products %}
-                    <tr>
-                        <td><code>{{ product.tcin }}</code></td>
-                        <td>
-                            <div style="max-width: 300px;">
-                                {{ product.dynamic_name or product.name or 'Unknown Product' }}
-                            </div>
-                        </td>
-                        <td>${{ "%.2f"|format(product.max_price) }}</td>
-                        <td>
-                            <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
-                                {{ 'ENABLED' if product.enabled else 'DISABLED' }}
-                            </span>
-                        </td>
-                        <td>
-                            {% if product.tcin in status.stock_by_tcin %}
-                                {% if status.stock_by_tcin[product.tcin] == 'IN_STOCK' %}
-                                    <span class="badge in-stock">IN STOCK</span>
-                                {% else %}
-                                    <span class="badge out-of-stock">OUT OF STOCK</span>
-                                {% endif %}
-                            {% else %}
-                                <span class="badge unknown">UNKNOWN</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <a href="{{ product.url }}" target="_blank" class="view-btn">
-                                View on Target
-                            </a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <div class="no-data">No products configured</div>
-            {% endif %}
-        </div>
-        
-        {% if status.recent_stock %}
-        <div class="logs-section">
-            <h2 class="section-title">Recent Stock Alerts</h2>
-            {% for entry in status.recent_stock %}
-            <div class="log-entry">{{ entry }}</div>
-            {% endfor %}
-        </div>
-        {% endif %}
-        
-        {% if status.recent_purchases %}
-        <div class="logs-section">
-            <h2 class="section-title">Recent Purchase Attempts</h2>
-            {% for entry in status.recent_purchases %}
-            <div class="log-entry">{{ entry }}</div>
-            {% endfor %}
-        </div>
-        {% endif %}
-        
-        <div style="text-align: center; margin-top: 2rem;">
-            <button class="refresh-btn" onclick="location.reload()">Refresh Now</button>
+        <!-- Actions -->
+        <div style="text-align: center; margin-top: 2rem; padding-bottom: 2rem;">
+            <button class="btn btn-primary" onclick="location.reload()" style="padding: 0.75rem 2rem;">
+                🔄 Refresh Dashboard
+            </button>
         </div>
     </div>
 </body>

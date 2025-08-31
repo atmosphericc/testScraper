@@ -1,0 +1,327 @@
+{
+  "data": {
+    "product": {
+      "__typename": "Product",
+      "tcin": "94681770",
+      "category": {
+        "parent_category_id": "5xtb0",
+        "name": "Collectible Trading Cards",
+        "breadcrumbs": [
+          {
+            "canonical_url": "/",
+            "category_id": "root",
+            "name": "target"
+          },
+          {
+            "canonical_url": "/c/toys/-/N-5xtb0",
+            "category_id": "5xtb0",
+            "name": "Toys"
+          },
+          {
+            "canonical_url": "/c/collectible-trading-cards-hobby-collectibles-toys/-/N-27p31",
+            "category_id": "27p31",
+            "name": "Collectible Trading Cards"
+          }
+        ]
+      },
+      "sales_classification_nodes": {
+        "node_ids": [
+          "27p31",
+          "4slqy",
+          "hono5",
+          "5cdua",
+          "5ol",
+          "j1kz2",
+          "4yka5",
+          "ehy89",
+          "x6ax5",
+          "qk2n3",
+          "iinmv"
+        ]
+      },
+      "ratings_and_reviews": {
+        "has_verified": false,
+        "statistics": {
+          "not_recommended_count": 2,
+          "question_count": 5,
+          "rating": {
+            "average": 2.84,
+            "count": 24,
+            "distribution": {
+              "rating1": 13,
+              "rating2": 0,
+              "rating3": 0,
+              "rating4": 0,
+              "rating5": 11
+            }
+          },
+          "recommended_count": 0,
+          "recommended_percentage": 0,
+          "review_count": 3
+        },
+        "most_recent": [
+          {
+            "id": "cf47edf2-2f9d-40f9-abb1-f076453006a0",
+            "text": "Target app has gone downhill. They must only have junior engineers on staff to cut costs.",
+            "author": {
+              "nickname": "Chase",
+              "external_id": "8119810388"
+            },
+            "title": "Target Now Hiring Engineers",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-08-22T05:15:46.125Z"
+            }
+          },
+          {
+            "id": "13ee7c63-3b62-45a0-af6e-579320d0a902",
+            "text": "Supper super super super cool",
+            "author": {
+              "nickname": "Max",
+              "external_id": "10105467953"
+            },
+            "title": "Cool",
+            "rating": {
+              "value": 5.0,
+              "submitted_at": "2025-08-22T05:12:26.758Z"
+            }
+          },
+          {
+            "id": "22a9e788-2afd-48c8-8db0-0deb54126e7f",
+            "text": "Terrible after waiting over a month of having target hold my money they canceled my order\ud83d\udc4e\ud83c\udffb",
+            "author": {
+              "nickname": "Packripper9000",
+              "external_id": "8204289957"
+            },
+            "title": "Terrible",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-08-20T23:12:37.626Z"
+            }
+          }
+        ]
+      },
+      "financing_options": {
+        "channel": "DIGITAL",
+        "providers": [
+          {
+            "finance_footer": "Rates are between 10\u201336% APR. Subject to credit check and approval. Options depend on your purchase amount, and a down payment may be required. Estimated payment amount may exclude taxes and shipping. Payment options through Affirm are provided by these lending partners: <a class='affirm-loan-originator' href='https://www.affirm.com/lenders'>affirm.com/lenders</a>. Please note that you can\u2019t use Affirm to pay for pre-ordered items. See <a class='affirm-loan-originator' href='https://www.affirm.com/faqs'>affirm.com/faqs</a> for details.",
+            "finance_header": "Make easy monthly payments over 3, 6 or 12 months",
+            "finance_message": "Pay over time on $50+ orders with Affirm. <a class='affirm-modal-trigger'>Learn more</a>",
+            "finance_minimum_loan_amount": 50.0,
+            "finance_provider": "Affirm",
+            "finance_terms": [
+              {
+                "amount": 103.35,
+                "apr": 19.99,
+                "installment_amount": 34.45,
+                "installment_count": 3,
+                "interest_amount": 3.35,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "3 months",
+                "installment_interval": "$34.45 every month"
+              },
+              {
+                "amount": 105.93,
+                "apr": 20.06,
+                "installment_amount": 17.66,
+                "installment_count": 6,
+                "interest_amount": 5.93,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "6 months",
+                "installment_interval": "$17.66 every month"
+              },
+              {
+                "amount": 111.27,
+                "apr": 20.18,
+                "installment_amount": 9.27,
+                "installment_count": 12,
+                "interest_amount": 11.27,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "12 months",
+                "installment_interval": "$9.27 every month"
+              }
+            ],
+            "financing_terms_url": "www.affirm.com/lenders",
+            "financing_cell_header": "Pay over time",
+            "financing_cell_body": "With Affirm on orders over $50",
+            "is_finance_eligible": true,
+            "is_finance_message_eligible": true
+          }
+        ]
+      },
+      "free_shipping": {
+        "enabled": false
+      },
+      "desirability_cues": [],
+      "item": {
+        "product_classification": {
+          "item_type": {
+            "name": "Collectible Trading Cards",
+            "type": "39980041"
+          },
+          "product_type": 544,
+          "product_type_name": "TOYS",
+          "purchase_behavior": "Discretionary"
+        },
+        "choking_hazard": [
+          {
+            "code": "choking_hazard_small_parts",
+            "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+          }
+        ],
+        "compliance": {
+          "is_carbon_neutral": false,
+          "is_proposition_65": false
+        },
+        "enrichment": {
+          "buy_url": "https://www.target.com/p/pok-233-mon-trading-card-game-scarlet-38-violet-8212-black-bolt-booster-bundle/-/A-94681770",
+          "image_info": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image": {
+              "image_name": "GUEST_ee499d33-590a-4e14-bdf4-645e339e1d68",
+              "url": "https://target.scene7.com/is/image/Target/GUEST_ee499d33-590a-4e14-bdf4-645e339e1d68"
+            },
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_104b78ca-db24-4ac5-a85d-9848842b3233"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_1a06a349-be88-46da-a1a0-b3c072fc2e0e"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_4c885ee3-e8fe-4345-9274-46882abda3fa"
+              }
+            ],
+            "alternate_images": [
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_0d0c9d00-c992-47d6-9680-de7f5d90e59c",
+                "image_name": "GUEST_0d0c9d00-c992-47d6-9680-de7f5d90e59c"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_82c36bf0-92e3-40b6-bf7c-8ad2f62941be",
+                "image_name": "GUEST_82c36bf0-92e3-40b6-bf7c-8ad2f62941be"
+              }
+            ],
+            "swatch_image": {}
+          },
+          "images": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_ee499d33-590a-4e14-bdf4-645e339e1d68",
+            "primary_image": "GUEST_ee499d33-590a-4e14-bdf4-645e339e1d68",
+            "alternate_images": [
+              "GUEST_0d0c9d00-c992-47d6-9680-de7f5d90e59c",
+              "GUEST_82c36bf0-92e3-40b6-bf7c-8ad2f62941be"
+            ],
+            "alternate_image_urls": [
+              "https://target.scene7.com/is/image/Target/GUEST_0d0c9d00-c992-47d6-9680-de7f5d90e59c",
+              "https://target.scene7.com/is/image/Target/GUEST_82c36bf0-92e3-40b6-bf7c-8ad2f62941be"
+            ],
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_104b78ca-db24-4ac5-a85d-9848842b3233"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_1a06a349-be88-46da-a1a0-b3c072fc2e0e"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_4c885ee3-e8fe-4345-9274-46882abda3fa"
+              }
+            ]
+          },
+          "return_policies": [
+            {
+              "user_type": "regular_guest",
+              "day_count": 0
+            },
+            {
+              "user_type": "best_guest",
+              "day_count": 0
+            }
+          ]
+        },
+        "environmental_segmentation": {
+          "is_hazardous_material": false
+        },
+        "formatted_return_method": "This item cannot be returned;  please reference our return policy for more information.",
+        "fulfillment": {
+          "po_box_prohibited_message": "We regret that this item cannot be shipped to PO Boxes.",
+          "shipping_exclusion_codes": [
+            "American Samoa (see also separate entry under AS)",
+            "Guam (see also separate entry under GU)",
+            "Northern Mariana Islands",
+            "Puerto Rico (see also separate entry under PR)",
+            "United States Minor Outlying Islands",
+            "Virgin Islands, U.S.",
+            "APO/FPO"
+          ],
+          "is_gift_wrap_eligible": true,
+          "purchase_limit": 2
+        },
+        "package_dimensions": {
+          "depth": 4.25,
+          "dimension_unit_of_measure": "INCH",
+          "weight": 0.35,
+          "weight_unit_of_measure": "POUND",
+          "height": 2.0,
+          "width": 3.0
+        },
+        "product_description": {
+          "bullet_descriptions": [
+            "<B>Suggested Age:</B> 6 Years and Up",
+            "<B>CPSC Choking Hazard Warnings:</B> Choking_hazard_small_parts",
+            "<B>Includes:</B> Cards",
+            "<B>Package Type:</B> Box Set"
+          ],
+          "downstream_description": "Explore a Region of Harmony & Ideals! Reunite with the Pok\u00e9mon of Unova and rise to the top as a Trainer in a land of unity and legends! Evolve first partner Snivy all the way to Serperior ex, and discover the inspiring power of ideals with the region\u2019s Legendary and Mythical Pok\u00e9mon, including Zekrom ex and Meloetta ex. As you fill out your Pok\u00e9dex, keep an eye out for special illustrations of each Pok\u00e9mon and parallel cards with Pok\u00e9 Ball patterns in the Pok\u00e9mon TCG: Scarlet & Violet\u2014Black Bolt expansion!<br />",
+          "soft_bullets": {
+            "bullets": [
+              "6 Packs Per Box",
+              "10 Cards Per Pack",
+              "Content May Vary",
+              "Collect Them All"
+            ],
+            "title": "highlights"
+          },
+          "title": "Pok&#233;mon Trading Card Game: Scarlet &#38; Violet&#8212;Black Bolt Booster Bundle",
+          "soft_bullet_description": "&bull;6 Packs Per Box<br>&bull;10 Cards Per Pack<br>&bull;Content May Vary<br>&bull;Collect Them All "
+        },
+        "relationship_type_code": "SA",
+        "return_policy_url": "https://www.target.com/help/articles/returns-exchanges/returns",
+        "ribbons": [
+          "New At Target"
+        ],
+        "cart_add_on_threshold": 35.0,
+        "dpci": "087-12-6829",
+        "handling": {
+          "import_designation_description": "Made in the USA or Imported"
+        },
+        "merchandise_classification": {
+          "class_id": 12,
+          "department_id": 87,
+          "department_name": "GAMES/DIECAST/ACTION FIGURES"
+        },
+        "mmbv_content": {
+          "street_date": "2025-08-22"
+        },
+        "primary_barcode": "196214129290",
+        "primary_brand": {
+          "canonical_url": "/b/pokemon/-/N-569t0",
+          "linking_id": "569t0",
+          "name": "Pokemon"
+        },
+        "return_method": "No Return"
+      },
+      "price": {
+        "current_retail": 31.99,
+        "display_was_now": false,
+        "formatted_current_price": "$31.99",
+        "formatted_current_price_type": "reg",
+        "reg_retail": 31.99,
+        "location_id": 3991,
+        "external_system_id": "794256770"
+      },
+      "promotions": []
+    }
+  }
+}

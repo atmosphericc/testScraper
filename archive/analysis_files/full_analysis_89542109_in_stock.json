@@ -1,0 +1,412 @@
+{
+  "data": {
+    "product": {
+      "__typename": "Product",
+      "tcin": "89542109",
+      "category": {
+        "parent_category_id": "5xtb0",
+        "name": "Collectible Trading Cards",
+        "breadcrumbs": [
+          {
+            "canonical_url": "/",
+            "category_id": "root",
+            "name": "target"
+          },
+          {
+            "canonical_url": "/c/toys/-/N-5xtb0",
+            "category_id": "5xtb0",
+            "name": "Toys"
+          },
+          {
+            "canonical_url": "/c/collectible-trading-cards-hobby-collectibles-toys/-/N-27p31",
+            "category_id": "27p31",
+            "name": "Collectible Trading Cards"
+          }
+        ]
+      },
+      "sales_classification_nodes": {
+        "node_ids": [
+          "27p31",
+          "ts1nr",
+          "wn8i6",
+          "mvpyl",
+          "hono5",
+          "5cdua",
+          "4yka5",
+          "ehy89",
+          "x6ax5",
+          "qk2n3",
+          "iinmv"
+        ]
+      },
+      "ratings_and_reviews": {
+        "has_verified": true,
+        "statistics": {
+          "not_recommended_count": 6,
+          "question_count": 0,
+          "rating": {
+            "average": 2.65,
+            "count": 17,
+            "distribution": {
+              "rating1": 9,
+              "rating2": 1,
+              "rating3": 0,
+              "rating4": 1,
+              "rating5": 6
+            },
+            "secondary_averages": [
+              {
+                "id": "broad age appeal",
+                "label": "broad age appeal",
+                "range": 5,
+                "type": "RATING",
+                "value": 2.33
+              },
+              {
+                "id": "length of play",
+                "label": "length of play",
+                "range": 5,
+                "type": "RATING",
+                "value": 2.33
+              },
+              {
+                "id": "quality",
+                "label": "quality",
+                "range": 5,
+                "type": "RATING",
+                "value": 2.0
+              },
+              {
+                "id": "value",
+                "label": "value",
+                "range": 5,
+                "type": "RATING",
+                "value": 2.0
+              }
+            ]
+          },
+          "recommended_count": 1,
+          "recommended_percentage": 14,
+          "review_count": 7
+        },
+        "most_recent": [
+          {
+            "id": "a544ceeb-3e49-4026-8d42-d57b3adcac56",
+            "text": "I got sent the wrong pack and I\u2019m upset about it.",
+            "author": {
+              "nickname": "Logan",
+              "external_id": "20091548827"
+            },
+            "title": "Not as described",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-08-22T19:43:16.504Z"
+            }
+          },
+          {
+            "id": "2a51c10f-4fe2-4661-9e14-e7522a0b8f3e",
+            "text": "Bought as a bi that gift",
+            "author": {
+              "nickname": "Kris",
+              "external_id": "8010428116"
+            },
+            "title": "Good Buy",
+            "rating": {
+              "value": 5.0,
+              "submitted_at": "2025-06-06T19:36:22.214Z"
+            }
+          },
+          {
+            "id": "7a6fa22c-72c8-47c6-9cbd-89e6223c17de",
+            "text": "Was purchased in November online. Didn\u2019t make it until after Christmas and will not accept return. Asked numerous times to cancel before it shipped. Horrible customer service.",
+            "author": {
+              "nickname": "Jsnow1975",
+              "external_id": "10004578965"
+            },
+            "title": "Horrible customer service",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-01-04T18:24:11.600Z"
+            }
+          },
+          {
+            "id": "8047ba71-a770-446e-a303-755a1bd847e9",
+            "text": "I believe this came from a 3rd party seller and not directly from Target. It took them 3 weeks to ship this item. I ordered it December 2nd, which was plenty of time for me to get it by Christmas. I didn't even get notified it was shipped until December 24th. It was finally delivered December 31st. I'd recommend staying away from this seller/item if you need something quicker than 4-6 weeks. The box seemed like it had been opened as well. Of course, it isn't available for a return - how convenient.",
+            "author": {
+              "nickname": "Jennie",
+              "external_id": "3574331164"
+            },
+            "title": "Wasn't sure I was getting this item.",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-01-02T13:42:45.278Z"
+            }
+          },
+          {
+            "id": "c927d5f5-961b-420a-8de0-08961532e3ac",
+            "text": "Be careful trying to purchase this item. IT IS Unreturnable even though I received the package 30 days after I ordered it.",
+            "author": {
+              "nickname": "Brdsgrl31",
+              "external_id": "1904220050"
+            },
+            "title": "Dont buy from Target",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-01-01T15:17:37.369Z"
+            }
+          },
+          {
+            "id": "5c5cd3e5-8463-4be0-9778-61ba2246ad51",
+            "text": "This item is not eligible for returns and took 27 days to get to me. I tried to cancel it the day after ordering, and Target said that I could return it after receiving the item. It arrived after Christmas and Target will not allow me to return it.",
+            "author": {
+              "nickname": "J",
+              "external_id": "1198619299"
+            },
+            "title": "Poor Customer Service",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2025-01-01T08:32:18.670Z"
+            }
+          },
+          {
+            "id": "a495fddd-f2d3-4eba-9505-286eb9f41a0d",
+            "text": "This item was already opened upon delivery. The pieces were spilled out into the shipment box. Since this item is not eligible for returns, I am stuck with an opened box I had planned to gift to someone. If items are not able to be returned, quality control should be better.",
+            "author": {
+              "nickname": "Unknown 1",
+              "external_id": "7883322763"
+            },
+            "title": "Quality",
+            "rating": {
+              "value": 1.0,
+              "submitted_at": "2023-11-15T04:19:43.729Z"
+            }
+          }
+        ],
+        "photos": [
+          "https://target.scene7.com/is/image/Target/GUEST_1fc5eb39-f6fe-4959-9052-294db8803f3b"
+        ]
+      },
+      "financing_options": {
+        "channel": "DIGITAL",
+        "providers": [
+          {
+            "finance_footer": "Rates are between 10\u201336% APR. Subject to credit check and approval. Options depend on your purchase amount, and a down payment may be required. Estimated payment amount may exclude taxes and shipping. Payment options through Affirm are provided by these lending partners: <a class='affirm-loan-originator' href='https://www.affirm.com/lenders'>affirm.com/lenders</a>. Please note that you can\u2019t use Affirm to pay for pre-ordered items. See <a class='affirm-loan-originator' href='https://www.affirm.com/faqs'>affirm.com/faqs</a> for details.",
+            "finance_header": "Make easy monthly payments over 3, 6 or 12 months",
+            "finance_message": "Pay over time on $50+ orders with Affirm. <a class='affirm-modal-trigger'>Learn more</a>",
+            "finance_minimum_loan_amount": 50.0,
+            "finance_provider": "Affirm",
+            "finance_terms": [
+              {
+                "amount": 103.35,
+                "apr": 19.99,
+                "installment_amount": 34.45,
+                "installment_count": 3,
+                "interest_amount": 3.35,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "3 months",
+                "installment_interval": "$34.45 every month"
+              },
+              {
+                "amount": 105.93,
+                "apr": 20.06,
+                "installment_amount": 17.66,
+                "installment_count": 6,
+                "interest_amount": 5.93,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "6 months",
+                "installment_interval": "$17.66 every month"
+              },
+              {
+                "amount": 111.27,
+                "apr": 20.18,
+                "installment_amount": 9.27,
+                "installment_count": 12,
+                "interest_amount": 11.27,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "12 months",
+                "installment_interval": "$9.27 every month"
+              }
+            ],
+            "financing_terms_url": "www.affirm.com/lenders",
+            "financing_cell_header": "Pay over time",
+            "financing_cell_body": "With Affirm on orders over $50",
+            "is_finance_eligible": true,
+            "is_finance_message_eligible": true
+          }
+        ]
+      },
+      "free_shipping": {
+        "enabled": false
+      },
+      "item": {
+        "product_classification": {
+          "item_type": {
+            "name": "Collectible Trading Cards",
+            "type": "39980041"
+          },
+          "product_type": 544,
+          "product_type_name": "TOYS",
+          "purchase_behavior": "Discretionary"
+        },
+        "choking_hazard": [
+          {
+            "code": "choking_hazard_small_parts",
+            "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+          }
+        ],
+        "compliance": {
+          "is_carbon_neutral": false,
+          "is_proposition_65": false
+        },
+        "enrichment": {
+          "buy_url": "https://www.target.com/p/pok-233-mon-trading-card-game-quaquaval-ex-deluxe-battle-deck/-/A-89542109",
+          "image_info": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image": {
+              "image_name": "GUEST_1210d593-eb91-4105-8052-9fee85153697",
+              "url": "https://target.scene7.com/is/image/Target/GUEST_1210d593-eb91-4105-8052-9fee85153697"
+            },
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_45136263-8cc0-42cb-9f06-1b125b33f25b"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_526ca7dc-934d-4deb-ba81-b3c2944fa766"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_1210d593-eb91-4105-8052-9fee85153697"
+              }
+            ],
+            "alternate_images": [
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_45136263-8cc0-42cb-9f06-1b125b33f25b",
+                "image_name": "GUEST_45136263-8cc0-42cb-9f06-1b125b33f25b"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_526ca7dc-934d-4deb-ba81-b3c2944fa766",
+                "image_name": "GUEST_526ca7dc-934d-4deb-ba81-b3c2944fa766"
+              }
+            ],
+            "swatch_image": {}
+          },
+          "images": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_1210d593-eb91-4105-8052-9fee85153697",
+            "primary_image": "GUEST_1210d593-eb91-4105-8052-9fee85153697",
+            "alternate_images": [
+              "GUEST_45136263-8cc0-42cb-9f06-1b125b33f25b",
+              "GUEST_526ca7dc-934d-4deb-ba81-b3c2944fa766"
+            ],
+            "alternate_image_urls": [
+              "https://target.scene7.com/is/image/Target/GUEST_45136263-8cc0-42cb-9f06-1b125b33f25b",
+              "https://target.scene7.com/is/image/Target/GUEST_526ca7dc-934d-4deb-ba81-b3c2944fa766"
+            ],
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_45136263-8cc0-42cb-9f06-1b125b33f25b"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_526ca7dc-934d-4deb-ba81-b3c2944fa766"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_1210d593-eb91-4105-8052-9fee85153697"
+              }
+            ]
+          },
+          "return_policies": [
+            {
+              "user_type": "regular_guest",
+              "day_count": 0
+            },
+            {
+              "user_type": "best_guest",
+              "day_count": 0
+            }
+          ]
+        },
+        "environmental_segmentation": {
+          "is_hazardous_material": false
+        },
+        "formatted_return_method": "This item cannot be returned;  please reference our return policy for more information.",
+        "fulfillment": {
+          "po_box_prohibited_message": "We regret that this item cannot be shipped to PO Boxes.",
+          "shipping_exclusion_codes": [
+            "American Samoa (see also separate entry under AS)",
+            "Guam (see also separate entry under GU)",
+            "Northern Mariana Islands",
+            "Puerto Rico (see also separate entry under PR)",
+            "United States Minor Outlying Islands",
+            "Virgin Islands, U.S.",
+            "APO/FPO"
+          ],
+          "is_gift_wrap_eligible": true,
+          "purchase_limit": 2
+        },
+        "package_dimensions": {
+          "depth": 6.5,
+          "dimension_unit_of_measure": "INCH",
+          "weight": 0.9,
+          "weight_unit_of_measure": "POUND",
+          "height": 1.6,
+          "width": 6.1
+        },
+        "product_description": {
+          "bullet_descriptions": [
+            "<B>Suggested Age:</B> 6 Years and Up",
+            "<B>CPSC Choking Hazard Warnings:</B> Choking_hazard_small_parts",
+            "<B>Includes:</B> Cards",
+            "<B>Package Type:</B> Beginner Deck"
+          ],
+          "downstream_description": "A Deluxe Challenge for Your Opponent!<br />The new Pok\u00e9mon Trading Card Game: Quaquaval Deluxe Battle Decks offer a step up for players who are ready for a challenge, with more advanced strategies and additional power cards. Each 60-card deck includes 3 foil cards and everything you need to play right away. Let the deluxe battle begin!",
+          "soft_bullets": {
+            "bullets": [
+              "1 ready-to-play 60-card deck",
+              "1 single-player playmat",
+              "1 set of damage counters",
+              "1 large metallic coin",
+              "2 condition markers",
+              "1 deck box",
+              "1 strategy sheet",
+              "1 code card to play this deck online"
+            ],
+            "title": "highlights"
+          },
+          "title": "Pok&#233;mon Trading Card Game: Quaquaval ex Deluxe Battle Deck",
+          "soft_bullet_description": "&bull;1 ready-to-play 60-card deck<br>&bull;1 single-player playmat<br>&bull;1 set of damage counters<br>&bull;1 large metallic coin<br>&bull;2 condition markers<br>&bull;1 deck box<br>&bull;1 strategy sheet<br>&bull;1 code card to play this deck online"
+        },
+        "relationship_type_code": "SA",
+        "return_policy_url": "https://www.target.com/help/articles/returns-exchanges/returns",
+        "cart_add_on_threshold": 35.0,
+        "dpci": "087-12-9130",
+        "handling": {
+          "import_designation_description": "Made in the USA or Imported"
+        },
+        "merchandise_classification": {
+          "class_id": 12,
+          "department_id": 87,
+          "department_name": "GAMES/DIECAST/ACTION FIGURES"
+        },
+        "primary_barcode": "097712559605",
+        "primary_brand": {
+          "canonical_url": "/b/pokemon/-/N-569t0",
+          "linking_id": "569t0",
+          "name": "Pokemon"
+        },
+        "return_method": "No Return"
+      },
+      "price": {
+        "current_retail": 14.99,
+        "display_was_now": false,
+        "formatted_current_price": "$14.99",
+        "formatted_current_price_type": "reg",
+        "reg_retail": 14.99,
+        "location_id": 3991,
+        "external_system_id": "89542109-3991-14.99-2025082809"
+      },
+      "promotions": [],
+      "predictive_search": {
+        "search_term": "pokemon cards"
+      }
+    }
+  }
+}

@@ -593,6 +593,59 @@ def api_record_proxy():
     
     return jsonify({'error': 'missing proxy_host'}), 400
 
+@app.route('/api/live-stock-status')
+def api_live_stock_status():
+    """API endpoint for live stock status check"""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+    
+    try:
+        from authenticated_stock_checker import AuthenticatedStockChecker
+        
+        # Get configured products
+        config = DashboardData.get_config()
+        if not config.get('products'):
+            return jsonify({'error': 'No products configured'})
+        
+        # Check stock for all enabled products
+        async def check_all_products():
+            checker = AuthenticatedStockChecker()
+            results = {}
+            
+            for product in config['products']:
+                if product.get('enabled', True):  # Default to enabled
+                    tcin = product['tcin']
+                    try:
+                        result = await checker.check_authenticated_stock(tcin)
+                        results[tcin] = {
+                            'available': result.get('available', False),
+                            'status': 'IN_STOCK' if result.get('available', False) else 'OUT_OF_STOCK',
+                            'details': result.get('availability_text', 'Unknown'),
+                            'price': result.get('price', 0),
+                            'last_checked': datetime.now().isoformat()
+                        }
+                    except Exception as e:
+                        results[tcin] = {
+                            'available': False,
+                            'status': 'ERROR',
+                            'details': str(e),
+                            'price': 0,
+                            'last_checked': datetime.now().isoformat()
+                        }
+                        
+            return results
+        
+        # Run async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        stock_results = loop.run_until_complete(check_all_products())
+        loop.close()
+        
+        return jsonify(stock_results)
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to check stock: {str(e)}'}), 500
+
 if __name__ == '__main__':
     print("="*60)
     print("TARGET MONITOR DASHBOARD")

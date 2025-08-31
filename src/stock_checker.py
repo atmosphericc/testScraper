@@ -15,8 +15,11 @@ import requests
 from typing import Dict, Optional
 from datetime import datetime, timedelta
 
+# Import the production authenticated stock checker
+from authenticated_stock_checker import AuthenticatedStockChecker
+
 class StockChecker:
-    def __init__(self, proxies=None):
+    def __init__(self, proxies=None, use_website_checking=True):
         self.logger = logging.getLogger(__name__)
         self.base_url = "https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1"
         self.api_key = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
@@ -28,6 +31,10 @@ class StockChecker:
         self.proxies = proxies or []
         self.proxy_index = 0
         self.proxy_stats = {}
+        
+        # Website checking for accurate results
+        self.use_website_checking = use_website_checking
+        self.website_checker = AuthenticatedStockChecker() if use_website_checking else None
         
         # Dashboard analytics integration
         self.dashboard_url = 'http://localhost:5000'
@@ -172,7 +179,7 @@ class StockChecker:
         return False
 
     async def check_stock(self, session, tcin: str) -> Dict:
-        """Check stock with PERFECT browser impersonation"""
+        """Check stock with ACCURATE website verification"""
         # Check if we should back off
         if await self.should_backoff():
             return {
@@ -181,7 +188,22 @@ class StockChecker:
                 'status': 'backoff',
                 'error': 'Backing off due to consecutive errors'
             }
-            
+        
+        # Use accurate website checking if enabled
+        if self.use_website_checking and self.website_checker:
+            try:
+                self.logger.debug(f"Using website checking for {tcin}")
+                result = await self.website_checker.check_authenticated_stock(tcin)
+                
+                # Reset consecutive errors on success
+                self.consecutive_errors = 0
+                return result
+                
+            except Exception as e:
+                self.logger.warning(f"Website checking failed for {tcin}: {e}, falling back to API")
+                # Fall through to API checking
+        
+        # Fallback to API checking (less accurate but faster)  
         if CURL_CFFI_AVAILABLE:
             # 🔥 PERFECT BROWSER IMPERSONATION
             return await self._check_stock_stealth(tcin)
@@ -448,14 +470,18 @@ class StockChecker:
             eligibility = item.get('eligibility_rules', {})
             ship_to_guest = eligibility.get('ship_to_guest', {}).get('is_active', False)
             
-            # STOCK DETECTION LOGIC
+            # FIXED STOCK DETECTION LOGIC - based on actual API analysis
+            # Key insight: OUT OF STOCK products have NO eligibility_rules at all
+            # IN STOCK products have eligibility_rules.ship_to_guest.is_active: true
+            
             if is_marketplace:
                 # Third-party seller
                 available = purchase_limit > 0
                 seller_type = "third-party"
             else:
-                # Target direct
-                available = ship_to_guest and purchase_limit >= 2
+                # Target direct - must have eligibility_rules AND ship_to_guest active  
+                has_eligibility_rules = bool(item.get('eligibility_rules'))
+                available = has_eligibility_rules and ship_to_guest and purchase_limit >= 1
                 seller_type = "target"
             
             # Special handling for pre-orders
