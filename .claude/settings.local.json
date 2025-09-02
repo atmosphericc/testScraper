@@ -14,7 +14,8 @@
       "Bash(del dashboardanalytics.db)",
       "Bash(del test_api_only.py)",
       "WebSearch",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(ping:*)"
     ],
     "deny": [],
     "ask": []
