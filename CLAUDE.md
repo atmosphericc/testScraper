@@ -4,46 +4,76 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an advanced, commercial-grade Python-based Target product monitoring system with enterprise-level stealth capabilities. The system features sophisticated anti-detection measures including proxy rotation, browser profile management, TLS fingerprint masking, and intelligent request timing to avoid API blocking while automatically attempting product purchases.
+This is an advanced, commercial-grade Python-based Target product monitoring system featuring **Ultra-Fast Stock Checking** with sub-3-second performance for 50+ SKUs and zero missed opportunities. The system combines intelligent API-first checking with background browser verification, smart priority scheduling, and comprehensive production safety systems.
 
 ## Common Commands
 
 ### Initial Setup
 ```bash
-# Initialize directories and configuration
-python setup.py init
-
-# Setup Target login session (interactive)
+# Setup Target login session (required first)
 python setup.py login
+
+# Initialize directories and configuration (optional)
+python setup.py init
 
 # Test setup completion
 python setup.py test
 
-# Install advanced stealth dependencies (optional but recommended)
-python install_stealth_deps.py
+# Setup advanced evasion system (recommended)
+python setup_advanced_evasion.py
+
+# Setup free proxy integration
+python setup_free_proxies.py
 ```
 
-### Running the Monitor
+### Running the Ultra-Fast Monitor (Recommended)
 ```bash
-# Run in test mode (default - won't complete purchases)
-python run.py
-
-# Run in test mode explicitly
+# Run ultra-fast system in test mode (default)
 python run.py test
 
-# Run in production mode (will attempt real purchases)
+# Run with web dashboard (recommended)
+python run.py test --dashboard
+
+# Run in production mode (real purchases)
 python run.py production
+
+# Force legacy system
+python run.py test --legacy
 ```
 
-### Dashboard & Testing
+### Alternative Entry Points
 ```bash
-# Start web dashboard (port 5000)
+# Direct ultra-fast system
+python run_ultra_fast_monitor.py
+
+# Legacy dashboard only (port 5000)
 python dashboard/app.py
 
-# Test individual components
-python test_proxy_rotation.py
-python test_enhanced_features.py
-python debug_stock.py
+# Ultra-fast dashboard only (port 5001)  
+python dashboard/ultra_fast_dashboard.py
+
+# Advanced stock monitor
+python advanced_stock_monitor.py
+
+# Simple API testing
+python simple_api_check.py
+```
+
+### Testing and Development
+```bash
+# Test adaptive evasion system
+python test_adaptive_evasion.py
+
+# Test ultimate bypass system
+python test_ultimate_bypass.py
+
+# Quick evasion test
+python quick_evasion_test.py
+
+# Check API status
+python check_api_status.py
+
+# Archived test files available in archive/old_tests/
 ```
 
 ## Architecture Overview
@@ -57,58 +87,95 @@ python debug_stock.py
 - Integrates proxy rotation, session management, and browser profile rotation
 - Real-time analytics integration with dashboard API
 
-**Advanced Stealth System**:
-- **ProxyManager** (`src/proxy_manager.py`): Commercial-grade proxy rotation with success rate tracking, automatic blocking detection, and intelligent proxy selection
-- **StealthRequester** (`src/stealth_requester.py`): Ultra-stealth HTTP client using curl_cffi for perfect browser TLS impersonation with HTTP/2 support
-- **MultiSessionManager** (`src/multi_session_manager.py`): Multiple browser profiles with unique fingerprints, viewport randomization, and anti-detection scripting
-- **SessionRotator** (`src/session_rotator.py`): Smart session rotation with usage tracking and intelligent timing patterns
-- **BrowserProfileManager** (`src/browser_profile_manager.py`): Manages multiple browser profiles with randomized characteristics
+**Ultra-Fast Stock Checking System**:
+- **UltraFastStockChecker** (`src/ultra_fast_stock_checker.py`): Sub-3-second checking for 50+ SKUs with zero missed opportunities
+- **AuthenticatedStockChecker** (`src/authenticated_stock_checker.py`): Production-grade authenticated stock verification with adaptive evasion
+- **UltraStealthBypass** (`src/ultra_stealth_bypass.py`): Military-grade anti-detection with JA3/JA4 spoofing and ML-based behavioral adaptation
+
+**Advanced Evasion and Stealth System**:
+- **ProxyManager** (`src/proxy_manager.py`): Commercial-grade proxy rotation with success rate tracking and intelligent selection
+- **ProxyRotator** (`src/proxy_rotator.py`): Advanced proxy rotation with health monitoring
+- **ResidentialProxyNetwork** (`src/residential_proxy_network.py`): Residential proxy integration for maximum stealth
+- **StealthRequester** (`src/stealth_requester.py`): Ultra-stealth HTTP client using curl_cffi for perfect browser TLS impersonation
+- **AdvancedEvasionEngine** (`src/advanced_evasion_engine.py`): Advanced bot detection countermeasures
+- **RequestPatternObfuscator** (`src/request_pattern_obfuscator.py`): Request pattern randomization and obfuscation
+
+**Session and Profile Management**:
+- **MultiSessionManager** (`src/multi_session_manager.py`): Multiple browser profiles with unique fingerprints
+- **BackgroundSessionManager** (`src/background_session_manager.py`): Background session warming and management
+- **BehavioralSessionManager** (`src/behavioral_session_manager.py`): Human-like browsing behavior simulation
+- **SessionRotator** (`src/session_rotator.py`): Smart session rotation with usage tracking
+- **BrowserProfileManager** (`src/browser_profile_manager.py`): Browser profile management with randomized characteristics
+- **SessionFingerprinter** (`src/session_fingerprinter.py`): Advanced fingerprinting and detection avoidance
+- **SessionManager** (`src/session_manager.py`): Target.com authentication with periodic validation
+
+**AI-Powered Adaptive Systems**:
+- **AdaptiveRateLimiter** (`src/adaptive_rate_limiter.py`): Machine learning-like rate limiting adaptation
+- **UltraFastSmartScheduler** (`src/ultra_fast_smart_scheduler.py`): Intelligent scheduling and priority management
+- **ResponseAnalyzer** (`src/response_analyzer.py`): Advanced response analysis and threat detection
 
 **Core Monitoring Components**:
-- **StockChecker** (`src/stock_checker.py`): Enhanced stock checker with proxy integration and intelligent retry logic
+- **StockChecker** (`src/stock_checker.py`): Hybrid stock checker with API fallback and website verification
+- **WebsiteStockChecker** (`src/website_stock_checker.py`): Direct website-based stock checking with stealth browser settings
 - **BuyBot** (`src/buy_bot.py`): Advanced purchase automation with screenshot debugging
-- **SessionManager** (`src/session_manager.py`): Target.com authentication with periodic validation
+- **DashboardOptimizedChecker** (`src/dashboard_optimized_checker.py`): Optimized checking for dashboard integration
 
 **Configuration & Monitoring**:
 - **ConfigWatcher** (`src/config_watcher.py`): Hot-reload configuration changes without restart
 - **BatchStockChecker** (`src/batch_stock_checker.py`): Optimized batch processing for multiple products
+- **UltraFastConfigManager** (`src/ultra_fast_config_manager.py`): Advanced configuration management
+- **UltraFastSafetySystem** (`src/ultra_fast_safety_system.py`): Production safety and validation systems
+- **CookieManager** (`src/cookie_manager.py`): Advanced cookie management and persistence
 
 ### Advanced Stealth Features
 
-1. **Proxy Rotation System**:
-   - Automatic proxy health monitoring and rotation
-   - Success rate tracking and intelligent proxy selection  
-   - Automatic blocked proxy detection and cooldown management
-   - Support for HTTP, HTTPS, and SOCKS5 proxies with authentication
+1. **Ultra-Fast Stock Checking System**:
+   - **Sub-3-second performance**: Check 50+ SKUs in under 3 seconds
+   - **Zero missed opportunities**: Instant purchase triggering on stock detection
+   - **Adaptive evasion**: Machine learning-like bot detection avoidance
+   - **Enhanced authenticated checking**: Real browser sessions with stealth capabilities
 
-2. **Perfect Browser Impersonation**:
-   - curl_cffi integration for authentic browser TLS fingerprints
-   - HTTP/2 support matching real browser behavior
-   - Randomized browser profiles (Chrome, Firefox, Safari, Edge)
-   - Dynamic user agent and header randomization
+2. **Military-Grade Anti-Detection (UltraStealthBypass)**:
+   - **JA3/JA4 fingerprint spoofing**: Real browser TLS fingerprints from live traffic
+   - **Advanced HTTP/2 manipulation**: Realistic SETTINGS frames and header ordering
+   - **Custom TLS cipher suites**: Browser-specific encryption preferences
+   - **Anti-bot parameter injection**: `isBot=false` and related countermeasures
 
-3. **Multi-Session Management**:
-   - Multiple isolated browser contexts with unique fingerprints
-   - Viewport, timezone, and locale randomization
-   - Anti-automation detection scripts
-   - WebGL and plugin fingerprint spoofing
+3. **Residential Proxy Network Integration**:
+   - **Proxy warming system**: Realistic browsing behavior before target requests
+   - **Intelligent proxy rotation**: Health monitoring and automatic failover
+   - **Geographic distribution**: Support for residential and datacenter networks
+   - **Success rate optimization**: Automatic blocked proxy detection and cooldown
 
-4. **Intelligent Request Timing**:
-   - Smart delay patterns mimicking human browsing
-   - Product-specific staggered request timing
-   - Priority-based check frequency adjustment
-   - Burst and pause patterns to avoid detection
+4. **Advanced Session Management**:
+   - **Behavioral session simulation**: Human-like browsing patterns and timing
+   - **Background session warming**: Pre-warmed sessions for instant availability
+   - **Multiple profile rotation**: Chrome, Firefox, Safari profiles with unique characteristics
+   - **Fingerprint randomization**: Viewport, timezone, hardware specs, and WebGL variations
 
-5. **Configuration Hot-Reloading**:
-   - Real-time config updates without service restart
-   - Dynamic proxy enable/disable
-   - Live product list modifications
+5. **AI-Powered Adaptive Systems**:
+   - **Adaptive rate limiting**: ML-like learning from API responses and success rates
+   - **Threat level assessment**: Real-time detection risk evaluation
+   - **Smart scheduling**: Priority-based checking with intelligent intervals
+   - **Response pattern analysis**: Advanced API response interpretation
 
-6. **Analytics & Monitoring**:
-   - Real-time dashboard integration
-   - Proxy performance analytics
-   - Stock check response time tracking
-   - Purchase attempt success rate monitoring
+6. **Enhanced Request Patterns**:
+   - **Intelligent delay calculation**: Time-of-day aware delays with fatigue simulation
+   - **Request pattern obfuscation**: Randomized timing and sequence variations
+   - **Header order manipulation**: Browser-specific header ordering and variations
+   - **Connection fingerprint spoofing**: Realistic connection characteristics
+
+7. **Production Safety Systems**:
+   - **Ultra-fast safety validation**: Multi-layer confirmation for production mode
+   - **Configuration hot-reloading**: Real-time updates without service restart
+   - **Comprehensive logging**: Detailed audit trails and performance monitoring
+   - **Error handling and recovery**: Automatic fallback systems and error recovery
+
+8. **Dashboard Integration**:
+   - **Real-time monitoring**: Live stock status and system performance
+   - **Zero-cache policy**: All data fetched live for maximum accuracy
+   - **Enhanced analytics**: Success rates, response times, and system health
+   - **Dual dashboard system**: Ultra-fast (port 5001) and legacy (port 5000) dashboards
 
 ### Configuration Structure
 
@@ -136,8 +203,17 @@ python debug_stock.py
 ### Entry Points
 
 - `run.py`: Main application with enhanced startup and mode selection
+- `run_ultra_fast_monitor.py`: Direct ultra-fast monitoring system
 - `setup.py`: Comprehensive setup with session creation and validation
-- `dashboard/app.py`: Analytics dashboard server
+- `setup_advanced_evasion.py`: Advanced evasion system setup and configuration
+- `setup_free_proxies.py`: Free proxy integration and setup
+- `setup_protonvpn_integration.py`: ProtonVPN integration for enhanced privacy
+- `dashboard/app.py`: Legacy analytics dashboard server (port 5000)
+- `dashboard/ultra_fast_dashboard.py`: Ultra-fast dashboard with live data (port 5001)
+- `advanced_stock_monitor.py`: Advanced monitoring system with enhanced features
+- `advanced_proxy_finder.py`: Intelligent proxy discovery and validation
+- `auto_proxy_setup.py`: Automated proxy configuration and testing
+- `get_free_proxies.py`: Free proxy source integration
 - `install_stealth_deps.py`: Optional advanced stealth library installer
 
 ### Dependencies
@@ -148,39 +224,54 @@ python debug_stock.py
 - `playwright`: Browser automation and session management
 - `flask`: Web dashboard and analytics API
 
-**Advanced Stealth Dependencies** (optional, installed via `install_stealth_deps.py`):
-- `curl-cffi`: Perfect browser TLS fingerprint impersonation
+**Advanced Stealth Dependencies** (optional, installed via `install_stealth_deps.py` or `setup_advanced_evasion.py`):
+- `curl-cffi`: Perfect browser TLS fingerprint impersonation and JA3/JA4 spoofing
+- `tls-client`: Custom TLS implementation with cipher suite control
+- `undetected-chromedriver`: Advanced Chrome automation with anti-detection
+- `selenium`: Browser automation framework
 - `playwright-stealth`: Enhanced anti-detection capabilities
 - `fake-useragent`: Dynamic user agent generation
 - `httpx[http2]`: HTTP/2 client support
-- `tls-client`: Custom TLS implementation
+- `requests[security]`: Enhanced HTTP client with security features
+- `cryptography`: Advanced cryptographic functions for fingerprinting
 
 ### Development Notes
 
-- **Commercial-Grade Performance**: System designed for high-frequency monitoring with minimal API blocking
-- **Stealth-First Architecture**: Every component includes anti-detection measures
-- **Fault Tolerance**: Automatic failover between proxies, sessions, and browser profiles  
-- **Real-Time Analytics**: Live monitoring of all system components via dashboard
+- **Ultra-Fast Performance**: Sub-3-second checking for 50+ SKUs with zero missed opportunities
+- **Military-Grade Stealth**: Advanced anti-detection with JA3/JA4 spoofing and behavioral adaptation
+- **AI-Powered Adaptation**: Machine learning-like response to detection attempts and rate limiting
+- **Commercial-Grade Reliability**: Fault tolerance with automatic failover and recovery systems
+- **Residential Proxy Integration**: Advanced proxy warming and rotation for maximum stealth
+- **Real-Time Analytics**: Live monitoring with zero-cache policy for maximum accuracy
 - **Hot Configuration**: Changes can be made without service interruption
-- **Comprehensive Logging**: Detailed logs for debugging and performance analysis
-- **Test Mode Safety**: Extensive safeguards prevent accidental purchases during testing
+- **Comprehensive Safety**: Multi-layer production safeguards and validation systems
+- **Enhanced Logging**: Detailed audit trails for debugging and performance analysis
 
 ### Stealth Operational Features
 
-- **Proxy Health Monitoring**: Automatic detection and rotation of blocked/failed proxies
-- **Browser Fingerprint Randomization**: Each session uses unique browser characteristics
-- **Request Pattern Obfuscation**: Human-like timing patterns and request distribution
-- **Session Lifecycle Management**: Automatic session validation and renewal
-- **Rate Limit Adaptation**: Dynamic adjustment based on API responses
-- **Geographic Distribution**: Support for residential and datacenter proxy networks
+- **Ultra-Stealth API Integration**: Military-grade anti-detection with `isBot=false` parameter injection
+- **Advanced TLS Fingerprinting**: Real browser JA3/JA4 signatures from live traffic analysis
+- **Behavioral Session Warming**: Human-like browsing patterns before target requests
+- **Intelligent Proxy Management**: Health monitoring, success tracking, and automatic rotation
+- **Advanced Browser Impersonation**: Perfect Chrome, Firefox, and Safari profile simulation
+- **Request Pattern Intelligence**: Time-of-day aware delays with fatigue simulation
+- **Response Analysis Engine**: Advanced API response interpretation and threat detection
+- **Geographic Proxy Distribution**: Support for residential and datacenter networks
+- **Real-Time Threat Assessment**: Dynamic risk evaluation and countermeasure deployment
+- **Zero-Cache Live Monitoring**: All stock data fetched live for maximum accuracy
+- **Enhanced Error Recovery**: Automatic fallback systems and intelligent retry logic
 
 ### Testing & Validation
 
 The system includes comprehensive testing utilities:
-- `test_proxy_rotation.py`: Validate proxy rotation functionality
-- `test_enhanced_features.py`: Test advanced stealth features
-- `debug_stock.py`: Debug individual stock check operations
+- `test_adaptive_evasion.py`: Test adaptive evasion and ML-like learning systems
+- `test_ultimate_bypass.py`: Test military-grade stealth bypass capabilities
+- `quick_evasion_test.py`: Quick validation of stealth systems
+- `check_api_status.py`: API endpoint health and availability testing
+- `simple_api_check.py`: Simple API functionality validation
 - `TESTFiles/`: Collection of API testing and validation scripts
+- `archive/old_tests/`: Legacy test files and performance benchmarks
+- `archive/network_tests/`: Network traffic analysis and API discovery tools
 
 ### Security & Compliance
 

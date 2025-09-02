@@ -275,7 +275,6 @@ class StockChecker:
                     headers=headers,
                     timeout=15,
                     impersonate=browser_profile,  # Perfect impersonation
-                    http2=True,                   # HTTP/2 like real browsers
                     allow_redirects=True,
                     proxies=proxies_dict          # Proxy rotation
                 )
@@ -452,7 +451,10 @@ class StockChecker:
             }
     
     def parse_availability(self, tcin: str, data: Dict) -> Dict:
-        """Parse Target API response for availability"""
+        """
+        OPTIMIZED API stock detection algorithm
+        Based on deep analysis - eliminates false positives, conservative for false negatives
+        """
         try:
             product = data['data']['product']
             item = product['item']
@@ -466,29 +468,55 @@ class StockChecker:
             is_marketplace = fulfillment.get('is_marketplace', False)
             purchase_limit = fulfillment.get('purchase_limit', 0)
             
-            # Eligibility rules
+            # Eligibility rules analysis
             eligibility = item.get('eligibility_rules', {})
-            ship_to_guest = eligibility.get('ship_to_guest', {}).get('is_active', False)
-            
-            # FIXED STOCK DETECTION LOGIC - based on actual API analysis
-            # Key insight: OUT OF STOCK products have NO eligibility_rules at all
-            # IN STOCK products have eligibility_rules.ship_to_guest.is_active: true
             
             if is_marketplace:
-                # Third-party seller
+                # Third-party seller - simple check
                 available = purchase_limit > 0
                 seller_type = "third-party"
+                confidence = "high"
+                
             else:
-                # Target direct - must have eligibility_rules AND ship_to_guest active  
-                has_eligibility_rules = bool(item.get('eligibility_rules'))
-                available = has_eligibility_rules and ship_to_guest and purchase_limit >= 1
+                # Target direct - REFINED ALGORITHM based on eligibility patterns
+                
+                # Positive availability signals
+                ship_to_guest_active = eligibility.get('ship_to_guest', {}).get('is_active', False)
+                scheduled_delivery_active = eligibility.get('scheduled_delivery', {}).get('is_active', False)
+                
+                # Negative availability signals  
+                inventory_notification_excluded = eligibility.get('inventory_notification_to_guest_excluded', {}).get('is_active', False)
+                
+                # Restriction signals
+                hold_active = eligibility.get('hold', {}).get('is_active', False)
+                
+                # REFINED DECISION LOGIC (eliminates false positives)
+                
+                # Rule 1: Explicit OOS indicator
+                if inventory_notification_excluded:
+                    available = False
+                    confidence = "high"
+                    reason = "inventory_notification_excluded"
+                    
+                # Rule 2: Ship to guest active with purchase limit = likely available
+                elif ship_to_guest_active and purchase_limit >= 1:
+                    # But check for hold restriction (prevents false positive)
+                    if hold_active:
+                        available = False  # Conservative: hold = restricted availability
+                        confidence = "medium"
+                        reason = "hold_restriction_present"
+                    else:
+                        available = True
+                        confidence = "high" 
+                        reason = "ship_to_guest_active"
+                        
+                # Rule 3: Conservative default - no clear positive signals = OOS
+                else:
+                    available = False
+                    confidence = "medium"  # Medium confidence since API may not reflect real-time stock
+                    reason = "no_positive_signals"
+                
                 seller_type = "target"
-            
-            # Special handling for pre-orders
-            if not ship_to_guest and purchase_limit == 1 and price >= 400:
-                # Likely a pre-order bundle
-                available = True
-                seller_type = "target-preorder"
             
             return {
                 'tcin': tcin,
@@ -497,7 +525,8 @@ class StockChecker:
                 'available': available,
                 'seller_type': seller_type,
                 'purchase_limit': purchase_limit,
-                'ship_to_guest': ship_to_guest,
+                'confidence': confidence,
+                'reason': reason if 'reason' in locals() else 'marketplace',
                 'status': 'success'
             }
             
@@ -507,5 +536,6 @@ class StockChecker:
                 'tcin': tcin,
                 'available': False,
                 'status': 'parse_error',
+                'confidence': 'error',
                 'error': str(e)
             }

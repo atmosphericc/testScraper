@@ -595,60 +595,92 @@ def api_record_proxy():
 
 @app.route('/api/live-stock-status')
 def api_live_stock_status():
-    """API endpoint for live stock status check"""
+    """API endpoint for live stock status check - FIXED"""
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
     
     try:
-        from authenticated_stock_checker import AuthenticatedStockChecker
+        # Use the new advanced evasion system instead
+        from ultra_stealth_bypass import UltraStealthBypass
         
         # Get configured products
         config = DashboardData.get_config()
         if not config.get('products'):
             return jsonify({'error': 'No products configured'})
         
-        # Check stock for all enabled products
+        # Check stock for all enabled products using advanced evasion
         async def check_all_products():
-            checker = AuthenticatedStockChecker()
+            bypass = UltraStealthBypass()
             results = {}
             
-            for product in config['products']:
-                if product.get('enabled', True):  # Default to enabled
-                    tcin = product['tcin']
-                    try:
-                        result = await checker.check_authenticated_stock(tcin)
-                        results[tcin] = {
-                            'available': result.get('available', False),
-                            'status': 'IN_STOCK' if result.get('available', False) else 'OUT_OF_STOCK',
-                            'details': result.get('availability_text', 'Unknown'),
-                            'price': result.get('price', 0),
-                            'last_checked': datetime.now().isoformat()
-                        }
-                    except Exception as e:
-                        results[tcin] = {
-                            'available': False,
-                            'status': 'ERROR',
-                            'details': str(e),
-                            'price': 0,
-                            'last_checked': datetime.now().isoformat()
-                        }
+            # Limit to first 3 products to avoid overload
+            products_to_check = [p for p in config['products'] if p.get('enabled', True)][:3]
+            
+            for product in products_to_check:
+                tcin = product['tcin']
+                try:
+                    result = await bypass.check_stock_ultra_stealth(tcin, warm_proxy=False)
+                    results[tcin] = {
+                        'available': result.get('available', False),
+                        'status': 'IN_STOCK' if result.get('available', False) else 'OUT_OF_STOCK',
+                        'details': result.get('reason', result.get('error', 'Unknown')),
+                        'price': result.get('price', 0),
+                        'last_checked': datetime.now().isoformat(),
+                        'confidence': result.get('confidence', 'unknown'),
+                        'method': 'ultra_stealth',
+                        'response_time': result.get('response_time', 0)
+                    }
+                    
+                    # Handle error states
+                    if result.get('status') in ['blocked_or_not_found', 'rate_limited', 'request_exception']:
+                        results[tcin]['status'] = 'ERROR'
+                        
+                except Exception as e:
+                    results[tcin] = {
+                        'available': False,
+                        'status': 'ERROR',
+                        'details': str(e),
+                        'price': 0,
+                        'last_checked': datetime.now().isoformat()
+                    }
+                
+                # Add delay to prevent rapid-fire requests
+                await asyncio.sleep(1)
                         
             return results
         
-        # Run async function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        stock_results = loop.run_until_complete(check_all_products())
-        loop.close()
+        # Run async function with proper error handling
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            stock_results = loop.run_until_complete(check_all_products())
+            loop.close()
+            
+            return jsonify(stock_results)
+        except Exception as async_error:
+            return jsonify({
+                'error': f'Async execution failed: {str(async_error)}',
+                'fallback_message': 'Use python advanced_stock_monitor.py for direct checking'
+            }), 500
         
-        return jsonify(stock_results)
-        
+    except ImportError as import_error:
+        return jsonify({
+            'error': f'Import failed: {str(import_error)}',
+            'suggestion': 'Run python setup_advanced_evasion.py to install dependencies'
+        }), 500
     except Exception as e:
-        return jsonify({'error': f'Failed to check stock: {str(e)}'}), 500
+        return jsonify({
+            'error': f'Failed to check stock: {str(e)}',
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 if __name__ == '__main__':
     print("="*60)
     print("TARGET MONITOR DASHBOARD")
-    print("Access at: http://localhost:5000")
+    print("Legacy Dashboard - Access at: http://localhost:5000")
+    print("Ultra-Fast Dashboard - Access at: http://localhost:5001")
     print("="*60)
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    print("NOTE: Use 'python run.py --dashboard' for the new ultra-fast system")
+    print("This legacy dashboard works with the old monitoring system")
+    print("="*60)
+    app.run(debug=True, host='127.0.0.1', port=5000)

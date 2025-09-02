@@ -123,3 +123,7 @@ Call log:
 Call log:
   - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
 
+2025-08-31 18:38:43,420 - INFO - Starting purchase: 89542109 - $35.00 (max: $15.00)
+2025-08-31 18:38:43,420 - WARNING - Price too high: $35.00 > $15.00
+2025-08-31 18:41:59,914 - INFO - Starting purchase: 89542109 - $35.00 (max: $15.00)
+2025-08-31 18:41:59,915 - WARNING - Price too high: $35.00 > $15.00

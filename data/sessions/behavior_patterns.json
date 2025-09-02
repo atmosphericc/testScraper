@@ -1,0 +1,114 @@
+{
+  "successful_patterns": [
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 6.766403886523014,
+      "session_age": 6.339185953140259,
+      "products_viewed": 1
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 3.6610799212233216,
+      "session_age": 14.612577438354492,
+      "products_viewed": 2
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 4.743447215729666,
+      "session_age": 24.86871862411499,
+      "products_viewed": 3
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 9.391951154568156,
+      "session_age": 37.1691677570343,
+      "products_viewed": 4
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 9.791850697631716,
+      "session_age": 45.34438109397888,
+      "products_viewed": 5
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 2.944372846405231,
+      "session_age": 8.272687673568726,
+      "products_viewed": 1
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 9.463785009415187,
+      "session_age": 18.225415229797363,
+      "products_viewed": 2
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 3.0452678982095094,
+      "session_age": 30.764402627944946,
+      "products_viewed": 3
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 7.218025990794023,
+      "session_age": 41.48207330703735,
+      "products_viewed": 4
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 8.766598259246756,
+      "session_age": 50.92699599266052,
+      "products_viewed": 5
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 41.07505150702649,
+      "session_age": 90.48908281326294,
+      "products_viewed": 1
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 15.932594113538531,
+      "session_age": 143.11552333831787,
+      "products_viewed": 2
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 30.518600557949775,
+      "session_age": 45.66118860244751,
+      "products_viewed": 1
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 30.21111558799798,
+      "session_age": 87.20974326133728,
+      "products_viewed": 2
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 41.10213069073616,
+      "session_age": 109.52964782714844,
+      "products_viewed": 3
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 17.615366202146703,
+      "session_age": 162.11620259284973,
+      "products_viewed": 4
+    },
+    {
+      "user_type": "bulk_checker",
+      "time_spent": 49.87862426382522,
+      "session_age": 190.78521132469177,
+      "products_viewed": 5
+    }
+  ],
+  "failed_patterns": [],
+  "optimal_timings": {},
+  "effective_user_types": [
+    "bulk_checker",
+    "bulk_checker",
+    "bulk_checker",
+    "bulk_checker"
+  ]
+}

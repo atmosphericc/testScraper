@@ -1,0 +1,112 @@
+{
+  "proxies": [
+    {
+      "id": "bright_data_1",
+      "host": "brd-customer-hl_XXXXXXXX-zone-XXXXXXXX.zproxy.lum-superproxy.io",
+      "port": 22225,
+      "username": "brd-customer-hl_XXXXXXXX-zone-XXXXXXXX",
+      "password": "XXXXXXXXXXXXXXXX",
+      "protocol": "http",
+      "provider": "BrightData",
+      "country": "US",
+      "state": "CA",
+      "city": "Los Angeles",
+      "isp": "residential",
+      "speed_tier": "premium",
+      "enabled": true
+    },
+    {
+      "id": "smartproxy_1", 
+      "host": "gate.smartproxy.com",
+      "port": 10000,
+      "username": "spXXXXXXXX",
+      "password": "XXXXXXXXXXXXXXXX",
+      "protocol": "http",
+      "provider": "Smartproxy",
+      "country": "US",
+      "state": "NY", 
+      "city": "New York",
+      "isp": "residential",
+      "speed_tier": "standard",
+      "enabled": true
+    },
+    {
+      "id": "oxylabs_1",
+      "host": "pr.oxylabs.io",
+      "port": 7777,
+      "username": "customer-USERNAME",
+      "password": "PASSWORD",
+      "protocol": "http",
+      "provider": "Oxylabs",
+      "country": "US",
+      "state": "TX",
+      "city": "Dallas", 
+      "isp": "residential",
+      "speed_tier": "enterprise",
+      "enabled": true
+    },
+    {
+      "id": "rayobyte_1",
+      "host": "rotating-residential.rayobyte.com",
+      "port": 8000,
+      "username": "USERNAME",
+      "password": "PASSWORD",
+      "protocol": "http",
+      "provider": "Rayobyte",
+      "country": "US",
+      "state": "FL",
+      "city": "Miami",
+      "isp": "residential", 
+      "speed_tier": "standard",
+      "enabled": true
+    },
+    {
+      "id": "iproyal_1",
+      "host": "geo.iproyal.com",
+      "port": 12321,
+      "username": "USERNAME",
+      "password": "PASSWORD_country-US",
+      "protocol": "http",
+      "provider": "IPRoyal",
+      "country": "US",
+      "state": "WA",
+      "city": "Seattle",
+      "isp": "residential",
+      "speed_tier": "standard", 
+      "enabled": true
+    }
+  ],
+  
+  "settings": {
+    "rotation_strategy": "weighted_random",
+    "warmup_enabled": true,
+    "health_check_interval": 300,
+    "max_consecutive_failures": 3,
+    "min_success_rate": 0.7,
+    "block_duration_base": 600
+  },
+  
+  "notes": {
+    "setup_instructions": [
+      "1. Replace XXXXXXXX placeholders with your actual credentials",
+      "2. Test each proxy individually before batch operations", 
+      "3. Residential proxies work best for avoiding detection",
+      "4. Rotate credentials regularly for security",
+      "5. Monitor usage limits to avoid service interruption"
+    ],
+    
+    "recommended_providers": [
+      "BrightData (premium, enterprise-grade)",
+      "Smartproxy (good balance of price/performance)", 
+      "Oxylabs (high-end enterprise)",
+      "Rayobyte (budget-friendly residential)",
+      "IPRoyal (geographic targeting)"
+    ],
+    
+    "proxy_types_ranking": [
+      "1. Residential (best for anti-detection)",
+      "2. Mobile (good for mobile targeting)",
+      "3. Datacenter (fastest but most detectable)"
+    ]
+  }
+}

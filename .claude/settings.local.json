@@ -2,7 +2,19 @@
   "permissions": {
     "allow": [
       "Bash(python:*)",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(timeout:*)",
+      "Bash(curl:*)",
+      "Bash(FLASK_ENV=development python app.py)",
+      "Bash(tasklist:*)",
+      "Bash(pip install:*)",
+      "Bash(taskkill:*)",
+      "Bash(dir:*)",
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "Bash(del dashboardanalytics.db)",
+      "Bash(del test_api_only.py)",
+      "WebSearch",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

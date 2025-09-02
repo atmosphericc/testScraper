@@ -7,8 +7,8 @@
       "quantity": 1,
       "enabled": true,
       "priority": 1,
-      "check_frequency": 0.5,
-      "notes": "High priority - check every 30 seconds"
+      "check_frequency": 300,
+      "notes": "Check every 5 minutes (REALISTIC TIMING)"
     },
         {
       "tcin": "94681785",
@@ -17,8 +17,8 @@
       "quantity": 1,
       "enabled": true,
       "priority": 2,
-      "check_frequency": 0.3,
-      "notes": "Medium priority - check every 50 seconds"
+      "check_frequency": 300,
+      "notes": "Check every 5 minutes (REALISTIC TIMING)"
     },
         {
       "tcin": "94681770",
@@ -26,7 +26,8 @@
       "max_price": 32.00,
       "quantity": 1,
       "enabled": true,
-      "notes": "Regular item"
+      "check_frequency": 300,
+      "notes": "Check every 5 minutes (REALISTIC TIMING)"
     },
             {
       "tcin": "94336414",
@@ -34,7 +35,8 @@
       "max_price": 25.00,
       "quantity": 1,
       "enabled": true,
-      "notes": "Regular item"
+      "check_frequency": 300,
+      "notes": "Check every 5 minutes (REALISTIC TIMING)"
     }
     ,
             {
@@ -43,35 +45,45 @@
       "max_price": 15.00,
       "quantity": 1,
       "enabled": true,
-      "notes": "Regular item"
+      "check_frequency": 300,
+      "notes": "Check every 5 minutes (REALISTIC TIMING)"
     }
   ],
   "proxies": [
     {
-      "host": "proxy1.example.com",
-      "port": 8080,
-      "username": "your_username",
-      "password": "your_password",
-      "protocol": "http",
-      "enabled": true,
-      "notes": "Example residential proxy - ENABLED FOR TESTING"
+      "host": "us-free-01.protonvpn.net",
+      "port": 1080,
+      "username": "YOUR_OPENVPN_USERNAME_HERE",
+      "password": "YOUR_OPENVPN_PASSWORD_HERE",
+      "protocol": "socks5",
+      "enabled": false,
+      "notes": "ProtonVPN US #1 - UPDATE CREDENTIALS TO ENABLE"
     },
     {
-      "host": "proxy2.example.com", 
-      "port": 8081,
-      "username": "your_username",
-      "password": "your_password",
-      "protocol": "http",
-      "enabled": true,
-      "notes": "Example residential proxy 2 - ENABLED FOR TESTING"
+      "host": "us-free-02.protonvpn.net", 
+      "port": 1080,
+      "username": "YOUR_OPENVPN_USERNAME_HERE",
+      "password": "YOUR_OPENVPN_PASSWORD_HERE",
+      "protocol": "socks5",
+      "enabled": false,
+      "notes": "ProtonVPN US #2 - UPDATE CREDENTIALS TO ENABLE"
+    },
+    {
+      "host": "us-free-03.protonvpn.net",
+      "port": 1080,
+      "username": "YOUR_OPENVPN_USERNAME_HERE", 
+      "password": "YOUR_OPENVPN_PASSWORD_HERE",
+      "protocol": "socks5",
+      "enabled": false,
+      "notes": "ProtonVPN US #3 - UPDATE CREDENTIALS TO ENABLE"
     }
   ],
   "settings": {
     "mode": "test",
     "rate_limit": {
-      "requests_per_second": 0.05,
-      "batch_size": 1,
-      "batch_delay_seconds": 30,
+      "requests_per_second": 0.1,
+      "batch_size": 5,
+      "batch_delay_seconds": 2,
       "smart_timing": true,
       "session_rotation": true,
       "proxy_rotation": true

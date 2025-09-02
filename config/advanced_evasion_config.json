@@ -1,0 +1,22 @@
+{
+  "evasion_settings": {
+    "default_method": "ultra_stealth",
+    "use_proxies": false,
+    "warmup_sessions": true,
+    "adaptive_timing": true,
+    "browser_fingerprint_rotation": true,
+    "anti_bot_params": true
+  },
+  "timing_settings": {
+    "base_delay": 3.0,
+    "delay_variation": 0.5,
+    "burst_detection_prevention": true,
+    "session_fatigue_simulation": true
+  },
+  "monitoring_settings": {
+    "log_level": "INFO",
+    "save_responses": false,
+    "track_success_rates": true,
+    "proxy_health_monitoring": true
+  }
+}

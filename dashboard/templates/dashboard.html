@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Target Monitor Dashboard</title>
+    <title>Target Monitor Dashboard - UPDATED VERSION</title>
     <style>
         :root {
             --primary-bg: #0d1117;
@@ -443,6 +443,16 @@
             animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
         }
         
+        /* Status badge styling */
+        .status-badge.checking {
+            color: var(--warning-color);
+            animation: pulse 1s ease-in-out infinite;
+        }
+        
+        .status-badge.waiting {
+            color: var(--text-secondary);
+        }
+        
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.7; }
@@ -468,7 +478,8 @@
         }
     </style>
     <script>
-        // Auto-refresh every 10 seconds
+        // CACHE BUST: 2025-09-01-00:05 - FORCED REFRESH REQUIRED
+        // Auto-refresh every 60 seconds for production accuracy
         let refreshInterval;
         
         async function fetchAnalytics() {
@@ -504,10 +515,40 @@
         async function fetchLiveStockStatus() {
             try {
                 const response = await fetch('/api/live-stock-status');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
                 const data = await response.json();
                 updateStockStatusDisplay(data);
+                
+                // Update timestamp based on actual data, not current time - FIXED
+                const timestamps = Object.values(data)
+                    .map(item => {
+                        if (item.last_checked) {
+                            const date = new Date(item.last_checked);
+                            return isNaN(date.getTime()) ? new Date() : date;
+                        }
+                        return new Date();
+                    });
+                if (timestamps.length > 0) {
+                    const latestCheck = new Date(Math.max(...timestamps));
+                    const timestampElement = document.getElementById('last-update');
+                    if (timestampElement && !isNaN(latestCheck.getTime())) {
+                        timestampElement.textContent = latestCheck.toLocaleTimeString();
+                    }
+                }
             } catch (error) {
                 console.error('Failed to fetch live stock status:', error);
+                // Show error in the UI instead of perpetual loading
+                const stockContainer = document.getElementById('live-stock-container');
+                if (stockContainer) {
+                    stockContainer.innerHTML = `
+                        <div class="error-message" style="color: #f85149; padding: 20px; text-align: center;">
+                            ❌ Stock check failed: ${error.message}<br>
+                            <small>Check the dashboard logs for details</small>
+                        </div>
+                    `;
+                }
             }
         }
         
@@ -534,13 +575,17 @@
             if (data.recent_stock_alerts && data.recent_stock_alerts.length > 0) {
                 const alertsContainer = document.getElementById('recent-alerts');
                 if (alertsContainer) {
-                    alertsContainer.innerHTML = data.recent_stock_alerts.map(alert => `
-                        <div class="log-entry success">
-                            <strong>${alert.product_name}</strong> (${alert.tcin})
-                            ${alert.price ? `- $${alert.price}` : ''}
-                            <br><small style="opacity: 0.7">${new Date(alert.timestamp).toLocaleString()}</small>
-                        </div>
-                    `).join('');
+                    alertsContainer.innerHTML = data.recent_stock_alerts.map(alert => {
+                        const timestamp = alert.timestamp ? new Date(alert.timestamp) : new Date();
+                        const timeString = isNaN(timestamp.getTime()) ? 'Unknown time' : timestamp.toLocaleString();
+                        return `
+                            <div class="log-entry success">
+                                <strong>${alert.product_name}</strong> (${alert.tcin})
+                                ${alert.price ? `- $${alert.price}` : ''}
+                                <br><small style="opacity: 0.7">${timeString}</small>
+                            </div>
+                        `;
+                    }).join('');
                 }
             }
         }
@@ -581,6 +626,8 @@
         
         function updateStockStatusDisplay(data) {
             // Update stock status badges in the products table
+            let currentInStockCount = 0;
+            
             Object.entries(data).forEach(([tcin, stockInfo]) => {
                 const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
                 stockBadges.forEach(badge => {
@@ -591,6 +638,7 @@
                     if (stockInfo.status === 'IN_STOCK') {
                         badge.classList.add('in-stock');
                         badge.textContent = 'IN STOCK';
+                        currentInStockCount++;
                     } else if (stockInfo.status === 'OUT_OF_STOCK') {
                         badge.classList.add('out-of-stock');
                         badge.textContent = 'OUT OF STOCK';
@@ -604,6 +652,16 @@
                     setTimeout(() => badge.classList.remove('pulse'), 1000);
                 });
             });
+            
+            // Update the "In Stock Now" panel with live count
+            const inStockPanel = document.getElementById('in-stock-count');
+            if (inStockPanel && currentInStockCount !== undefined) {
+                inStockPanel.textContent = currentInStockCount;
+                
+                // Add visual feedback for updates
+                inStockPanel.classList.add('pulse');
+                setTimeout(() => inStockPanel.classList.remove('pulse'), 1000);
+            }
         }
         
         function startRealTimeUpdates() {
@@ -612,12 +670,41 @@
             fetchProxyStats();
             fetchLiveStockStatus();
             
+            let countdownSeconds = 180; // Changed to 3 minutes
             refreshInterval = setInterval(() => {
-                fetchAnalytics();
-                fetchStatus();
-                fetchProxyStats();
-                fetchLiveStockStatus();
-            }, 30000); // Check stock every 30 seconds
+                if (!document.hidden) { // Only check if tab is visible
+                    fetchAnalytics();
+                    fetchStatus();
+                    fetchProxyStats();
+                    fetchLiveStockStatus();
+                }
+                countdownSeconds = 180; // Reset countdown to 3 minutes
+            }, 180000); // Check stock every 3 minutes (was 60 seconds)
+            
+            // Countdown timer
+            setInterval(() => {
+                countdownSeconds--;
+                if (countdownSeconds < 0) countdownSeconds = 0;
+                updateCountdownDisplay(countdownSeconds);
+            }, 1000);
+        }
+        
+        function updateCountdownDisplay(seconds) {
+            const countdownElement = document.getElementById('next-update-countdown');
+            if (countdownElement) {
+                countdownElement.textContent = seconds + 's';
+            }
+            
+            const statusElement = document.getElementById('update-status');
+            if (statusElement) {
+                if (seconds === 0) {
+                    statusElement.textContent = 'Checking now...';
+                    statusElement.className = 'status-badge checking';
+                } else {
+                    statusElement.textContent = `Next check in ${seconds}s`;
+                    statusElement.className = 'status-badge waiting';
+                }
+            }
         }
         
         function stopRealTimeUpdates() {
@@ -646,13 +733,7 @@
                 }
             });
             
-            // Update timestamp
-            const timestampElement = document.getElementById('last-update');
-            if (timestampElement) {
-                setInterval(() => {
-                    timestampElement.textContent = new Date().toLocaleTimeString();
-                }, 1000);
-            }
+            // Timestamp is now updated in fetchLiveStockStatus() based on actual API data
         });
         
         window.addEventListener('beforeunload', stopRealTimeUpdates);
@@ -676,6 +757,14 @@
                     <div class="header-stat-value" style="color: {{ 'var(--success-color)' if status.monitoring else 'var(--danger-color)' }}">
                         {{ 'LIVE' if status.monitoring else 'OFF' }}
                     </div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Next Check</div>
+                    <div class="header-stat-value" id="next-update-countdown">--</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Update Status</div>
+                    <div class="header-stat-value" id="update-status">Initializing...</div>
                 </div>
             </div>
         </div>

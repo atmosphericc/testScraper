@@ -437,3 +437,334 @@ Call log:
 2025-08-29 11:07:41,310 - config_watcher - INFO - ==================================================
 2025-08-29 11:07:47,162 - session_manager - INFO - Session validated successfully
 2025-08-29 11:07:47,234 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 18:24:44,924 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 18:24:44,924 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 18:24:44,958 - monitor - INFO - ============================================================
+2025-08-31 18:24:44,958 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 18:24:44,958 - monitor - INFO - Mode: test
+2025-08-31 18:24:44,958 - monitor - INFO - ============================================================
+2025-08-31 18:24:44,958 - monitor - INFO - Validating session...
+2025-08-31 18:24:44,958 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 18:24:44,959 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:24:44,962 - config_watcher - INFO - ==================================================
+2025-08-31 18:24:44,962 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:24:44,962 - config_watcher - INFO - ==================================================
+2025-08-31 18:24:44,964 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:24:44,964 - config_watcher - INFO - ==================================================
+2025-08-31 18:24:54,434 - session_manager - INFO - Session validated successfully
+2025-08-31 18:24:54,527 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 18:25:51,825 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 18:25:51,826 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 18:25:51,829 - monitor - INFO - ============================================================
+2025-08-31 18:25:51,829 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 18:25:51,830 - monitor - INFO - Mode: test
+2025-08-31 18:25:51,830 - monitor - INFO - ============================================================
+2025-08-31 18:25:51,830 - monitor - INFO - Validating session...
+2025-08-31 18:25:51,830 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 18:25:51,831 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:25:51,835 - config_watcher - INFO - ==================================================
+2025-08-31 18:25:51,835 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:25:51,835 - config_watcher - INFO - ==================================================
+2025-08-31 18:25:51,837 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:25:51,837 - config_watcher - INFO - ==================================================
+2025-08-31 18:25:54,883 - session_manager - ERROR - Session expired - redirected to login
+2025-08-31 18:25:54,966 - monitor - ERROR - Session invalid! Please run: python setup.py login
+2025-08-31 18:27:07,629 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 18:27:07,630 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 18:27:07,632 - monitor - INFO - ============================================================
+2025-08-31 18:27:07,633 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 18:27:07,633 - monitor - INFO - Mode: test
+2025-08-31 18:27:07,633 - monitor - INFO - ============================================================
+2025-08-31 18:27:07,633 - monitor - INFO - Validating session...
+2025-08-31 18:27:07,633 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 18:27:07,634 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:27:07,637 - config_watcher - INFO - ==================================================
+2025-08-31 18:27:07,637 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:27:07,637 - config_watcher - INFO - ==================================================
+2025-08-31 18:27:07,639 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:27:07,639 - config_watcher - INFO - ==================================================
+2025-08-31 18:27:10,722 - session_manager - INFO - Session validated successfully
+2025-08-31 18:27:10,805 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 18:36:10,358 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 18:36:10,360 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 18:36:10,361 - monitor - INFO - ============================================================
+2025-08-31 18:36:10,361 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 18:36:10,361 - monitor - INFO - Mode: test
+2025-08-31 18:36:10,361 - monitor - INFO - ============================================================
+2025-08-31 18:36:10,361 - monitor - INFO - Validating session...
+2025-08-31 18:36:10,361 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 18:36:10,361 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:36:10,362 - config_watcher - INFO - ==================================================
+2025-08-31 18:36:10,362 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:36:10,362 - config_watcher - INFO - ==================================================
+2025-08-31 18:36:10,362 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:36:10,363 - config_watcher - INFO - ==================================================
+2025-08-31 18:36:13,440 - session_manager - INFO - Session validated successfully
+2025-08-31 18:36:13,520 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 18:38:43,419 - monitor - WARNING - IN STOCK: Test Product 5 at $35.00
+2025-08-31 18:38:43,420 - monitor - INFO - Initiating purchase for 89542109
+2025-08-31 18:38:43,420 - purchases - INFO - Starting purchase: 89542109 - $35.00 (max: $15.00)
+2025-08-31 18:38:43,420 - purchases - WARNING - Price too high: $35.00 > $15.00
+2025-08-31 18:38:45,435 - monitor - WARNING - PURCHASE FAILED: 89542109 - price_too_high
+2025-08-31 18:39:29,911 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 18:39:29,912 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 18:39:29,914 - monitor - INFO - ============================================================
+2025-08-31 18:39:29,914 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 18:39:29,914 - monitor - INFO - Mode: test
+2025-08-31 18:39:29,914 - monitor - INFO - ============================================================
+2025-08-31 18:39:29,914 - monitor - INFO - Validating session...
+2025-08-31 18:39:29,915 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 18:39:29,915 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:39:29,916 - config_watcher - INFO - ==================================================
+2025-08-31 18:39:29,916 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:39:29,916 - config_watcher - INFO - ==================================================
+2025-08-31 18:39:29,916 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:39:29,916 - config_watcher - INFO - ==================================================
+2025-08-31 18:39:32,982 - session_manager - INFO - Session validated successfully
+2025-08-31 18:39:33,085 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 18:41:59,914 - monitor - WARNING - IN STOCK: Test Product 5 at $35.00
+2025-08-31 18:41:59,914 - monitor - INFO - Initiating purchase for 89542109
+2025-08-31 18:41:59,914 - purchases - INFO - Starting purchase: 89542109 - $35.00 (max: $15.00)
+2025-08-31 18:41:59,915 - purchases - WARNING - Price too high: $35.00 > $15.00
+2025-08-31 18:42:01,929 - monitor - WARNING - PURCHASE FAILED: 89542109 - price_too_high
+2025-08-31 18:43:08,896 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:43:08,897 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:08,897 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:43:08,897 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:08,898 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:43:08,898 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:12,924 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:43:12,925 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:12,925 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:43:12,925 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:12,925 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:43:12,925 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:16,938 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:43:16,939 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:16,939 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:43:16,939 - config_watcher - INFO - ==================================================
+2025-08-31 18:43:16,940 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:43:16,940 - config_watcher - INFO - ==================================================
+2025-08-31 18:47:40,976 - monitor - INFO - OUT OF STOCK: Test Product 5
+2025-08-31 18:49:08,897 - monitor - INFO - Status - Cycle: 10 | Checks: 44 | In Stock: 0 | Active Purchases: 0
+2025-08-31 18:55:47,211 - monitor - INFO - Status - Cycle: 20 | Checks: 94 | In Stock: 0 | Active Purchases: 0
+2025-08-31 18:57:50,223 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 18:57:50,224 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 18:57:50,226 - monitor - INFO - ============================================================
+2025-08-31 18:57:50,226 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 18:57:50,226 - monitor - INFO - Mode: test
+2025-08-31 18:57:50,226 - monitor - INFO - ============================================================
+2025-08-31 18:57:50,226 - monitor - INFO - Validating session...
+2025-08-31 18:57:50,226 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 18:57:50,226 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 18:57:50,227 - config_watcher - INFO - ==================================================
+2025-08-31 18:57:50,227 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 18:57:50,227 - config_watcher - INFO - ==================================================
+2025-08-31 18:57:50,227 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 18:57:50,227 - config_watcher - INFO - ==================================================
+2025-08-31 18:57:53,288 - session_manager - INFO - Session validated successfully
+2025-08-31 18:57:54,073 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 19:04:26,300 - monitor - INFO - Status - Cycle: 10 | Checks: 50 | In Stock: 0 | Active Purchases: 0
+2025-08-31 19:10:31,843 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 19:10:31,844 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 19:10:31,846 - monitor - INFO - ============================================================
+2025-08-31 19:10:31,846 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 19:10:31,846 - monitor - INFO - Mode: test
+2025-08-31 19:10:31,846 - monitor - INFO - ============================================================
+2025-08-31 19:10:31,846 - monitor - INFO - Validating session...
+2025-08-31 19:10:31,846 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 19:10:31,847 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 19:10:31,850 - config_watcher - INFO - ==================================================
+2025-08-31 19:10:31,850 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 19:10:31,850 - config_watcher - INFO - ==================================================
+2025-08-31 19:10:31,853 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 19:10:31,853 - config_watcher - INFO - ==================================================
+2025-08-31 19:10:34,954 - session_manager - INFO - Session validated successfully
+2025-08-31 19:10:35,042 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 19:11:39,155 - asyncio - ERROR - Task was destroyed but it is pending!
+task: <Task cancelling name='Task-1' coro=<main() done, defined at C:\Users\elric\Desktop\testScraper\run.py:81> wait_for=<_GatheringFuture pending cb=[Task.task_wakeup()]> cb=[gather.<locals>._done_callback() at C:\Users\elric\AppData\Local\Programs\Python\Python312\Lib\asyncio\tasks.py:767]>
+2025-08-31 19:11:39,155 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+2025-08-31 19:11:39,155 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed\nCall log:\n  - waiting for locator("button:has-text(\\"Add to cart\\")") to be visible\n')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("button:has-text(\"Add to cart\")") to be visible
+
+2025-08-31 19:11:39,155 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+2025-08-31 19:11:39,156 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed\nCall log:\n  - waiting for locator("button:has-text(\\"Add to cart\\")") to be visible\n')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("button:has-text(\"Add to cart\")") to be visible
+
+2025-08-31 19:51:12,343 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 19:51:12,343 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 19:51:12,345 - monitor - INFO - ============================================================
+2025-08-31 19:51:12,345 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 19:51:12,345 - monitor - INFO - Mode: test
+2025-08-31 19:51:12,345 - monitor - INFO - ============================================================
+2025-08-31 19:51:12,346 - monitor - INFO - Validating session...
+2025-08-31 19:51:12,346 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 19:51:12,346 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 19:51:12,352 - config_watcher - INFO - ==================================================
+2025-08-31 19:51:12,352 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 19:51:12,352 - config_watcher - INFO - ==================================================
+2025-08-31 19:51:12,355 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 19:51:12,355 - config_watcher - INFO - ==================================================
+2025-08-31 19:51:15,435 - session_manager - INFO - Session validated successfully
+2025-08-31 19:51:15,516 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 19:58:08,256 - monitor - INFO - Status - Cycle: 10 | Checks: 50 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:05:09,031 - monitor - INFO - Status - Cycle: 20 | Checks: 100 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:11:41,733 - monitor - INFO - Status - Cycle: 30 | Checks: 150 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:18:24,438 - monitor - INFO - Status - Cycle: 40 | Checks: 200 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:21:15,532 - monitor - INFO - Validating session...
+2025-08-31 20:21:18,612 - session_manager - INFO - Session validated successfully
+2025-08-31 20:21:18,708 - monitor - INFO - Session still valid
+2025-08-31 20:24:43,855 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-31 20:25:25,425 - monitor - INFO - Status - Cycle: 50 | Checks: 250 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:32:14,138 - monitor - INFO - Status - Cycle: 60 | Checks: 300 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:38:59,050 - monitor - INFO - Status - Cycle: 70 | Checks: 350 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:45:51,505 - monitor - INFO - Status - Cycle: 80 | Checks: 400 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:51:18,709 - monitor - INFO - Validating session...
+2025-08-31 20:51:21,810 - session_manager - INFO - Session validated successfully
+2025-08-31 20:51:21,896 - monitor - INFO - Session still valid
+2025-08-31 20:52:31,971 - monitor - INFO - Status - Cycle: 90 | Checks: 450 | In Stock: 0 | Active Purchases: 0
+2025-08-31 20:58:29,529 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-31 20:59:08,177 - monitor - INFO - Status - Cycle: 100 | Checks: 500 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:06:02,084 - monitor - INFO - Status - Cycle: 110 | Checks: 550 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:12:54,500 - monitor - INFO - Status - Cycle: 120 | Checks: 600 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:19:47,016 - monitor - INFO - Status - Cycle: 130 | Checks: 650 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:21:21,914 - monitor - INFO - Validating session...
+2025-08-31 21:21:25,069 - session_manager - INFO - Session validated successfully
+2025-08-31 21:21:25,169 - monitor - INFO - Session still valid
+2025-08-31 21:26:41,533 - monitor - INFO - Status - Cycle: 140 | Checks: 700 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:32:47,103 - monitor - INFO - Reloaded config - 5 products enabled
+2025-08-31 21:33:30,269 - monitor - INFO - Status - Cycle: 150 | Checks: 750 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:40:21,230 - monitor - INFO - Status - Cycle: 160 | Checks: 800 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:47:15,038 - monitor - INFO - Status - Cycle: 170 | Checks: 850 | In Stock: 0 | Active Purchases: 0
+2025-08-31 21:51:26,494 - monitor - INFO - Validating session...
+2025-08-31 21:51:29,691 - session_manager - INFO - Session validated successfully
+2025-08-31 21:51:29,782 - monitor - INFO - Session still valid
+2025-08-31 21:54:09,622 - monitor - INFO - Status - Cycle: 180 | Checks: 900 | In Stock: 0 | Active Purchases: 0
+2025-08-31 22:03:31,114 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 22:03:31,114 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 22:03:31,117 - monitor - INFO - ============================================================
+2025-08-31 22:03:31,117 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 22:03:31,117 - monitor - INFO - Mode: test
+2025-08-31 22:03:31,117 - monitor - INFO - ============================================================
+2025-08-31 22:03:31,117 - monitor - INFO - Validating session...
+2025-08-31 22:03:31,118 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 22:03:31,118 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 22:03:31,120 - config_watcher - INFO - ==================================================
+2025-08-31 22:03:31,121 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 22:03:31,121 - config_watcher - INFO - ==================================================
+2025-08-31 22:03:31,124 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 22:03:31,124 - config_watcher - INFO - ==================================================
+2025-08-31 22:03:36,952 - session_manager - INFO - Session validated successfully
+2025-08-31 22:03:37,042 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 22:05:01,946 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 22:05:01,946 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 22:05:01,947 - monitor - INFO - ============================================================
+2025-08-31 22:05:01,948 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 22:05:01,948 - monitor - INFO - Mode: test
+2025-08-31 22:05:01,948 - monitor - INFO - ============================================================
+2025-08-31 22:05:01,948 - monitor - INFO - Validating session...
+2025-08-31 22:05:01,948 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 22:05:01,948 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 22:05:01,949 - config_watcher - INFO - ==================================================
+2025-08-31 22:05:01,949 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 22:05:01,949 - config_watcher - INFO - ==================================================
+2025-08-31 22:05:01,950 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 22:05:01,950 - config_watcher - INFO - ==================================================
+2025-08-31 22:05:05,038 - session_manager - INFO - Session validated successfully
+2025-08-31 22:05:05,122 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 22:11:07,360 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 22:11:07,360 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 22:11:07,362 - monitor - INFO - ============================================================
+2025-08-31 22:11:07,362 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 22:11:07,362 - monitor - INFO - Mode: test
+2025-08-31 22:11:07,362 - monitor - INFO - ============================================================
+2025-08-31 22:11:07,362 - monitor - INFO - Validating session...
+2025-08-31 22:11:07,362 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 22:11:07,362 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 22:11:07,367 - config_watcher - INFO - ==================================================
+2025-08-31 22:11:07,368 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 22:11:07,368 - config_watcher - INFO - ==================================================
+2025-08-31 22:11:07,371 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 22:11:07,371 - config_watcher - INFO - ==================================================
+2025-08-31 22:11:10,399 - session_manager - INFO - Session validated successfully
+2025-08-31 22:11:10,493 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 22:13:27,562 - stock_checker - WARNING - Website checking failed for 94724987: Browser.close: Connection closed while reading from the driver, falling back to API
+2025-08-31 22:13:27,581 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=Exception('Connection closed while reading from the driver')>
+Exception: Connection closed while reading from the driver
+2025-08-31 22:13:27,582 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed\nCall log:\n  - navigating to "https://www.target.com/p/-/A-94724987", waiting until "domcontentloaded"\n')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+Call log:
+  - navigating to "https://www.target.com/p/-/A-94724987", waiting until "domcontentloaded"
+
+2025-08-31 22:13:31,238 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 22:13:31,238 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 22:13:31,240 - monitor - INFO - ============================================================
+2025-08-31 22:13:31,240 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 22:13:31,240 - monitor - INFO - Mode: test
+2025-08-31 22:13:31,240 - monitor - INFO - ============================================================
+2025-08-31 22:13:31,240 - monitor - INFO - Validating session...
+2025-08-31 22:13:31,240 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 22:13:31,241 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 22:13:31,243 - config_watcher - INFO - ==================================================
+2025-08-31 22:13:31,243 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 22:13:31,243 - config_watcher - INFO - ==================================================
+2025-08-31 22:13:31,245 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 22:13:31,245 - config_watcher - INFO - ==================================================
+2025-08-31 22:13:34,319 - session_manager - INFO - Session validated successfully
+2025-08-31 22:13:34,404 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 22:15:41,809 - monitor - INFO - No proxies enabled - using direct connection
+2025-08-31 22:15:41,809 - monitor - INFO - Created 5 unique browser profiles
+2025-08-31 22:15:41,810 - monitor - INFO - ============================================================
+2025-08-31 22:15:41,810 - monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-08-31 22:15:41,810 - monitor - INFO - Mode: test
+2025-08-31 22:15:41,812 - monitor - INFO - ============================================================
+2025-08-31 22:15:41,812 - monitor - INFO - Validating session...
+2025-08-31 22:15:41,812 - config_watcher - INFO - Started watching config file: config\product_config.json
+2025-08-31 22:15:41,812 - config_watcher - INFO - Config file changed - reloading...
+2025-08-31 22:15:41,814 - config_watcher - INFO - ==================================================
+2025-08-31 22:15:41,814 - config_watcher - INFO - CONFIG RELOADED
+2025-08-31 22:15:41,814 - config_watcher - INFO - ==================================================
+2025-08-31 22:15:41,818 - config_watcher - INFO - Config reload complete - changes applied!
+2025-08-31 22:15:41,818 - config_watcher - INFO - ==================================================
+2025-08-31 22:15:44,855 - session_manager - INFO - Session validated successfully
+2025-08-31 22:15:44,937 - monitor - INFO - Session valid - starting monitoring
+2025-08-31 22:18:52,861 - stock_checker - WARNING - Website checking failed for 94336414: Browser.close: Connection closed while reading from the driver, falling back to API
+2025-08-31 22:18:52,861 - stock_checker - WARNING - Website checking failed for 94681785: Browser.close: Connection closed while reading from the driver, falling back to API
+2025-08-31 22:18:52,861 - stock_checker - WARNING - Website checking failed for 89542109: Browser.close: Connection closed while reading from the driver, falling back to API
+2025-08-31 22:18:52,861 - stock_checker - WARNING - Website checking failed for 94681770: Browser.close: Connection closed while reading from the driver, falling back to API
+2025-08-31 22:18:52,901 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=Exception('Connection closed while reading from the driver')>
+Exception: Connection closed while reading from the driver
+2025-08-31 22:18:52,904 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TimeoutError('Timeout 10000ms exceeded.\nCall log:\n  - waiting for locator("button:has-text(\\"Add to cart\\")") to be visible\n')>
+playwright._impl._errors.TimeoutError: Timeout 10000ms exceeded.
+Call log:
+  - waiting for locator("button:has-text(\"Add to cart\")") to be visible
+
+2025-08-31 22:18:52,904 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed\nCall log:\n  - waiting for locator("button:has-text(\\"Add to cart\\")") to be visible\n')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("button:has-text(\"Add to cart\")") to be visible
+
+2025-08-31 22:18:52,905 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+2025-08-31 22:18:52,905 - asyncio - ERROR - Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed\nCall log:\n  - waiting for locator("button:has-text(\\"Add to cart\\")") to be visible\n')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("button:has-text(\"Add to cart\")") to be visible
+
