@@ -13,10 +13,17 @@ import ssl
 import html
 
 # Import advanced evasion systems
-from .behavioral_session_manager import session_manager
-from .adaptive_rate_limiter import adaptive_limiter
-from .response_analyzer import response_analyzer
-from .request_pattern_obfuscator import request_obfuscator
+try:
+    from .behavioral_session_manager import session_manager
+    from .adaptive_rate_limiter import adaptive_limiter
+    from .response_analyzer import response_analyzer
+    from .request_pattern_obfuscator import request_obfuscator
+except ImportError:
+    # Fallback for direct execution
+    from behavioral_session_manager import session_manager
+    from adaptive_rate_limiter import adaptive_limiter
+    from response_analyzer import response_analyzer
+    from request_pattern_obfuscator import request_obfuscator
 
 class AuthenticatedStockChecker:
     """Fast API-only stock checker using fulfillment endpoint for maximum speed"""
@@ -313,7 +320,7 @@ class AuthenticatedStockChecker:
             session_kwargs = {
                 'cookies': enhanced_cookies,
                 'connector': connector,
-                'timeout': aiohttp.ClientTimeout(total=15, connect=5),  # Realistic timeouts
+                'timeout': aiohttp.ClientTimeout(total=30, connect=10),  # Increased timeouts to prevent hanging
                 'skip_auto_headers': ['User-Agent'],  # We set our own
                 'trust_env': True,  # Use system proxy settings if available
             }
@@ -369,8 +376,8 @@ class AuthenticatedStockChecker:
                 
                 # Randomize API call order to avoid patterns
                 tasks = [
-                    ('fulfillment', session.get(self.fulfillment_url, params=fulfillment_params, headers=headers, timeout=aiohttp.ClientTimeout(total=10))),
-                    ('product', session.get(self.product_url, params=product_params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)))
+                    ('fulfillment', session.get(self.fulfillment_url, params=fulfillment_params, headers=headers, timeout=aiohttp.ClientTimeout(total=20))),
+                    ('product', session.get(self.product_url, params=product_params, headers=headers, timeout=aiohttp.ClientTimeout(total=20)))
                 ]
                 
                 # Sometimes add a small delay between calls to seem more human

@@ -61,15 +61,20 @@ async def run_ultra_fast_system(test_mode: bool, use_dashboard: bool):
         # Start dashboard if requested
         if use_dashboard:
             import threading
-            from dashboard.ultra_fast_dashboard import UltraFastDashboard
+            # Use simple stealth dashboard for now
+            import subprocess
             
-            dashboard = UltraFastDashboard(port=5001)
-            dashboard_thread = threading.Thread(target=lambda: dashboard.run(debug=False), daemon=True)
-            dashboard_thread.start()
-            print("Enhanced Dashboard available at: http://localhost:5001")
+            dashboard_cmd = [sys.executable, 'dashboard/app.py']
+            dashboard_process = subprocess.Popen(dashboard_cmd, cwd=os.getcwd())
+            print("Ultra-Fast System with Real Data Integration")
+            print("Enhanced Dashboard available at: http://localhost:5000")
         
-        # Initialize enhanced checker
+        # Initialize enhanced checker and shared data
         checker = AuthenticatedStockChecker()
+        
+        # Import shared data for dashboard integration
+        from src.shared_stock_data import shared_stock_data
+        shared_stock_data.set_monitoring_active(True)
         
         # Monitoring loop with enhanced adaptive evasion
         print("\n[ENHANCED] Ultra-Fast Monitor Starting...")
@@ -83,9 +88,13 @@ async def run_ultra_fast_system(test_mode: bool, use_dashboard: bool):
                 # Use enhanced adaptive checking
                 results = await checker.check_multiple_products(tcins)
                 
+                # Update shared data for dashboard
+                check_time = time.time() - start_time
+                results_dict = {r['tcin']: r for r in results}
+                shared_stock_data.update_stock_data(results_dict, check_time)
+                
                 # Display results
                 in_stock_count = sum(1 for r in results if r.get('available', False))
-                check_time = time.time() - start_time
                 
                 print(f"\n[{time.strftime('%H:%M:%S')}] Check complete: {in_stock_count}/{len(results)} in stock ({check_time:.1f}s)")
                 

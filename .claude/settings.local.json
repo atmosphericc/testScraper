@@ -15,7 +15,11 @@
       "Bash(del test_api_only.py)",
       "WebSearch",
       "Bash(git add:*)",
-      "Bash(ping:*)"
+      "Bash(ping:*)",
+      "Bash(lsof:*)",
+      "Bash(kill:*)",
+      "Bash(playwright install)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

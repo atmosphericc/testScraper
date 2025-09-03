@@ -12,7 +12,10 @@ from pathlib import Path
 import logging
 from dataclasses import dataclass
 
-from .authenticated_stock_checker import AuthenticatedStockChecker
+try:
+    from .authenticated_stock_checker import AuthenticatedStockChecker
+except ImportError:
+    from authenticated_stock_checker import AuthenticatedStockChecker
 
 @dataclass
 class StockResult:

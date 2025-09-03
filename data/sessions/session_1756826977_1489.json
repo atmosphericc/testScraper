@@ -1,0 +1,32 @@
+{
+  "session_id": "session_1756826977_1489",
+  "user_type": "UserBehaviorType.BULK_CHECKER",
+  "created_at": 1756826977.4780748,
+  "last_activity": 1756827077.703559,
+  "total_requests": 5,
+  "successful_requests": 5,
+  "failed_requests": 0,
+  "current_interest": "collectibles",
+  "browsing_history": [
+    "94724987",
+    "94681785",
+    "94681770",
+    "94336414",
+    "89542109"
+  ],
+  "search_terms": [],
+  "time_spent_per_product": {
+    "94724987": 57.63309066579932,
+    "94681785": 52.859247401040804,
+    "94681770": 25.864872946450035,
+    "94336414": 33.47233805624019,
+    "89542109": 19.203667514616747
+  },
+  "behavioral_flags": {
+    "has_searched": false,
+    "compared_products": true,
+    "viewed_details": true,
+    "added_to_cart": false
+  },
+  "session_duration_limit": 634.8439872870881
+}

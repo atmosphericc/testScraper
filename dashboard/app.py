@@ -595,83 +595,94 @@ def api_record_proxy():
 
 @app.route('/api/live-stock-status')
 def api_live_stock_status():
-    """API endpoint for live stock status check - FIXED"""
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
-    
+    """API endpoint for live stock status check - SIMPLE WORKING VERSION"""
     try:
-        # Use the new advanced evasion system instead
-        from ultra_stealth_bypass import UltraStealthBypass
+        # Simple working stock check using requests
+        import requests
+        import random
         
         # Get configured products
         config = DashboardData.get_config()
         if not config.get('products'):
             return jsonify({'error': 'No products configured'})
         
-        # Check stock for all enabled products using advanced evasion
-        async def check_all_products():
-            bypass = UltraStealthBypass()
-            results = {}
-            
-            # Limit to first 3 products to avoid overload
-            products_to_check = [p for p in config['products'] if p.get('enabled', True)][:3]
-            
-            for product in products_to_check:
-                tcin = product['tcin']
-                try:
-                    result = await bypass.check_stock_ultra_stealth(tcin, warm_proxy=False)
-                    results[tcin] = {
-                        'available': result.get('available', False),
-                        'status': 'IN_STOCK' if result.get('available', False) else 'OUT_OF_STOCK',
-                        'details': result.get('reason', result.get('error', 'Unknown')),
-                        'price': result.get('price', 0),
-                        'last_checked': datetime.now().isoformat(),
-                        'confidence': result.get('confidence', 'unknown'),
-                        'method': 'ultra_stealth',
-                        'response_time': result.get('response_time', 0)
-                    }
+        results = {}
+        api_key = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
+        base_url = "https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1"
+        
+        # Check first 3 products only
+        products_to_check = [p for p in config['products'] if p.get('enabled', True)][:3]
+        
+        for product in products_to_check:
+            tcin = product['tcin']
+            try:
+                params = {
+                    'key': api_key,
+                    'tcin': tcin,
+                    'store_id': '865',
+                    'pricing_store_id': '865',
+                    'has_pricing_store_id': 'true',
+                    'visitor_id': ''.join(random.choices('0123456789ABCDEF', k=32))
+                }
+                
+                headers = {
+                    'accept': 'application/json',
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'origin': 'https://www.target.com'
+                }
+                
+                response = requests.get(base_url, params=params, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    product_data = data.get('data', {}).get('product', {})
                     
-                    # Handle error states
-                    if result.get('status') in ['blocked_or_not_found', 'rate_limited', 'request_exception']:
-                        results[tcin]['status'] = 'ERROR'
-                        
-                except Exception as e:
+                    # Get product name
+                    item_data = product_data.get('item', {})
+                    name = item_data.get('product_description', {}).get('title', product.get('name', f'Product {tcin}'))
+                    
+                    # Check availability 
+                    fulfillment = product_data.get('fulfillment', {})
+                    sold_out = fulfillment.get('sold_out', True)
+                    shipping = fulfillment.get('shipping_options', {})
+                    available_qty = shipping.get('available_to_promise_quantity', 0)
+                    
+                    available = not sold_out and available_qty > 0
+                    
                     results[tcin] = {
-                        'available': False,
-                        'status': 'ERROR',
-                        'details': str(e),
-                        'price': 0,
+                        'available': available,
+                        'status': 'IN_STOCK' if available else 'OUT_OF_STOCK',
+                        'details': f'Available: {available_qty}' if available else 'Out of stock',
+                        'name': name,
+                        'tcin': tcin,
                         'last_checked': datetime.now().isoformat()
                     }
-                
-                # Add delay to prevent rapid-fire requests
-                await asyncio.sleep(1)
+                else:
+                    results[tcin] = {
+                        'available': False,
+                        'status': 'ERROR', 
+                        'details': f'HTTP {response.status_code}',
+                        'name': product.get('name', f'Product {tcin}'),
+                        'tcin': tcin,
+                        'last_checked': datetime.now().isoformat()
+                    }
                         
-            return results
+            except Exception as e:
+                results[tcin] = {
+                    'available': False,
+                    'status': 'ERROR',
+                    'details': str(e),
+                    'name': product.get('name', f'Product {tcin}'),
+                    'tcin': tcin,
+                    'last_checked': datetime.now().isoformat()
+                }
         
-        # Run async function with proper error handling
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            stock_results = loop.run_until_complete(check_all_products())
-            loop.close()
-            
-            return jsonify(stock_results)
-        except Exception as async_error:
-            return jsonify({
-                'error': f'Async execution failed: {str(async_error)}',
-                'fallback_message': 'Use python advanced_stock_monitor.py for direct checking'
-            }), 500
+        return jsonify(results)
         
-    except ImportError as import_error:
-        return jsonify({
-            'error': f'Import failed: {str(import_error)}',
-            'suggestion': 'Run python setup_advanced_evasion.py to install dependencies'
-        }), 500
     except Exception as e:
         return jsonify({
-            'error': f'Failed to check stock: {str(e)}',
-            'timestamp': datetime.now().isoformat()
+            'error': f'Stock check failed: {str(e)}',
+            'fallback_message': 'Stock checking temporarily unavailable'
         }), 500
 
 if __name__ == '__main__':

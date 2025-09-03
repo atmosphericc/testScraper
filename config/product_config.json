@@ -2,51 +2,50 @@
   "products": [
     {
       "tcin": "94724987",
-      "name": "Test Product 1",
+      "name": "Pokémon Trading Card Game: Blooming Waters Premium Collection",
       "max_price": 70.00,
       "quantity": 1,
       "enabled": true,
       "priority": 1,
       "check_frequency": 300,
-      "notes": "Check every 5 minutes (REALISTIC TIMING)"
+      "notes": "Premium Collection - High value Pokemon cards"
     },
-        {
+    {
       "tcin": "94681785",
-      "name": "Test Product 2",
+      "name": "Pokémon Trading Card Game: Scarlet & Violet—White Flare Booster Bundle",
       "max_price": 32.00,
       "quantity": 1,
       "enabled": true,
       "priority": 2,
       "check_frequency": 300,
-      "notes": "Check every 5 minutes (REALISTIC TIMING)"
+      "notes": "Booster Bundle - Scarlet & Violet series"
     },
-        {
+    {
       "tcin": "94681770",
-      "name": "Test Product 3",
+      "name": "Pokémon Trading Card Game: Scarlet & Violet—Black Bolt Booster Bundle",
       "max_price": 32.00,
       "quantity": 1,
       "enabled": true,
       "check_frequency": 300,
-      "notes": "Check every 5 minutes (REALISTIC TIMING)"
+      "notes": "Booster Bundle - Scarlet & Violet series"
     },
-            {
+    {
       "tcin": "94336414",
-      "name": "Test Product 4",
+      "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Surprise Box",
       "max_price": 25.00,
       "quantity": 1,
       "enabled": true,
       "check_frequency": 300,
-      "notes": "Check every 5 minutes (REALISTIC TIMING)"
-    }
-    ,
-            {
+      "notes": "Surprise Box - Prismatic Evolutions set"
+    },
+    {
       "tcin": "89542109",
-      "name": "Test Product 5",
+      "name": "Pokémon Trading Card Game: Quaquaval ex Deluxe Battle Deck",
       "max_price": 15.00,
       "quantity": 1,
       "enabled": true,
       "check_frequency": 300,
-      "notes": "Check every 5 minutes (REALISTIC TIMING)"
+      "notes": "Battle Deck - Quaquaval ex featured deck"
     }
   ],
   "proxies": [

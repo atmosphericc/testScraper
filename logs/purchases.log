@@ -127,3 +127,8 @@ Call log:
 2025-08-31 18:38:43,420 - WARNING - Price too high: $35.00 > $15.00
 2025-08-31 18:41:59,914 - INFO - Starting purchase: 89542109 - $35.00 (max: $15.00)
 2025-08-31 18:41:59,915 - WARNING - Price too high: $35.00 > $15.00
+2025-09-02 11:15:23,721 - INFO - Starting purchase: 89542109 - $14.99 (max: $15.00)
+2025-09-02 11:15:37,535 - ERROR - Could not add to cart: Page.wait_for_selector: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
+

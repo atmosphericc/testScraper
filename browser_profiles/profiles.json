@@ -3,16 +3,16 @@
     {
       "profile_id": "profile_000",
       "resolution": [
-        1600,
-        900
+        1366,
+        768
       ],
-      "os": "Windows",
-      "os_version": "10.0",
-      "chrome_version": 129,
+      "os": "macOS",
+      "os_version": "12.6.0",
+      "chrome_version": 130,
       "firefox_version": 129,
       "timezone": "America/Los_Angeles",
-      "language": "en-US,en;q=0.9,fr;q=0.8",
-      "device_memory": 4,
+      "language": "en-US,en;q=0.7,de;q=0.5",
+      "device_memory": 32,
       "hardware_concurrency": 16,
       "usage_count": 0,
       "last_used": 0
@@ -20,32 +20,32 @@
     {
       "profile_id": "profile_001",
       "resolution": [
-        1366,
-        768
+        2560,
+        1440
       ],
       "os": "macOS",
-      "os_version": "12.6.0",
-      "chrome_version": 130,
-      "firefox_version": 130,
-      "timezone": "America/Denver",
-      "language": "en-US,en;q=0.9",
-      "device_memory": 8,
-      "hardware_concurrency": 6,
+      "os_version": "10.15.7",
+      "chrome_version": 129,
+      "firefox_version": 131,
+      "timezone": "America/Chicago",
+      "language": "en-US,en;q=0.9,fr;q=0.8",
+      "device_memory": 32,
+      "hardware_concurrency": 8,
       "usage_count": 0,
       "last_used": 0
     },
     {
       "profile_id": "profile_002",
       "resolution": [
-        1920,
-        1200
+        2560,
+        1440
       ],
       "os": "macOS",
       "os_version": "12.6.0",
-      "chrome_version": 130,
-      "firefox_version": 128,
-      "timezone": "America/Detroit",
-      "language": "en-US,en;q=0.9,fr;q=0.8",
+      "chrome_version": 128,
+      "firefox_version": 129,
+      "timezone": "America/Chicago",
+      "language": "en-US,en;q=0.8,es;q=0.6",
       "device_memory": 16,
       "hardware_concurrency": 6,
       "usage_count": 0,
@@ -54,37 +54,37 @@
     {
       "profile_id": "profile_003",
       "resolution": [
-        1366,
-        768
+        1536,
+        864
       ],
-      "os": "Windows",
-      "os_version": "11.0",
-      "chrome_version": 130,
-      "firefox_version": 130,
-      "timezone": "America/Denver",
-      "language": "en-US,en;q=0.8,es;q=0.6",
-      "device_memory": 4,
-      "hardware_concurrency": 8,
+      "os": "macOS",
+      "os_version": "10.15.7",
+      "chrome_version": 131,
+      "firefox_version": 131,
+      "timezone": "America/Phoenix",
+      "language": "en-US,en;q=0.9",
+      "device_memory": 8,
+      "hardware_concurrency": 4,
       "usage_count": 0,
       "last_used": 0
     },
     {
       "profile_id": "profile_004",
       "resolution": [
-        1600,
-        900
+        1366,
+        768
       ],
       "os": "macOS",
       "os_version": "12.6.0",
-      "chrome_version": 130,
-      "firefox_version": 130,
-      "timezone": "America/Chicago",
-      "language": "en-US,en;q=0.9,fr;q=0.8",
-      "device_memory": 4,
+      "chrome_version": 131,
+      "firefox_version": 129,
+      "timezone": "America/Denver",
+      "language": "en-US,en;q=0.8,es;q=0.6",
+      "device_memory": 32,
       "hardware_concurrency": 12,
       "usage_count": 0,
       "last_used": 0
     }
   ],
-  "created_time": 1756696541.8095076
+  "created_time": 1756830026.9534678
 }

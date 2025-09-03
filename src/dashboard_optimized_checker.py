@@ -4,7 +4,10 @@ Dashboard-optimized stock checker with faster initial response
 Balances speed for UI responsiveness with evasion capabilities
 """
 
-from .authenticated_stock_checker import AuthenticatedStockChecker
+try:
+    from .authenticated_stock_checker import AuthenticatedStockChecker
+except ImportError:
+    from authenticated_stock_checker import AuthenticatedStockChecker
 import asyncio
 import logging
 from pathlib import Path
@@ -22,7 +25,10 @@ class DashboardOptimizedChecker(AuthenticatedStockChecker):
         results = []
         
         # Start behavioral session
-        from .behavioral_session_manager import session_manager
+        try:
+            from .behavioral_session_manager import session_manager
+        except ImportError:
+            from behavioral_session_manager import session_manager
         session_manager.start_new_session()
         
         self.logger.info(f"Dashboard mode: Checking {len(tcins)} products with {max_delay_override}s max delay")
@@ -50,9 +56,14 @@ class DashboardOptimizedChecker(AuthenticatedStockChecker):
         """Stock check with dashboard-friendly delay limits"""
         
         # Import required modules
-        from .behavioral_session_manager import session_manager
-        from .adaptive_rate_limiter import adaptive_limiter
-        from .response_analyzer import response_analyzer
+        try:
+            from .behavioral_session_manager import session_manager
+            from .adaptive_rate_limiter import adaptive_limiter
+            from .response_analyzer import response_analyzer
+        except ImportError:
+            from behavioral_session_manager import session_manager
+            from adaptive_rate_limiter import adaptive_limiter
+            from response_analyzer import response_analyzer
         
         # Get session context
         if not session_manager.current_session:

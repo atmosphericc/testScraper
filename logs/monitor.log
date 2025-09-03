@@ -768,3 +768,85 @@ playwright._impl._errors.TargetClosedError: Target page, context or browser has 
 Call log:
   - waiting for locator("button:has-text(\"Add to cart\")") to be visible
 
+2025-09-02 11:14:31,744 - src.monitor - INFO - No proxies enabled - using direct connection
+2025-09-02 11:14:31,745 - src.monitor - INFO - Created 5 unique browser profiles
+2025-09-02 11:14:31,745 - config_watcher - INFO - 🔥 Hot reload enabled - edit config while running!
+2025-09-02 11:14:31,745 - src.monitor - INFO - ============================================================
+2025-09-02 11:14:31,745 - src.monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-09-02 11:14:31,745 - src.monitor - INFO - Mode: test
+2025-09-02 11:14:31,745 - src.monitor - INFO - ============================================================
+2025-09-02 11:14:31,745 - src.monitor - INFO - Validating session...
+2025-09-02 11:14:31,746 - config_watcher - INFO - Started watching config file: config/product_config.json
+2025-09-02 11:14:31,746 - config_watcher - INFO - Config file changed - reloading...
+2025-09-02 11:14:31,746 - config_watcher - INFO - 🔄 Updated to 0 proxies
+2025-09-02 11:14:31,747 - config_watcher - INFO - ✅ Hot reload complete - monitor updated!
+2025-09-02 11:14:31,747 - config_watcher - INFO - ==================================================
+2025-09-02 11:14:31,747 - config_watcher - INFO - CONFIG RELOADED
+2025-09-02 11:14:31,747 - config_watcher - INFO - ==================================================
+2025-09-02 11:14:31,747 - config_watcher - INFO - ✅ Enabled products: 5
+2025-09-02 11:14:31,747 - config_watcher - INFO - 🔄 Enabled proxies: 0
+2025-09-02 11:14:31,747 - config_watcher - INFO - Config reload complete - changes applied!
+2025-09-02 11:14:31,747 - config_watcher - INFO - ==================================================
+2025-09-02 11:14:37,490 - session_manager - INFO - Session validated successfully
+2025-09-02 11:14:37,561 - src.monitor - INFO - Session valid - starting monitoring
+2025-09-02 11:14:38,064 - behavioral_session_manager - INFO - Started new session: session_1756829678_9761 (bulk_checker)
+2025-09-02 11:15:17,817 - authenticated_stock_checker - INFO - API Check 94681770: OUT OF STOCK - Unavailable - Status: OUT_OF_STOCK
+2025-09-02 11:15:23,623 - authenticated_stock_checker - INFO - API Check 94724987: OUT OF STOCK - Unavailable - Status: OUT_OF_STOCK
+2025-09-02 11:15:23,708 - authenticated_stock_checker - INFO - API Check 89542109: IN STOCK - In stock - Shipping: 10.0 available, Target Circle eligible
+2025-09-02 11:15:23,720 - src.monitor - WARNING - IN STOCK: Test Product 5 at $14.99
+2025-09-02 11:15:23,721 - src.monitor - INFO - Initiating purchase for 89542109
+2025-09-02 11:15:23,721 - purchases - INFO - Starting purchase: 89542109 - $14.99 (max: $15.00)
+2025-09-02 11:15:24,803 - buy_bot - INFO - Navigating to https://www.target.com/p/-/A-89542109
+2025-09-02 11:15:26,421 - authenticated_stock_checker - INFO - API Check 94681785: OUT OF STOCK - Unavailable - Status: OUT_OF_STOCK
+2025-09-02 11:15:32,530 - buy_bot - INFO - Shipping option not found or already selected
+2025-09-02 11:15:34,854 - authenticated_stock_checker - INFO - API Check 94336414: OUT OF STOCK - Unavailable - Status: DISCONTINUED
+2025-09-02 11:15:37,535 - purchases - ERROR - Could not add to cart: Page.wait_for_selector: Timeout 5000ms exceeded.
+Call log:
+  - waiting for locator("button[id^=\"addToCartButtonOrTextIdFor\"]") to be visible
+
+2025-09-02 11:15:40,833 - src.monitor - WARNING - PURCHASE FAILED: 89542109 - add_to_cart_failed
+2025-09-02 11:15:42,325 - authenticated_stock_checker - INFO - API Check 94724987: OUT OF STOCK - Unavailable - Status: OUT_OF_STOCK
+2025-09-02 11:16:14,927 - authenticated_stock_checker - INFO - API Check 94681785: OUT OF STOCK - Unavailable - Status: OUT_OF_STOCK
+2025-09-02 11:16:32,116 - authenticated_stock_checker - INFO - API Check 94681770: OUT OF STOCK - Unavailable - Status: OUT_OF_STOCK
+2025-09-02 11:19:16,796 - src.monitor - INFO - No proxies enabled - using direct connection
+2025-09-02 11:19:16,797 - src.monitor - INFO - Created 5 unique browser profiles
+2025-09-02 11:19:16,798 - config_watcher - INFO - 🔥 Hot reload enabled - edit config while running!
+2025-09-02 11:19:16,798 - src.monitor - INFO - ============================================================
+2025-09-02 11:19:16,799 - src.monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-09-02 11:19:16,799 - src.monitor - INFO - Mode: test
+2025-09-02 11:19:16,799 - src.monitor - INFO - ============================================================
+2025-09-02 11:19:16,799 - src.monitor - INFO - Validating session...
+2025-09-02 11:19:16,800 - config_watcher - INFO - Started watching config file: config/product_config.json
+2025-09-02 11:19:16,800 - config_watcher - INFO - Config file changed - reloading...
+2025-09-02 11:19:16,800 - config_watcher - INFO - 🔄 Updated to 0 proxies
+2025-09-02 11:19:16,801 - config_watcher - INFO - ✅ Hot reload complete - monitor updated!
+2025-09-02 11:19:16,801 - config_watcher - INFO - ==================================================
+2025-09-02 11:19:16,801 - config_watcher - INFO - CONFIG RELOADED
+2025-09-02 11:19:16,801 - config_watcher - INFO - ==================================================
+2025-09-02 11:19:16,801 - config_watcher - INFO - ✅ Enabled products: 5
+2025-09-02 11:19:16,801 - config_watcher - INFO - 🔄 Enabled proxies: 0
+2025-09-02 11:19:16,802 - config_watcher - INFO - Config reload complete - changes applied!
+2025-09-02 11:19:16,802 - config_watcher - INFO - ==================================================
+2025-09-02 11:19:24,873 - session_manager - ERROR - Session invalid - could not find account element
+2025-09-02 11:19:24,928 - src.monitor - ERROR - Session invalid! Please run: python setup.py login
+2025-09-02 11:20:26,952 - src.monitor - INFO - No proxies enabled - using direct connection
+2025-09-02 11:20:26,954 - src.monitor - INFO - Created 5 unique browser profiles
+2025-09-02 11:20:26,956 - config_watcher - INFO - 🔥 Hot reload enabled - edit config while running!
+2025-09-02 11:20:26,956 - src.monitor - INFO - ============================================================
+2025-09-02 11:20:26,956 - src.monitor - INFO - TARGET MONITOR STARTED - 5 products
+2025-09-02 11:20:26,956 - src.monitor - INFO - Mode: test
+2025-09-02 11:20:26,956 - src.monitor - INFO - ============================================================
+2025-09-02 11:20:26,956 - src.monitor - INFO - Validating session...
+2025-09-02 11:20:26,957 - config_watcher - INFO - Started watching config file: config/product_config.json
+2025-09-02 11:20:26,957 - config_watcher - INFO - Config file changed - reloading...
+2025-09-02 11:20:26,957 - config_watcher - INFO - 🔄 Updated to 0 proxies
+2025-09-02 11:20:26,957 - config_watcher - INFO - ✅ Hot reload complete - monitor updated!
+2025-09-02 11:20:26,957 - config_watcher - INFO - ==================================================
+2025-09-02 11:20:26,957 - config_watcher - INFO - CONFIG RELOADED
+2025-09-02 11:20:26,957 - config_watcher - INFO - ==================================================
+2025-09-02 11:20:26,957 - config_watcher - INFO - ✅ Enabled products: 5
+2025-09-02 11:20:26,957 - config_watcher - INFO - 🔄 Enabled proxies: 0
+2025-09-02 11:20:26,957 - config_watcher - INFO - Config reload complete - changes applied!
+2025-09-02 11:20:26,958 - config_watcher - INFO - ==================================================
+2025-09-02 11:20:34,736 - session_manager - ERROR - Session invalid - could not find account element
+2025-09-02 11:20:34,818 - src.monitor - ERROR - Session invalid! Please run: python setup.py login

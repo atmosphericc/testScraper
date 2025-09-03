@@ -1,0 +1,32 @@
+{
+  "session_id": "session_1756827607_9782",
+  "user_type": "UserBehaviorType.BULK_CHECKER",
+  "created_at": 1756827607.2684438,
+  "last_activity": 1756827733.0471501,
+  "total_requests": 5,
+  "successful_requests": 5,
+  "failed_requests": 0,
+  "current_interest": "toys",
+  "browsing_history": [
+    "94724987",
+    "94681785",
+    "94681770",
+    "94336414",
+    "89542109"
+  ],
+  "search_terms": [],
+  "time_spent_per_product": {
+    "94724987": 47.81376512540691,
+    "94681785": 28.465701943139557,
+    "94681770": 41.72182525215089,
+    "94336414": 28.217829048658352,
+    "89542109": 24.95713469624255
+  },
+  "behavioral_flags": {
+    "has_searched": false,
+    "compared_products": true,
+    "viewed_details": true,
+    "added_to_cart": false
+  },
+  "session_duration_limit": 413.0259246319487
+}
