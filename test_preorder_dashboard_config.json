@@ -1,0 +1,39 @@
+{
+  "products": [
+    {
+      "tcin": "94681776",
+      "name": "Test Preorder 1 (Should be unavailable)",
+      "max_price": 55.00,
+      "enabled": true
+    },
+    {
+      "tcin": "94734932", 
+      "name": "Test Preorder 2 (Should be available)",
+      "max_price": 50.00,
+      "enabled": true
+    },
+    {
+      "tcin": "94723520",
+      "name": "Test Preorder 3 (Should be available)", 
+      "max_price": 45.00,
+      "enabled": true
+    },
+    {
+      "tcin": "89542109",
+      "name": "Test Regular Product (Should be in stock)",
+      "max_price": 30.00,
+      "enabled": true
+    }
+  ],
+  "settings": {
+    "rate_limit": {
+      "enabled": true,
+      "delay_seconds": 45,
+      "smart_timing": true
+    },
+    "purchase": {
+      "enabled": false,
+      "max_price_filter": true
+    }
+  }
+}

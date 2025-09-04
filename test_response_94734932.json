@@ -1,0 +1,287 @@
+{
+  "data": {
+    "product": {
+      "__typename": "Product",
+      "tcin": "94734932",
+      "category": {
+        "parent_category_id": "5xtb0",
+        "name": "Collectible Trading Cards",
+        "breadcrumbs": [
+          {
+            "canonical_url": "/",
+            "category_id": "root",
+            "name": "target"
+          },
+          {
+            "canonical_url": "/c/toys/-/N-5xtb0",
+            "category_id": "5xtb0",
+            "name": "Toys"
+          },
+          {
+            "canonical_url": "/c/collectible-trading-cards-hobby-collectibles-toys/-/N-27p31",
+            "category_id": "27p31",
+            "name": "Collectible Trading Cards"
+          }
+        ]
+      },
+      "sales_classification_nodes": {
+        "node_ids": [
+          "27p31",
+          "4slqy",
+          "56gcy",
+          "85ufv",
+          "5cdua",
+          "5ol",
+          "5om",
+          "rdrcz",
+          "vmjqu",
+          "54vro",
+          "qk2n3",
+          "iinmv",
+          "adggg"
+        ]
+      },
+      "ratings_and_reviews": {
+        "has_verified": false,
+        "statistics": {
+          "not_recommended_count": 0,
+          "question_count": 0,
+          "rating": {
+            "average": 0.0,
+            "count": 0,
+            "distribution": {
+              "rating1": 0,
+              "rating2": 0,
+              "rating3": 0,
+              "rating4": 0,
+              "rating5": 0
+            }
+          },
+          "recommended_count": 0,
+          "recommended_percentage": 0,
+          "review_count": 0
+        }
+      },
+      "financing_options": {
+        "channel": "DIGITAL",
+        "providers": [
+          {
+            "finance_footer": "Rates are between 10\u201336% APR. Subject to credit check and approval. Options depend on your purchase amount, and a down payment may be required. Estimated payment amount may exclude taxes and shipping. Payment options through Affirm are provided by these lending partners: <a class='affirm-loan-originator' href='https://www.affirm.com/lenders'>affirm.com/lenders</a>. Please note that you can\u2019t use Affirm to pay for pre-ordered items. See <a class='affirm-loan-originator' href='https://www.affirm.com/faqs'>affirm.com/faqs</a> for details.",
+            "finance_header": "Make easy monthly payments over 3, 6 or 12 months",
+            "finance_message": "Pay over time on $50+ orders with Affirm. <a class='affirm-modal-trigger'>Learn more</a>",
+            "finance_minimum_loan_amount": 50.0,
+            "finance_provider": "Affirm",
+            "finance_terms": [
+              {
+                "amount": 103.35,
+                "apr": 19.99,
+                "installment_amount": 34.45,
+                "installment_count": 3,
+                "interest_amount": 3.35,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "3 months",
+                "installment_interval": "$34.45 every month"
+              },
+              {
+                "amount": 105.93,
+                "apr": 20.06,
+                "installment_amount": 17.66,
+                "installment_count": 6,
+                "interest_amount": 5.93,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "6 months",
+                "installment_interval": "$17.66 every month"
+              },
+              {
+                "amount": 111.27,
+                "apr": 20.18,
+                "installment_amount": 9.27,
+                "installment_count": 12,
+                "interest_amount": 11.27,
+                "minimum_loan_amount": 100.0,
+                "billing_frequency": "12 months",
+                "installment_interval": "$9.27 every month"
+              }
+            ],
+            "financing_terms_url": "www.affirm.com/lenders",
+            "financing_cell_header": "Pay over time",
+            "financing_cell_body": "With Affirm on orders over $50",
+            "is_finance_eligible": true,
+            "is_finance_message_eligible": true
+          }
+        ]
+      },
+      "free_shipping": {
+        "enabled": true
+      },
+      "item": {
+        "product_classification": {
+          "item_type": {
+            "name": "Collectible Trading Cards",
+            "type": "39980041"
+          },
+          "product_type": 544,
+          "product_type_name": "TOYS",
+          "purchase_behavior": "Discretionary"
+        },
+        "choking_hazard": [
+          {
+            "code": "choking_hazard_small_parts",
+            "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+          }
+        ],
+        "compliance": {
+          "is_carbon_neutral": false,
+          "is_proposition_65": false
+        },
+        "enrichment": {
+          "buy_url": "https://www.target.com/p/disney-lorcana-trading-card-game-fabled-illumineer-39-s-trove/-/A-94734932",
+          "image_info": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image": {
+              "image_name": "GUEST_c9c16a9b-ff38-4ffa-9e9d-0cb26140ff4d",
+              "url": "https://target.scene7.com/is/image/Target/GUEST_c9c16a9b-ff38-4ffa-9e9d-0cb26140ff4d"
+            },
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_55a647dc-573a-4628-a70f-32ed5ad5deda"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_c9c16a9b-ff38-4ffa-9e9d-0cb26140ff4d"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_fecd2e9a-9cbc-4e10-8b0b-2a677d2cb249"
+              }
+            ],
+            "alternate_images": [
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_55a647dc-573a-4628-a70f-32ed5ad5deda",
+                "image_name": "GUEST_55a647dc-573a-4628-a70f-32ed5ad5deda"
+              },
+              {
+                "url": "https://target.scene7.com/is/image/Target/GUEST_fecd2e9a-9cbc-4e10-8b0b-2a677d2cb249",
+                "image_name": "GUEST_fecd2e9a-9cbc-4e10-8b0b-2a677d2cb249"
+              }
+            ],
+            "swatch_image": {}
+          },
+          "images": {
+            "base_url": "//target.scene7.com/is/image/Target/",
+            "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_c9c16a9b-ff38-4ffa-9e9d-0cb26140ff4d",
+            "primary_image": "GUEST_c9c16a9b-ff38-4ffa-9e9d-0cb26140ff4d",
+            "alternate_images": [
+              "GUEST_55a647dc-573a-4628-a70f-32ed5ad5deda",
+              "GUEST_fecd2e9a-9cbc-4e10-8b0b-2a677d2cb249"
+            ],
+            "alternate_image_urls": [
+              "https://target.scene7.com/is/image/Target/GUEST_55a647dc-573a-4628-a70f-32ed5ad5deda",
+              "https://target.scene7.com/is/image/Target/GUEST_fecd2e9a-9cbc-4e10-8b0b-2a677d2cb249"
+            ],
+            "content_labels": [
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_55a647dc-573a-4628-a70f-32ed5ad5deda"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_c9c16a9b-ff38-4ffa-9e9d-0cb26140ff4d"
+              },
+              {
+                "image_url": "https://target.scene7.com/is/image/Target/GUEST_fecd2e9a-9cbc-4e10-8b0b-2a677d2cb249"
+              }
+            ]
+          },
+          "return_policies": [
+            {
+              "user_type": "regular_guest",
+              "day_count": 0
+            },
+            {
+              "user_type": "best_guest",
+              "day_count": 0
+            }
+          ]
+        },
+        "environmental_segmentation": {
+          "is_hazardous_material": false
+        },
+        "formatted_return_method": "This item cannot be returned;  please reference our return policy for more information.",
+        "fulfillment": {
+          "po_box_prohibited_message": "We regret that this item cannot be shipped to PO Boxes.",
+          "shipping_exclusion_codes": [
+            "American Samoa (see also separate entry under AS)",
+            "Guam (see also separate entry under GU)",
+            "Northern Mariana Islands",
+            "Puerto Rico (see also separate entry under PR)",
+            "United States Minor Outlying Islands",
+            "Virgin Islands, U.S.",
+            "APO/FPO"
+          ],
+          "is_gift_wrap_eligible": true,
+          "purchase_limit": 2
+        },
+        "package_dimensions": {
+          "depth": 4.0,
+          "dimension_unit_of_measure": "INCH",
+          "weight": 0.9,
+          "weight_unit_of_measure": "POUND",
+          "height": 6.25,
+          "width": 6.25
+        },
+        "product_description": {
+          "bullet_descriptions": [
+            "<B>Suggested Age:</B> 6 Years and Up",
+            "<B>CPSC Choking Hazard Warnings:</B> Choking_hazard_small_parts",
+            "<B>Includes:</B> Cards",
+            "<B>Package Type:</B> Box Set"
+          ],
+          "downstream_description": "Illumineer\u2019s Troves are great for Disney fans, TCG enthusiasts, and collectors alike! With the 8 booster packs, you\u2019ll expand your collection, giving you more options for your deck. The full-art storage box and 6 dividers keep your cards safe and organized. Each of the dividers feature Enchanted card art with a stunning foil treatment! During play, keep track of damage with the 6 ink-themed dice\u2014one for each ink type. The foiled spin-dial lore counter makes it easy to remember how close you are to victory!<br />",
+          "soft_bullets": {
+            "bullets": [
+              "TREASURES GALORE: Illumineer\u2019s Trove are chocked full with magical must-haves from gorgeous card dividers to stunning damage-counter dice.",
+              "STORAGE WITH CHARACTER: Store and protect your valuable within the included box. Durable and long-lasting, its beautiful artwork adds a touch of Disney style to your gaming experience.",
+              "A GREAT GIFT FOR FANS: Surprise the Disney Lorcana enthusiast in your life with this amazing gift. The Illumineer\u2019s Trove offers the opportunity to customize and expand any collection.",
+              "THE ILLUMINEER\u2019S TROVE INCLUDES: 1 card storage box, 6 card dividers, 8 booster packs of 12 additional cards each, 6 damage-counter dice, and 1 lore counter."
+            ],
+            "title": "highlights"
+          },
+          "title": "Disney Lorcana Trading Card Game: Fabled Illumineer&#39;s Trove",
+          "soft_bullet_description": "&bull;TREASURES GALORE: Illumineer\u2019s Trove are chocked full with magical must-haves from gorgeous card dividers to stunning damage-counter dice.<br>&bull;STORAGE WITH CHARACTER: Store and protect your valuable within the included box. Durable and long-lasting, its beautiful artwork adds a touch of Disney style to your gaming experience.<br>&bull;A GREAT GIFT FOR FANS: Surprise the Disney Lorcana enthusiast in your life with this amazing gift. The Illumineer\u2019s Trove offers the opportunity to customize and expand any collection.<br>&bull;THE ILLUMINEER\u2019S TROVE INCLUDES: 1 card storage box, 6 card dividers, 8 booster packs of 12 additional cards each, 6 damage-counter dice, and 1 lore counter."
+        },
+        "relationship_type_code": "SA",
+        "return_policy_url": "https://www.target.com/help/articles/returns-exchanges/returns",
+        "ribbons": [
+          "New At Target"
+        ],
+        "cart_add_on_threshold": 35.0,
+        "dpci": "087-12-0636",
+        "handling": {
+          "import_designation_description": "Made in the USA or Imported"
+        },
+        "merchandise_classification": {
+          "class_id": 12,
+          "department_id": 87,
+          "department_name": "GAMES/DIECAST/ACTION FIGURES"
+        },
+        "mmbv_content": {
+          "street_date": "2025-09-05"
+        },
+        "primary_barcode": "4050368986139",
+        "primary_brand": {
+          "canonical_url": "/b/disney/-/N-bgmat",
+          "linking_id": "bgmat",
+          "name": "Disney"
+        },
+        "return_method": "No Return"
+      },
+      "price": {
+        "current_retail": 49.99,
+        "display_was_now": false,
+        "formatted_current_price": "$49.99",
+        "formatted_current_price_type": "reg",
+        "reg_retail": 49.99,
+        "location_id": 3991,
+        "external_system_id": "94734932-3991-49.99-2025051516"
+      },
+      "promotions": []
+    }
+  }
+}

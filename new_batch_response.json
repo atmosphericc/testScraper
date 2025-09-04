@@ -1,0 +1,262 @@
+{
+  "data": {
+    "product_summaries": [
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94734932",
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Disney Lorcana Trading Card Game: Fabled Illumineer&#39;s Trove"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/disney-lorcana-trading-card-game-fabled-illumineer-39-s-trove/-/A-94734932"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "94734932",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "PRE_ORDER_SELLABLE",
+            "loyalty_availability_status": "PRE_ORDER_SELLABLE",
+            "services": [
+              {
+                "cutoff": "2025-09-05T14:00:00Z",
+                "shipping_method_id": "STANDARD",
+                "min_delivery_date": "2025-09-09",
+                "max_delivery_date": "2025-09-12",
+                "is_two_day_shipping": false,
+                "is_base_shipping_method": true
+              }
+            ]
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94681776",
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Pok&#233;mon Trading Card Game: Mega Evolution Elite Trainer Box- Lucario"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/pok-233-mon-trading-card-game-mega-evolution-elite-trainer-box-lucario/-/A-94681776"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "94681776",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "PRE_ORDER_UNSELLABLE",
+            "loyalty_availability_status": "PRE_ORDER_UNSELLABLE",
+            "services": []
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94336414",
+        "desirability_cues": [],
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Pok&#233;mon Trading Card Game: Scarlet &#38; Violet&#8212;Prismatic Evolutions Surprise Box"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/2025-pokemon-scarlet-violet-s8-5-prismatic-evolutions-surprise-box/-/A-94336414"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          },
+          "eligibility_rules": {}
+        },
+        "fulfillment": {
+          "product_id": "94336414",
+          "is_out_of_stock_in_all_store_locations": false,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "DISCONTINUED",
+            "loyalty_availability_status": "DISCONTINUED",
+            "services": []
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "OUT_OF_STOCK"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "__typename": "ProductSummary",
+        "tcin": "89542109",
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Pok&#233;mon Trading Card Game: Quaquaval ex Deluxe Battle Deck"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/pok-233-mon-trading-card-game-quaquaval-ex-deluxe-battle-deck/-/A-89542109"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "89542109",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "IN_STOCK",
+            "loyalty_availability_status": "IN_STOCK",
+            "services": [
+              {
+                "cutoff": "2025-09-05T17:00:00Z",
+                "shipping_method_id": "STANDARD",
+                "min_delivery_date": "2025-09-09",
+                "max_delivery_date": "2025-09-09",
+                "is_two_day_shipping": true,
+                "is_base_shipping_method": true
+              }
+            ]
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

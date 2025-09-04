@@ -20,7 +20,9 @@
       "Bash(kill:*)",
       "Bash(playwright install)",
       "Bash(echo:*)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(cat:*)",
+      "WebFetch(domain:gist.github.com)"
     ],
     "deny": [],
     "ask": []

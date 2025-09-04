@@ -1,0 +1,265 @@
+{
+  "data": {
+    "product_summaries": [
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94681776",
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Pok&#233;mon Trading Card Game: Mega Evolution Elite Trainer Box- Lucario"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/pok-233-mon-trading-card-game-mega-evolution-elite-trainer-box-lucario/-/A-94681776"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "94681776",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "PRE_ORDER_UNSELLABLE",
+            "loyalty_availability_status": "PRE_ORDER_UNSELLABLE",
+            "services": []
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94723520",
+        "desirability_cues": [],
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Yu-Gi-Oh! Trading Card Game: Shonen Jump Tin - Mega Pack"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/yu-gi-oh-trading-card-game-shonen-jump-tin-mega-pack/-/A-94723520"
+          },
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "94723520",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "PRE_ORDER_SELLABLE",
+            "loyalty_availability_status": "PRE_ORDER_SELLABLE",
+            "services": [
+              {
+                "cutoff": "2025-09-05T14:00:00Z",
+                "shipping_method_id": "STANDARD",
+                "min_delivery_date": "2025-09-09",
+                "max_delivery_date": "2025-09-12",
+                "is_two_day_shipping": false,
+                "is_base_shipping_method": true
+              }
+            ]
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94827553",
+        "item": {
+          "is_limited_time_offer": false,
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Lorcana Trading Card Game : Gift Box"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/lorcana-trading-card-game-gift-box/-/A-94827553"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "94827553",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "PRE_ORDER_SELLABLE",
+            "loyalty_availability_status": "PRE_ORDER_SELLABLE",
+            "services": [
+              {
+                "cutoff": "2025-09-30T14:00:00Z",
+                "shipping_method_id": "STANDARD",
+                "min_delivery_date": "2025-10-02",
+                "max_delivery_date": "2025-10-07",
+                "is_two_day_shipping": false,
+                "is_base_shipping_method": true
+              }
+            ]
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "__typename": "ProductSummary",
+        "tcin": "94734932",
+        "item": {
+          "relationship_type_code": "SA",
+          "product_classification": {
+            "item_type": {
+              "name": "Collectible Trading Cards",
+              "type": "39980041"
+            }
+          },
+          "product_description": {
+            "title": "Disney Lorcana Trading Card Game: Fabled Illumineer&#39;s Trove"
+          },
+          "enrichment": {
+            "buy_url": "https://www.target.com/p/disney-lorcana-trading-card-game-fabled-illumineer-39-s-trove/-/A-94734932"
+          },
+          "choking_hazard": [
+            {
+              "code": "choking_hazard_small_parts",
+              "message": "WARNING: choking hazard - small parts. Not for children under 3 yrs."
+            }
+          ],
+          "fulfillment": {},
+          "merchandise_classification": {
+            "class_id": 12,
+            "department_id": 87
+          }
+        },
+        "fulfillment": {
+          "product_id": "94734932",
+          "is_out_of_stock_in_all_store_locations": true,
+          "sold_out": false,
+          "shipping_options": {
+            "availability_status": "PRE_ORDER_SELLABLE",
+            "loyalty_availability_status": "PRE_ORDER_SELLABLE",
+            "services": [
+              {
+                "cutoff": "2025-09-05T14:00:00Z",
+                "shipping_method_id": "STANDARD",
+                "min_delivery_date": "2025-09-09",
+                "max_delivery_date": "2025-09-12",
+                "is_two_day_shipping": false,
+                "is_base_shipping_method": true
+              }
+            ]
+          },
+          "store_options": [
+            {
+              "search_response_store_type": "PRIMARY",
+              "location_available_to_promise_quantity": 0.0,
+              "location_id": "865",
+              "store": {
+                "location_name": "Gurnee"
+              },
+              "order_pickup": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "ship_to_store": {
+                "availability_status": "UNAVAILABLE"
+              },
+              "in_store_only": {
+                "availability_status": "NOT_SOLD_IN_STORE"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

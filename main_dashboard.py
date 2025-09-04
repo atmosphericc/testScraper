@@ -27,7 +27,7 @@ import sqlite3
 import os
 import ssl
 import socket
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from urllib3.util.ssl_ import create_urllib3_context
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
@@ -255,6 +255,103 @@ class SessionWarmupManager:
 # Initialize F5/Shape evasion components
 human_behavior = HumanBehaviorSimulator()
 session_warmer = SessionWarmupManager()
+
+# Preorder Detection and Checking Functions
+def is_preorder_item(fulfillment_data: Dict) -> bool:
+    """
+    Detect if an item is a preorder based on fulfillment API data structure
+    
+    Args:
+        fulfillment_data: Fulfillment section from batch API response
+        
+    Returns:
+        bool: True if item is a preorder
+    """
+    # Check availability status for PRE_ORDER indicators
+    shipping_options = fulfillment_data.get('shipping_options', {})
+    availability_status = shipping_options.get('availability_status', '')
+    
+    return 'PRE_ORDER' in availability_status
+
+def check_preorder_availability_enhanced(tcin: str, api_key: str, store_id: str = "865") -> Tuple[bool, Dict]:
+    """
+    Enhanced preorder availability checker using fulfillment endpoint
+    
+    Args:
+        tcin: Product TCIN
+        api_key: Target API key
+        store_id: Store ID (default: "865")
+    
+    Returns:
+        tuple: (is_available, status_info)
+        - is_available: bool, True if preorder can be purchased
+        - status_info: dict with detailed availability information
+    """
+    fulfillment_url = "https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1"
+    
+    headers = {
+        'accept': 'application/json',
+        'user-agent': get_massive_user_agent_rotation(),
+        'accept-encoding': 'gzip, deflate, br',
+        'accept-language': 'en-US,en;q=0.9',
+        'cache-control': 'no-cache',
+        'referer': 'https://www.target.com/',
+    }
+    
+    params = {
+        'key': api_key,
+        'tcins': tcin,  # Note: 'tcins' not 'tcin' for this endpoint
+        'store_id': store_id,
+        'pricing_store_id': store_id,
+        'has_pricing_context': 'true',
+        'has_promotions': 'true',
+        'is_bot': 'false',
+    }
+    
+    try:
+        response = requests.get(fulfillment_url, params=params, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Extract fulfillment data
+            if ('data' in data and 
+                'product_summaries' in data['data'] and 
+                len(data['data']['product_summaries']) > 0):
+                
+                fulfillment = data['data']['product_summaries'][0].get('fulfillment', {})
+                shipping_options = fulfillment.get('shipping_options', {})
+                availability_status = shipping_options.get('availability_status')
+                
+                # Key logic: PRE_ORDER_SELLABLE = available, PRE_ORDER_UNSELLABLE = unavailable
+                is_available = availability_status == 'PRE_ORDER_SELLABLE'
+                
+                status_info = {
+                    'availability_status': availability_status,
+                    'loyalty_availability_status': shipping_options.get('loyalty_availability_status'),
+                    'is_out_of_stock_in_all_store_locations': fulfillment.get('is_out_of_stock_in_all_store_locations', False),
+                    'sold_out': fulfillment.get('sold_out', False),
+                    'source': 'fulfillment_api',
+                    'success': True,
+                    'is_preorder': True
+                }
+                
+                return is_available, status_info
+        
+        return False, {
+            'error': f'API failed with status {response.status_code}',
+            'source': 'fulfillment_api',
+            'success': False,
+            'is_preorder': True
+        }
+        
+    except Exception as e:
+        return False, {
+            'error': f'Request failed: {str(e)}',
+            'source': 'fulfillment_api', 
+            'success': False,
+            'is_preorder': True
+        }
 
 def get_massive_user_agent_rotation():
     """50+ User agents for maximum stealth"""
@@ -531,7 +628,7 @@ class UltimateStealthBatchChecker:
             session.close()
     
     def process_batch_response(self, data, enabled_products):
-        """Convert batch API response to dashboard format with stealth preservation"""
+        """Convert batch API response to dashboard format with stealth preservation and preorder support"""
         if not data or 'data' not in data or 'product_summaries' not in data['data']:
             print("❌ Invalid batch response structure")
             print(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
@@ -560,12 +657,28 @@ class UltimateStealthBatchChecker:
             fulfillment = product_summary.get('fulfillment', {})
             shipping = fulfillment.get('shipping_options', {})
             
-            # Determine availability
+            # Detect if this is a preorder
+            is_preorder = is_preorder_item(fulfillment)
+            
+            # Determine availability based on product type
             availability_status = shipping.get('availability_status', 'UNKNOWN')
-            is_available = availability_status == 'IN_STOCK'
+            
+            if is_preorder:
+                # For preorders, use PRE_ORDER_SELLABLE/UNSELLABLE logic
+                is_available = availability_status == 'PRE_ORDER_SELLABLE'
+                print(f"🎯 Preorder {tcin}: {availability_status} -> {'AVAILABLE' if is_available else 'UNAVAILABLE'}")
+            else:
+                # For regular products, use IN_STOCK logic
+                is_available = availability_status == 'IN_STOCK'
+                print(f"📦 Regular {tcin}: {availability_status} -> {'AVAILABLE' if is_available else 'UNAVAILABLE'}")
             
             # Normalize status - IN_STOCK or OUT_OF_STOCK only
             normalized_status = 'IN_STOCK' if is_available else 'OUT_OF_STOCK'
+            
+            # Get street date for preorders
+            street_date = None
+            if is_preorder:
+                street_date = item.get('mmbv_content', {}).get('street_date')
             
             # Build dashboard-compatible result
             result = {
@@ -586,6 +699,11 @@ class UltimateStealthBatchChecker:
                 # Store availability
                 'store_available': not fulfillment.get('is_out_of_stock_in_all_store_locations', True),
                 
+                # Preorder-specific fields
+                'is_preorder': is_preorder,
+                'street_date': street_date,
+                'preorder_status': availability_status if is_preorder else None,
+                
                 # Additional stealth tracking
                 'stealth_applied': True,
                 'batch_api': True,
@@ -593,7 +711,8 @@ class UltimateStealthBatchChecker:
             }
             
             processed_data[tcin] = result
-            print(f"✅ Processed {tcin}: {normalized_status} - {result['name'][:30]}...")
+            preorder_text = " (PREORDER)" if is_preorder else ""
+            print(f"✅ Processed {tcin}: {normalized_status}{preorder_text} - {result['name'][:30]}...")
             
         return processed_data
 

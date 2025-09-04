@@ -1,104 +1,64 @@
 {
   "products": [
     {
-      "tcin": "94724987",
-      "name": "Pokémon Trading Card Game: Blooming Waters Premium Collection",
-      "max_price": 70.00,
-      "quantity": 1,
-      "enabled": true,
-      "priority": 1,
-      "check_frequency": 300,
-      "notes": "Premium Collection - High value Pokemon cards"
-    },
-    {
-      "tcin": "94681785",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—White Flare Booster Bundle",
-      "max_price": 32.00,
-      "quantity": 1,
-      "enabled": true,
-      "priority": 2,
-      "check_frequency": 300,
-      "notes": "Booster Bundle - Scarlet & Violet series"
-    },
-    {
-      "tcin": "94681770",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Black Bolt Booster Bundle",
-      "max_price": 32.00,
-      "quantity": 1,
-      "enabled": true,
-      "check_frequency": 300,
-      "notes": "Booster Bundle - Scarlet & Violet series"
-    },
-    {
       "tcin": "94336414",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Surprise Box",
-      "max_price": 25.00,
-      "quantity": 1,
+      "name": "Test Regular Product 1",
       "enabled": true,
-      "check_frequency": 300,
-      "notes": "Surprise Box - Prismatic Evolutions set"
+      "max_price": 25.0
+    },
+        {
+      "tcin": "94681770",
+      "name": "Test Regular Product 2",
+      "enabled": true,
+      "max_price": 32.0
+    },
+        {
+      "tcin": "94687409",
+      "name": "Test Preorder 3",
+      "enabled": true,
+      "max_price": 27.0
+    },
+        {
+      "tcin": "94687407",
+      "name": "Test Preorder 4",
+      "enabled": true,
+      "max_price": 27.0
+    },
+        {
+      "tcin": "94636856",
+      "name": "Test Regular Product 5",
+      "enabled": true,
+      "max_price": 35.0
+    },
+        {
+      "tcin": "94681776",
+      "name": "Test Preorder 6",
+      "enabled": true,
+      "max_price": 55.0
+    },
+        {
+      "tcin": "94681784",
+      "name": "Test Preorder 7",
+      "enabled": true,
+      "max_price": 55.0
+    },
+    {
+      "tcin": "94681782",
+      "name": "Test Preorder 8",
+      "enabled": true,
+      "max_price": 30.0
+    },
+    {
+      "tcin": "94734932",
+      "name": "Test Preorder 9",
+      "enabled": true,
+      "max_price": 50.0
     },
     {
       "tcin": "89542109",
-      "name": "Pokémon Trading Card Game: Quaquaval ex Deluxe Battle Deck",
-      "max_price": 15.00,
-      "quantity": 1,
+      "name": "Test Regular Product 10",
       "enabled": true,
-      "check_frequency": 300,
-      "notes": "Battle Deck - Quaquaval ex featured deck"
+      "max_price": 15.0
     }
-  ],
-  "proxies": [
-    {
-      "host": "us-free-01.protonvpn.net",
-      "port": 1080,
-      "username": "YOUR_OPENVPN_USERNAME_HERE",
-      "password": "YOUR_OPENVPN_PASSWORD_HERE",
-      "protocol": "socks5",
-      "enabled": false,
-      "notes": "ProtonVPN US #1 - UPDATE CREDENTIALS TO ENABLE"
-    },
-    {
-      "host": "us-free-02.protonvpn.net", 
-      "port": 1080,
-      "username": "YOUR_OPENVPN_USERNAME_HERE",
-      "password": "YOUR_OPENVPN_PASSWORD_HERE",
-      "protocol": "socks5",
-      "enabled": false,
-      "notes": "ProtonVPN US #2 - UPDATE CREDENTIALS TO ENABLE"
-    },
-    {
-      "host": "us-free-03.protonvpn.net",
-      "port": 1080,
-      "username": "YOUR_OPENVPN_USERNAME_HERE", 
-      "password": "YOUR_OPENVPN_PASSWORD_HERE",
-      "protocol": "socks5",
-      "enabled": false,
-      "notes": "ProtonVPN US #3 - UPDATE CREDENTIALS TO ENABLE"
-    }
-  ],
-  "settings": {
-    "mode": "test",
-    "rate_limit": {
-      "requests_per_second": 0.1,
-      "batch_size": 5,
-      "batch_delay_seconds": 2,
-      "smart_timing": true,
-      "session_rotation": true,
-      "proxy_rotation": true
-    },
-    "purchase": {
-      "stop_after_success": false,
-      "cooldown_after_attempt_minutes": 5,
-      "max_attempts_per_session": 999
-    },
-    "session": {
-      "storage_path": "sessions/target_storage.json",
-      "validity_check_interval_minutes": 30
-    },
-    "logging": {
-      "level": "INFO",
-      "log_dir": "logs"
-    }
-  }
+  ]
 }

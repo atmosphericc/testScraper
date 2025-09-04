@@ -290,6 +290,12 @@
             border: 1px solid rgba(139, 148, 158, 0.3);
         }
         
+        .badge.preorder {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-color);
+            border: 1px solid rgba(88, 166, 255, 0.3);
+        }
+        
         /* Buttons */
         .btn {
             display: inline-flex;
@@ -551,6 +557,15 @@
                     // Convert to the format expected by updateLiveStockDisplay
                     const formattedData = {};
                     data.products.forEach(product => {
+                        // Debug logging for preorder fields
+                        if (product.is_preorder) {
+                            console.log(`🎯 Initial load - Preorder detected: ${product.tcin}`, {
+                                is_preorder: product.is_preorder,
+                                street_date: product.street_date,
+                                preorder_status: product.preorder_status
+                            });
+                        }
+                        
                         formattedData[product.tcin] = {
                             tcin: product.tcin,
                             available: product.available,
@@ -558,7 +573,11 @@
                             name: product.name,
                             price: product.price,
                             last_checked: product.last_checked,
-                            response_time: product.response_time
+                            response_time: product.response_time,
+                            // Include preorder-related fields
+                            is_preorder: product.is_preorder,
+                            street_date: product.street_date,
+                            preorder_status: product.preorder_status
                         };
                     });
                     
@@ -697,6 +716,7 @@
             let currentInStockCount = 0;
             
             Object.entries(data).forEach(([tcin, stockInfo]) => {
+                // Update stock badges
                 const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
                 stockBadges.forEach(badge => {
                     // Remove existing classes
@@ -718,6 +738,38 @@
                     // Add pulse animation to show it's been updated
                     badge.classList.add('pulse');
                     setTimeout(() => badge.classList.remove('pulse'), 1000);
+                });
+                
+                // Update preorder badges
+                const preorderBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .preorder-badge`);
+                preorderBadges.forEach(badge => {
+                    // Debug logging
+                    console.log(`🔍 Updating preorder badge for ${tcin}:`, {
+                        is_preorder: stockInfo.is_preorder,
+                        street_date: stockInfo.street_date,
+                        badge_exists: !!badge
+                    });
+                    
+                    if (stockInfo.is_preorder) {
+                        // Show preorder badge for preorder items
+                        badge.style.display = 'inline-flex';
+                        if (stockInfo.street_date) {
+                            const releaseDate = new Date(stockInfo.street_date);
+                            badge.title = `Pre-order - Releases ${releaseDate.toLocaleDateString()}`;
+                        } else {
+                            badge.title = 'Pre-order item';
+                        }
+                        
+                        console.log(`✅ Showing preorder badge for ${tcin}`);
+                        
+                        // Add pulse animation
+                        badge.classList.add('pulse');
+                        setTimeout(() => badge.classList.remove('pulse'), 1000);
+                    } else {
+                        // Hide preorder badge for regular items
+                        badge.style.display = 'none';
+                        console.log(`❌ Hiding preorder badge for ${tcin} (not preorder)`);
+                    }
                 });
             });
             
@@ -993,6 +1045,7 @@
                                 <th>Product Name</th>
                                 <th>Max Price</th>
                                 <th>Monitor</th>
+                                <th>Preorder</th>
                                 <th>Stock Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -1018,6 +1071,11 @@
                                 <td>
                                     <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
                                         {{ 'ENABLED' if product.enabled else 'DISABLED' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="badge preorder preorder-badge" data-tcin="{{ product.tcin }}" style="display: none;">
+                                        PREORDER
                                     </span>
                                 </td>
                                 <td>
