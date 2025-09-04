@@ -19,7 +19,8 @@
       "Bash(lsof:*)",
       "Bash(kill:*)",
       "Bash(playwright install)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

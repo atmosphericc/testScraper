@@ -583,8 +583,8 @@
         
         async function fetchLiveStockStatus() {
             try {
-                // Use the live stock check endpoint for accurate real-time data
-                const response = await fetch('/api/live-stock-check');
+                // Use the live stock status endpoint for accurate real-time data
+                const response = await fetch('/api/live-stock-status');
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
@@ -623,7 +623,7 @@
                     'checks-24h': data.stock_analytics.total_checks_24h,
                     'found-stock-24h': data.stock_analytics.in_stock_found_24h,
                     'avg-response': data.stock_analytics.avg_response_time + 'ms',
-                    'purchase-success': data.purchase_analytics.success_rate + '%'
+                    'purchase-success': (data.stealth_performance ? data.stealth_performance.success_rate : 100) + '%'
                 };
                 
                 Object.entries(elements).forEach(([id, value]) => {
@@ -705,10 +705,17 @@
                 addLogEntry('Initial data loaded - starting refresh cycle', 'success');
                 
                 // Only start timers AFTER initial responses complete
-                let countdownSeconds = 30;
+                // Random interval between 40-45 seconds to match backend
+                function getRandomInterval() {
+                    return Math.floor(Math.random() * 6) + 40; // Random 40-45 seconds
+                }
+                
+                let countdownSeconds = getRandomInterval();
+                let refreshIntervalMs = countdownSeconds * 1000;
+                
                 refreshInterval = setInterval(async () => {
                     if (!document.hidden) { // Only check if tab is visible
-                        console.log('🔄 Starting 30s refresh cycle...');
+                        console.log(`🔄 Starting ${countdownSeconds}s refresh cycle...`);
                         addLogEntry('Checking stock status...', 'stock');
                         
                         // Wait for all refresh calls to complete
@@ -718,16 +725,28 @@
                             fetchLiveStockStatus()
                         ]);
                         
-                        console.log('✅ 30s refresh cycle completed');
+                        console.log(`✅ ${countdownSeconds}s refresh cycle completed`);
                         addLogEntry('Refresh completed - data updated', 'success');
                     }
-                    countdownSeconds = 30; // Reset countdown after responses complete
-                }, 30000);
+                    // Reset countdown with new random interval when it reaches 0 or negative
+                    if (countdownSeconds <= 0) {
+                        countdownSeconds = getRandomInterval(); // New random 40-45s interval
+                        // Update the interval for next cycle
+                        clearInterval(refreshInterval);
+                        refreshIntervalMs = countdownSeconds * 1000;
+                        // Restart with new random interval
+                        setTimeout(() => {
+                            refreshInterval = setInterval(arguments.callee, refreshIntervalMs);
+                        }, 0);
+                    }
+                }, refreshIntervalMs);
                 
                 // Countdown timer starts only after initial load
                 setInterval(() => {
                     countdownSeconds--;
-                    if (countdownSeconds < 0) countdownSeconds = 0;
+                    if (countdownSeconds < 0) {
+                        countdownSeconds = getRandomInterval(); // Reset to new random interval when it goes negative
+                    }
                     updateCountdownDisplay(countdownSeconds);
                 }, 1000);
                 

@@ -49,8 +49,8 @@ def main():
         # Run the system with proper arguments
         import subprocess
         
-        # Use the real staggered dashboard to test timing
-        cmd = [sys.executable, 'dashboard_ultra_fast_stealth.py']
+        # Use the mock data dashboard for testing UI/functionality
+        cmd = [sys.executable, 'dashboard_ultra_fast_stealth_mock.py']
         subprocess.run(cmd)
         
     except KeyboardInterrupt:
