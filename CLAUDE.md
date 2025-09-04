@@ -2,6 +2,40 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🚀 VERSION HISTORY & REFERENCE POINTS
+
+### **September 2024 - Ultimate Stealth Dashboard (CURRENT REFERENCE POINT)**
+**Status**: ✅ STABLE - This is the main iteration to reference
+
+**Major Changes:**
+- [x] **Ultimate stealth dashboard promoted to main system**
+- [x] **Real-time activity logging** connected to actual API calls
+- [x] **Fixed countdown timer** (40-45s random, no jumping)
+- [x] **Dynamic product count** from config (hot reload)
+- [x] **Project cleanup**: 25+ outdated files archived to `archive/outdated_files/`
+- [x] **Streamlined entry points**: `main_dashboard.py`, `start_dashboard.py`
+- [x] **Enhanced documentation** with recovery instructions
+
+**Primary Entry Points (Use These):**
+```bash
+python start_dashboard.py           # Simple launcher (RECOMMENDED)
+python main_dashboard.py           # Direct main dashboard  
+python dashboard_ultimate_batch_stealth.py  # Original filename
+```
+
+**Key Features Working:**
+- ✅ Batch API for multiple products (87% fewer calls)
+- ✅ Military-grade stealth (JA3/JA4 spoofing, behavioral patterns)
+- ✅ Real activity logging with actual API timing
+- ✅ Stock change detection and notifications
+- ✅ Dynamic product count from configuration
+- ✅ Hot configuration reload without restart
+
+**Files to Reference if Issues:**
+- `main_dashboard.py` - Primary dashboard (ultimate stealth version)
+- `dashboard_ultimate_batch_stealth.py` - Original ultimate version  
+- `archive/outdated_files/` - Old versions if rollback needed
+
 ## Project Overview
 
 This is an advanced, commercial-grade Python-based Target product monitoring system featuring **Ultra-Fast Stock Checking** with sub-3-second performance for 50+ SKUs and zero missed opportunities. The system combines intelligent API-first checking with background browser verification, smart priority scheduling, and comprehensive production safety systems.
@@ -26,37 +60,28 @@ python setup_advanced_evasion.py
 python setup_free_proxies.py
 ```
 
-### Running the Ultra-Fast Monitor (Recommended)
+### Running the Ultimate Stealth Dashboard (Primary)
 ```bash
-# Run ultra-fast system in test mode (default)
-python run.py test
+# Run main dashboard (RECOMMENDED)
+python main_dashboard.py
 
-# Run with web dashboard (recommended)
+# Or use original filename
+python dashboard_ultimate_batch_stealth.py
+
+# Alternative: Run main system with dashboard
 python run.py test --dashboard
-
-# Run in production mode (real purchases)
-python run.py production
-
-# Force legacy system
-python run.py test --legacy
 ```
 
-### Alternative Entry Points
+### Testing and API Validation
 ```bash
-# Direct ultra-fast system
-python run_ultra_fast_monitor.py
-
-# Legacy dashboard only (port 5000)
-python dashboard/app.py
-
-# Ultra-fast dashboard only (port 5001)  
-python dashboard/ultra_fast_dashboard.py
-
-# Advanced stock monitor
-python advanced_stock_monitor.py
-
-# Simple API testing
+# Test API status and connectivity
 python simple_api_check.py
+
+# Quick stealth system validation
+python quick_evasion_test.py
+
+# Check advanced stealth features
+python test_ultimate_bypass.py
 ```
 
 ### Testing and Development
@@ -210,6 +235,7 @@ python check_api_status.py
 - `setup_protonvpn_integration.py`: ProtonVPN integration for enhanced privacy
 - `dashboard/app.py`: Legacy analytics dashboard server (port 5000)
 - `dashboard/ultra_fast_dashboard.py`: Ultra-fast dashboard with live data (port 5001)
+- `dashboard_ultimate_batch_stealth.py`: Ultimate batch API dashboard with full stealth integration, session warmup, and 87% fewer API calls
 - `advanced_stock_monitor.py`: Advanced monitoring system with enhanced features
 - `advanced_proxy_finder.py`: Intelligent proxy discovery and validation
 - `auto_proxy_setup.py`: Automated proxy configuration and testing

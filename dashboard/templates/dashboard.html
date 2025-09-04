@@ -506,11 +506,17 @@
         
         async function fetchAnalytics() {
             try {
+                const startTime = Date.now();
                 const response = await fetch('/api/analytics');
+                const responseTime = Date.now() - startTime;
+                
                 const data = await response.json();
                 updateAnalyticsDisplay(data);
+                
+                addLogEntry(`Analytics updated (${responseTime}ms) - ${data.ultimate_features?.products_monitored || 0} products monitored`, 'info');
             } catch (error) {
                 console.error('Failed to fetch analytics:', error);
+                addLogEntry(`Analytics fetch failed: ${error.message}`, 'error');
             }
         }
         
@@ -581,15 +587,51 @@
             }
         }
         
+        // Store previous stock status for change detection
+        let previousStockData = {};
+        
         async function fetchLiveStockStatus() {
             try {
-                // Use the live stock status endpoint for accurate real-time data
+                const startTime = Date.now();
                 const response = await fetch('/api/live-stock-status');
+                const responseTime = Date.now() - startTime;
+                
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
                 const data = await response.json();
+                
+                // Check for stock changes
+                let stockChanges = [];
+                let inStockCount = 0;
+                
+                Object.entries(data).forEach(([tcin, item]) => {
+                    if (item.available) inStockCount++;
+                    
+                    // Check if stock status changed
+                    if (previousStockData[tcin]) {
+                        const wasAvailable = previousStockData[tcin].available;
+                        const isAvailable = item.available;
+                        
+                        if (wasAvailable !== isAvailable) {
+                            const productName = item.name || `TCIN ${tcin}`;
+                            const status = isAvailable ? '🟢 IN STOCK' : '🔴 OUT OF STOCK';
+                            stockChanges.push(`${productName}: ${status}`);
+                        }
+                    }
+                });
+                
+                // Update display
                 updateStockStatusDisplay(data);
+                previousStockData = JSON.parse(JSON.stringify(data)); // Deep copy
+                
+                // Log stock check results
+                addLogEntry(`Stock check complete (${responseTime}ms) - ${Object.keys(data).length} products, ${inStockCount} in stock`, 'success');
+                
+                // Log any stock changes
+                stockChanges.forEach(change => {
+                    addLogEntry(change, change.includes('IN STOCK') ? 'warning' : 'info');
+                });
                 
                 // Update timestamp based on actual data, not current time - FIXED
                 const timestamps = Object.values(data)
@@ -609,6 +651,7 @@
                 }
             } catch (error) {
                 console.error('Failed to fetch live stock status:', error);
+                addLogEntry(`Stock check failed: ${error.message}`, 'error');
                 // Show error in stock badges
                 document.querySelectorAll('.stock-badge').forEach(badge => {
                     badge.className = 'badge stock-badge error';
@@ -620,7 +663,7 @@
         function updateAnalyticsDisplay(data) {
             if (data.stock_analytics) {
                 const elements = {
-                    'checks-24h': data.stock_analytics.total_checks_24h,
+                    'checks-24h': data.stock_analytics.monitored_products,
                     'found-stock-24h': data.stock_analytics.in_stock_found_24h,
                     'avg-response': data.stock_analytics.avg_response_time + 'ms',
                     'purchase-success': (data.stealth_performance ? data.stealth_performance.success_rate : 100) + '%'
@@ -691,63 +734,56 @@
         
         async function startRealTimeUpdates() {
             console.log('🚀 Starting real-time updates...');
-            addLogEntry('Starting real-time updates...', 'info');
+            addLogEntry('🚀 Starting ultimate stealth monitoring system...', 'info');
+            
+            // Stop any existing timers
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
             
             try {
-                // Wait for initial data load to complete before starting cycles
-                console.log('⏳ Waiting for initial API responses...');
+                // Initial data load
+                const initStart = Date.now();
                 await Promise.all([
                     fetchAnalytics(),
                     fetchStatus(), 
                     fetchInitialStockStatus()
                 ]);
-                console.log('✅ Initial API responses completed - starting refresh cycle');
-                addLogEntry('Initial data loaded - starting refresh cycle', 'success');
                 
-                // Only start timers AFTER initial responses complete
-                // Random interval between 40-45 seconds to match backend
-                function getRandomInterval() {
-                    return Math.floor(Math.random() * 6) + 40; // Random 40-45 seconds
-                }
+                const initTime = Date.now() - initStart;
+                addLogEntry(`🎯 Initial data loaded (${initTime}ms) - System ready for monitoring`, 'success');
                 
-                let countdownSeconds = getRandomInterval();
-                let refreshIntervalMs = countdownSeconds * 1000;
+                // Simple countdown system
+                let countdown = Math.floor(Math.random() * 6) + 40; // 40-45 seconds
+                updateCountdownDisplay(countdown);
                 
                 refreshInterval = setInterval(async () => {
-                    if (!document.hidden) { // Only check if tab is visible
-                        console.log(`🔄 Starting ${countdownSeconds}s refresh cycle...`);
-                        addLogEntry('Checking stock status...', 'stock');
+                    countdown--;
+                    updateCountdownDisplay(countdown);
+                    
+                    if (countdown <= 0) {
+                        // Start refresh cycle
+                        const nextInterval = Math.floor(Math.random() * 6) + 40;
                         
-                        // Wait for all refresh calls to complete
-                        await Promise.all([
-                            fetchAnalytics(),
-                            fetchStatus(),
-                            fetchLiveStockStatus()
-                        ]);
+                        if (!document.hidden) {
+                            const refreshStart = Date.now();
+                            addLogEntry(`🔄 Starting refresh cycle...`, 'info');
+                            
+                            await Promise.all([
+                                fetchAnalytics(),
+                                fetchStatus(),
+                                fetchLiveStockStatus()
+                            ]);
+                            
+                            const refreshTime = Date.now() - refreshStart;
+                            addLogEntry(`✅ Refresh cycle complete (${refreshTime}ms) - Next check in ${nextInterval}s`, 'success');
+                        } else {
+                            addLogEntry(`⏸️ Refresh skipped (tab hidden) - Next check in ${nextInterval}s`, 'info');
+                        }
                         
-                        console.log(`✅ ${countdownSeconds}s refresh cycle completed`);
-                        addLogEntry('Refresh completed - data updated', 'success');
+                        // Reset countdown to new random number
+                        countdown = nextInterval;
                     }
-                    // Reset countdown with new random interval when it reaches 0 or negative
-                    if (countdownSeconds <= 0) {
-                        countdownSeconds = getRandomInterval(); // New random 40-45s interval
-                        // Update the interval for next cycle
-                        clearInterval(refreshInterval);
-                        refreshIntervalMs = countdownSeconds * 1000;
-                        // Restart with new random interval
-                        setTimeout(() => {
-                            refreshInterval = setInterval(arguments.callee, refreshIntervalMs);
-                        }, 0);
-                    }
-                }, refreshIntervalMs);
-                
-                // Countdown timer starts only after initial load
-                setInterval(() => {
-                    countdownSeconds--;
-                    if (countdownSeconds < 0) {
-                        countdownSeconds = getRandomInterval(); // Reset to new random interval when it goes negative
-                    }
-                    updateCountdownDisplay(countdownSeconds);
                 }, 1000);
                 
             } catch (error) {
@@ -767,6 +803,7 @@
         function stopRealTimeUpdates() {
             if (refreshInterval) {
                 clearInterval(refreshInterval);
+                refreshInterval = null;
             }
         }
         
@@ -857,8 +894,8 @@
         // Add initial log entry
         document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => {
-                addLogEntry('Live monitoring system initialized', 'success');
-                addLogEntry('Real-time stock checking every 3 minutes', 'info');
+                addLogEntry('Ultimate stealth dashboard initialized', 'success');
+                addLogEntry('Random refresh intervals: 40-45 seconds with advanced evasion', 'info');
             }, 1000);
         });
         
