@@ -296,6 +296,37 @@
             border: 1px solid rgba(88, 166, 255, 0.3);
         }
         
+        .badge.ready {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+        
+        .badge.attempting {
+            background: rgba(247, 133, 0, 0.15);
+            color: var(--warning-color);
+            border: 1px solid rgba(247, 133, 0, 0.3);
+            animation: pulse 1s ease-in-out infinite;
+        }
+        
+        .badge.cooldown {
+            background: rgba(139, 148, 158, 0.15);
+            color: var(--text-secondary);
+            border: 1px solid rgba(139, 148, 158, 0.3);
+        }
+        
+        .badge.failed {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+        
+        .badge.purchased {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-color);
+            border: 1px solid rgba(88, 166, 255, 0.3);
+        }
+        
         /* Buttons */
         .btn {
             display: inline-flex;
@@ -609,6 +640,19 @@
         // Store previous stock status for change detection
         let previousStockData = {};
         
+        async function fetchPurchaseStatus() {
+            try {
+                const response = await fetch('/api/purchase-status');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const data = await response.json();
+                updatePurchaseStatusDisplay(data);
+            } catch (error) {
+                console.error('Failed to fetch purchase status:', error);
+            }
+        }
+
         async function fetchLiveStockStatus() {
             try {
                 const startTime = Date.now();
@@ -711,6 +755,64 @@
         }
         
         
+        function updatePurchaseStatusDisplay(data) {
+            // Update purchase status badges
+            Object.entries(data).forEach(([tcin, purchaseInfo]) => {
+                const purchaseStatusBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .purchase-status-badge`);
+                purchaseStatusBadges.forEach(badge => {
+                    // Remove all status classes
+                    badge.classList.remove('ready', 'attempting', 'cooldown', 'failed', 'purchased');
+                    
+                    let displayText = '';
+                    let statusClass = '';
+                    
+                    switch (purchaseInfo.status) {
+                        case 'Ready':
+                            displayText = '✅ READY';
+                            statusClass = 'ready';
+                            break;
+                        case 'Purchasing':
+                            displayText = '🔄 PURCHASING';
+                            statusClass = 'attempting';
+                            break;
+                        case 'Purchase Success':
+                            if (purchaseInfo.cooldown_seconds > 0) {
+                                const successMinutes = Math.floor(purchaseInfo.cooldown_seconds / 60);
+                                const successSeconds = purchaseInfo.cooldown_seconds % 60;
+                                displayText = `✅ SUCCESS ${successMinutes}:${successSeconds.toString().padStart(2, '0')}`;
+                                statusClass = 'purchased';
+                            } else {
+                                displayText = '✅ READY';
+                                statusClass = 'ready';
+                            }
+                            break;
+                        case 'Purchase Failed':
+                            if (purchaseInfo.cooldown_seconds > 0) {
+                                const failedMinutes = Math.floor(purchaseInfo.cooldown_seconds / 60);
+                                const failedSeconds = purchaseInfo.cooldown_seconds % 60;
+                                displayText = `❌ FAILED ${failedMinutes}:${failedSeconds.toString().padStart(2, '0')}`;
+                                statusClass = 'failed';
+                            } else {
+                                displayText = '✅ READY';
+                                statusClass = 'ready';
+                            }
+                            break;
+                        default:
+                            displayText = '❓ UNKNOWN';
+                            statusClass = 'unknown';
+                    }
+                    
+                    badge.textContent = displayText;
+                    badge.classList.add(statusClass);
+                    
+                    // Add attempt count to tooltip
+                    if (purchaseInfo.attempt_count > 0) {
+                        badge.title = `Attempts: ${purchaseInfo.attempt_count}`;
+                    }
+                });
+            });
+        }
+
         function updateStockStatusDisplay(data) {
             // Update stock status badges in the products table
             let currentInStockCount = 0;
@@ -732,13 +834,16 @@
                 const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
                 stockBadges.forEach(badge => {
                     // Remove existing classes
-                    badge.classList.remove('in-stock', 'out-of-stock', 'unknown');
+                    badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting');
                     
                     // Add appropriate class and update text
                     if (stockInfo.status === 'IN_STOCK') {
                         badge.classList.add('in-stock');
                         badge.textContent = 'IN STOCK';
                         currentInStockCount++;
+                    } else if (stockInfo.status === 'Waiting for Refresh') {
+                        badge.classList.add('attempting');
+                        badge.textContent = 'WAITING FOR REFRESH';
                     } else if (stockInfo.status === 'NON_TARGET_SELLER') {
                         badge.classList.add('out-of-stock');
                         badge.textContent = 'NON-TARGET';
@@ -808,6 +913,7 @@
             if (refreshInterval) {
                 clearInterval(refreshInterval);
             }
+            stopPurchaseStatusTimer();
             
             try {
                 // Initial data load
@@ -815,14 +921,19 @@
                 await Promise.all([
                     fetchAnalytics(),
                     fetchStatus(), 
-                    fetchInitialStockStatus()
+                    fetchInitialStockStatus(),
+                    fetchPurchaseStatus()
                 ]);
                 
                 const initTime = Date.now() - initStart;
                 addLogEntry(`🎯 Initial data loaded (${initTime}ms) - System ready for monitoring`, 'success');
                 
-                // Simple countdown system
-                let countdown = Math.floor(Math.random() * 6) + 40; // 40-45 seconds
+                // Start separate purchase status countdown timer (1 second intervals)
+                startPurchaseStatusTimer();
+                addLogEntry('🛒 Purchase status countdown timer started (1s intervals)', 'info');
+                
+                // Simple countdown system - Updated for 3 calls per minute (15-25s intervals)
+                let countdown = Math.floor(Math.random() * 11) + 15; // 15-25 seconds
                 updateCountdownDisplay(countdown);
                 
                 refreshInterval = setInterval(async () => {
@@ -831,7 +942,7 @@
                     
                     if (countdown <= 0) {
                         // Start refresh cycle
-                        const nextInterval = Math.floor(Math.random() * 6) + 40;
+                        const nextInterval = Math.floor(Math.random() * 11) + 15;
                         
                         if (!document.hidden) {
                             const refreshStart = Date.now();
@@ -873,6 +984,7 @@
                 clearInterval(refreshInterval);
                 refreshInterval = null;
             }
+            stopPurchaseStatusTimer();
         }
         
         document.addEventListener('DOMContentLoaded', () => {
@@ -898,6 +1010,23 @@
             // Timestamp is now updated in fetchLiveStockStatus() based on actual API data
         });
         
+        // Purchase status countdown timer (separate from main refresh)
+        let purchaseStatusInterval;
+        
+        function startPurchaseStatusTimer() {
+            // Update purchase status countdowns every second
+            purchaseStatusInterval = setInterval(() => {
+                fetchPurchaseStatus();
+            }, 1000);
+        }
+        
+        function stopPurchaseStatusTimer() {
+            if (purchaseStatusInterval) {
+                clearInterval(purchaseStatusInterval);
+                purchaseStatusInterval = null;
+            }
+        }
+
         // Live Activity Logging System
         function addLogEntry(message, type = 'info') {
             const logContainer = document.getElementById('activity-log');
@@ -963,11 +1092,14 @@
         document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => {
                 addLogEntry('Ultimate stealth dashboard initialized', 'success');
-                addLogEntry('Random refresh intervals: 40-45 seconds with advanced evasion', 'info');
+                addLogEntry('Dual timer system: Stock checks 15-25s, Purchase countdowns 1s', 'info');
             }, 1000);
         });
         
-        window.addEventListener('beforeunload', stopRealTimeUpdates);
+        window.addEventListener('beforeunload', () => {
+            stopRealTimeUpdates();
+            stopPurchaseStatusTimer();
+        });
     </script>
 </head>
 <body>
@@ -1062,6 +1194,7 @@
                                 <th>Monitor</th>
                                 <th>Preorder</th>
                                 <th>Stock Status</th>
+                                <th>Purchase Status</th>
                                 <th>Actions</th>
                             </tr>
                         </thead>
@@ -1114,6 +1247,11 @@
                                             <span class="loading"></span> CHECKING...
                                         </span>
                                     {% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge purchase-status-badge" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}">
+                                        ✅ READY
+                                    </span>
                                 </td>
                                 <td>
                                     <a href="{{ product.url }}" target="_blank" class="btn btn-outline">

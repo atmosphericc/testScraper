@@ -27,7 +27,8 @@
       "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
       "Read(/C:\\Users\\elric\\Desktop\\testScraper\\config/**)",
       "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
-      "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)"
+      "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []
