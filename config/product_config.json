@@ -1,64 +1,46 @@
 {
   "products": [
     {
-      "tcin": "94336414",
-      "name": "Test Regular Product 1",
+      "tcin": "94886127",
+      "name": "Product 1",
       "enabled": true,
-      "max_price": 25.0
+      "max_price": 180.0
     },
-        {
-      "tcin": "94681770",
-      "name": "Test Regular Product 2",
+    {
+      "tcin": "94300072",
+      "name": "Product 2",
       "enabled": true,
-      "max_price": 32.0
+      "max_price": 100.0
     },
-        {
-      "tcin": "94687409",
-      "name": "Test Preorder 3",
+    {
+      "tcin": "94864079",
+      "name": "Product 3",
       "enabled": true,
-      "max_price": 27.0
+      "max_price": 80.0
     },
-        {
-      "tcin": "94687407",
-      "name": "Test Preorder 4",
+    {
+      "tcin": "94724987",
+      "name": "Product 4",
       "enabled": true,
-      "max_price": 27.0
+      "max_price": 70.0
     },
-        {
-      "tcin": "94636856",
-      "name": "Test Regular Product 5",
+    {
+      "tcin": "93954435",
+      "name": "Product 5",
       "enabled": true,
-      "max_price": 35.0
+      "max_price": 55.0
     },
-        {
+    {
       "tcin": "94681776",
-      "name": "Test Preorder 6",
+      "name": "Product 6",
       "enabled": true,
       "max_price": 55.0
     },
-        {
+    {
       "tcin": "94681784",
-      "name": "Test Preorder 7",
+      "name": "Product 7",
       "enabled": true,
       "max_price": 55.0
-    },
-    {
-      "tcin": "94681782",
-      "name": "Test Preorder 8",
-      "enabled": true,
-      "max_price": 30.0
-    },
-    {
-      "tcin": "94734932",
-      "name": "Test Preorder 9",
-      "enabled": true,
-      "max_price": 50.0
-    },
-    {
-      "tcin": "89542109",
-      "name": "Test Regular Product 10",
-      "enabled": true,
-      "max_price": 15.0
     }
   ]
 }

@@ -27,6 +27,7 @@ import sqlite3
 import os
 import ssl
 import socket
+import html
 from typing import Dict, List, Any, Tuple
 from urllib3.util.ssl_ import create_urllib3_context
 from requests.adapters import HTTPAdapter
@@ -657,40 +658,61 @@ class UltimateStealthBatchChecker:
             fulfillment = product_summary.get('fulfillment', {})
             shipping = fulfillment.get('shipping_options', {})
             
+            # Check seller - only trust Target direct sales (relationship_type_code = SA)
+            relationship_code = item.get('relationship_type_code', 'UNKNOWN')
+            is_target_direct = relationship_code == 'SA'
+            
+            if is_target_direct:
+                print(f"✅ {tcin}: Target direct sale (SA)")
+            else:
+                print(f"🚫 {tcin}: Not Target direct ({relationship_code}) - will block")
+            
             # Detect if this is a preorder
             is_preorder = is_preorder_item(fulfillment)
             
             # Determine availability based on product type
             availability_status = shipping.get('availability_status', 'UNKNOWN')
             
+            # Determine base availability
             if is_preorder:
                 # For preorders, use PRE_ORDER_SELLABLE/UNSELLABLE logic
-                is_available = availability_status == 'PRE_ORDER_SELLABLE'
-                print(f"🎯 Preorder {tcin}: {availability_status} -> {'AVAILABLE' if is_available else 'UNAVAILABLE'}")
+                base_available = availability_status == 'PRE_ORDER_SELLABLE'
+                print(f"🎯 Preorder {tcin}: {availability_status} -> {'AVAILABLE' if base_available else 'UNAVAILABLE'}")
             else:
                 # For regular products, use IN_STOCK logic
-                is_available = availability_status == 'IN_STOCK'
-                print(f"📦 Regular {tcin}: {availability_status} -> {'AVAILABLE' if is_available else 'UNAVAILABLE'}")
+                base_available = availability_status == 'IN_STOCK'
+                print(f"📦 Regular {tcin}: {availability_status} -> {'AVAILABLE' if base_available else 'UNAVAILABLE'}")
             
-            # Normalize status - IN_STOCK or OUT_OF_STOCK only
-            normalized_status = 'IN_STOCK' if is_available else 'OUT_OF_STOCK'
+            # Final availability = base availability AND Target direct seller
+            is_available = base_available and is_target_direct
+            
+            # Determine status message
+            if not base_available:
+                normalized_status = 'OUT_OF_STOCK'
+            elif not is_target_direct:
+                normalized_status = 'NON_TARGET_SELLER'
+            else:
+                normalized_status = 'IN_STOCK'
             
             # Get street date for preorders
             street_date = None
             if is_preorder:
                 street_date = item.get('mmbv_content', {}).get('street_date')
             
+            # Properly decode HTML entities in product name
+            raw_name = product_desc.get('title', 'Unknown Product')
+            clean_name = html.unescape(raw_name)  # This handles all HTML entities including &#39;
+            
             # Build dashboard-compatible result
             result = {
                 'available': is_available,
                 'status': normalized_status,
-                'name': product_desc.get('title', config_product.get('name', 'Unknown Product')).replace('&#233;', 'é').replace('&#38;', '&').replace('&#8212;', '—'),
+                'name': clean_name,
                 'tcin': tcin,
                 'last_checked': datetime.now().isoformat(),
                 'quantity': 1 if is_available else 0,
                 'availability_status': availability_status,  # Keep original for debugging
                 'sold_out': not is_available,
-                'price': config_product.get('max_price', 0),
                 'response_time': stealth_analytics.analytics_data['average_response_time'],
                 'confidence': 'high',
                 'method': 'ultimate_stealth_batch',
@@ -698,6 +720,10 @@ class UltimateStealthBatchChecker:
                 
                 # Store availability
                 'store_available': not fulfillment.get('is_out_of_stock_in_all_store_locations', True),
+                
+                # Seller verification
+                'is_target_direct': is_target_direct,
+                'seller_code': relationship_code,
                 
                 # Preorder-specific fields
                 'is_preorder': is_preorder,
@@ -819,15 +845,31 @@ def index():
     config = stealth_checker.get_config()
     timestamp = datetime.now()
     
-    # Add product URLs
+    # Get latest stock data
+    with latest_data_lock:
+        stock_data = latest_stock_data.copy()
+    
+    # Add product URLs and populate with latest data if available
     for product in config.get('products', []):
         tcin = product.get('tcin')
         if tcin:
             product['url'] = f"https://www.target.com/p/-/A-{tcin}"
-    
-    # Create status with stealth info
-    with latest_data_lock:
-        stock_data = latest_stock_data.copy()
+            
+            # If we have current data for this product, use it for immediate display
+            if tcin in stock_data:
+                api_data = stock_data[tcin]
+                product['display_name'] = api_data.get('name', product.get('name', 'Unknown Product'))
+                product['available'] = api_data.get('available', False)
+                product['stock_status'] = api_data.get('status', 'UNKNOWN')
+                product['is_preorder'] = api_data.get('is_preorder', False)
+                product['street_date'] = api_data.get('street_date')
+                product['is_target_direct'] = api_data.get('is_target_direct', True)
+                product['seller_code'] = api_data.get('seller_code', 'UNKNOWN')
+                # Mark that we have data
+                product['has_data'] = True
+            else:
+                # No data available yet - will show loading states
+                product['has_data'] = False
         
     status = {
         'monitoring': True,

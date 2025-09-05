@@ -22,7 +22,12 @@
       "Bash(echo:*)",
       "WebFetch(domain:github.com)",
       "Bash(cat:*)",
-      "WebFetch(domain:gist.github.com)"
+      "WebFetch(domain:gist.github.com)",
+      "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
+      "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
+      "Read(/C:\\Users\\elric\\Desktop\\testScraper\\config/**)",
+      "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
+      "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)"
     ],
     "deny": [],
     "ask": []

@@ -716,6 +716,18 @@
             let currentInStockCount = 0;
             
             Object.entries(data).forEach(([tcin, stockInfo]) => {
+                // Update product names from API
+                const productNameElements = document.querySelectorAll(`[data-tcin="${tcin}"] .product-name`);
+                productNameElements.forEach(nameElement => {
+                    if (stockInfo.name && stockInfo.name !== 'Unknown Product') {
+                        nameElement.textContent = stockInfo.name;
+                        // Add pulse animation to show it's been updated
+                        nameElement.classList.add('pulse');
+                        setTimeout(() => nameElement.classList.remove('pulse'), 1000);
+                    }
+                });
+                
+                
                 // Update stock badges
                 const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
                 stockBadges.forEach(badge => {
@@ -727,6 +739,10 @@
                         badge.classList.add('in-stock');
                         badge.textContent = 'IN STOCK';
                         currentInStockCount++;
+                    } else if (stockInfo.status === 'NON_TARGET_SELLER') {
+                        badge.classList.add('out-of-stock');
+                        badge.textContent = 'NON-TARGET';
+                        badge.title = `Seller: ${stockInfo.seller_code || 'Unknown'}`;
                     } else if (stockInfo.status === 'OUT_OF_STOCK') {
                         badge.classList.add('out-of-stock');
                         badge.textContent = 'OUT OF STOCK';
@@ -1043,7 +1059,6 @@
                             <tr>
                                 <th>TCIN</th>
                                 <th>Product Name</th>
-                                <th>Max Price</th>
                                 <th>Monitor</th>
                                 <th>Preorder</th>
                                 <th>Stock Status</th>
@@ -1059,14 +1074,9 @@
                                     </code>
                                 </td>
                                 <td>
-                                    <div style="max-width: 350px; font-weight: 500;">
-                                        {{ product.display_name or product.dynamic_name or product.name or 'Unknown Product' }}
+                                    <div style="max-width: 350px; font-weight: 500;" class="product-name">
+                                        {{ product.display_name or product.name or 'Loading...' }}
                                     </div>
-                                </td>
-                                <td>
-                                    <span style="font-weight: 600; color: var(--success-color);">
-                                        ${{ "%.2f"|format(product.max_price) }}
-                                    </span>
                                 </td>
                                 <td>
                                     <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
@@ -1074,27 +1084,31 @@
                                     </span>
                                 </td>
                                 <td>
-                                    <span class="badge preorder preorder-badge" data-tcin="{{ product.tcin }}" style="display: none;">
+                                    <span class="badge preorder preorder-badge" data-tcin="{{ product.tcin }}" 
+                                          style="display: {{ 'inline-flex' if product.has_data and product.is_preorder else 'none' }}"
+                                          {% if product.street_date %}title="Pre-order - Releases {{ product.street_date }}"{% endif %}>
                                         PREORDER
                                     </span>
                                 </td>
                                 <td>
-                                    {% if product.stock_status == 'initializing' %}
-                                        <span class="badge stock-badge unknown">
-                                            <span class="loading"></span> STARTING...
-                                        </span>
-                                    {% elif product.available %}
-                                        <span class="badge stock-badge in-stock">
-                                            ✅ IN STOCK
-                                        </span>
-                                    {% elif product.stock_status == 'success' and not product.available %}
-                                        <span class="badge stock-badge out-of-stock">
-                                            ❌ OUT OF STOCK
-                                        </span>
-                                    {% elif product.stock_status == 'error' %}
-                                        <span class="badge stock-badge error">
-                                            ⚠️ ERROR
-                                        </span>
+                                    {% if product.has_data %}
+                                        {% if product.stock_status == 'IN_STOCK' %}
+                                            <span class="badge stock-badge in-stock">
+                                                ✅ IN STOCK
+                                            </span>
+                                        {% elif product.stock_status == 'NON_TARGET_SELLER' %}
+                                            <span class="badge stock-badge out-of-stock">
+                                                🚫 NON-TARGET
+                                            </span>
+                                        {% elif product.stock_status == 'OUT_OF_STOCK' %}
+                                            <span class="badge stock-badge out-of-stock">
+                                                ❌ OUT OF STOCK
+                                            </span>
+                                        {% else %}
+                                            <span class="badge stock-badge unknown">
+                                                ❓ {{ product.stock_status }}
+                                            </span>
+                                        {% endif %}
                                     {% else %}
                                         <span class="badge stock-badge unknown">
                                             <span class="loading"></span> CHECKING...
