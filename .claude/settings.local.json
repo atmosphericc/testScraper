@@ -30,7 +30,8 @@
       "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
       "Bash(find:*)",
       "Bash(git restore:*)",
-      "Bash(del nul)"
+      "Bash(del nul)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
