@@ -38,10 +38,10 @@ try:
     import curl_cffi
     from curl_cffi import requests as cf_requests
     CURL_CFFI_AVAILABLE = True
-    print("🔥 curl_cffi available - Advanced TLS fingerprinting enabled for F5/Shape evasion")
+    print("curl_cffi available - Advanced TLS fingerprinting enabled for F5/Shape evasion")
 except ImportError:
     CURL_CFFI_AVAILABLE = False
-    print("⚠️ curl_cffi not available - using standard requests (consider: pip install curl_cffi)")
+    print("[WARN] curl_cffi not available - using standard requests (consider: pip install curl_cffi)")
 
 try:
     import pytz
@@ -64,9 +64,10 @@ last_update_time = None
 purchase_cooldowns = {}  # {tcin: {'status': 'ready/attempting/cooldown', 'cooldown_until': datetime, 'last_attempt': datetime}}
 purchase_lock = threading.Lock()
 
-# Stock status override for purchase attempts
-stock_status_override = {}  # {tcin: 'Waiting for Refresh'} - overrides stock display during purchases
+# Stock status override for "Waiting for Refresh" after purchase completion
+stock_status_override = {}  # {tcin: 'Waiting for Refresh'}
 stock_override_lock = threading.Lock()
+
 
 def init_purchase_status(tcin):
     """Initialize purchase status for a product"""
@@ -90,8 +91,16 @@ def can_attempt_purchase(tcin):
             init_purchase_status(tcin)
             
         status_info = purchase_cooldowns[tcin]
-        if status_info['status'] == 'cooldown' and status_info['cooldown_until']:
-            return datetime.now() >= status_info['cooldown_until']
+        
+        # Ensure status is always a valid value
+        if status_info['status'] not in ['ready', 'attempting', 'purchased', 'failed', 'cooldown']:
+            status_info['status'] = 'ready'
+        
+        # Check if cooldown has expired for any cooldown status
+        if status_info['status'] in ['cooldown', 'purchased', 'failed'] and status_info['cooldown_until']:
+            if datetime.now() >= status_info['cooldown_until']:
+                status_info['status'] = 'ready'
+                status_info['cooldown_until'] = None
         
         return status_info['status'] in ['ready']
 
@@ -109,21 +118,13 @@ def set_purchase_status(tcin, status, cooldown_minutes=None):
         
         if status == 'attempting':
             purchase_cooldowns[tcin]['attempt_count'] += 1
+        
+        # CRITICAL FIX: Set stock override IMMEDIATELY when purchase completes (success or failure)
+        # This ensures "Waiting for Refresh" appears instantly when purchase status changes
+        elif status in ['purchased', 'failed']:
+            set_stock_waiting_for_response(tcin)
+            print(f"[TRIGGER #1] Purchase completed for {tcin} - stock status set to 'Waiting for Refresh' IMMEDIATELY")
 
-def set_stock_override(tcin, override_status):
-    """Set stock status override during purchase attempts"""
-    with stock_override_lock:
-        stock_status_override[tcin] = override_status
-
-def clear_stock_override(tcin):
-    """Clear stock status override"""
-    with stock_override_lock:
-        stock_status_override.pop(tcin, None)
-
-def get_stock_override(tcin):
-    """Get stock status override if exists"""
-    with stock_override_lock:
-        return stock_status_override.get(tcin)
 
 def get_purchase_status(tcin):
     """Get current purchase status for display"""
@@ -142,10 +143,28 @@ def get_purchase_status(tcin):
             if datetime.now() >= status_info['cooldown_until']:
                 status_info['status'] = 'ready'
                 status_info['cooldown_until'] = None
-                # Clear stock override when cooldown expires
-                clear_stock_override(tcin)
         
         return status_info.copy()
+
+def set_stock_waiting_for_response(tcin):
+    """Set stock status to 'Waiting for Refresh' after purchase completion"""
+    with stock_override_lock:
+        stock_status_override[tcin] = 'Waiting for Refresh'
+        print(f"[REFRESH] Stock status set to 'Waiting for Refresh' for {tcin}")
+
+def clear_all_stock_overrides():
+    """Clear all stock status overrides on refresh"""
+    with stock_override_lock:
+        cleared_count = len(stock_status_override)
+        if cleared_count > 0:
+            print(f"[REFRESH] Clearing {cleared_count} 'Waiting for Refresh' overrides - showing real API status")
+            stock_status_override.clear()
+        return cleared_count
+
+def get_stock_override(tcin):
+    """Get stock status override if exists"""
+    with stock_override_lock:
+        return stock_status_override.get(tcin)
 
 def trigger_purchase_attempts_for_in_stock_products():
     """Check all in-stock products and trigger purchase attempts if ready"""
@@ -158,6 +177,10 @@ def trigger_purchase_attempts_for_in_stock_products():
         if product_data.get('available') and can_attempt_purchase(tcin):
             product_name = product_data.get('name', 'Unknown Product')
             
+            # Set purchase status to 'attempting' IMMEDIATELY (before thread starts)
+            set_purchase_status(tcin, 'attempting')
+            add_activity_log(f"[CART] Purchase attempt started for {product_name} (TCIN: {tcin}) - Purchase: Processing", 'purchase')
+            
             # Start async purchase attempt in a thread to avoid blocking API response
             def start_purchase_attempt():
                 try:
@@ -166,20 +189,21 @@ def trigger_purchase_attempts_for_in_stock_products():
                     loop.run_until_complete(mock_purchase_attempt(tcin, product_name))
                     loop.close()
                 except Exception as e:
-                    print(f"❌ Purchase attempt error for {tcin}: {e}")
+                    print(f"[ERROR] Purchase attempt error for {tcin}: {e}")
+                    # Set failed status on error - this now automatically sets stock override
+                    set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)
             
             purchase_thread = threading.Thread(target=start_purchase_attempt, daemon=True)
             purchase_thread.start()
-            print(f"🛒 Dashboard refresh triggered purchase attempt for {tcin} ({product_name})")
+            print(f"[CART] Dashboard refresh triggered purchase attempt for {tcin} ({product_name})")
         elif product_data.get('available'):
-            print(f"⏳ Product {tcin} in stock but in cooldown period (not ready)")
+            print(f"[WAIT] Product {tcin} in stock but in cooldown period (not ready)")
 
 async def mock_purchase_attempt(tcin, product_name):
     """Mock purchase attempt with realistic timing and potential failure"""
     try:
-        # Set purchase status to attempting (stock status remains unchanged during attempt)
-        set_purchase_status(tcin, 'attempting')
-        add_activity_log(f"🛒 Mock purchase attempt started for {product_name} (TCIN: {tcin}) - Purchase: Purchasing", 'purchase')
+        # Purchase status was already set to 'attempting' when this function was called
+        print(f"[CART] Executing mock purchase for {product_name} (TCIN: {tcin})...")
         
         # Simulate checkout steps with human-like timing
         await asyncio.sleep(random.uniform(2, 4))  # Add to cart
@@ -191,20 +215,17 @@ async def mock_purchase_attempt(tcin, product_name):
         success = random.random() < 0.5
         
         if success:
-            set_purchase_status(tcin, 'purchased', cooldown_minutes=10/60)  # 10 second cooldown after success
-            set_stock_override(tcin, 'Waiting for Refresh')  # Stock shows "Waiting for Refresh" after purchase
-            add_activity_log(f"✅ Mock purchase SUCCESS for {product_name} - Stock: Waiting for Refresh, Purchase: Success with 10s cooldown", 'success')
+            set_purchase_status(tcin, 'purchased', cooldown_minutes=10/60)  # This now automatically sets stock override
+            add_activity_log(f"[OK] Mock purchase SUCCESS for {product_name} - Stock: Waiting for Refresh, Purchase: Success with 10s cooldown", 'success')
             return True
         else:
-            set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)  # 10 second cooldown on failure
-            set_stock_override(tcin, 'Waiting for Refresh')  # Stock shows "Waiting for Refresh" after failed attempt too
-            add_activity_log(f"❌ Mock purchase FAILED for {product_name} - Stock: Waiting for Refresh, Purchase: Failed with 10s cooldown", 'error')
+            set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)  # This now automatically sets stock override
+            add_activity_log(f"[ERROR] Mock purchase FAILED for {product_name} - Stock: Waiting for Refresh, Purchase: Failed with 10s cooldown", 'error')
             return False
             
     except Exception as e:
-        set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)
-        set_stock_override(tcin, 'Waiting for Refresh')  # Stock shows "Waiting for Refresh" after error too
-        add_activity_log(f"❌ Mock purchase ERROR for {product_name}: {e} - Stock: Waiting for Refresh, Purchase: Failed with 10s cooldown", 'error')
+        set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)  # This now automatically sets stock override
+        add_activity_log(f"[ERROR] Mock purchase ERROR for {product_name}: {e} - Stock: Waiting for Refresh, Purchase: Failed with 10s cooldown", 'error')
         return False
 
 # Stealth analytics tracking
@@ -382,7 +403,7 @@ class SessionWarmupManager:
                 'Upgrade-Insecure-Requests': '1'
             })
             
-            print(f"🔥 F5/Shape evasion: Warming session with {warmup_url}")
+            print(f"[HOT] F5/Shape evasion: Warming session with {warmup_url}")
             
             warmup_response = session.get(
                 warmup_url,
@@ -395,11 +416,11 @@ class SessionWarmupManager:
             time.sleep(random.uniform(2, 5))
             
             self.last_warmup_time = datetime.now()
-            print(f"✅ Session warmup complete: {warmup_response.status_code}")
+            print(f"[OK] Session warmup complete: {warmup_response.status_code}")
             return True
             
         except Exception as e:
-            print(f"⚠️ Session warmup failed: {e}")
+            print(f"[WARN] Session warmup failed: {e}")
             return False
 
 # Initialize F5/Shape evasion components
@@ -681,7 +702,7 @@ class UltimateStealthBatchChecker:
         # F5/Shape evasion: Check for human break patterns
         if human_behavior.should_take_human_break():
             break_duration = human_behavior.get_break_duration()
-            print(f"😴 F5/Shape evasion: Taking human break for {break_duration/60:.1f} minutes...")
+            print(f"[TIRED] F5/Shape evasion: Taking human break for {break_duration/60:.1f} minutes...")
             time.sleep(break_duration)
         
         # Extract TCINs for batch call
@@ -709,7 +730,7 @@ class UltimateStealthBatchChecker:
                 session = cf_requests.Session(impersonate="firefox119")
             else:
                 session = cf_requests.Session(impersonate="chrome120")
-            print(f"🔥 F5/Shape evasion: Advanced TLS fingerprinting enabled")
+            print(f"[HOT] F5/Shape evasion: Advanced TLS fingerprinting enabled")
         else:
             # Fallback to standard session
             session, cookies = self.create_stealth_session()
@@ -719,7 +740,7 @@ class UltimateStealthBatchChecker:
         
         # F5/Shape evasion: Session warmup before API call
         if session_warmer.needs_warmup():
-            print(f"🔥 F5/Shape evasion: Session warmup starting...")
+            print(f"[HOT] F5/Shape evasion: Session warmup starting...")
             session_warmer.warmup_session(session, headers)
             # Human delay between warmup and API call
             time.sleep(random.uniform(3, 8))
@@ -736,15 +757,15 @@ class UltimateStealthBatchChecker:
         
         try:
             start_time = time.time()
-            print(f"🔄 Ultimate stealth + F5 evasion batch call: {len(tcins)} products, API key: {api_key[:8]}...")
-            print(f"🎭 User-Agent: {headers['user-agent'][:60]}...")
-            print(f"🔥 F5/Shape evasion: {'Advanced TLS' if CURL_CFFI_AVAILABLE else 'Standard'}, Session warmup: {'Yes' if session_warmer.last_warmup_time else 'No'}")
+            print(f"[REFRESH] Ultimate stealth + F5 evasion batch call: {len(tcins)} products, API key: {api_key[:8]}...")
+            print(f"[STEALTH] User-Agent: {headers['user-agent'][:60]}...")
+            print(f"[HOT] F5/Shape evasion: {'Advanced TLS' if CURL_CFFI_AVAILABLE else 'Standard'}, Session warmup: {'Yes' if session_warmer.last_warmup_time else 'No'}")
             
             # Update human behavior tracking
             human_behavior.requests_this_session += 1
             human_behavior.last_request_time = datetime.now()
             cookies_count = len(session.cookies) if hasattr(session, 'cookies') else 0
-            print(f"🍪 Cookies: {cookies_count} rotating, Headers: {len(headers)} randomized")
+            print(f"[COOKIES] {cookies_count} rotating, Headers: {len(headers)} randomized")
             
             response = session.get(
                 self.batch_endpoint, 
@@ -757,7 +778,7 @@ class UltimateStealthBatchChecker:
             response_time = (end_time - start_time) * 1000
             
             if response.status_code == 200:
-                print(f"✅ Stealth batch success: {response_time:.0f}ms")
+                print(f"[OK] Stealth batch success: {response_time:.0f}ms")
                 data = response.json()
                 processed_data = self.process_batch_response(data, enabled_products)
                 
@@ -766,12 +787,12 @@ class UltimateStealthBatchChecker:
                 
                 return processed_data
             else:
-                print(f"❌ Stealth batch failed: HTTP {response.status_code}")
+                print(f"[ERROR] Stealth batch failed: HTTP {response.status_code}")
                 stealth_analytics.record_batch_check(response_time, False, stealth_data)
                 return {}
                 
         except Exception as e:
-            print(f"❌ Stealth batch exception: {e}")
+            print(f"[ERROR] Stealth batch exception: {e}")
             stealth_analytics.record_batch_check(0, False, stealth_data)
             return {}
         finally:
@@ -780,25 +801,25 @@ class UltimateStealthBatchChecker:
     def process_batch_response(self, data, enabled_products):
         """Convert batch API response to dashboard format with stealth preservation and preorder support"""
         if not data or 'data' not in data or 'product_summaries' not in data['data']:
-            print("❌ Invalid batch response structure")
+            print("[ERROR] Invalid batch response structure")
             print(f"Response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
             return {}
             
         product_summaries = data['data']['product_summaries']
         processed_data = {}
         
-        print(f"📊 Processing {len(product_summaries)} products from batch response...")
+        print(f"[DATA] Processing {len(product_summaries)} products from batch response...")
         
         for product_summary in product_summaries:
             tcin = product_summary.get('tcin')
             if not tcin:
-                print("⚠️  Product missing TCIN, skipping...")
+                print("[WARN] Product missing TCIN, skipping...")
                 continue
                 
             # Find matching config product
             config_product = next((p for p in enabled_products if p['tcin'] == tcin), None)
             if not config_product:
-                print(f"⚠️  TCIN {tcin} not found in config, skipping...")
+                print(f"[WARN]  TCIN {tcin} not found in config, skipping...")
                 continue
                 
             # Extract product information
@@ -818,9 +839,9 @@ class UltimateStealthBatchChecker:
             relationship_code = item.get('relationship_type_code', 'UNKNOWN')
             
             if is_target_direct:
-                print(f"✅ {tcin}: Target direct sale (is_marketplace: {is_marketplace})")
+                print(f"[OK] {tcin}: Target direct sale (is_marketplace: {is_marketplace})")
             else:
-                print(f"🚫 {tcin}: MARKETPLACE SELLER (is_marketplace: {is_marketplace}) - treating as OUT_OF_STOCK")
+                print(f"[BLOCKED] {tcin}: MARKETPLACE SELLER (is_marketplace: {is_marketplace}) - treating as OUT_OF_STOCK")
             
             # Detect if this is a preorder
             is_preorder = is_preorder_item(fulfillment)
@@ -832,11 +853,11 @@ class UltimateStealthBatchChecker:
             if is_preorder:
                 # For preorders, use PRE_ORDER_SELLABLE/UNSELLABLE logic
                 base_available = availability_status == 'PRE_ORDER_SELLABLE'
-                print(f"🎯 Preorder {tcin}: {availability_status} -> {'AVAILABLE' if base_available else 'UNAVAILABLE'}")
+                print(f"[TARGET] Preorder {tcin}: {availability_status} -> {'AVAILABLE' if base_available else 'UNAVAILABLE'}")
             else:
                 # For regular products, use IN_STOCK logic
                 base_available = availability_status == 'IN_STOCK'
-                print(f"📦 Regular {tcin}: {availability_status} -> {'AVAILABLE' if base_available else 'UNAVAILABLE'}")
+                print(f"[PACKAGE] Regular {tcin}: {availability_status} -> {'AVAILABLE' if base_available else 'UNAVAILABLE'}")
             
             # Get street date for preorders
             street_date = None
@@ -856,15 +877,10 @@ class UltimateStealthBatchChecker:
             else:
                 normalized_status = 'IN_STOCK'
             
-            # Clear stock override on API refresh so actual stock status shows
-            # Purchase status will reset after cooldown expires naturally
-            if get_stock_override(tcin):
-                clear_stock_override(tcin)
-                print(f"🔄 Stock override cleared for {tcin} - showing actual API status: {normalized_status}")
             
             # Purchase logic moved to dashboard API endpoint - only triggered on dashboard refresh
             if is_available:
-                print(f"📦 Product {tcin} in stock and ready for purchase on next dashboard refresh")
+                print(f"[PACKAGE] Product {tcin} in stock and ready for purchase on next dashboard refresh")
             
             # Build dashboard-compatible result
             result = {
@@ -902,7 +918,7 @@ class UltimateStealthBatchChecker:
             
             processed_data[tcin] = result
             preorder_text = " (PREORDER)" if is_preorder else ""
-            print(f"✅ Processed {tcin}: {normalized_status}{preorder_text} - {result['name'][:30]}...")
+            print(f"[OK] Processed {tcin}: {normalized_status}{preorder_text} - {result['name'][:30]}...")
             
         return processed_data
 
@@ -913,7 +929,7 @@ def perform_initial_stealth_batch_check():
     """Perform initial stealth batch check"""
     global latest_stock_data, initial_check_completed, last_update_time
     
-    print("🚀 Starting initial ULTIMATE STEALTH batch check...")
+    print("[INIT] Starting initial ULTIMATE STEALTH batch check...")
     start_time = time.time()
     
     # Initialize purchase status for all enabled products
@@ -923,7 +939,7 @@ def perform_initial_stealth_batch_check():
         tcin = product.get('tcin')
         if tcin:
             init_purchase_status(tcin)
-    print(f"🛒 Initialized purchase status for {len(enabled_products)} products")
+    print(f"[CART] Initialized purchase status for {len(enabled_products)} products")
     
     try:
         batch_data = stealth_checker.make_ultimate_stealth_batch_call()
@@ -936,19 +952,19 @@ def perform_initial_stealth_batch_check():
         elapsed = (time.time() - start_time) * 1000
         in_stock_count = sum(1 for r in batch_data.values() if r.get('available'))
         
-        print(f"✅ Initial stealth batch complete: {len(batch_data)} products ({in_stock_count} in stock) in {elapsed:.0f}ms")
-        print(f"🎭 Stealth metrics: UA rotated, API key rotated, {len(get_rotating_cookies())} cookies, {len(get_ultra_stealth_headers())} headers")
+        print(f"[OK] Initial stealth batch complete: {len(batch_data)} products ({in_stock_count} in stock) in {elapsed:.0f}ms")
+        print(f"[STEALTH] Stealth metrics: UA rotated, API key rotated, {len(get_rotating_cookies())} cookies, {len(get_ultra_stealth_headers())} headers")
         
         # Trigger purchase attempts for any in-stock products found on bootup
         if in_stock_count > 0:
-            print(f"🛒 Found {in_stock_count} products in stock on bootup - triggering immediate purchase attempts")
+            print(f"[CART] Found {in_stock_count} products in stock on bootup - triggering immediate purchase attempts")
             trigger_purchase_attempts_for_in_stock_products()
         
         # Log to activity
         add_activity_log(f"Initial batch check complete: {len(batch_data)} products ({in_stock_count} in stock) in {elapsed:.0f}ms", 'success')
         
     except Exception as e:
-        print(f"❌ Initial stealth batch failed: {e}")
+        print(f"[ERROR] Initial stealth batch failed: {e}")
         with latest_data_lock:
             latest_stock_data = {}
             initial_check_completed = True
@@ -958,32 +974,39 @@ def background_stealth_batch_monitor():
     """Background stealth batch monitor with F5/Shape evasion human behavior timing"""
     global latest_stock_data, last_update_time
     
-    print("🔄 Starting background ULTIMATE STEALTH + F5/Shape evasion batch monitor...")
-    print("🧠 Timing: Human behavior simulation (fatigue, time-of-day, breaks)")
+    print("[REFRESH] Starting background ULTIMATE STEALTH + F5/Shape evasion batch monitor...")
+    print("[BRAIN] Timing: Human behavior simulation (fatigue, time-of-day, breaks)")
     
     while True:
         try:
             # F5/Shape evasion: Use human behavior timing instead of fixed intervals
             human_delay = human_behavior.get_human_delay()
             
-            active_hours = "🌞 Active" if human_behavior.is_human_active_hours() else "🌙 Off-hours"
-            fatigue = f"😴 {human_behavior.fatigue_factor:.2f}x"
+            active_hours = "[DAY] Active" if human_behavior.is_human_active_hours() else "[NIGHT] Off-hours"
+            fatigue = f"[TIRED] {human_behavior.fatigue_factor:.2f}x"
             
-            print(f"⏱️  Next F5/Shape evasion batch call in {human_delay:.1f}s ({active_hours}, Fatigue: {fatigue})")
+            print(f"[TIME]  Next F5/Shape evasion batch call in {human_delay:.1f}s ({active_hours}, Fatigue: {fatigue})")
             time.sleep(human_delay)
             
-            print(f"📊 Background F5/Shape evasion + stealth batch refresh...")
-            print(f"🧠 Human session: {human_behavior.requests_this_session} requests, fatigue: {human_behavior.fatigue_factor:.2f}")
+            print(f"[DATA] Background F5/Shape evasion + stealth batch refresh...")
+            print(f"[BRAIN] Human session: {human_behavior.requests_this_session} requests, fatigue: {human_behavior.fatigue_factor:.2f}")
             
             batch_data = stealth_checker.make_ultimate_stealth_batch_call()
             
+            # CRITICAL FIX: Always clear overrides on every background refresh, regardless of API success/failure
+            # This ensures "Waiting for Refresh" status always gets cleared after timer expires
+            cleared_count = clear_all_stock_overrides()
+            if cleared_count > 0:
+                print(f"[REFRESH] Timer expired - cleared {cleared_count} 'Waiting for Refresh' overrides (showing API data)")
+            
             if batch_data:
+                # Update with fresh API data
                 with latest_data_lock:
                     latest_stock_data = batch_data
                     last_update_time = datetime.now()
                 
                 in_stock_count = sum(1 for r in batch_data.values() if r.get('available'))
-                print(f"✅ F5/Shape evasion batch refresh complete: {len(batch_data)} products ({in_stock_count} in stock)")
+                print(f"[OK] F5/Shape evasion batch refresh complete: {len(batch_data)} products ({in_stock_count} in stock)")
                 
                 # Log to activity  
                 add_activity_log(f"Batch refresh complete: {len(batch_data)} products ({in_stock_count} in stock)", 'success')
@@ -991,24 +1014,24 @@ def background_stealth_batch_monitor():
                 # Reset break flag periodically (like humans)
                 if human_behavior.requests_this_session % 50 == 0:
                     human_behavior.break_taken_this_hour = False
-                    print("🔄 Human behavior: Break flag reset (like humans)")
+                    print("[REFRESH] Human behavior: Break flag reset (like humans)")
                     
             else:
-                print("❌ F5/Shape evasion batch refresh failed - keeping previous data")
+                print("[ERROR] F5/Shape evasion batch refresh failed - but overrides still cleared to show previous API data")
                 
         except Exception as e:
-            print(f"❌ Background F5/Shape evasion batch error: {e}")
+            print(f"[ERROR] Background F5/Shape evasion batch error: {e}")
             time.sleep(60)  # Longer wait on error for human-like recovery
 
 # Initialize system
-print("🎯" + "="*80)
-print("🚀 ULTIMATE BATCH API WITH FULL STEALTH INTEGRATION")
-print("🎯" + "="*80)
-print("📡 Endpoint: product_summary_with_fulfillment_v1 (batch)")
-print("🎭 Stealth: 50+ user agents, 30+ API keys, rotating cookies/headers")
-print("📊 Strategy: Batch API + 15-25s random intervals (3 calls/min)")
-print("🔐 Rate Limiting: 87% fewer calls + full anti-detection")
-print("🎯" + "="*80)
+print("=" + "="*80)
+print("ULTIMATE BATCH API WITH FULL STEALTH INTEGRATION")
+print("=" + "="*80)
+print("[ENDPOINT] product_summary_with_fulfillment_v1 (batch)")
+print("[STEALTH] 50+ user agents, 30+ API keys, rotating cookies/headers")
+print("[STRATEGY] Batch API + 15-25s random intervals (3 calls/min)")
+print("[RATE LIMITING] 87% fewer calls + full anti-detection")
+print("=" + "="*80)
 
 # Perform initial check
 perform_initial_stealth_batch_check()
@@ -1077,33 +1100,69 @@ def index():
 @app.route('/api/live-stock-status')
 def api_live_stock_status():
     """Live stock status from stealth batch data - triggers purchase attempts on dashboard refresh"""
-    print("📱 Dashboard refresh detected - checking for purchase opportunities...")
+    print("[MOBILE] Dashboard refresh detected - checking for purchase opportunities...")
     
-    # Trigger purchase attempts for in-stock ready products
-    trigger_purchase_attempts_for_in_stock_products()
-    
+    # Get current stock data first
     with latest_data_lock:
         stock_data = latest_stock_data.copy()
     
-    # Apply stock status overrides for products being purchased
+    # Apply existing "Waiting for Refresh" overrides FIRST
     for tcin in stock_data.keys():
         override = get_stock_override(tcin)
         if override:
             stock_data[tcin] = stock_data[tcin].copy()  # Don't modify original
             stock_data[tcin]['status'] = override
+            print(f"[REFRESH] Applied stock override for {tcin}: {override}")
     
-    return jsonify(stock_data)
+    # DO NOT clear overrides here - they should persist until background refresh updates data
+    # Overrides are only cleared when fresh API data comes from background monitor
+    
+    # Check if API data is available
+    print(f"[DEBUG] live-stock-status: stock_data = {stock_data}, len = {len(stock_data)}")
+    if not stock_data or len(stock_data) == 0:
+        # Return error response when API data is empty (API likely blocked/failed)
+        print("[ERROR] API data is empty - returning API_BLOCKED error")
+        return jsonify({
+            'success': False,
+            'error': 'API_BLOCKED',
+            'message': 'Target API is currently blocked or unavailable (HTTP 404)',
+            'products': [],
+            'timestamp': datetime.now().isoformat()
+        })
+    
+    # Trigger purchase attempts for in-stock ready products 
+    trigger_purchase_attempts_for_in_stock_products()
+    
+    return jsonify({
+        'success': True,
+        'products': list(stock_data.values()),
+        'timestamp': datetime.now().isoformat()
+    })
 
 @app.route('/api/initial-stock-check')
 def api_initial_stock_check():
-    """Initial stock check - stealth batch format - triggers purchases if in stock"""
-    print("📱 Initial page load detected - checking for immediate purchase opportunities...")
+    """Initial stock check - stealth batch format - shows clean data on page load"""
+    print("[MOBILE] Initial page load detected - clearing overrides and showing clean stock data...")
     
-    # Trigger purchase attempts for in-stock ready products on page load
-    trigger_purchase_attempts_for_in_stock_products()
+    # Clear all "Waiting for Refresh" overrides on initial page load to show clean API status
+    clear_all_stock_overrides()
     
     with latest_data_lock:
         stock_data = latest_stock_data.copy()
+    
+    # Check if API data is available
+    print(f"[DEBUG] initial-stock-check: stock_data = {stock_data}, len = {len(stock_data)}")
+    if not stock_data or len(stock_data) == 0:
+        # Return error response when API data is empty (API likely blocked/failed)
+        print("[ERROR] API data is empty - returning API_BLOCKED error")
+        return jsonify({
+            'success': False,
+            'error': 'API_BLOCKED',
+            'message': 'Target API is currently blocked or unavailable (HTTP 404)',
+            'products': [],
+            'timestamp': datetime.now().isoformat(),
+            'method': 'ultimate_stealth_batch'
+        })
     
     products_array = []
     for tcin, data in stock_data.items():
@@ -1248,23 +1307,23 @@ if __name__ == '__main__':
     product_count = get_enabled_product_count()
     
     # Add startup logging
-    add_activity_log("🚀 Ultimate stealth dashboard starting up...", 'info')
-    add_activity_log(f"📊 Monitoring {product_count} enabled products with advanced evasion", 'info')
-    add_activity_log("🎭 F5/Shape evasion: JA3/JA4 spoofing, behavioral patterns, proxy rotation", 'info')
+    add_activity_log("[START] Ultimate stealth dashboard starting up...", 'info')
+    add_activity_log(f"[DATA] Monitoring {product_count} enabled products with advanced evasion", 'info')
+    add_activity_log("[STEALTH] F5/Shape evasion: JA3/JA4 spoofing, behavioral patterns, proxy rotation", 'info')
     
-    print("\n🎯" + "="*80)
-    print("🚀 ULTIMATE STEALTH + F5/SHAPE EVASION DASHBOARD - PRODUCTION READY")
-    print("🎯" + "="*80)
-    print(f"📊 Products: {product_count} enabled")
-    print(f"⚡ Performance: {stealth_analytics.analytics_data['average_response_time']:.0f}ms batch calls")
-    print(f"🎭 Stealth: 50+ UAs, 30+ APIs, rotating cookies/headers")
-    print(f"🔥 F5/Shape Evasion: Session warmup, human behavior, TLS fingerprinting")
-    print(f"🧠 Human Behavior: Fatigue simulation, time-of-day awareness, break patterns")
-    print(f"🔄 Timing: 15-25s intervals with human behavior simulation")
-    print(f"📈 Status: {sum(1 for r in latest_stock_data.values() if r.get('available'))} products in stock")
-    print(f"🎯" + "="*80)
-    print(f"🌍 Dashboard: http://localhost:5001")
-    print(f"🔥 Features: F5/Shape evasion + ultimate stealth + batch efficiency")
-    print(f"🎯" + "="*80)
+    print("\n[TARGET]" + "="*80)
+    print("[DASHBOARD] ULTIMATE STEALTH + F5/SHAPE EVASION DASHBOARD - PRODUCTION READY")
+    print("=" + "="*80)
+    print(f"[PRODUCTS] {product_count} enabled")
+    print(f"[PERFORMANCE] {stealth_analytics.analytics_data['average_response_time']:.0f}ms batch calls")
+    print("[STEALTH] 50+ UAs, 30+ APIs, rotating cookies/headers")
+    print("[F5/SHAPE EVASION] Session warmup, human behavior, TLS fingerprinting")
+    print("[HUMAN BEHAVIOR] Fatigue simulation, time-of-day awareness, break patterns")
+    print("[TIMING] 15-25s intervals with human behavior simulation")
+    print(f"[STATUS] {sum(1 for r in latest_stock_data.values() if r.get('available'))} products in stock")
+    print("[READY] " + "="*80)
+    print("Dashboard: http://localhost:5001")
+    print(f"[HOT] Features: F5/Shape evasion + ultimate stealth + batch efficiency")
+    print("[READY] " + "="*80)
     
     app.run(host='127.0.0.1', port=5001, debug=False, threaded=True)

@@ -28,7 +28,9 @@
       "Read(/C:\\Users\\elric\\Desktop\\testScraper\\config/**)",
       "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
       "Read(/C:\\Users\\elric\\Desktop\\testScraper/**)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(git restore:*)",
+      "Bash(del nul)"
     ],
     "deny": [],
     "ask": []

@@ -584,7 +584,7 @@
                 const data = await response.json();
                 console.log('Initial stock data received:', data);
                 
-                if (data.success && data.products) {
+                if (data.success && data.products && data.products.length > 0) {
                     // Convert to the format expected by updateLiveStockDisplay
                     const formattedData = {};
                     data.products.forEach(product => {
@@ -624,7 +624,13 @@
                     }
                     
                 } else {
-                    throw new Error(data.error || 'Initial stock check failed');
+                    // Handle case where API succeeds but returns no products (empty array)
+                    console.warn('⚠️ API returned no products - showing API unavailable state');
+                    document.querySelectorAll('.stock-badge').forEach(badge => {
+                        badge.className = 'badge stock-badge error';
+                        badge.innerHTML = '🚫 API UNAVAILABLE';
+                    });
+                    throw new Error(data.error || 'No product data available - API may be blocked or rate limited');
                 }
                 
             } catch (error) {
@@ -639,6 +645,9 @@
         
         // Store previous stock status for change detection
         let previousStockData = {};
+        
+        // Store previous purchase status for change detection
+        let previousPurchaseStatus = {};
         
         async function fetchPurchaseStatus() {
             try {
@@ -684,7 +693,8 @@
                     }
                 });
                 
-                // Update display
+                // TRIGGER #2: Next check refresh - update all stock statuses based on API response
+                console.log(`🎯 TRIGGER #2: Next check refresh updating stock status for ${Object.keys(data).length} products`);
                 updateStockStatusDisplay(data);
                 previousStockData = JSON.parse(JSON.stringify(data)); // Deep copy
                 
@@ -810,6 +820,31 @@
                         badge.title = `Attempts: ${purchaseInfo.attempt_count}`;
                     }
                 });
+                
+                // TRIGGER #1: Detect purchase status changes and immediately update stock status to "Waiting for Refresh"
+                const currentPurchaseStatus = purchaseInfo.status;
+                const previousStatus = previousPurchaseStatus[tcin];
+                
+                // Check if purchase just completed (changed from "Purchasing" to "Success" or "Failed")
+                if (previousStatus === 'Purchasing' && 
+                    (currentPurchaseStatus === 'Purchase Success' || currentPurchaseStatus === 'Purchase Failed')) {
+                    
+                    console.log(`🎯 TRIGGER #1: Purchase completed for ${tcin} (${previousStatus} → ${currentPurchaseStatus})`);
+                    console.log(`🔄 Setting stock status to "Waiting for Refresh" immediately...`);
+                    
+                    // Immediately update stock status badge to "Waiting for Refresh"
+                    const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
+                    stockBadges.forEach(badge => {
+                        badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting');
+                        badge.classList.add('attempting');
+                        badge.textContent = 'WAITING FOR REFRESH';
+                        badge.classList.add('pulse');
+                        setTimeout(() => badge.classList.remove('pulse'), 1000);
+                    });
+                }
+                
+                // Store current status for next comparison
+                previousPurchaseStatus[tcin] = currentPurchaseStatus;
             });
         }
 
