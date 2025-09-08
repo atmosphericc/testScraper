@@ -646,8 +646,7 @@
         // Store previous stock status for change detection
         let previousStockData = {};
         
-        // Store previous purchase status for change detection
-        let previousPurchaseStatus = {};
+        // Simplified - no intermediate state tracking needed
         
         async function fetchPurchaseStatus() {
             try {
@@ -821,30 +820,8 @@
                     }
                 });
                 
-                // TRIGGER #1: Detect purchase status changes and immediately update stock status to "Waiting for Refresh"
-                const currentPurchaseStatus = purchaseInfo.status;
-                const previousStatus = previousPurchaseStatus[tcin];
-                
-                // Check if purchase just completed (changed from "Purchasing" to "Success" or "Failed")
-                if (previousStatus === 'Purchasing' && 
-                    (currentPurchaseStatus === 'Purchase Success' || currentPurchaseStatus === 'Purchase Failed')) {
-                    
-                    console.log(`🎯 TRIGGER #1: Purchase completed for ${tcin} (${previousStatus} → ${currentPurchaseStatus})`);
-                    console.log(`🔄 Setting stock status to "Waiting for Refresh" immediately...`);
-                    
-                    // Immediately update stock status badge to "Waiting for Refresh"
-                    const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
-                    stockBadges.forEach(badge => {
-                        badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting');
-                        badge.classList.add('attempting');
-                        badge.textContent = 'WAITING FOR REFRESH';
-                        badge.classList.add('pulse');
-                        setTimeout(() => badge.classList.remove('pulse'), 1000);
-                    });
-                }
-                
-                // Store current status for next comparison
-                previousPurchaseStatus[tcin] = currentPurchaseStatus;
+                // Simple flow - no intermediate waiting states
+                console.log(`📦 Purchase status update for ${tcin}: ${purchaseInfo.status}`);
             });
         }
 
@@ -876,9 +853,7 @@
                         badge.classList.add('in-stock');
                         badge.textContent = 'IN STOCK';
                         currentInStockCount++;
-                    } else if (stockInfo.status === 'Waiting for Refresh') {
-                        badge.classList.add('attempting');
-                        badge.textContent = 'WAITING FOR REFRESH';
+                    // "Waiting for Refresh" state removed - direct stock status only
                     } else if (stockInfo.status === 'NON_TARGET_SELLER') {
                         badge.classList.add('out-of-stock');
                         badge.textContent = 'NON-TARGET';

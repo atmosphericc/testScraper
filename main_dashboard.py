@@ -65,8 +65,7 @@ purchase_cooldowns = {}  # {tcin: {'status': 'ready/attempting/cooldown', 'coold
 purchase_lock = threading.Lock()
 
 # Stock status override for "Waiting for Refresh" after purchase completion
-stock_status_override = {}  # {tcin: 'Waiting for Refresh'}
-stock_override_lock = threading.Lock()
+# Stock override system removed for simplicity - direct stock status display
 
 
 def init_purchase_status(tcin):
@@ -119,11 +118,9 @@ def set_purchase_status(tcin, status, cooldown_minutes=None):
         if status == 'attempting':
             purchase_cooldowns[tcin]['attempt_count'] += 1
         
-        # CRITICAL FIX: Set stock override IMMEDIATELY when purchase completes (success or failure)
-        # This ensures "Waiting for Refresh" appears instantly when purchase status changes
+        # Purchase complete - stock status will show current API data directly
         elif status in ['purchased', 'failed']:
-            set_stock_waiting_for_response(tcin)
-            print(f"[TRIGGER #1] Purchase completed for {tcin} - stock status set to 'Waiting for Refresh' IMMEDIATELY")
+            print(f"[PURCHASE] Purchase completed for {tcin} with status: {status}")
 
 
 def get_purchase_status(tcin):
@@ -146,25 +143,7 @@ def get_purchase_status(tcin):
         
         return status_info.copy()
 
-def set_stock_waiting_for_response(tcin):
-    """Set stock status to 'Waiting for Refresh' after purchase completion"""
-    with stock_override_lock:
-        stock_status_override[tcin] = 'Waiting for Refresh'
-        print(f"[REFRESH] Stock status set to 'Waiting for Refresh' for {tcin}")
-
-def clear_all_stock_overrides():
-    """Clear all stock status overrides on refresh"""
-    with stock_override_lock:
-        cleared_count = len(stock_status_override)
-        if cleared_count > 0:
-            print(f"[REFRESH] Clearing {cleared_count} 'Waiting for Refresh' overrides - showing real API status")
-            stock_status_override.clear()
-        return cleared_count
-
-def get_stock_override(tcin):
-    """Get stock status override if exists"""
-    with stock_override_lock:
-        return stock_status_override.get(tcin)
+# Stock override functions removed - using direct stock status from API only
 
 def trigger_purchase_attempts_for_in_stock_products():
     """Check all in-stock products and trigger purchase attempts if ready"""
@@ -993,11 +972,7 @@ def background_stealth_batch_monitor():
             
             batch_data = stealth_checker.make_ultimate_stealth_batch_call()
             
-            # CRITICAL FIX: Always clear overrides on every background refresh, regardless of API success/failure
-            # This ensures "Waiting for Refresh" status always gets cleared after timer expires
-            cleared_count = clear_all_stock_overrides()
-            if cleared_count > 0:
-                print(f"[REFRESH] Timer expired - cleared {cleared_count} 'Waiting for Refresh' overrides (showing API data)")
+            # Background refresh - stock status shows current API data directly
             
             if batch_data:
                 # Update with fresh API data
@@ -1106,16 +1081,7 @@ def api_live_stock_status():
     with latest_data_lock:
         stock_data = latest_stock_data.copy()
     
-    # Apply existing "Waiting for Refresh" overrides FIRST
-    for tcin in stock_data.keys():
-        override = get_stock_override(tcin)
-        if override:
-            stock_data[tcin] = stock_data[tcin].copy()  # Don't modify original
-            stock_data[tcin]['status'] = override
-            print(f"[REFRESH] Applied stock override for {tcin}: {override}")
-    
-    # DO NOT clear overrides here - they should persist until background refresh updates data
-    # Overrides are only cleared when fresh API data comes from background monitor
+    # Stock data displayed directly from API - no overrides
     
     # Check if API data is available
     print(f"[DEBUG] live-stock-status: stock_data = {stock_data}, len = {len(stock_data)}")
@@ -1144,8 +1110,7 @@ def api_initial_stock_check():
     """Initial stock check - stealth batch format - shows clean data on page load"""
     print("[MOBILE] Initial page load detected - clearing overrides and showing clean stock data...")
     
-    # Clear all "Waiting for Refresh" overrides on initial page load to show clean API status
-    clear_all_stock_overrides()
+    # Initial page load - show current stock data directly from API
     
     with latest_data_lock:
         stock_data = latest_stock_data.copy()
