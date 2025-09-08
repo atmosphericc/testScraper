@@ -118,17 +118,22 @@ def simulate_api_call():
     print(f"Stock data with overrides: {stock_data}")
     
     # Clear all overrides for next refresh cycle AFTER applying them to response
-    clear_all_stock_overrides()
+    cleared_overrides_count = clear_all_stock_overrides()
     
-    # Check if we should trigger purchases (simulate the trigger logic)
-    for tcin, product_data in stock_data.items():
-        if product_data.get('available') and can_attempt_purchase(tcin):
-            print(f"Triggering purchase for {tcin}")
-            # Set purchase status to 'attempting' IMMEDIATELY
-            set_purchase_status(tcin, 'attempting')
-            print(f"Purchase status set to 'attempting' for {tcin}")
-        else:
-            print(f"Not triggering purchase for {tcin} - available: {product_data.get('available')}, can_attempt: {can_attempt_purchase(tcin)}")
+    # Only trigger purchase attempts if NO overrides were cleared (meaning this is a fresh check, not post-purchase refresh)
+    if cleared_overrides_count == 0:
+        print("No overrides cleared - triggering purchase attempts for fresh in-stock products")
+        # Check if we should trigger purchases (simulate the trigger logic)
+        for tcin, product_data in stock_data.items():
+            if product_data.get('available') and can_attempt_purchase(tcin):
+                print(f"Triggering purchase for {tcin}")
+                # Set purchase status to 'attempting' IMMEDIATELY
+                set_purchase_status(tcin, 'attempting')
+                print(f"Purchase status set to 'attempting' for {tcin}")
+            else:
+                print(f"Not triggering purchase for {tcin} - available: {product_data.get('available')}, can_attempt: {can_attempt_purchase(tcin)}")
+    else:
+        print(f"{cleared_overrides_count} override(s) cleared - skipping purchase triggers to avoid double purchases")
     
     return stock_data
 

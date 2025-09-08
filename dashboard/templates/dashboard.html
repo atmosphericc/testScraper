@@ -672,11 +672,19 @@
                 }
                 const data = await response.json();
                 
+                // Convert products array to object keyed by TCIN
+                const productData = {};
+                if (data.products && Array.isArray(data.products)) {
+                    data.products.forEach(product => {
+                        productData[product.tcin] = product;
+                    });
+                }
+                
                 // Check for stock changes
                 let stockChanges = [];
                 let inStockCount = 0;
                 
-                Object.entries(data).forEach(([tcin, item]) => {
+                Object.entries(productData).forEach(([tcin, item]) => {
                     if (item.available) inStockCount++;
                     
                     // Check if stock status changed
@@ -693,12 +701,12 @@
                 });
                 
                 // TRIGGER #2: Next check refresh - update all stock statuses based on API response
-                console.log(`🎯 TRIGGER #2: Next check refresh updating stock status for ${Object.keys(data).length} products`);
-                updateStockStatusDisplay(data);
-                previousStockData = JSON.parse(JSON.stringify(data)); // Deep copy
+                console.log(`🎯 TRIGGER #2: Next check refresh updating stock status for ${Object.keys(productData).length} products`);
+                updateStockStatusDisplay(productData);
+                previousStockData = JSON.parse(JSON.stringify(productData)); // Deep copy
                 
                 // Log stock check results
-                addLogEntry(`Stock check complete (${responseTime}ms) - ${Object.keys(data).length} products, ${inStockCount} in stock`, 'success');
+                addLogEntry(`Stock check complete (${responseTime}ms) - ${Object.keys(productData).length} products, ${inStockCount} in stock`, 'success');
                 
                 // Log any stock changes
                 stockChanges.forEach(change => {
@@ -825,7 +833,18 @@
             });
         }
 
-        function updateStockStatusDisplay(data) {
+        async function updateStockStatusDisplay(data) {
+            // Get current purchase statuses to override during active purchases
+            let purchaseStatuses = {};
+            try {
+                const purchaseResponse = await fetch('/api/purchase-status');
+                if (purchaseResponse.ok) {
+                    purchaseStatuses = await purchaseResponse.json();
+                }
+            } catch (error) {
+                console.error('Failed to fetch purchase status:', error);
+            }
+            
             // Update stock status badges in the products table
             let currentInStockCount = 0;
             
@@ -848,8 +867,30 @@
                     // Remove existing classes
                     badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting');
                     
-                    // Add appropriate class and update text
-                    if (stockInfo.status === 'IN_STOCK') {
+                    // Check purchase status for override logic
+                    const purchaseInfo = purchaseStatuses[tcin];
+                    
+                    // Priority order for stock status display:
+                    // 1. If currently attempting purchase -> show "PURCHASING..."  
+                    // 2. If purchase completed but awaiting refresh -> show "Waiting for Refresh"
+                    // 3. Otherwise show actual stock status from API
+                    
+                    const isAttempting = purchaseInfo && purchaseInfo.internal_status === 'attempting';
+                    const isWaitingForRefresh = stockInfo.status === 'Waiting for Refresh';
+                    
+                    if (isAttempting) {
+                        // Show PURCHASING during active attempt (until purchase completes)
+                        badge.classList.add('attempting');
+                        badge.textContent = 'PURCHASING...';
+                        badge.classList.add('pulse');
+                        console.log(`🛒 ${tcin}: Showing PURCHASING... (attempt in progress)`);
+                    } else if (isWaitingForRefresh) {
+                        // Show waiting state after purchase completes (until next refresh)
+                        badge.classList.add('attempting');
+                        badge.textContent = 'Waiting for Refresh';
+                        badge.classList.add('pulse');
+                        console.log(`⏳ ${tcin}: Waiting for next refresh to show updated stock status`);
+                    } else if (stockInfo.status === 'IN_STOCK') {
                         badge.classList.add('in-stock');
                         badge.textContent = 'IN STOCK';
                         currentInStockCount++;
@@ -938,9 +979,11 @@
                 const initTime = Date.now() - initStart;
                 addLogEntry(`🎯 Initial data loaded (${initTime}ms) - System ready for monitoring`, 'success');
                 
-                // Start separate purchase status countdown timer (1 second intervals)
-                startPurchaseStatusTimer();
-                addLogEntry('🛒 Purchase status countdown timer started (1s intervals)', 'info');
+                // Purchase status updates now come via WebSocket - no more polling!
+                addLogEntry('🛒 Purchase status updates via WebSocket - no more polling timers', 'info');
+                
+                // Completely disable purchase status polling timer
+                // startPurchaseStatusTimer(); // DISABLED - WebSocket only
                 
                 // Simple countdown system - Updated for 3 calls per minute (15-25s intervals)
                 let countdown = Math.floor(Math.random() * 11) + 15; // 15-25 seconds
@@ -1024,10 +1067,12 @@
         let purchaseStatusInterval;
         
         function startPurchaseStatusTimer() {
-            // Update purchase status countdowns every second
-            purchaseStatusInterval = setInterval(() => {
-                fetchPurchaseStatus();
-            }, 1000);
+            // DISABLED: Purchase status updates now come via WebSocket only
+            console.log('🛑 Purchase status timer disabled - using WebSocket updates only');
+            addLogEntry('🛑 Purchase status via WebSocket (no HTTP polling)', 'info');
+            // purchaseStatusInterval = setInterval(() => {
+            //     fetchPurchaseStatus();
+            // }, 1000);
         }
         
         function stopPurchaseStatusTimer() {
@@ -1098,11 +1143,12 @@
             originalUpdateStockStatusDisplay(data);
         };
         
-        // Add initial log entry
+        // Add initial log entry and initialize WebSocket
         document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => {
                 addLogEntry('Ultimate stealth dashboard initialized', 'success');
-                addLogEntry('Dual timer system: Stock checks 15-25s, Purchase countdowns 1s', 'info');
+                addLogEntry('WebSocket real-time updates: Stock & Purchase status synced with refresh timer', 'info');
+                initializeWebSocket();
             }, 1000);
         });
         
@@ -1110,6 +1156,109 @@
             stopRealTimeUpdates();
             stopPurchaseStatusTimer();
         });
+    </script>
+    <!-- Socket.IO client library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script>
+        // WebSocket Real-time Updates
+        let socket;
+        
+        function initializeWebSocket() {
+            socket = io();
+            
+            socket.on('connect', function() {
+                console.log('🟢 WebSocket connected - Real-time updates enabled');
+                addLogEntry('🟢 Real-time WebSocket connection established', 'success');
+            });
+            
+            socket.on('disconnect', function() {
+                console.log('🔴 WebSocket disconnected');
+                addLogEntry('🔴 WebSocket connection lost - attempting reconnect...', 'error');
+            });
+            
+            // Listen for stock data updates
+            socket.on('stock_update', function(data) {
+                console.log('📦 Received real-time stock update:', data);
+                addLogEntry('📦 Real-time stock update received', 'info');
+                updateStockStatusDisplay(data);
+            });
+            
+            // Listen for purchase status updates
+            socket.on('purchase_status_update', function(data) {
+                console.log('💳 WebSocket purchase status update:', data);
+                addLogEntry(`💳 WebSocket: ${data.status} for TCIN ${data.tcin}`, 'info');
+                
+                // Update purchase status in UI immediately
+                updatePurchaseStatusForTcin(data.tcin, data.status);
+                
+                // For completed purchases, sync countdown with main timer
+                if (data.status === 'purchased' || data.status === 'failed') {
+                    console.log(`🔄 Syncing purchase timer for ${data.tcin} with main countdown`);
+                    // Small delay to ensure UI is updated first
+                    setTimeout(() => {
+                        syncPurchaseCountdownWithMainTimer(data.tcin);
+                    }, 100);
+                }
+            });
+        }
+        
+        function updatePurchaseStatusForTcin(tcin, status) {
+            // Update purchase status display for specific product
+            const purchaseElements = document.querySelectorAll(`[data-tcin="${tcin}"] .purchase-status`);
+            purchaseElements.forEach(element => {
+                element.textContent = status.toUpperCase();
+                element.classList.remove('ready', 'attempting', 'purchased', 'failed');
+                element.classList.add(status.toLowerCase());
+            });
+        }
+        
+        function syncPurchaseCountdownWithMainTimer(tcin) {
+            console.log(`🔄 Starting timer sync for TCIN ${tcin}`);
+            
+            // Get the current main timer countdown from the top-right display
+            const countdownElement = document.getElementById('next-check-countdown');
+            if (!countdownElement) {
+                console.warn(`⚠️ Main countdown element not found for sync`);
+                return;
+            }
+            
+            const remainingSeconds = parseInt(countdownElement.textContent) || 0;
+            console.log(`🔄 Main timer shows ${remainingSeconds}s remaining`);
+            
+            // Find ALL purchase status elements for this TCIN
+            const selectors = [
+                `[data-tcin="${tcin}"] .purchase-status`,
+                `.purchase-status[data-tcin="${tcin}"]`,
+                `.purchase-status`
+            ];
+            
+            let elementsUpdated = 0;
+            selectors.forEach(selector => {
+                const elements = document.querySelectorAll(selector);
+                elements.forEach(element => {
+                    const elementTcin = element.getAttribute('data-tcin') || element.closest('[data-tcin]')?.getAttribute('data-tcin');
+                    if (elementTcin === tcin || selector === '.purchase-status') {
+                        const currentText = element.textContent || '';
+                        let statusWord = 'SUCCESS';
+                        
+                        // Determine status word from current text
+                        if (currentText.toLowerCase().includes('fail')) {
+                            statusWord = 'FAILED';
+                        } else if (currentText.toLowerCase().includes('success') || currentText.toLowerCase().includes('purchased')) {
+                            statusWord = 'SUCCESS';
+                        }
+                        
+                        // Update with synchronized countdown
+                        const newText = `${statusWord} (${remainingSeconds}s)`;
+                        element.textContent = newText;
+                        elementsUpdated++;
+                        console.log(`🔄 Updated element: "${currentText}" → "${newText}"`);
+                    }
+                });
+            });
+            
+            console.log(`✅ Timer sync complete: Updated ${elementsUpdated} elements with ${remainingSeconds}s countdown for TCIN ${tcin}`);
+        }
     </script>
 </head>
 <body>

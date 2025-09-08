@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 import logging
 import sqlite3
 import os
@@ -49,10 +50,13 @@ try:
 except ImportError:
     PYTZ_AVAILABLE = False
 
-# Initialize Flask app
+# Initialize Flask app with SocketIO
 app = Flask(__name__, template_folder='dashboard/templates')
 CORS(app)
 app.secret_key = 'ultimate-batch-stealth-2025'
+
+# Initialize SocketIO for real-time updates
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Global data storage with thread safety
 latest_stock_data = {}
@@ -65,7 +69,8 @@ purchase_cooldowns = {}  # {tcin: {'status': 'ready/attempting/cooldown', 'coold
 purchase_lock = threading.Lock()
 
 # Stock status override for "Waiting for Refresh" after purchase completion
-# Stock override system removed for simplicity - direct stock status display
+stock_status_override = {}
+stock_override_lock = threading.Lock()
 
 
 def init_purchase_status(tcin):
@@ -84,24 +89,28 @@ def init_purchase_status(tcin):
                 purchase_cooldowns[tcin]['status'] = 'ready'
 
 def can_attempt_purchase(tcin):
-    """Check if product can be purchased (not in cooldown)"""
+    """Simple purchase check - only prevent if already attempting"""
     with purchase_lock:
         if tcin not in purchase_cooldowns:
             init_purchase_status(tcin)
-            
+        
         status_info = purchase_cooldowns[tcin]
         
-        # Ensure status is always a valid value
-        if status_info['status'] not in ['ready', 'attempting', 'purchased', 'failed', 'cooldown']:
-            status_info['status'] = 'ready'
-        
-        # Check if cooldown has expired for any cooldown status
-        if status_info['status'] in ['cooldown', 'purchased', 'failed'] and status_info['cooldown_until']:
-            if datetime.now() >= status_info['cooldown_until']:
+        # Only prevent if currently attempting purchase
+        return status_info['status'] != 'attempting'
+
+def reset_expired_purchase_statuses():
+    """Reset purchase statuses that have completed back to 'ready' - synchronized with refresh cycle"""
+    with purchase_lock:
+        reset_count = 0
+        for tcin, status_info in purchase_cooldowns.items():
+            if status_info['status'] in ['purchased', 'failed']:
                 status_info['status'] = 'ready'
                 status_info['cooldown_until'] = None
+                reset_count += 1
         
-        return status_info['status'] in ['ready']
+        if reset_count > 0:
+            print(f"[SYNC] Reset {reset_count} purchase statuses to 'ready' for new refresh cycle")
 
 def set_purchase_status(tcin, status, cooldown_minutes=None):
     """Set purchase status and optional cooldown"""
@@ -118,8 +127,18 @@ def set_purchase_status(tcin, status, cooldown_minutes=None):
         if status == 'attempting':
             purchase_cooldowns[tcin]['attempt_count'] += 1
         
+        # Emit WebSocket update for purchase status change
+        try:
+            socketio.emit('purchase_status_update', {
+                'tcin': tcin,
+                'status': status,
+                'timestamp': datetime.now().isoformat()
+            })
+        except Exception as e:
+            print(f"[WEBSOCKET] Failed to emit purchase status update: {e}")
+        
         # Purchase complete - stock status will show current API data directly
-        elif status in ['purchased', 'failed']:
+        if status in ['purchased', 'failed']:
             print(f"[PURCHASE] Purchase completed for {tcin} with status: {status}")
 
 
@@ -143,7 +162,38 @@ def get_purchase_status(tcin):
         
         return status_info.copy()
 
-# Stock override functions removed - using direct stock status from API only
+def set_stock_waiting_for_response(tcin):
+    """Set stock status to 'Waiting for Refresh' after purchase completion"""
+    with stock_override_lock:
+        stock_status_override[tcin] = 'Waiting for Refresh'
+        print(f"[REFRESH] Stock status set to 'Waiting for Refresh' for {tcin}")
+
+def clear_all_stock_overrides():
+    """Clear all stock status overrides on refresh"""
+    with stock_override_lock:
+        cleared_count = len(stock_status_override)
+        if cleared_count > 0:
+            print(f"[REFRESH] Clearing {cleared_count} 'Waiting for Refresh' overrides - showing real API status")
+            stock_status_override.clear()
+        return cleared_count
+
+def reset_purchase_statuses_for_new_cycle():
+    """Reset purchase statuses to 'ready' for new refresh cycle (once per refresh logic)"""
+    with purchase_lock:
+        reset_count = 0
+        for tcin, status_info in purchase_cooldowns.items():
+            if status_info['status'] in ['purchased', 'failed']:
+                status_info['status'] = 'ready'
+                status_info['cooldown_until'] = None
+                reset_count += 1
+        if reset_count > 0:
+            print(f"[REFRESH] Reset {reset_count} purchase statuses to 'ready' for new refresh cycle")
+        return reset_count
+
+def get_stock_override(tcin):
+    """Get stock status override if exists"""
+    with stock_override_lock:
+        return stock_status_override.get(tcin)
 
 def trigger_purchase_attempts_for_in_stock_products():
     """Check all in-stock products and trigger purchase attempts if ready"""
@@ -184,26 +234,29 @@ async def mock_purchase_attempt(tcin, product_name):
         # Purchase status was already set to 'attempting' when this function was called
         print(f"[CART] Executing mock purchase for {product_name} (TCIN: {tcin})...")
         
-        # Simulate checkout steps with human-like timing
-        await asyncio.sleep(random.uniform(2, 4))  # Add to cart
-        await asyncio.sleep(random.uniform(1, 2))  # Go to cart
-        await asyncio.sleep(random.uniform(2, 3))  # Checkout page
-        await asyncio.sleep(random.uniform(1, 2))  # Payment info
+        # Simulate checkout steps with faster timing for testing
+        await asyncio.sleep(0.5)  # Add to cart
+        await asyncio.sleep(0.5)  # Go to cart
+        await asyncio.sleep(0.5)  # Checkout page
+        await asyncio.sleep(0.5)  # Payment info
         
         # Random success/failure (50% success rate for testing)
         success = random.random() < 0.5
         
         if success:
-            set_purchase_status(tcin, 'purchased', cooldown_minutes=10/60)  # This now automatically sets stock override
+            set_purchase_status(tcin, 'purchased', cooldown_minutes=10/60)
+            set_stock_waiting_for_response(tcin)  # Set stock override
             add_activity_log(f"[OK] Mock purchase SUCCESS for {product_name} - Stock: Waiting for Refresh, Purchase: Success with 10s cooldown", 'success')
             return True
         else:
-            set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)  # This now automatically sets stock override
+            set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)
+            set_stock_waiting_for_response(tcin)  # Set stock override
             add_activity_log(f"[ERROR] Mock purchase FAILED for {product_name} - Stock: Waiting for Refresh, Purchase: Failed with 10s cooldown", 'error')
             return False
             
     except Exception as e:
-        set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)  # This now automatically sets stock override
+        set_purchase_status(tcin, 'failed', cooldown_minutes=10/60)
+        set_stock_waiting_for_response(tcin)  # Set stock override
         add_activity_log(f"[ERROR] Mock purchase ERROR for {product_name}: {e} - Stock: Waiting for Refresh, Purchase: Failed with 10s cooldown", 'error')
         return False
 
@@ -986,6 +1039,26 @@ def background_stealth_batch_monitor():
                 # Log to activity  
                 add_activity_log(f"Batch refresh complete: {len(batch_data)} products ({in_stock_count} in stock)", 'success')
                 
+                # Reset purchase statuses to 'ready' for new refresh cycle (synchronized timing)
+                reset_expired_purchase_statuses()
+                
+                # Trigger purchases for in-stock products that aren't already being processed
+                for tcin, product_data in batch_data.items():
+                    if product_data.get('available') and can_attempt_purchase(tcin):
+                        print(f"[CART] Background refresh triggered purchase attempt for {tcin}")
+                        # Set status to 'attempting' immediately for UI feedback
+                        set_purchase_status(tcin, 'attempting')
+                        # Start purchase in background thread
+                        def start_purchase(tcin=tcin, product_name=product_data.get('name', 'Unknown Product')):
+                            try:
+                                time.sleep(0.5)  # Small delay to allow UI to update
+                                asyncio.run(mock_purchase_attempt(tcin, product_name))
+                            except Exception as e:
+                                print(f"[ERROR] Background purchase thread failed for {tcin}: {e}")
+                        
+                        thread = threading.Thread(target=start_purchase, daemon=True)
+                        thread.start()
+                
                 # Reset break flag periodically (like humans)
                 if human_behavior.requests_this_session % 50 == 0:
                     human_behavior.break_taken_this_hour = False
@@ -1074,19 +1147,15 @@ def index():
 
 @app.route('/api/live-stock-status')
 def api_live_stock_status():
-    """Live stock status from stealth batch data - triggers purchase attempts on dashboard refresh"""
-    print("[MOBILE] Dashboard refresh detected - checking for purchase opportunities...")
+    """Live stock status - SIMPLIFIED: Just return API data + purchase status, let frontend handle display"""
+    print("[MOBILE] Dashboard refresh detected")
     
-    # Get current stock data first
+    # Get current stock data 
     with latest_data_lock:
         stock_data = latest_stock_data.copy()
     
-    # Stock data displayed directly from API - no overrides
-    
     # Check if API data is available
-    print(f"[DEBUG] live-stock-status: stock_data = {stock_data}, len = {len(stock_data)}")
     if not stock_data or len(stock_data) == 0:
-        # Return error response when API data is empty (API likely blocked/failed)
         print("[ERROR] API data is empty - returning API_BLOCKED error")
         return jsonify({
             'success': False,
@@ -1096,8 +1165,38 @@ def api_live_stock_status():
             'timestamp': datetime.now().isoformat()
         })
     
-    # Trigger purchase attempts for in-stock ready products 
-    trigger_purchase_attempts_for_in_stock_products()
+    # Reset purchase statuses to 'ready' for new refresh cycle (synchronized timing)
+    reset_expired_purchase_statuses()
+    
+    # Simple logic: trigger purchases for in-stock products that aren't already being processed
+    for tcin, product_data in stock_data.items():
+        if product_data.get('available') and can_attempt_purchase(tcin):
+            print(f"[CART] Triggering purchase for {tcin}")
+            # Set status to 'attempting' immediately for UI feedback
+            set_purchase_status(tcin, 'attempting')
+            # Start purchase in background thread
+            def start_purchase():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(mock_purchase_attempt(tcin, product_data.get('name', 'Unknown Product')))
+                    loop.close()
+                except Exception as e:
+                    print(f"[ERROR] Purchase failed for {tcin}: {e}")
+                    # No cooldown timer - will reset on next refresh cycle
+                    set_purchase_status(tcin, 'failed')
+            
+            threading.Thread(target=start_purchase, daemon=True).start()
+    
+    # Emit WebSocket update for stock data change
+    try:
+        socketio.emit('stock_update', {
+            'success': True,
+            'products': list(stock_data.values()),
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        print(f"[WEBSOCKET] Failed to emit stock update: {e}")
     
     return jsonify({
         'success': True,
@@ -1291,4 +1390,4 @@ if __name__ == '__main__':
     print(f"[HOT] Features: F5/Shape evasion + ultimate stealth + batch efficiency")
     print("[READY] " + "="*80)
     
-    app.run(host='127.0.0.1', port=5001, debug=False, threaded=True)
+    socketio.run(app, host='127.0.0.1', port=5001, debug=False)
