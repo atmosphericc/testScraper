@@ -34,12 +34,23 @@ def main():
     print("=" * 60)
     
     try:
-        # Launch the dashboard
-        subprocess.run([sys.executable, dashboard_file])
+        # Launch dashboard as subprocess (simpler and more reliable)
+        print("🚀 Launching dashboard subprocess...")
+        process = subprocess.Popen([sys.executable, dashboard_file])
+        print(f"✅ Dashboard started (PID: {process.pid})")
+        print("🌐 Waiting for server to start...")
+        
+        # Wait for the process to either complete or be interrupted
+        process.wait()
+        
     except KeyboardInterrupt:
         print("\n\n👋 Dashboard stopped by user")
+        if 'process' in locals():
+            process.terminate()
+            process.wait()
     except Exception as e:
         print(f"\n❌ Error starting dashboard: {e}")
+        print(f"💡 Try running directly: python {dashboard_file}")
         return 1
     
     return 0

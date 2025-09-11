@@ -513,8 +513,22 @@
         }
         
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.7; }
+            0% {
+                opacity: 1;
+                background-color: inherit;
+            }
+            30% {
+                opacity: 0.7;
+                background-color: #ffe066;
+            }
+            70% {
+                opacity: 0.7;
+                background-color: #ffe066;
+            }
+            100% {
+                opacity: 1;
+                background-color: inherit;
+            }
         }
         
         /* Custom scrollbar */
@@ -625,12 +639,13 @@
                     
                 } else {
                     // Handle case where API succeeds but returns no products (empty array)
-                    console.warn('⚠️ API returned no products - showing API unavailable state');
+                    // This usually means initial API call hasn't completed yet
+                    console.log('📡 API returned no products - likely initial call still in progress, showing loading state');
                     document.querySelectorAll('.stock-badge').forEach(badge => {
-                        badge.className = 'badge stock-badge error';
-                        badge.innerHTML = '🚫 API UNAVAILABLE';
+                        badge.className = 'badge stock-badge unknown';
+                        badge.innerHTML = '<span class="loading"></span> LOADING...';
                     });
-                    throw new Error(data.error || 'No product data available - API may be blocked or rate limited');
+                    // Don't throw error - just show loading state and wait for next update
                 }
                 
             } catch (error) {
@@ -645,6 +660,9 @@
         
         // Store previous stock status for change detection
         let previousStockData = {};
+        
+        // Global countdown variable for timer synchronization
+        let countdown = 25;
         
         // Simplified - no intermediate state tracking needed
         
@@ -753,8 +771,6 @@
                     const element = document.getElementById(id);
                     if (element) {
                         element.textContent = value;
-                        element.classList.add('pulse');
-                        setTimeout(() => element.classList.remove('pulse'), 1000);
                     }
                 });
             }
@@ -772,11 +788,28 @@
         }
         
         
+        // Track purchase cooldowns locally for real-time countdown
+        let purchaseCooldowns = {};
+
         function updatePurchaseStatusDisplay(data) {
-            // Update purchase status badges
+            // Update purchase status badges and track cooldowns locally
             Object.entries(data).forEach(([tcin, purchaseInfo]) => {
+                // Update local cooldown tracking
+                if (purchaseInfo.cooldown_seconds > 0) {
+                    purchaseCooldowns[tcin] = {
+                        status: purchaseInfo.status,
+                        cooldown_seconds: purchaseInfo.cooldown_seconds,
+                        attempt_count: purchaseInfo.attempt_count
+                    };
+                } else {
+                    // Clear cooldown when it expires
+                    delete purchaseCooldowns[tcin];
+                }
+                
                 const purchaseStatusBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .purchase-status-badge`);
                 purchaseStatusBadges.forEach(badge => {
+                    // Ensure base classes are present for consistent styling
+                    badge.classList.add('badge', 'purchase-status-badge');
                     // Remove all status classes
                     badge.classList.remove('ready', 'attempting', 'cooldown', 'failed', 'purchased');
                     
@@ -793,26 +826,12 @@
                             statusClass = 'attempting';
                             break;
                         case 'Purchase Success':
-                            if (purchaseInfo.cooldown_seconds > 0) {
-                                const successMinutes = Math.floor(purchaseInfo.cooldown_seconds / 60);
-                                const successSeconds = purchaseInfo.cooldown_seconds % 60;
-                                displayText = `✅ SUCCESS ${successMinutes}:${successSeconds.toString().padStart(2, '0')}`;
-                                statusClass = 'purchased';
-                            } else {
-                                displayText = '✅ READY';
-                                statusClass = 'ready';
-                            }
+                            displayText = '✅ SUCCESS';
+                            statusClass = 'purchased';
                             break;
                         case 'Purchase Failed':
-                            if (purchaseInfo.cooldown_seconds > 0) {
-                                const failedMinutes = Math.floor(purchaseInfo.cooldown_seconds / 60);
-                                const failedSeconds = purchaseInfo.cooldown_seconds % 60;
-                                displayText = `❌ FAILED ${failedMinutes}:${failedSeconds.toString().padStart(2, '0')}`;
-                                statusClass = 'failed';
-                            } else {
-                                displayText = '✅ READY';
-                                statusClass = 'ready';
-                            }
+                            displayText = '❌ FAILED';
+                            statusClass = 'failed';
                             break;
                         default:
                             displayText = '❓ UNKNOWN';
@@ -833,7 +852,17 @@
             });
         }
 
+        // Simplified purchase cooldown - now handled by main timer
+        function updatePurchaseCooldownDisplay() {
+            // This function is now simplified since main timer handles the countdown updates
+            // Just clean up any expired local cooldown tracking if needed
+            console.log('Purchase countdown display updated by main timer');
+        }
+
         async function updateStockStatusDisplay(data) {
+            console.log(`🎯 updateStockStatusDisplay called with ${Object.keys(data).length} products`);
+            console.log('🎯 Product TCINs to update:', Object.keys(data));
+
             // Get current purchase statuses to override during active purchases
             let purchaseStatuses = {};
             try {
@@ -844,57 +873,86 @@
             } catch (error) {
                 console.error('Failed to fetch purchase status:', error);
             }
-            
+
+            // Update only the actual stock status badges in the product table (no pulse)
+            Object.entries(data).forEach(([tcin, stockInfo]) => {
+                const row = document.querySelector(`tr[data-tcin="${tcin}"]`);
+                if (row) {
+                    const stockStatusCell = row.querySelectorAll('td')[4];
+                    if (stockStatusCell) {
+                        const badge = stockStatusCell.querySelector('.stock-badge');
+                        if (badge) {
+                            badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting', 'pulse');
+                            const purchaseInfo = purchaseStatuses[tcin];
+                            const isAttempting = purchaseInfo && purchaseInfo.internal_status === 'attempting';
+                            const isWaitingForRefresh = stockInfo.status === 'Waiting for Refresh';
+
+                            // Update badge content and classes
+                            if (isAttempting) {
+                                badge.classList.add('attempting');
+                                badge.textContent = 'PURCHASING...';
+                            } else if (isWaitingForRefresh) {
+                                badge.classList.add('attempting');
+                                badge.textContent = 'Waiting for Refresh';
+                            } else if (stockInfo.status === 'IN_STOCK') {
+                                badge.classList.add('in-stock');
+                                badge.textContent = 'IN STOCK';
+                            } else if (stockInfo.status === 'NON_TARGET_SELLER') {
+                                badge.classList.add('out-of-stock');
+                                badge.textContent = 'NON-TARGET';
+                                badge.title = `Seller: ${stockInfo.seller_code || 'Unknown'}`;
+                            } else if (stockInfo.status === 'OUT_OF_STOCK') {
+                                badge.classList.add('out-of-stock');
+                                badge.textContent = 'OUT OF STOCK';
+                            } else {
+                                badge.classList.add('unknown');
+                                badge.textContent = 'ERROR';
+                            }
+                        }
+                    }
+                }
+            });
+
             // Update stock status badges in the products table
             let currentInStockCount = 0;
-            
+            let updatedCount = 0;
+            let errorCount = 0;
+
             Object.entries(data).forEach(([tcin, stockInfo]) => {
+                console.log(`🎯 Processing update for ${tcin}: ${stockInfo.status} (available: ${stockInfo.available})`);
+                updatedCount++;
                 // Update product names from API
                 const productNameElements = document.querySelectorAll(`[data-tcin="${tcin}"] .product-name`);
                 productNameElements.forEach(nameElement => {
                     if (stockInfo.name && stockInfo.name !== 'Unknown Product') {
                         nameElement.textContent = stockInfo.name;
-                        // Add pulse animation to show it's been updated
-                        nameElement.classList.add('pulse');
-                        setTimeout(() => nameElement.classList.remove('pulse'), 1000);
                     }
                 });
-                
-                
+
                 // Update stock badges
                 const stockBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .stock-badge`);
+                console.log(`🎯 Found ${stockBadges.length} stock badges for ${tcin}`);
+
                 stockBadges.forEach(badge => {
-                    // Remove existing classes
-                    badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting');
-                    
-                    // Check purchase status for override logic
+                    badge.classList.remove('in-stock', 'out-of-stock', 'unknown', 'attempting', 'pulse');
+
                     const purchaseInfo = purchaseStatuses[tcin];
-                    
-                    // Priority order for stock status display:
-                    // 1. If currently attempting purchase -> show "PURCHASING..."  
-                    // 2. If purchase completed but awaiting refresh -> show "Waiting for Refresh"
-                    // 3. Otherwise show actual stock status from API
-                    
                     const isAttempting = purchaseInfo && purchaseInfo.internal_status === 'attempting';
                     const isWaitingForRefresh = stockInfo.status === 'Waiting for Refresh';
-                    
+
+                    // Update badge content and classes
                     if (isAttempting) {
-                        // Show PURCHASING during active attempt (until purchase completes)
                         badge.classList.add('attempting');
                         badge.textContent = 'PURCHASING...';
-                        badge.classList.add('pulse');
                         console.log(`🛒 ${tcin}: Showing PURCHASING... (attempt in progress)`);
                     } else if (isWaitingForRefresh) {
-                        // Show waiting state after purchase completes (until next refresh)
                         badge.classList.add('attempting');
                         badge.textContent = 'Waiting for Refresh';
-                        badge.classList.add('pulse');
                         console.log(`⏳ ${tcin}: Waiting for next refresh to show updated stock status`);
                     } else if (stockInfo.status === 'IN_STOCK') {
                         badge.classList.add('in-stock');
                         badge.textContent = 'IN STOCK';
                         currentInStockCount++;
-                    // "Waiting for Refresh" state removed - direct stock status only
                     } else if (stockInfo.status === 'NON_TARGET_SELLER') {
                         badge.classList.add('out-of-stock');
                         badge.textContent = 'NON-TARGET';
@@ -905,25 +963,20 @@
                     } else {
                         badge.classList.add('unknown');
                         badge.textContent = 'ERROR';
+                        errorCount++;
                     }
-                    
-                    // Add pulse animation to show it's been updated
-                    badge.classList.add('pulse');
-                    setTimeout(() => badge.classList.remove('pulse'), 1000);
+                    console.log(`🎯 Updated badge for ${tcin}: ${badge.textContent}`);
                 });
-                
+
                 // Update preorder badges
                 const preorderBadges = document.querySelectorAll(`[data-tcin="${tcin}"] .preorder-badge`);
                 preorderBadges.forEach(badge => {
-                    // Debug logging
                     console.log(`🔍 Updating preorder badge for ${tcin}:`, {
                         is_preorder: stockInfo.is_preorder,
                         street_date: stockInfo.street_date,
                         badge_exists: !!badge
                     });
-                    
                     if (stockInfo.is_preorder) {
-                        // Show preorder badge for preorder items
                         badge.style.display = 'inline-flex';
                         if (stockInfo.street_date) {
                             const releaseDate = new Date(stockInfo.street_date);
@@ -931,28 +984,24 @@
                         } else {
                             badge.title = 'Pre-order item';
                         }
-                        
-                        console.log(`✅ Showing preorder badge for ${tcin}`);
-                        
-                        // Add pulse animation
-                        badge.classList.add('pulse');
-                        setTimeout(() => badge.classList.remove('pulse'), 1000);
                     } else {
-                        // Hide preorder badge for regular items
                         badge.style.display = 'none';
                         console.log(`❌ Hiding preorder badge for ${tcin} (not preorder)`);
                     }
                 });
             });
-            
+
+            // Final summary logging
+            console.log(`🎯 updateStockStatusDisplay complete:`);
+            console.log(`🎯 - Products processed: ${updatedCount}`);
+            console.log(`🎯 - Currently in stock: ${currentInStockCount}`);
+            console.log(`🎯 - Errors encountered: ${errorCount}`);
+
             // Update the live stock count in analytics section (found-stock-24h shows current in-stock count)
             const analyticsStockPanel = document.getElementById('found-stock-24h');
             if (analyticsStockPanel && currentInStockCount !== undefined) {
                 analyticsStockPanel.textContent = currentInStockCount;
-                
-                // Add visual feedback for updates
-                analyticsStockPanel.classList.add('pulse');
-                setTimeout(() => analyticsStockPanel.classList.remove('pulse'), 1000);
+                console.log(`🎯 Analytics panel updated: ${currentInStockCount} products in stock`);
             }
         }
         
@@ -979,42 +1028,53 @@
                 const initTime = Date.now() - initStart;
                 addLogEntry(`🎯 Initial data loaded (${initTime}ms) - System ready for monitoring`, 'success');
                 
-                // Purchase status updates now come via WebSocket - no more polling!
-                addLogEntry('🛒 Purchase status updates via WebSocket - no more polling timers', 'info');
+                // Purchase status updates via WebSocket for instant response
+                addLogEntry('🛒 Purchase status: WebSocket instant updates + HTTP fallback', 'info');
                 
-                // Completely disable purchase status polling timer
-                // startPurchaseStatusTimer(); // DISABLED - WebSocket only
+                // Keep HTTP polling as fallback (every 5 seconds)
+                startPurchaseStatusTimer(); // Fallback polling every 5 seconds
                 
-                // Simple countdown system - Updated for 3 calls per minute (15-25s intervals)
-                let countdown = Math.floor(Math.random() * 11) + 15; // 15-25 seconds
+                // Simple timer display - purely driven by WebSocket updates
+                countdown = 20; // Initialize with reasonable default
                 updateCountdownDisplay(countdown);
                 
+                // Enhanced countdown display with recovery mechanism
                 refreshInterval = setInterval(async () => {
-                    countdown--;
-                    updateCountdownDisplay(countdown);
-                    
-                    if (countdown <= 0) {
-                        // Start refresh cycle
-                        const nextInterval = Math.floor(Math.random() * 11) + 15;
+                    if (countdown > 0) {
+                        countdown = countdown - 1;
+                        updateCountdownDisplay(countdown);
+                    } else {
+                        // Timer reached 0 - display 0 and request fresh data
+                        updateCountdownDisplay(0);
                         
-                        if (!document.hidden) {
-                            const refreshStart = Date.now();
-                            addLogEntry(`🔄 Starting refresh cycle...`, 'info');
+                        // After 5 seconds at 0, try to recover
+                        if (!window.timerRecoveryStarted) {
+                            window.timerRecoveryStarted = true;
+                            console.log('⚠️ Timer at 0 for too long - requesting recovery');
                             
-                            await Promise.all([
-                                fetchAnalytics(),
-                                fetchStatus(),
-                                fetchLiveStockStatus()
-                            ]);
-                            
-                            const refreshTime = Date.now() - refreshStart;
-                            addLogEntry(`✅ Refresh cycle complete (${refreshTime}ms) - Next check in ${nextInterval}s`, 'success');
-                        } else {
-                            addLogEntry(`⏸️ Refresh skipped (tab hidden) - Next check in ${nextInterval}s`, 'info');
+                            setTimeout(() => {
+                                if (countdown <= 0) {
+                                    console.log('🚨 Timer recovery: requesting fresh data');
+                                    addLogEntry('🚨 Timer stuck at 0 - requesting fresh data', 'warning');
+                                    
+                                    // Try WebSocket force refresh first
+                                    if (socket && socket.connected) {
+                                        socket.emit('force_refresh');
+                                        addLogEntry('📡 Sent force refresh via WebSocket', 'info');
+                                    } else {
+                                        // Fallback to HTTP refresh
+                                        Promise.all([
+                                            fetchAnalytics(),
+                                            fetchStatus(),
+                                            fetchPurchaseStatus()
+                                        ]).then(() => {
+                                            addLogEntry('🔄 HTTP fallback refresh completed', 'success');
+                                        });
+                                    }
+                                }
+                                window.timerRecoveryStarted = false;
+                            }, 5000);
                         }
-                        
-                        // Reset countdown to new random number
-                        countdown = nextInterval;
                     }
                 }, 1000);
                 
@@ -1026,10 +1086,37 @@
         
         function updateCountdownDisplay(seconds) {
             const countdownElement = document.getElementById('next-update-countdown');
-            if (countdownElement) {
-                countdownElement.textContent = seconds + 's';
-            }
             
+            if (countdownElement) {
+                // Validate and sanitize input
+                let validSeconds = 0;
+                if (typeof seconds === 'number' && !isNaN(seconds)) {
+                    validSeconds = Math.max(0, Math.round(seconds));
+                } else if (typeof seconds === 'string') {
+                    validSeconds = Math.max(0, Math.round(parseFloat(seconds) || 0));
+                }
+                
+                countdownElement.textContent = validSeconds + 's';
+                
+                // Add visual indicator for zero
+                if (validSeconds === 0) {
+                    countdownElement.style.color = '#ff6b6b';  // Red when at 0
+                } else {
+                    countdownElement.style.color = '';  // Reset to default
+                }
+                
+                console.log(`🕐 Timer display updated: ${validSeconds}s`);  // Enable logging for debugging
+            } else {
+                console.error('🕐 Timer element #next-update-countdown not found!');
+                // Try to find it again after a short delay (maybe DOM not ready)
+                setTimeout(() => {
+                    const retryElement = document.getElementById('next-update-countdown');
+                    if (retryElement) {
+                        console.log('🕐 Timer element found on retry');
+                        updateCountdownDisplay(seconds);
+                    }
+                }, 500);
+            }
         }
         
         function stopRealTimeUpdates() {
@@ -1038,6 +1125,43 @@
                 refreshInterval = null;
             }
             stopPurchaseStatusTimer();
+        }
+        
+        // Sync timer with backend API - backend is source of truth
+        let timerSyncInterval;
+        
+        async function syncTimerWithBackend() {
+            try {
+                const response = await fetch('/api/timer-status');
+                const data = await response.json();
+                
+                if (data.timer_active && data.seconds_remaining > 0) {
+                    countdown = data.seconds_remaining;
+                    updateCountdownDisplay(countdown);
+                    console.log(`⏱️ Timer synced with backend: ${countdown}s remaining`);
+                } else {
+                    console.log('⏱️ Backend timer inactive or completed');
+                }
+            } catch (error) {
+                console.error('⏱️ Failed to sync timer with backend:', error);
+            }
+        }
+        
+        function startTimerSync() {
+            // Initial sync
+            syncTimerWithBackend();
+            
+            // Sync every second to keep frontend in sync with backend
+            timerSyncInterval = setInterval(syncTimerWithBackend, 1000);
+            console.log('⏱️ Timer sync started - backend is source of truth');
+        }
+        
+        function stopTimerSync() {
+            if (timerSyncInterval) {
+                clearInterval(timerSyncInterval);
+                timerSyncInterval = null;
+                console.log('⏱️ Timer sync stopped');
+            }
         }
         
         document.addEventListener('DOMContentLoaded', () => {
@@ -1067,12 +1191,20 @@
         let purchaseStatusInterval;
         
         function startPurchaseStatusTimer() {
-            // DISABLED: Purchase status updates now come via WebSocket only
-            console.log('🛑 Purchase status timer disabled - using WebSocket updates only');
-            addLogEntry('🛑 Purchase status via WebSocket (no HTTP polling)', 'info');
-            // purchaseStatusInterval = setInterval(() => {
-            //     fetchPurchaseStatus();
-            // }, 1000);
+            // HTTP polling fallback for purchase status every 5 seconds
+            console.log('✅ Starting purchase status HTTP fallback timer');
+            addLogEntry('✅ Purchase status timer: HTTP fallback every 5 seconds', 'info');
+            purchaseStatusInterval = setInterval(async () => {
+                try {
+                    // Only fetch if WebSocket isn't connected
+                    if (!socket || !socket.connected) {
+                        console.log('📡 WebSocket not connected - using HTTP fallback');
+                        await fetchPurchaseStatus();
+                    }
+                } catch (error) {
+                    console.error('Purchase status fallback poll failed:', error);
+                }
+            }, 5000);
         }
         
         function stopPurchaseStatusTimer() {
@@ -1143,121 +1275,196 @@
             originalUpdateStockStatusDisplay(data);
         };
         
-        // Add initial log entry and initialize WebSocket
+        // Initialize dashboard with proper WebSocket implementation
         document.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => {
                 addLogEntry('Ultimate stealth dashboard initialized', 'success');
-                addLogEntry('WebSocket real-time updates: Stock & Purchase status synced with refresh timer', 'info');
+                addLogEntry('WebSocket real-time updates enabled', 'info');
+                addLogEntry('Timer sync with backend enabled', 'info');
                 initializeWebSocket();
+                startTimerSync();
             }, 1000);
         });
         
         window.addEventListener('beforeunload', () => {
             stopRealTimeUpdates();
             stopPurchaseStatusTimer();
+            stopTimerSync();
+            if (socket && socket.connected) {
+                socket.disconnect();
+            }
         });
     </script>
     <!-- Socket.IO client library -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script>
-        // WebSocket Real-time Updates
+        // WebSocket Implementation - Clean and Reliable
         let socket;
         
         function initializeWebSocket() {
-            socket = io();
-            
-            socket.on('connect', function() {
-                console.log('🟢 WebSocket connected - Real-time updates enabled');
-                addLogEntry('🟢 Real-time WebSocket connection established', 'success');
-            });
-            
-            socket.on('disconnect', function() {
-                console.log('🔴 WebSocket disconnected');
-                addLogEntry('🔴 WebSocket connection lost - attempting reconnect...', 'error');
-            });
-            
-            // Listen for stock data updates
-            socket.on('stock_update', function(data) {
-                console.log('📦 Received real-time stock update:', data);
-                addLogEntry('📦 Real-time stock update received', 'info');
-                updateStockStatusDisplay(data);
-            });
-            
-            // Listen for purchase status updates
-            socket.on('purchase_status_update', function(data) {
-                console.log('💳 WebSocket purchase status update:', data);
-                addLogEntry(`💳 WebSocket: ${data.status} for TCIN ${data.tcin}`, 'info');
+            try {
+                console.log('🔗 Initializing SocketIO connection...');
+                socket = io({
+                    transports: ['polling', 'websocket'],  // Try polling first
+                    timeout: 10000,
+                    forceNew: true,
+                    upgrade: true,
+                    autoConnect: true
+                });
+                console.log('🔗 SocketIO object created:', socket);
                 
-                // Update purchase status in UI immediately
-                updatePurchaseStatusForTcin(data.tcin, data.status);
+                socket.on('connect', function() {
+                    console.log('🟢 WebSocket connected successfully');
+                    addLogEntry('🟢 WebSocket connection established', 'success');
+                    
+                    // Reset recovery flag on reconnect
+                    window.timerRecoveryStarted = false;
+                });
                 
-                // For completed purchases, sync countdown with main timer
-                if (data.status === 'purchased' || data.status === 'failed') {
-                    console.log(`🔄 Syncing purchase timer for ${data.tcin} with main countdown`);
-                    // Small delay to ensure UI is updated first
-                    setTimeout(() => {
-                        syncPurchaseCountdownWithMainTimer(data.tcin);
-                    }, 100);
-                }
-            });
-        }
-        
-        function updatePurchaseStatusForTcin(tcin, status) {
-            // Update purchase status display for specific product
-            const purchaseElements = document.querySelectorAll(`[data-tcin="${tcin}"] .purchase-status`);
-            purchaseElements.forEach(element => {
-                element.textContent = status.toUpperCase();
-                element.classList.remove('ready', 'attempting', 'purchased', 'failed');
-                element.classList.add(status.toLowerCase());
-            });
-        }
-        
-        function syncPurchaseCountdownWithMainTimer(tcin) {
-            console.log(`🔄 Starting timer sync for TCIN ${tcin}`);
-            
-            // Get the current main timer countdown from the top-right display
-            const countdownElement = document.getElementById('next-check-countdown');
-            if (!countdownElement) {
-                console.warn(`⚠️ Main countdown element not found for sync`);
-                return;
-            }
-            
-            const remainingSeconds = parseInt(countdownElement.textContent) || 0;
-            console.log(`🔄 Main timer shows ${remainingSeconds}s remaining`);
-            
-            // Find ALL purchase status elements for this TCIN
-            const selectors = [
-                `[data-tcin="${tcin}"] .purchase-status`,
-                `.purchase-status[data-tcin="${tcin}"]`,
-                `.purchase-status`
-            ];
-            
-            let elementsUpdated = 0;
-            selectors.forEach(selector => {
-                const elements = document.querySelectorAll(selector);
-                elements.forEach(element => {
-                    const elementTcin = element.getAttribute('data-tcin') || element.closest('[data-tcin]')?.getAttribute('data-tcin');
-                    if (elementTcin === tcin || selector === '.purchase-status') {
-                        const currentText = element.textContent || '';
-                        let statusWord = 'SUCCESS';
-                        
-                        // Determine status word from current text
-                        if (currentText.toLowerCase().includes('fail')) {
-                            statusWord = 'FAILED';
-                        } else if (currentText.toLowerCase().includes('success') || currentText.toLowerCase().includes('purchased')) {
-                            statusWord = 'SUCCESS';
-                        }
-                        
-                        // Update with synchronized countdown
-                        const newText = `${statusWord} (${remainingSeconds}s)`;
-                        element.textContent = newText;
-                        elementsUpdated++;
-                        console.log(`🔄 Updated element: "${currentText}" → "${newText}"`);
+                socket.on('disconnect', function(reason) {
+                    console.log('🔴 WebSocket disconnected:', reason);
+                    addLogEntry('🔴 WebSocket disconnected - will auto-reconnect...', 'error');
+                    
+                    // Socket.IO will auto-reconnect, but we can add manual fallback
+                    if (reason === 'io server disconnect') {
+                        console.log('🔄 Server initiated disconnect - reconnecting manually...');
+                        setTimeout(() => {
+                            if (!socket.connected) {
+                                socket.connect();
+                            }
+                        }, 2000);
                     }
                 });
-            });
+                
+                socket.on('connect_error', function(error) {
+                    console.error('❌ WebSocket connection error:', error);
+                    addLogEntry(`❌ WebSocket connection failed: ${error.message || error}`, 'error');
+                });
+                
+                socket.on('error', function(error) {
+                    console.error('❌ WebSocket error:', error);
+                    addLogEntry(`❌ WebSocket error: ${error}`, 'error');
+                });
+                
+                // Stock data updates via WebSocket with detailed verification
+                socket.on('stock_update', function(data) {
+                    console.log('📦 WebSocket stock update received:', data);
+                    
+                    if (data.success && data.products && data.products.length > 0) {
+                        console.log(`📦 Processing ${data.products.length} products from WebSocket`);
+                        
+                        const in_stock_products = data.products.filter(p => p.available);
+                        addLogEntry(`📦 Stock update: ${data.products.length} products (${in_stock_products.length} in stock)`, 'success');
+                        
+                        // Convert array to object keyed by TCIN
+                        const productData = {};
+                        data.products.forEach(product => {
+                            productData[product.tcin] = product;
+                        });
+                        
+                        updateStockStatusDisplay(productData);
+                        
+                    } else if (!data.success) {
+                        console.warn('📦 API returned no data:', data.error || 'Unknown error');
+                        addLogEntry(`⚠️ API issue: ${data.error || 'No data received'}`, 'warning');
+                        
+                    } else {
+                        console.warn('📦 Empty or invalid stock update:', data);
+                        addLogEntry('📦 Empty stock update received', 'warning');
+                    }
+                });
+                
+                // Purchase status updates via WebSocket
+                socket.on('purchase_status_update', function(data) {
+                    console.log('💳 WebSocket purchase status update:', data);
+                    addLogEntry(`💳 Purchase status: ${data.status} for ${data.tcin}`, 'info');
+                    
+                    // Update the purchase status immediately
+                    updateSinglePurchaseStatus(data.tcin, data.status);
+                });
+                
+                // Timer updates via WebSocket - reset countdown when backend sends new time
+                socket.on('timer_update', function(data) {
+                    console.log('⏱️ WebSocket timer_update received:', data);
+                    
+                    if (data.next_check_seconds && data.next_check_seconds > 0) {
+                        countdown = Math.ceil(data.next_check_seconds);
+                        console.log(`⏱️ Timer reset: ${data.next_check_seconds}s → displaying ${countdown}s`);
+                        
+                        updateCountdownDisplay(countdown);
+                        
+                        // Enhanced logging based on timer type
+                        if (data.initial_connection) {
+                            addLogEntry(`🔗 Connected - next refresh in ${countdown}s`, 'success');
+                        } else if (data.cycle_start) {
+                            addLogEntry(`🔄 New cycle - next refresh in ${countdown}s`, 'success');
+                        } else if (data.refresh_completed) {
+                            addLogEntry(`✅ Refresh complete - next in ${countdown}s`, 'success');
+                        } else {
+                            addLogEntry(`⏱️ Timer reset to ${countdown}s`, 'info');
+                        }
+                        
+                        console.log(`⏱️ Timer successfully updated to ${countdown}s`);
+                    } else {
+                        console.warn('⏱️ Invalid timer data received:', data);
+                        addLogEntry('⚠️ Invalid timer update received', 'warning');
+                    }
+                });
+                
+                // Force refresh response handler
+                socket.on('force_refresh_response', function(data) {
+                    console.log('🔄 Force refresh response:', data);
+                    if (data.success) {
+                        addLogEntry(data.message, 'success');
+                    } else {
+                        addLogEntry(data.message, 'error');
+                    }
+                });
+                
+            } catch (error) {
+                console.error('❌ Failed to initialize WebSocket:', error);
+                addLogEntry('❌ WebSocket initialization failed', 'error');
+            }
+        }
+        
+        function updateSinglePurchaseStatus(tcin, status) {
+            // Find all purchase status badges for this TCIN
+            const badges = document.querySelectorAll(`[data-tcin="${tcin}"] .purchase-status-badge`);
             
-            console.log(`✅ Timer sync complete: Updated ${elementsUpdated} elements with ${remainingSeconds}s countdown for TCIN ${tcin}`);
+            badges.forEach(badge => {
+                // Clear existing status classes
+                badge.classList.remove('ready', 'attempting', 'purchased', 'failed', 'unknown');
+                
+                let displayText = '';
+                let statusClass = '';
+                
+                switch(status.toLowerCase()) {
+                    case 'ready':
+                        displayText = '✅ READY';
+                        statusClass = 'ready';
+                        break;
+                    case 'attempting':
+                        displayText = '🔄 PURCHASING';
+                        statusClass = 'attempting';
+                        break;
+                    case 'purchased':
+                        displayText = '✅ SUCCESS';
+                        statusClass = 'purchased';
+                        break;
+                    case 'failed':
+                        displayText = '❌ FAILED';
+                        statusClass = 'failed';
+                        break;
+                    default:
+                        displayText = '❓ UNKNOWN';
+                        statusClass = 'unknown';
+                }
+                
+                badge.textContent = displayText;
+                badge.classList.add(statusClass);
+                
+                console.log(`✅ Updated purchase status for ${tcin}: ${displayText}`);
+            });
         }
     </script>
 </head>
@@ -1384,21 +1591,21 @@
                                 </td>
                                 <td>
                                     {% if product.has_data %}
-                                        {% if product.stock_status == 'IN_STOCK' %}
+                                        {% if product.status == 'IN_STOCK' %}
                                             <span class="badge stock-badge in-stock">
                                                 ✅ IN STOCK
                                             </span>
-                                        {% elif product.stock_status == 'NON_TARGET_SELLER' %}
+                                        {% elif product.status == 'NON_TARGET_SELLER' %}
                                             <span class="badge stock-badge out-of-stock">
                                                 🚫 NON-TARGET
                                             </span>
-                                        {% elif product.stock_status == 'OUT_OF_STOCK' %}
+                                        {% elif product.status == 'OUT_OF_STOCK' %}
                                             <span class="badge stock-badge out-of-stock">
                                                 ❌ OUT OF STOCK
                                             </span>
                                         {% else %}
                                             <span class="badge stock-badge unknown">
-                                                ❓ {{ product.stock_status }}
+                                                ❓ {{ product.status }}
                                             </span>
                                         {% endif %}
                                     {% else %}

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Loading - Target Monitor</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #2c3e50, #3498db);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+        }
+        
+        .container {
+            text-align: center;
+            max-width: 600px;
+            padding: 2rem;
+        }
+        
+        .logo {
+            font-size: 3rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            color: #ecf0f1;
+        }
+        
+        .message {
+            font-size: 1.5rem;
+            margin-bottom: 2rem;
+            color: #bdc3c7;
+        }
+        
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 2rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .details {
+            background: rgba(0,0,0,0.2);
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-top: 2rem;
+        }
+        
+        .step {
+            margin: 0.5rem 0;
+            padding: 0.5rem;
+            border-left: 3px solid #3498db;
+            padding-left: 1rem;
+        }
+        
+        .step.active {
+            background: rgba(52, 152, 219, 0.2);
+            border-left: 3px solid #2ecc71;
+        }
+        
+        .refresh-notice {
+            margin-top: 2rem;
+            font-size: 0.9rem;
+            opacity: 0.7;
+        }
+    </style>
+    <!-- Minimal spinner loading screen, no progress logic -->
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #232526, #414345);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #f0f6fc;
+        }
+        .container {
+            text-align: center;
+            max-width: 400px;
+            padding: 2rem;
+            background: rgba(33,38,45,0.95);
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+        }
+        .logo {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 1.5rem;
+            color: #3fb950;
+            letter-spacing: 1px;
+        }
+        .spinner {
+            width: 56px;
+            height: 56px;
+            border: 6px solid rgba(63,185,80,0.18);
+            border-top: 6px solid #3fb950;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 2rem;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading-message {
+            font-size: 1.25rem;
+            color: #f0f6fc;
+            margin-top: 1.5rem;
+            opacity: 0.85;
+            letter-spacing: 0.5px;
+        }
+    </style>
+    <body>
+        <div class="container">
+            <div class="logo">🎯 Target Monitor</div>
+            <div class="spinner"></div>
+            <div class="loading-message">Loading, please wait...</div>
+        </div>
+        <script>
+            // Refresh every 2 seconds to check if API call is complete
+            setTimeout(function() {
+                window.location.href = "/";
+            }, 2000);
+        </script>
+    </body>
