@@ -33,7 +33,8 @@
       "Bash(del nul)",
       "Bash(git commit:*)",
       "Bash(xargs kill:*)",
-      "Bash(open http://localhost:5001)"
+      "Bash(open http://localhost:5001)",
+      "Bash(source:*)"
     ],
     "deny": [],
     "ask": []

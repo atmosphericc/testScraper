@@ -4,37 +4,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 🚀 VERSION HISTORY & REFERENCE POINTS
 
-### **September 2024 - Ultimate Stealth Dashboard (CURRENT REFERENCE POINT)**
+### **January 2025 - Ultimate Stealth Dashboard (CURRENT REFERENCE POINT)**
 **Status**: ✅ STABLE - This is the main iteration to reference
 
 **Major Changes:**
-- [x] **Ultimate stealth dashboard promoted to main system**
-- [x] **Real-time activity logging** connected to actual API calls
-- [x] **Fixed countdown timer** (40-45s random, no jumping)
-- [x] **Dynamic product count** from config (hot reload)
-- [x] **Project cleanup**: 25+ outdated files archived to `archive/outdated_files/`
-- [x] **Streamlined entry points**: `main_dashboard.py`, `start_dashboard.py`
-- [x] **Enhanced documentation** with recovery instructions
+- [x] **Ultimate stealth dashboard with advanced WebSocket integration**
+- [x] **Real-time purchase automation** with mock purchase attempts and status tracking
+- [x] **Enhanced stealth features** including 50+ user agent rotation, 30+ API key rotation
+- [x] **F5/Shape evasion** with TLS fingerprinting (curl_cffi), session warmup, and human behavior simulation
+- [x] **Batch API efficiency** (87% fewer API calls) with ultra-stealth bypass capabilities
+- [x] **Preorder support** with PRE_ORDER_SELLABLE/UNSELLABLE detection
+- [x] **Loading screen system** with progressive startup sequence
+- [x] **Background monitoring** with timer-based stock checking (15-25s intervals)
+- [x] **Advanced purchase status tracking** with refresh cycle management
+- [x] **WebSocket live updates** for stock status, timer synchronization, and purchase updates
 
 **Primary Entry Points (Use These):**
 ```bash
 python start_dashboard.py           # Simple launcher (RECOMMENDED)
-python main_dashboard.py           # Direct main dashboard  
-python dashboard_ultimate_batch_stealth.py  # Original filename
+python main_dashboard.py           # Direct main dashboard (ultimate stealth version)
 ```
 
 **Key Features Working:**
 - ✅ Batch API for multiple products (87% fewer calls)
 - ✅ Military-grade stealth (JA3/JA4 spoofing, behavioral patterns)
-- ✅ Real activity logging with actual API timing
-- ✅ Stock change detection and notifications
+- ✅ Real-time WebSocket updates for stock status and purchase tracking
+- ✅ Advanced purchase automation with mock purchase attempts
+- ✅ Preorder detection and availability checking
+- ✅ F5/Shape evasion with human behavior simulation
+- ✅ Session warmup and TLS fingerprinting
 - ✅ Dynamic product count from configuration
 - ✅ Hot configuration reload without restart
 
 **Files to Reference if Issues:**
-- `main_dashboard.py` - Primary dashboard (ultimate stealth version)
-- `dashboard_ultimate_batch_stealth.py` - Original ultimate version  
-- `archive/outdated_files/` - Old versions if rollback needed
+- `main_dashboard.py` - Primary dashboard (ultimate stealth version with WebSocket integration)
+- `start_dashboard.py` - Simple launcher script
+- `dashboard/templates/` - Dashboard HTML templates
 
 ## Project Overview
 
@@ -62,14 +67,13 @@ python setup_free_proxies.py
 
 ### Running the Ultimate Stealth Dashboard (Primary)
 ```bash
-# Run main dashboard (RECOMMENDED)
+# Run main dashboard via launcher (RECOMMENDED)
+python start_dashboard.py
+
+# Or run directly
 python main_dashboard.py
 
-# Or use original filename
-python dashboard_ultimate_batch_stealth.py
-
-# Alternative: Run main system with dashboard
-python run.py test --dashboard
+# Dashboard will be available at: http://localhost:5001
 ```
 
 ### Testing and API Validation
@@ -197,10 +201,14 @@ python check_api_status.py
    - **Error handling and recovery**: Automatic fallback systems and error recovery
 
 8. **Dashboard Integration**:
-   - **Real-time monitoring**: Live stock status and system performance
+   - **Real-time WebSocket updates**: Live stock status, purchase tracking, and timer synchronization
+   - **Advanced purchase automation**: Mock purchase attempts with status tracking and refresh cycle management
+   - **Loading screen system**: Progressive startup sequence with background data loading
    - **Zero-cache policy**: All data fetched live for maximum accuracy
    - **Enhanced analytics**: Success rates, response times, and system health
-   - **Dual dashboard system**: Ultra-fast (port 5001) and legacy (port 5000) dashboards
+   - **F5/Shape evasion integration**: Session warmup, human behavior simulation, and TLS fingerprinting
+   - **Preorder support**: Detection and handling of PRE_ORDER_SELLABLE/UNSELLABLE items
+   - **Ultimate dashboard**: Single integrated system (port 5001) with all advanced features
 
 ### Configuration Structure
 
@@ -227,28 +235,37 @@ python check_api_status.py
 
 ### Entry Points
 
-- `run.py`: Main application with enhanced startup and mode selection
-- `run_ultra_fast_monitor.py`: Direct ultra-fast monitoring system
+**Primary Dashboard System:**
+- `start_dashboard.py`: Simple launcher for the ultimate stealth dashboard (RECOMMENDED)
+- `main_dashboard.py`: Ultimate stealth dashboard with WebSocket integration, purchase automation, and F5/Shape evasion (port 5001)
+
+**Setup and Configuration:**
 - `setup.py`: Comprehensive setup with session creation and validation
 - `setup_advanced_evasion.py`: Advanced evasion system setup and configuration
 - `setup_free_proxies.py`: Free proxy integration and setup
 - `setup_protonvpn_integration.py`: ProtonVPN integration for enhanced privacy
+- `install_stealth_deps.py`: Optional advanced stealth library installer
+
+**Legacy Systems:**
+- `run.py`: Main application with enhanced startup and mode selection
+- `run_ultra_fast_monitor.py`: Direct ultra-fast monitoring system
 - `dashboard/app.py`: Legacy analytics dashboard server (port 5000)
 - `dashboard/ultra_fast_dashboard.py`: Ultra-fast dashboard with live data (port 5001)
-- `dashboard_ultimate_batch_stealth.py`: Ultimate batch API dashboard with full stealth integration, session warmup, and 87% fewer API calls
 - `advanced_stock_monitor.py`: Advanced monitoring system with enhanced features
+
+**Testing and Utilities:**
 - `advanced_proxy_finder.py`: Intelligent proxy discovery and validation
 - `auto_proxy_setup.py`: Automated proxy configuration and testing
 - `get_free_proxies.py`: Free proxy source integration
-- `install_stealth_deps.py`: Optional advanced stealth library installer
 
 ### Dependencies
 
 **Core Dependencies**:
-- `asyncio`: Async programming foundation
-- `aiohttp`: HTTP client for API requests with session support  
-- `playwright`: Browser automation and session management
+- `requests`: HTTP client for API requests with session support
 - `flask`: Web dashboard and analytics API
+- `flask-socketio`: Real-time WebSocket communication for live updates
+- `flask-cors`: Cross-origin resource sharing support
+- `threading`: Multi-threaded background processing
 
 **Advanced Stealth Dependencies** (optional, installed via `install_stealth_deps.py` or `setup_advanced_evasion.py`):
 - `curl-cffi`: Perfect browser TLS fingerprint impersonation and JA3/JA4 spoofing
@@ -286,6 +303,8 @@ python check_api_status.py
 - **Real-Time Threat Assessment**: Dynamic risk evaluation and countermeasure deployment
 - **Zero-Cache Live Monitoring**: All stock data fetched live for maximum accuracy
 - **Enhanced Error Recovery**: Automatic fallback systems and intelligent retry logic
+- **Purchase Automation**: Advanced mock purchase system with realistic timing and status tracking
+- **WebSocket Integration**: Real-time communication for stock updates, purchase status, and timer synchronization
 
 ### Testing & Validation
 

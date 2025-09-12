@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Target Monitor Pro - Enterprise Stock Monitoring</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-bg: #0a0e13;
+            --secondary-bg: #151922;
+            --card-bg: #1e242e;
+            --elevated-bg: #252b36;
+            --border-color: #2d3748;
+            --border-light: #374151;
+            --accent-color: #3b82f6;
+            --accent-hover: #2563eb;
+            --accent-light: #60a5fa;
+            --success-color: #10b981;
+            --success-light: #34d399;
+            --warning-color: #f59e0b;
+            --warning-light: #fbbf24;
+            --danger-color: #ef4444;
+            --danger-light: #f87171;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 10px 10px -5px rgba(0, 0, 0, 0.3);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+            background-attachment: fixed;
+        }
+
+        .container {
+            max-width: 1920px;
+            margin: 0 auto;
+            padding: 1rem;
+            padding-top: 0.5rem;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            min-height: 0;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 0;
+            padding: 1.5rem 0;
+            background: var(--elevated-bg);
+            border-radius: 16px;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-lg);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent-color), var(--success-color), var(--accent-light));
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-light), var(--success-light));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.25rem;
+            letter-spacing: -0.025em;
+        }
+
+        .header p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            font-weight: 500;
+        }
+
+        .header-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+            padding: 0.5rem 1rem;
+            background: var(--accent-color);
+            color: white;
+            border-radius: 50px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 0;
+        }
+
+        .status-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            text-align: center;
+            box-shadow: var(--shadow);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .status-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--accent-color);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .status-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-xl);
+            border-color: var(--border-light);
+        }
+
+        .status-card:hover::before {
+            opacity: 1;
+        }
+
+        .status-card h2 {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 1rem;
+        }
+
+        .status-card .value {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.025em;
+        }
+
+        .status-card .subtitle {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .status-card.success .value {
+            color: var(--success-color);
+        }
+
+        .status-card.error .value {
+            color: var(--danger-color);
+        }
+
+        .status-card.warning .value {
+            color: var(--warning-color);
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            min-height: 0;
+        }
+
+        .products-section {
+            flex: 2;
+            overflow-y: auto;
+            min-height: 0;
+        }
+
+        .products-table {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 0;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .products-table-header {
+            background: var(--elevated-bg);
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .products-table-header h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .products-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .product-row {
+            display: grid;
+            grid-template-columns: 80px 1fr 120px 100px 120px;
+            gap: 1rem;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+            align-items: center;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .product-row:last-child {
+            border-bottom: none;
+        }
+
+        .product-row:hover {
+            background: var(--elevated-bg);
+        }
+
+        .product-row::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--border-color);
+            border-radius: 0 2px 2px 0;
+        }
+
+        .product-row.in-stock::before {
+            background: var(--success-color);
+        }
+
+        .product-row.out-of-stock::before {
+            background: var(--danger-color);
+            opacity: 0.5;
+        }
+
+        .product-image-small {
+            width: 60px;
+            height: 60px;
+            border-radius: 8px;
+            object-fit: contain;
+            background: var(--secondary-bg);
+            padding: 0.25rem;
+        }
+
+        .product-name-cell {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-primary);
+            line-height: 1.3;
+            overflow: hidden;
+        }
+
+        .product-tcin-cell {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            background: var(--secondary-bg);
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .product-status-cell {
+            text-align: center;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 0.375rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .status-badge.in-stock {
+            background: var(--success-color);
+            color: white;
+        }
+
+        .status-badge.out-of-stock {
+            background: var(--secondary-bg);
+            color: var(--text-muted);
+            border: 1px solid var(--border-color);
+        }
+
+        .product-action-cell {
+            text-align: center;
+        }
+
+        .btn-small {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: 6px;
+        }
+
+        .activity-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 200px;
+        }
+
+        .activity-wrapper {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-height: 0;
+        }
+
+        .product-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: var(--shadow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .product-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--accent-color);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .product-card:hover {
+            transform: translateY(-6px);
+            box-shadow: var(--shadow-xl);
+            border-color: var(--border-light);
+        }
+
+        .product-card:hover::before {
+            opacity: 1;
+        }
+
+        .product-card.in-stock::before {
+            background: var(--success-color);
+            opacity: 1;
+        }
+
+        .product-card.out-of-stock::before {
+            background: var(--danger-color);
+            opacity: 0.5;
+        }
+
+        .product-image {
+            margin-bottom: 1.5rem;
+            text-align: center;
+            position: relative;
+        }
+
+        .product-image img {
+            max-width: 100%;
+            max-height: 150px;
+            width: auto;
+            height: auto;
+            object-fit: contain;
+            border-radius: 12px;
+            background: var(--secondary-bg);
+            padding: 1rem;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .product-image img:hover {
+            transform: scale(1.08);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .product-name {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-primary);
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            min-height: 2.8rem;
+        }
+
+        .product-tcin {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            margin-bottom: 1rem;
+            font-family: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-weight: 500;
+            background: var(--secondary-bg);
+            padding: 0.25rem 0.5rem;
+            border-radius: 6px;
+            display: inline-block;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-radius: 50px;
+            font-size: 0.875rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            transition: all 0.2s ease;
+            box-shadow: var(--shadow-sm);
+        }
+
+        .badge.in-stock {
+            background: linear-gradient(135deg, var(--success-color), var(--success-light));
+            color: white;
+            box-shadow: 0 4px 14px 0 rgba(16, 185, 129, 0.39);
+        }
+
+        .badge.out-of-stock {
+            background: linear-gradient(135deg, var(--danger-color), var(--danger-light));
+            color: white;
+            box-shadow: 0 4px 14px 0 rgba(239, 68, 68, 0.39);
+        }
+
+        .badge.unknown {
+            background: var(--secondary-bg);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+        }
+
+        .badge.preorder {
+            background: linear-gradient(135deg, var(--accent-color), var(--accent-light));
+            color: white;
+            box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.39);
+        }
+
+        .product-actions {
+            margin-top: 1rem;
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.75rem 1.5rem;
+            border-radius: 50px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            gap: 0.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-color), var(--accent-light));
+            color: white;
+            box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.39);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px 0 rgba(59, 130, 246, 0.5);
+        }
+
+        .btn-outline {
+            background: transparent;
+            color: var(--accent-color);
+            border: 2px solid var(--accent-color);
+        }
+
+        .btn-outline:hover {
+            background: var(--accent-color);
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px 0 rgba(59, 130, 246, 0.3);
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 0.5rem;
+            padding: 0.5rem 0;
+            border-top: 1px solid var(--border-color);
+            color: var(--text-muted);
+        }
+
+        .footer p {
+            margin-bottom: 0.25rem;
+            font-size: 0.75rem;
+        }
+
+        .refresh-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .countdown {
+            font-weight: 600;
+            color: var(--accent-color);
+            min-width: 2rem;
+            text-align: center;
+        }
+
+        .refreshing {
+            color: var(--warning-color);
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--text-secondary);
+        }
+
+        .loading .spinner {
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border-color);
+            border-top: 3px solid var(--accent-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 0.5rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .refreshing {
+            color: var(--warning-light) !important;
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        .refresh-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin-bottom: 1rem;
+            font-weight: 500;
+        }
+
+        .sticky-timer {
+            position: fixed;
+            top: 1.5rem;
+            right: 1.5rem;
+            background: var(--elevated-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            box-shadow: var(--shadow-lg);
+            z-index: 1000;
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .sticky-timer:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-xl);
+        }
+
+        .sticky-timer .countdown {
+            color: var(--accent-light);
+            font-weight: 700;
+            font-size: 1.1rem;
+            min-width: 2rem;
+            text-align: center;
+        }
+
+        .sticky-timer.refreshing {
+            color: var(--warning-light);
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        .activity-log {
+            flex: 1;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            background: var(--elevated-bg);
+            box-shadow: inset var(--shadow-sm);
+            min-height: 0;
+        }
+
+        .activity-log::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .activity-log::-webkit-scrollbar-track {
+            background: var(--secondary-bg);
+            border-radius: 3px;
+        }
+
+        .activity-log::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        .activity-log::-webkit-scrollbar-thumb:hover {
+            background: var(--border-light);
+        }
+
+        .activity-entry {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: center;
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.875rem;
+            gap: 1rem;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .activity-entry:last-child {
+            border-bottom: none;
+        }
+
+        .activity-entry:hover {
+            background: var(--card-bg);
+        }
+
+        .activity-entry::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: var(--border-color);
+            border-radius: 0 2px 2px 0;
+        }
+
+        .activity-entry.success::before {
+            background: var(--success-color);
+        }
+
+        .activity-entry.error::before {
+            background: var(--danger-color);
+        }
+
+        .activity-entry.warning::before {
+            background: var(--warning-color);
+        }
+
+        .activity-time {
+            font-family: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            color: var(--text-muted);
+            flex-shrink: 0;
+            font-weight: 500;
+            background: var(--secondary-bg);
+            padding: 0.375rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            min-width: 5.5rem;
+            text-align: center;
+        }
+
+        .activity-message {
+            color: var(--text-primary);
+            font-weight: 500;
+            line-height: 1.4;
+        }
+
+        .activity-category {
+            font-family: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-size: 0.625rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            letter-spacing: 0.05em;
+            flex-shrink: 0;
+        }
+
+        .activity-category.system {
+            background: var(--secondary-bg);
+            color: var(--text-muted);
+        }
+
+        .activity-category.api {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-light);
+        }
+
+        .activity-category.api_summary {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--success-light);
+        }
+
+        .activity-category.stock_alert {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--warning-light);
+        }
+
+        .activity-category.stock_status {
+            background: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+        }
+
+        .activity-category.user_action {
+            background: rgba(139, 92, 246, 0.15);
+            color: #a78bfa;
+        }
+
+        .activity-category.config {
+            background: rgba(236, 72, 153, 0.15);
+            color: #f472b6;
+        }
+
+        .activity-entry.success .activity-message {
+            color: var(--success-light);
+        }
+
+        .activity-entry.error .activity-message {
+            color: var(--danger-light);
+        }
+
+        .activity-entry.warning .activity-message {
+            color: var(--warning-light);
+        }
+
+        /* Special styling for stock status entries */
+        .activity-entry.success[data-category="stock_status"] .activity-message::before {
+            content: '🟢 ';
+            font-size: 0.8em;
+        }
+
+        .activity-entry.info[data-category="stock_status"] .activity-message::before {
+            content: '🔴 ';
+            font-size: 0.8em;
+        }
+
+        .activity-entry.info[data-category="stock_status"] .activity-message {
+            color: var(--text-muted);
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 0.5rem;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+            }
+
+            .sticky-timer {
+                top: 0.5rem;
+                right: 0.5rem;
+                padding: 0.75rem 1rem;
+                font-size: 0.75rem;
+            }
+
+            .product-row {
+                grid-template-columns: 60px 1fr 80px;
+                gap: 0.75rem;
+                padding: 0.75rem 1rem;
+            }
+
+            .product-tcin-cell,
+            .product-action-cell {
+                display: none;
+            }
+
+            .product-status-cell {
+                text-align: right;
+            }
+
+            .status-badge {
+                font-size: 0.625rem;
+                padding: 0.25rem 0.5rem;
+            }
+
+            .activity-wrapper {
+                min-height: 150px;
+            }
+
+            .activity-entry {
+                grid-template-columns: 1fr;
+                gap: 0.5rem;
+                text-align: left;
+            }
+
+            .activity-time {
+                min-width: auto;
+                text-align: left;
+                order: 1;
+            }
+
+            .activity-message {
+                order: 2;
+            }
+
+            .activity-category {
+                order: 3;
+                justify-self: start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Sticky Timer -->
+    <div class="sticky-timer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+        </svg>
+        <span>Refresh in</span>
+        <span class="countdown">25</span>
+    </div>
+
+    <div class="container">
+        <div class="content-wrapper">
+            <div class="header">
+            <h1>Target Monitor Pro</h1>
+            <p>Enterprise Stock Monitoring Platform</p>
+            <div class="header-badge">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v12M6 12h12" stroke="white" stroke-width="2"/>
+                </svg>
+                Real-time Intelligence
+            </div>
+        </div>
+
+        <!-- Status Overview -->
+        <div class="status-grid">
+            <div class="status-card {{ 'success' if status.data_loaded else 'error' }}">
+                <h2>System Status</h2>
+                <div class="value">
+                    {% if status.data_loaded %}
+                        ● ONLINE
+                    {% else %}
+                        ● OFFLINE
+                    {% endif %}
+                </div>
+                <div class="subtitle">
+                    {% if status.data_loaded %}
+                        All systems operational
+                    {% elif status.error %}
+                        {{ status.error }}
+                    {% else %}
+                        Loading stock data...
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if status.data_loaded %}
+            <div class="status-card {{ 'success' if status.in_stock_count > 0 else '' }}">
+                <h2>Available Products</h2>
+                <div class="value">{{ status.in_stock_count }}</div>
+                <div class="subtitle">{{ 'Items in stock' if status.in_stock_count > 0 else 'No items available' }}</div>
+            </div>
+
+            <div class="status-card">
+                <h2>Response Time</h2>
+                <div class="value">{{ status.data_age_seconds }}s</div>
+                <div class="subtitle">Last refresh latency</div>
+            </div>
+
+            <div class="status-card success">
+                <h2>Data Source</h2>
+                <div class="value">● LIVE</div>
+                <div class="subtitle">Target.com API verified</div>
+            </div>
+            {% else %}
+            <div class="status-card error">
+                <h2>API Status</h2>
+                <div class="value">● FAILED</div>
+                <div class="subtitle">Unable to fetch data</div>
+            </div>
+
+            <div class="status-card error">
+                <h2>Data Source</h2>
+                <div class="value">● OFFLINE</div>
+                <div class="subtitle">API unavailable</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Products Section -->
+            <div class="products-section">
+                {% if config.products %}
+                <div class="products-table">
+                    <div class="products-table-header">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M9 11H7l-2 2 2 2h2m4-4h2l2-2-2-2h-2m-6 9c-.55 0-1-.45-1-1V5c0-.55.45-1 1-1h12c.55 0 1 .45 1 1v14c0 .55-.45 1-1 1H7z"/>
+                        </svg>
+                        <h3>Product Monitor</h3>
+                        <div style="margin-left: auto; font-size: 0.75rem; color: var(--text-muted);">
+                            {{ config.products|length }} products
+                        </div>
+                    </div>
+                    <div class="products-list">
+                        {% for product in config.products %}
+                        <div class="product-row {{ 'in-stock' if product.available else 'out-of-stock' }}">
+                            <div class="product-image-cell">
+                                {% if product.image_url %}
+                                <img src="{{ product.image_url }}" alt="{{ product.display_name or product.name }}" class="product-image-small" loading="lazy" onerror="this.style.display='none'">
+                                {% else %}
+                                <div class="product-image-small" style="display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.75rem;">No Image</div>
+                                {% endif %}
+                            </div>
+                            <div class="product-name-cell">
+                                <div style="font-weight: 600; margin-bottom: 0.125rem;">{{ product.display_name or product.name or 'Unknown Product' }}</div>
+                                {% if product.is_preorder %}
+                                <div style="font-size: 0.625rem; color: var(--accent-light); text-transform: uppercase; font-weight: 600;">Preorder</div>
+                                {% endif %}
+                            </div>
+                            <div class="product-tcin-cell">{{ product.tcin }}</div>
+                            <div class="product-status-cell">
+                                <span class="status-badge {{ 'in-stock' if product.available else 'out-of-stock' if product.has_data else 'unknown' }}">
+                                    {% if product.has_data %}
+                                        {{ 'IN STOCK' if product.available else 'OUT OF STOCK' }}
+                                    {% else %}
+                                        NO DATA
+                                    {% endif %}
+                                </span>
+                            </div>
+                            <div class="product-action-cell">
+                                <button class="btn btn-primary btn-small" data-url="{{ product.url }}" onclick="openProduct(this)" title="Opens: {{ product.url }}">
+                                    View
+                                </button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% else %}
+                <div class="status-card">
+                    <h2>No Products</h2>
+                    <div class="value">0</div>
+                    <div class="subtitle">No products configured for monitoring</div>
+                </div>
+                {% endif %}
+            </div>
+
+            <!-- Activity Section -->
+            <div class="activity-section">
+                <div class="activity-wrapper">
+                    <h2 style="margin-bottom: 1rem; color: var(--text-primary); font-size: 1.1rem; font-weight: 700; flex-shrink: 0;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -0.2em; margin-right: 0.5rem;">
+                            <path d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                        </svg>
+                        Activity Monitor
+                    </h2>
+            <div class="activity-log">
+                {% if activity_log %}
+                    {% for entry in activity_log[:25] %}
+                    <div class="activity-entry {{ entry.level }}" data-category="{{ entry.category }}">
+                        <span class="activity-time">{{ entry.time_str }}</span>
+                        <span class="activity-message">{{ entry.message }}</span>
+                        <span class="activity-category {{ entry.category }}">{{ entry.category.replace('_', ' ') }}</span>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="activity-entry info">
+                        <span class="activity-time">--:--:--</span>
+                        <span class="activity-message">Monitor initialized - awaiting first API call</span>
+                        <span class="activity-category system">system</span>
+                    </div>
+                {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="footer" style="background: var(--elevated-bg); border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow); padding: 1rem; flex-shrink: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
+                <div style="flex: 1; min-width: 0;">
+                    <p style="font-size: 0.875rem; font-weight: 600; margin-bottom: 0.125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                        <strong>Target Monitor Pro</strong> - Enterprise Platform
+                    </p>
+                    <p style="color: var(--text-muted); font-size: 0.75rem;">
+                        Last sync: {{ timestamp.strftime('%H:%M:%S') }}
+                    </p>
+                </div>
+                <div style="flex-shrink: 0;">
+                    <a href="/refresh" class="btn btn-primary" style="padding: 0.5rem 1rem; font-size: 0.75rem;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.375rem;">
+                            <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                        </svg>
+                        Refresh
+                    </a>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <script>
+        let countdown = 25;
+        const countdownElement = document.querySelector('.sticky-timer .countdown');
+        const refreshIndicator = document.querySelector('.sticky-timer');
+
+        function updateCountdown() {
+            countdown--;
+            if (countdownElement) {
+                countdownElement.textContent = countdown;
+            }
+
+            if (countdown <= 0) {
+                // Show refreshing state
+                if (refreshIndicator) {
+                    refreshIndicator.classList.add('refreshing');
+                }
+                if (countdownElement) {
+                    countdownElement.textContent = '⟳';
+                }
+                
+                // Find the refresh text span in sticky timer
+                const refreshTextSpan = refreshIndicator ? refreshIndicator.querySelector('span:nth-child(2)') : null;
+                if (refreshTextSpan) {
+                    refreshTextSpan.textContent = 'Refreshing...';
+                }
+
+                // Add loading overlay
+                showLoadingState();
+
+                // Refresh the page
+                setTimeout(() => {
+                    window.location.reload();
+                }, 500);
+            } else {
+                // Continue countdown
+                setTimeout(updateCountdown, 1000);
+            }
+        }
+
+        function showLoadingState() {
+            // Create loading overlay
+            const overlay = document.createElement('div');
+            overlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(10, 14, 19, 0.95);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 9999;
+                color: white;
+                font-size: 1.2rem;
+            `;
+            overlay.innerHTML = `
+                <div style="text-align: center;">
+                    <div style="
+                        width: 50px;
+                        height: 50px;
+                        border: 4px solid #30363d;
+                        border-top: 4px solid #58a6ff;
+                        border-radius: 50%;
+                        animation: spin 1s linear infinite;
+                        margin: 0 auto 1rem;
+                    "></div>
+                    <div>🔄 Refreshing stock data...</div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+        }
+
+        function openProduct(button) {
+            const url = button.getAttribute('data-url');
+            console.log('Opening product:', url);
+
+            if (!url) {
+                console.error('No URL found in button data-url attribute');
+                return;
+            }
+
+            try {
+                // Try to open in new tab
+                const newWindow = window.open(url, '_blank', 'noopener,noreferrer');
+
+                if (newWindow) {
+                    console.log('Product page opened successfully');
+                    newWindow.focus();
+                } else {
+                    console.warn('Popup blocked - copying URL to clipboard');
+                    // Alternative: Copy URL to clipboard silently
+                    copyToClipboardFromUrl(url);
+                }
+            } catch (error) {
+                console.error('Error opening product page:', error);
+                // Fallback: Copy URL silently
+                copyToClipboardFromUrl(url);
+            }
+        }
+
+        function copyToClipboardFromUrl(url) {
+            navigator.clipboard.writeText(url).then(function() {
+                console.log('URL copied to clipboard:', url);
+            }).catch(function(err) {
+                console.error('Failed to copy URL:', err);
+                // Fallback method for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = url;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                console.log('URL copied using fallback method');
+            });
+        }
+
+        // Debug logging
+        console.log('Dashboard loaded, starting auto-refresh countdown');
+        console.log('Countdown element:', countdownElement);
+        console.log('Refresh indicator:', refreshIndicator);
+
+        // Start the countdown when page loads
+        if (countdownElement && refreshIndicator) {
+            setTimeout(updateCountdown, 1000);
+            console.log('Auto-refresh timer started');
+        } else {
+            console.error('Failed to find countdown elements - auto-refresh disabled');
+        }
+    </script>
+</body>
+</html>

@@ -53,7 +53,7 @@ except ImportError:
 
 # Initialize Flask app with SocketIO
 app = Flask(__name__, template_folder='dashboard/templates')
-CORS(app)
+CORS(app, origins=["http://localhost:5001", "http://127.0.0.1:5001"])
 app.secret_key = 'ultimate-batch-stealth-2025'
 
 # Initialize SocketIO with better configuration for stability
@@ -189,28 +189,20 @@ def start_new_refresh_cycle():
     return current_refresh_timestamp
 
 def can_attempt_purchase(tcin):
-    """Enhanced purchase check - 1 attempt per refresh cycle, must wait for new cycle after completion"""
+    """Enhanced purchase check - allow multiple attempts for testing"""
     with purchase_lock:
-        # Check if already attempted this refresh cycle
-        last_attempt = purchase_attempts.get(tcin, 0)
-        
         # Check current purchase status
         status_info = purchase_statuses.get(tcin, {'status': 'ready', 'last_update': datetime.now()})
         current_status = status_info.get('status', 'ready')
-        
-        # Allow attempt if:
-        # 1. Haven't attempted in this refresh cycle AND
-        # 2. Either ready/failed/purchased (not currently attempting)
-        can_attempt = (current_refresh_timestamp > last_attempt) and (current_status != 'attempting')
-        
+
+        # For testing: Allow attempt if not currently attempting
+        can_attempt = (current_status != 'attempting')
+
         if can_attempt:
-            print(f"[✅ ALLOW] {tcin}: Ready for purchase (last: cycle #{last_attempt}, current: cycle #{current_refresh_timestamp}, status: {current_status})")
+            print(f"[✅ ALLOW] {tcin}: Ready for purchase (status: {current_status})")
         else:
-            if current_refresh_timestamp <= last_attempt:
-                print(f"[🚫 BLOCK] {tcin}: Already attempted this refresh cycle #{current_refresh_timestamp}")
-            elif current_status == 'attempting':
-                print(f"[🚫 BLOCK] {tcin}: Currently attempting purchase - wait for completion")
-        
+            print(f"[🚫 BLOCK] {tcin}: Currently attempting purchase - wait for completion")
+
         return can_attempt
 
 def record_purchase_attempt(tcin):
@@ -290,17 +282,13 @@ def trigger_purchase_attempts_for_in_stock_products():
             set_purchase_status(tcin, 'attempting')
             add_activity_log(f"[CART] Purchase attempt started for {product_name} (TCIN: {tcin}) - Purchase: Processing", 'purchase')
             
-            # Start simple purchase attempt in a thread (no asyncio complexity)
-            def start_purchase_attempt():
-                try:
-                    mock_purchase_attempt_sync(tcin, product_name)
-                except Exception as e:
-                    print(f"[ERROR] Purchase attempt error for {tcin}: {e}")
-                    set_purchase_status(tcin, 'failed')
-                    set_stock_waiting_for_response(tcin)
-            
-            purchase_thread = threading.Thread(target=start_purchase_attempt, daemon=True)
-            purchase_thread.start()
+            # Simple purchase attempt - no threading
+            try:
+                mock_purchase_attempt_sync(tcin, product_name)
+            except Exception as e:
+                print(f"[ERROR] Purchase attempt error for {tcin}: {e}")
+                set_purchase_status(tcin, 'failed')
+                set_stock_waiting_for_response(tcin)
             print(f"[CART] Dashboard refresh triggered purchase attempt for {tcin} ({product_name})")
         elif product_data.get('available'):
             print(f"[WAIT] Product {tcin} in stock but in cooldown period (not ready)")
@@ -462,17 +450,29 @@ activity_log = []
 MAX_LOG_ENTRIES = 50
 
 def add_activity_log(message, log_type='info'):
-    """Add entry to activity log"""
+    """Add entry to activity log and emit WebSocket update"""
     global activity_log
     timestamp = datetime.now()
-    activity_log.append({
+    log_entry = {
         'timestamp': timestamp.isoformat(),
         'message': message,
         'type': log_type
-    })
+    }
+
+    activity_log.append(log_entry)
     # Keep only last 50 entries
     if len(activity_log) > MAX_LOG_ENTRIES:
         activity_log = activity_log[-MAX_LOG_ENTRIES:]
+
+    # Emit WebSocket update for activity log
+    try:
+        socketio.emit('activity_log_update', {
+            'entry': log_entry,
+            'timestamp': timestamp.isoformat()
+        })
+        print(f"[WEBSOCKET] Activity log update sent: {message[:50]}...")
+    except Exception as e:
+        print(f"[WEBSOCKET] Failed to emit activity log update: {e}")
 
 def get_enabled_product_count():
     """Get enabled product count from config"""
@@ -761,18 +761,13 @@ def get_massive_user_agent_rotation():
     return random.choice(user_agents)
 
 def get_massive_api_key_rotation():
-    """30+ API keys for maximum distribution"""
-    api_keys = [
-        # Primary working key
+    """Working API keys for reliable operation"""
+    # Only use verified working keys to prevent 404 errors
+    working_api_keys = [
         "ff457966e64d5e877fdbad070f276d18ecec4a01",
-        # Additional rotation keys (these would need to be discovered/validated)
-        "9f36aeafbe60771e321a7cc95a78140772ab3e96",
-        "7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b",
-        "4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a",
-        "2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d",
-        "8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e"
+        "9f36aeafbe60771e321a7cc95a78140772ab3e96"
     ]
-    return random.choice(api_keys)
+    return random.choice(working_api_keys)
 
 def get_rotating_cookies():
     """Get rotating cookie sets for maximum stealth"""
@@ -898,84 +893,105 @@ class UltimateStealthBatchChecker:
         return session, rotating_cookies
     
     def make_ultimate_stealth_batch_call(self):
-        """Make batch API call with full stealth rotation + F5/Shape evasion"""
-        config = self.get_config()
-        enabled_products = [p for p in config.get('products', []) if p.get('enabled', True)]
+        """Make batch API call with full stealth rotation + F5/Shape evasion - DEBUGGING VERSION"""
+        print("[DEBUG] Starting make_ultimate_stealth_batch_call method...")
         
-        if not enabled_products:
-            return {}
-        
-        # F5/Shape evasion: Check for human break patterns
-        if human_behavior.should_take_human_break():
-            break_duration = human_behavior.get_break_duration()
-            print(f"[TIRED] F5/Shape evasion: Taking human break for {break_duration/60:.1f} minutes...")
-            time.sleep(break_duration)
-        
-        # Extract TCINs for batch call
-        tcins = [p['tcin'] for p in enabled_products]
-        
-        # Rotate API key for each call
-        api_key = get_massive_api_key_rotation()
-        
-        # Build stealth parameters
-        params = {
-            'key': api_key,
-            'tcins': ','.join(tcins),  # Batch format
-            'is_bot': 'false',  # Critical anti-bot parameter
-            '_': str(int(time.time() * 1000)),  # Cache busting
-            **self.location_params
-        }
-        
-        # F5/Shape evasion: Create advanced session with TLS fingerprinting
-        if CURL_CFFI_AVAILABLE:
-            # Advanced TLS fingerprinting
-            user_agent = get_massive_user_agent_rotation()[0]
-            if 'Chrome' in user_agent:
-                session = cf_requests.Session(impersonate="chrome120")
-            elif 'Firefox' in user_agent:
-                session = cf_requests.Session(impersonate="firefox119")
+        try:
+            config = self.get_config()
+            print("[DEBUG] ✅ Config loaded successfully")
+            
+            enabled_products = [p for p in config.get('products', []) if p.get('enabled', True)]
+            print(f"[DEBUG] ✅ Found {len(enabled_products)} enabled products")
+            
+            if not enabled_products:
+                print("[DEBUG] ❌ No enabled products, returning empty dict")
+                return {}
+            
+            # SKIP human break patterns for debugging
+            print("[DEBUG] ⚠️ Skipping human break patterns for debugging")
+            
+            # Extract TCINs for batch call
+            tcins = [p['tcin'] for p in enabled_products]
+            print(f"[DEBUG] ✅ Extracted {len(tcins)} TCINs: {tcins}")
+            
+            # Rotate API key for each call
+            print("[DEBUG] Getting API key...")
+            api_key = get_massive_api_key_rotation()
+            print(f"[DEBUG] ✅ Got API key: {api_key[:8]}...")
+            
+            # Build stealth parameters
+            print("[DEBUG] Building parameters...")
+            params = {
+                'key': api_key,
+                'tcins': ','.join(tcins),  # Batch format
+                'is_bot': 'false',  # Critical anti-bot parameter
+                '_': str(int(time.time() * 1000)),  # Cache busting
+                **self.location_params
+            }
+            print(f"[DEBUG] ✅ Parameters built, TCINs: {len(tcins)}")
+            
+            # F5/Shape evasion: Create advanced session with TLS fingerprinting
+            print("[DEBUG] Creating session...")
+            if CURL_CFFI_AVAILABLE:
+                print("[DEBUG] Using curl_cffi session...")
+                # Advanced TLS fingerprinting
+                user_agent = get_massive_user_agent_rotation()[0]
+                if 'Chrome' in user_agent:
+                    session = cf_requests.Session(impersonate="chrome120")
+                elif 'Firefox' in user_agent:
+                    session = cf_requests.Session(impersonate="firefox119")
+                else:
+                    session = cf_requests.Session(impersonate="chrome120")
+                print(f"[DEBUG] ✅ curl_cffi session created")
             else:
-                session = cf_requests.Session(impersonate="chrome120")
-            print(f"[HOT] F5/Shape evasion: Advanced TLS fingerprinting enabled")
-        else:
-            # Fallback to standard session
-            session, cookies = self.create_stealth_session()
-        
-        # Get rotated headers for this request
-        headers = get_ultra_stealth_headers()
-        
-        # F5/Shape evasion: Session warmup before API call
-        if session_warmer.needs_warmup():
-            print(f"[HOT] F5/Shape evasion: Session warmup starting...")
-            session_warmer.warmup_session(session, headers)
-            # Human delay between warmup and API call
-            time.sleep(random.uniform(3, 8))
-        
-        stealth_data = {
-            'api_key': api_key[:8] + '...',  # Track partial key
-            'user_agent': headers['user-agent'][:50] + '...',
-            'cookies_count': len(session.cookies) if hasattr(session, 'cookies') else 0,
-            'headers_count': len(headers),
-            'f5_evasion': True,
-            'session_warmup': session_warmer.last_warmup_time is not None,
-            'tls_fingerprinting': CURL_CFFI_AVAILABLE
-        }
+                print("[DEBUG] Using standard session...")
+                # Fallback to standard session
+                session, cookies = self.create_stealth_session()
+                print(f"[DEBUG] ✅ Standard session created")
+            
+            # Get rotated headers for this request
+            print("[DEBUG] Getting headers...")
+            headers = get_ultra_stealth_headers()
+            print(f"[DEBUG] ✅ Headers obtained: {len(headers)} headers")
+            
+            # SKIP session warmup for debugging
+            print("[DEBUG] ⚠️ Skipping session warmup for debugging")
+            
+            print("[DEBUG] About to make API request...")
+            
+            stealth_data = {
+                'api_key': api_key[:8] + '...',
+                'user_agent': headers['user-agent'][:50] + '...',
+                'cookies_count': len(session.cookies) if hasattr(session, 'cookies') else 0,
+                'headers_count': len(headers),
+                'f5_evasion': True,
+                'tls_fingerprinting': CURL_CFFI_AVAILABLE
+            }
+            print(f"[DEBUG] Stealth data: {stealth_data}")
+            
+        except Exception as init_error:
+            print(f"[DEBUG] ❌ Error in initialization: {init_error}")
+            return {}
         
         try:
             start_time = time.time()
-            print(f"[REFRESH] Ultimate stealth + F5 evasion batch call: {len(tcins)} products, API key: {api_key[:8]}...")
-            print(f"[STEALTH] User-Agent: {headers['user-agent'][:60]}...")
-            print(f"[HOT] F5/Shape evasion: {'Advanced TLS' if CURL_CFFI_AVAILABLE else 'Standard'}, Session warmup: {'Yes' if session_warmer.last_warmup_time else 'No'}")
+            print(f"[DEBUG] ✅ Starting API request...")
+            print(f"[DEBUG] URL: {self.batch_endpoint}")
+            print(f"[DEBUG] Params: tcins={len(tcins)}, key={api_key[:8]}...")
+            print(f"[DEBUG] Headers count: {len(headers)}")
+            print(f"[DEBUG] Timeout: 10 seconds (reduced for debugging)")
             
-            # Update human behavior tracking after actual request
-            human_behavior.update_fatigue_after_request()
-            human_behavior.last_request_time = datetime.now()
+            # SKIP human behavior tracking for debugging
+            print("[DEBUG] ⚠️ Skipping human behavior tracking for debugging")
+            
+            print("[DEBUG] Making session.get() call now...")
             response = session.get(
                 self.batch_endpoint,
                 params=params,
                 headers=headers,
-                timeout=25
+                timeout=10  # Reduced timeout for debugging
             )
+            print(f"[DEBUG] ✅ API request completed!")
             
             end_time = time.time()
             response_time = (end_time - start_time) * 1000
@@ -1090,17 +1106,12 @@ class UltimateStealthBatchChecker:
                     if can_attempt_purchase(tcin):
                         print(f"[CART] Auto-purchase attempt for {tcin}")
                         set_purchase_status(tcin, 'attempting')
-                        # Start purchase in background thread
-                        def start_auto_purchase():
-                            try:
-                                time.sleep(0.5)  # Small delay to allow status update
-                                mock_purchase_attempt_sync(tcin, clean_name)
-                            except Exception as e:
-                                print(f"[ERROR] Auto-purchase thread failed for {tcin}: {e}")
-                                set_purchase_status(tcin, 'failed')
-                        
-                        purchase_thread = threading.Thread(target=start_auto_purchase, daemon=True)
-                        purchase_thread.start()
+                        # Simple auto-purchase - no threading
+                        try:
+                            mock_purchase_attempt_sync(tcin, clean_name)
+                        except Exception as e:
+                            print(f"[ERROR] Auto-purchase failed for {tcin}: {e}")
+                            set_purchase_status(tcin, 'failed')
                     else:
                         print(f"[WAIT] Product {tcin} in stock but not ready for purchase attempt")
                 
@@ -1231,176 +1242,169 @@ def force_immediate_refresh():
         return False
 
 def simple_timer_manager():
-    """Simple timer that just manages timer state - no API calls"""
+    """Simple timer that manages timer state and sends WebSocket updates"""
     global current_timer_seconds, timer_started_at
-    
-    print("[SIMPLE_TIMER] Starting simple timer manager")
-    
+
+    print("[SIMPLE_TIMER] Starting simple timer manager with WebSocket sync")
+
     timer_count = 0
     while True:
         timer_count += 1
-        
+
         # Random interval between 15-25 seconds for stealth
         total_seconds = random.randint(15, 25)
         print(f"[TIMER] Starting timer #{timer_count}: {total_seconds} seconds")
-        
+
         # Update global timer state
         with timer_state_lock:
             current_timer_seconds = total_seconds
             timer_started_at = time.time()
-        
-        # Sleep for the full duration (simpler than countdown loop)
-        time.sleep(total_seconds)
-        
-        # Timer hit 0 - clear timer state
+
+        # Send initial timer update to frontend
+        try:
+            socketio.emit('timer_update', {
+                'next_check_seconds': total_seconds,
+                'timestamp': datetime.now().isoformat(),
+                'cycle_start': True
+            })
+            print(f"[WEBSOCKET] ✅ Timer cycle #{timer_count} started: {total_seconds}s")
+        except Exception as e:
+            print(f"[WEBSOCKET] ❌ Failed to send timer start update: {e}")
+
+        # Sleep in small chunks to avoid thread blocking issues
+        print(f"[TIMER] ⏰ Sleeping for {total_seconds} seconds...")
+        start_time = time.time()
+        last_periodic_update = 0
+        try:
+            elapsed = 0
+            while elapsed < total_seconds:
+                time.sleep(1.0)  # Sleep in 1 second chunks for more precise timing
+                elapsed = time.time() - start_time
+
+                # Skip periodic WebSocket updates to avoid blocking - frontend can count down on its own
+                # Just print progress every 5 seconds for debugging
+                current_second = int(elapsed)
+                if current_second != last_periodic_update and current_second % 5 == 0 and elapsed > 0:
+                    remaining = max(0, total_seconds - elapsed)
+                    print(f"[TIMER] ⏰ Progress: {remaining:.1f}s remaining")
+                    last_periodic_update = current_second
+
+                if elapsed >= total_seconds:
+                    break
+            actual_duration = time.time() - start_time
+            print(f"[TIMER] ⏰ Sleep completed after {actual_duration:.1f} seconds (target: {total_seconds}s)")
+        except Exception as e:
+            actual_duration = time.time() - start_time
+            print(f"[TIMER] ❌ Sleep interrupted after {actual_duration:.1f}s: {e}")
+            print(f"[TIMER] ⏰ Sleep completed with exception after attempting {total_seconds} seconds")
+
+        # Timer hit 0 - clear timer state and send completion update
         with timer_state_lock:
             current_timer_seconds = 0
             timer_started_at = None
-        
+
+        # Send timer completion update with proper data structure
+        try:
+            socketio.emit('timer_update', {
+                'next_check_seconds': 0,
+                'timestamp': datetime.now().isoformat(),
+                'refresh_completed': True,
+                'cycle_complete': True
+            })
+            print(f"[WEBSOCKET] ✅ Timer cycle #{timer_count} completed - refresh triggered")
+        except Exception as e:
+            print(f"[WEBSOCKET] ❌ Failed to send timer completion update: {e}")
+
         print(f"[TIMER] Timer #{timer_count} completed! Triggering stock check...")
+
+        # Also add to activity log so user can see when timer completes
+        add_activity_log("⏰ Timer completed - triggering API call...", 'info')
         
-        # Just signal that stock check should happen - don't block the timer
-        global stock_check_requested
-        stock_check_requested = True
-        print("[TIMER] Stock check requested (non-blocking)")
+        # Instead of using worker thread, directly trigger API call in a separate thread
+        def execute_api_call():
+            try:
+                print("[TIMER_API] 🔄 API thread started - performing stock check...")
+                print("[TIMER_API] 🔄 About to call add_activity_log...")
+                add_activity_log("🔄 Starting API call for stock check...", 'info')
+                print("[TIMER_API] ✅ Activity log entry added")
+                print("[TIMER_API] 🔄 About to call stealth_checker.make_ultimate_stealth_batch_call()...")
+                
+                batch_data = stealth_checker.make_ultimate_stealth_batch_call()
+                
+                if batch_data and len(batch_data) > 0:
+                    in_stock_count = sum(1 for r in batch_data.values() if r.get('available'))
+                    out_of_stock_count = len(batch_data) - in_stock_count
+                    
+                    print(f"[TIMER_API] ✅ Timer check: Updated {len(batch_data)} products")
+                    print(f"[TIMER_API] 📊 Results: {in_stock_count} in stock, {out_of_stock_count} out of stock")
+                    
+                    # Update global stock data
+                    global current_stock_data, latest_stock_data
+                    current_stock_data = batch_data
+                    with latest_data_lock:
+                        latest_stock_data = batch_data.copy()
+                    
+                    # Add individual product status updates to activity log
+                    for tcin, product_data in batch_data.items():
+                        product_name = product_data.get('name', 'Unknown Product')
+                        is_available = product_data.get('available', False)
+                        status = product_data.get('status', 'UNKNOWN')
+                        
+                        if is_available:
+                            add_activity_log(f"📦 {product_name} is IN STOCK", 'success')
+                            # Check if purchase attempt should be triggered
+                            if can_attempt_purchase(tcin):
+                                add_activity_log(f"🛒 Purchase attempt for {product_name} (Test Mode - No real purchase)", 'purchase')
+                        else:
+                            # Show specific status reason
+                            if status == 'MARKETPLACE_SELLER':
+                                add_activity_log(f"📦 {product_name} is available but from marketplace seller", 'warning')
+                            else:
+                                add_activity_log(f"📦 {product_name} is out of stock", 'info')
+                    
+                    # Add summary activity log entry
+                    add_activity_log(f"📋 Analytics updated - {len(batch_data)} products monitored", 'success')
+                    
+                    # Send WebSocket update
+                    try:
+                        socketio.emit('stock_update', {
+                            'success': True,
+                            'products': list(batch_data.values()),
+                            'timestamp': datetime.now().isoformat(),
+                            'source': 'timer_api'
+                        })
+                        print(f"[TIMER_API] ✅ WebSocket stock_update sent for {len(batch_data)} products")
+                    except Exception as ws_error:
+                        print(f"[TIMER_API] ❌ WebSocket error: {ws_error}")
+                else:
+                    print("[TIMER_API] ❌ Timer check: No data returned")
+                    add_activity_log("❌ API call returned no data", 'error')
+                    
+            except Exception as e:
+                print(f"[TIMER_API] ⚠️ Timer check error: {str(e)}")
+                add_activity_log(f"❌ API call failed: {str(e)}", 'error')
         
-        
+        # Execute API call in separate thread to avoid blocking timer
+        print(f"[TIMER] 🔄 About to start API call thread...")
+        api_thread = threading.Thread(target=execute_api_call, daemon=True)
+        api_thread.start()
+        print(f"[TIMER] ✅ API call thread started (thread ID: {api_thread.ident})")
+
+        # Add a small delay before starting next cycle to prevent rapid resets
+        time.sleep(0.5)
+
+
         print(f"[TIMER] Ready for next cycle...")
 
 def stock_checker_worker():
-    """Simple stock checker worker that performs an immediate check then waits for timer signals"""
-    global stock_check_requested, current_stock_data, stealth_checker, dashboard_ready, latest_stock_data
+    """Simplified worker - now using direct timer-based API calls instead"""
+    print("[STOCK_WORKER] 🚀 Worker disabled - using direct timer-based API calls")
+    add_activity_log("🔄 Using direct timer-based API calls (worker disabled)", 'info')
     
-    print("[STOCK_WORKER] 🚀 Starting stock checker worker...")
-    
+    # Just sleep - the timer will handle API calls directly
     import time
-    
-    # Wait briefly for stealth_checker to be available
-    for i in range(10):
-        try:
-            if stealth_checker is not None:
-                print("[STOCK_WORKER] ✅ stealth_checker is ready")
-                break
-        except:
-            pass
-        time.sleep(0.1)
-    
-    # Start immediate API call in background thread to avoid blocking dashboard
-    print("[STOCK_WORKER] 🔥 Starting background warmup API call...")
-    
-    def background_api_call():
-        global dashboard_ready, current_stock_data, latest_stock_data
-        try:
-            print("[STOCK_WORKER] 🚀 Background API call started...")
-            batch_data = stealth_checker.make_ultimate_stealth_batch_call()
-            print(f"[STOCK_WORKER] API call returned type: {type(batch_data)}, length: {len(batch_data) if batch_data else 0}")
-            
-            if batch_data and len(batch_data) > 0:
-                # Update both global data stores
-                current_stock_data = batch_data
-                with latest_data_lock:
-                    latest_stock_data = batch_data.copy()
-                
-                print(f"[STOCK_WORKER] ✅ Background API call: Got data for {len(batch_data)} products")
-                print(f"[STOCK_WORKER] ✅ current_stock_data keys: {list(current_stock_data.keys())}")
-                print(f"[STOCK_WORKER] ✅ Data loaded successfully!")
-                
-                # Optional: Send WebSocket update 
-                try:
-                    socketio.emit('stock_update', {
-                        'status': 'live_data',
-                        'data': batch_data,
-                        'timestamp': time.time()
-                    })
-                    print("[STOCK_WORKER] ✅ WebSocket update sent")
-                except Exception as ws_error:
-                    print(f"[STOCK_WORKER] WebSocket error: {ws_error}")
-            else:
-                print("[STOCK_WORKER] ⚠️ API call returned empty data")
-                print("[STOCK_WORKER] ✅ Continuing with empty data")
-                
-        except Exception as e:
-            print(f"[STOCK_WORKER] ❌ Background API call failed: {str(e)}")
-            print("[STOCK_WORKER] ✅ Continuing after error")
-            
-        finally:
-            # Always set dashboard ready after first API attempt (success or failure)
-            dashboard_ready = True
-            print("[STOCK_WORKER] ✅ Dashboard ready flag set to True")
-            print("[STOCK_WORKER] 🏁 Background API call thread completed")
-    
-    # Start background API call
-    import threading
-    api_thread = threading.Thread(target=background_api_call, daemon=True)
-    api_thread.start()
-    print("[STOCK_WORKER] 🚀 Background API thread started")
-    
-    # Wait for API call to complete (with timeout)
-    print("[STOCK_WORKER] ⏰ Waiting up to 15 seconds for API call to complete...")
-    
-    # Join the thread with timeout
-    api_thread.join(timeout=15.0)
-    
-    if api_thread.is_alive():
-        print("[STOCK_WORKER] ⚠️ API call taking longer than 15 seconds - enabling dashboard anyway")
-        dashboard_ready = True
-        print("[STOCK_WORKER] ✅ Dashboard ready (API call continues in background)")
-    else:
-        print("[STOCK_WORKER] ✅ API call completed within 15 seconds!")
-        
-    # Ensure dashboard_ready is set regardless  
-    if not dashboard_ready:
-        dashboard_ready = True
-        print("[STOCK_WORKER] ✅ Dashboard ready (fallback)")
-    
-    # Reset request flag
-    stock_check_requested = False
-    
-    # Now enter monitoring loop
-    print("[STOCK_WORKER] 🔄 Starting monitoring loop...")
-    loop_count = 0
-    
     while True:
-        try:
-            loop_count += 1
-            time.sleep(1)  # Check every second
-            
-            # Debug output every 10 seconds
-            if loop_count % 10 == 0:
-                print(f"[STOCK_WORKER] ✅ Loop #{loop_count}: stock_check_requested = {stock_check_requested}")
-            
-            # Check if timer has requested a stock check
-            if stock_check_requested:
-                print(f"[STOCK_WORKER] ✅ Timer requested stock check at loop #{loop_count}")
-                stock_check_requested = False
-                
-                print("[STOCK_WORKER] 🔄 Performing timer-triggered stock check...")
-                try:
-                    batch_data = stealth_checker.make_ultimate_stealth_batch_call()
-                    if batch_data and len(batch_data) > 0:
-                        print(f"[STOCK_WORKER] ✅ Timer check: Updated {len(batch_data)} products")
-                        current_stock_data = batch_data
-                        print(f"[STOCK_WORKER] ✅ current_stock_data keys after timer: {list(current_stock_data.keys())}")
-                        # Send WebSocket update
-                        try:
-                            socketio.emit('stock_update', {
-                                'status': 'success',
-                                'data': batch_data,
-                                'timestamp': time.time()
-                            })
-                            print("[STOCK_WORKER] ✅ WebSocket update sent for timer check")
-                        except Exception as ws_error:
-                            print(f"[STOCK_WORKER] WebSocket error: {ws_error}")
-                    else:
-                        print("[STOCK_WORKER] ❌ Timer check: No data returned; keeping previous current_stock_data")
-                        # Do NOT overwrite current_stock_data with empty unless truly failed
-                except Exception as e:
-                    print(f"[STOCK_WORKER] ⚠️ Timer check error: {str(e)}")
-                    current_stock_data = {}
-                    
-        except Exception as loop_error:
-            print(f"[STOCK_WORKER] ❌ Loop error: {str(loop_error)}")
-            time.sleep(1)
+        time.sleep(60)  # Sleep for 60 seconds, do nothing
 
 # Initialize system
 print("=" + "="*80)
@@ -1420,7 +1424,7 @@ api_calls_complete = False
 stock_data_loaded = False
 
 def perform_startup_sequence():
-    global session_warmup_complete, api_calls_complete, stock_data_loaded, dashboard_ready
+    global session_warmup_complete, api_calls_complete, stock_data_loaded, dashboard_ready, initial_api_call_complete
     # 1. Session warmup
     print('[PROGRESS] Starting session warmup...')
     try:
@@ -1435,32 +1439,57 @@ def perform_startup_sequence():
         session_warmup_complete = True
         print('[PROGRESS] Session warmup failed. (Flag 1 set)')
         socketio.emit('loading_step', {'step': 1})
-    # 2. Stealth API calls
-    print('[PROGRESS] Making stealth API calls...')
+    # 2. Initial API call for real stock data
+    print('[PROGRESS] Making initial API call for real stock data...')
     try:
         config = stealth_checker.get_config()
         enabled_products = [p for p in config.get('products', []) if p.get('enabled', True)]
         batch_data = stealth_checker.make_ultimate_stealth_batch_call()
-        api_calls_complete = True
-        print('[PROGRESS] Stealth API calls complete. (Flag 2 set)')
+
+        if batch_data and len(batch_data) > 0:
+            # Update global data with fresh API results
+            with latest_data_lock:
+                latest_stock_data = batch_data.copy()
+                last_update_time = datetime.now()
+
+            print(f'[PROGRESS] ✅ Initial API call successful - got {len(batch_data)} products')
+            initial_api_call_complete = True
+            api_calls_complete = True
+            print('[PROGRESS] Initial API call complete. (Flag 2 set)')
+
+            # Send WebSocket update with fresh data
+            try:
+                socketio.emit('stock_update', {
+                    'success': True,
+                    'products': list(batch_data.values()),
+                    'timestamp': datetime.now().isoformat(),
+                    'source': 'startup_sequence'
+                })
+                print(f'[WEBSOCKET] ✅ Startup sequence sent stock update for {len(batch_data)} products')
+            except Exception as ws_error:
+                print(f'[WEBSOCKET] ❌ Failed to send startup stock update: {ws_error}')
+        else:
+            print('[PROGRESS] ❌ Initial API call returned no data')
+            initial_api_call_complete = True
+            api_calls_complete = True
+
         socketio.emit('loading_step', {'step': 2})
     except Exception as e:
-        print(f'[ERROR] Stealth API calls failed: {e}')
+        print(f'[ERROR] Initial API call failed: {e}')
+        initial_api_call_complete = True
         api_calls_complete = True
-        print('[PROGRESS] Stealth API calls failed. (Flag 2 set)')
+        print('[PROGRESS] Initial API call failed. (Flag 2 set)')
         socketio.emit('loading_step', {'step': 2})
-    # 3. Load real stock data
-    print('[PROGRESS] Loading real stock data...')
+    # 3. Process stock data
+    print('[PROGRESS] Processing stock data...')
     try:
-        with latest_data_lock:
-            latest_stock_data = batch_data
         stock_data_loaded = True
-        print('[PROGRESS] Stock data loaded. (Flag 3 set)')
+        print('[PROGRESS] Stock data processed. (Flag 3 set)')
         socketio.emit('loading_step', {'step': 3})
     except Exception as e:
-        print(f'[ERROR] Stock data loading failed: {e}')
+        print(f'[ERROR] Stock data processing failed: {e}')
         stock_data_loaded = True
-        print('[PROGRESS] Stock data loading failed. (Flag 3 set)')
+        print('[PROGRESS] Stock data processing failed. (Flag 3 set)')
         socketio.emit('loading_step', {'step': 3})
     # 4. Dashboard ready
     dashboard_ready = True
@@ -1473,43 +1502,90 @@ startup_thread.start()
 
 @app.route('/')
 def index():
-    """Dashboard home page - shows loading screen initially, then dashboard when data ready"""
+    """Dashboard home page - waits for API response before showing dashboard with actual stock data"""
     global latest_stock_data, api_call_in_progress, dashboard_ready
-    
+
     print("[ROUTE] ========== Dashboard route accessed ==========")
-    
+
     # Check if we already have data
     with latest_data_lock:
         has_data = bool(latest_stock_data)
         data_count = len(latest_stock_data) if latest_stock_data else 0
-    
+
     print(f"[ROUTE] Current state: has_data={has_data}, data_count={data_count}, dashboard_ready={dashboard_ready}, api_call_in_progress={api_call_in_progress}")
-    
-    # Show loading screen if no data, dashboard if we have data
-    if not has_data:
-        print("[ROUTE] 📋 No data yet - showing loading screen...")
-        return render_template('loading.html', 
-            message="🔥 Loading stock data... This will refresh automatically...",
-            current_step=2)
-    
-    print(f"[ROUTE] 🎯 Data loaded - rendering dashboard with {data_count} products")
+
+    # If no data yet, make initial API call to get real stock status
+    if not has_data or data_count == 0:
+        print("[ROUTE] 📡 No data available - making initial API call to get real stock status...")
+        try:
+            # Create fresh stealth checker and get real data
+            fresh_checker = UltimateStealthBatchChecker()
+            batch_data = fresh_checker.make_ultimate_stealth_batch_call()
+
+            if batch_data and len(batch_data) > 0:
+                # Update global data with fresh API results
+                with latest_data_lock:
+                    latest_stock_data = batch_data.copy()
+                    last_update_time = datetime.now()
+                    data_count = len(batch_data)
+
+                print(f"[ROUTE] ✅ Got fresh API data for {data_count} products")
+
+                # Send WebSocket update with fresh data
+                try:
+                    socketio.emit('stock_update', {
+                        'success': True,
+                        'products': list(batch_data.values()),
+                        'timestamp': datetime.now().isoformat(),
+                        'source': 'initial_load'
+                    })
+                    print(f"[WEBSOCKET] ✅ Initial load sent stock update for {data_count} products")
+                except Exception as ws_error:
+                    print(f"[WEBSOCKET] ❌ Failed to send initial stock update: {ws_error}")
+
+                # Process purchase attempts for in-stock products
+                for tcin, product_data in batch_data.items():
+                    if product_data.get('available') and can_attempt_purchase(tcin):
+                        product_name = product_data.get('name', 'Unknown Product')
+                        print(f"[CART] Initial load purchase attempt for {tcin}")
+                        set_purchase_status(tcin, 'attempting')
+                        try:
+                            mock_purchase_attempt_sync(tcin, product_name)
+                        except Exception as e:
+                            print(f"[ERROR] Initial purchase failed for {tcin}: {e}")
+                            set_purchase_status(tcin, 'failed')
+            else:
+                print("[ROUTE] ❌ Initial API call returned no data")
+                # Set empty data to prevent hanging
+                with latest_data_lock:
+                    latest_stock_data = {}
+                    data_count = 0
+
+        except Exception as e:
+            print(f"[ROUTE] ❌ Initial API call failed: {e}")
+            # Set empty data to prevent hanging
+            with latest_data_lock:
+                latest_stock_data = {}
+                data_count = 0
+
+    print(f"[ROUTE] 🎯 Rendering dashboard with {data_count} products (real API data)")
 
     try:
         config = stealth_checker.get_config()
         timestamp = datetime.now()
-        
+
         # Get latest stock data
         with latest_data_lock:
             stock_data = latest_stock_data.copy()
-        
+
         print(f"[DEBUG] Dashboard route: stock_data has {len(stock_data)} products")
-        
+
         # Add product URLs and populate with latest data if available
         for product in config.get('products', []):
             tcin = product.get('tcin')
             if tcin:
                 product['url'] = f"https://www.target.com/p/-/A-{tcin}"
-                
+
                 # If we have current data for this product, use it for immediate display
                 if tcin in stock_data:
                     api_data = stock_data[tcin]
@@ -1533,26 +1609,52 @@ def index():
                     product['is_target_direct'] = True
                     product['seller_code'] = 'Unknown'
                     product['has_data'] = True
-            
+
         status = {
-           
             'monitoring': True,
             'total_checks': stealth_analytics.analytics_data['total_calls'],
             'in_stock_count': sum(1 for r in stock_data.values() if r.get('available')),
             'last_update': last_update_time.isoformat() if last_update_time else timestamp.isoformat(),
             'recent_stock': [entry['message'] for entry in activity_log[-10:] if entry['type'] in ['success', 'info']],
             'recent_purchases': [],
-            'timestamp': timestamp.isoformat(),
+            'timestamp': timestamp,
             'api_method': 'ultimate_stealth_batch',
             'stealth_active': True,
             'success_rate': stealth_analytics.analytics_data['success_rate']
         }
-    
-        print(f"[DEBUG] Dashboard route: Rendering template with {len(config.get('products', []))} products")
-        return render_template('dashboard.html',
-                             config=config,
-                             status=status,
-                             timestamp=timestamp)
+
+        print(f"[DEBUG] Dashboard route: About to render template with {len(config.get('products', []))} products")
+        print(f"[DEBUG] Config products: {len(config.get('products', []))}")
+        print(f"[DEBUG] Status keys: {list(status.keys())}")
+
+        # Ensure template folder exists and is accessible
+        template_path = Path('dashboard/templates/dashboard.html')
+        if not template_path.exists():
+            print(f"[ERROR] Template file not found: {template_path.absolute()}")
+            return f"Template Error: dashboard.html not found at {template_path.absolute()}", 500
+
+        print(f"[DEBUG] Template file exists: {template_path.absolute()}")
+
+        try:
+            # Render the template
+            result = render_template('dashboard.html',
+                                   config=config,
+                                   status=status,
+                                   timestamp=timestamp)
+
+            print(f"[DEBUG] Template rendered successfully, response length: {len(result)}")
+            print(f"[DEBUG] Response type: {type(result)}")
+            print(f"[DEBUG] First 200 chars of response: {result[:200]}")
+
+            # Return the rendered template
+            return result
+
+        except Exception as template_error:
+            print(f"[ERROR] Template rendering failed: {template_error}")
+            import traceback
+            traceback.print_exc()
+            return f"Template Rendering Error: {template_error}", 500
+
     except Exception as e:
         print(f"[ERROR] Dashboard route error: {e}")
         import traceback
@@ -1561,15 +1663,51 @@ def index():
 
 @app.route('/api/live-stock-status')
 def api_live_stock_status():
-    """Live stock status - always returns direct batch API results (no cache)"""
-    print("[LIVE] Making direct batch API call for live stock status (no cache)")
+    """Live stock status - always returns direct batch API results (no cache) WITH DETAILED LOGGING"""
+    print("[ENDPOINT] ========================================")
+    print("[ENDPOINT] Starting /api/live-stock-status endpoint")
+    print("[ENDPOINT] Step 1: Endpoint function called")
+
     try:
+        print("[ENDPOINT] Step 2: About to create UltimateStealthBatchChecker instance")
         # Create fresh instance to avoid threading conflicts
-        from main_dashboard import UltimateStealthBatchChecker
         fresh_checker = UltimateStealthBatchChecker()
-        
+        print("[ENDPOINT] Step 3: ✅ UltimateStealthBatchChecker instance created successfully")
+
+        print("[ENDPOINT] Step 4: About to call make_ultimate_stealth_batch_call")
         batch_data = fresh_checker.make_ultimate_stealth_batch_call()
+        print("[ENDPOINT] Step 5: ✅ make_ultimate_stealth_batch_call returned successfully")
         print(f"[LIVE] ✅ Got live data for {len(batch_data)} products")
+        
+        # Add individual product status updates to activity log
+        if batch_data:
+            for tcin, product_data in batch_data.items():
+                product_name = product_data.get('name', 'Unknown Product')
+                is_available = product_data.get('available', False)
+                status = product_data.get('status', 'UNKNOWN')
+                
+                if is_available:
+                    add_activity_log(f"📦 {product_name} is IN STOCK", 'success')
+                    # Check if purchase attempt should be triggered (no threading)
+                    if can_attempt_purchase(tcin):
+                        add_activity_log(f"🛒 Purchase attempt for {product_name} (Test Mode - No real purchase)", 'purchase')
+                        # Set purchase status and trigger mock purchase directly
+                        set_purchase_status(tcin, 'attempting')
+                        try:
+                            mock_purchase_attempt_sync(tcin, product_name)
+                        except Exception as e:
+                            print(f"[ERROR] Purchase failed for {tcin}: {e}")
+                            set_purchase_status(tcin, 'failed')
+                else:
+                    # Show specific status reason
+                    if status == 'MARKETPLACE_SELLER':
+                        add_activity_log(f"📦 {product_name} is available but from marketplace seller", 'warning')
+                    else:
+                        add_activity_log(f"📦 {product_name} is out of stock", 'info')
+            
+            # Add summary activity log entry
+            add_activity_log(f"📋 Analytics updated - {len(batch_data)} products monitored", 'success')
+        
         socketio.emit('stock_update', {
             'success': True,
             'products': list(batch_data.values()),
@@ -1583,6 +1721,7 @@ def api_live_stock_status():
         })
     except Exception as e:
         print(f"[LIVE] ❌ API call failed: {e}")
+        add_activity_log(f"❌ API call failed: {str(e)}", 'error')
         return jsonify({
             'success': False,
             'error': 'API_ERROR', 
@@ -1607,10 +1746,50 @@ def api_initial_stock_check():
         
         if batch_data:
             print(f"[LIVE] ✅ Got fresh data for {len(batch_data)} products")
+            
+            # Add individual product status updates to activity log - SAME AS YOU REQUESTED
+            for tcin, product_data in batch_data.items():
+                product_name = product_data.get('name', 'Unknown Product')
+                is_available = product_data.get('available', False)
+                status = product_data.get('status', 'UNKNOWN')
+                
+                if is_available:
+                    add_activity_log(f"📦 {product_name} is IN STOCK", 'success')
+                    # Check if purchase attempt should be triggered (no threading)
+                    if can_attempt_purchase(tcin):
+                        add_activity_log(f"🛒 Purchase attempt for {product_name} (Test Mode - No real purchase)", 'purchase')
+                        # Set purchase status and trigger mock purchase directly
+                        set_purchase_status(tcin, 'attempting')
+                        try:
+                            mock_purchase_attempt_sync(tcin, product_name)
+                        except Exception as e:
+                            print(f"[ERROR] Purchase failed for {tcin}: {e}")
+                            set_purchase_status(tcin, 'failed')
+                else:
+                    # Show specific status reason
+                    if status == 'MARKETPLACE_SELLER':
+                        add_activity_log(f"📦 {product_name} is available but from marketplace seller", 'warning')
+                    else:
+                        add_activity_log(f"📦 {product_name} is out of stock", 'info')
+            
+            # Add summary activity log entry
+            add_activity_log(f"📋 Analytics updated - {len(batch_data)} products monitored", 'success')
+            
             # Update cache for other endpoints but return fresh data
             with latest_data_lock:
                 latest_stock_data = batch_data.copy()
                 last_update_time = datetime.now()
+            
+            # Send WebSocket update
+            try:
+                socketio.emit('stock_update', {
+                    'success': True,
+                    'products': list(batch_data.values()),
+                    'timestamp': datetime.now().isoformat()
+                })
+                print(f"[WEBSOCKET] Stock update sent for {len(batch_data)} products")
+            except Exception as ws_error:
+                print(f"[WEBSOCKET] Stock update failed: {ws_error}")
             
             products_array = list(batch_data.values())
             return jsonify({
@@ -1733,6 +1912,79 @@ def api_purchase_status():
     
     return jsonify(purchase_status)
 
+@app.route('/api/debug-test')
+def api_debug_test():
+    """Debug test endpoint to isolate hanging components"""
+    try:
+        print("[TEST] Debug test endpoint called")
+
+        # Test 1: Basic functions
+        print("[TEST] Testing basic functions...")
+        api_key = get_massive_api_key_rotation()
+        print(f"[TEST] ✅ API key function works: {api_key[:8]}...")
+
+        user_agents = get_massive_user_agent_rotation()
+        print(f"[TEST] ✅ User agent function works: {len(user_agents)} agents")
+
+        headers = get_ultra_stealth_headers()
+        print(f"[TEST] ✅ Headers function works: {len(headers)} headers")
+
+        return {"status": "success", "message": "All basic functions working"}
+
+    except Exception as e:
+        print(f"[TEST] ❌ Error in debug test: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route('/api/debug-product/<tcin>')
+def api_debug_product(tcin):
+    """Debug specific product to check API response"""
+    try:
+        print(f"[DEBUG_PRODUCT] Testing product {tcin}")
+
+        # Create fresh checker instance
+        fresh_checker = UltimateStealthBatchChecker()
+
+        # Make API call for just this product
+        print(f"[DEBUG_PRODUCT] Making API call for {tcin}...")
+
+        # Temporarily modify config to only include this product
+        original_config = fresh_checker.get_config()
+        test_config = {"products": [p for p in original_config.get('products', []) if p.get('tcin') == tcin]}
+
+        if not test_config['products']:
+            return {"status": "error", "message": f"Product {tcin} not found in config"}, 404
+
+        print(f"[DEBUG_PRODUCT] Found product in config: {test_config['products'][0]}")
+
+        # Make the API call
+        batch_data = fresh_checker.make_ultimate_stealth_batch_call()
+
+        if batch_data and tcin in batch_data:
+            product_data = batch_data[tcin]
+            print(f"[DEBUG_PRODUCT] API response for {tcin}: {product_data}")
+
+            return {
+                "status": "success",
+                "tcin": tcin,
+                "product_data": product_data,
+                "raw_response": batch_data
+            }
+        else:
+            print(f"[DEBUG_PRODUCT] No data returned for {tcin}")
+            return {
+                "status": "error",
+                "message": f"No data returned for product {tcin}",
+                "raw_response": batch_data
+            }
+
+    except Exception as e:
+        print(f"[DEBUG_PRODUCT] ❌ Error testing product {tcin}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route('/api/analytics')
 def api_analytics():
     """Analytics with full stealth performance metrics"""
@@ -1782,7 +2034,39 @@ def api_analytics():
         }
     })
 
+def clear_python_cache():
+    """Clear Python cache files to prevent hanging issues"""
+    import os
+    import glob
+    import shutil
+    
+    try:
+        print("[CACHE] Clearing Python cache files...")
+        
+        # Remove .pyc files
+        pyc_files = glob.glob("**/*.pyc", recursive=True)
+        for pyc_file in pyc_files:
+            try:
+                os.remove(pyc_file)
+            except:
+                pass
+        
+        # Remove __pycache__ directories
+        pycache_dirs = glob.glob("**/__pycache__", recursive=True)
+        for pycache_dir in pycache_dirs:
+            try:
+                shutil.rmtree(pycache_dir)
+            except:
+                pass
+        
+        print(f"[CACHE] ✅ Cleared {len(pyc_files)} .pyc files and {len(pycache_dirs)} __pycache__ directories")
+    except Exception as e:
+        print(f"[CACHE] ⚠️ Cache clearing warning: {e}")
+
 if __name__ == '__main__':
+    # Clear Python cache to prevent hanging issues
+    clear_python_cache()
+    
     print("[INIT] Starting dashboard with immediate data loading...")
     
     # Initialize purchase status for all enabled products
@@ -1807,90 +2091,28 @@ if __name__ == '__main__':
     # Start initial refresh cycle before loading data  
     start_new_refresh_cycle()
     
-    # Skip initial data loading to avoid startup delays - background monitor will populate data
-    print("[INIT] Skipping initial data load - background monitor will populate data quickly")
+    # Start the timer manager in a background thread
+    print("[INIT] Starting timer manager in background thread...")
+    timer_thread = threading.Thread(target=simple_timer_manager, daemon=True)
+    timer_thread.start()
+    print("[INIT] ✅ Timer manager thread started")
+
+    # Set up basic state
     with latest_data_lock:
+        dashboard_ready = True  # Always ready - no waiting for background data
         initial_check_completed = True
         last_update_time = datetime.now()
+
+    print("[INIT] ✅ Dashboard ready with timer system active")
     
-    # Skip initial API call - background monitor will do a fast 3-second call
-    print("[INIT] Skipping separate initial API call - background monitor will load data in 3 seconds")
-    
-    # Start the simple timer thread for synchronized backend timer
-    print("[INIT] Starting simple timer thread...")
-    monitor_thread = threading.Thread(target=simple_timer_manager, daemon=True)
-    monitor_thread.start()
-    print("[INIT] Simple timer thread started")
-    
-    # Use a simple timer to trigger data loading after Flask is ready
-    print("[INIT] Starting delayed data loader (timer-based)...")
-    def delayed_data_loader():
-        global latest_stock_data, dashboard_ready, last_update_time
-        import time
-        import requests
-        try:
-            print("[LOADER] 🚀 Timer-based data loader started...")
-            # Wait for Flask to be fully ready
-            time.sleep(3)
-            print("[LOADER] 📡 Making internal API call to /api/initial-stock-check...")
-            response = requests.get('http://localhost:5001/api/initial-stock-check', timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('success') and data.get('products'):
-                    stock_data = {}
-                    for product in data['products']:
-                        stock_data[product['tcin']] = product
-                    # Thread-safe update of global state
-                    with latest_data_lock:
-                        latest_stock_data = stock_data.copy()
-                        last_update_time = datetime.now()
-                        dashboard_ready = True
-                        print(f"[LOADER] ✅ Data loaded via API: {len(stock_data)} products")
-                        print(f"[LOADER] ✅ Global latest_stock_data updated with {len(latest_stock_data)} products")
-                        print("[LOADER] 🏁 Dashboard is now READY after data load!")
-                    # Send WebSocket update after data is loaded
-                    try:
-                        socketio.emit('stock_update', {
-                            'success': True,
-                            'products': list(stock_data.values()),
-                            'timestamp': datetime.now().isoformat(),
-                            'initial_load': True
-                        })
-                        print("[LOADER] ✅ WebSocket stock_update sent after initial load")
-                    except Exception as ws_error:
-                        print(f"[LOADER] ❌ WebSocket stock_update failed: {ws_error}")
-                else:
-                    print(f"[LOADER] ⚠️ API returned no data: {data}")
-                    with latest_data_lock:
-                        dashboard_ready = False
-            else:
-                print(f"[LOADER] ❌ API call failed: HTTP {response.status_code}")
-                with latest_data_lock:
-                    dashboard_ready = False
-        except Exception as e:
-            print(f"[LOADER] ❌ Background loader failed: {e}")
-            with latest_data_lock:
-                dashboard_ready = False
-    
-    import threading
-    loader_thread = threading.Thread(target=delayed_data_loader, daemon=True)
-    loader_thread.start()
-    print("[INIT] Timer-based data loader thread started")
-    
-    # Request initial stock check for immediate data loading
-    print("[INIT] Requesting initial stock check for startup data...")
-    with stock_check_lock:
-        stock_check_requested = True
-    print("[INIT] Initial stock check requested")
-    
-    print("[INIT] Dashboard ready with initial data loaded")
+    print("[INIT] Dashboard initialization complete - waiting for data loading...")
     
     product_count = get_enabled_product_count()
     
-    # Add startup logging
+    # Add startup logging with dynamic product count
     add_activity_log("[START] Ultimate stealth dashboard starting up...", 'info')
-    add_activity_log(f"[DATA] Monitoring {product_count} enabled products with advanced evasion", 'info')
-    add_activity_log("[STEALTH] F5/Shape evasion: JA3/JA4 spoofing, behavioral patterns, proxy rotation", 'info')
+    add_activity_log(f"[DATA] Monitoring {product_count} products with advanced F5/Shape evasion", 'info')
+    add_activity_log("[STEALTH] Advanced evasion: JA3/JA4 spoofing, behavioral patterns, TLS fingerprinting", 'info')
     
     print("\n[TARGET]" + "="*80)
     print("[DASHBOARD] ULTIMATE STEALTH + F5/SHAPE EVASION DASHBOARD - PRODUCTION READY")
@@ -1904,7 +2126,7 @@ if __name__ == '__main__':
     print(f"[STATUS] Data will be loaded by background monitor within 15-25 seconds")
     print("[READY] " + "="*80)
     print("Dashboard: http://localhost:5001")
-    print(f"[HOT] Features: F5/Shape evasion + ultimate stealth + batch efficiency")
+    print(f"[HOT] Features: F5/Shape evasion + ultimate stealth + batch efficiency + auto cache management")
     print("[READY] " + "="*80)
     
     socketio.run(app, host='127.0.0.1', port=5001, debug=False, allow_unsafe_werkzeug=True)
