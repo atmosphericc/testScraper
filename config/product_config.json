@@ -1,52 +1,26 @@
 {
   "products": [
     {
-      "tcin": "94886127",
-      "name": "Product 1",
-      "enabled": true,
-      "max_price": 180.0
-    },
-    {
-      "tcin": "94300072",
-      "name": "Product 2",
-      "enabled": true,
-      "max_price": 100.0
-    },
-    {
-      "tcin": "94864079",
-      "name": "Product 3",
-      "enabled": true,
-      "max_price": 80.0
-    },
-    {
-      "tcin": "94724987",
-      "name": "Product 4",
-      "enabled": true,
-      "max_price": 70.0
-    },
-    {
-      "tcin": "93954435",
-      "name": "Product 5",
-      "enabled": true,
-      "max_price": 55.0
-    },
-    {
-      "tcin": "94681776",
-      "name": "Product 6",
-      "enabled": true,
-      "max_price": 55.0
-    },
-    {
       "tcin": "94681784",
       "name": "Product 7",
       "enabled": true,
       "max_price": 55.0
     },
-        {
+    {
       "tcin": "89542109",
       "name": "Product 8",
       "enabled": true,
       "max_price": 15.0
+    },
+    {
+      "tcin": "94681776",
+      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution Elite Trainer Box- Lucario",
+      "enabled": true
+    },
+    {
+      "tcin": "93954435",
+      "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Prismatic Evolutions Elite Trainer Box",
+      "enabled": true
     }
   ]
 }

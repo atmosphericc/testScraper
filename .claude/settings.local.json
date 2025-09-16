@@ -34,7 +34,11 @@
       "Bash(git commit:*)",
       "Bash(xargs kill:*)",
       "Bash(open http://localhost:5001)",
-      "Bash(source:*)"
+      "Bash(source:*)",
+      "Bash(for i in {1..5})",
+      "Bash(do sleep:*)",
+      "Bash(done)",
+      "Bash(xargs rm:*)"
     ],
     "deny": [],
     "ask": []

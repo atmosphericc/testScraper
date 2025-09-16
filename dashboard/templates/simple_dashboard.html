@@ -766,22 +766,7 @@
         }
 
         .sticky-timer {
-            position: fixed;
-            top: 1.5rem;
-            right: 1.5rem;
-            background: var(--card-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 0.75rem 1rem;
-            box-shadow: var(--shadow-lg);
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            font-size: 0.875rem;
-            color: var(--text-secondary);
-            font-weight: 600;
-            transition: all 0.2s ease;
+            display: none;
         }
 
         .sticky-timer:hover {
@@ -1111,12 +1096,12 @@
             <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
         </svg>
         <span>Refresh in</span>
-        <span class="countdown">25</span>
+        <span class="countdown" id="countdown-value">25</span>
     </div>
 
     <div class="header">
         <div class="header-content">
-            <h1>🎯 Target Monitor Pro</h1>
+            <h1>Target.com Monitoring System</h1>
             <div class="header-stats">
                 <div class="header-stat">
                     <div class="header-stat-label">Last Update</div>
@@ -1132,25 +1117,21 @@
                         {{ 'LIVE' if status.monitoring else 'OFF' }}
                     </div>
                 </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Next Refresh</div>
+                    <div class="header-stat-value" style="color: var(--accent-color); display: flex; align-items: center; gap: 0.5rem;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                        </svg>
+                        <span id="countdown-value-header">25</span>s
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <div class="container">
 
-        <!-- Status Overview -->
-        <div class="status-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
-            <div class="status-card {{ 'active' if status.monitoring else 'danger' }}">
-                <div class="status-card-title">System Status</div>
-                <div class="status-card-value">{{ 'ACTIVE' if status.monitoring else 'STOPPED' }}</div>
-                <div class="status-card-subtitle">{{ 'Monitoring products' if status.monitoring else 'System idle' }}</div>
-            </div>
-            <div class="status-card">
-                <div class="status-card-title">Success Rate</div>
-                <div class="status-card-value">100%</div>
-                <div class="status-card-subtitle">Purchase attempts</div>
-            </div>
-        </div>
 
         <!-- Live Stock Analytics -->
         <div class="section">
@@ -1169,21 +1150,10 @@
                         <div class="status-card-value">{{ status.in_stock_count if status.data_loaded else 0 }}</div>
                         <div class="status-card-subtitle">Available now</div>
                     </div>
-                    <div class="status-card">
-                        <div class="status-card-title">API Response</div>
-                        <div class="status-card-value">{{ status.data_age_seconds if status.data_loaded else '--' }}s</div>
-                        <div class="status-card-subtitle">Average speed</div>
-                    </div>
                 </div>
             </div>
         </div>
 
-        {% if status.in_stock_count > 0 %}
-        <div class="alert">
-            <div class="alert-title">🚨 Items Currently In Stock!</div>
-            Purchase attempts should be in progress for available products.
-        </div>
-        {% endif %}
 
         <!-- Monitored Products -->
         <div class="section">
@@ -1198,7 +1168,6 @@
                             <tr>
                                 <th>TCIN</th>
                                 <th>Product Name</th>
-                                <th>Monitor</th>
                                 <th>Preorder</th>
                                 <th>Stock Status</th>
                                 <th>Purchase Status</th>
@@ -1217,11 +1186,6 @@
                                     <div style="max-width: 350px; font-weight: 500;" class="product-name">
                                         {{ product.display_name or product.name or 'Loading...' }}
                                     </div>
-                                </td>
-                                <td>
-                                    <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
-                                        {{ 'ENABLED' if product.enabled else 'DISABLED' }}
-                                    </span>
                                 </td>
                                 <td>
                                     <span class="badge preorder preorder-badge" data-tcin="{{ product.tcin }}"
@@ -1288,6 +1252,102 @@
             </div>
         </div>
 
+        <!-- Product Configuration -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">⚙️ Product Configuration</div>
+            </div>
+            <div class="section-content">
+                <!-- Add Product Form -->
+                <form onsubmit="handleAddProduct(event)" style="margin-bottom: 2rem;">
+                    <div style="display: flex; gap: 1rem; align-items: center; max-width: 500px;">
+                        <input
+                            type="text"
+                            name="tcin"
+                            placeholder="Enter 8-digit TCIN..."
+                            pattern="[0-9]{8}"
+                            maxlength="8"
+                            required
+                            style="
+                                flex: 1;
+                                padding: 0.75rem 1rem;
+                                background: var(--secondary-bg);
+                                border: 1px solid var(--border-color);
+                                border-radius: 6px;
+                                color: var(--text-primary);
+                                font-size: 0.875rem;
+                                font-family: 'JetBrains Mono', monospace;
+                            "
+                        />
+                        <button
+                            type="submit"
+                            class="btn btn-primary"
+                            style="white-space: nowrap;"
+                        >
+                            ➕ Add Product
+                        </button>
+                    </div>
+                    <div style="margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
+                        Product name will be automatically fetched from Target's API
+                    </div>
+                </form>
+
+                <!-- Current Products Management -->
+                {% if config.products %}
+                <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; font-weight: 500;">
+                    Manage Existing Products:
+                </div>
+                <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                    {% for product in config.products %}
+                    <div style="
+                        display: flex;
+                        align-items: center;
+                        padding: 1rem;
+                        border-bottom: 1px solid var(--border-color);
+                        background: var(--secondary-bg);
+                    " {% if loop.last %}style="border-bottom: none;"{% endif %}>
+                        <!-- Product Info -->
+                        <div style="flex: 1; min-width: 0;">
+                            <div style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
+                                {{ product.display_name or product.name or 'Unknown Product' }}
+                            </div>
+                            <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">
+                                TCIN: {{ product.tcin }}
+                            </div>
+                        </div>
+
+                        <!-- Controls -->
+                        <div style="display: flex; align-items: center; gap: 1rem;">
+                            <!-- Delete Button -->
+                            <button
+                                onclick="handleRemoveProduct('{{ product.tcin }}')"
+                                style="
+                                    background: transparent;
+                                    border: 1px solid var(--danger-color);
+                                    color: var(--danger-color);
+                                    padding: 0.375rem 0.75rem;
+                                    border-radius: 4px;
+                                    font-size: 0.75rem;
+                                    cursor: pointer;
+                                    transition: all 0.2s ease;
+                                "
+                                onmouseover="this.style.background='var(--danger-color)'; this.style.color='white';"
+                                onmouseout="this.style.background='transparent'; this.style.color='var(--danger-color)';"
+                            >
+                                🗑️ Remove
+                            </button>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <div style="text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic;">
+                    No products configured. Add your first product using the form above.
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
         <!-- Actions -->
         <div style="text-align: center; margin-top: 2rem; padding-bottom: 2rem;">
             <button class="btn btn-primary" onclick="location.reload()" style="padding: 0.75rem 2rem;">
@@ -1297,9 +1357,159 @@
     </div>
 
     <script>
-        let countdown = 25;
-        const countdownElement = document.querySelector('.sticky-timer .countdown');
-        const refreshIndicator = document.querySelector('.sticky-timer');
+        // AJAX Product Management Functions
+        async function handleAddProduct(event) {
+            event.preventDefault();
+
+            const form = event.target;
+            const tcin = form.querySelector('input[name="tcin"]').value.trim();
+
+            if (!tcin) return;
+
+            try {
+                const response = await fetch('/add-product', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ tcin: tcin })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Add product to both tables
+                    addProductToMainTable(result.product);
+                    addProductToConfigSection(result.product);
+
+                    // Clear form
+                    form.reset();
+                } else {
+                    alert('Error: ' + result.error);
+                }
+            } catch (error) {
+                alert('Error adding product: ' + error.message);
+            }
+        }
+
+        async function handleRemoveProduct(tcin) {
+            try {
+                const response = await fetch(`/remove-product/${tcin}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Remove from both tables
+                    removeProductFromMainTable(tcin);
+                    removeProductFromConfigSection(tcin);
+                } else {
+                    alert('Error: ' + result.error);
+                }
+            } catch (error) {
+                alert('Error removing product: ' + error.message);
+            }
+        }
+
+
+        // DOM Manipulation Functions
+        function addProductToMainTable(product) {
+            const tbody = document.querySelector('table tbody');
+            if (!tbody) return;
+
+            const row = document.createElement('tr');
+            row.setAttribute('data-tcin', product.tcin);
+            row.innerHTML = `
+                <td>
+                    <code style="background: var(--secondary-bg); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem;">
+                        ${product.tcin}
+                    </code>
+                </td>
+                <td>
+                    <div style="max-width: 350px; font-weight: 500;" class="product-name">
+                        ${product.name}
+                    </div>
+                </td>
+                <td>
+                    <span class="badge preorder preorder-badge" data-tcin="${product.tcin}" style="display: none">PREORDER</span>
+                </td>
+                <td>
+                    <span class="badge unknown" data-tcin="${product.tcin}">WAITING FOR REFRESH</span>
+                </td>
+                <td>
+                    <span class="badge purchase-status-badge" data-tcin="${product.tcin}">✅ READY</span>
+                </td>
+                <td>
+                    <a href="${product.url}" target="_blank" class="btn btn-outline">View Product</a>
+                </td>
+            `;
+            tbody.appendChild(row);
+        }
+
+        function addProductToConfigSection(product) {
+            const container = document.querySelector('.section-content div[style*="max-height: 300px"]');
+            if (!container) return;
+
+            const productDiv = document.createElement('div');
+            productDiv.setAttribute('data-tcin', product.tcin);
+            productDiv.style.cssText = `
+                display: flex;
+                align-items: center;
+                padding: 1rem;
+                border-bottom: 1px solid var(--border-color);
+                background: var(--secondary-bg);
+            `;
+
+            productDiv.innerHTML = `
+                <div style="flex: 1; min-width: 0;">
+                    <div style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
+                        ${product.name}
+                    </div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">
+                        TCIN: ${product.tcin}
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <button
+                        onclick="handleRemoveProduct('${product.tcin}')"
+                        style="background: transparent; border: 1px solid var(--danger-color); color: var(--danger-color); padding: 0.375rem 0.75rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; transition: all 0.2s ease;"
+                    >
+                        🗑️ Remove
+                    </button>
+                </div>
+            `;
+
+            container.appendChild(productDiv);
+        }
+
+        function removeProductFromMainTable(tcin) {
+            const row = document.querySelector(`table tr[data-tcin="${tcin}"]`);
+            if (row) row.remove();
+        }
+
+        function removeProductFromConfigSection(tcin) {
+            const div = document.querySelector(`.section-content div[data-tcin="${tcin}"]`);
+            if (div) div.remove();
+        }
+
+
+        // Generate random interval between 15-25 seconds for anti-detection
+        function getRandomInterval() {
+            return Math.floor(Math.random() * (25 - 15 + 1)) + 15;
+        }
+
+        let countdown = getRandomInterval();
+        console.log(`🎯 Anti-detection: Random interval set to ${countdown} seconds`);
+        const countdownElement = document.querySelector('#countdown-value-header');
+
+        // Update initial display with random value
+        if (countdownElement) {
+            countdownElement.textContent = countdown;
+        }
 
         function updateCountdown() {
             countdown--;
@@ -1309,17 +1519,8 @@
 
             if (countdown <= 0) {
                 // Show refreshing state
-                if (refreshIndicator) {
-                    refreshIndicator.classList.add('refreshing');
-                }
                 if (countdownElement) {
                     countdownElement.textContent = '⟳';
-                }
-                
-                // Find the refresh text span in sticky timer
-                const refreshTextSpan = refreshIndicator ? refreshIndicator.querySelector('span:nth-child(2)') : null;
-                if (refreshTextSpan) {
-                    refreshTextSpan.textContent = 'Refreshing...';
                 }
 
                 // Add loading overlay
@@ -1416,14 +1617,13 @@
         // Debug logging
         console.log('Dashboard loaded, starting auto-refresh countdown');
         console.log('Countdown element:', countdownElement);
-        console.log('Refresh indicator:', refreshIndicator);
 
         // Start the countdown when page loads
-        if (countdownElement && refreshIndicator) {
+        if (countdownElement) {
             setTimeout(updateCountdown, 1000);
             console.log('Auto-refresh timer started');
         } else {
-            console.error('Failed to find countdown elements - auto-refresh disabled');
+            console.error('Failed to find countdown element - auto-refresh disabled');
         }
     </script>
 </body>
