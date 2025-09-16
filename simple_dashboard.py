@@ -342,7 +342,9 @@ class SimpleStealthChecker:
                 'key': api_key,
                 'tcins': ','.join(tcins),
                 'store_id': '1859',
-                'pricing_store_id': '1859'
+                'pricing_store_id': '1859',
+                'is_bot': 'false',
+                '_': str(int(time.time() * 1000))
             }
 
             # Simple session
@@ -542,7 +544,9 @@ def index():
                     'is_target_direct': api_data.get('is_target_direct', True),
                     'seller_code': api_data.get('seller_code', 'UNKNOWN'),
                     'url': api_data.get('url', f"https://www.target.com/p/-/A-{tcin}"),  # Add URL
-                    'has_data': True
+                    'has_data': True,
+                    'enabled': product.get('enabled', True),  # Add enabled field for badge
+                    'street_date': api_data.get('street_date', None)  # Add street_date for preorders
                 })
             else:
                 # No data for this product
@@ -555,7 +559,9 @@ def index():
                     'is_target_direct': True,
                     'seller_code': 'UNKNOWN',
                     'url': f"https://www.target.com/p/-/A-{tcin}",  # Add fallback URL
-                    'has_data': False
+                    'has_data': False,
+                    'enabled': product.get('enabled', True),
+                    'street_date': None
                 })
 
         # Build status info

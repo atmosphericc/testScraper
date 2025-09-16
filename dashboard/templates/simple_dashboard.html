@@ -9,24 +9,25 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --primary-bg: #0a0e13;
-            --secondary-bg: #151922;
-            --card-bg: #1e242e;
-            --elevated-bg: #252b36;
-            --border-color: #2d3748;
-            --border-light: #374151;
-            --accent-color: #3b82f6;
-            --accent-hover: #2563eb;
-            --accent-light: #60a5fa;
-            --success-color: #10b981;
-            --success-light: #34d399;
-            --warning-color: #f59e0b;
-            --warning-light: #fbbf24;
-            --danger-color: #ef4444;
-            --danger-light: #f87171;
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --text-muted: #64748b;
+            /* GitHub-style dark theme matching main dashboard */
+            --primary-bg: #0d1117;
+            --secondary-bg: #161b22;
+            --card-bg: #21262d;
+            --elevated-bg: #21262d;
+            --border-color: #30363d;
+            --border-light: #484f58;
+            --accent-color: #58a6ff;
+            --accent-hover: #4493e0;
+            --accent-light: #58a6ff;
+            --success-color: #3fb950;
+            --success-light: #56d364;
+            --warning-color: #f78500;
+            --warning-light: #ffa657;
+            --danger-color: #f85149;
+            --danger-light: #ff7b72;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
             --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
             --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.4), 0 1px 2px 0 rgba(0, 0, 0, 0.3);
             --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
@@ -36,104 +37,93 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-            background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background: var(--primary-bg);
             color: var(--text-primary);
             line-height: 1.6;
             min-height: 100vh;
-            background-attachment: fixed;
+            overflow-x: hidden;
         }
 
         .container {
-            max-width: 1920px;
+            max-width: 1400px;
             margin: 0 auto;
-            padding: 1rem;
-            padding-top: 0.5rem;
-            height: 100vh;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .content-wrapper {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            min-height: 0;
+            padding: 2rem;
         }
 
         .header {
-            text-align: center;
-            margin-bottom: 0;
+            background: linear-gradient(135deg, var(--secondary-bg) 0%, var(--card-bg) 100%);
+            border-bottom: 1px solid var(--border-color);
             padding: 1.5rem 0;
-            background: var(--elevated-bg);
-            border-radius: 16px;
-            border: 1px solid var(--border-color);
-            box-shadow: var(--shadow-lg);
-            position: relative;
-            overflow: hidden;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+            margin: -2rem -2rem 2rem -2rem;
         }
 
-        .header::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, var(--accent-color), var(--success-color), var(--accent-light));
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .header h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, var(--accent-light), var(--success-light));
+            font-size: 1.5rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--accent-color), var(--success-color));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-            margin-bottom: 0.25rem;
-            letter-spacing: -0.025em;
         }
 
-        .header p {
-            color: var(--text-secondary);
-            font-size: 1.1rem;
-            font-weight: 500;
-        }
-
-        .header-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            margin-top: 1rem;
-            padding: 0.5rem 1rem;
-            background: var(--accent-color);
-            color: white;
-            border-radius: 50px;
+        .header-stats {
+            display: flex;
+            gap: 2rem;
             font-size: 0.875rem;
+        }
+
+        .header-stat {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            opacity: 0.8;
+        }
+
+        .header-stat-label {
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+
+        .header-stat-value {
             font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            font-size: 1.1rem;
         }
 
         .status-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 0;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
         }
 
         .status-card {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 1rem;
-            text-align: center;
-            box-shadow: var(--shadow);
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            padding: 1.5rem;
             position: relative;
             overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .status-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(88, 166, 255, 0.15);
+            border-color: var(--accent-color);
         }
 
         .status-card::before {
@@ -143,41 +133,92 @@
             left: 0;
             right: 0;
             height: 3px;
-            background: var(--accent-color);
-            opacity: 0;
-            transition: opacity 0.3s ease;
+            background: linear-gradient(90deg, var(--accent-color), var(--success-color));
         }
 
-        .status-card:hover {
-            transform: translateY(-4px);
-            box-shadow: var(--shadow-xl);
-            border-color: var(--border-light);
+        .status-card.warning::before {
+            background: var(--warning-color);
         }
 
-        .status-card:hover::before {
-            opacity: 1;
+        .status-card.danger::before,
+        .status-card.error::before {
+            background: var(--danger-color);
         }
 
+        .status-card.success::before {
+            background: var(--success-color);
+        }
+
+        .status-card-title {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 1rem;
+        }
+
+        .status-card-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.5rem;
+        }
+
+        .status-card-subtitle {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .status-card.success .status-card-value {
+            color: var(--success-color);
+        }
+
+        .status-card.error .status-card-value,
+        .status-card.danger .status-card-value {
+            color: var(--danger-color);
+        }
+
+        .status-card.warning .status-card-value {
+            color: var(--warning-color);
+        }
+
+        /* Alert styling */
+        .alert {
+            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid;
+            background: rgba(63, 185, 80, 0.1);
+            border-left-color: var(--success-color);
+            color: var(--success-color);
+        }
+
+        .alert-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Backwards compatibility for old class names */
         .status-card h2 {
             color: var(--text-secondary);
-            font-size: 0.75rem;
-            font-weight: 600;
+            font-size: 0.875rem;
+            font-weight: 500;
             text-transform: uppercase;
-            letter-spacing: 0.1em;
+            letter-spacing: 0.5px;
             margin-bottom: 1rem;
         }
 
         .status-card .value {
             font-size: 2.5rem;
-            font-weight: 800;
+            font-weight: 700;
+            line-height: 1;
             margin-bottom: 0.5rem;
-            letter-spacing: -0.025em;
         }
 
         .status-card .subtitle {
             color: var(--text-muted);
             font-size: 0.875rem;
-            font-weight: 500;
         }
 
         .status-card.success .value {
@@ -192,58 +233,79 @@
             color: var(--warning-color);
         }
 
-        .main-content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-            min-height: 0;
-        }
-
-        .products-section {
-            flex: 2;
-            overflow-y: auto;
-            min-height: 0;
-        }
-
-        .products-table {
+        .section {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 0;
-            box-shadow: var(--shadow);
+            margin-bottom: 2rem;
             overflow: hidden;
         }
 
-        .products-table-header {
-            background: var(--elevated-bg);
-            padding: 1rem 1.5rem;
+        .section-header {
+            padding: 1.5rem 2rem;
             border-bottom: 1px solid var(--border-color);
+            background: var(--secondary-bg);
+        }
+
+        .section-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text-primary);
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
 
-        .products-table-header h3 {
-            font-size: 1.1rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin: 0;
+        .section-content {
+            padding: 2rem;
         }
 
-        .products-list {
-            max-height: 400px;
-            overflow-y: auto;
+        .table-container {
+            overflow-x: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--secondary-bg);
+        }
+
+        th {
+            background: var(--primary-bg);
+            padding: 1rem;
+            text-align: left;
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+
+        tr:hover {
+            background: var(--card-bg);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
         }
 
         .product-row {
             display: grid;
             grid-template-columns: 80px 1fr 120px 100px 120px;
-            gap: 1rem;
-            padding: 1rem 1.5rem;
+            gap: 1.5rem;
+            padding: 1.5rem;
             border-bottom: 1px solid var(--border-color);
             align-items: center;
-            transition: all 0.2s ease;
+            transition: all 0.15s ease;
             position: relative;
         }
 
@@ -252,7 +314,7 @@
         }
 
         .product-row:hover {
-            background: var(--elevated-bg);
+            background: var(--secondary-bg);
         }
 
         .product-row::before {
@@ -261,9 +323,8 @@
             left: 0;
             top: 0;
             bottom: 0;
-            width: 3px;
-            background: var(--border-color);
-            border-radius: 0 2px 2px 0;
+            width: 4px;
+            background: var(--border-light);
         }
 
         .product-row.in-stock::before {
@@ -272,59 +333,151 @@
 
         .product-row.out-of-stock::before {
             background: var(--danger-color);
-            opacity: 0.5;
         }
 
         .product-image-small {
             width: 60px;
             height: 60px;
-            border-radius: 8px;
+            border-radius: 6px;
             object-fit: contain;
             background: var(--secondary-bg);
-            padding: 0.25rem;
+            padding: 0.5rem;
+            border: 1px solid var(--border-color);
         }
 
         .product-name-cell {
-            font-size: 0.875rem;
+            font-size: 0.9rem;
             font-weight: 500;
             color: var(--text-primary);
-            line-height: 1.3;
+            line-height: 1.4;
             overflow: hidden;
         }
 
         .product-tcin-cell {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.75rem;
-            color: var(--text-muted);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
             background: var(--secondary-bg);
-            padding: 0.25rem 0.5rem;
-            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
             text-align: center;
+            border: 1px solid var(--border-color);
         }
 
         .product-status-cell {
             text-align: center;
         }
 
-        .status-badge {
-            display: inline-block;
-            padding: 0.375rem 0.75rem;
-            border-radius: 6px;
-            font-size: 0.75rem;
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.0625rem 0.25rem;
+            border-radius: 2px;
+            font-size: 0.5rem;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.1px;
+            gap: 0.0625rem;
+            white-space: nowrap;
+        }
+
+        .badge.enabled {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+
+        .badge.disabled {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+
+        .badge.in-stock {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+
+        .badge.out-of-stock {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+
+        .badge.unknown {
+            background: rgba(139, 148, 158, 0.15);
+            color: var(--text-secondary);
+            border: 1px solid rgba(139, 148, 158, 0.3);
+        }
+
+        .badge.preorder {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-color);
+            border: 1px solid rgba(88, 166, 255, 0.3);
+        }
+
+        .badge.ready {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
+        }
+
+        .badge.attempting {
+            background: rgba(247, 133, 0, 0.15);
+            color: var(--warning-color);
+            border: 1px solid rgba(247, 133, 0, 0.3);
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        .badge.cooldown {
+            background: rgba(139, 148, 158, 0.15);
+            color: var(--text-secondary);
+            border: 1px solid rgba(139, 148, 158, 0.3);
+        }
+
+        .badge.failed {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+
+        .badge.purchased {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-color);
+            border: 1px solid rgba(88, 166, 255, 0.3);
+        }
+
+        /* Backwards compatibility */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.0625rem 0.25rem;
+            border-radius: 2px;
+            font-size: 0.5rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1px;
+            gap: 0.0625rem;
+            white-space: nowrap;
         }
 
         .status-badge.in-stock {
-            background: var(--success-color);
-            color: white;
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success-color);
+            border: 1px solid rgba(63, 185, 80, 0.3);
         }
 
         .status-badge.out-of-stock {
-            background: var(--secondary-bg);
-            color: var(--text-muted);
-            border: 1px solid var(--border-color);
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger-color);
+            border: 1px solid rgba(248, 81, 73, 0.3);
+        }
+
+        .status-badge.unknown {
+            background: rgba(139, 148, 158, 0.15);
+            color: var(--text-secondary);
+            border: 1px solid rgba(139, 148, 158, 0.3);
         }
 
         .product-action-cell {
@@ -341,14 +494,15 @@
             flex: 1;
             display: flex;
             flex-direction: column;
-            min-height: 200px;
+            min-height: 400px;
+            max-height: 500px;
         }
 
         .activity-wrapper {
             background: var(--card-bg);
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1rem;
+            border-radius: 8px;
+            padding: 1.5rem;
             box-shadow: var(--shadow);
             display: flex;
             flex-direction: column;
@@ -497,56 +651,42 @@
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 0.75rem 1.5rem;
-            border-radius: 50px;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
             font-size: 0.875rem;
-            font-weight: 600;
+            font-weight: 500;
             text-decoration: none;
             border: none;
             cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: all 0.2s ease;
             gap: 0.5rem;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
-            transition: left 0.5s;
-        }
-
-        .btn:hover::before {
-            left: 100%;
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, var(--accent-color), var(--accent-light));
+            background: var(--accent-color);
             color: white;
-            box-shadow: 0 4px 14px 0 rgba(59, 130, 246, 0.39);
         }
 
         .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px 0 rgba(59, 130, 246, 0.5);
+            background: #4493e0;
+            transform: translateY(-1px);
         }
 
         .btn-outline {
             background: transparent;
             color: var(--accent-color);
-            border: 2px solid var(--accent-color);
+            border: 1px solid var(--accent-color);
         }
 
         .btn-outline:hover {
             background: var(--accent-color);
             color: white;
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px 0 rgba(59, 130, 246, 0.3);
+        }
+
+        .btn-small {
+            padding: 0.375rem 0.75rem;
+            font-size: 0.75rem;
+            border-radius: 6px;
         }
 
         .footer {
@@ -629,122 +769,142 @@
             position: fixed;
             top: 1.5rem;
             right: 1.5rem;
-            background: var(--elevated-bg);
+            background: var(--card-bg);
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1rem 1.5rem;
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
             box-shadow: var(--shadow-lg);
             z-index: 1000;
-            backdrop-filter: blur(8px);
             display: flex;
             align-items: center;
             gap: 0.75rem;
             font-size: 0.875rem;
             color: var(--text-secondary);
             font-weight: 600;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
         }
 
         .sticky-timer:hover {
-            transform: translateY(-2px);
             box-shadow: var(--shadow-xl);
         }
 
         .sticky-timer .countdown {
-            color: var(--accent-light);
+            color: var(--accent-color);
             font-weight: 700;
-            font-size: 1.1rem;
+            font-size: 1rem;
             min-width: 2rem;
             text-align: center;
         }
 
         .sticky-timer.refreshing {
-            color: var(--warning-light);
+            color: var(--warning-color);
             animation: pulse 1s ease-in-out infinite;
         }
 
-        .activity-log {
-            flex: 1;
+        .log-container {
+            max-height: 400px;
             overflow-y: auto;
+            border-radius: 8px;
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            background: var(--elevated-bg);
-            box-shadow: inset var(--shadow-sm);
-            min-height: 0;
+            background: var(--primary-bg);
         }
 
-        .activity-log::-webkit-scrollbar {
-            width: 6px;
+        .log-entry {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-size: 0.8125rem;
+            padding: 0.75rem 1rem;
+            border-left: 3px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            line-height: 1.4;
+            transition: all 0.2s ease;
         }
 
-        .activity-log::-webkit-scrollbar-track {
+        .log-entry:hover {
             background: var(--secondary-bg);
-            border-radius: 3px;
         }
 
-        .activity-log::-webkit-scrollbar-thumb {
-            background: var(--border-color);
-            border-radius: 3px;
+        .log-entry:last-child {
+            border-bottom: none;
         }
 
-        .activity-log::-webkit-scrollbar-thumb:hover {
-            background: var(--border-light);
+        .log-entry.success {
+            border-left-color: var(--success-color);
+            background: rgba(63, 185, 80, 0.05);
+        }
+
+        .log-entry.error {
+            border-left-color: var(--danger-color);
+            background: rgba(248, 81, 73, 0.05);
+        }
+
+        .log-entry.warning {
+            border-left-color: var(--warning-color);
+            background: rgba(247, 133, 0, 0.05);
+        }
+
+        /* Backwards compatibility for activity log */
+        .activity-log {
+            max-height: 400px;
+            overflow-y: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--primary-bg);
         }
 
         .activity-entry {
+            font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+            font-size: 0.8125rem;
+            padding: 0.75rem 1rem;
+            border-left: 3px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+            line-height: 1.4;
+            transition: all 0.2s ease;
             display: grid;
             grid-template-columns: auto 1fr auto;
             align-items: center;
-            padding: 1rem 1.25rem;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 0.875rem;
             gap: 1rem;
-            transition: all 0.2s ease;
-            position: relative;
+        }
+
+        .activity-entry:hover {
+            background: var(--secondary-bg);
         }
 
         .activity-entry:last-child {
             border-bottom: none;
         }
 
-        .activity-entry:hover {
-            background: var(--card-bg);
+        .activity-entry.success {
+            border-left-color: var(--success-color);
+            background: rgba(63, 185, 80, 0.05);
         }
 
-        .activity-entry::before {
-            content: '';
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 3px;
-            background: var(--border-color);
-            border-radius: 0 2px 2px 0;
+        .activity-entry.error {
+            border-left-color: var(--danger-color);
+            background: rgba(248, 81, 73, 0.05);
         }
 
-        .activity-entry.success::before {
-            background: var(--success-color);
+        .activity-entry.warning {
+            border-left-color: var(--warning-color);
+            background: rgba(247, 133, 0, 0.05);
         }
 
-        .activity-entry.error::before {
-            background: var(--danger-color);
-        }
-
-        .activity-entry.warning::before {
-            background: var(--warning-color);
+        .activity-entry.info {
+            border-left-color: var(--accent-color);
+            background: rgba(88, 166, 255, 0.05);
         }
 
         .activity-time {
             font-family: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-            color: var(--text-muted);
+            color: var(--text-secondary);
             flex-shrink: 0;
             font-weight: 500;
             background: var(--secondary-bg);
-            padding: 0.375rem 0.75rem;
-            border-radius: 8px;
-            font-size: 0.75rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
             min-width: 5.5rem;
             text-align: center;
+            border: 1px solid var(--border-color);
         }
 
         .activity-message {
@@ -755,60 +915,71 @@
 
         .activity-category {
             font-family: 'JetBrains Mono', 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
-            font-size: 0.625rem;
+            font-size: 0.7rem;
             font-weight: 600;
             text-transform: uppercase;
-            padding: 0.25rem 0.5rem;
+            padding: 0.375rem 0.75rem;
             border-radius: 4px;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.025em;
             flex-shrink: 0;
+            border: 1px solid transparent;
         }
 
         .activity-category.system {
             background: var(--secondary-bg);
-            color: var(--text-muted);
+            color: var(--text-secondary);
+            border-color: var(--border-color);
         }
 
         .activity-category.api {
-            background: rgba(59, 130, 246, 0.15);
-            color: var(--accent-light);
+            background: rgba(37, 99, 235, 0.1);
+            color: var(--accent-color);
+            border-color: rgba(37, 99, 235, 0.2);
         }
 
         .activity-category.api_summary {
-            background: rgba(16, 185, 129, 0.15);
-            color: var(--success-light);
+            background: rgba(5, 150, 105, 0.1);
+            color: var(--success-color);
+            border-color: rgba(5, 150, 105, 0.2);
         }
 
         .activity-category.stock_alert {
-            background: rgba(245, 158, 11, 0.15);
-            color: var(--warning-light);
+            background: rgba(217, 119, 6, 0.1);
+            color: var(--warning-color);
+            border-color: rgba(217, 119, 6, 0.2);
         }
 
         .activity-category.stock_status {
-            background: rgba(34, 197, 94, 0.15);
-            color: #4ade80;
+            background: rgba(5, 150, 105, 0.1);
+            color: var(--success-color);
+            border-color: rgba(5, 150, 105, 0.2);
         }
 
         .activity-category.user_action {
-            background: rgba(139, 92, 246, 0.15);
-            color: #a78bfa;
+            background: rgba(139, 92, 246, 0.1);
+            color: #8b5cf6;
+            border-color: rgba(139, 92, 246, 0.2);
         }
 
         .activity-category.config {
-            background: rgba(236, 72, 153, 0.15);
-            color: #f472b6;
+            background: rgba(236, 72, 153, 0.1);
+            color: #ec4899;
+            border-color: rgba(236, 72, 153, 0.2);
         }
 
         .activity-entry.success .activity-message {
-            color: var(--success-light);
+            color: var(--success-color);
+            font-weight: 600;
         }
 
         .activity-entry.error .activity-message {
-            color: var(--danger-light);
+            color: var(--danger-color);
+            font-weight: 600;
         }
 
         .activity-entry.warning .activity-message {
-            color: var(--warning-light);
+            color: var(--warning-color);
+            font-weight: 600;
         }
 
         /* Special styling for stock status entries */
@@ -887,6 +1058,50 @@
                 justify-self: start;
             }
         }
+
+        /* Loading states */
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border-color);
+            border-radius: 50%;
+            border-top-color: var(--accent-color);
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        /* Keyframe animations */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--secondary-bg);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
     </style>
 </head>
 <body>
@@ -899,185 +1114,189 @@
         <span class="countdown">25</span>
     </div>
 
-    <div class="container">
-        <div class="content-wrapper">
-            <div class="header">
-            <h1>Target Monitor Pro</h1>
-            <p>Enterprise Stock Monitoring Platform</p>
-            <div class="header-badge">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="12" cy="12" r="10"/>
-                    <path d="M12 6v12M6 12h12" stroke="white" stroke-width="2"/>
-                </svg>
-                Real-time Intelligence
+    <div class="header">
+        <div class="header-content">
+            <h1>🎯 Target Monitor Pro</h1>
+            <div class="header-stats">
+                <div class="header-stat">
+                    <div class="header-stat-label">Last Update</div>
+                    <div class="header-stat-value">{{ timestamp.strftime('%H:%M:%S') }}</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Products</div>
+                    <div class="header-stat-value">{{ config.products | length }}</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Status</div>
+                    <div class="header-stat-value" style="color: {{ 'var(--success-color)' if status.monitoring else 'var(--danger-color)' }}">
+                        {{ 'LIVE' if status.monitoring else 'OFF' }}
+                    </div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-label">Next Refresh</div>
+                    <div class="header-stat-value"><span class="countdown">25</span>s</div>
+                </div>
             </div>
         </div>
+    </div>
+
+    <div class="container">
 
         <!-- Status Overview -->
-        <div class="status-grid">
-            <div class="status-card {{ 'success' if status.data_loaded else 'error' }}">
-                <h2>System Status</h2>
-                <div class="value">
-                    {% if status.data_loaded %}
-                        ● ONLINE
-                    {% else %}
-                        ● OFFLINE
-                    {% endif %}
-                </div>
-                <div class="subtitle">
-                    {% if status.data_loaded %}
-                        All systems operational
-                    {% elif status.error %}
-                        {{ status.error }}
-                    {% else %}
-                        Loading stock data...
-                    {% endif %}
-                </div>
+        <div class="status-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+            <div class="status-card {{ 'active' if status.monitoring else 'danger' }}">
+                <div class="status-card-title">System Status</div>
+                <div class="status-card-value">{{ 'ACTIVE' if status.monitoring else 'STOPPED' }}</div>
+                <div class="status-card-subtitle">{{ 'Monitoring products' if status.monitoring else 'System idle' }}</div>
             </div>
-
-            {% if status.data_loaded %}
-            <div class="status-card {{ 'success' if status.in_stock_count > 0 else '' }}">
-                <h2>Available Products</h2>
-                <div class="value">{{ status.in_stock_count }}</div>
-                <div class="subtitle">{{ 'Items in stock' if status.in_stock_count > 0 else 'No items available' }}</div>
-            </div>
-
             <div class="status-card">
-                <h2>Response Time</h2>
-                <div class="value">{{ status.data_age_seconds }}s</div>
-                <div class="subtitle">Last refresh latency</div>
+                <div class="status-card-title">Success Rate</div>
+                <div class="status-card-value">100%</div>
+                <div class="status-card-subtitle">Purchase attempts</div>
             </div>
-
-            <div class="status-card success">
-                <h2>Data Source</h2>
-                <div class="value">● LIVE</div>
-                <div class="subtitle">Target.com API verified</div>
-            </div>
-            {% else %}
-            <div class="status-card error">
-                <h2>API Status</h2>
-                <div class="value">● FAILED</div>
-                <div class="subtitle">Unable to fetch data</div>
-            </div>
-
-            <div class="status-card error">
-                <h2>Data Source</h2>
-                <div class="value">● OFFLINE</div>
-                <div class="subtitle">API unavailable</div>
-            </div>
-            {% endif %}
         </div>
 
-        <!-- Main Content -->
-        <div class="main-content">
-            <!-- Products Section -->
-            <div class="products-section">
-                {% if config.products %}
-                <div class="products-table">
-                    <div class="products-table-header">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M9 11H7l-2 2 2 2h2m4-4h2l2-2-2-2h-2m-6 9c-.55 0-1-.45-1-1V5c0-.55.45-1 1-1h12c.55 0 1 .45 1 1v14c0 .55-.45 1-1 1H7z"/>
-                        </svg>
-                        <h3>Product Monitor</h3>
-                        <div style="margin-left: auto; font-size: 0.75rem; color: var(--text-muted);">
-                            {{ config.products|length }} products
-                        </div>
+        <!-- Live Stock Analytics -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">📊 Live Stock Analytics</div>
+            </div>
+            <div class="section-content">
+                <div class="status-grid">
+                    <div class="status-card">
+                        <div class="status-card-title">Total Products</div>
+                        <div class="status-card-value">{{ config.products | length }}</div>
+                        <div class="status-card-subtitle">Monitored SKUs</div>
                     </div>
-                    <div class="products-list">
-                        {% for product in config.products %}
-                        <div class="product-row {{ 'in-stock' if product.available else 'out-of-stock' }}">
-                            <div class="product-image-cell">
-                                {% if product.image_url %}
-                                <img src="{{ product.image_url }}" alt="{{ product.display_name or product.name }}" class="product-image-small" loading="lazy" onerror="this.style.display='none'">
-                                {% else %}
-                                <div class="product-image-small" style="display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 0.75rem;">No Image</div>
-                                {% endif %}
-                            </div>
-                            <div class="product-name-cell">
-                                <div style="font-weight: 600; margin-bottom: 0.125rem;">{{ product.display_name or product.name or 'Unknown Product' }}</div>
-                                {% if product.is_preorder %}
-                                <div style="font-size: 0.625rem; color: var(--accent-light); text-transform: uppercase; font-weight: 600;">Preorder</div>
-                                {% endif %}
-                            </div>
-                            <div class="product-tcin-cell">{{ product.tcin }}</div>
-                            <div class="product-status-cell">
-                                <span class="status-badge {{ 'in-stock' if product.available else 'out-of-stock' if product.has_data else 'unknown' }}">
+                    <div class="status-card warning">
+                        <div class="status-card-title">Currently In Stock</div>
+                        <div class="status-card-value">{{ status.in_stock_count if status.data_loaded else 0 }}</div>
+                        <div class="status-card-subtitle">Available now</div>
+                    </div>
+                    <div class="status-card">
+                        <div class="status-card-title">API Response</div>
+                        <div class="status-card-value">{{ status.data_age_seconds if status.data_loaded else '--' }}s</div>
+                        <div class="status-card-subtitle">Average speed</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% if status.in_stock_count > 0 %}
+        <div class="alert">
+            <div class="alert-title">🚨 Items Currently In Stock!</div>
+            Purchase attempts should be in progress for available products.
+        </div>
+        {% endif %}
+
+        <!-- Monitored Products -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">📦 Monitored Products</div>
+            </div>
+            <div class="section-content">
+                {% if config.products %}
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>TCIN</th>
+                                <th>Product Name</th>
+                                <th>Monitor</th>
+                                <th>Preorder</th>
+                                <th>Stock Status</th>
+                                <th>Purchase Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for product in config.products %}
+                            <tr data-tcin="{{ product.tcin }}">
+                                <td>
+                                    <code style="background: var(--secondary-bg); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem;">
+                                        {{ product.tcin }}
+                                    </code>
+                                </td>
+                                <td>
+                                    <div style="max-width: 350px; font-weight: 500;" class="product-name">
+                                        {{ product.display_name or product.name or 'Loading...' }}
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="badge {{ 'enabled' if product.enabled else 'disabled' }}">
+                                        {{ 'ENABLED' if product.enabled else 'DISABLED' }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="badge preorder preorder-badge" data-tcin="{{ product.tcin }}"
+                                          style="display: {{ 'inline-flex' if product.has_data and product.is_preorder else 'none' }}"
+                                          {% if product.street_date %}title="Pre-order - Releases {{ product.street_date }}"{% endif %}>
+                                        PREORDER
+                                    </span>
+                                </td>
+                                <td>
                                     {% if product.has_data %}
-                                        {{ 'IN STOCK' if product.available else 'OUT OF STOCK' }}
+                                        <span class="badge {{ 'in-stock' if product.available else 'out-of-stock' }}" data-tcin="{{ product.tcin }}">
+                                            {{ 'IN STOCK' if product.available else 'OUT OF STOCK' }}
+                                        </span>
                                     {% else %}
-                                        NO DATA
+                                        <span class="badge unknown" data-tcin="{{ product.tcin }}">
+                                            <span class="loading"></span> LOADING...
+                                        </span>
                                     {% endif %}
-                                </span>
-                            </div>
-                            <div class="product-action-cell">
-                                <button class="btn btn-primary btn-small" data-url="{{ product.url }}" onclick="openProduct(this)" title="Opens: {{ product.url }}">
-                                    View
-                                </button>
-                            </div>
+                                </td>
+                                <td>
+                                    <span class="badge purchase-status-badge" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}">
+                                        ✅ READY
+                                    </span>
+                                </td>
+                                <td>
+                                    <a href="{{ product.url }}" target="_blank" class="btn btn-outline">
+                                        View Product
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                    No products configured for monitoring
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Live Activity Log -->
+        <div class="section">
+            <div class="section-header">
+                <div class="section-title">📋 Live Activity Log</div>
+            </div>
+            <div class="section-content">
+                <div class="log-container" style="max-height: 300px;">
+                    {% if activity_log %}
+                        {% for entry in activity_log[:25] %}
+                        <div class="log-entry {{ entry.level }}">
+                            <span style="opacity: 0.7;">[{{ entry.time_str }}]</span>
+                            📋 {{ entry.message }}
                         </div>
                         {% endfor %}
-                    </div>
-                </div>
-                {% else %}
-                <div class="status-card">
-                    <h2>No Products</h2>
-                    <div class="value">0</div>
-                    <div class="subtitle">No products configured for monitoring</div>
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- Activity Section -->
-            <div class="activity-section">
-                <div class="activity-wrapper">
-                    <h2 style="margin-bottom: 1rem; color: var(--text-primary); font-size: 1.1rem; font-weight: 700; flex-shrink: 0;">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="vertical-align: -0.2em; margin-right: 0.5rem;">
-                            <path d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-                        </svg>
-                        Activity Monitor
-                    </h2>
-            <div class="activity-log">
-                {% if activity_log %}
-                    {% for entry in activity_log[:25] %}
-                    <div class="activity-entry {{ entry.level }}" data-category="{{ entry.category }}">
-                        <span class="activity-time">{{ entry.time_str }}</span>
-                        <span class="activity-message">{{ entry.message }}</span>
-                        <span class="activity-category {{ entry.category }}">{{ entry.category.replace('_', ' ') }}</span>
-                    </div>
-                    {% endfor %}
-                {% else %}
-                    <div class="activity-entry info">
-                        <span class="activity-time">--:--:--</span>
-                        <span class="activity-message">Monitor initialized - awaiting first API call</span>
-                        <span class="activity-category system">system</span>
-                    </div>
-                {% endif %}
-                    </div>
+                    {% else %}
+                        <div class="log-entry">
+                            <span style="opacity: 0.7;">[{{ timestamp.strftime('%H:%M:%S') }}]</span>
+                            📋 Dashboard started - monitoring {{ config.products | length }} products
+                        </div>
+                    {% endif %}
                 </div>
             </div>
         </div>
 
-        <!-- Footer -->
-        <div class="footer" style="background: var(--elevated-bg); border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow); padding: 1rem; flex-shrink: 0;">
-            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem;">
-                <div style="flex: 1; min-width: 0;">
-                    <p style="font-size: 0.875rem; font-weight: 600; margin-bottom: 0.125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                        <strong>Target Monitor Pro</strong> - Enterprise Platform
-                    </p>
-                    <p style="color: var(--text-muted); font-size: 0.75rem;">
-                        Last sync: {{ timestamp.strftime('%H:%M:%S') }}
-                    </p>
-                </div>
-                <div style="flex-shrink: 0;">
-                    <a href="/refresh" class="btn btn-primary" style="padding: 0.5rem 1rem; font-size: 0.75rem;">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.375rem;">
-                            <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
-                        </svg>
-                        Refresh
-                    </a>
-                </div>
-            </div>
-        </div>
+        <!-- Actions -->
+        <div style="text-align: center; margin-top: 2rem; padding-bottom: 2rem;">
+            <button class="btn btn-primary" onclick="location.reload()" style="padding: 0.75rem 2rem;">
+                🔄 Refresh Dashboard
+            </button>
         </div>
     </div>
 
