@@ -1206,9 +1206,29 @@
                                     {% endif %}
                                 </td>
                                 <td>
-                                    <span class="badge purchase-status-badge" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}">
-                                        ✅ READY
-                                    </span>
+                                    {% if product.purchase_status == 'ready' %}
+                                        <span class="badge ready" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}">
+                                            ✅ READY
+                                        </span>
+                                    {% elif product.purchase_status == 'attempting' %}
+                                        <span class="badge attempting" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}">
+                                            ⏳ ATTEMPTING
+                                        </span>
+                                    {% elif product.purchase_status == 'purchased' %}
+                                        <span class="badge purchased" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}"
+                                              {% if product.order_number %}title="Order: {{ product.order_number }}"{% endif %}>
+                                            🎉 PURCHASED
+                                        </span>
+                                    {% elif product.purchase_status == 'failed' %}
+                                        <span class="badge failed" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}"
+                                              {% if product.purchase_attempt_count %}title="Failed after {{ product.purchase_attempt_count }} attempts"{% endif %}>
+                                            ❌ FAILED
+                                        </span>
+                                    {% else %}
+                                        <span class="badge ready" data-tcin="{{ product.tcin }}" id="purchase-status-{{ product.tcin }}">
+                                            ✅ READY
+                                        </span>
+                                    {% endif %}
                                 </td>
                                 <td>
                                     <a href="{{ product.url }}" target="_blank" class="btn btn-outline">
@@ -1348,12 +1368,6 @@
             </div>
         </div>
 
-        <!-- Actions -->
-        <div style="text-align: center; margin-top: 2rem; padding-bottom: 2rem;">
-            <button class="btn btn-primary" onclick="location.reload()" style="padding: 0.75rem 2rem;">
-                🔄 Refresh Dashboard
-            </button>
-        </div>
     </div>
 
     <script>
@@ -1497,27 +1511,41 @@
         }
 
 
-        // Generate random interval between 15-25 seconds for anti-detection
-        function getRandomInterval() {
-            return Math.floor(Math.random() * (25 - 15 + 1)) + 15;
+        // Server-time based persistent timer (survives browser refresh)
+        const REFRESH_INTERVAL = 20; // 20 seconds
+        const serverTime = new Date("{{ timestamp.isoformat() }}").getTime();
+        const pageLoadTime = Date.now();
+
+        function calculateCountdown() {
+            // Calculate elapsed time since server rendered the page
+            const now = Date.now();
+            const serverNow = serverTime + (now - pageLoadTime);
+
+            // Calculate time until next refresh (based on server time)
+            const elapsed = Math.floor(serverNow / 1000) % REFRESH_INTERVAL;
+            const remaining = REFRESH_INTERVAL - elapsed;
+
+            return Math.max(1, remaining);
         }
 
-        let countdown = getRandomInterval();
-        console.log(`🎯 Anti-detection: Random interval set to ${countdown} seconds`);
+        let countdown = calculateCountdown();
+        console.log(`🔄 Persistent timer: ${countdown} seconds remaining (survives browser refresh)`);
         const countdownElement = document.querySelector('#countdown-value-header');
 
-        // Update initial display with random value
+        // Update initial display with calculated value
         if (countdownElement) {
             countdownElement.textContent = countdown;
         }
 
         function updateCountdown() {
-            countdown--;
+            // Recalculate countdown based on server time (self-correcting)
+            countdown = calculateCountdown();
+
             if (countdownElement) {
                 countdownElement.textContent = countdown;
             }
 
-            if (countdown <= 0) {
+            if (countdown <= 1) {
                 // Show refreshing state
                 if (countdownElement) {
                     countdownElement.textContent = '⟳';
@@ -1625,6 +1653,170 @@
         } else {
             console.error('Failed to find countdown element - auto-refresh disabled');
         }
+
+        // ===============================================
+        // FOOLPROOF PURCHASE SYSTEM - CLIENT-SIDE COUNTDOWN
+        // ===============================================
+
+        // Active countdowns to prevent race conditions
+        const activeCountdowns = {};
+
+        function startFoolproofPurchase(tcin, productName) {
+            console.log(`🚀 FOOLPROOF: Starting purchase: ${productName} (${tcin})`);
+
+            // Update UI immediately
+            updatePurchaseStatus(tcin, 'attempting');
+
+            // Call API to start purchase
+            fetch(`/api/start_purchase/${tcin}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('❌ Start failed:', data.error);
+                        updatePurchaseStatus(tcin, 'ready');
+                        return;
+                    }
+
+                    console.log(`✅ Purchase started: ${data.duration}s duration, will ${data.will_succeed ? 'SUCCESS' : 'FAIL'}`);
+
+                    // Start client-side countdown (FOOLPROOF!)
+                    startPurchaseCountdown(tcin, data.duration, data.will_succeed, data);
+                })
+                .catch(error => {
+                    console.error('❌ API error:', error);
+                    updatePurchaseStatus(tcin, 'ready');
+                });
+        }
+
+        function startPurchaseCountdown(tcin, duration, willSucceed, purchaseData) {
+            console.log(`⏱️ Starting countdown: ${tcin} -> ${duration}s`);
+
+            // Store countdown reference to prevent conflicts
+            if (activeCountdowns[tcin]) {
+                clearInterval(activeCountdowns[tcin]);
+            }
+
+            let remaining = Math.ceil(duration);
+
+            // Update the purchase status badge with countdown
+            updatePurchaseStatusWithCountdown(tcin, 'attempting', remaining);
+
+            // Start countdown timer
+            activeCountdowns[tcin] = setInterval(() => {
+                remaining--;
+                updatePurchaseStatusWithCountdown(tcin, 'attempting', remaining);
+
+                if (remaining <= 0) {
+                    clearInterval(activeCountdowns[tcin]);
+                    delete activeCountdowns[tcin];
+
+                    console.log(`⏰ Countdown finished: ${tcin}`);
+                    completeFoolproofPurchase(tcin, purchaseData);
+                }
+            }, 1000);
+        }
+
+        function completeFoolproofPurchase(tcin, purchaseData) {
+            console.log(`🏁 Completing purchase: ${tcin}`);
+
+            // Call API to complete purchase
+            fetch(`/api/complete_purchase/${tcin}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error('❌ Complete failed:', data.error);
+                        return;
+                    }
+
+                    console.log(`✅ Purchase completed: ${data.status}`);
+
+                    // Update UI with final result
+                    updatePurchaseStatus(tcin, data.status);
+
+                    // Show success/failure details
+                    if (data.status === 'purchased') {
+                        showPurchaseResult(tcin, `SUCCESS! Order: ${data.order_number}, Price: $${data.price}`, 'success');
+                    } else {
+                        showPurchaseResult(tcin, `FAILED: ${data.failure_reason}`, 'error');
+                    }
+
+                    // Auto-cycle: Reset to ready after 7 seconds, then start new purchase
+                    setTimeout(() => {
+                        updatePurchaseStatus(tcin, 'ready');
+
+                        // Auto-start new purchase after 2 more seconds (simulating "if in stock")
+                        setTimeout(() => {
+                            console.log(`🔄 Auto-cycling: Starting new purchase for ${tcin}`);
+                            startFoolproofPurchase(tcin, purchaseData.product_name);
+                        }, 2000);
+                    }, 7000);
+                })
+                .catch(error => {
+                    console.error('❌ Complete API error:', error);
+                });
+        }
+
+        function updatePurchaseStatus(tcin, status) {
+            const badge = document.getElementById(`purchase-status-${tcin}`);
+            if (badge) {
+                badge.className = `badge ${status}`;
+                badge.textContent = status.toUpperCase();
+            }
+        }
+
+        function updatePurchaseStatusWithCountdown(tcin, status, remaining) {
+            const badge = document.getElementById(`purchase-status-${tcin}`);
+            if (badge) {
+                badge.className = `badge ${status}`;
+                badge.textContent = `${status.toUpperCase()} (${remaining}s)`;
+            }
+        }
+
+        function showPurchaseResult(tcin, message, level) {
+            // You can enhance this to show results in your UI
+            console.log(`[${level.toUpperCase()}] ${tcin}: ${message}`);
+        }
+
+        // Auto-start purchases for products that are "attempting" on page load
+        window.addEventListener('load', () => {
+            console.log('🔄 FOOLPROOF: Checking for existing purchases...');
+
+            {% for product in products %}
+            {% if product.purchase_state and product.purchase_state.status == 'attempting' %}
+            // Resume countdown for existing purchase
+            const tcin_{{ loop.index }} = '{{ product.tcin }}';
+            const startedAt_{{ loop.index }} = {{ product.purchase_state.get('started_at', 0) }};
+            const completesAt_{{ loop.index }} = {{ product.purchase_state.get('completes_at', 0) }};
+            const willSucceed_{{ loop.index }} = {{ product.purchase_state.get('will_succeed', false)|tojson }};
+            const purchaseData_{{ loop.index }} = {{ product.purchase_state|tojson }};
+
+            const now_{{ loop.index }} = Date.now() / 1000;
+            const remaining_{{ loop.index }} = completesAt_{{ loop.index }} - now_{{ loop.index }};
+
+            if (remaining_{{ loop.index }} > 0) {
+                console.log(`🔄 Resuming countdown: ${tcin_{{ loop.index }}} -> ${remaining_{{ loop.index }}}s remaining`);
+                startPurchaseCountdown(tcin_{{ loop.index }}, remaining_{{ loop.index }}, willSucceed_{{ loop.index }}, purchaseData_{{ loop.index }});
+            } else {
+                console.log(`⚡ Purchase should be completed: ${tcin_{{ loop.index }}}`);
+                completeFoolproofPurchase(tcin_{{ loop.index }}, purchaseData_{{ loop.index }});
+            }
+            {% endif %}
+            {% endfor %}
+
+            // Auto-start purchases for ready products (simulating "if in stock")
+            setTimeout(() => {
+                {% for product in products %}
+                {% if not product.purchase_state or product.purchase_state.status == 'ready' %}
+                console.log(`🔄 Auto-starting purchase for ready product: {{ product.tcin }}`);
+                startFoolproofPurchase('{{ product.tcin }}', '{{ product.name }}');
+                {% endif %}
+                {% endfor %}
+            }, 1000); // Start after 1 second
+        });
+
+        // Make foolproof purchase function globally available
+        window.startFoolproofPurchase = startFoolproofPurchase;
+
     </script>
 </body>
 </html>

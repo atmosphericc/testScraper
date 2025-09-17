@@ -1,12 +1,6 @@
 {
   "products": [
     {
-      "tcin": "94681784",
-      "name": "Product 7",
-      "enabled": true,
-      "max_price": 55.0
-    },
-    {
       "tcin": "89542109",
       "name": "Product 8",
       "enabled": true,
