@@ -260,6 +260,39 @@
             padding: 2rem;
         }
 
+        .clear-logs-btn {
+            background: var(--danger-color);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+        }
+
+        .clear-logs-btn:hover {
+            background: var(--danger-light);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+        }
+
+        .clear-logs-btn:active {
+            transform: translateY(0);
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
         .table-container {
             overflow-x: auto;
             border-radius: 8px;
@@ -1087,6 +1120,65 @@
         ::-webkit-scrollbar-thumb:hover {
             background: var(--text-muted);
         }
+
+        /* Tab Styles */
+        .tab-navigation {
+            display: flex;
+            gap: 0.25rem;
+            background: var(--secondary-bg);
+            padding: 0.25rem;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .tab-button {
+            padding: 0.75rem 1.5rem;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .tab-button:hover {
+            background: var(--card-bg);
+            color: var(--text-primary);
+        }
+
+        .tab-button.active {
+            background: var(--card-bg);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-content-container {
+            min-height: 200px;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .tab-content-wrapper {
+            padding: 0;
+        }
+
+        .btn-disabled {
+            background: var(--secondary-bg) !important;
+            color: var(--text-muted) !important;
+            border-color: var(--border-color) !important;
+            cursor: not-allowed !important;
+        }
+
     </style>
 </head>
 <body>
@@ -1129,6 +1221,7 @@
             </div>
         </div>
     </div>
+
 
     <div class="container">
 
@@ -1196,9 +1289,15 @@
                                 </td>
                                 <td>
                                     {% if product.has_data %}
-                                        <span class="badge {{ 'in-stock' if product.available else 'out-of-stock' }}" data-tcin="{{ product.tcin }}">
-                                            {{ 'IN STOCK' if product.available else 'OUT OF STOCK' }}
-                                        </span>
+                                        {% if product.stock_status == 'WAITING_FOR_REFRESH' %}
+                                            <span class="badge unknown" data-tcin="{{ product.tcin }}">
+                                                <span class="loading"></span> WAITING FOR REFRESH
+                                            </span>
+                                        {% else %}
+                                            <span class="badge {{ 'in-stock' if product.available else 'out-of-stock' }}" data-tcin="{{ product.tcin }}">
+                                                {{ 'IN STOCK' if product.available else 'OUT OF STOCK' }}
+                                            </span>
+                                        {% endif %}
                                     {% else %}
                                         <span class="badge unknown" data-tcin="{{ product.tcin }}">
                                             <span class="loading"></span> LOADING...
@@ -1252,6 +1351,9 @@
         <div class="section">
             <div class="section-header">
                 <div class="section-title">📋 Live Activity Log</div>
+                <button id="clear-logs-btn" class="clear-logs-btn" onclick="clearActivityLogs()">
+                    🗑️ Clear Logs
+                </button>
             </div>
             <div class="section-content">
                 <div class="log-container" style="max-height: 300px;">
@@ -1278,6 +1380,21 @@
                 <div class="section-title">⚙️ Product Configuration</div>
             </div>
             <div class="section-content">
+                <!-- Tab Navigation -->
+                <div class="tab-navigation" style="margin-bottom: 1.5rem;">
+                    <button class="tab-button active" onclick="switchTab('active')" id="active-tab">
+                        📊 Active Products ({{ config.products|length }})
+                    </button>
+                    <button class="tab-button" onclick="switchTab('catalog')" id="catalog-tab">
+                        📚 Product Catalog ({{ catalog.catalog|length }})
+                    </button>
+                </div>
+
+                <!-- Tab Content Container -->
+                <div class="tab-content-container">
+                    <!-- Active Products Tab -->
+                    <div class="tab-content active" id="active-content">
+                        <div class="tab-content-wrapper">
                 <!-- Add Product Form -->
                 <form onsubmit="handleAddProduct(event)" style="margin-bottom: 2rem;">
                     <div style="display: flex; gap: 1rem; align-items: center; max-width: 500px;">
@@ -1317,9 +1434,9 @@
                 <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; font-weight: 500;">
                     Manage Existing Products:
                 </div>
-                <div style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                <div class="product-config-container" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
                     {% for product in config.products %}
-                    <div style="
+                    <div data-tcin="{{ product.tcin }}" style="
                         display: flex;
                         align-items: center;
                         padding: 1rem;
@@ -1328,7 +1445,7 @@
                     " {% if loop.last %}style="border-bottom: none;"{% endif %}>
                         <!-- Product Info -->
                         <div style="flex: 1; min-width: 0;">
-                            <div style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
+                            <div class="product-config-name" style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
                                 {{ product.display_name or product.name or 'Unknown Product' }}
                             </div>
                             <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">
@@ -1360,25 +1477,775 @@
                     </div>
                     {% endfor %}
                 </div>
-                {% else %}
-                <div style="text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic;">
-                    No products configured. Add your first product using the form above.
+                        {% else %}
+                        <div style="text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic;">
+                            No products configured. Add your first product using the form above.
+                        </div>
+                        {% endif %}
+                        </div>
+                    </div>
+
+                    <!-- Product Catalog Tab -->
+                    <div class="tab-content" id="catalog-content">
+                        <div class="tab-content-wrapper">
+                            <!-- Add to Catalog Form -->
+                            <form onsubmit="handleAddToCatalog(event)" style="margin-bottom: 2rem;">
+                                <div style="display: flex; gap: 1rem; align-items: center; max-width: 500px;">
+                                    <input
+                                        type="text"
+                                        name="tcin"
+                                        placeholder="Enter 8-digit TCIN..."
+                                        pattern="[0-9]{8}"
+                                        maxlength="8"
+                                        required
+                                        style="
+                                            flex: 1;
+                                            padding: 0.75rem 1rem;
+                                            background: var(--secondary-bg);
+                                            border: 1px solid var(--border-color);
+                                            border-radius: 6px;
+                                            color: var(--text-primary);
+                                            font-size: 0.875rem;
+                                            font-family: 'JetBrains Mono', monospace;
+                                        "
+                                    />
+                                    <button
+                                        type="submit"
+                                        class="btn btn-secondary"
+                                        style="
+                                            padding: 0.75rem 1.5rem;
+                                            white-space: nowrap;
+                                        "
+                                    >
+                                        📚 Save to Catalog
+                                    </button>
+                                </div>
+                            </form>
+
+                            <!-- Current Catalog Products -->
+                            {% if catalog.catalog %}
+                            <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; font-weight: 500;">
+                                Catalog Products:
+                            </div>
+                            <div class="catalog-config-container" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+                                {% for product in catalog.catalog %}
+                                <div data-catalog-tcin="{{ product.tcin }}" style="
+                                    display: flex;
+                                    align-items: center;
+                                    padding: 1rem;
+                                    border-bottom: 1px solid var(--border-color);
+                                    background: var(--secondary-bg);
+                                " {% if loop.last %}style="border-bottom: none;"{% endif %}>
+                                    <!-- Product Info -->
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div class="catalog-product-name" style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
+                                            {{ product.name }}
+                                        </div>
+                                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">
+                                            TCIN: {{ product.tcin }} • Added: {{ product.date_added[:10] }}
+                                        </div>
+                                    </div>
+
+                                    <!-- Smart Action Buttons -->
+                                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                        <!-- COHESIVE SYSTEM: Use the is_actively_monitored property from backend -->
+                                        {% set is_active = product.is_actively_monitored %}
+
+                                        <!-- Add to Monitor Button -->
+                                        <button
+                                            onclick="activateFromCatalog('{{ product.tcin }}')"
+                                            class="btn {% if is_active %}btn-disabled{% else %}btn-primary{% endif %}"
+                                            {% if is_active %}disabled{% endif %}
+                                            style="
+                                                padding: 0.375rem 0.75rem;
+                                                font-size: 0.75rem;
+                                                white-space: nowrap;
+                                                {% if is_active %}opacity: 0.5; cursor: not-allowed;{% endif %}
+                                            "
+                                        >
+                                            {% if is_active %}✅ Already Active{% else %}🚀 Add to Monitor{% endif %}
+                                        </button>
+
+                                        <!-- Remove from Catalog Button -->
+                                        <button
+                                            onclick="removeFromCatalog('{{ product.tcin }}')"
+                                            style="
+                                                background: transparent;
+                                                border: 1px solid var(--danger-color);
+                                                color: var(--danger-color);
+                                                padding: 0.375rem 0.75rem;
+                                                border-radius: 4px;
+                                                font-size: 0.75rem;
+                                                cursor: pointer;
+                                                transition: all 0.2s ease;
+                                                white-space: nowrap;
+                                            "
+                                            onmouseover="this.style.background='var(--danger-color)'; this.style.color='white';"
+                                            onmouseout="this.style.background='transparent'; this.style.color='var(--danger-color)';"
+                                        >
+                                            🗑️ Remove
+                                        </button>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <div style="text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic;">
+                                No products in catalog. Save your first product using the form above.
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
                 </div>
-                {% endif %}
             </div>
         </div>
 
     </div>
 
     <script>
-        // AJAX Product Management Functions
+        // ===============================================
+        // TAB MANAGEMENT AND CATALOG FUNCTIONS
+        // ===============================================
+
+        function switchTab(tabName) {
+            // Remove active class from all tabs and content
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            // Add active class to selected tab and content
+            document.getElementById(`${tabName}-tab`).classList.add('active');
+            document.getElementById(`${tabName}-content`).classList.add('active');
+        }
+
+        async function handleAddToCatalog(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            const tcin = formData.get('tcin');
+
+            try {
+                const response = await fetch('/catalog/add', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ tcin: tcin })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Clear form
+                    form.reset();
+
+                    // Add to catalog UI immediately
+                    addProductToCatalogSection(result.product);
+
+                    // Update tab counter
+                    updateTabCounters();
+
+                    // Show success message
+                    showSuccessToast('Product saved to catalog: ' + result.product.name);
+                } else {
+                    showErrorToast('Error: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error adding to catalog:', error);
+                showErrorToast('Error adding to catalog: ' + error.message);
+            }
+        }
+
+        async function removeFromCatalog(tcin) {
+            try {
+                const response = await fetch(`/catalog/remove/${tcin}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Remove from catalog UI with animation
+                    removeProductFromCatalogSection(tcin);
+
+                    // Update tab counter
+                    updateTabCounters();
+
+                    showSuccessToast('Product removed from catalog');
+                } else {
+                    showErrorToast('Error: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error removing from catalog:', error);
+                showErrorToast('Error removing from catalog: ' + error.message);
+            }
+        }
+
+        async function activateFromCatalog(tcin) {
+            try {
+                const response = await fetch(`/catalog/activate/${tcin}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Add to main table and active config section
+                    addProductToMainTable(result.product);
+                    addProductToConfigSection(result.product);
+
+                    // Update button state in catalog (disable "Add to Monitor" button)
+                    updateCatalogButtonState(tcin, true);
+
+                    // Update tab counters
+                    updateTabCounters();
+
+                    showSuccessToast('Product activated for monitoring: ' + result.product.name);
+                } else {
+                    showErrorToast('Error: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error activating from catalog:', error);
+                showErrorToast('Error activating from catalog: ' + error.message);
+            }
+        }
+
+        function addProductToCatalogSection(product) {
+            const container = document.querySelector('.catalog-config-container');
+            if (!container) {
+                // Create container if it doesn't exist (empty state)
+                const catalogContent = document.getElementById('catalog-content');
+                const existingEmpty = catalogContent.querySelector('div[style*="text-align: center"]');
+                if (existingEmpty) {
+                    existingEmpty.remove();
+                }
+
+                // Add container and header
+                const headerDiv = document.createElement('div');
+                headerDiv.style.cssText = 'font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; font-weight: 500;';
+                headerDiv.textContent = 'Catalog Products:';
+
+                const newContainer = document.createElement('div');
+                newContainer.className = 'catalog-config-container';
+                newContainer.style.cssText = 'max-height: 300px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;';
+
+                catalogContent.querySelector('.tab-content-wrapper').appendChild(headerDiv);
+                catalogContent.querySelector('.tab-content-wrapper').appendChild(newContainer);
+                container = newContainer;
+            }
+
+            const productDiv = document.createElement('div');
+            productDiv.setAttribute('data-catalog-tcin', product.tcin);
+            productDiv.style.cssText = `
+                display: flex;
+                align-items: center;
+                padding: 1rem;
+                border-bottom: 1px solid var(--border-color);
+                background: var(--secondary-bg);
+                opacity: 0;
+                transform: translateY(20px);
+                transition: all 0.3s ease;
+            `;
+
+            productDiv.innerHTML = `
+                <div style="flex: 1; min-width: 0;">
+                    <div class="catalog-product-name" style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
+                        ${product.name}
+                    </div>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">
+                        TCIN: ${product.tcin} • Added: ${product.date_added.substring(0, 10)}
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <button
+                        onclick="activateFromCatalog('${product.tcin}')"
+                        class="btn btn-primary"
+                        style="
+                            padding: 0.375rem 0.75rem;
+                            font-size: 0.75rem;
+                            white-space: nowrap;
+                        "
+                    >
+                        🚀 Add to Monitor
+                    </button>
+                    <button
+                        onclick="removeFromCatalog('${product.tcin}')"
+                        style="
+                            background: transparent;
+                            border: 1px solid var(--danger-color);
+                            color: var(--danger-color);
+                            padding: 0.375rem 0.75rem;
+                            border-radius: 4px;
+                            font-size: 0.75rem;
+                            cursor: pointer;
+                            transition: all 0.2s ease;
+                            white-space: nowrap;
+                        "
+                        onmouseover="this.style.background='var(--danger-color)'; this.style.color='white';"
+                        onmouseout="this.style.background='transparent'; this.style.color='var(--danger-color)';"
+                    >
+                        🗑️ Remove
+                    </button>
+                </div>
+            `;
+
+            container.appendChild(productDiv);
+
+            // Animate in
+            setTimeout(() => {
+                productDiv.style.opacity = '1';
+                productDiv.style.transform = 'translateY(0)';
+            }, 100);
+        }
+
+        function removeProductFromCatalogSection(tcin) {
+            const div = document.querySelector(`div[data-catalog-tcin="${tcin}"]`);
+            if (div) {
+                div.style.transition = 'all 0.3s ease';
+                div.style.opacity = '0';
+                div.style.transform = 'translateX(-20px)';
+                setTimeout(() => {
+                    div.remove();
+
+                    // Check if this was the last item
+                    const container = document.querySelector('.catalog-config-container');
+                    if (container && container.children.length === 0) {
+                        // Remove container and add empty state
+                        container.previousElementSibling?.remove(); // Remove header
+                        container.remove();
+
+                        const catalogContent = document.getElementById('catalog-content');
+                        const emptyDiv = document.createElement('div');
+                        emptyDiv.style.cssText = 'text-align: center; padding: 2rem; color: var(--text-muted); font-style: italic;';
+                        emptyDiv.textContent = 'No products in catalog. Save your first product using the form above.';
+                        catalogContent.querySelector('.tab-content-wrapper').appendChild(emptyDiv);
+                    }
+                }, 300);
+            }
+        }
+
+        function updateCatalogButtonState(tcin, isActive) {
+            const catalogItem = document.querySelector(`div[data-catalog-tcin="${tcin}"]`);
+            if (catalogItem) {
+                const activateButton = catalogItem.querySelector('button[onclick*="activateFromCatalog"]');
+                if (activateButton) {
+                    if (isActive) {
+                        activateButton.disabled = true;
+                        activateButton.className = 'btn btn-disabled';
+                        activateButton.textContent = '✅ Already Active';
+                        activateButton.style.opacity = '0.5';
+                        activateButton.style.cursor = 'not-allowed';
+                    } else {
+                        activateButton.disabled = false;
+                        activateButton.className = 'btn btn-primary';
+                        activateButton.textContent = '🚀 Add to Monitor';
+                        activateButton.style.opacity = '1';
+                        activateButton.style.cursor = 'pointer';
+                    }
+                }
+            }
+        }
+
+        function updateTabCounters() {
+            // Update active products counter
+            const activeCount = document.querySelector('table tbody')?.querySelectorAll('tr').length || 0;
+            document.getElementById('active-tab').textContent = `📊 Active Products (${activeCount})`;
+
+            // Update catalog counter
+            const catalogCount = document.querySelector('.catalog-config-container')?.children.length || 0;
+            document.getElementById('catalog-tab').textContent = `📚 Product Catalog (${catalogCount})`;
+        }
+
+        // Override the existing handleRemoveProduct to also update catalog button states
+        const originalHandleRemoveProduct = window.handleRemoveProduct;
+        window.handleRemoveProduct = async function(tcin) {
+            const result = await originalHandleRemoveProduct(tcin);
+
+            // Update catalog button state if the product was removed from active
+            updateCatalogButtonState(tcin, false);
+            updateTabCounters();
+
+            return result;
+        };
+
+        // ===============================================
+        // HEALTH CHECK MONITORING SYSTEM
+        // ===============================================
+
+        let healthCheckInterval = null;
+        let syncErrorCount = 0;
+        let lastHealthCheck = null;
+        let validationRetryCount = 0;
+        let maxRetries = 3;
+        let isAutoCorrectEnabled = true;
+        let syncStatus = 'unknown'; // 'healthy', 'error', 'correcting', 'offline'
+
+        function startHealthCheckMonitoring() {
+            /**
+             * ENHANCED HEALTH CHECK: Proactive sync monitoring with auto-correction
+             * - Runs validation every cycle (not every 3rd)
+             * - Immediate validation after every atomic API event
+             * - Auto-correction of detected sync issues
+             * - Real-time sync status indicator
+             * - Retry logic for failed validations
+             */
+            console.log('🏥 ENHANCED HEALTH CHECK: Starting proactive sync monitoring with auto-correction...');
+
+            // Monitor atomic events and run enhanced health check every cycle
+            const originalHandler = handleAtomicApiCycleUpdate;
+            handleAtomicApiCycleUpdate = function(eventData) {
+                // Call original handler
+                originalHandler(eventData);
+
+                // Run enhanced validation immediately after every cycle
+                setTimeout(() => runEnhancedHealthCheck(eventData.cycle_id), 500);
+            };
+        }
+
+        async function runHealthCheck(triggeredByCycleId) {
+            /**
+             * HEALTH CHECK: Compare frontend state with backend expected state
+             * This catches the specific bug scenario automatically
+             */
+            try {
+                console.log(`🏥 HEALTH CHECK: Running validation (triggered by cycle ${triggeredByCycleId})`);
+                lastHealthCheck = new Date();
+
+                const response = await fetch('/api/validate-sync');
+                const backendData = await response.json();
+
+                if (!backendData.success) {
+                    console.error('🏥 HEALTH CHECK: Backend validation failed:', backendData.error);
+                    return;
+                }
+
+                const expectedState = backendData.expected_ui_state;
+                const currentUIState = validateCurrentUIState();
+                const healthErrors = [];
+
+                // Compare each product's state
+                Object.entries(expectedState).forEach(([tcin, expected]) => {
+                    const actual = currentUIState[tcin];
+
+                    if (!actual) {
+                        healthErrors.push(`${tcin}: Missing from UI`);
+                        return;
+                    }
+
+                    // Check stock status sync
+                    const expectedStockStatus = expected.stock_status;
+                    const actualStockText = actual.stock_status;
+
+                    let actualStockStatus = 'UNKNOWN';
+                    if (actualStockText.includes('IN STOCK')) actualStockStatus = 'IN_STOCK';
+                    else if (actualStockText.includes('OUT OF STOCK')) actualStockStatus = 'OUT_OF_STOCK';
+
+                    if (expectedStockStatus !== actualStockStatus) {
+                        healthErrors.push(`${tcin}: Stock status mismatch - Expected ${expectedStockStatus}, Got ${actualStockStatus}`);
+                    }
+
+                    // Check purchase status sync
+                    const expectedPurchaseStatus = expected.purchase_status;
+                    const actualPurchaseText = actual.purchase_status;
+
+                    if (expectedPurchaseStatus === 'ready' && !actualPurchaseText.includes('READY')) {
+                        healthErrors.push(`${tcin}: Purchase status mismatch - Expected ready, Got ${actualPurchaseText}`);
+                    }
+                });
+
+                // Report health check results
+                if (healthErrors.length === 0) {
+                    console.log(`✅ HEALTH CHECK PASSED: All UI states match backend (cycle ${triggeredByCycleId})`);
+                    syncErrorCount = 0; // Reset error count on success
+                    updateHealthStatus('healthy');
+                } else {
+                    syncErrorCount++;
+                    console.error(`🚨 HEALTH CHECK FAILED: ${healthErrors.length} sync issues detected (cycle ${triggeredByCycleId}):`);
+                    healthErrors.forEach(error => console.error(`   - ${error}`));
+
+                    updateHealthStatus('error', healthErrors);
+
+                    // Alert user if multiple consecutive failures
+                    if (syncErrorCount >= 2) {
+                        showSyncErrorAlert(healthErrors, triggeredByCycleId);
+                    }
+                }
+
+            } catch (error) {
+                console.error('🏥 HEALTH CHECK: Validation request failed:', error);
+                updateHealthStatus('offline');
+            }
+        }
+
+        function updateHealthStatus(status, errors = []) {
+            /**
+             * Update health status indicator in UI
+             */
+            const indicator = document.getElementById('health-status') || createHealthStatusIndicator();
+            const timestamp = new Date().toLocaleTimeString();
+
+            switch (status) {
+                case 'healthy':
+                    indicator.style.color = 'var(--success-color)';
+                    indicator.textContent = '✅ SYNC OK';
+                    indicator.title = `Last check: ${timestamp} - All systems synchronized`;
+                    break;
+                case 'error':
+                    indicator.style.color = 'var(--danger-color)';
+                    indicator.textContent = '❌ SYNC ERROR';
+                    indicator.title = `Last check: ${timestamp} - ${errors.length} sync issues detected`;
+                    break;
+                case 'offline':
+                    indicator.style.color = 'var(--warning-color)';
+                    indicator.textContent = '⚠️ HEALTH CHECK OFFLINE';
+                    indicator.title = `Last check: ${timestamp} - Health check unavailable`;
+                    break;
+            }
+        }
+
+        function createHealthStatusIndicator() {
+            /**
+             * Create health status indicator in header
+             */
+            const headerStats = document.querySelector('.header-stats');
+            if (!headerStats) return null;
+
+            const healthStat = document.createElement('div');
+            healthStat.className = 'header-stat';
+            healthStat.innerHTML = `
+                <div class="header-stat-label">Sync Health</div>
+                <div class="header-stat-value" id="health-status">🔄 CHECKING</div>
+            `;
+            headerStats.appendChild(healthStat);
+
+            return document.getElementById('health-status');
+        }
+
+        function showSyncErrorAlert(errors, cycleId) {
+            /**
+             * Show persistent sync error alert to user
+             */
+            const alertHtml = `
+                <div style="
+                    position: fixed;
+                    top: 80px;
+                    right: 20px;
+                    background: var(--danger-color);
+                    color: white;
+                    padding: 1rem 1.5rem;
+                    border-radius: 8px;
+                    box-shadow: var(--shadow-xl);
+                    z-index: 1000;
+                    max-width: 400px;
+                    font-size: 0.875rem;
+                " id="sync-error-alert">
+                    <div style="font-weight: 600; margin-bottom: 0.5rem;">🚨 Sync Error Detected</div>
+                    <div style="margin-bottom: 0.5rem;">The UI is not properly syncing with backend data (Cycle ${cycleId}):</div>
+                    <ul style="margin: 0.5rem 0; padding-left: 1rem;">
+                        ${errors.map(error => `<li>${error}</li>`).join('')}
+                    </ul>
+                    <div style="margin-top: 0.5rem; font-size: 0.75rem; opacity: 0.9;">
+                        Try refreshing the page. If the issue persists, check console logs.
+                    </div>
+                    <button onclick="document.getElementById('sync-error-alert').remove()"
+                            style="position: absolute; top: 0.5rem; right: 0.5rem; background: none; border: none; color: white; cursor: pointer;">×</button>
+                </div>
+            `;
+
+            // Remove existing alert
+            const existingAlert = document.getElementById('sync-error-alert');
+            if (existingAlert) existingAlert.remove();
+
+            // Add new alert
+            document.body.insertAdjacentHTML('beforeend', alertHtml);
+
+            // Auto-remove after 30 seconds
+            setTimeout(() => {
+                const alert = document.getElementById('sync-error-alert');
+                if (alert) alert.remove();
+            }, 30000);
+        }
+
+        // ===============================================
+        // TIMER DRIFT MONITORING
+        // ===============================================
+
+        let timerDriftHistory = [];
+        const MAX_DRIFT_HISTORY = 10;
+        let lastValidTimerSync = null;
+
+        function validateTimerMeasurement(oldCountdown, newCountdown, cycleId) {
+            /**
+             * TIMER MEASUREMENT VALIDATION: Filter out invalid drift measurements
+             * This prevents false positives from bad timing or state issues
+             */
+
+            // Skip if values are clearly invalid
+            if (oldCountdown < 0 || newCountdown < 0) {
+                console.log(`⏰ VALIDATION: Skipping negative timer values (old: ${oldCountdown}, new: ${newCountdown})`);
+                return false;
+            }
+
+            // Skip if values are unreasonably high (>30s for a 15-25s cycle system)
+            if (oldCountdown > 30 || newCountdown > 30) {
+                console.log(`⏰ VALIDATION: Skipping unreasonably high timer values (old: ${oldCountdown}, new: ${newCountdown})`);
+                return false;
+            }
+
+            // Skip if this is the first sync after page load (no valid baseline)
+            if (lastValidTimerSync === null) {
+                console.log(`⏰ VALIDATION: First timer sync after page load - establishing baseline`);
+                lastValidTimerSync = { oldCountdown, newCountdown, cycleId, timestamp: Date.now() };
+                return false;
+            }
+
+            // Skip if frontend timer might be in "refreshing" state
+            const countdownElement = document.getElementById('countdown');
+            if (countdownElement && countdownElement.classList.contains('refreshing')) {
+                console.log(`⏰ VALIDATION: Skipping measurement - timer in refreshing state`);
+                return false;
+            }
+
+            // Skip if measurement seems to be during rapid state changes
+            const timeSinceLastSync = Date.now() - lastValidTimerSync.timestamp;
+            if (timeSinceLastSync < 2000) { // Less than 2 seconds since last sync
+                console.log(`⏰ VALIDATION: Skipping measurement - too soon after last sync (${timeSinceLastSync}ms)`);
+                return false;
+            }
+
+            // Update last valid sync
+            lastValidTimerSync = { oldCountdown, newCountdown, cycleId, timestamp: Date.now() };
+
+            console.log(`⏰ VALIDATION: Timer measurement valid - proceeding with drift check`);
+            return true;
+        }
+
+        function logTimerDrift(frontendTime, backendTime, drift, cycleId) {
+            /**
+             * TIMER DRIFT TRACKING: Log and monitor timer synchronization issues
+             */
+            // Enhanced drift classification with false positive detection
+            let severity = 'low';
+            let suspiciousFactor = '';
+
+            if (drift > 15) {
+                severity = 'false_positive'; // Extremely high drift is likely measurement error
+                suspiciousFactor = 'extreme_drift';
+            } else if (drift > 10) {
+                severity = 'high';
+                suspiciousFactor = 'very_high_drift';
+            } else if (drift > 5) {
+                severity = 'medium';
+            }
+
+            // Check for suspicious patterns that indicate false positives
+            if (drift > (frontendTime + backendTime)) {
+                severity = 'false_positive';
+                suspiciousFactor = 'drift_exceeds_sum';
+            }
+
+            const driftEntry = {
+                cycleId,
+                timestamp: new Date().toISOString(),
+                frontendTime,
+                backendTime,
+                drift,
+                severity,
+                suspiciousFactor,
+                note: severity === 'false_positive' ? 'Likely measurement error' : 'Valid measurement'
+            };
+
+            timerDriftHistory.unshift(driftEntry);
+            if (timerDriftHistory.length > MAX_DRIFT_HISTORY) {
+                timerDriftHistory = timerDriftHistory.slice(0, MAX_DRIFT_HISTORY);
+            }
+
+            console.log(`⏰ TIMER DRIFT LOG:`, driftEntry);
+
+            // Check for persistent drift issues with improved validation
+            const recentDrifts = timerDriftHistory.slice(0, 5); // Check last 5 instead of 3
+            const validDrifts = recentDrifts.filter(entry => entry.severity !== 'false_positive');
+
+            if (validDrifts.length >= 3) {
+                const avgDrift = validDrifts.reduce((sum, entry) => sum + entry.drift, 0) / validDrifts.length;
+
+                // Only alert if consistently high drift (>5s average over multiple cycles)
+                if (avgDrift > 5) {
+                    console.warn(`⚠️ PERSISTENT TIMER DRIFT: Average ${avgDrift.toFixed(1)}s drift over last ${validDrifts.length} valid cycles`);
+                    showTimerDriftAlert(avgDrift, validDrifts);
+                } else {
+                    console.log(`⏰ DRIFT TRACKING: Minor average drift ${avgDrift.toFixed(1)}s over ${validDrifts.length} cycles - within acceptable range`);
+                }
+            } else {
+                console.log(`⏰ DRIFT TRACKING: Insufficient valid drift measurements (${validDrifts.length}/3 needed)`);
+            }
+        }
+
+        function showTimerDriftAlert(avgDrift, recentDrifts) {
+            /**
+             * Alert user about persistent timer drift issues
+             */
+            const alertHtml = `
+                <div style="
+                    position: fixed;
+                    top: 130px;
+                    right: 20px;
+                    background: var(--warning-color);
+                    color: white;
+                    padding: 1rem 1.5rem;
+                    border-radius: 8px;
+                    box-shadow: var(--shadow-xl);
+                    z-index: 999;
+                    max-width: 350px;
+                    font-size: 0.875rem;
+                " id="timer-drift-alert">
+                    <div style="font-weight: 600; margin-bottom: 0.5rem;">⏰ Timer Drift Warning</div>
+                    <div style="margin-bottom: 0.5rem;">
+                        Frontend timer is drifting from backend (avg ${avgDrift.toFixed(1)}s over last ${recentDrifts.length} cycles)
+                    </div>
+                    <div style="font-size: 0.75rem; opacity: 0.9;">
+                        This may cause timing inconsistencies. The system auto-corrects on each cycle.
+                    </div>
+                    <button onclick="document.getElementById('timer-drift-alert').remove()"
+                            style="position: absolute; top: 0.5rem; right: 0.5rem; background: none; border: none; color: white; cursor: pointer;">×</button>
+                </div>
+            `;
+
+            // Remove existing alert
+            const existingAlert = document.getElementById('timer-drift-alert');
+            if (existingAlert) existingAlert.remove();
+
+            // Add new alert
+            document.body.insertAdjacentHTML('beforeend', alertHtml);
+
+            // Auto-remove after 20 seconds
+            setTimeout(() => {
+                const alert = document.getElementById('timer-drift-alert');
+                if (alert) alert.remove();
+            }, 20000);
+        }
+
+        // Enhanced AJAX Product Management Functions with Loading States
         async function handleAddProduct(event) {
             event.preventDefault();
 
             const form = event.target;
+            const submitButton = form.querySelector('button[type="submit"]');
             const tcin = form.querySelector('input[name="tcin"]').value.trim();
 
             if (!tcin) return;
+
+            // Show loading state
+            const originalButtonText = submitButton.textContent;
+            submitButton.disabled = true;
+            submitButton.innerHTML = '<div class="loading" style="width: 12px; height: 12px; margin-right: 0.5rem;"></div>Adding...';
+
+            const loadingIndicator = showLoadingIndicator('Adding product...');
 
             try {
                 const response = await fetch('/add-product', {
@@ -1392,21 +2259,53 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    // Add product to both tables
+                    // Add product to both tables and configuration section immediately
                     addProductToMainTable(result.product);
                     addProductToConfigSection(result.product);
 
+                    // COHESIVE SYSTEM: Add to catalog if not already there and update button state
+                    const existingCatalogItem = document.querySelector(`div[data-catalog-tcin="${result.product.tcin}"]`);
+                    if (existingCatalogItem) {
+                        // Product already in catalog, update button state to "Already Active"
+                        updateCatalogButtonState(result.product.tcin, true);
+                    } else {
+                        // Add to catalog with "Already Active" state
+                        const catalogProduct = {
+                            tcin: result.product.tcin,
+                            name: result.product.name,
+                            date_added: new Date().toISOString(),
+                            url: result.product.url
+                        };
+                        addProductToCatalogSection(catalogProduct);
+                        // Set to "Already Active" since we just added it to monitoring
+                        setTimeout(() => updateCatalogButtonState(result.product.tcin, true), 100);
+                    }
+
+                    // Update product count in header and tab counters
+                    updateProductCount();
+                    updateTabCounters();
+
                     // Clear form
                     form.reset();
+
+                    // Show success message
+                    showSuccessToast('Product added successfully: ' + result.product.name);
                 } else {
-                    alert('Error: ' + result.error);
+                    showErrorToast('Error: ' + result.error);
                 }
             } catch (error) {
-                alert('Error adding product: ' + error.message);
+                showErrorToast('Error adding product: ' + error.message);
+            } finally {
+                // Restore button state
+                submitButton.disabled = false;
+                submitButton.textContent = originalButtonText;
+                loadingIndicator.remove();
             }
         }
 
         async function handleRemoveProduct(tcin) {
+            const loadingIndicator = showLoadingIndicator('Removing product...');
+
             try {
                 const response = await fetch(`/remove-product/${tcin}`, {
                     method: 'POST',
@@ -1418,14 +2317,21 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    // Remove from both tables
+                    // Remove from both tables with animation
                     removeProductFromMainTable(tcin);
                     removeProductFromConfigSection(tcin);
+
+                    // Update product count in header
+                    updateProductCount();
+
+                    showSuccessToast('Product removed successfully');
                 } else {
-                    alert('Error: ' + result.error);
+                    showErrorToast('Error: ' + result.error);
                 }
             } catch (error) {
-                alert('Error removing product: ' + error.message);
+                showErrorToast('Error removing product: ' + error.message);
+            } finally {
+                loadingIndicator.remove();
             }
         }
 
@@ -1437,6 +2343,10 @@
 
             const row = document.createElement('tr');
             row.setAttribute('data-tcin', product.tcin);
+            row.style.opacity = '0';
+            row.style.transform = 'translateY(20px)';
+            row.style.transition = 'all 0.3s ease';
+
             row.innerHTML = `
                 <td>
                     <code style="background: var(--secondary-bg); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem;">
@@ -1452,20 +2362,29 @@
                     <span class="badge preorder preorder-badge" data-tcin="${product.tcin}" style="display: none">PREORDER</span>
                 </td>
                 <td>
-                    <span class="badge unknown" data-tcin="${product.tcin}">WAITING FOR REFRESH</span>
+                    <span class="badge unknown" data-tcin="${product.tcin}">
+                        <div class="loading" style="width: 12px; height: 12px; margin-right: 0.5rem;"></div>
+                        WAITING FOR REFRESH
+                    </span>
                 </td>
                 <td>
-                    <span class="badge purchase-status-badge" data-tcin="${product.tcin}">✅ READY</span>
+                    <span class="badge ready" data-tcin="${product.tcin}" id="purchase-status-${product.tcin}">✅ READY</span>
                 </td>
                 <td>
                     <a href="${product.url}" target="_blank" class="btn btn-outline">View Product</a>
                 </td>
             `;
             tbody.appendChild(row);
+
+            // Animate in
+            setTimeout(() => {
+                row.style.opacity = '1';
+                row.style.transform = 'translateY(0)';
+            }, 100);
         }
 
         function addProductToConfigSection(product) {
-            const container = document.querySelector('.section-content div[style*="max-height: 300px"]');
+            const container = document.querySelector('.product-config-container');
             if (!container) return;
 
             const productDiv = document.createElement('div');
@@ -1480,7 +2399,7 @@
 
             productDiv.innerHTML = `
                 <div style="flex: 1; min-width: 0;">
-                    <div style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
+                    <div class="product-config-name" style="font-weight: 500; color: var(--text-primary); margin-bottom: 0.25rem;">
                         ${product.name}
                     </div>
                     <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; color: var(--text-muted);">
@@ -1502,100 +2421,194 @@
 
         function removeProductFromMainTable(tcin) {
             const row = document.querySelector(`table tr[data-tcin="${tcin}"]`);
-            if (row) row.remove();
+            if (row) {
+                row.style.transition = 'all 0.3s ease';
+                row.style.opacity = '0';
+                row.style.transform = 'translateX(-20px)';
+                setTimeout(() => {
+                    row.remove();
+                }, 300);
+            }
         }
 
         function removeProductFromConfigSection(tcin) {
-            const div = document.querySelector(`.section-content div[data-tcin="${tcin}"]`);
-            if (div) div.remove();
+            const div = document.querySelector(`.product-config-container div[data-tcin="${tcin}"]`);
+            if (div) {
+                div.style.transition = 'all 0.3s ease';
+                div.style.opacity = '0';
+                div.style.transform = 'translateX(-20px)';
+                setTimeout(() => {
+                    div.remove();
+                }, 300);
+            }
+        }
+
+        function updateProductCount() {
+            const tbody = document.querySelector('table tbody');
+            const count = tbody ? tbody.querySelectorAll('tr').length : 0;
+
+            // Update header product count
+            const productCountElement = document.querySelector('.header-stat-value');
+            if (productCountElement && productCountElement.closest('.header-stat').querySelector('.header-stat-label').textContent === 'Products') {
+                productCountElement.textContent = count;
+            }
+
+            // Update analytics section
+            const analyticsCountElement = document.querySelector('.status-card .status-card-value');
+            if (analyticsCountElement) {
+                analyticsCountElement.textContent = count;
+            }
         }
 
 
-        // Server-time based persistent timer (survives browser refresh)
-        const REFRESH_INTERVAL = 20; // 20 seconds
-        const serverTime = new Date("{{ timestamp.isoformat() }}").getTime();
-        const pageLoadTime = Date.now();
-
-        function calculateCountdown() {
-            // Calculate elapsed time since server rendered the page
-            const now = Date.now();
-            const serverNow = serverTime + (now - pageLoadTime);
-
-            // Calculate time until next refresh (based on server time)
-            const elapsed = Math.floor(serverNow / 1000) % REFRESH_INTERVAL;
-            const remaining = REFRESH_INTERVAL - elapsed;
-
-            return Math.max(1, remaining);
-        }
-
-        let countdown = calculateCountdown();
-        console.log(`🔄 Persistent timer: ${countdown} seconds remaining (survives browser refresh)`);
+        // Real-time countdown with server synchronization
+        let countdown = 20;
+        let isRefreshing = false;
+        let lastServerSync = 0;
+        let countdownInterval = null;
         const countdownElement = document.querySelector('#countdown-value-header');
 
-        // Update initial display with calculated value
-        if (countdownElement) {
-            countdownElement.textContent = countdown;
-        }
-
         function updateCountdown() {
-            // Recalculate countdown based on server time (self-correcting)
-            countdown = calculateCountdown();
+            if (isRefreshing) {
+                return;
+            }
+
+            countdown--;
 
             if (countdownElement) {
                 countdownElement.textContent = countdown;
             }
 
-            if (countdown <= 1) {
-                // Show refreshing state
+            if (countdown <= 0) {
+                // Show refreshing state but DO NOT reload page
+                isRefreshing = true;
                 if (countdownElement) {
                     countdownElement.textContent = '⟳';
+                    countdownElement.classList.add('refreshing');
                 }
 
-                // Add loading overlay
-                showLoadingState();
+                console.log('🔄 Waiting for next SSE data refresh...');
 
-                // Refresh the page
+                // Reset countdown for next cycle - get fresh random timer from server
                 setTimeout(() => {
-                    window.location.reload();
-                }, 500);
-            } else {
-                // Continue countdown
-                setTimeout(updateCountdown, 1000);
+                    // Fetch fresh timer value from server for new cycle
+                    fetch('/api/timer-status')
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.active) {
+                                countdown = Math.ceil(data.remaining);
+                                console.log(`🔄 Timer reset with fresh random value: ${countdown}s`);
+                            } else {
+                                countdown = 20; // Fallback only if server fails
+                            }
+                            isRefreshing = false;
+                            if (countdownElement) {
+                                countdownElement.classList.remove('refreshing');
+                                countdownElement.textContent = countdown;
+                            }
+                            // Ensure countdown interval is still running
+                            if (!countdownInterval) {
+                                countdownInterval = setInterval(updateCountdown, 1000);
+                                console.log('🔄 Restarted countdown interval after reset');
+                            }
+                        })
+                        .catch(error => {
+                            console.warn('⚠️ Timer reset failed, using fallback:', error);
+                            countdown = 20; // Fallback on error
+                            isRefreshing = false;
+                            if (countdownElement) {
+                                countdownElement.classList.remove('refreshing');
+                                countdownElement.textContent = countdown;
+                            }
+                            // Ensure countdown interval is still running even on error
+                            if (!countdownInterval) {
+                                countdownInterval = setInterval(updateCountdown, 1000);
+                                console.log('🔄 Restarted countdown interval after error');
+                            }
+                        });
+                }, 2000);
             }
+            // No need for setTimeout here - interval handles the timing
         }
 
-        function showLoadingState() {
-            // Create loading overlay
-            const overlay = document.createElement('div');
-            overlay.style.cssText = `
+        function showLoadingIndicator(message = 'Loading...', persistent = false) {
+            const indicator = document.createElement('div');
+            indicator.className = 'ajax-loading-indicator';
+            indicator.style.cssText = `
                 position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(10, 14, 19, 0.95);
+                top: 20px;
+                right: 20px;
+                background: var(--card-bg);
+                border: 1px solid var(--border-color);
+                border-radius: 8px;
+                padding: 1rem 1.5rem;
+                z-index: 1000;
                 display: flex;
                 align-items: center;
-                justify-content: center;
-                z-index: 9999;
+                gap: 0.75rem;
+                color: var(--text-primary);
+                font-size: 0.875rem;
+                box-shadow: var(--shadow-lg);
+            `;
+            indicator.innerHTML = `
+                <div class="loading"></div>
+                <span>${message}</span>
+            `;
+            document.body.appendChild(indicator);
+
+            if (!persistent) {
+                setTimeout(() => {
+                    if (indicator.parentNode) {
+                        indicator.remove();
+                    }
+                }, 3000);
+            }
+
+            return indicator;
+        }
+
+        function showSuccessToast(message) {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: var(--success-color);
                 color: white;
-                font-size: 1.2rem;
+                border-radius: 8px;
+                padding: 1rem 1.5rem;
+                z-index: 1001;
+                font-size: 0.875rem;
+                box-shadow: var(--shadow-lg);
             `;
-            overlay.innerHTML = `
-                <div style="text-align: center;">
-                    <div style="
-                        width: 50px;
-                        height: 50px;
-                        border: 4px solid #30363d;
-                        border-top: 4px solid #58a6ff;
-                        border-radius: 50%;
-                        animation: spin 1s linear infinite;
-                        margin: 0 auto 1rem;
-                    "></div>
-                    <div>🔄 Refreshing stock data...</div>
-                </div>
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        function showErrorToast(message) {
+            const toast = document.createElement('div');
+            toast.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: var(--danger-color);
+                color: white;
+                border-radius: 8px;
+                padding: 1rem 1.5rem;
+                z-index: 1001;
+                font-size: 0.875rem;
+                box-shadow: var(--shadow-lg);
             `;
-            document.body.appendChild(overlay);
+            toast.textContent = message;
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.remove();
+            }, 5000);
         }
 
         function openProduct(button) {
@@ -1642,125 +2655,808 @@
             });
         }
 
-        // Debug logging
-        console.log('Dashboard loaded, starting auto-refresh countdown');
-        console.log('Countdown element:', countdownElement);
+        // Enhanced Timer System with SSE Integration
+        function initializeTimer() {
+            console.log('🔄 Initializing SSE-based timer system...');
 
-        // Start the countdown when page loads
-        if (countdownElement) {
-            setTimeout(updateCountdown, 1000);
-            console.log('Auto-refresh timer started');
-        } else {
-            console.error('Failed to find countdown element - auto-refresh disabled');
+            // Sync with server first, then start countdown
+            if (countdownElement) {
+                syncTimerWithServer(); // This will start the countdown after sync
+                console.log('✅ Real-time timer initialized (no page refreshes)');
+            } else {
+                console.error('❌ Failed to find countdown element');
+            }
         }
 
-        // ===============================================
-        // FOOLPROOF PURCHASE SYSTEM - CLIENT-SIDE COUNTDOWN
-        // ===============================================
+        // Sync timer with server (ONLY on page load/refresh)
+        function syncTimerWithServer() {
+            // Only sync once on page load or manual refresh - never during countdown
+            if (lastServerSync > 0) {
+                console.log('⏭️ Timer already synced, skipping to maintain independent countdown');
+                return;
+            }
 
-        // Active countdowns to prevent race conditions
-        const activeCountdowns = {};
+            lastServerSync = Date.now();
 
-        function startFoolproofPurchase(tcin, productName) {
-            console.log(`🚀 FOOLPROOF: Starting purchase: ${productName} (${tcin})`);
-
-            // Update UI immediately
-            updatePurchaseStatus(tcin, 'attempting');
-
-            // Call API to start purchase
-            fetch(`/api/start_purchase/${tcin}`)
+            fetch('/api/timer-status')
                 .then(response => response.json())
                 .then(data => {
-                    if (data.error) {
-                        console.error('❌ Start failed:', data.error);
-                        updatePurchaseStatus(tcin, 'ready');
-                        return;
+                    if (data.active) {
+                        countdown = Math.ceil(data.remaining);
+                        console.log(`🔁 Initial timer sync: ${countdown}s remaining`);
+                        if (countdownElement) {
+                            countdownElement.textContent = countdown;
+                        }
+                        // Start the independent countdown interval after sync
+                        // Clear any existing interval first to prevent multiple timers
+                        if (countdownInterval) {
+                            clearInterval(countdownInterval);
+                        }
+                        countdownInterval = setInterval(updateCountdown, 1000);
+                        console.log('🔄 Started countdown interval');
                     }
-
-                    console.log(`✅ Purchase started: ${data.duration}s duration, will ${data.will_succeed ? 'SUCCESS' : 'FAIL'}`);
-
-                    // Start client-side countdown (FOOLPROOF!)
-                    startPurchaseCountdown(tcin, data.duration, data.will_succeed, data);
                 })
                 .catch(error => {
-                    console.error('❌ API error:', error);
-                    updatePurchaseStatus(tcin, 'ready');
+                    console.warn('⚠️ Timer sync failed:', error);
                 });
         }
 
-        function startPurchaseCountdown(tcin, duration, willSucceed, purchaseData) {
-            console.log(`⏱️ Starting countdown: ${tcin} -> ${duration}s`);
+        // ===============================================
+        // BULLETPROOF REAL-TIME SYSTEM - SERVER-SENT EVENTS
+        // ===============================================
 
-            // Store countdown reference to prevent conflicts
+        let eventSource = null;
+        const activeCountdowns = {};
+
+        // SSE Fallback and Recovery Configuration
+        let sseFailureCount = 0;
+        let lastSSEEventTime = Date.now();
+        let pollingFallbackActive = false;
+        let pollingInterval = null;
+        let sseHealthCheckInterval = null;
+        const MAX_SSE_FAILURES = 3;
+        const SSE_TIMEOUT_MS = 30000; // 30 seconds without events triggers fallback
+        const POLLING_INTERVAL_MS = 5000; // 5 second polling fallback
+        const SSE_HEALTH_CHECK_MS = 10000; // Check SSE health every 10 seconds
+
+        function initializeRealTimeUpdates() {
+            console.log('🚀 BULLETPROOF: Initializing real-time updates with fallback mechanisms...');
+
+            // Start SSE health monitoring
+            startSSEHealthMonitoring();
+
+            // Connect to SSE stream with enhanced error handling
+            connectSSE();
+        }
+
+        function connectSSE() {
+            try {
+                // Clean up existing connection
+                if (eventSource) {
+                    eventSource.close();
+                    eventSource = null;
+                }
+
+                console.log('🔌 Establishing SSE connection...');
+                eventSource = new EventSource('/api/stream');
+
+                eventSource.onopen = function(event) {
+                    console.log('✅ SSE connection established');
+                    updateConnectionStatus(true);
+                    sseFailureCount = 0; // Reset failure count on successful connection
+                    lastSSEEventTime = Date.now(); // Reset timeout tracker
+
+                    // If polling fallback was active, disable it
+                    if (pollingFallbackActive) {
+                        disablePollingFallback();
+                    }
+                };
+
+                eventSource.onmessage = function(event) {
+                    try {
+                        lastSSEEventTime = Date.now(); // Update last event time
+                        const data = JSON.parse(event.data);
+
+                        // Enhanced event handling with fallback tracking
+                        handleRealTimeEventWithFallback(data);
+
+                    } catch (error) {
+                        console.error('❌ Failed to parse SSE data:', error);
+                        handleSSEFailure('Parse error', error);
+                    }
+                };
+
+                eventSource.onerror = function(event) {
+                    console.error('❌ SSE connection error:', event);
+                    handleSSEFailure('Connection error', event);
+                };
+
+            } catch (error) {
+                console.error('❌ Failed to initialize SSE:', error);
+                handleSSEFailure('Initialization error', error);
+            }
+        }
+
+        function handleSSEFailure(reason, event) {
+            sseFailureCount++;
+            console.error(`❌ SSE FAILURE #${sseFailureCount}: ${reason}`, event);
+            updateConnectionStatus(false);
+
+            // Log failure for visibility
+            addActivityEntryToDOM({
+                level: 'error',
+                message: `Real-time connection failed: ${reason} (failure #${sseFailureCount})`,
+                time_str: new Date().toLocaleTimeString()
+            });
+
+            // Decide on recovery strategy based on failure count
+            if (sseFailureCount >= MAX_SSE_FAILURES) {
+                console.warn(`⚠️ SSE FAILURE THRESHOLD REACHED: Enabling polling fallback`);
+                enablePollingFallback();
+            } else {
+                // Exponential backoff for reconnection
+                const retryDelay = Math.min(3000 * Math.pow(2, sseFailureCount - 1), 30000);
+                console.log(`🔄 SSE RECONNECTION: Retrying in ${retryDelay}ms (attempt ${sseFailureCount}/${MAX_SSE_FAILURES})`);
+
+                setTimeout(() => {
+                    if (!pollingFallbackActive && sseFailureCount < MAX_SSE_FAILURES) {
+                        connectSSE();
+                    }
+                }, retryDelay);
+            }
+        }
+
+        function enablePollingFallback() {
+            if (pollingFallbackActive) return;
+
+            console.log('🔄 ENABLING POLLING FALLBACK: SSE unreliable, switching to polling mode');
+            pollingFallbackActive = true;
+
+            // Close SSE connection
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+
+            // Start polling for updates
+            pollingInterval = setInterval(async () => {
+                try {
+                    console.log('📡 POLLING: Fetching update via fallback...');
+                    const response = await fetch('/api/current-state');
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+                    handlePollingUpdate(data);
+
+                } catch (error) {
+                    console.error('❌ POLLING FALLBACK FAILED:', error);
+                    // If polling also fails, try to re-enable SSE
+                    if (sseFailureCount >= MAX_SSE_FAILURES + 3) {
+                        console.log('🔄 POLLING FAILED: Attempting SSE recovery...');
+                        disablePollingFallback();
+                        sseFailureCount = 0; // Reset and try SSE again
+                        connectSSE();
+                    }
+                }
+            }, POLLING_INTERVAL_MS);
+
+            // Update UI to show polling mode
+            updateConnectionStatus('polling');
+
+            addActivityEntryToDOM({
+                level: 'warning',
+                message: 'Switched to polling mode due to connection issues',
+                time_str: new Date().toLocaleTimeString()
+            });
+        }
+
+        function disablePollingFallback() {
+            console.log('✅ DISABLING POLLING FALLBACK: SSE connection restored');
+            pollingFallbackActive = false;
+
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+            }
+        }
+
+        function startSSEHealthMonitoring() {
+            // Monitor SSE health by checking last event time
+            sseHealthCheckInterval = setInterval(() => {
+                if (pollingFallbackActive) return; // Skip if already in fallback mode
+
+                const timeSinceLastEvent = Date.now() - lastSSEEventTime;
+
+                if (timeSinceLastEvent > SSE_TIMEOUT_MS) {
+                    console.warn(`⚠️ SSE TIMEOUT: No events for ${timeSinceLastEvent}ms, checking connection...`);
+
+                    // Test if SSE is actually dead by checking readyState
+                    if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+                        console.error('❌ SSE CONNECTION DEAD: Auto-recovering...');
+                        handleSSEFailure('Timeout - connection dead', null);
+                    } else if (timeSinceLastEvent > SSE_TIMEOUT_MS * 2) {
+                        // If no events for double the timeout, force reconnection
+                        console.error('❌ SSE FORCED RECOVERY: Extended timeout detected');
+                        handleSSEFailure('Extended timeout', null);
+                    }
+                }
+            }, SSE_HEALTH_CHECK_MS);
+        }
+
+        function handlePollingUpdate(data) {
+            console.log('📡 POLLING UPDATE RECEIVED:', data);
+
+            // Process polling data similar to SSE events
+            if (data.stock_data) {
+                Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
+                    const updateResult = updateStockStatus(tcin, stockInfo);
+                    if (!updateResult) {
+                        console.warn(`⚠️ POLLING: Stock update failed for ${tcin}`);
+                    }
+                });
+            }
+
+            // Update statistics
+            if (data.in_stock_count !== undefined) {
+                const inStockElement = document.querySelector('.status-card.warning .status-card-value');
+                if (inStockElement) {
+                    inStockElement.textContent = data.in_stock_count;
+                }
+            }
+
+            // Update last update time
+            const lastUpdateElement = document.querySelector('.header-stat-value');
+            if (lastUpdateElement && lastUpdateElement.closest('.header-stat').querySelector('.header-stat-label').textContent === 'Last Update') {
+                const now = new Date();
+                lastUpdateElement.textContent = now.toLocaleTimeString();
+            }
+        }
+
+        function handleRealTimeEventWithFallback(data) {
+            try {
+                // Process the event normally
+                handleRealTimeEvent(data);
+
+                // Additional validation for critical events
+                if (data.type === 'api_cycle_complete') {
+                    validateEventProcessing(data);
+                }
+
+            } catch (error) {
+                console.error('❌ EVENT PROCESSING FAILED:', error, data);
+
+                // Attempt recovery for critical stock updates
+                if (data.type === 'api_cycle_complete' && data.data && data.data.stock_updates) {
+                    console.log('🔄 ATTEMPTING EVENT RECOVERY...');
+                    setTimeout(() => {
+                        try {
+                            Object.entries(data.data.stock_updates).forEach(([tcin, stockInfo]) => {
+                                updateStockStatus(tcin, stockInfo);
+                            });
+                        } catch (recoveryError) {
+                            console.error('❌ EVENT RECOVERY FAILED:', recoveryError);
+                        }
+                    }, 1000);
+                }
+            }
+        }
+
+        function validateEventProcessing(eventData) {
+            // Ensure stock updates were actually processed
+            if (eventData.data && eventData.data.stock_updates) {
+                setTimeout(() => {
+                    Object.entries(eventData.data.stock_updates).forEach(([tcin, stockInfo]) => {
+                        const currentStatus = getStockStatusFromUI(tcin);
+                        const expectedStatus = stockInfo.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK';
+
+                        if (currentStatus !== expectedStatus) {
+                            console.warn(`⚠️ EVENT VALIDATION FAILED: ${tcin} expected ${expectedStatus}, got ${currentStatus}`);
+                            // Trigger recovery update
+                            updateStockStatus(tcin, stockInfo);
+                        }
+                    });
+                }, 200);
+            }
+        }
+
+        function handleRealTimeEvent(data) {
+            switch (data.type) {
+                case 'api_cycle_complete':
+                    handleAtomicApiCycleUpdate(data);
+                    break;
+                case 'purchase_status':
+                    handlePurchaseStatusUpdate(data.data);
+                    break;
+                case 'stock_update':
+                    handleStockUpdate(data.data);
+                    break;
+                case 'activity_log':
+                    handleActivityLogUpdate(data.data);
+                    break;
+                case 'logs_cleared':
+                    handleLogsClearedUpdate(data.data);
+                    break;
+                case 'timer_sync':
+                    handleTimerSync(data.data);
+                    break;
+                case 'refresh_cycle':
+                    handleRefreshCycle(data.data);
+                    break;
+                case 'heartbeat':
+                    // Keep connection alive
+                    break;
+                default:
+                    console.log('📡 Real-time event:', data.type, data.data);
+            }
+        }
+
+        function handleAtomicApiCycleUpdate(eventData) {
+            /**
+             * ATOMIC API CYCLE HANDLER - Processes entire 15-25s cycle atomically
+             * This prevents intermediate UI states and ensures all changes happen simultaneously
+             */
+            console.log(`🔄 ATOMIC: Processing API cycle ${eventData.cycle_id}`);
+            console.log(`📊 CYCLE DATA:`, eventData);
+
+            const cycleData = eventData.data;
+            const stockUpdates = cycleData.stock_updates || {};
+            const purchaseChanges = cycleData.purchase_state_changes || {};
+            const timerSync = cycleData.timer_sync || {};
+            const summary = cycleData.summary || {};
+
+            // VALIDATION: Log state BEFORE changes for comparison
+            const preUpdateState = validateCurrentUIState();
+            console.log(`📋 PRE-UPDATE UI STATE:`, preUpdateState);
+
+            // STEP 1: Update timer FIRST (critical for sync)
+            if (timerSync.current_remaining !== undefined) {
+                const oldCountdown = countdown;
+                const newCountdown = Math.ceil(timerSync.current_remaining);
+
+                // IMPROVED TIMER DRIFT DETECTION - with validation
+                const shouldMeasureDrift = validateTimerMeasurement(oldCountdown, newCountdown, eventData.cycle_id);
+
+                if (shouldMeasureDrift) {
+                    const drift = Math.abs(oldCountdown - newCountdown);
+                    if (drift > 3) { // Increased threshold to reduce false positives
+                        console.warn(`⏰ TIMER DRIFT DETECTED: Frontend was ${oldCountdown}s, Backend says ${newCountdown}s (drift: ${drift}s)`);
+                        logTimerDrift(oldCountdown, newCountdown, drift, eventData.cycle_id);
+                    } else if (drift > 1) {
+                        console.log(`⏰ Minor timer adjustment: ${oldCountdown}s → ${newCountdown}s (${drift}s difference)`);
+                    }
+                } else {
+                    console.log(`⏰ Timer measurement skipped - invalid baseline (Frontend: ${oldCountdown}s, Backend: ${newCountdown}s)`);
+                }
+
+                countdown = newCountdown;
+                isRefreshing = false;
+                if (countdownElement) {
+                    countdownElement.textContent = countdown;
+                    countdownElement.classList.remove('refreshing');
+                }
+                console.log(`🔄 ATOMIC: Timer synced to ${countdown}s`);
+            }
+
+            // STEP 2: Process purchase resets atomically
+            const resetTcins = purchaseChanges.resets || [];
+            resetTcins.forEach(tcin => {
+                updatePurchaseStatus(tcin, 'ready', {});
+                // Clear any existing countdown for this TCIN
+                if (activeCountdowns[tcin]) {
+                    clearInterval(activeCountdowns[tcin]);
+                    delete activeCountdowns[tcin];
+                }
+            });
+            if (resetTcins.length > 0) {
+                console.log(`🔄 ATOMIC: Reset ${resetTcins.length} purchase states to ready`);
+            }
+
+            // STEP 3: Update stock statuses atomically with enhanced error handling
+            console.log(`📦 STOCK UPDATES PROCESSING (${Object.keys(stockUpdates).length} updates):`);
+            const stockUpdateResults = {
+                successful: 0,
+                failed: 0,
+                retrying: 0,
+                errors: []
+            };
+
+            Object.entries(stockUpdates).forEach(([tcin, stockInfo]) => {
+                try {
+                    const oldStatus = getStockStatusFromUI(tcin);
+                    console.log(`📦 PROCESSING STOCK UPDATE: ${tcin} - ${oldStatus} -> ${stockInfo.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK'}`);
+
+                    // Enhanced updateStockStatus call with result tracking
+                    const updateResult = updateStockStatus(tcin, stockInfo);
+
+                    if (updateResult === true) {
+                        stockUpdateResults.successful++;
+                        const newStatus = stockInfo.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK';
+
+                        // LOG CRITICAL BUG SCENARIO: Stock status changes
+                        if (oldStatus !== newStatus) {
+                            console.log(`🔄 STOCK CHANGE CONFIRMED: ${tcin} ${oldStatus} → ${newStatus}`);
+                            console.log(`📊 Stock Info:`, stockInfo);
+                        }
+                    } else if (updateResult === false) {
+                        // Check if it's a retry or permanent failure
+                        if (stockUpdateRetries.has(tcin)) {
+                            stockUpdateResults.retrying++;
+                            console.log(`🔄 STOCK UPDATE RETRYING: ${tcin} (attempt ${stockUpdateRetries.get(tcin)})`);
+                        } else {
+                            stockUpdateResults.failed++;
+                            const error = `Stock update failed for ${tcin}`;
+                            stockUpdateResults.errors.push(error);
+                            console.error(`❌ STOCK UPDATE FAILED: ${tcin}`);
+                        }
+                    }
+
+                    // Additional validation: Check DOM state after update
+                    setTimeout(() => {
+                        const finalStatus = getStockStatusFromUI(tcin);
+                        const expectedStatus = stockInfo.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK';
+
+                        if (finalStatus !== expectedStatus) {
+                            console.error(`❌ DELAYED VALIDATION FAILED: ${tcin} Expected ${expectedStatus}, got ${finalStatus}`);
+                            // Attempt one more recovery update
+                            console.log(`🔄 RECOVERY UPDATE ATTEMPT: ${tcin}`);
+                            updateStockStatus(tcin, stockInfo);
+                        }
+                    }, 100); // Check after 100ms to allow for any async operations
+
+                } catch (error) {
+                    stockUpdateResults.failed++;
+                    const errorMsg = `Exception in stock update for ${tcin}: ${error.message}`;
+                    stockUpdateResults.errors.push(errorMsg);
+                    console.error(`❌ STOCK UPDATE EXCEPTION: ${tcin}`, error);
+
+                    // Emergency fallback: Try to mark the element as having an error
+                    try {
+                        const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+                        if (stockBadge) {
+                            stockBadge.className = 'badge unknown';
+                            stockBadge.textContent = '⚠️ ERROR';
+                            stockBadge.title = `Update error: ${error.message}`;
+                        }
+                    } catch (fallbackError) {
+                        console.error(`❌ EMERGENCY FALLBACK FAILED: ${tcin}`, fallbackError);
+                    }
+                }
+            });
+
+            // Comprehensive logging of stock update results
+            console.log(`🔄 ATOMIC STOCK UPDATE SUMMARY:`, {
+                total: Object.keys(stockUpdates).length,
+                successful: stockUpdateResults.successful,
+                failed: stockUpdateResults.failed,
+                retrying: stockUpdateResults.retrying,
+                errors: stockUpdateResults.errors
+            });
+
+            // Alert if there are significant failures
+            if (stockUpdateResults.failed > 0) {
+                console.warn(`⚠️ STOCK UPDATE ISSUES: ${stockUpdateResults.failed} failed, ${stockUpdateResults.retrying} retrying`);
+
+                // Log to activity for visibility
+                addActivityEntryToDOM({
+                    level: 'warning',
+                    message: `Stock update issues: ${stockUpdateResults.failed} failed, ${stockUpdateResults.retrying} retrying`,
+                    time_str: new Date().toLocaleTimeString()
+                });
+            }
+
+            // STEP 4: Start new purchase attempts atomically
+            const newAttempts = purchaseChanges.new_attempts || [];
+            newAttempts.forEach(attempt => {
+                updatePurchaseStatus(attempt.tcin, 'attempting', attempt);
+                if (attempt.completes_at) {
+                    startRealTimeCountdown(attempt.tcin, attempt);
+                }
+            });
+            if (newAttempts.length > 0) {
+                console.log(`🔄 ATOMIC: Started ${newAttempts.length} purchase attempts`);
+            }
+
+            // STEP 5: Update header statistics
+            if (summary.in_stock_count !== undefined) {
+                const inStockElement = document.querySelector('.status-card.warning .status-card-value');
+                if (inStockElement) {
+                    inStockElement.textContent = summary.in_stock_count;
+                }
+            }
+
+            // STEP 6: Update last update time in header
+            const lastUpdateElement = document.querySelector('.header-stat-value');
+            if (lastUpdateElement && lastUpdateElement.closest('.header-stat').querySelector('.header-stat-label').textContent === 'Last Update') {
+                const now = new Date();
+                lastUpdateElement.textContent = now.toLocaleTimeString();
+            }
+
+            // FINAL VALIDATION: Compare UI state after processing
+            const postUpdateState = validateCurrentUIState();
+            console.log(`📋 POST-UPDATE UI STATE:`, postUpdateState);
+
+            // SYNC VALIDATION: Check if UI matches expected backend state
+            validateSyncWithBackend(stockUpdates, purchaseChanges, eventData.cycle_id);
+
+            console.log(`✅ ATOMIC: API cycle ${eventData.cycle_id} processed completely - ${summary.total_products} products, ${summary.in_stock_count} in stock, ${summary.new_attempts_count} attempts, ${summary.resets_count} resets`);
+        }
+
+        function validateCurrentUIState() {
+            /**
+             * SYNC VALIDATION: Capture current UI state for comparison
+             */
+            const uiState = {};
+
+            // Get all product rows
+            const productRows = document.querySelectorAll('tr[data-tcin]');
+            productRows.forEach(row => {
+                const tcin = row.getAttribute('data-tcin');
+                const stockBadge = row.querySelector('.badge[data-tcin]');
+                const purchaseBadge = row.querySelector(`#purchase-status-${tcin}`);
+
+                uiState[tcin] = {
+                    stock_status: stockBadge ? stockBadge.textContent.trim() : 'UNKNOWN',
+                    stock_classes: stockBadge ? stockBadge.className : '',
+                    purchase_status: purchaseBadge ? purchaseBadge.textContent.trim() : 'UNKNOWN',
+                    purchase_classes: purchaseBadge ? purchaseBadge.className : ''
+                };
+            });
+
+            return uiState;
+        }
+
+        function getStockStatusFromUI(tcin) {
+            /**
+             * Get current stock status for a specific TCIN from UI
+             */
+            const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+            if (!stockBadge) return 'UNKNOWN';
+
+            const text = stockBadge.textContent.trim();
+            if (text.includes('IN STOCK')) return 'IN_STOCK';
+            if (text.includes('OUT OF STOCK')) return 'OUT_OF_STOCK';
+            if (text.includes('LOADING')) return 'LOADING';
+            if (text.includes('WAITING')) return 'WAITING';
+            return text;
+        }
+
+        function validateSyncWithBackend(stockUpdates, purchaseChanges, cycleId) {
+            /**
+             * CRITICAL: Validate that UI state matches what backend sent
+             * This catches the specific bug: backend says IN_STOCK but UI shows OUT_OF_STOCK
+             */
+            console.log(`🔍 SYNC VALIDATION for cycle ${cycleId}:`);
+
+            let syncErrors = [];
+
+            // Validate stock status sync
+            Object.entries(stockUpdates).forEach(([tcin, backendStock]) => {
+                const uiStatus = getStockStatusFromUI(tcin);
+                const expectedStatus = backendStock.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK';
+
+                if (uiStatus !== expectedStatus) {
+                    const error = `❌ SYNC ERROR: ${tcin} Backend=${expectedStatus} UI=${uiStatus}`;
+                    console.error(error);
+                    syncErrors.push(error);
+                }
+            });
+
+            // Validate purchase status sync
+            const resetTcins = purchaseChanges.resets || [];
+            resetTcins.forEach(tcin => {
+                const purchaseBadge = document.querySelector(`#purchase-status-${tcin}`);
+                if (purchaseBadge && !purchaseBadge.textContent.includes('READY')) {
+                    const error = `❌ SYNC ERROR: ${tcin} should be READY after reset, but shows ${purchaseBadge.textContent}`;
+                    console.error(error);
+                    syncErrors.push(error);
+                }
+            });
+
+            if (syncErrors.length === 0) {
+                console.log(`✅ SYNC PERFECT: All UI states match backend for cycle ${cycleId}`);
+            } else {
+                console.error(`🚨 SYNC ISSUES DETECTED (${syncErrors.length}):`, syncErrors);
+                // Could trigger alert or notification here for immediate debugging
+            }
+
+            return syncErrors;
+        }
+
+        function handleTimerSync(data) {
+            if (data.remaining !== undefined && (isRefreshing || Math.abs(countdown - data.remaining) > 3)) {
+                // Only sync if we're refreshing or if there's a significant difference
+                countdown = Math.ceil(data.remaining);
+                isRefreshing = false;
+                if (countdownElement) {
+                    countdownElement.textContent = countdown;
+                    countdownElement.classList.remove('refreshing');
+                }
+                console.log(`🔁 Timer synced via SSE: ${countdown}s`);
+            }
+        }
+
+        function handleRefreshCycle(data) {
+            console.log('🔄 Refresh cycle completed - data updated via SSE');
+            // Reset timer for next cycle
+            countdown = REFRESH_INTERVAL;
+            isRefreshing = false;
+            if (countdownElement) {
+                countdownElement.classList.remove('refreshing');
+            }
+        }
+
+        function handlePurchaseStatusUpdate(data) {
+            const tcin = data.tcin;
+            const status = data.status;
+            const state = data.state;
+
+            console.log(`🔄 Real-time purchase update: ${tcin} -> ${status}`);
+
+            // Don't override recent countdown completions with "attempting" status
+            if (status === 'attempting' && window.recentCompletions && window.recentCompletions.has(tcin)) {
+                const completedAt = window.recentCompletions.get(tcin);
+                const timeSince = Date.now() - completedAt;
+                console.log(`🔄 Ignoring "attempting" update for ${tcin} - recently completed ${timeSince}ms ago`);
+                return;
+            }
+
+            if (status === 'attempting') {
+                startRealTimeCountdown(tcin, state);
+            } else {
+                // Clear any existing countdown
+                if (activeCountdowns[tcin]) {
+                    clearInterval(activeCountdowns[tcin]);
+                    delete activeCountdowns[tcin];
+                }
+
+                updatePurchaseStatus(tcin, status, state);
+            }
+        }
+
+        function startRealTimeCountdown(tcin, state) {
+            const completesAt = state.completes_at;
+            if (!completesAt) return;
+
+            // Clear existing countdown and start fresh
             if (activeCountdowns[tcin]) {
                 clearInterval(activeCountdowns[tcin]);
             }
 
-            let remaining = Math.ceil(duration);
+            function updateCountdown() {
+                const now = Date.now() / 1000;
+                const remaining = Math.max(0, Math.ceil(completesAt - now));
 
-            // Update the purchase status badge with countdown
-            updatePurchaseStatusWithCountdown(tcin, 'attempting', remaining);
-
-            // Start countdown timer
-            activeCountdowns[tcin] = setInterval(() => {
-                remaining--;
-                updatePurchaseStatusWithCountdown(tcin, 'attempting', remaining);
-
-                if (remaining <= 0) {
+                if (remaining > 0) {
+                    updatePurchaseStatusWithCountdown(tcin, 'attempting', remaining);
+                } else {
+                    // Countdown finished - fetch current server state to get real final outcome
                     clearInterval(activeCountdowns[tcin]);
                     delete activeCountdowns[tcin];
 
-                    console.log(`⏰ Countdown finished: ${tcin}`);
-                    completeFoolproofPurchase(tcin, purchaseData);
+                    console.log(`🔄 Countdown completed for ${tcin} - fetching current server state for final outcome`);
+
+                    // SURGICAL FIX: Always fetch fresh server state when countdown completes
+                    fetch('/api/purchase-states')
+                        .then(response => response.json())
+                        .then(currentStates => {
+                            const currentState = currentStates[tcin];
+                            let finalStatus;
+
+                            if (currentState && (currentState.status === 'purchased' || currentState.status === 'failed')) {
+                                // Server has definitive final state
+                                finalStatus = currentState.status;
+                                console.log(`🔄 Server has final state for ${tcin}: ${finalStatus}`);
+                                updatePurchaseStatus(tcin, finalStatus, currentState);
+                            } else if (state.final_outcome && state.final_outcome !== 'attempting') {
+                                // Use final_outcome from original state as backup
+                                finalStatus = state.final_outcome;
+                                console.log(`🔄 Using final_outcome from state for ${tcin}: ${finalStatus}`);
+                                updatePurchaseStatus(tcin, finalStatus, state);
+                            } else {
+                                // Last resort: assume failed if no clear outcome
+                                finalStatus = 'failed';
+                                console.log(`🔄 No clear outcome for ${tcin}, defaulting to failed`);
+                                updatePurchaseStatus(tcin, finalStatus, { status: 'failed', failure_reason: 'Timeout' });
+                            }
+
+                            // Store completion to prevent immediate SSE override
+                            if (!window.recentCompletions) window.recentCompletions = new Map();
+                            window.recentCompletions.set(tcin, Date.now());
+                            // Clear after 5 seconds to allow legitimate updates
+                            setTimeout(() => {
+                                if (window.recentCompletions) {
+                                    window.recentCompletions.delete(tcin);
+                                }
+                            }, 5000);
+                        })
+                        .catch(error => {
+                            console.error(`🔄 Failed to fetch final state for ${tcin}:`, error);
+                            // Fallback to failed on fetch error
+                            const finalStatus = state.final_outcome || 'failed';
+                            console.log(`🔄 Fetch failed for ${tcin}, using fallback: ${finalStatus}`);
+                            updatePurchaseStatus(tcin, finalStatus, state);
+                        });
                 }
-            }, 1000);
+            }
+
+            // Initial update
+            updateCountdown();
+
+            // Start countdown
+            activeCountdowns[tcin] = setInterval(updateCountdown, 1000);
         }
 
-        function completeFoolproofPurchase(tcin, purchaseData) {
-            console.log(`🏁 Completing purchase: ${tcin}`);
+        function handleStockUpdate(data) {
+            console.log(`📊 Real-time stock update: ${data.in_stock_count}/${data.total_count} in stock`);
 
-            // Call API to complete purchase
-            fetch(`/api/complete_purchase/${tcin}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        console.error('❌ Complete failed:', data.error);
-                        return;
-                    }
+            // Update header statistics
+            const inStockElement = document.querySelector('.status-card.warning .status-card-value');
+            if (inStockElement) {
+                inStockElement.textContent = data.in_stock_count;
+            }
 
-                    console.log(`✅ Purchase completed: ${data.status}`);
+            // Update stock status badges and remove "waiting" states
+            Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
+                updateStockStatus(tcin, stockInfo);
+            });
 
-                    // Update UI with final result
-                    updatePurchaseStatus(tcin, data.status);
-
-                    // Show success/failure details
-                    if (data.status === 'purchased') {
-                        showPurchaseResult(tcin, `SUCCESS! Order: ${data.order_number}, Price: $${data.price}`, 'success');
-                    } else {
-                        showPurchaseResult(tcin, `FAILED: ${data.failure_reason}`, 'error');
-                    }
-
-                    // Auto-cycle: Reset to ready after 7 seconds, then start new purchase
-                    setTimeout(() => {
-                        updatePurchaseStatus(tcin, 'ready');
-
-                        // Auto-start new purchase after 2 more seconds (simulating "if in stock")
-                        setTimeout(() => {
-                            console.log(`🔄 Auto-cycling: Starting new purchase for ${tcin}`);
-                            startFoolproofPurchase(tcin, purchaseData.product_name);
-                        }, 2000);
-                    }, 7000);
-                })
-                .catch(error => {
-                    console.error('❌ Complete API error:', error);
-                });
+            // Update last update time in header
+            const lastUpdateElement = document.querySelector('.header-stat-value');
+            if (lastUpdateElement && lastUpdateElement.closest('.header-stat').querySelector('.header-stat-label').textContent === 'Last Update') {
+                const now = new Date();
+                lastUpdateElement.textContent = now.toLocaleTimeString();
+            }
         }
 
-        function updatePurchaseStatus(tcin, status) {
+        function handleActivityLogUpdate(entry) {
+            console.log(`📋 New activity: ${entry.message}`);
+
+            // Add to activity log display
+            addActivityEntryToDOM(entry);
+        }
+
+        function handleLogsClearedUpdate(data) {
+            console.log(`🗑️ Logs cleared: ${data.message}`);
+
+            // Clear the logs from the UI for other connected clients
+            const logContainer = document.querySelector('.log-container');
+            if (logContainer) {
+                logContainer.innerHTML = '<div class="log-entry info"><span style="opacity: 0.7;">[' +
+                    new Date().toLocaleTimeString() + ']</span> 📋 Activity logs cleared by user</div>';
+            }
+        }
+
+        function updatePurchaseStatus(tcin, status, state = {}) {
             const badge = document.getElementById(`purchase-status-${tcin}`);
             if (badge) {
                 badge.className = `badge ${status}`;
-                badge.textContent = status.toUpperCase();
+
+                let text = '';
+                switch (status) {
+                    case 'ready':
+                        text = '✅ READY';
+                        break;
+                    case 'attempting':
+                        text = '⏳ ATTEMPTING';
+                        break;
+                    case 'purchased':
+                        text = '🎉 PURCHASED';
+                        if (state.order_number) {
+                            badge.title = `Order: ${state.order_number}`;
+                        }
+                        break;
+                    case 'failed':
+                        text = '❌ FAILED';
+                        if (state.failure_reason) {
+                            badge.title = `Failed: ${state.failure_reason}`;
+                        }
+                        break;
+                    default:
+                        text = status.toUpperCase();
+                }
+                badge.textContent = text;
             }
         }
 
@@ -1768,54 +3464,519 @@
             const badge = document.getElementById(`purchase-status-${tcin}`);
             if (badge) {
                 badge.className = `badge ${status}`;
-                badge.textContent = `${status.toUpperCase()} (${remaining}s)`;
+                badge.textContent = `⏳ ATTEMPTING (${remaining}s)`;
             }
         }
 
-        function showPurchaseResult(tcin, message, level) {
-            // You can enhance this to show results in your UI
-            console.log(`[${level.toUpperCase()}] ${tcin}: ${message}`);
+        // Track failed update attempts for retry logic
+        const stockUpdateRetries = new Map();
+        const MAX_STOCK_UPDATE_RETRIES = 3;
+        const STOCK_UPDATE_RETRY_DELAY = 500; // Start with 500ms
+
+        function updateStockStatus(tcin, stockInfo) {
+            const updateId = `${tcin}-${Date.now()}`;
+            console.log(`🔄 STOCK UPDATE START: ${updateId} - ${tcin} -> ${stockInfo.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK'}`);
+
+            try {
+                return updateStockStatusWithRetry(tcin, stockInfo, 0, updateId);
+            } catch (error) {
+                console.error(`❌ CRITICAL STOCK UPDATE ERROR: ${updateId}`, error);
+                // Log to activity for visibility
+                addActivityEntryToDOM({
+                    level: 'error',
+                    message: `Critical stock update error for ${tcin}: ${error.message}`,
+                    time_str: new Date().toLocaleTimeString()
+                });
+                return false;
+            }
         }
 
-        // Auto-start purchases for products that are "attempting" on page load
-        window.addEventListener('load', () => {
-            console.log('🔄 FOOLPROOF: Checking for existing purchases...');
+        function updateStockStatusWithRetry(tcin, stockInfo, attempt, updateId) {
+            try {
+                console.log(`📊 STOCK UPDATE ATTEMPT ${attempt + 1}/${MAX_STOCK_UPDATE_RETRIES}: ${updateId}`);
 
-            {% for product in products %}
-            {% if product.purchase_state and product.purchase_state.status == 'attempting' %}
-            // Resume countdown for existing purchase
-            const tcin_{{ loop.index }} = '{{ product.tcin }}';
-            const startedAt_{{ loop.index }} = {{ product.purchase_state.get('started_at', 0) }};
-            const completesAt_{{ loop.index }} = {{ product.purchase_state.get('completes_at', 0) }};
-            const willSucceed_{{ loop.index }} = {{ product.purchase_state.get('will_succeed', false)|tojson }};
-            const purchaseData_{{ loop.index }} = {{ product.purchase_state|tojson }};
+                // Pre-validation: Check if elements exist (target stock status column specifically)
+                const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+                if (!stockBadge) {
+                    console.error(`❌ STOCK UPDATE FAILED: ${updateId} - Stock badge not found for ${tcin}`);
+                    throw new Error(`Stock badge not found for TCIN ${tcin}`);
+                }
 
-            const now_{{ loop.index }} = Date.now() / 1000;
-            const remaining_{{ loop.index }} = completesAt_{{ loop.index }} - now_{{ loop.index }};
+                const productRow = stockBadge.closest('tr');
+                if (!productRow) {
+                    console.error(`❌ STOCK UPDATE FAILED: ${updateId} - Product row not found for ${tcin}`);
+                    throw new Error(`Product row not found for TCIN ${tcin}`);
+                }
 
-            if (remaining_{{ loop.index }} > 0) {
-                console.log(`🔄 Resuming countdown: ${tcin_{{ loop.index }}} -> ${remaining_{{ loop.index }}}s remaining`);
-                startPurchaseCountdown(tcin_{{ loop.index }}, remaining_{{ loop.index }}, willSucceed_{{ loop.index }}, purchaseData_{{ loop.index }});
+                // Record old state for comparison
+                const oldStatus = getStockStatusFromUI(tcin);
+                const oldText = stockBadge.textContent;
+                const oldClassName = stockBadge.className;
+
+                console.log(`📋 STOCK UPDATE STATE: ${updateId} - Old: ${oldStatus} (${oldText})`);
+
+                // Remove loading animation and waiting state
+                stockBadge.classList.remove('unknown');
+                const loadingSpinner = stockBadge.querySelector('.loading');
+                if (loadingSpinner) {
+                    loadingSpinner.remove();
+                }
+
+                // Apply new stock status
+                const expectedStatus = stockInfo.in_stock ? 'IN_STOCK' : 'OUT_OF_STOCK';
+                if (stockInfo.in_stock) {
+                    stockBadge.className = 'badge in-stock';
+                    stockBadge.textContent = 'IN STOCK';
+                } else {
+                    stockBadge.className = 'badge out-of-stock';
+                    stockBadge.textContent = 'OUT OF STOCK';
+                }
+
+                // Immediate validation after update
+                const newStatus = getStockStatusFromUI(tcin);
+                const newText = stockBadge.textContent;
+                const newClassName = stockBadge.className;
+
+                console.log(`📋 STOCK UPDATE RESULT: ${updateId} - New: ${newStatus} (${newText})`);
+
+                // Validation: Check if update was successful
+                if (newStatus !== expectedStatus) {
+                    const errorMsg = `Stock status validation failed: Expected ${expectedStatus}, got ${newStatus}`;
+                    console.error(`❌ STOCK UPDATE VALIDATION FAILED: ${updateId} - ${errorMsg}`);
+                    throw new Error(errorMsg);
+                }
+
+                // Update product name if available (with error handling)
+                try {
+                    const productNameCell = document.querySelector(`tr[data-tcin="${tcin}"] .product-name`);
+                    if (productNameCell && stockInfo.title) {
+                        const oldName = productNameCell.textContent;
+                        productNameCell.textContent = stockInfo.title;
+                        console.log(`📝 PRODUCT NAME UPDATED: ${updateId} - "${oldName}" -> "${stockInfo.title}"`);
+                    }
+                } catch (nameError) {
+                    console.warn(`⚠️ PRODUCT NAME UPDATE FAILED: ${updateId}`, nameError);
+                    // Don't fail the entire update for name issues
+                }
+
+                // Also update product config section name if it exists (with error handling)
+                try {
+                    const configNameCell = document.querySelector(`div[data-tcin="${tcin}"] .product-config-name`);
+                    if (configNameCell && stockInfo.title) {
+                        const oldConfigName = configNameCell.textContent;
+                        configNameCell.textContent = stockInfo.title;
+                        console.log(`📝 CONFIG NAME UPDATED: ${updateId} - "${oldConfigName}" -> "${stockInfo.title}"`);
+                    }
+                } catch (configNameError) {
+                    console.warn(`⚠️ CONFIG NAME UPDATE FAILED: ${updateId}`, configNameError);
+                    // Don't fail the entire update for config name issues
+                }
+
+                // Also update catalog section name if it exists (with error handling)
+                try {
+                    const catalogNameCell = document.querySelector(`div[data-catalog-tcin="${tcin}"] .catalog-product-name`);
+                    if (catalogNameCell && stockInfo.title && catalogNameCell.textContent.startsWith('Product ')) {
+                        const oldCatalogName = catalogNameCell.textContent;
+                        catalogNameCell.textContent = stockInfo.title;
+                        console.log(`📝 CATALOG NAME UPDATED: ${updateId} - "${oldCatalogName}" -> "${stockInfo.title}"`);
+                    }
+                } catch (catalogNameError) {
+                    console.warn(`⚠️ CATALOG NAME UPDATE FAILED: ${updateId}`, catalogNameError);
+                    // Don't fail the entire update for catalog name issues
+                }
+
+                // Handle preorder status (with error handling)
+                try {
+                    const preorderBadge = document.querySelector(`tr[data-tcin="${tcin}"] .preorder-badge`);
+                    if (preorderBadge && stockInfo.is_preorder) {
+                        preorderBadge.style.display = 'inline-flex';
+                        if (stockInfo.street_date) {
+                            preorderBadge.title = `Pre-order - Releases ${stockInfo.street_date}`;
+                        }
+                        console.log(`🎯 PREORDER STATUS UPDATED: ${updateId} - ${stockInfo.street_date || 'No date'}`);
+                    } else if (preorderBadge && !stockInfo.is_preorder) {
+                        preorderBadge.style.display = 'none';
+                        console.log(`🎯 PREORDER STATUS CLEARED: ${updateId}`);
+                    }
+                } catch (preorderError) {
+                    console.warn(`⚠️ PREORDER UPDATE FAILED: ${updateId}`, preorderError);
+                    // Don't fail the entire update for preorder issues
+                }
+
+                // Final validation
+                const finalStatus = getStockStatusFromUI(tcin);
+                if (finalStatus === expectedStatus) {
+                    console.log(`✅ STOCK UPDATE SUCCESS: ${updateId} - ${tcin} ${oldStatus} -> ${finalStatus}`);
+
+                    // Clear any retry tracking
+                    stockUpdateRetries.delete(tcin);
+
+                    // Log significant changes
+                    if (oldStatus !== finalStatus) {
+                        console.log(`🔄 STOCK CHANGE CONFIRMED: ${updateId} - ${tcin} changed from ${oldStatus} to ${finalStatus}`);
+                        addActivityEntryToDOM({
+                            level: 'info',
+                            message: `Stock status changed: ${tcin} ${oldStatus} -> ${finalStatus}`,
+                            time_str: new Date().toLocaleTimeString()
+                        });
+                    }
+
+                    return true;
+                } else {
+                    throw new Error(`Final validation failed: Expected ${expectedStatus}, got ${finalStatus}`);
+                }
+
+            } catch (error) {
+                console.error(`❌ STOCK UPDATE ATTEMPT ${attempt + 1} FAILED: ${updateId}`, error);
+
+                // Retry logic with exponential backoff
+                if (attempt < MAX_STOCK_UPDATE_RETRIES - 1) {
+                    const retryDelay = STOCK_UPDATE_RETRY_DELAY * Math.pow(2, attempt);
+                    console.log(`🔄 STOCK UPDATE RETRY: ${updateId} - Retrying in ${retryDelay}ms (attempt ${attempt + 2}/${MAX_STOCK_UPDATE_RETRIES})`);
+
+                    // Track retry attempts
+                    if (!stockUpdateRetries.has(tcin)) {
+                        stockUpdateRetries.set(tcin, 0);
+                    }
+                    stockUpdateRetries.set(tcin, stockUpdateRetries.get(tcin) + 1);
+
+                    setTimeout(() => {
+                        updateStockStatusWithRetry(tcin, stockInfo, attempt + 1, updateId);
+                    }, retryDelay);
+
+                    return false; // Indicate retry in progress
+                } else {
+                    console.error(`❌ STOCK UPDATE FAILED PERMANENTLY: ${updateId} - All ${MAX_STOCK_UPDATE_RETRIES} attempts failed`);
+
+                    // Log critical failure for visibility
+                    addActivityEntryToDOM({
+                        level: 'error',
+                        message: `Stock update failed permanently for ${tcin}: ${error.message}`,
+                        time_str: new Date().toLocaleTimeString()
+                    });
+
+                    // Mark element as failed for manual attention
+                    try {
+                        const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+                        if (stockBadge) {
+                            stockBadge.className = 'badge unknown';
+                            stockBadge.textContent = '❌ UPDATE FAILED';
+                            stockBadge.title = `Update failed: ${error.message}`;
+                        }
+                    } catch (fallbackError) {
+                        console.error(`❌ FALLBACK MARKING FAILED: ${updateId}`, fallbackError);
+                    }
+
+                    return false;
+                }
+            }
+        }
+
+        function addActivityEntryToDOM(entry) {
+            const logContainer = document.querySelector('.log-container');
+            if (!logContainer) return;
+
+            const entryDiv = document.createElement('div');
+            entryDiv.className = `log-entry ${entry.level}`;
+            entryDiv.innerHTML = `
+                <span style="opacity: 0.7;">[${entry.time_str}]</span>
+                📋 ${entry.message}
+            `;
+
+            // Insert at the beginning
+            const firstEntry = logContainer.querySelector('.log-entry');
+            if (firstEntry) {
+                logContainer.insertBefore(entryDiv, firstEntry);
             } else {
-                console.log(`⚡ Purchase should be completed: ${tcin_{{ loop.index }}}`);
-                completeFoolproofPurchase(tcin_{{ loop.index }}, purchaseData_{{ loop.index }});
+                logContainer.appendChild(entryDiv);
             }
-            {% endif %}
-            {% endfor %}
 
-            // Auto-start purchases for ready products (simulating "if in stock")
-            setTimeout(() => {
-                {% for product in products %}
-                {% if not product.purchase_state or product.purchase_state.status == 'ready' %}
-                console.log(`🔄 Auto-starting purchase for ready product: {{ product.tcin }}`);
-                startFoolproofPurchase('{{ product.tcin }}', '{{ product.name }}');
-                {% endif %}
-                {% endfor %}
-            }, 1000); // Start after 1 second
+            // Keep only last 50 entries visible
+            const entries = logContainer.querySelectorAll('.log-entry');
+            if (entries.length > 50) {
+                for (let i = 50; i < entries.length; i++) {
+                    entries[i].remove();
+                }
+            }
+        }
+
+        function updateConnectionStatus(connected) {
+            // Add visual indicator for connection status
+            const indicator = document.getElementById('connection-status');
+            if (indicator) {
+                indicator.style.color = connected ? 'var(--success-color)' : 'var(--danger-color)';
+                indicator.textContent = connected ? '🟢 LIVE' : '🔴 OFFLINE';
+            }
+        }
+
+        // Initialize real-time updates when page loads
+        window.addEventListener('load', () => {
+            console.log('🚀 BULLETPROOF: Starting real-time dashboard...');
+            initializeRealTimeUpdates();
+            initializeTimer();
+
+            // Initialize countdowns for any existing "attempting" purchases
+            initializeExistingCountdowns();
+
+            // Start health check monitoring for sync validation
+            startHealthCheckMonitoring();
+
+            // COHESIVE SYSTEM: Initialize catalog with proper button states
+            initializeCohesiveCatalogSystem();
+
+            // Timer sync handled by initializeTimer() - no duplicate sync needed
         });
 
-        // Make foolproof purchase function globally available
-        window.startFoolproofPurchase = startFoolproofPurchase;
+        function initializeExistingCountdowns() {
+            console.log('🔄 Initializing countdowns for existing attempts...');
+
+            // Find all products with "attempting" status and sync with server state
+            const attemptingBadges = document.querySelectorAll('.badge.attempting[id^="purchase-status-"]');
+            console.log(`🔄 Found ${attemptingBadges.length} attempting badges to initialize`);
+
+            if (attemptingBadges.length === 0) {
+                console.log('🔄 No attempting purchases found, initialization complete');
+                return;
+            }
+
+            // Get current state from the backend for all TCINs
+            fetch('/api/status')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('🔄 Got server state for initialization:', data.purchase_states);
+
+                    attemptingBadges.forEach(badge => {
+                        const tcin = badge.id.replace('purchase-status-', '');
+                        const purchaseState = data.purchase_states[tcin];
+
+                        console.log(`🔄 Initializing ${tcin}: server state =`, purchaseState);
+
+                        if (purchaseState) {
+                            const now = Date.now() / 1000;
+
+                            if (purchaseState.status === 'attempting' && purchaseState.completes_at) {
+                                const remaining = Math.max(0, Math.ceil(purchaseState.completes_at - now));
+
+                                if (remaining > 0) {
+                                    // Still attempting with time left - start countdown
+                                    console.log(`🔄 Starting countdown for ${tcin}: ${remaining}s remaining`);
+                                    startRealTimeCountdown(tcin, purchaseState);
+                                } else {
+                                    // Time expired but server hasn't updated yet - show final outcome
+                                    console.log(`🔄 Time expired for ${tcin}, showing final outcome: ${purchaseState.final_outcome}`);
+                                    const finalStatus = purchaseState.final_outcome || 'failed';
+                                    updatePurchaseStatus(tcin, finalStatus, purchaseState);
+                                }
+                            } else {
+                                // Already completed - update badge immediately
+                                console.log(`🔄 Already completed ${tcin}: ${purchaseState.status}`);
+                                updatePurchaseStatus(tcin, purchaseState.status, purchaseState);
+                            }
+                        } else {
+                            // No server state found - reset to ready
+                            console.log(`🔄 No server state for ${tcin}, resetting to ready`);
+                            updatePurchaseStatus(tcin, 'ready', {});
+                        }
+
+                        // SURGICAL FIX: Force immediate update to ensure display sync
+                        setTimeout(() => {
+                            const badge = document.getElementById(`purchase-status-${tcin}`);
+                            if (badge && badge.textContent.includes('ATTEMPTING') && !badge.textContent.includes('(')) {
+                                console.log(`🔄 SURGICAL FIX: Re-syncing ${tcin} display`);
+                                // Re-check state and fix display
+                                if (purchaseState && purchaseState.status === 'attempting' && purchaseState.completes_at) {
+                                    const nowFix = Date.now() / 1000;
+                                    const remainingFix = Math.max(0, Math.ceil(purchaseState.completes_at - nowFix));
+                                    if (remainingFix > 0) {
+                                        startRealTimeCountdown(tcin, purchaseState);
+                                    } else {
+                                        const finalStatus = purchaseState.final_outcome || 'failed';
+                                        updatePurchaseStatus(tcin, finalStatus, purchaseState);
+                                    }
+                                }
+                            }
+                        }, 100);
+                    });
+                })
+                .catch(error => {
+                    console.error('🔄 Failed to initialize countdowns:', error);
+                    // Fallback: reset all attempting badges to ready
+                    attemptingBadges.forEach(badge => {
+                        const tcin = badge.id.replace('purchase-status-', '');
+                        console.log(`🔄 Fallback: resetting ${tcin} to ready`);
+                        updatePurchaseStatus(tcin, 'ready', {});
+                    });
+                });
+        }
+
+        function initializeCohesiveCatalogSystem() {
+            console.log('🔗 COHESIVE: Initializing unified catalog system...');
+
+            // Get all active product TCINs from the main table
+            const activeProducts = [];
+            const mainTableRows = document.querySelectorAll('table tbody tr[data-tcin]');
+            mainTableRows.forEach(row => {
+                const tcin = row.getAttribute('data-tcin');
+                const nameCell = row.querySelector('td:nth-child(2)');
+                const name = nameCell ? nameCell.textContent.trim() : `Product ${tcin}`;
+                activeProducts.push({ tcin, name });
+            });
+
+            console.log(`🔗 COHESIVE: Found ${activeProducts.length} active products to sync with catalog`);
+
+            // Get all existing catalog TCINs
+            const existingCatalogTcins = [];
+            const catalogItems = document.querySelectorAll('div[data-catalog-tcin]');
+            catalogItems.forEach(item => {
+                existingCatalogTcins.push(item.getAttribute('data-catalog-tcin'));
+            });
+
+            // Add missing active products to catalog
+            activeProducts.forEach(product => {
+                if (!existingCatalogTcins.includes(product.tcin)) {
+                    console.log(`🔗 COHESIVE: Adding missing active product ${product.tcin} to catalog`);
+                    const catalogProduct = {
+                        tcin: product.tcin,
+                        name: product.name,
+                        date_added: new Date().toISOString(),
+                        url: `https://www.target.com/p/-/A-${product.tcin}`
+                    };
+                    addProductToCatalogSection(catalogProduct);
+                }
+            });
+
+            // Set proper button states for all catalog items
+            setTimeout(() => {
+                const allCatalogItems = document.querySelectorAll('div[data-catalog-tcin]');
+                allCatalogItems.forEach(item => {
+                    const tcin = item.getAttribute('data-catalog-tcin');
+                    const isActive = activeProducts.some(p => p.tcin === tcin);
+                    updateCatalogButtonState(tcin, isActive);
+                    console.log(`🔗 COHESIVE: Set button state for ${tcin}: ${isActive ? 'Already Active' : 'Add to Monitor'}`);
+                });
+
+                // Update tab counters
+                updateTabCounters();
+                console.log('🔗 COHESIVE: Catalog system initialization complete');
+            }, 200);
+        }
+
+        // Clear activity logs function
+        async function clearActivityLogs() {
+            if (!confirm('Are you sure you want to clear all activity logs? This action cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const button = document.getElementById('clear-logs-btn');
+                const originalText = button.innerHTML;
+
+                // Show loading state
+                button.innerHTML = '⏳ Clearing...';
+                button.disabled = true;
+
+                const response = await fetch('/clear-logs', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    }
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Clear the logs from the UI immediately
+                    const logContainer = document.querySelector('.log-container');
+                    if (logContainer) {
+                        logContainer.innerHTML = '<div class="log-entry info"><span style="opacity: 0.7;">[' +
+                            new Date().toLocaleTimeString() + ']</span> 📋 Activity logs cleared by user</div>';
+                    }
+
+                    // Show success message briefly
+                    button.innerHTML = '✅ Cleared!';
+                    setTimeout(() => {
+                        button.innerHTML = originalText;
+                        button.disabled = false;
+                    }, 2000);
+                } else {
+                    throw new Error(result.error || 'Failed to clear logs');
+                }
+            } catch (error) {
+                console.error('Error clearing logs:', error);
+                alert('Failed to clear logs: ' + error.message);
+
+                // Reset button
+                const button = document.getElementById('clear-logs-btn');
+                button.innerHTML = '🗑️ Clear Logs';
+                button.disabled = false;
+            }
+        }
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (eventSource) {
+                eventSource.close();
+            }
+            // Clear all countdown intervals
+            Object.values(activeCountdowns).forEach(clearInterval);
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+        });
+
+        // Initialize when page loads
+        window.addEventListener('load', () => {
+            console.log('🚀 BULLETPROOF: Starting real-time dashboard...');
+            initializeRealTimeUpdates();
+            initializeTimer();
+
+            // Initialize countdowns for any existing "attempting" purchases
+            const attemptingRows = document.querySelectorAll('tr[data-purchase-status="attempting"]');
+            attemptingRows.forEach(row => {
+                const tcin = row.dataset.tcin;
+                const completesAt = row.dataset.completesAt;
+                if (completesAt) {
+                    const completesAtTime = parseFloat(completesAt);
+                    const currentTime = Date.now() / 1000; // Current time in seconds
+                    const remainingTime = completesAtTime - currentTime;
+
+                    console.log(`🔄 COUNTDOWN INIT: ${tcin} completes at ${completesAtTime}, current time ${currentTime}, remaining: ${remainingTime.toFixed(1)}s`);
+
+                    if (remainingTime > 0) {
+                        // Purchase is still valid, start countdown
+                        startRealTimeCountdown(tcin, { completes_at: completesAtTime });
+                        console.log(`✅ COUNTDOWN STARTED: ${tcin} with ${remainingTime.toFixed(1)}s remaining`);
+                    } else {
+                        // Purchase timer has expired - fetch final outcome and complete immediately
+                        console.log(`⏰ EXPIRED PURCHASE: ${tcin} expired ${Math.abs(remainingTime).toFixed(1)}s ago - fetching final outcome`);
+
+                        // Fetch current purchase state to get final outcome
+                        fetch('/api/purchase-states')
+                            .then(response => response.json())
+                            .then(states => {
+                                const purchaseState = states[tcin];
+                                if (purchaseState && purchaseState.final_outcome) {
+                                    console.log(`🎯 COMPLETING EXPIRED: ${tcin} -> ${purchaseState.final_outcome}`);
+                                    updatePurchaseStatus(tcin, purchaseState.final_outcome, purchaseState);
+                                } else {
+                                    console.log(`❌ NO FINAL OUTCOME: ${tcin} - defaulting to failed`);
+                                    updatePurchaseStatus(tcin, 'failed', { status: 'failed' });
+                                }
+                            })
+                            .catch(error => {
+                                console.error(`Error fetching purchase state for ${tcin}:`, error);
+                                updatePurchaseStatus(tcin, 'failed', { status: 'failed' });
+                            });
+                    }
+                }
+            });
+
+            // Add synthetic loading for demonstration
+            setTimeout(() => {
+                updateConnectionStatus(true);
+            }, 1000);
+        });
 
     </script>
 </body>

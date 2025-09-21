@@ -1,44 +1,50 @@
 {
   "89542109": {
-    "status": "attempting",
-    "started_at": 1758118144.5349438,
-    "completes_at": 1758118147.843317,
-    "window_id": 29301969,
-    "product_name": "Pok\u00e9mon Trading Card Game: Quaquaval ex Deluxe Battle Deck",
-    "attempt_count": 1,
-    "final_outcome": "purchased",
-    "order_number": "ORD-949883-90",
-    "price": 37.54,
-    "failure_reason": null,
-    "config_snapshot": {
-      "duration_min": 2.0,
-      "duration_max": 4.0,
-      "success_rate": 0.7,
-      "window_minutes": 1
-    }
+    "status": "ready"
   },
   "94681776": {
-    "status": "attempting",
-    "started_at": 1758118400.4021144,
-    "completes_at": 1758118404.1070697,
-    "duration": 3.704955326050584,
-    "product_name": "Pok\u00e9mon Trading Card Game: Mega Evolution Elite Trainer Box- Lucario",
-    "will_succeed": false,
-    "order_number": null,
-    "price": null,
-    "failure_reason": "out_of_stock",
-    "created_at": "2025-09-17T09:13:20.402114"
+    "status": "ready"
   },
   "93954435": {
-    "status": "attempting",
-    "started_at": 1758118400.4081697,
-    "completes_at": 1758118403.0322502,
-    "duration": 2.624080313544897,
-    "product_name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Prismatic Evolutions Elite Trainer Box",
-    "will_succeed": false,
-    "order_number": null,
-    "price": null,
-    "failure_reason": "out_of_stock",
-    "created_at": "2025-09-17T09:13:20.408169"
+    "status": "ready"
+  },
+  "12345678": {
+    "status": "ready"
+  },
+  "12345670": {
+    "status": "ready"
+  },
+  "12345671": {
+    "status": "ready"
+  },
+  "12345672": {
+    "status": "ready"
+  },
+  "94091387": {
+    "status": "ready"
+  },
+  "94091389": {
+    "status": "ready"
+  },
+  "94681777": {
+    "status": "ready"
+  },
+  "94681773": {
+    "status": "ready"
+  },
+  "94724987": {
+    "status": "ready"
+  },
+  "94681784": {
+    "status": "ready"
+  },
+  "94681786": {
+    "status": "ready"
+  },
+  "94681763": {
+    "status": "ready"
+  },
+  "94721096": {
+    "status": "ready"
   }
 }

@@ -44,7 +44,9 @@
       "Bash(del:*)",
       "Bash(start http://localhost:5001)",
       "Bash(start http://localhost:5002)",
-      "Bash(start http://localhost:5003)"
+      "Bash(start http://localhost:5003)",
+      "Bash(rm:*)",
+      "Bash(open http://127.0.0.1:5001)"
     ],
     "deny": [],
     "ask": []
