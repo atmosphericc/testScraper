@@ -9,10 +9,20 @@ import time
 import random
 import os
 import threading
-import fcntl
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Callable
+
+# Cross-platform file locking
+import platform
+if platform.system() == 'Windows':
+    import msvcrt
+    HAS_MSVCRT = True
+    HAS_FCNTL = False
+else:
+    import fcntl
+    HAS_MSVCRT = False
+    HAS_FCNTL = True
 
 class BulletproofPurchaseManager:
     def __init__(self, status_callback: Optional[Callable] = None):
@@ -108,21 +118,44 @@ class BulletproofPurchaseManager:
 
     def _acquire_file_lock(self):
         """Acquire exclusive file lock to prevent corruption"""
-        try:
-            lock_fd = os.open(self.lock_file, os.O_CREAT | os.O_TRUNC | os.O_RDWR)
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return lock_fd
-        except (OSError, IOError):
-            return None
+        if HAS_MSVCRT:
+            # Windows file locking using msvcrt
+            try:
+                lock_fd = os.open(self.lock_file, os.O_CREAT | os.O_TRUNC | os.O_RDWR)
+                msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                return lock_fd
+            except (OSError, IOError):
+                return None
+        elif HAS_FCNTL:
+            # Unix/Linux file locking using fcntl
+            try:
+                lock_fd = os.open(self.lock_file, os.O_CREAT | os.O_TRUNC | os.O_RDWR)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return lock_fd
+            except (OSError, IOError):
+                return None
+        else:
+            # Fallback - should not reach here
+            return True
 
     def _release_file_lock(self, lock_fd):
         """Release file lock"""
-        try:
-            if lock_fd:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
-        except:
-            pass
+        if HAS_MSVCRT:
+            # Windows file unlocking using msvcrt
+            try:
+                if lock_fd:
+                    msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+                    os.close(lock_fd)
+            except:
+                pass
+        elif HAS_FCNTL:
+            # Unix/Linux file unlocking using fcntl
+            try:
+                if lock_fd:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
+            except:
+                pass
 
     def _load_states_unsafe(self) -> Dict:
         """Load states without external locking (assumes caller has lock)"""
