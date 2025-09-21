@@ -166,8 +166,13 @@ class ThreadSafeData:
         # Add back any WAITING_FOR_REFRESH entries that weren't in the fresh data
         for tcin, data in self.stock_data.items():
             if tcin not in fresh_stock_data and data.get('status_detail') == 'WAITING_FOR_REFRESH':
-                print(f"[CACHE] Preserving WAITING_FOR_REFRESH status for {tcin}")
-                combined_data[tcin] = data
+                # Only preserve if the product name isn't a placeholder
+                if not data.get('title', '').startswith('Product '):
+                    print(f"[CACHE] Preserving WAITING_FOR_REFRESH status for {tcin}")
+                    combined_data[tcin] = data
+                else:
+                    print(f"[CACHE] Clearing placeholder WAITING_FOR_REFRESH for {tcin}")
+                    # This will force a fresh API call on next cycle
 
         # Update with combined data
         self.stock_data = combined_data
@@ -1375,7 +1380,8 @@ def activate_from_catalog(tcin):
         new_product = {
             'tcin': tcin,
             'name': catalog_product['name'],
-            'enabled': True
+            'enabled': True,
+            'url': f"https://www.target.com/p/-/A-{tcin}"
         }
 
         config['products'].append(new_product)

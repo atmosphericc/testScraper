@@ -1,16 +1,6 @@
 {
   "products": [
     {
-      "tcin": "94681777",
-      "name": "Product 94681777",
-      "enabled": true
-    },
-    {
-      "tcin": "94681773",
-      "name": "Product 94681773",
-      "enabled": true
-    },
-    {
       "tcin": "94724987",
       "name": "Product 94724987",
       "enabled": true
@@ -34,6 +24,17 @@
       "tcin": "94721096",
       "name": "Magic: The Gathering | Marvel's Spider-Man - Collector Booster",
       "enabled": true
+    },
+    {
+      "tcin": "94681773",
+      "name": "Pok\u00e9mon Trading Card Game:Lugia ex & Latias ex Premium Collection",
+      "enabled": true
+    },
+    {
+      "tcin": "94681777",
+      "name": "Pok\u00e9mon Trading Card Game:Mimikyu ex & Alcremie ex Premium Collection",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94681777"
     }
   ]
 }
