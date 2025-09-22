@@ -19,6 +19,7 @@ import pickle
 # Import our bulletproof modules
 from stock_monitor import StockMonitor
 from bulletproof_purchase_manager import BulletproofPurchaseManager
+# Removed test imports - using core system only
 
 # Initialize Flask app
 app = Flask(__name__, template_folder='dashboard/templates')
@@ -48,6 +49,10 @@ class ThreadSafeData:
 
         # PRODUCTION-GRADE CACHE MANAGEMENT
         self.stock_data_checksum = None
+
+        # Test mode support
+        self.test_monitor = None
+        self.test_mode_enabled = False
         self.stock_data_ttl = 30  # Max 30 seconds cache validity
         self.cache_miss_count = 0
         self.cache_hit_count = 0
@@ -241,6 +246,9 @@ class EventBus:
 # Global thread-safe data and event system
 shared_data = ThreadSafeData()
 event_bus = EventBus()
+
+# Core monitoring using purchase manager only
+realtime_validator = None
 
 # SSE event queue for real-time updates
 sse_queue = queue.Queue()
@@ -630,6 +638,10 @@ class PurchaseManagerThread:
         self.running = False
         self.thread = None
 
+        # Initialize real-time validation system
+        # Removed test validation system - using core purchase manager only
+        print("[SYSTEM] Core bulletproof monitoring active")
+
         # Subscribe to stock update events
         self.event_bus.subscribe('stock_updated', self._handle_stock_update)
 
@@ -638,12 +650,24 @@ class PurchaseManagerThread:
         self.running = True
         self.thread = threading.Thread(target=self._purchase_loop, daemon=True)
         self.thread.start()
+
+        # Start real-time validation
+        global realtime_validator
+        if realtime_validator and not realtime_validator.running:
+            realtime_validator.start_validation()
+
         # Log from a separate thread to avoid deadlock
         threading.Thread(target=lambda: add_activity_log("Purchase manager thread started", "success", "system"), daemon=True).start()
 
     def stop(self):
         """Stop the purchase management thread"""
         self.running = False
+
+        # Stop real-time validation
+        global realtime_validator
+        if realtime_validator and realtime_validator.running:
+            realtime_validator.stop_validation()
+
         if self.thread:
             self.thread.join(timeout=5)
 
@@ -675,6 +699,9 @@ class PurchaseManagerThread:
 
     def _handle_stock_update(self, event_data):
         """Handle stock update events with atomic response - NEW ATOMIC VERSION"""
+        cycle_start_time = time.time()
+        cycle_id = None
+
         try:
             stock_data = event_data['stock_data']
             current_time = time.time()
@@ -690,27 +717,77 @@ class PurchaseManagerThread:
 
             # Generate unique cycle ID
             cycle_id = shared_data.get_next_cycle_id()
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Starting API cycle processing at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Stock data contains {len(stock_data)} products")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Starting API cycle processing at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Stock data contains {len(stock_data)} products")
 
-            # STEP 1: Reset completed purchases to ready for new cycle
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] STEP 1: Resetting completed purchases...")
+            # STEP 1: Stock-aware reset of completed purchases (only for OUT OF STOCK products)
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 1: Stock-aware reset of completed purchases...")
+
+            # Get detailed state before reset
             reset_tcins = self.purchase_manager.get_completed_purchase_tcins()  # Get list before reset
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Found {len(reset_tcins)} completed purchases to reset: {reset_tcins}")
-            reset_count = self.purchase_manager.reset_completed_purchases_to_ready()
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Reset {reset_count} purchases to ready")
+            all_states_before = self.purchase_manager.get_all_states()
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Found {len(reset_tcins)} completed purchases to evaluate: {reset_tcins}")
+
+            # Log current states for debugging
+            for tcin in reset_tcins:
+                state = all_states_before.get(tcin, {})
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Before reset - {tcin}: {state.get('status')} (order: {state.get('order_number', 'N/A')})")
+
+            # Perform the stock-aware reset (only resets OUT OF STOCK completed purchases)
+            reset_count = self.purchase_manager.reset_completed_purchases_by_stock_status(stock_data)
+
+            # Verify the stock-aware reset completed correctly
+            all_states_after = self.purchase_manager.get_all_states()
+            reset_verification_errors = []
+
+            # Create stock status lookup for verification
+            stock_lookup = {}
+            for tcin, data in stock_data.items():
+                in_stock = data.get('in_stock', False)
+                stock_lookup[tcin] = in_stock
+
+            for tcin in reset_tcins:
+                before_state = all_states_before.get(tcin, {})
+                after_state = all_states_after.get(tcin, {})
+                before_status = before_state.get('status')
+                actual_status = after_state.get('status')
+                is_in_stock = stock_lookup.get(tcin, False)
+
+                if is_in_stock:
+                    # IN STOCK products should keep their purchase status unchanged
+                    if actual_status != before_status:
+                        reset_verification_errors.append(f"{tcin}: IN STOCK should remain '{before_status}' but got '{actual_status}'")
+                    else:
+                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified unchanged - {tcin}: {actual_status} (IN STOCK)")
+                else:
+                    # OUT OF STOCK products should be reset to ready
+                    if actual_status != 'ready':
+                        reset_verification_errors.append(f"{tcin}: OUT OF STOCK should be 'ready' but got '{actual_status}'")
+                    else:
+                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified reset - {tcin}: {actual_status} (OUT OF STOCK)")
+
+            if reset_verification_errors:
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR STOCK-AWARE RESET VERIFICATION FAILED:")
+                for error in reset_verification_errors:
+                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR   {error}")
+                # Continue processing but log the error
+                add_activity_log(f"Cycle {cycle_id}: Stock-aware reset verification failed for {len(reset_verification_errors)} purchases", "error", "purchase_reset")
+            else:
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Stock-aware reset verification passed for all {len(reset_tcins)} purchases")
+
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Reset {reset_count} purchases to ready")
 
             # STEP 2: Process stock data according to state rules
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] STEP 2: Processing stock data...")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 2: Processing stock data...")
             in_stock_tcins = [tcin for tcin, data in stock_data.items() if data.get('in_stock')]
             out_stock_tcins = [tcin for tcin, data in stock_data.items() if not data.get('in_stock')]
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] IN STOCK: {in_stock_tcins}")
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] OUT OF STOCK: {out_stock_tcins}")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] IN STOCK: {in_stock_tcins}")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OUT OF STOCK: {out_stock_tcins}")
 
-            # IN STOCK + ready status → go to "attempting"
-            # OUT OF STOCK → stay in "ready" status
+            # IN STOCK + ready status -> go to "attempting"
+            # OUT OF STOCK -> stay in "ready" status
             purchase_actions = self.purchase_manager.process_stock_data(stock_data)
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Generated {len(purchase_actions)} purchase actions")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Generated {len(purchase_actions)} purchase actions")
 
             # STEP 3: Prepare atomic purchase changes data
             purchase_changes = {
@@ -738,8 +815,8 @@ class PurchaseManagerThread:
             }
 
             # STEP 5: Broadcast single atomic event with ALL changes
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] STEP 5: Broadcasting atomic SSE event...")
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Event contains: {summary['total_products']} products, {summary['in_stock_count']} in stock, {summary['new_attempts_count']} attempts, {summary['resets_count']} resets")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 5: Broadcasting atomic SSE event...")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Event contains: {summary['total_products']} products, {summary['in_stock_count']} in stock, {summary['new_attempts_count']} attempts, {summary['resets_count']} resets")
 
             broadcast_atomic_api_cycle_event(
                 cycle_id=cycle_id,
@@ -755,12 +832,48 @@ class PurchaseManagerThread:
                 "info", "api_cycle"
             )
 
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] ✅ COMPLETED at {datetime.now().strftime('%H:%M:%S.%f')[:-3]} - {len(purchase_actions)} attempts started, {reset_count} resets")
-            print(f"[🔄 ATOMIC CYCLE {cycle_id}] Next cycle will be #{cycle_id + 1}")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK COMPLETED at {datetime.now().strftime('%H:%M:%S.%f')[:-3]} - {len(purchase_actions)} attempts started, {reset_count} resets")
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Next cycle will be #{cycle_id + 1}")
+
+            # ENHANCED MONITORING: Record comprehensive cycle data
+            try:
+                cycle_duration = time.time() - cycle_start_time
+                final_purchase_states = self.purchase_manager.get_all_states()
+
+                monitoring_system.record_cycle_data(
+                    cycle_id=str(cycle_id),
+                    cycle_duration=cycle_duration,
+                    stock_data=stock_data,
+                    purchase_actions=purchase_actions,
+                    completions=[],  # Completions happen in separate check
+                    resets=reset_count,
+                    purchase_states=final_purchase_states
+                )
+
+                print(f"[CYCLE MONITORING] Cycle {cycle_id} data recorded - duration: {cycle_duration:.3f}s")
+
+            except Exception as monitor_error:
+                print(f"[CYCLE MONITORING] Error recording cycle data: {monitor_error}")
 
         except Exception as e:
             print(f"[PURCHASE_MANAGER] Error in atomic stock update: {e}")
             add_activity_log(f"API cycle processing failed: {str(e)}", "error", "api_cycle")
+
+            # ENHANCED MONITORING: Record failed cycle
+            try:
+                if cycle_id:
+                    cycle_duration = time.time() - cycle_start_time
+                    monitoring_system.record_cycle_data(
+                        cycle_id=str(cycle_id),
+                        cycle_duration=cycle_duration,
+                        stock_data={},
+                        purchase_actions=[],
+                        completions=[],
+                        resets=0,
+                        purchase_states={}
+                    )
+            except Exception as monitor_error:
+                print(f"[CYCLE MONITORING] Error recording failed cycle: {monitor_error}")
 
 def monitoring_loop():
     """Legacy monitoring loop - replaced by event-driven architecture"""
@@ -810,6 +923,10 @@ def monitoring_loop():
 
 def start_monitoring():
     """Start the background monitoring thread"""
+    # Initialize test monitor for simulated stock data
+    shared_data.test_monitor = StockMonitor()
+    print("[SYSTEM] Test monitor initialized for simulated stock data")
+
     monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
     monitor_thread.start()
     add_activity_log("Background monitoring started", "success", "system")
@@ -1431,7 +1548,7 @@ def update_catalog_names_from_stock_data(stock_data):
                 if real_name and not real_name.startswith('Product '):
                     catalog_item['name'] = real_name
                     updated = True
-                    print(f"[CATALOG] Updated name for {tcin}: {current_name} → {real_name}")
+                    print(f"[CATALOG] Updated name for {tcin}: {current_name} -> {real_name}")
 
         if updated:
             save_catalog_config(catalog_config)
@@ -1804,6 +1921,576 @@ def force_sync():
         error_msg = f"Failed to force sync: {str(e)}"
         add_activity_log(error_msg, "error", "debug")
         return jsonify({'success': False, 'error': error_msg}), 500
+
+@app.route('/api/debug/purchase-states')
+def debug_purchase_states():
+    """Debug endpoint to inspect purchase states for stuck statuses"""
+    try:
+        # Get detailed purchase states from the purchase manager
+        if 'purchase_thread' in locals():
+            purchase_manager = purchase_thread.purchase_manager
+        else:
+            # Fallback - create a temporary purchase manager to read states
+            from bulletproof_purchase_manager import BulletproofPurchaseManager
+            purchase_manager = BulletproofPurchaseManager()
+
+        all_states = purchase_manager.get_all_states()
+        current_time = time.time()
+
+        # Analyze each state for potential issues
+        state_analysis = {}
+        issues_found = []
+
+        for tcin, state in all_states.items():
+            status = state.get('status', 'unknown')
+            completed_at = state.get('completed_at', 0)
+            completes_at = state.get('completes_at', 0)
+
+            analysis = {
+                'tcin': tcin,
+                'status': status,
+                'completed_at': completed_at,
+                'completes_at': completes_at,
+                'order_number': state.get('order_number'),
+                'time_since_completion': current_time - completed_at if completed_at else None,
+                'time_until_completion': completes_at - current_time if completes_at else None
+            }
+
+            # Check for issues
+            if status in ['purchased', 'failed']:
+                time_since = analysis['time_since_completion']
+                if time_since and time_since > 30:  # Completed more than 30 seconds ago
+                    issues_found.append({
+                        'tcin': tcin,
+                        'issue': 'stuck_completed_state',
+                        'status': status,
+                        'time_since_completion': time_since,
+                        'severity': 'high' if time_since > 120 else 'medium'
+                    })
+
+            elif status == 'attempting':
+                time_until = analysis['time_until_completion']
+                if time_until and time_until < -30:  # Should have completed more than 30 seconds ago
+                    issues_found.append({
+                        'tcin': tcin,
+                        'issue': 'overdue_purchase',
+                        'status': status,
+                        'overdue_by': abs(time_until),
+                        'severity': 'high'
+                    })
+
+            state_analysis[tcin] = analysis
+
+        return jsonify({
+            'success': True,
+            'timestamp': datetime.now().isoformat(),
+            'summary': {
+                'total_products': len(all_states),
+                'ready': len([s for s in all_states.values() if s.get('status') == 'ready']),
+                'attempting': len([s for s in all_states.values() if s.get('status') == 'attempting']),
+                'purchased': len([s for s in all_states.values() if s.get('status') == 'purchased']),
+                'failed': len([s for s in all_states.values() if s.get('status') == 'failed']),
+                'issues_found': len(issues_found)
+            },
+            'issues': issues_found,
+            'detailed_states': state_analysis
+        })
+
+    except Exception as e:
+        error_msg = f"Failed to debug purchase states: {str(e)}"
+        return jsonify({'success': False, 'error': error_msg}), 500
+
+@app.route('/api/debug/force-reset-purchases', methods=['POST'])
+def force_reset_purchases():
+    """Force reset all completed purchases to ready state"""
+    try:
+        data = request.get_json() or {}
+        tcins_to_reset = data.get('tcins', [])  # If empty, reset all completed
+
+        # Get purchase manager instance
+        if 'purchase_thread' in locals():
+            purchase_manager = purchase_thread.purchase_manager
+        else:
+            # Fallback - create a temporary purchase manager
+            from bulletproof_purchase_manager import BulletproofPurchaseManager
+            purchase_manager = BulletproofPurchaseManager()
+
+        # Get states before reset
+        states_before = purchase_manager.get_all_states()
+
+        if tcins_to_reset:
+            # Reset specific TCINs
+            reset_count = 0
+            with purchase_manager._state_lock:
+                states = purchase_manager._load_states_unsafe()
+                for tcin in tcins_to_reset:
+                    if tcin in states and states[tcin].get('status') in ['purchased', 'failed']:
+                        old_status = states[tcin].get('status')
+                        states[tcin] = {'status': 'ready'}
+                        reset_count += 1
+                        print(f"[FORCE_RESET] {tcin}: {old_status} -> ready")
+
+                if reset_count > 0:
+                    purchase_manager._save_states_unsafe(states)
+
+            add_activity_log(f"Force reset {reset_count} specific purchases: {tcins_to_reset}", "warning", "debug")
+        else:
+            # Reset all completed purchases
+            reset_count = purchase_manager.reset_completed_purchases_to_ready()
+            add_activity_log(f"Force reset all {reset_count} completed purchases", "warning", "debug")
+
+        # Get states after reset
+        states_after = purchase_manager.get_all_states()
+
+        return jsonify({
+            'success': True,
+            'message': f'Force reset {reset_count} purchases',
+            'reset_count': reset_count,
+            'states_before': states_before,
+            'states_after': states_after,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        error_msg = f"Failed to force reset purchases: {str(e)}"
+        add_activity_log(error_msg, "error", "debug")
+        return jsonify({'success': False, 'error': error_msg}), 500
+
+# ========== ENHANCED MONITORING API ENDPOINTS ==========
+
+@app.route('/api/monitoring/health-report')
+def api_health_report():
+    """Get comprehensive system health report with enhanced monitoring"""
+    try:
+        health_report = monitoring_system.get_comprehensive_health_report()
+        return jsonify({
+            'success': True,
+            'health_report': health_report,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/monitoring/alerts')
+def api_monitoring_alerts():
+    """Get current system alerts and issues"""
+    try:
+        alerts_summary = monitoring_system.get_alerts_summary()
+        return jsonify({
+            'success': True,
+            'alerts': alerts_summary,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/monitoring/stuck-states')
+def api_stuck_states():
+    """Get information about stuck purchase states"""
+    try:
+        stuck_summary = monitoring_system.purchase_monitor.get_stuck_state_summary()
+
+        # Get current stuck states
+        current_states = {}
+        with shared_data.lock:
+            current_states = shared_data.purchase_states.copy()
+
+        current_time = time.time()
+        current_stuck = []
+
+        for tcin, state in current_states.items():
+            status = state.get('status', 'unknown')
+            if status in ['purchased', 'failed']:
+                completed_at = state.get('completed_at', 0)
+                if completed_at and (current_time - completed_at) > 30:
+                    current_stuck.append({
+                        'tcin': tcin,
+                        'status': status,
+                        'stuck_duration': current_time - completed_at,
+                        'completed_at': completed_at,
+                        'order_number': state.get('order_number')
+                    })
+
+        return jsonify({
+            'success': True,
+            'stuck_states_summary': stuck_summary,
+            'current_stuck_states': current_stuck,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/monitoring/performance-summary')
+def api_performance_summary():
+    """Get system performance summary"""
+    try:
+        perf_summary = monitoring_system.performance_monitor.get_performance_summary(minutes=10)
+        cycle_summary = monitoring_system.cycle_monitor.get_cycle_performance_summary(cycles=20)
+
+        return jsonify({
+            'success': True,
+            'performance_summary': perf_summary,
+            'cycle_summary': cycle_summary,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/monitoring/state-transitions')
+def api_state_transitions():
+    """Get purchase state transition analysis"""
+    try:
+        transitions = monitoring_system.purchase_monitor.get_state_transition_analysis()
+
+        return jsonify({
+            'success': True,
+            'state_transitions': transitions,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/validation/status')
+def api_validation_status():
+    """Get real-time validation system status"""
+    try:
+        global realtime_validator
+        if realtime_validator:
+            validation_summary = realtime_validator.get_validation_summary()
+            return jsonify({
+                'success': True,
+                'validation_summary': validation_summary,
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Real-time validation not initialized',
+                'timestamp': datetime.now().isoformat()
+            }), 503
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/validation/incidents')
+def api_validation_incidents():
+    """Get recent validation incidents"""
+    try:
+        global realtime_validator
+        if realtime_validator:
+            minutes = request.args.get('minutes', 10, type=int)
+            incidents = realtime_validator.get_recent_incidents(minutes)
+
+            return jsonify({
+                'success': True,
+                'incidents': incidents,
+                'period_minutes': minutes,
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Real-time validation not initialized',
+                'timestamp': datetime.now().isoformat()
+            }), 503
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/validation/configure', methods=['POST'])
+def api_configure_validation():
+    """Configure real-time validation parameters"""
+    try:
+        global realtime_validator
+        if not realtime_validator:
+            return jsonify({
+                'success': False,
+                'error': 'Real-time validation not initialized'
+            }), 503
+
+        data = request.get_json() or {}
+
+        # Extract configuration parameters
+        config_params = {}
+        if 'stuck_threshold_seconds' in data:
+            config_params['stuck_threshold_seconds'] = int(data['stuck_threshold_seconds'])
+        if 'check_interval' in data:
+            config_params['check_interval'] = int(data['check_interval'])
+        if 'auto_recovery_enabled' in data:
+            config_params['auto_recovery_enabled'] = bool(data['auto_recovery_enabled'])
+        if 'max_recovery_attempts' in data:
+            config_params['max_recovery_attempts'] = int(data['max_recovery_attempts'])
+
+        # Apply configuration
+        if config_params:
+            realtime_validator.configure_validation(**config_params)
+            add_activity_log(f"Validation configuration updated: {config_params}", "info", "validation")
+
+            return jsonify({
+                'success': True,
+                'message': 'Validation configuration updated',
+                'updated_params': config_params,
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'No valid configuration parameters provided'
+            }), 400
+
+    except Exception as e:
+        error_msg = f"Failed to configure validation: {str(e)}"
+        add_activity_log(error_msg, "error", "validation")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/validation/force-check', methods=['POST'])
+def api_force_validation_check():
+    """Force an immediate validation check"""
+    try:
+        global realtime_validator
+        if not realtime_validator:
+            return jsonify({
+                'success': False,
+                'error': 'Real-time validation not initialized'
+            }), 503
+
+        # Perform immediate validation check
+        current_time = time.time()
+        validation_result = realtime_validator._perform_validation_check(current_time)
+
+        add_activity_log("Manual validation check triggered", "info", "validation")
+
+        return jsonify({
+            'success': True,
+            'validation_result': validation_result,
+            'timestamp': datetime.now().isoformat()
+        })
+
+    except Exception as e:
+        error_msg = f"Failed to perform validation check: {str(e)}"
+        add_activity_log(error_msg, "error", "validation")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+# ========== TEST MODE API ENDPOINTS ==========
+
+@app.route('/api/test-mode/enable', methods=['POST'])
+def api_enable_test_mode():
+    """Enable test mode with simulated stock data"""
+    try:
+        data = request.get_json() or {}
+        scenario = data.get('scenario', 'alternating')
+
+        # Enable test mode on the stock monitor
+        if hasattr(shared_data, 'test_monitor') and shared_data.test_monitor:
+            shared_data.test_monitor.enable_test_mode(scenario)
+            shared_data.test_mode_enabled = True
+            add_activity_log(f"Test mode enabled with scenario: {scenario}", "info", "test_mode")
+
+            return jsonify({
+                'success': True,
+                'message': f'Test mode enabled with scenario: {scenario}',
+                'scenario': scenario,
+                'available_scenarios': ['alternating', 'rapid_changes', 'purchase_timing', 'edge_cases', 'sync_stress'],
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Test monitor not available',
+                'timestamp': datetime.now().isoformat()
+            }), 503
+
+    except Exception as e:
+        error_msg = f"Failed to enable test mode: {str(e)}"
+        add_activity_log(error_msg, "error", "test_mode")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/test-mode/disable', methods=['POST'])
+def api_disable_test_mode():
+    """Disable test mode and return to live API data"""
+    try:
+        # Disable test mode
+        if hasattr(shared_data, 'test_monitor') and shared_data.test_monitor:
+            shared_data.test_monitor.disable_test_mode()
+            shared_data.test_mode_enabled = False
+            add_activity_log("Test mode disabled - returning to live API data", "info", "test_mode")
+
+            return jsonify({
+                'success': True,
+                'message': 'Test mode disabled - now using live API data',
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Test monitor not available',
+                'timestamp': datetime.now().isoformat()
+            }), 503
+
+    except Exception as e:
+        error_msg = f"Failed to disable test mode: {str(e)}"
+        add_activity_log(error_msg, "error", "test_mode")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/test-mode/status')
+def api_test_mode_status():
+    """Get current test mode status"""
+    try:
+        if hasattr(shared_data, 'test_monitor') and shared_data.test_monitor:
+            test_status = shared_data.test_monitor.get_test_status()
+
+            return jsonify({
+                'success': True,
+                'test_status': test_status,
+                'test_mode_enabled': getattr(shared_data, 'test_mode_enabled', False),
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Test monitor not available',
+                'test_mode_enabled': False,
+                'timestamp': datetime.now().isoformat()
+            })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'test_mode_enabled': False,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/test-mode/scenario', methods=['POST'])
+def api_change_test_scenario():
+    """Change the current test scenario"""
+    try:
+        data = request.get_json() or {}
+        scenario = data.get('scenario', 'alternating')
+
+        if hasattr(shared_data, 'test_monitor') and shared_data.test_monitor:
+            if shared_data.test_monitor.test_mode:
+                # Change scenario
+                shared_data.test_monitor.enable_test_mode(scenario)
+                add_activity_log(f"Test scenario changed to: {scenario}", "info", "test_mode")
+
+                return jsonify({
+                    'success': True,
+                    'message': f'Test scenario changed to: {scenario}',
+                    'scenario': scenario,
+                    'timestamp': datetime.now().isoformat()
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Test mode is not currently enabled',
+                    'timestamp': datetime.now().isoformat()
+                }), 400
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Test monitor not available',
+                'timestamp': datetime.now().isoformat()
+            }), 503
+
+    except Exception as e:
+        error_msg = f"Failed to change test scenario: {str(e)}"
+        add_activity_log(error_msg, "error", "test_mode")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/api/test-mode/manual-stock', methods=['POST'])
+def api_set_manual_stock_data():
+    """Manually set stock data for specific products in test mode"""
+    try:
+        data = request.get_json() or {}
+        stock_overrides = data.get('stock_data', {})
+
+        if hasattr(shared_data, 'test_monitor') and shared_data.test_monitor:
+            if shared_data.test_monitor.test_mode:
+                # Set manual stock data
+                shared_data.test_monitor.set_test_data_override(stock_overrides)
+                add_activity_log(f"Manual stock data set for {len(stock_overrides)} products", "info", "test_mode")
+
+                return jsonify({
+                    'success': True,
+                    'message': f'Manual stock data set for {len(stock_overrides)} products',
+                    'stock_overrides': stock_overrides,
+                    'timestamp': datetime.now().isoformat()
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Test mode is not currently enabled',
+                    'timestamp': datetime.now().isoformat()
+                }), 400
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Test monitor not available',
+                'timestamp': datetime.now().isoformat()
+            }), 503
+
+    except Exception as e:
+        error_msg = f"Failed to set manual stock data: {str(e)}"
+        add_activity_log(error_msg, "error", "test_mode")
+        return jsonify({
+            'success': False,
+            'error': error_msg,
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 if __name__ == '__main__':
     print("=" * 60)

@@ -48,7 +48,11 @@
       "Bash(rm:*)",
       "Bash(open http://127.0.0.1:5001)",
       "WebFetch(domain:unsplash.com)",
-      "WebFetch(domain:www.porsche.com)"
+      "WebFetch(domain:www.porsche.com)",
+      "Bash(for i in {1..20})",
+      "Bash(do echo \"=== Cycle $i ===\")",
+      "Bash(for i in {1..10})",
+      "Bash(start:*)"
     ],
     "deny": [],
     "ask": []
