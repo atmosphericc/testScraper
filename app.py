@@ -17,8 +17,8 @@ import os
 import pickle
 
 # Import our bulletproof modules
-from stock_monitor import StockMonitor
-from bulletproof_purchase_manager import BulletproofPurchaseManager
+from src.monitoring import StockMonitor
+from src.purchasing import BulletproofPurchaseManager
 # Removed test imports - using core system only
 
 # Initialize Flask app

@@ -3,7 +3,7 @@ from playwright.async_api import async_playwright
 import os
 import json
 
-STORAGE_PATH = "target.json"
+STORAGE_PATH = "target_storage.json"
 
 async def save_login():
     async with async_playwright() as p:

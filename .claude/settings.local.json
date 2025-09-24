@@ -52,7 +52,16 @@
       "Bash(for i in {1..20})",
       "Bash(do echo \"=== Cycle $i ===\")",
       "Bash(for i in {1..10})",
-      "Bash(start:*)"
+      "Bash(start:*)",
+      "WebFetch(domain:www.target.com)",
+      "Bash(TARGET_PASSWORD=\"test_password\" python buy_bot.py)",
+      "Bash(TARGET_PASSWORD=\"Cars123!\" python buy_bot.py)",
+      "Bash(xxd:*)",
+      "Bash(TARGET_PASSWORD=\"Cars123!\" TARGET_TCIN=\"94898414\" python buy_bot.py)",
+      "Bash(TARGET_PASSWORD=\"Cars123!\" TARGET_TCIN=\"75567580\" python buy_bot.py)",
+      "Bash(TARGET_TCIN=\"94898414\" python buy_bot.py)",
+      "Bash(TARGET_TCIN=\"75567580\" python buy_bot.py)",
+      "Bash(export TARGET_TCIN=\"94898414\")"
     ],
     "deny": [],
     "ask": []

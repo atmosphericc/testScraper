@@ -35,6 +35,17 @@
       "name": "Pok\u00e9mon Trading Card Game:Mimikyu ex & Alcremie ex Premium Collection",
       "enabled": true,
       "url": "https://www.target.com/p/-/A-94681777"
+    },
+    {
+      "tcin": "94636856",
+      "name": "Product 94636856",
+      "enabled": true
+    },
+    {
+      "tcin": "94898414",
+      "name": "Product 94898414",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94898414"
     }
   ]
 }
