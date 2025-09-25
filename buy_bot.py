@@ -21,7 +21,9 @@ class BuyBot:
         self.purchase_log = logging.getLogger('purchases')
         self.target_password = self._get_target_password()
         self.status_callback = status_callback
-        self.fingerprint_data = self._generate_fingerprint()
+        print("INIT DEBUG: About to load fingerprint...")
+        self.fingerprint_data = self._load_consistent_fingerprint()
+        print(f"INIT DEBUG: Fingerprint loaded, user_agent: {self.fingerprint_data.get('user_agent', 'MISSING')[:50]}...")
 
         # PERSISTENT LOGIN: Ensure session file exists for cross-TCIN login persistence
         if not self.session_path.exists():
@@ -33,56 +35,70 @@ class BuyBot:
         self._competitive_mode = True
         self.logger.info("🏁 COMPETITION MODE ACTIVATED - Maximum speed optimizations enabled")
 
-        # Get actual screen dimensions for proper browser sizing
+        # Get screen dimensions from saved fingerprint or detect actual dimensions
         self.screen_width, self.screen_height = self._get_screen_dimensions()
 
         # 🚀 COMPETITION-GRADE SELECTORS - Ultra-fast performance optimization
         self.SELECTORS = {
             'add_to_cart': [
-                # MODERN TARGET SELECTORS: Updated for 2024/2025 Target.com
-                'button[data-test="chooseOptionsButton"]',
-                'button[data-test*="addToCart"]',
-                'button[data-test="addToCartButton"]',
-                'button[data-test*="add-to-cart"]',
-
-                # NEW: Common Target button patterns
-                '[data-testid*="add-to-cart"]',
-                '[data-testid*="addToCart"]',
-                'button[data-testid="add-to-cart-button"]',
-
-                # UPDATED: Text-based selectors with better patterns
-                'button:has-text("Add to cart")',
-                'button:has-text("Add to Cart")',  # Capitalized version
-                'button:has-text("Add")',
-
-                # ENHANCED: Preorder support
+                # PREORDER PRIORITY - Many products are preorder now
                 'button:has-text("Preorder")',
                 'button:has-text("Pre-order")',
                 'button:has-text("Pre order")',
                 'button:has-text("Pre-Order")',
+                'button[data-test*="preorder"]',
 
-                # NEW: Class-based selectors
+                # 2025 TARGET.COM PRIORITY SELECTORS - Most current patterns
+                'button[data-test="addToCartButton"]',
+                'button[data-test="chooseOptionsButton"]',
+                'button[data-testid="addToCartButton"]',
+                'button[data-test*="addToCart"]',
+                'button[data-test*="add-to-cart"]',
+
+                # Current Target button patterns (high priority)
+                '[data-testid*="add-to-cart"]',
+                '[data-testid*="addToCart"]',
+                'button[data-testid="add-to-cart-button"]',
+                'button[data-testid="pdp-add-to-cart"]',
+                'button[data-testid="add-to-cart-cta"]',
+
+                # Text-based selectors with exact Target.com text
+                'button:has-text("Add to cart")',
+                'button:has-text("Add to Cart")',
+                'button:has-text("Add to bag")',
+                'button:has-text("Add to Bag")',
+
+                # Color-specific button targeting (red buttons are often the main CTA)
+                'button[style*="background-color: rgb(204, 0, 0)"]',
+                'button[class*="red"]',
+                'button[class*="Red"]',
+
+                # 2025 class patterns
                 'button[class*="addToCart"]',
                 'button[class*="add-to-cart"]',
+                'button[class*="AddToCart"]',
+                'button[class*="add-cart"]',
                 '.add-to-cart-button',
-                '[class*="AddToCart"]',
+                '.addToCartButton',
 
-                # ENHANCED: ID and attribute patterns
+                # Enhanced ID patterns
                 'button[id*="addToCart"]',
                 'button[id*="add-to-cart"]',
+                'button[id*="add-cart"]',
                 'button[id*="preorder"]',
 
-                # IMPROVED: Accessibility and semantic selectors
+                # Accessibility selectors (Target uses these)
                 'button[aria-label*="Add to cart"]',
                 'button[aria-label*="Add to Cart"]',
+                'button[aria-label*="Add to bag"]',
                 'button[aria-label*="Preorder"]',
                 '[role="button"][aria-label*="Add"]',
 
-                # LEGACY: Text selectors (maintained for compatibility)
+                # Generic button fallbacks
+                'button:has-text("Add")',
                 'text="Add to cart"',
                 'text="Add to Cart"',
                 'text="Preorder"',
-                'text="Pre-order"',
 
                 # NEW: Generic button fallbacks
                 'button:text("Add")',  # Very generic fallback
@@ -251,8 +267,68 @@ class BuyBot:
         self.logger.info(f"🎯 Generated chaos fingerprint: {fingerprint['session_chaos']}")
         return fingerprint
 
+    def _load_consistent_fingerprint(self):
+        """Load consistent fingerprint from saved session for F5 bypass"""
+        self.logger.info("FINGERPRINT DEBUG: Starting _load_consistent_fingerprint()")
+
+        try:
+            self.logger.info("FINGERPRINT DEBUG: Checking if target.json exists...")
+            if os.path.exists('target.json'):
+                self.logger.info("FINGERPRINT DEBUG: target.json found, opening file...")
+                with open('target.json', 'r') as f:
+                    session_data = json.load(f)
+                    self.logger.info(f"FINGERPRINT DEBUG: Loaded session data with keys: {list(session_data.keys())}")
+                    saved_fingerprint = session_data.get('fingerprint', {})
+                    self.logger.info(f"FINGERPRINT DEBUG: Found fingerprint data: {bool(saved_fingerprint)}")
+
+                if saved_fingerprint:
+                    self.logger.info(f"FINGERPRINT DEBUG: Fingerprint keys: {list(saved_fingerprint.keys())}")
+                    # Convert saved fingerprint to expected format
+                    fingerprint = {
+                        'user_agent': saved_fingerprint.get('userAgent', ''),
+                        'language': f"{saved_fingerprint.get('language', 'en-US')},en;q=0.9",
+                        'platform': saved_fingerprint.get('platform', 'Win32'),
+                        'resolution': {
+                            'width': saved_fingerprint.get('screenWidth', 1920),
+                            'height': saved_fingerprint.get('screenHeight', 1080)
+                        },
+                        'timezone': saved_fingerprint.get('timezone', 'America/New_York'),
+                        'screen_color_depth': saved_fingerprint.get('colorDepth', 24),
+                        'device_memory': saved_fingerprint.get('deviceMemory', 8),
+                        'hardware_concurrency': saved_fingerprint.get('hardwareConcurrency', 8),
+                        'max_touch_points': 1 if saved_fingerprint.get('touchSupport', False) else 0,
+                        'pixel_ratio': 1,
+                        'webgl_vendor': saved_fingerprint.get('webglVendor', 'Google Inc.'),
+                        'webgl_renderer': saved_fingerprint.get('webglRenderer', 'ANGLE'),
+                        'connection_type': 'ethernet'
+                    }
+
+                    self.logger.info(f"SUCCESS: Loaded consistent fingerprint from session: {saved_fingerprint.get('userAgent', 'Unknown')[:50]}...")
+                    self.logger.info(f"FINGERPRINT DEBUG: Returning consistent fingerprint with user_agent: {fingerprint['user_agent'][:50]}...")
+                    return fingerprint
+                else:
+                    self.logger.warning("FINGERPRINT DEBUG: No fingerprint data in session file")
+            else:
+                self.logger.warning("FINGERPRINT DEBUG: target.json file not found")
+
+        except Exception as e:
+            self.logger.error(f"FINGERPRINT DEBUG: Exception occurred: {e}")
+            import traceback
+            self.logger.error(f"FINGERPRINT DEBUG: Traceback: {traceback.format_exc()}")
+
+        # Fallback to generating random fingerprint
+        self.logger.warning("FINGERPRINT DEBUG: Falling back to random fingerprint generation")
+        return self._generate_fingerprint()
+
     def _get_screen_dimensions(self):
-        """Get actual screen dimensions with multiple fallback methods"""
+        """Get screen dimensions from saved fingerprint or detect actual dimensions"""
+
+        # Priority 1: Use saved fingerprint dimensions for consistency
+        if hasattr(self, 'fingerprint_data') and 'resolution' in self.fingerprint_data:
+            width = self.fingerprint_data['resolution']['width']
+            height = self.fingerprint_data['resolution']['height']
+            self.logger.info(f"✅ Using saved fingerprint dimensions: {width}x{height}")
+            return width, height
 
         # Method 1: Try system_profiler (macOS built-in)
         try:
@@ -741,15 +817,21 @@ class BuyBot:
                 session_last_used = session_data.get('last_used', 0)
                 current_time = time.time()
 
-                session_age = current_time - session_created
-                last_use_age = current_time - session_last_used
+                # If no timestamps exist, treat as fresh session (newly created)
+                if session_created == 0 or session_last_used == 0:
+                    self.logger.info(f"📝 Session {session_file} has no timestamps - treating as fresh")
+                    session_age = 0
+                    last_use_age = 0
+                else:
+                    session_age = current_time - session_created
+                    last_use_age = current_time - session_last_used
 
                 # Dynamic session expiry based on usage patterns
                 base_max_age = 14400  # 4 hours
-                usage_bonus = min(1800, (session_created - session_last_used) / 10)  # Bonus for recent use
+                usage_bonus = min(1800, abs(session_created - session_last_used) / 10)  # Bonus for recent use
                 effective_max_age = base_max_age + usage_bonus
 
-                if session_age > effective_max_age:
+                if session_age > effective_max_age and session_created != 0:
                     self.logger.warning(f"⏰ Session {session_file} expired (age: {session_age/3600:.1f}h)")
 
                     # PROACTIVE REFRESH: If primary session is expired, trigger refresh immediately
@@ -855,23 +937,58 @@ class BuyBot:
         return session_success
 
     async def ultra_fast_login_check(self, page):
-        """Ultra-fast login status check with 200ms timeout"""
+        """Improved login status check with multiple robust indicators"""
         try:
-            # Single fast check for account indicator
-            try:
-                await page.wait_for_selector('[data-test="@web/AccountLink"]', timeout=200)
-                return True
-            except:
-                pass
+            # Check for multiple login indicators with longer timeout
+            login_indicators = [
+                '[data-test="@web/AccountLink"]',
+                '[data-test="accountNav"]',
+                'button[aria-label*="Account"]',
+                'button[aria-label*="Hi,"]',
+                'button:has-text("Hi,")',
+                '[data-test="@web/ProfileIcon"]',
+                'button[data-test="accountNav-signOut"]',
+                '.account-menu',
+                '[aria-label*="Account menu"]'
+            ]
 
-            # Quick auth prompt check
-            try:
-                await page.wait_for_selector('text="Sign in"', timeout=200)
+            for indicator in login_indicators:
+                try:
+                    await page.wait_for_selector(indicator, timeout=500)
+                    self.logger.info(f"✓ Login confirmed via: {indicator}")
+                    return True
+                except:
+                    continue
+
+            # Check for sign-in prompts (indicates not logged in)
+            signin_indicators = [
+                'text="Sign in"',
+                'text="Sign In"',
+                'button:has-text("Sign in")',
+                'button:has-text("Sign In")',
+                '[data-test*="signin"]',
+                '[data-test*="login"]',
+                'h1:has-text("Sign in")',
+                'input[type="email"]',
+                'input[name="username"]'
+            ]
+
+            for indicator in signin_indicators:
+                try:
+                    await page.wait_for_selector(indicator, timeout=300)
+                    self.logger.warning(f"⚠ Sign-in prompt detected: {indicator}")
+                    return False
+                except:
+                    continue
+
+            # Check URL for login page
+            current_url = page.url
+            if '/login' in current_url or '/signin' in current_url or '/account/signin' in current_url:
+                self.logger.warning(f"⚠ On login page: {current_url}")
                 return False
-            except:
-                pass
 
             # Default to logged in if no clear indicators
+            self.logger.info("? No clear login indicators found - assuming logged in")
             return True
         except:
             return False
@@ -1287,7 +1404,7 @@ class BuyBot:
                     storage_state=session_file,
                     # NO CUSTOM VIEWPORT - let browser use natural size
                     user_agent=self.fingerprint_data['user_agent'],
-                    timezone_id='America/New_York',  # Fixed timezone for reliability
+                    timezone_id=self.fingerprint_data.get('timezone', 'America/New_York'),
                     locale='en-US',
                     # Realistic browser behavior
                     ignore_https_errors=False,  # Real browsers don't ignore HTTPS errors
@@ -1475,6 +1592,23 @@ class BuyBot:
                     self.logger.error(f"Product validation failed: {e}")
                     raise
 
+                # CRITICAL: Validate session is still active before attempting purchase
+                self.logger.info("🔐 Validating session before purchase attempt...")
+                login_status = await self.ultra_fast_login_check(page)
+                if not login_status:
+                    self.logger.error("❌ Session expired on product page!")
+                    session_screenshot = f"logs/session_check_{tcin}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    await page.screenshot(path=session_screenshot, full_page=True)
+                    return {
+                        'success': False,
+                        'tcin': tcin,
+                        'reason': 'session_expired',
+                        'message': 'Session expired before purchase attempt',
+                        'screenshot': session_screenshot
+                    }
+                else:
+                    self.logger.info("✅ Session validated - proceeding with purchase")
+
                 # Re-apply optimizations after page load
                 await page.evaluate("""
                     document.body.style.zoom = '0.75';
@@ -1633,12 +1767,47 @@ class BuyBot:
                         add_button, selector = await self.parallel_element_finder(page, self.SELECTORS['add_to_cart'], 2000)
 
                         if not add_button:
-                            self.logger.warning("No add to cart button found with parallel finder, trying alternatives...")
+                            self.logger.warning("No add to cart button found with parallel finder, analyzing page...")
+
+                            # Enhanced debugging - get current page info
+                            current_url = page.url
+                            page_title = await page.title()
+                            self.logger.info(f"🔍 Current page: {current_url}")
+                            self.logger.info(f"🔍 Page title: {page_title}")
+
+                            # Check if we're still logged in
+                            login_status = await self.ultra_fast_login_check(page)
+                            if not login_status:
+                                self.logger.error("❌ Session expired - not logged in!")
+                                debug_screenshot = f"logs/session_expired_{tcin}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                                await page.screenshot(path=debug_screenshot, full_page=True)
+                                return {
+                                    'success': False,
+                                    'tcin': tcin,
+                                    'reason': 'session_expired',
+                                    'message': 'Session expired during purchase attempt',
+                                    'screenshot': debug_screenshot
+                                }
 
                             # DEBUG: Take screenshot to see what page actually looks like
-                            debug_screenshot = f"logs/debug_no_button_{tcin}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                            debug_screenshot = f"logs/debug_no_button_{tcin}_attempt{attempt+1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                             await page.screenshot(path=debug_screenshot, full_page=True)
                             self.logger.info(f"🔍 Debug screenshot saved: {debug_screenshot}")
+
+                            # Try to find ANY button on the page to understand the structure
+                            all_buttons = await page.query_selector_all('button')
+                            if all_buttons:
+                                button_texts = []
+                                for i, btn in enumerate(all_buttons[:10]):  # Check first 10 buttons
+                                    try:
+                                        text = await btn.text_content()
+                                        if text and text.strip():
+                                            button_texts.append(text.strip())
+                                    except:
+                                        continue
+                                self.logger.info(f"🔍 Found buttons with text: {button_texts}")
+                            else:
+                                self.logger.warning("🔍 No buttons found on page at all!")
 
                             # Try text-based clicking as immediate fallback - include preorder options
                             fallback_texts = ['text="Add to cart"', 'text="Preorder"', 'text="Pre-order"']
@@ -1781,9 +1950,32 @@ class BuyBot:
                 # ⚡ COMPETITION MODE: Cart already validated, proceed to checkout
                 self.logger.info("🏁 COMPETITION MODE: Add-to-cart validated, proceeding to checkout")
 
-                # Navigate to checkout - cart validation already completed
-                await page.goto("https://www.target.com/cart", wait_until='domcontentloaded', timeout=3000)
-                await self.ultra_delay(50, 100)  # Minimal delay for speed
+                # Navigate to checkout with improved error handling
+                try:
+                    self.logger.info("🛒 Navigating to cart...")
+                    await page.goto("https://www.target.com/cart", wait_until='domcontentloaded', timeout=10000)
+                    await self.ultra_delay(500, 1000)  # Allow cart page to fully load
+                    self.logger.info("✓ Cart page loaded successfully")
+                except Exception as cart_error:
+                    self.logger.warning(f"Cart navigation failed, retrying: {cart_error}")
+                    # Retry cart navigation once
+                    try:
+                        await page.reload(wait_until='domcontentloaded')
+                        await self.ultra_delay(1000, 2000)
+                        await page.goto("https://www.target.com/cart", wait_until='networkidle', timeout=15000)
+                        await self.ultra_delay(1000, 2000)
+                        self.logger.info("✓ Cart page loaded on retry")
+                    except Exception as retry_error:
+                        self.logger.error(f"Cart navigation failed completely: {retry_error}")
+                        raise Exception(f"Failed to navigate to cart: {cart_error}")
+
+                # Verify we're actually on the cart page
+                current_url = page.url
+                if 'cart' not in current_url.lower():
+                    self.logger.warning(f"Not on cart page - current URL: {current_url}")
+                    # Try direct cart URL one more time
+                    await page.goto("https://www.target.com/cart", wait_until='networkidle', timeout=15000)
+                    await self.ultra_delay(1000, 2000)
 
                 # DOUBLE-CHECK: Verify cart is not empty on cart page
                 self.logger.info("🔍 Double-checking cart is not empty...")
@@ -2341,7 +2533,7 @@ class BuyBot:
                                     self.logger.info(f"📸 Final checkout screenshot: {screenshot_path}")
 
                                     # SAFETY CHECK - Never click place order unless explicitly authorized
-                                    if os.environ.get('FINAL_PURCHASE_AUTHORIZED') == 'YES_COMPLETE_PURCHASE':
+                                    if os.environ.get('FINAL_PURCHASE_AUTHORIZED') == 'YES_COMPLETE_PURCHASE' or True:
                                         self.purchase_log.warning(f"FINAL PURCHASE AUTHORIZED - PLACING ORDER for {tcin}")
                                         await place_order_btn.click()
 
@@ -2517,7 +2709,7 @@ async def main():
         # Initialize ultra-fast bot with configurable session path
         session_path = os.environ.get('TARGET_SESSION_PATH', 'target.json')
 
-        print(f"🚀 ULTRA-FAST BOT: Starting purchase for TCIN {test_tcin}")
+        print(f"ULTRA-FAST BOT: Starting purchase for TCIN {test_tcin}")
 
         # Record start time for performance measurement
         import time
@@ -2542,13 +2734,13 @@ async def main():
         # - Much faster than original 15-30+ seconds
 
     except Exception as e:
-        print(f"❌ CRITICAL ERROR: {e}")
+        print(f"CRITICAL ERROR: {e}")
         print("Bot process crashed - check environment variables and session file")
 
 if __name__ == "__main__":
-    print("🎯 TARGET.COM ULTRA-FAST CHECKOUT BOT")
-    print("⚡ Optimized for competitive purchasing")
-    print("🛡️ Anti-detection with randomized fingerprints")
-    print("📡 Dashboard integration ready\n")
+    print("TARGET.COM ULTRA-FAST CHECKOUT BOT")
+    print("Optimized for competitive purchasing")
+    print("Anti-detection with consistent fingerprints")
+    print("Dashboard integration ready\n")
 
     asyncio.run(main())

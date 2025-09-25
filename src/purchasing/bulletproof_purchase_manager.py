@@ -9,9 +9,13 @@ import time
 import random
 import os
 import threading
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Callable
+
+# Import session management components
+from ..session import SessionManager, SessionKeepAlive, PurchaseExecutor
 
 # Cross-platform file locking
 import platform
@@ -35,6 +39,13 @@ class BulletproofPurchaseManager:
             'cooldown_seconds': 0  # No cooldown - immediate retry on next stock check
         }
 
+        # Persistent session management
+        self.session_manager = None
+        self.session_keepalive = None
+        self.purchase_executor = None
+        self.session_initialized = False
+        self.use_real_purchasing = True  # Enable real purchasing
+
         # Thread synchronization
         self._file_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -45,6 +56,69 @@ class BulletproofPurchaseManager:
 
         # Ensure logs directory exists
         os.makedirs('logs', exist_ok=True)
+
+        # Initialize session system
+        self._initialize_session_system()
+
+    def _initialize_session_system(self):
+        """Initialize persistent session management system"""
+        try:
+            print("[SESSION] Initializing persistent session system...")
+
+            # Create session manager
+            self.session_manager = SessionManager(session_path="target.json")
+
+            # Create session keep-alive service
+            def session_status_callback(event, data):
+                print(f"[SESSION] {event}: {data}")
+
+            self.session_keepalive = SessionKeepAlive(
+                self.session_manager,
+                status_callback=session_status_callback
+            )
+
+            # Create purchase executor
+            def purchase_status_callback(data):
+                # Forward purchase status to main callback
+                if self.status_callback and 'tcin' in data:
+                    self.status_callback(data['tcin'], data['status'], data)
+
+            self.purchase_executor = PurchaseExecutor(
+                self.session_manager,
+                status_callback=purchase_status_callback
+            )
+
+            print("[SESSION] Session system components created")
+
+        except Exception as e:
+            print(f"[SESSION] Failed to initialize session system: {e}")
+            self.use_real_purchasing = False  # Fall back to mock
+
+    async def _ensure_session_ready(self):
+        """Ensure session is initialized and ready"""
+        if self.session_initialized:
+            return True
+
+        try:
+            print("[SESSION] Starting session initialization...")
+
+            # Initialize session manager
+            if await self.session_manager.initialize():
+                print("[SESSION]  Session manager initialized")
+
+                # Start keep-alive service
+                self.session_keepalive.start()
+                print("[SESSION]  Keep-alive service started")
+
+                self.session_initialized = True
+                return True
+            else:
+                print("[SESSION]  Session manager initialization failed")
+                return False
+
+        except Exception as e:
+            print(f"[SESSION]  Session initialization error: {e}")
+            return False
 
     def check_and_complete_purchases(self):
         """Check and complete purchases - called during stock refresh cycles only"""
@@ -465,6 +539,76 @@ class BulletproofPurchaseManager:
             print(f"[PURCHASE] PREVENTED DUPLICATE: {tcin} already attempting")
             return {'success': False, 'reason': 'already_attempting'}
 
+        # Use real purchasing if available, otherwise fall back to mock
+        if self.use_real_purchasing and self.session_initialized:
+            return self._start_real_purchase(tcin, product_title, states)
+        else:
+            return self._start_mock_purchase(tcin, product_title, states)
+
+    def _start_real_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
+        """Start real purchase using PurchaseExecutor"""
+        now = time.time()
+
+        # Create initial state
+        new_state = {
+            'status': 'attempting',
+            'tcin': tcin,
+            'product_title': product_title,
+            'started_at': now,
+            'completes_at': now + 60,  # Max 60 seconds for real purchase
+            'final_outcome': 'unknown',  # Will be determined by real purchase
+            'attempt_count': 1,
+            'real_purchase': True
+        }
+
+        # Save state
+        states[tcin] = new_state
+        self._save_states_unsafe(states)
+
+        print(f"[PURCHASE] Starting REAL purchase: {product_title} (TCIN: {tcin})")
+
+        # Notify real-time updates
+        if self.status_callback:
+            self.status_callback(tcin, 'attempting', new_state)
+
+        # Start real purchase in background
+        def execute_real_purchase():
+            try:
+                # Run purchase in new event loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(self.purchase_executor.execute_purchase(tcin))
+                loop.close()
+
+                # Update state with real result
+                self._update_purchase_result(tcin, result)
+
+            except Exception as e:
+                print(f"[PURCHASE] Real purchase failed for {tcin}: {e}")
+                # Mark as failed
+                failed_result = {
+                    'success': False,
+                    'tcin': tcin,
+                    'reason': 'execution_error',
+                    'error': str(e)
+                }
+                self._update_purchase_result(tcin, failed_result)
+
+        # Start purchase thread
+        import threading
+        purchase_thread = threading.Thread(target=execute_real_purchase, daemon=True)
+        purchase_thread.start()
+
+        return {
+            'success': True,
+            'tcin': tcin,
+            'duration': 60,  # Max expected duration
+            'status': 'attempting',
+            'real_purchase': True
+        }
+
+    def _start_mock_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
+        """Start mock purchase (fallback when real purchasing not available)"""
         # Random timing from specific values (5, 15, 20, 25 seconds) and 70% success rate
         duration = random.choice([5, 15, 20, 25])
         will_succeed = random.random() < self.config['success_rate']
@@ -483,14 +627,15 @@ class BulletproofPurchaseManager:
                 'out_of_stock', 'payment_failed', 'cart_timeout',
                 'captcha_required', 'price_changed', 'shipping_unavailable'
             ]) if not will_succeed else None,
-            'attempt_count': 1
+            'attempt_count': 1,
+            'real_purchase': False
         }
 
         # Save state
         states[tcin] = new_state
         self._save_states_unsafe(states)
 
-        print(f"[PURCHASE] Started purchase: {product_title} (TCIN: {tcin}) - duration: {duration:.1f}s")
+        print(f"[PURCHASE] Started MOCK purchase: {product_title} (TCIN: {tcin}) - duration: {duration:.1f}s")
         print(f"[PURCHASE_DEBUG] {tcin} STARTING at timestamp {now:.3f}, will complete at {new_state['completes_at']:.3f}, expected outcome: {new_state['final_outcome']}")
 
         # Notify real-time updates
@@ -504,6 +649,55 @@ class BulletproofPurchaseManager:
             'will_succeed': will_succeed,
             'status': 'attempting'
         }
+
+    def _update_purchase_result(self, tcin: str, result: Dict):
+        """Update purchase state with real purchase result"""
+        with self._state_lock:
+            states = self._load_states_unsafe()
+            current_state = states.get(tcin, {})
+
+            if current_state.get('status') != 'attempting':
+                print(f"[PURCHASE] Warning: {tcin} not in attempting state, ignoring result")
+                return
+
+            now = time.time()
+
+            if result['success']:
+                # Purchase successful
+                final_state = {
+                    **current_state,
+                    'status': 'purchased',
+                    'completed_at': now,
+                    'final_outcome': 'purchased',
+                    'execution_time': result.get('execution_time', 0),
+                    'order_number': f"REAL-{random.randint(100000, 999999)}",  # Placeholder
+                    'price': round(random.uniform(15.99, 89.99), 2)  # Placeholder
+                }
+
+                print(f"[PURCHASE]  REAL purchase completed: {tcin}")
+
+                if self.status_callback:
+                    self.status_callback(tcin, 'purchased', final_state)
+
+            else:
+                # Purchase failed
+                final_state = {
+                    **current_state,
+                    'status': 'failed',
+                    'completed_at': now,
+                    'final_outcome': 'failed',
+                    'execution_time': result.get('execution_time', 0),
+                    'failure_reason': result.get('reason', 'unknown_error'),
+                    'error_details': result.get('error', '')
+                }
+
+                print(f"[PURCHASE]  REAL purchase failed: {tcin} - {result.get('reason', 'unknown')}")
+
+                if self.status_callback:
+                    self.status_callback(tcin, 'failed', final_state)
+
+            states[tcin] = final_state
+            self._save_states_unsafe(states)
 
     def _finalize_purchase_unsafe(self, tcin: str, state: Dict, final_outcome: str, states: Dict):
         """Finalize a completed purchase (assumes caller has lock)"""

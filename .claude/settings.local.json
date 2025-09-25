@@ -61,7 +61,14 @@
       "Bash(TARGET_PASSWORD=\"Cars123!\" TARGET_TCIN=\"75567580\" python buy_bot.py)",
       "Bash(TARGET_TCIN=\"94898414\" python buy_bot.py)",
       "Bash(TARGET_TCIN=\"75567580\" python buy_bot.py)",
-      "Bash(export TARGET_TCIN=\"94898414\")"
+      "Bash(export TARGET_TCIN=\"94898414\")",
+      "Bash(findstr:*)",
+      "Bash(TARGET_TCIN=\"82867916\" python buy_bot.py)",
+      "Bash(npm i:*)",
+      "Bash(claude --version)",
+      "Bash(npx:*)",
+      "Bash(set FINAL_PURCHASE_AUTHORIZED=YES_COMPLETE_PURCHASE)",
+      "Bash(cmd /c:*)"
     ],
     "deny": [],
     "ask": []

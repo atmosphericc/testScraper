@@ -645,9 +645,41 @@ class PurchaseManagerThread:
         # Subscribe to stock update events
         self.event_bus.subscribe('stock_updated', self._handle_stock_update)
 
+    def _initialize_session_system(self):
+        """Initialize persistent session system"""
+        def session_init_task():
+            try:
+                print("[PURCHASE_THREAD] Initializing persistent session system...")
+
+                # Run async session initialization
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                session_ready = loop.run_until_complete(self.purchase_manager._ensure_session_ready())
+                loop.close()
+
+                if session_ready:
+                    print("[PURCHASE_THREAD] Persistent session system ready")
+                    add_activity_log("Persistent session system initialized", "success", "session")
+                else:
+                    print("[PURCHASE_THREAD] Session system failed - will use mock purchasing")
+                    add_activity_log("Session system failed - using mock purchasing", "warning", "session")
+
+            except Exception as e:
+                print(f"[PURCHASE_THREAD] Session initialization error: {e}")
+                add_activity_log(f"Session initialization error: {str(e)}", "error", "session")
+
+        # Run session initialization in background to avoid blocking startup
+        threading.Thread(target=session_init_task, daemon=True).start()
+
     def start(self):
         """Start the purchase management thread"""
         self.running = True
+
+        # Initialize session system first
+        self._initialize_session_system()
+
         self.thread = threading.Thread(target=self._purchase_loop, daemon=True)
         self.thread.start()
 
@@ -663,6 +695,9 @@ class PurchaseManagerThread:
         """Stop the purchase management thread"""
         self.running = False
 
+        # Stop session system
+        self._cleanup_session_system()
+
         # Stop real-time validation
         global realtime_validator
         if realtime_validator and realtime_validator.running:
@@ -670,6 +705,29 @@ class PurchaseManagerThread:
 
         if self.thread:
             self.thread.join(timeout=5)
+
+    def _cleanup_session_system(self):
+        """Clean up session system resources"""
+        def cleanup_task():
+            try:
+                if hasattr(self.purchase_manager, 'session_keepalive') and self.purchase_manager.session_keepalive:
+                    self.purchase_manager.session_keepalive.stop()
+                    print("[SESSION] Keep-alive service stopped")
+
+                if hasattr(self.purchase_manager, 'session_manager') and self.purchase_manager.session_manager:
+                    # Run async cleanup
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.purchase_manager.session_manager.cleanup())
+                    loop.close()
+                    print("[SESSION] Session manager cleaned up")
+
+            except Exception as e:
+                print(f"[SESSION] Cleanup error: {e}")
+
+        # Run cleanup in background
+        threading.Thread(target=cleanup_task, daemon=True).start()
 
     def _purchase_loop(self):
         """Main purchase management loop - checks completions every second"""
