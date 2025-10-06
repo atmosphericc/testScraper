@@ -15,21 +15,21 @@ from app import *
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("🧪 TEST MODE DASHBOARD - SAFE TESTING ENABLED")
+    print("TEST MODE DASHBOARD - SAFE TESTING ENABLED")
     print("=" * 60)
     print("[MODE] TEST - Will stop before final purchase button")
     print("[SAFETY] No actual purchases will be completed")
-    print("[TESTING] Full flow tested: cart → checkout → payment → STOP")
+    print("[TESTING] Full flow tested: cart -> checkout -> payment -> STOP")
     print("[FEATURES] Real-time updates, infinite purchase loops")
     print("[REALTIME] Server-Sent Events for immediate UI updates")
     print("=" * 60)
     print()
-    print("ℹ️  For PRODUCTION mode (actual purchases), use: python app.py")
+    print("INFO: For PRODUCTION mode (actual purchases), use: python app.py")
     print("=" * 60)
 
     # Initialize
     load_activity_log()
-    add_activity_log("🧪 TEST MODE: Dashboard initialized (safe testing mode)", "info", "system")
+    add_activity_log("TEST MODE: Dashboard initialized (safe testing mode)", "info", "system")
 
     # Start background monitoring
     start_monitoring()

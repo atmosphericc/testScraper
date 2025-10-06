@@ -32,7 +32,7 @@ class PurchaseExecutor:
         # TEST_MODE support - read from environment
         self.test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
         if self.test_mode:
-            self.logger.info("🧪 TEST MODE ENABLED - Will stop before final purchase button")
+            self.logger.info("[TEST] TEST MODE ENABLED - Will stop before final purchase button")
 
         # Load existing buy_bot selectors
         self.SELECTORS = {
@@ -82,53 +82,53 @@ class PurchaseExecutor:
         page = None
 
         try:
-            print(f"[PURCHASE_EXECUTOR] 🎯 Starting purchase for TCIN {tcin}")
-            self.logger.info(f"🎯 Starting purchase for TCIN {tcin}")
+            print(f"[PURCHASE_EXECUTOR] [TARGET] Starting purchase for TCIN {tcin}")
+            self.logger.info(f"[TARGET] Starting purchase for TCIN {tcin}")
             self._notify_status(tcin, 'attempting', {'start_time': datetime.now().isoformat()})
 
             # Get existing logged-in page from session (keepalive no longer interferes)
             print(f"[PURCHASE_EXECUTOR] Getting existing page from session...")
-            print(f"[DEBUG_FLASH] 🛒 PURCHASE_EXECUTOR getting page...")
+            print(f"[DEBUG_FLASH] [PURCHASE] PURCHASE_EXECUTOR getting page...")
 
             # Access context directly (synchronous attribute access)
             context = self.session_manager.context
             if not context:
-                print(f"[PURCHASE_EXECUTOR] ❌ No context available")
-                print(f"[DEBUG_FLASH] ❌ No context in purchase executor")
+                print(f"[PURCHASE_EXECUTOR] [ERROR] No context available")
+                print(f"[DEBUG_FLASH] [ERROR] No context in purchase executor")
                 raise Exception("Browser context not available")
 
             # Use existing page (already logged in from startup)
             pages = context.pages
-            print(f"[DEBUG_FLASH] 🛒 Purchase executor found {len(pages)} pages in context")
+            print(f"[DEBUG_FLASH] [PURCHASE] Purchase executor found {len(pages)} pages in context")
             if not pages:
-                print(f"[PURCHASE_EXECUTOR] ❌ No pages available in context")
-                print(f"[DEBUG_FLASH] ❌ No pages available - would need to create one (BAD!)")
+                print(f"[PURCHASE_EXECUTOR] [ERROR] No pages available in context")
+                print(f"[DEBUG_FLASH] [ERROR] No pages available - would need to create one (BAD!)")
                 raise Exception("No pages available - session not initialized properly")
 
             page = pages[0]
-            print(f"[PURCHASE_EXECUTOR] ✅ Using existing logged-in page from session")
-            print(f"[DEBUG_FLASH] ✅ Purchase executor using existing page[0] - NO NEW TAB")
+            print(f"[PURCHASE_EXECUTOR] [OK] Using existing logged-in page from session")
+            print(f"[DEBUG_FLASH] [OK] Purchase executor using existing page[0] - NO NEW TAB")
 
             # Navigate to product page
             product_url = f"https://www.target.com/p/-/A-{tcin}"
-            print(f"[PURCHASE_EXECUTOR] 🌐 Navigating to product page: {product_url}")
+            print(f"[PURCHASE_EXECUTOR] [NAV] Navigating to product page: {product_url}")
             try:
                 await page.goto(product_url, wait_until='domcontentloaded', timeout=10000)
-                print(f"[PURCHASE_EXECUTOR] ✅ Navigation to product page completed")
+                print(f"[PURCHASE_EXECUTOR] [OK] Navigation to product page completed")
             except Exception as nav_error:
-                print(f"[PURCHASE_EXECUTOR] ❌ Navigation failed: {nav_error}")
+                print(f"[PURCHASE_EXECUTOR] [ERROR] Navigation failed: {nav_error}")
                 raise
 
             self.logger.info(f"Navigated to product page: {tcin}")
 
             # Double-check login status on product page
-            print(f"[PURCHASE_EXECUTOR] 🔐 Validating login status on product page...")
+            print(f"[PURCHASE_EXECUTOR] [AUTH] Validating login status on product page...")
             login_valid = await self._validate_login_status(page)
             print(f"[PURCHASE_EXECUTOR] Login validation result: {login_valid}")
 
             if not login_valid:
-                self.logger.error("❌ Session expired on product page")
-                print(f"[PURCHASE_EXECUTOR] ❌ Session expired, aborting purchase")
+                self.logger.error("[ERROR] Session expired on product page")
+                print(f"[PURCHASE_EXECUTOR] [ERROR] Session expired, aborting purchase")
                 return {
                     'success': False,
                     'tcin': tcin,
@@ -137,7 +137,7 @@ class PurchaseExecutor:
                 }
 
             # Find and click add-to-cart button
-            print(f"[PURCHASE_EXECUTOR] 🔍 Looking for add-to-cart button...")
+            print(f"[PURCHASE_EXECUTOR] [DEBUG] Looking for add-to-cart button...")
             add_button = await self._find_add_to_cart_button(page)
             print(f"[PURCHASE_EXECUTOR] Add-to-cart button found: {add_button is not None}")
             if not add_button:
@@ -153,7 +153,7 @@ class PurchaseExecutor:
             await add_button.click()
             await asyncio.sleep(random.uniform(0.5, 1.5))
 
-            self.logger.info(f"🛒 Clicked add-to-cart for {tcin}")
+            self.logger.info(f"[PURCHASE] Clicked add-to-cart for {tcin}")
 
             # Save session after successful interaction
             await self.session_manager.save_session_state()
@@ -183,7 +183,7 @@ class PurchaseExecutor:
             execution_time = time.time() - start_time
 
             if checkout_result:
-                self.logger.info(f"✅ PURCHASE COMPLETED for {tcin} in {execution_time:.2f}s")
+                self.logger.info(f"[OK] PURCHASE COMPLETED for {tcin} in {execution_time:.2f}s")
 
                 # CRITICAL: Save session after successful purchase
                 await self.session_manager.save_session_state()
@@ -211,7 +211,7 @@ class PurchaseExecutor:
 
         except Exception as e:
             execution_time = time.time() - start_time
-            print(f"[PURCHASE_EXECUTOR] ❌ Purchase failed for {tcin}: {e}")
+            print(f"[PURCHASE_EXECUTOR] [ERROR] Purchase failed for {tcin}: {e}")
             self.logger.error(f" Purchase failed for {tcin}: {e}")
 
             import traceback
@@ -499,15 +499,15 @@ class PurchaseExecutor:
             if place_order_button:
                 # TEST_MODE: Stop before clicking the final button
                 if self.test_mode:
-                    self.logger.info("🧪 TEST MODE: Found place order button - STOPPING before click")
-                    self.logger.info("🧪 TEST MODE: Purchase flow validated successfully!")
+                    self.logger.info("[TEST] TEST MODE: Found place order button - STOPPING before click")
+                    self.logger.info("[TEST] TEST MODE: Purchase flow validated successfully!")
 
                     # Take screenshot for verification
                     try:
                         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                         screenshot_path = f"logs/test_mode_final_step_{timestamp}.png"
                         await page.screenshot(path=screenshot_path)
-                        self.logger.info(f"🧪 TEST MODE: Screenshot saved: {screenshot_path}")
+                        self.logger.info(f"[TEST] TEST MODE: Screenshot saved: {screenshot_path}")
                     except:
                         pass
 

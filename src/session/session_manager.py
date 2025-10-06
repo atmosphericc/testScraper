@@ -81,11 +81,11 @@ class SessionManager:
         self._initialization_attempts += 1
 
         try:
-            self.logger.info(f"🚀 Initializing persistent session (attempt {self._initialization_attempts}/{self._max_init_attempts})...")
+            self.logger.info(f"[INIT] Initializing persistent session (attempt {self._initialization_attempts}/{self._max_init_attempts})...")
 
             # Store the event loop for thread-safe operations
             self._event_loop = asyncio.get_running_loop()
-            self.logger.info(f"✅ Event loop stored for thread-safe operations")
+            self.logger.info(f"[OK] Event loop stored for thread-safe operations")
 
             # Clean up any existing resources first
             await self._safe_cleanup()
@@ -122,7 +122,7 @@ class SessionManager:
             }
 
             self.browser = await self.playwright.chromium.launch(**launch_options)
-            self.logger.info("✅ Browser launched successfully")
+            self.logger.info("[OK] Browser launched successfully")
 
             # Note: Window size will be set when context/page is created
 
@@ -132,8 +132,8 @@ class SessionManager:
 
             # IMMEDIATE NAVIGATION: Navigate to Target.com right after context creation
             # Do this BEFORE validation to ensure page is ready
-            print("[SESSION_INIT] 🎯 Attempting to navigate to Target.com...")
-            self.logger.info("🎯 Navigating to Target.com homepage...")
+            print("[SESSION_INIT] [NAVIGATE] Attempting to navigate to Target.com...")
+            self.logger.info("[NAVIGATE] Navigating to Target.com homepage...")
             try:
                 # Get page directly from context (bypass health checks during initialization)
                 if self.context:
@@ -145,10 +145,10 @@ class SessionManager:
                         print(f"[DEBUG_FLASH] 📄 Using existing page from context - NO NEW TAB")
                     else:
                         print("[SESSION_INIT] No pages exist, creating new page...")
-                        print(f"[DEBUG_FLASH] ⚠️ CREATING NEW PAGE during session init - THIS WILL CREATE A TAB")
+                        print(f"[DEBUG_FLASH] [WARNING] CREATING NEW PAGE during session init - THIS WILL CREATE A TAB")
                         page = await self.context.new_page()
                         print("[SESSION_INIT] New page created")
-                        print(f"[DEBUG_FLASH] ✅ New page created during init")
+                        print(f"[DEBUG_FLASH] [OK] New page created during init")
 
                     if page:
                         # Set up WebAuthn (window maximizes automatically with no_viewport=True + --start-maximized)
@@ -165,9 +165,9 @@ class SessionManager:
                                     'automaticPresenceSimulation': True
                                 }
                             })
-                            print("[SESSION_INIT] ✅ WebAuthn virtual authenticator enabled (no passkey prompts)")
+                            print("[SESSION_INIT] [OK] WebAuthn virtual authenticator enabled (no passkey prompts)")
                         except Exception as e:
-                            print(f"[SESSION_INIT] ⚠️ Could not set up WebAuthn: {e}")
+                            print(f"[SESSION_INIT] [WARNING] Could not set up WebAuthn: {e}")
 
                         print(f"[SESSION_INIT] Page object valid, navigating to https://www.target.com...")
                         await page.goto("https://www.target.com", wait_until='domcontentloaded', timeout=15000)
@@ -175,19 +175,19 @@ class SessionManager:
                         # Give page time to fully load and stabilize
                         await asyncio.sleep(3)
                         current_url = page.url
-                        print(f"[SESSION_INIT] ✅ Successfully navigated to Target.com (current URL: {current_url})")
-                        self.logger.info(f"✅ Successfully navigated to Target.com (URL: {current_url})")
+                        print(f"[SESSION_INIT] [OK] Successfully navigated to Target.com (current URL: {current_url})")
+                        self.logger.info(f"[OK] Successfully navigated to Target.com (URL: {current_url})")
                     else:
-                        print("[SESSION_INIT] ❌ Could not create page for initial navigation")
-                        self.logger.warning("⚠️ Could not create page for initial navigation")
+                        print("[SESSION_INIT] [ERROR] Could not create page for initial navigation")
+                        self.logger.warning("[WARNING] Could not create page for initial navigation")
                 else:
-                    print("[SESSION_INIT] ❌ Context not available for initial navigation")
-                    self.logger.warning("⚠️ Context not available for initial navigation")
+                    print("[SESSION_INIT] [ERROR] Context not available for initial navigation")
+                    self.logger.warning("[WARNING] Context not available for initial navigation")
             except Exception as nav_error:
-                print(f"[SESSION_INIT] ❌ Navigation exception: {nav_error}")
+                print(f"[SESSION_INIT] [ERROR] Navigation exception: {nav_error}")
                 import traceback
                 traceback.print_exc()
-                self.logger.warning(f"⚠️ Initial navigation failed (will retry in validation): {nav_error}")
+                self.logger.warning(f"[WARNING] Initial navigation failed (will retry in validation): {nav_error}")
 
             # ALWAYS validate login state - never skip this
             print("[SESSION_INIT] Running mandatory login validation...")
@@ -212,30 +212,30 @@ class SessionManager:
                 self.session_active = True
                 self.session_created_at = datetime.now()
                 self._initialization_attempts = 0  # Reset on success
-                self.logger.info("✅ Persistent session initialized successfully")
+                self.logger.info("[OK] Persistent session initialized successfully")
                 return True
             else:
-                self.logger.error("❌ Failed to validate session after all attempts")
+                self.logger.error("[ERROR] Failed to validate session after all attempts")
 
                 # Try one more time with fresh context if we haven't exhausted attempts
                 if self._initialization_attempts < self._max_init_attempts:
-                    self.logger.info("🔄 Retrying initialization with fresh context...")
+                    self.logger.info("[RETRY] Retrying initialization with fresh context...")
                     await asyncio.sleep(3)
                     return await self.initialize()
                 else:
                     return False
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize session: {e}")
+            self.logger.error(f"[ERROR] Failed to initialize session: {e}")
             await self._safe_cleanup()
 
             # Retry if we haven't exhausted attempts
             if self._initialization_attempts < self._max_init_attempts:
-                self.logger.info("🔄 Retrying session initialization...")
+                self.logger.info("[RETRY] Retrying session initialization...")
                 await asyncio.sleep(5)  # Wait longer between full retries
                 return await self.initialize()
             else:
-                self.logger.error("🚨 Exhausted all initialization attempts")
+                self.logger.error("[CRITICAL] Exhausted all initialization attempts")
                 return False
 
     def submit_async_task(self, coro):
@@ -258,7 +258,7 @@ class SessionManager:
         for attempt in range(max_attempts):
             try:
                 await self._create_context()
-                self.logger.info(f"✅ Context created successfully on attempt {attempt + 1}")
+                self.logger.info(f"[OK] Context created successfully on attempt {attempt + 1}")
                 return True
             except Exception as e:
                 self.logger.error(f"Context creation attempt {attempt + 1} failed: {e}")
@@ -327,13 +327,13 @@ class SessionManager:
                         with open(self.session_path, 'r') as f:
                             session_data = json.load(f)
                         context_options['storage_state'] = str(self.session_path)
-                        self.logger.info(f"✅ Loading session state from {self.session_path}")
+                        self.logger.info(f"[OK] Loading session state from {self.session_path}")
                     except Exception as e:
                         self.logger.warning(f"Invalid session file, starting fresh: {e}")
 
-                print(f"[DEBUG_FLASH] 🔧 Creating new browser context (recreation #{self._context_recreation_count})")
+                print(f"[DEBUG_FLASH] [INIT] Creating new browser context (recreation #{self._context_recreation_count})")
                 self.context = await self.browser.new_context(**context_options)
-                print(f"[DEBUG_FLASH] ✅ Browser context created - checking for initial pages...")
+                print(f"[DEBUG_FLASH] [OK] Browser context created - checking for initial pages...")
 
                 # Check if context auto-created any pages
                 initial_pages = self.context.pages
@@ -344,10 +344,10 @@ class SessionManager:
                 # Set up stealth mode
                 await self._setup_stealth_mode()
 
-                self.logger.info(f"✅ Browser context created successfully (recreation #{self._context_recreation_count})")
+                self.logger.info(f"[OK] Browser context created successfully (recreation #{self._context_recreation_count})")
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to create context: {e}")
+            self.logger.error(f"[ERROR] Failed to create context: {e}")
             raise
 
     async def _setup_stealth_mode(self):
@@ -460,20 +460,20 @@ class SessionManager:
     async def get_page(self) -> Optional[Page]:
         """Get a page from the persistent context - bulletproof with auto-recovery"""
         max_attempts = 3
-        print(f"[DEBUG_FLASH] 🔍 get_page() called - checking for pages...")
+        print(f"[DEBUG_FLASH] [DEBUG] get_page() called - checking for pages...")
 
         for attempt in range(max_attempts):
             try:
                 with self._context_lock:
                     # BULLETPROOF CHECK 1: Ensure context exists and is valid
                     if not self.context or not self.browser:
-                        print(f"[DEBUG_FLASH] ⚠️ Context invalid on attempt {attempt + 1}, recreating context...")
+                        print(f"[DEBUG_FLASH] [WARNING] Context invalid on attempt {attempt + 1}, recreating context...")
                         self.logger.warning(f"Context invalid on attempt {attempt + 1}, recreating...")
                         await self._recreate_context_if_needed()
 
                     # BULLETPROOF CHECK 2: Test context health
                     if self.context and not await self._test_context_health():
-                        print(f"[DEBUG_FLASH] ⚠️ Context unhealthy on attempt {attempt + 1}, recreating context...")
+                        print(f"[DEBUG_FLASH] [WARNING] Context unhealthy on attempt {attempt + 1}, recreating context...")
                         self.logger.warning(f"Context unhealthy on attempt {attempt + 1}, recreating...")
                         await self._recreate_context_if_needed()
 
@@ -483,19 +483,19 @@ class SessionManager:
                         print(f"[DEBUG_FLASH] Context has {len(pages)} pages available")
                         if pages:
                             page = pages[0]
-                            print(f"[DEBUG_FLASH] ✅ Using existing page[0] - NO NEW TAB")
+                            print(f"[DEBUG_FLASH] [OK] Using existing page[0] - NO NEW TAB")
                         else:
-                            print(f"[DEBUG_FLASH] ⚠️ NO PAGES EXIST - CREATING NEW PAGE - THIS WILL FLASH!")
+                            print(f"[DEBUG_FLASH] [WARNING] NO PAGES EXIST - CREATING NEW PAGE - THIS WILL FLASH!")
                             page = await self.context.new_page()
-                            print(f"[DEBUG_FLASH] ✅ New page created in get_page()")
+                            print(f"[DEBUG_FLASH] [OK] New page created in get_page()")
 
                         # BULLETPROOF CHECK 4: Test page validity
                         if page and await self._test_page_health(page):
                             self.logger.debug(f"Successfully got healthy page on attempt {attempt + 1}")
-                            print(f"[DEBUG_FLASH] ✅ Returning healthy page from get_page()")
+                            print(f"[DEBUG_FLASH] [OK] Returning healthy page from get_page()")
                             return page
                         else:
-                            print(f"[DEBUG_FLASH] ❌ Page unhealthy on attempt {attempt + 1}")
+                            print(f"[DEBUG_FLASH] [ERROR] Page unhealthy on attempt {attempt + 1}")
                             self.logger.warning(f"Page unhealthy on attempt {attempt + 1}")
 
             except Exception as e:
@@ -506,21 +506,21 @@ class SessionManager:
                 await asyncio.sleep(1)
 
         # BULLETPROOF FALLBACK: If all attempts failed, return None but log clearly
-        self.logger.error("🚨 CRITICAL: Failed to get healthy page after all attempts - session system needs restart")
+        self.logger.error("[CRITICAL] Failed to get healthy page after all attempts - session system needs restart")
         return None
 
     async def _recreate_context_if_needed(self):
         """Recreate context if it's broken - internal helper"""
         try:
-            print(f"[DEBUG_FLASH] 🔄 _recreate_context_if_needed() called - WILL CREATE NEW CONTEXT")
+            print(f"[DEBUG_FLASH] [RETRY] _recreate_context_if_needed() called - WILL CREATE NEW CONTEXT")
             if self.browser:
                 await self._create_context()
-                print(f"[DEBUG_FLASH] ✅ Context recreated in _recreate_context_if_needed()")
+                print(f"[DEBUG_FLASH] [OK] Context recreated in _recreate_context_if_needed()")
             else:
-                print(f"[DEBUG_FLASH] ❌ Cannot recreate context - browser is None")
+                print(f"[DEBUG_FLASH] [ERROR] Cannot recreate context - browser is None")
                 self.logger.error("Cannot recreate context - browser is None")
         except Exception as e:
-            print(f"[DEBUG_FLASH] ❌ Failed to recreate context: {e}")
+            print(f"[DEBUG_FLASH] [ERROR] Failed to recreate context: {e}")
             self.logger.error(f"Failed to recreate context: {e}")
 
     async def _test_context_health(self) -> bool:
@@ -556,15 +556,15 @@ class SessionManager:
     async def _validate_session(self, attempt_recovery: bool = True) -> bool:
         """Validate that the session is still active and logged in - STRICT validation with auto-recovery"""
         try:
-            self.logger.info("🔍 [VALIDATION START] Beginning session validation...")
+            self.logger.info("[DEBUG] [VALIDATION START] Beginning session validation...")
 
             page = await self.get_page()
             if not page:
-                self.logger.error("❌ [VALIDATION] No page available for validation")
+                self.logger.error("[ERROR] [VALIDATION] No page available for validation")
                 return False
 
             # Navigate to Target homepage to test session
-            self.logger.info("🌐 [VALIDATION] Navigating to Target.com for login validation...")
+            self.logger.info("[NAV] [VALIDATION] Navigating to Target.com for login validation...")
             await page.goto("https://www.target.com",
                           wait_until='domcontentloaded',
                           timeout=self.validation_timeout)
@@ -595,7 +595,7 @@ class SessionManager:
                     self.logger.info(f"🔎 [VALIDATION] Checking indicator {i}/{len(login_indicators)}: {indicator}")
                     element = await page.wait_for_selector(indicator, timeout=3000)
                     if element and await element.is_visible():
-                        self.logger.info(f"✅ [VALIDATION] Login validated via: {indicator}")
+                        self.logger.info(f"[OK] [VALIDATION] Login validated via: {indicator}")
                         self.last_validation = datetime.now()
                         self.validation_failures = 0
                         login_found = True
@@ -603,13 +603,13 @@ class SessionManager:
                         await self.save_session_state()
                         return True
                     else:
-                        self.logger.info(f"⚠️ [VALIDATION] Indicator {i} found but not visible: {indicator}")
+                        self.logger.info(f"[WARNING] [VALIDATION] Indicator {i} found but not visible: {indicator}")
                 except Exception as e:
-                    self.logger.info(f"❌ [VALIDATION] Indicator {i} not found: {indicator} ({type(e).__name__})")
+                    self.logger.info(f"[ERROR] [VALIDATION] Indicator {i} not found: {indicator} ({type(e).__name__})")
                     continue
 
             if not login_found:
-                self.logger.error("❌ [VALIDATION] No login indicators found - NOT LOGGED IN")
+                self.logger.error("[ERROR] [VALIDATION] No login indicators found - NOT LOGGED IN")
 
                 # Check for sign-in prompts to confirm
                 signin_indicators = [
@@ -624,7 +624,7 @@ class SessionManager:
                     try:
                         element = await page.wait_for_selector(indicator, timeout=1000)
                         if element:
-                            self.logger.error(f"❌ Found sign-in prompt: {indicator} - SESSION EXPIRED")
+                            self.logger.error(f"[ERROR] Found sign-in prompt: {indicator} - SESSION EXPIRED")
                             signin_found = True
                             break
                     except:
@@ -632,12 +632,12 @@ class SessionManager:
 
                 # SESSION RECOVERY: Try multiple recovery strategies
                 if attempt_recovery:
-                    self.logger.warning("🔄 Attempting session recovery...")
+                    self.logger.warning("[RETRY] Attempting session recovery...")
 
                     # STRATEGY 1: Try token refresh (uses refreshToken)
                     self.logger.info("Strategy 1: Attempting token refresh...")
                     if await self._trigger_token_refresh():
-                        self.logger.info("✅ Session recovered via token refresh!")
+                        self.logger.info("[OK] Session recovered via token refresh!")
                         # Re-validate after recovery (but don't attempt recovery again)
                         return await self._validate_session(attempt_recovery=False)
 
@@ -646,21 +646,21 @@ class SessionManager:
                     try:
                         # Pass existing page to avoid tab flash
                         if await ensure_logged_in_with_session_save(self.context, existing_page=page):
-                            self.logger.info("✅ Session recovered via auto-login!")
+                            self.logger.info("[OK] Session recovered via auto-login!")
                             # Re-validate after login
                             return await self._validate_session(attempt_recovery=False)
                         else:
-                            self.logger.warning("⚠️ Auto-login failed")
+                            self.logger.warning("[WARNING] Auto-login failed")
                     except Exception as login_error:
-                        self.logger.error(f"❌ Auto-login error: {login_error}")
+                        self.logger.error(f"[ERROR] Auto-login error: {login_error}")
 
-                    self.logger.error("❌ All session recovery strategies failed")
+                    self.logger.error("[ERROR] All session recovery strategies failed")
 
                 self.validation_failures += 1
                 return False
 
         except Exception as e:
-            self.logger.error(f"❌ Session validation failed: {e}")
+            self.logger.error(f"[ERROR] Session validation failed: {e}")
             self.validation_failures += 1
             return False
 
@@ -707,7 +707,7 @@ class SessionManager:
                     continue  # Element not found or not clickable
 
             if dismissed_count > 0:
-                self.logger.info(f"✅ Dismissed {dismissed_count} popup(s)")
+                self.logger.info(f"[OK] Dismissed {dismissed_count} popup(s)")
 
             return True
 
@@ -718,7 +718,7 @@ class SessionManager:
     async def _auto_login(self, email: str, password: str) -> bool:
         """Automatically log in to Target.com with F5-safe human-like behavior"""
         try:
-            self.logger.info("🔐 Starting auto-login flow...")
+            self.logger.info("[AUTH] Starting auto-login flow...")
 
             page = await self.get_page()
             if not page:
@@ -757,7 +757,7 @@ class SessionManager:
                     continue
 
             if not email_field:
-                self.logger.error("❌ Could not find email input field")
+                self.logger.error("[ERROR] Could not find email input field")
                 return False
 
             # F5-SAFE: Type email slowly like a human
@@ -769,7 +769,7 @@ class SessionManager:
                 await email_field.type(char)
                 await asyncio.sleep(random.uniform(0.05, 0.15))  # Human typing speed
 
-            self.logger.info("✅ Email entered")
+            self.logger.info("[OK] Email entered")
 
             # Random pause (human behavior)
             await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -794,7 +794,7 @@ class SessionManager:
                     continue
 
             if not continue_button:
-                self.logger.error("❌ Could not find continue button")
+                self.logger.error("[ERROR] Could not find continue button")
                 return False
 
             # Click continue to proceed to password screen
@@ -830,7 +830,7 @@ class SessionManager:
                         self.logger.info(f"Found close button: {selector}, dismissing...")
                         await asyncio.sleep(random.uniform(0.3, 0.7))
                         await close_button.click()
-                        self.logger.info("✅ Passkey modal dismissed!")
+                        self.logger.info("[OK] Passkey modal dismissed!")
                         await asyncio.sleep(1)
                         break
                 except:
@@ -860,7 +860,7 @@ class SessionManager:
                     continue
 
             if not password_field:
-                self.logger.error("❌ Could not find password input field")
+                self.logger.error("[ERROR] Could not find password input field")
                 return False
 
             # F5-SAFE: Type password slowly
@@ -872,7 +872,7 @@ class SessionManager:
                 await password_field.type(char)
                 await asyncio.sleep(random.uniform(0.05, 0.15))
 
-            self.logger.info("✅ Password entered")
+            self.logger.info("[OK] Password entered")
 
             # Random pause before submit (human behavior)
             await asyncio.sleep(random.uniform(0.8, 1.5))
@@ -897,13 +897,13 @@ class SessionManager:
                     continue
 
             if not signin_button:
-                self.logger.error("❌ Could not find sign-in button")
+                self.logger.error("[ERROR] Could not find sign-in button")
                 return False
 
             # F5-SAFE: Human-like delay before clicking submit
             await asyncio.sleep(random.uniform(0.3, 0.7))
             await signin_button.click()
-            self.logger.info("🔄 Sign-in submitted, waiting for response...")
+            self.logger.info("[RETRY] Sign-in submitted, waiting for response...")
 
             # Wait for navigation or error
             await asyncio.sleep(random.uniform(2.0, 4.0))
@@ -933,7 +933,7 @@ class SessionManager:
                     if error_elem:
                         error_text = await error_elem.inner_text()
                         if error_text and len(error_text) > 0:
-                            self.logger.error(f"❌ Login error: {error_text}")
+                            self.logger.error(f"[ERROR] Login error: {error_text}")
                             login_error = True
                             break
                 except:
@@ -944,7 +944,7 @@ class SessionManager:
 
             # Check for successful login indicators
             if 'login' not in current_url.lower() and 'signin' not in current_url.lower():
-                self.logger.info("✅ Login successful - redirected away from login page")
+                self.logger.info("[OK] Login successful - redirected away from login page")
 
                 # Save session immediately
                 await self.save_session_state()
@@ -952,11 +952,11 @@ class SessionManager:
                 # Validate we're actually logged in
                 return await self._validate_session(attempt_recovery=False)
             else:
-                self.logger.warning(f"⚠️ Still on login page: {current_url}")
+                self.logger.warning(f"[WARNING] Still on login page: {current_url}")
                 return False
 
         except Exception as e:
-            self.logger.error(f"❌ Auto-login failed: {e}")
+            self.logger.error(f"[ERROR] Auto-login failed: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -964,7 +964,7 @@ class SessionManager:
     async def _trigger_token_refresh(self) -> bool:
         """Trigger Target's auto-refresh flow using refreshToken - preserves session cookies"""
         try:
-            self.logger.info("🔄 Triggering token refresh flow (preserves context)...")
+            self.logger.info("[RETRY] Triggering token refresh flow (preserves context)...")
 
             # Get current page without recreating context
             page = await self.get_page()
@@ -984,7 +984,7 @@ class SessionManager:
             # Check if we're redirected to login (means refreshToken expired)
             current_url = page.url
             if 'login' in current_url.lower() or 'signin' in current_url.lower():
-                self.logger.error("❌ Token refresh failed - redirected to login (refreshToken expired)")
+                self.logger.error("[ERROR] Token refresh failed - redirected to login (refreshToken expired)")
                 return False
 
             # Check for account indicators (successful refresh)
@@ -1000,7 +1000,7 @@ class SessionManager:
                 try:
                     element = await page.wait_for_selector(indicator, timeout=3000)
                     if element:
-                        self.logger.info("✅ Token refresh successful - account page loaded")
+                        self.logger.info("[OK] Token refresh successful - account page loaded")
                         # Save refreshed session state
                         await self.save_session_state()
                         self.last_validation = datetime.now()
@@ -1009,22 +1009,22 @@ class SessionManager:
                 except:
                     continue
 
-            self.logger.warning("⚠️ Token refresh ambiguous - no clear account indicators")
+            self.logger.warning("[WARNING] Token refresh ambiguous - no clear account indicators")
             return False
 
         except Exception as e:
-            self.logger.error(f"❌ Token refresh failed: {e}")
+            self.logger.error(f"[ERROR] Token refresh failed: {e}")
             return False
 
     async def refresh_session(self) -> bool:
         """Refresh session - tries navigation refresh first, context recreation as last resort"""
         try:
-            self.logger.info("🔄 Refreshing session...")
+            self.logger.info("[RETRY] Refreshing session...")
 
             # STRATEGY 1: Try navigation-based refresh (preserves session cookies)
             self.logger.info("Attempting navigation-based refresh (preserves session cookies)...")
             if await self._trigger_token_refresh():
-                self.logger.info("✅ Session refreshed via navigation (context preserved)")
+                self.logger.info("[OK] Session refreshed via navigation (context preserved)")
                 return True
 
             # STRATEGY 2: Context recreation (destroys session cookies - last resort)
@@ -1032,13 +1032,13 @@ class SessionManager:
 
             # Try context recreation with retry
             if not await self._create_context_with_retry():
-                self.logger.error("❌ Failed to recreate context during refresh")
+                self.logger.error("[ERROR] Failed to recreate context during refresh")
                 return False
 
             # After context recreation, we MUST trigger token refresh
             self.logger.info("Context recreated, triggering token refresh to restore session...")
             if await self._trigger_token_refresh():
-                self.logger.info("✅ Session restored after context recreation")
+                self.logger.info("[OK] Session restored after context recreation")
                 return True
 
             # Final validation attempt
@@ -1046,7 +1046,7 @@ class SessionManager:
             for attempt in range(validation_attempts):
                 try:
                     if await self._validate_session():
-                        self.logger.info("✅ Session refreshed successfully")
+                        self.logger.info("[OK] Session refreshed successfully")
                         return True
                     else:
                         self.logger.warning(f"Session refresh validation failed on attempt {attempt + 1}")
@@ -1057,11 +1057,11 @@ class SessionManager:
                     if attempt < validation_attempts - 1:
                         await asyncio.sleep(2)
 
-            self.logger.error("❌ Session refresh failed validation after all attempts")
+            self.logger.error("[ERROR] Session refresh failed validation after all attempts")
             return False
 
         except Exception as e:
-            self.logger.error(f"❌ Session refresh failed: {e}")
+            self.logger.error(f"[ERROR] Session refresh failed: {e}")
             return False
 
     async def save_session_state(self) -> bool:
@@ -1088,11 +1088,11 @@ class SessionManager:
             import os
             os.replace(temp_path, self.session_path)
 
-            self.logger.info(f"✅ Session state saved to {self.session_path}")
+            self.logger.info(f"[OK] Session state saved to {self.session_path}")
             return True
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to save session state: {e}")
+            self.logger.error(f"[ERROR] Failed to save session state: {e}")
             return False
 
     async def is_healthy(self) -> bool:
@@ -1115,7 +1115,7 @@ class SessionManager:
         """Clean up resources - public interface"""
         self.logger.info("🧹 Starting session cleanup...")
         await self._safe_cleanup()
-        self.logger.info("✅ Session cleanup completed")
+        self.logger.info("[OK] Session cleanup completed")
 
     def get_session_stats(self) -> Dict[str, Any]:
         """Get session statistics for monitoring"""

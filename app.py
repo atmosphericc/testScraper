@@ -490,12 +490,12 @@ class StockMonitorThread:
 
         # WARMUP DELAY ON STARTUP - Give browser time to launch and initialize before first purchase attempt
         if not is_manual_refresh:
-            print("[STOCK_MONITOR] 🔥 Browser warmup: waiting 10 seconds for browser to launch and navigate to target.com...")
+            print("[STOCK_MONITOR] [WARMUP] Browser warmup: waiting 10 seconds for browser to launch and navigate to target.com...")
             for i in range(10):
                 if not self.running:
                     return
                 time.sleep(1)
-            print("[STOCK_MONITOR] ✅ Browser warmup complete, ready for stock checks and purchases")
+            print("[STOCK_MONITOR] [OK] Browser warmup complete, ready for stock checks and purchases")
 
         # IMMEDIATE STOCK CHECK ON STARTUP ONLY - for instant stock status display AND immediate purchase attempts
         if not is_manual_refresh:
@@ -634,7 +634,7 @@ class StockMonitorThread:
 
                     # If circuit breaker opened, add alert
                     if self.shared_data.api_circuit_open:
-                        add_activity_log("⚠️ API circuit breaker activated - service degraded", "warning", "circuit_breaker")
+                        add_activity_log("[WARNING] API circuit breaker activated - service degraded", "warning", "circuit_breaker")
 
             return None
 
@@ -658,7 +658,7 @@ class PurchaseManagerThread:
         """Initialize persistent session system - called only once"""
         def session_init_task():
             try:
-                print("[PURCHASE_THREAD] 🚀 Initializing persistent session system...")
+                print("[PURCHASE_THREAD] [INIT] Initializing persistent session system...")
 
                 # Run async session initialization
                 import asyncio
@@ -666,17 +666,17 @@ class PurchaseManagerThread:
                 asyncio.set_event_loop(loop)
 
                 session_ready = loop.run_until_complete(self.purchase_manager._ensure_session_ready())
-                loop.close()
+                # loop.close()  # Keep loop alive for session manager
 
                 if session_ready:
-                    print("[PURCHASE_THREAD] ✅ Persistent session system ready - browser should be at Target.com")
+                    print("[PURCHASE_THREAD] [OK] Persistent session system ready - browser should be at Target.com")
                     add_activity_log("Persistent session initialized - browser at Target.com", "success", "session")
                 else:
-                    print("[PURCHASE_THREAD] ⚠️ Session system failed - falling back to mock purchasing")
+                    print("[PURCHASE_THREAD] [WARNING] Session system failed - falling back to mock purchasing")
                     add_activity_log("Session system failed - using mock purchasing mode", "warning", "session")
 
             except Exception as e:
-                print(f"[PURCHASE_THREAD] ❌ Session initialization error: {e}")
+                print(f"[PURCHASE_THREAD] [ERROR] Session initialization error: {e}")
                 add_activity_log(f"Session initialization error: {str(e)}", "error", "session")
 
         # Run session initialization in background to avoid blocking startup

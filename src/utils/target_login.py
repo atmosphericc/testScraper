@@ -110,7 +110,7 @@ async def perform_target_login(page: Page) -> bool:
                 continue
 
         if not account_button:
-            print("❌ Could not find Account menu")
+            print("[ERROR] Could not find Account menu")
             return False
 
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -134,7 +134,7 @@ async def perform_target_login(page: Page) -> bool:
                 continue
 
         if not signin_link:
-            print("❌ Could not find 'Sign in' link")
+            print("[ERROR] Could not find 'Sign in' link")
             return False
 
         await asyncio.sleep(random.uniform(0.3, 0.7))
@@ -145,7 +145,7 @@ async def perform_target_login(page: Page) -> bool:
         print("4. Entering email...")
         email_field = await page.wait_for_selector('input[name="username"]', timeout=5000)
         if not email_field:
-            print("❌ Could not find email field")
+            print("[ERROR] Could not find email field")
             return False
 
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -156,13 +156,13 @@ async def perform_target_login(page: Page) -> bool:
             await email_field.type(char)
             await asyncio.sleep(random.uniform(0.05, 0.15))
 
-        print(f"   ✓ Email entered: {EMAIL}")
+        print(f"   [OK] Email entered: {EMAIL}")
 
         # Click Continue
         print("5. Clicking Continue...")
         continue_button = await page.wait_for_selector('button:has-text("Continue")', timeout=3000)
         if not continue_button:
-            print("❌ Could not find Continue button")
+            print("[ERROR] Could not find Continue button")
             return False
 
         await asyncio.sleep(random.uniform(0.3, 0.7))
@@ -182,7 +182,7 @@ async def perform_target_login(page: Page) -> bool:
                     await asyncio.sleep(random.uniform(0.3, 0.7))
                     await checkbox.check()
                     await asyncio.sleep(0.5)
-                    print("   ✓ 'Keep me signed in' checked!")
+                    print("   [OK] 'Keep me signed in' checked!")
                 checkbox_found = True
         except:
             pass
@@ -194,7 +194,7 @@ async def perform_target_login(page: Page) -> bool:
                     is_checked = await checkbox.is_checked()
                     if not is_checked:
                         await checkbox.check()
-                        print("   ✓ 'Keep me signed in' checked!")
+                        print("   [OK] 'Keep me signed in' checked!")
                     checkbox_found = True
             except:
                 pass
@@ -204,9 +204,9 @@ async def perform_target_login(page: Page) -> bool:
                 label = page.locator('text=Keep me signed in')
                 if await label.is_visible(timeout=2000):
                     await label.click()
-                    print("   ✓ Clicked 'Keep me signed in' label!")
+                    print("   [OK] Clicked 'Keep me signed in' label!")
             except:
-                print("   ⚠️  Could not find checkbox")
+                print("   [WARNING] Could not find checkbox")
 
         # Click "Enter your password"
         print("7. Clicking 'Enter your password'...")
@@ -225,7 +225,7 @@ async def perform_target_login(page: Page) -> bool:
                 continue
 
         if not password_option:
-            print("❌ Could not find 'Enter your password' button")
+            print("[ERROR] Could not find 'Enter your password' button")
             return False
 
         await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -236,7 +236,7 @@ async def perform_target_login(page: Page) -> bool:
         print("8. Entering password...")
         password_field = await page.wait_for_selector('input[type="password"]', timeout=5000)
         if not password_field:
-            print("❌ Could not find password field")
+            print("[ERROR] Could not find password field")
             return False
 
         await asyncio.sleep(random.uniform(1.0, 2.0))
@@ -250,7 +250,7 @@ async def perform_target_login(page: Page) -> bool:
                 await asyncio.sleep(random.uniform(0.1, 0.3))
 
         await asyncio.sleep(random.uniform(0.5, 1.0))
-        print("   ✓ Password entered")
+        print("   [OK] Password entered")
 
         # Click Sign in button
         print("9. Clicking 'Sign in' button...")
@@ -273,12 +273,12 @@ async def perform_target_login(page: Page) -> bool:
                 continue
 
         if not signin_button:
-            print("❌ Could not find sign-in button")
+            print("[ERROR] Could not find sign-in button")
             return False
 
         await asyncio.sleep(random.uniform(0.3, 0.7))
         await signin_button.click()
-        print("   ✓ Sign-in clicked!")
+        print("   [OK] Sign-in clicked!")
 
         # Wait for login to complete
         print("10. Waiting for login response...")
@@ -301,17 +301,17 @@ async def perform_target_login(page: Page) -> bool:
                 element = await page.wait_for_selector(selector, timeout=3000)
                 if element and await element.is_visible():
                     print("\n" + "=" * 60)
-                    print("🎉 LOGIN SUCCESSFUL!")
+                    print("[SUCCESS] LOGIN SUCCESSFUL!")
                     print("=" * 60)
                     return True
             except:
                 continue
 
-        print("❌ Login verification failed")
+        print("[ERROR] Login verification failed")
         return False
 
     except Exception as e:
-        print(f"❌ Login failed with error: {e}")
+        print(f"[ERROR] Login failed with error: {e}")
         return False
 
 
@@ -329,16 +329,16 @@ async def ensure_logged_in_with_session_save(context, existing_page=None) -> boo
         if existing_page:
             page = existing_page
             should_close_page = False  # Don't close page we didn't create
-            print("[LOGIN] ✓ Using existing page for login check (NO NEW TAB)")
+            print("[LOGIN] [OK] Using existing page for login check (NO NEW TAB)")
         else:
             page = await context.new_page()
             should_close_page = True  # Close page we created
-            print("[LOGIN] ⚠️  CREATED NEW PAGE FOR LOGIN CHECK - THIS WILL FLASH!")
+            print("[LOGIN] [WARNING] CREATED NEW PAGE FOR LOGIN CHECK - THIS WILL FLASH!")
 
         # Check if already logged in
         print("[LOGIN] Checking login status...")
         if await check_if_logged_in(page):
-            print("[LOGIN] ✅ Already logged in!")
+            print("[LOGIN] [OK] Already logged in!")
 
             # Only close if we created the page
             if should_close_page:
@@ -349,7 +349,7 @@ async def ensure_logged_in_with_session_save(context, existing_page=None) -> boo
             storage_state = await context.storage_state()
             with open(STORAGE_PATH, 'w') as f:
                 json.dump(storage_state, f, indent=2)
-            print(f"[LOGIN] ✓ Session saved to {STORAGE_PATH}")
+            print(f"[LOGIN] [OK] Session saved to {STORAGE_PATH}")
 
             return True
 
@@ -363,7 +363,7 @@ async def ensure_logged_in_with_session_save(context, existing_page=None) -> boo
             storage_state = await context.storage_state()
             with open(STORAGE_PATH, 'w') as f:
                 json.dump(storage_state, f, indent=2)
-            print(f"[LOGIN] ✓ Session saved to {STORAGE_PATH}")
+            print(f"[LOGIN] [OK] Session saved to {STORAGE_PATH}")
 
         # Only close if we created the page
         if should_close_page:
@@ -372,5 +372,5 @@ async def ensure_logged_in_with_session_save(context, existing_page=None) -> boo
         return login_success
 
     except Exception as e:
-        print(f"[LOGIN] ❌ Error during login check: {e}")
+        print(f"[LOGIN] [ERROR] Error during login check: {e}")
         return False

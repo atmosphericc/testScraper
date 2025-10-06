@@ -1,6 +1,12 @@
 {
   "89542109": {
-    "status": "ready"
+    "status": "queued",
+    "tcin": "89542109",
+    "product_title": "Pok\u00e9mon Trading Card Game: Quaquaval ex Deluxe Battle Deck",
+    "started_at": 1759756639.9040513,
+    "final_outcome": "unknown",
+    "attempt_count": 1,
+    "real_purchase": true
   },
   "94724987": {
     "status": "ready"

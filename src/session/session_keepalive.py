@@ -51,7 +51,7 @@ class SessionKeepAlive:
         self._thread = threading.Thread(target=self._run_service, daemon=True)
         self._thread.start()
 
-        self.logger.info("🔄 Session keep-alive service started")
+        self.logger.info("[KEEPALIVE] Session keep-alive service started")
         self._notify_status("keep_alive_started", {"status": "active"})
 
     def stop(self):
@@ -98,13 +98,13 @@ class SessionKeepAlive:
         try:
             # Check if session manager is healthy
             if not await self.session_manager.is_healthy():
-                self.logger.warning("⚠️ Session manager unhealthy, attempting refresh...")
+                self.logger.warning("[WARNING] Session manager unhealthy, attempting refresh...")
                 # refresh_session() now tries navigation refresh first (preserves context)
                 if await self.session_manager.refresh_session():
-                    self.logger.info("✅ Session refreshed successfully")
+                    self.logger.info("[OK] Session refreshed successfully")
                     self.keep_alive_failures = 0
                 else:
-                    self.logger.error("❌ Session refresh failed")
+                    self.logger.error("[ERROR] Session refresh failed")
                     self.keep_alive_failures += 1
                     self._notify_status("keep_alive_error", {"error": "refresh_failed"})
                     return
@@ -119,12 +119,12 @@ class SessionKeepAlive:
             await self._check_idle_timeout(current_time)
 
         except Exception as e:
-            self.logger.error(f"❌ Service cycle error: {e}")
+            self.logger.error(f"[ERROR] Service cycle error: {e}")
             self.keep_alive_failures += 1
 
             # Only force refresh after multiple consecutive failures
             if self.keep_alive_failures >= self.max_failures:
-                self.logger.error(f"🚨 Too many keep-alive failures ({self.keep_alive_failures}), forcing refresh")
+                self.logger.error(f"[CRITICAL] Too many keep-alive failures ({self.keep_alive_failures}), forcing refresh")
                 # refresh_session() now tries navigation refresh first
                 await self.session_manager.refresh_session()
                 self.keep_alive_failures = 0
@@ -158,19 +158,19 @@ class SessionKeepAlive:
 
                 # BULLETPROOF CHECK 1: Ensure page is not None
                 if not page:
-                    self.logger.warning("⚠️ Keep-alive: No page available - attempting light refresh")
+                    self.logger.warning("[WARNING] Keep-alive: No page available - attempting light refresh")
                     # Try to get page again before forcing refresh
                     page = await self.session_manager.get_page()
 
                     if not page:
                         # Only refresh if we truly can't get a page
-                        self.logger.warning("⚠️ Keep-alive: Still no page, attempting session refresh")
+                        self.logger.warning("[WARNING] Keep-alive: Still no page, attempting session refresh")
                         if await self.session_manager.refresh_session():
-                            self.logger.info("✅ Keep-alive: Session refreshed successfully")
+                            self.logger.info("[OK] Keep-alive: Session refreshed successfully")
                             page = await self.session_manager.get_page()
 
                     if not page:
-                        self.logger.error("❌ Keep-alive: Still no page after refresh - skipping this cycle")
+                        self.logger.error("[ERROR] Keep-alive: Still no page after refresh - skipping this cycle")
                         self.keep_alive_failures += 1
                         self._notify_status("keep_alive_failed", {"error": "No page available after refresh"})
                         return
@@ -180,7 +180,7 @@ class SessionKeepAlive:
                     # Quick health check - this will fail if page is broken
                     await page.evaluate("() => document.readyState", timeout=3000)
                 except Exception as health_error:
-                    self.logger.warning(f"⚠️ Keep-alive: Page health check failed: {health_error}")
+                    self.logger.warning(f"[WARNING] Keep-alive: Page health check failed: {health_error}")
                     # Try to get a fresh page
                     try:
                         await self.session_manager.refresh_session()
@@ -190,7 +190,7 @@ class SessionKeepAlive:
                         else:
                             raise Exception("No page after refresh")
                     except Exception:
-                        self.logger.error("❌ Keep-alive: Page unusable after refresh - skipping")
+                        self.logger.error("[ERROR] Keep-alive: Page unusable after refresh - skipping")
                         self.keep_alive_failures += 1
                         self._notify_status("keep_alive_failed", {"error": f"Page health check failed: {health_error}"})
                         return
@@ -210,7 +210,7 @@ class SessionKeepAlive:
                     self.last_keep_alive = current_time
                     self.last_activity = current_time
                     self.keep_alive_failures = max(0, self.keep_alive_failures - 1)  # Reduce failure count on success
-                    self.logger.debug("✅ Keep-alive health check completed (non-intrusive)")
+                    self.logger.debug("[OK] Keep-alive health check completed (non-intrusive)")
                     self._notify_status("keep_alive_completed", {"timestamp": current_time.isoformat()})
 
                 except Exception as health_error:
@@ -220,13 +220,13 @@ class SessionKeepAlive:
                     return
 
             except Exception as e:
-                self.logger.error(f"❌ Keep-alive interaction failed with unexpected error: {e}")
+                self.logger.error(f"[ERROR] Keep-alive interaction failed with unexpected error: {e}")
                 self.keep_alive_failures += 1
                 self._notify_status("keep_alive_failed", {"error": str(e)})
 
                 # Circuit breaker: if too many consecutive failures, request session restart
                 if self.keep_alive_failures >= self.max_failures:
-                    self.logger.error("🚨 CRITICAL: Keep-alive circuit breaker triggered - requesting session restart")
+                    self.logger.error("[CRITICAL] CRITICAL: Keep-alive circuit breaker triggered - requesting session restart")
                     self._notify_status("keep_alive_circuit_open", {"consecutive_failures": self.keep_alive_failures})
 
     async def _check_idle_timeout(self, current_time: datetime):
@@ -235,7 +235,7 @@ class SessionKeepAlive:
             idle_time = (current_time - self.last_activity).total_seconds()
             # Increased idle timeout to reduce unnecessary refreshes
             if idle_time > self.max_idle_time:
-                self.logger.warning(f"⚠️ Session idle for {idle_time/60:.1f} minutes, performing lightweight check")
+                self.logger.warning(f"[WARNING] Session idle for {idle_time/60:.1f} minutes, performing lightweight check")
                 # Just perform a light validation WITHOUT navigation (no interference!)
                 try:
                     page = await self.session_manager.get_page()
@@ -243,16 +243,16 @@ class SessionKeepAlive:
                         # Lightweight check - NO navigation to avoid interfering with purchases
                         await page.evaluate("() => document.readyState", timeout=3000)
                         self.last_activity = current_time
-                        self.logger.info("✅ Idle session validated (non-intrusive)")
+                        self.logger.info("[OK] Idle session validated (non-intrusive)")
                     else:
                         # Only refresh if we can't get a page
                         if await self.session_manager.refresh_session():
                             self.last_activity = current_time
-                            self.logger.info("✅ Idle session refreshed successfully")
+                            self.logger.info("[OK] Idle session refreshed successfully")
                         else:
-                            self.logger.error("❌ Idle session refresh failed")
+                            self.logger.error("[ERROR] Idle session refresh failed")
                 except Exception as e:
-                    self.logger.error(f"❌ Idle check failed: {e}")
+                    self.logger.error(f"[ERROR] Idle check failed: {e}")
 
                 self._notify_status("idle_activity", {"idle_time_minutes": idle_time/60})
 
