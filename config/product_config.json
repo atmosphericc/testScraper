@@ -42,10 +42,10 @@
       "enabled": true
     },
     {
-      "tcin": "94898414",
-      "name": "Product 94898414",
+      "tcin": "89542109",
+      "name": "Test Product - Always In Stock",
       "enabled": true,
-      "url": "https://www.target.com/p/-/A-94898414"
+      "url": "https://www.target.com/p/-/A-89542109"
     }
   ]
 }

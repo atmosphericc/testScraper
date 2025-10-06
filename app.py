@@ -488,6 +488,15 @@ class StockMonitorThread:
 
         print(f"[STOCK_MONITOR] Starting with {initial_cycle_duration:.1f}s initial cycle")
 
+        # WARMUP DELAY ON STARTUP - Give browser time to launch and initialize before first purchase attempt
+        if not is_manual_refresh:
+            print("[STOCK_MONITOR] 🔥 Browser warmup: waiting 10 seconds for browser to launch and navigate to target.com...")
+            for i in range(10):
+                if not self.running:
+                    return
+                time.sleep(1)
+            print("[STOCK_MONITOR] ✅ Browser warmup complete, ready for stock checks and purchases")
+
         # IMMEDIATE STOCK CHECK ON STARTUP ONLY - for instant stock status display AND immediate purchase attempts
         if not is_manual_refresh:
             print("[STOCK_MONITOR] Performing IMMEDIATE startup stock check...")
@@ -646,10 +655,10 @@ class PurchaseManagerThread:
         self.event_bus.subscribe('stock_updated', self._handle_stock_update)
 
     def _initialize_session_system(self):
-        """Initialize persistent session system"""
+        """Initialize persistent session system - called only once"""
         def session_init_task():
             try:
-                print("[PURCHASE_THREAD] Initializing persistent session system...")
+                print("[PURCHASE_THREAD] 🚀 Initializing persistent session system...")
 
                 # Run async session initialization
                 import asyncio
@@ -660,14 +669,14 @@ class PurchaseManagerThread:
                 loop.close()
 
                 if session_ready:
-                    print("[PURCHASE_THREAD] Persistent session system ready")
-                    add_activity_log("Persistent session system initialized", "success", "session")
+                    print("[PURCHASE_THREAD] ✅ Persistent session system ready - browser should be at Target.com")
+                    add_activity_log("Persistent session initialized - browser at Target.com", "success", "session")
                 else:
-                    print("[PURCHASE_THREAD] Session system failed - will use mock purchasing")
-                    add_activity_log("Session system failed - using mock purchasing", "warning", "session")
+                    print("[PURCHASE_THREAD] ⚠️ Session system failed - falling back to mock purchasing")
+                    add_activity_log("Session system failed - using mock purchasing mode", "warning", "session")
 
             except Exception as e:
-                print(f"[PURCHASE_THREAD] Session initialization error: {e}")
+                print(f"[PURCHASE_THREAD] ❌ Session initialization error: {e}")
                 add_activity_log(f"Session initialization error: {str(e)}", "error", "session")
 
         # Run session initialization in background to avoid blocking startup
@@ -677,7 +686,7 @@ class PurchaseManagerThread:
         """Start the purchase management thread"""
         self.running = True
 
-        # Initialize session system first
+        # Initialize session system ONCE at startup
         self._initialize_session_system()
 
         self.thread = threading.Thread(target=self._purchase_loop, daemon=True)

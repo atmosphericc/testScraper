@@ -1399,6 +1399,13 @@ class BuyBot:
                 # 🔄 REVOLUTIONARY SESSION MANAGEMENT - F5 Bypass Evolution
                 session_file = await self._revolutionary_session_manager()
 
+                # 🧪 FORCE FRESH SESSION: Ensure we use the fresh login we just saved
+                if not session_file or not os.path.exists(str(session_file)):
+                    session_file = self.session_path
+                    self.logger.info(f"🔧 Using fresh session file: {session_file}")
+                else:
+                    self.logger.info(f"✅ Using evaluated session file: {session_file}")
+
                 # ULTIMATE STEALTH context - Let browser use natural viewport
                 context = await browser.new_context(
                     storage_state=session_file,
@@ -2532,8 +2539,22 @@ class BuyBot:
                                     await page.screenshot(path=screenshot_path)
                                     self.logger.info(f"📸 Final checkout screenshot: {screenshot_path}")
 
+                                    # 🧪 TEST MODE CHECK - Stop before final purchase to avoid cancellations
+                                    test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
+                                    if test_mode:
+                                        self.purchase_log.warning(f"🧪 TEST MODE: Stopping before final purchase for {tcin}")
+                                        return {
+                                            'success': True,
+                                            'tcin': tcin,
+                                            'test_mode': True,
+                                            'message': f'✅ TEST COMPLETE: Ready to purchase {tcin} - Place order button found',
+                                            'screenshot': screenshot_path,
+                                            'ready_to_purchase': True,
+                                            'next_step': 'Set TEST_MODE=false to complete actual purchase'
+                                        }
+
                                     # SAFETY CHECK - Never click place order unless explicitly authorized
-                                    if os.environ.get('FINAL_PURCHASE_AUTHORIZED') == 'YES_COMPLETE_PURCHASE' or True:
+                                    if os.environ.get('FINAL_PURCHASE_AUTHORIZED') == 'YES_COMPLETE_PURCHASE':
                                         self.purchase_log.warning(f"FINAL PURCHASE AUTHORIZED - PLACING ORDER for {tcin}")
                                         await place_order_btn.click()
 
@@ -2704,7 +2725,12 @@ async def main():
         )
 
         # Product configuration from environment (for dashboard integration)
-        test_tcin = os.environ.get('TARGET_TCIN', '94898414')
+        test_tcin = os.environ.get('TARGET_TCIN', '75567580')
+
+        # 🧪 TEST MODE: Stop before final purchase to avoid cancellations
+        test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
+        if test_mode:
+            print("🧪 TEST MODE ENABLED - Will stop before final purchase confirmation")
 
         # Initialize ultra-fast bot with configurable session path
         session_path = os.environ.get('TARGET_SESSION_PATH', 'target.json')

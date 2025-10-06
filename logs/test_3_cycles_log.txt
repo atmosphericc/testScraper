@@ -1,0 +1,60 @@
+3-Cycle Test Started: 2025-10-04T22:59:50.389477
+================================================================================
+
+[22:59:50] [INFO] 🚀 Starting Flask app...
+[22:59:50] [INFO] Monitoring for 3 purchase cycles...
+[22:59:50] [INFO] 
+[22:59:50] [INFO] ✅ App started successfully
+[22:59:50] [INFO] Monitoring dashboard at http://127.0.0.1:5001
+[22:59:50] [INFO] 
+[23:00:01] [INFO] 
+================================================================================
+[23:00:01] [INFO] 🔄 CYCLE 1 STARTED
+[23:00:01] [INFO] ================================================================================
+[23:00:01] [INFO] 🛒 PURCHASE ATTEMPTED (Cycle 1)
+[23:00:02] [ERROR] 📦 PURCHASE COMPLETED (Cycle 1): ❌ FAILED
+[23:00:02] [INFO] ⏱️  Cycle 1 duration: 1.0s
+[23:00:43] [INFO] 
+================================================================================
+[23:00:43] [INFO] 🔄 CYCLE 2 STARTED
+[23:00:43] [INFO] ================================================================================
+[23:00:43] [INFO] 🛒 PURCHASE ATTEMPTED (Cycle 2)
+[23:00:44] [ERROR] 📦 PURCHASE COMPLETED (Cycle 2): ❌ FAILED
+[23:00:44] [INFO] ⏱️  Cycle 2 duration: 1.0s
+[23:02:06] [INFO] 
+================================================================================
+[23:02:06] [INFO] 🔄 CYCLE 3 STARTED
+[23:02:06] [INFO] ================================================================================
+[23:02:06] [INFO] 🛒 PURCHASE ATTEMPTED (Cycle 3)
+[23:02:07] [INFO] 
+🏁 3 cycles completed - waiting for final cycle to finish...
+[23:02:17] [INFO] 
+📊 Generating final report...
+[23:02:17] [INFO] 
+================================================================================
+[23:02:17] [INFO] 📊 FINAL TEST REPORT
+[23:02:17] [INFO] ================================================================================
+[23:02:17] [INFO] 
+Total Cycles: 2
+[23:02:17] [INFO] Successful Logins: 0/2
+[23:02:17] [INFO] Successful Purchases: 0/2
+[23:02:17] [INFO] 
+Cycle Details:
+[23:02:17] [INFO] 
+Cycle 1:
+[23:02:17] [INFO]   Duration: 1.0s
+[23:02:17] [INFO]   Login Validated: ❌ NO
+[23:02:17] [INFO]   Purchase Attempted: ✅ YES
+[23:02:17] [INFO]   Purchase Success: ❌ NO
+[23:02:17] [INFO] 
+Cycle 2:
+[23:02:17] [INFO]   Duration: 1.0s
+[23:02:17] [INFO]   Login Validated: ❌ NO
+[23:02:17] [INFO]   Purchase Attempted: ✅ YES
+[23:02:17] [INFO]   Purchase Success: ❌ NO
+[23:02:17] [INFO] 
+================================================================================
+[23:02:17] [ERROR] ❌ TEST FAILED: Session did not persist across all cycles
+[23:02:17] [INFO] ❌ Only 0/3 logins validated
+[23:02:17] [INFO] 
+📁 Full test log saved to: logs/test_3_cycles_log.txt

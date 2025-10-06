@@ -68,7 +68,19 @@
       "Bash(claude --version)",
       "Bash(npx:*)",
       "Bash(set FINAL_PURCHASE_AUTHORIZED=YES_COMPLETE_PURCHASE)",
-      "Bash(cmd /c:*)"
+      "Bash(cmd /c:*)",
+      "Bash(TEST_MODE=true python buy_bot.py)",
+      "Bash(TEST_MODE=true python app.py)",
+      "Bash(awk:*)",
+      "Read(//private/tmp/**)",
+      "Bash(tee:*)",
+      "Bash(TARGET_TCIN=\"94724987\" python buy_bot.py)",
+      "mcp__ide__getDiagnostics",
+      "Bash(chmod:*)",
+      "Bash(./run_test_with_login.sh:*)",
+      "Bash(/Users/Eric/Desktop/testScraper/run_test_with_login.sh:*)",
+      "Bash(python3:*)",
+      "WebFetch(domain:www.zenrows.com)"
     ],
     "deny": [],
     "ask": []

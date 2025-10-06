@@ -39,12 +39,30 @@ class BulletproofPurchaseManager:
             'cooldown_seconds': 0  # No cooldown - immediate retry on next stock check
         }
 
-        # Persistent session management
+        # 🚩 FEATURE FLAGS AND SAFETY MEASURES
+        self.feature_flags = {
+            # Main persistent session feature flag (environment controlled)
+            'enable_persistent_session': os.environ.get('ENABLE_PERSISTENT_SESSION', 'true').lower() == 'true',
+
+            # Safety rollback flag (can disable persistent session if issues arise)
+            'force_mock_mode': os.environ.get('FORCE_MOCK_MODE', 'false').lower() == 'true',
+
+            # Debug mode for detailed session logging
+            'debug_session_system': os.environ.get('DEBUG_SESSION_SYSTEM', 'false').lower() == 'true',
+
+            # Circuit breaker - disable persistent session after X consecutive failures
+            'enable_circuit_breaker': True,
+            'max_session_failures': int(os.environ.get('MAX_SESSION_FAILURES', '3')),  # Reduced from 5 to 3
+        }
+
+        # Persistent session management with safety tracking
         self.session_manager = None
         self.session_keepalive = None
         self.purchase_executor = None
         self.session_initialized = False
-        self.use_real_purchasing = True  # Enable real purchasing
+        self.session_failure_count = 0  # Track consecutive failures
+        self.session_circuit_open = False  # Circuit breaker state
+        self.use_real_purchasing = self.feature_flags['enable_persistent_session'] and not self.feature_flags['force_mock_mode']
 
         # Thread synchronization
         self._file_lock = threading.Lock()
@@ -61,38 +79,119 @@ class BulletproofPurchaseManager:
         self._initialize_session_system()
 
     def _initialize_session_system(self):
-        """Initialize persistent session management system"""
+        """Initialize persistent session management system with safety measures"""
+
+        # 🚩 SAFETY CHECK 1: Feature flag control
+        if not self.feature_flags['enable_persistent_session']:
+            print("[SESSION] 🔒 Persistent session DISABLED by feature flag - using mock purchasing")
+            self.use_real_purchasing = False
+            return
+
+        if self.feature_flags['force_mock_mode']:
+            print("[SESSION] 🔒 FORCE_MOCK_MODE enabled - using mock purchasing")
+            self.use_real_purchasing = False
+            return
+
+        # 🚩 SAFETY CHECK 2: Circuit breaker check
+        if self.session_circuit_open:
+            print("[SESSION] 🔒 Session circuit breaker OPEN - using mock purchasing")
+            self.use_real_purchasing = False
+            return
+
         try:
-            print("[SESSION] Initializing persistent session system...")
+            if self.feature_flags['debug_session_system']:
+                print("[SESSION] 🚀 Initializing persistent session system (DEBUG MODE)...")
+                print(f"[SESSION] Feature flags: {self.feature_flags}")
+            else:
+                print("[SESSION] 🚀 Initializing persistent session system...")
 
             # Create session manager
             self.session_manager = SessionManager(session_path="target.json")
 
-            # Create session keep-alive service
+            # Create session keep-alive service with enhanced callback
             def session_status_callback(event, data):
-                print(f"[SESSION] {event}: {data}")
+                if self.feature_flags['debug_session_system']:
+                    print(f"[SESSION] 📊 {event}: {data}")
+                else:
+                    print(f"[SESSION] {event}: {data}")
+
+                # Track session failures for circuit breaker
+                if event in ['session_validation_failed', 'keep_alive_failed']:
+                    self.session_failure_count += 1
+                    if (self.feature_flags['enable_circuit_breaker'] and
+                        self.session_failure_count >= self.feature_flags['max_session_failures']):
+                        self._trigger_circuit_breaker(f"Too many {event} events")
+
+                elif event in ['session_validated', 'keep_alive_completed']:
+                    # Reset failure count on success
+                    self.session_failure_count = 0
 
             self.session_keepalive = SessionKeepAlive(
                 self.session_manager,
                 status_callback=session_status_callback
             )
 
-            # Create purchase executor
+            # Create purchase executor with enhanced callback
             def purchase_status_callback(data):
                 # Forward purchase status to main callback
                 if self.status_callback and 'tcin' in data:
                     self.status_callback(data['tcin'], data['status'], data)
+
+                # Track purchase executor failures
+                if data.get('status') == 'failed' and 'session' in data.get('reason', '').lower():
+                    self.session_failure_count += 1
+                    if (self.feature_flags['enable_circuit_breaker'] and
+                        self.session_failure_count >= self.feature_flags['max_session_failures']):
+                        self._trigger_circuit_breaker("Purchase executor session failures")
 
             self.purchase_executor = PurchaseExecutor(
                 self.session_manager,
                 status_callback=purchase_status_callback
             )
 
-            print("[SESSION] Session system components created")
+            print("[SESSION] ✅ Session system components created successfully")
 
         except Exception as e:
-            print(f"[SESSION] Failed to initialize session system: {e}")
-            self.use_real_purchasing = False  # Fall back to mock
+            print(f"[SESSION] ❌ Failed to initialize session system: {e}")
+            self.session_failure_count += 1
+
+            # 🚩 SAFETY FALLBACK: Always preserve functionality
+            if (self.feature_flags['enable_circuit_breaker'] and
+                self.session_failure_count >= self.feature_flags['max_session_failures']):
+                self._trigger_circuit_breaker(f"Initialization failure: {e}")
+            else:
+                print("[SESSION] 🔄 Falling back to mock purchasing (system remains functional)")
+                self.use_real_purchasing = False
+
+    def _trigger_circuit_breaker(self, reason: str):
+        """Trigger circuit breaker to disable persistent sessions"""
+        self.session_circuit_open = True
+        self.use_real_purchasing = False
+        print(f"[SESSION] 🚨 CIRCUIT BREAKER TRIGGERED: {reason}")
+        print(f"[SESSION] 🔒 Persistent sessions DISABLED after {self.session_failure_count} failures")
+        print(f"[SESSION] 🔄 Falling back to MOCK PURCHASING mode (simulated purchases)")
+        print("[SESSION] 💡 Dashboard will continue working, but purchases will be simulated")
+        print("[SESSION] 💡 To fix: Check browser/session issues and restart application")
+
+        if self.status_callback:
+            self.status_callback('system', 'circuit_breaker_open', {
+                'reason': reason,
+                'failure_count': self.session_failure_count,
+                'fallback_mode': 'mock_purchasing',
+                'message': 'Session system disabled - using mock mode'
+            })
+
+    def get_system_status(self) -> dict:
+        """Get current system status for monitoring"""
+        return {
+            'feature_flags': self.feature_flags,
+            'use_real_purchasing': self.use_real_purchasing,
+            'session_initialized': self.session_initialized,
+            'session_failure_count': self.session_failure_count,
+            'circuit_breaker_open': self.session_circuit_open,
+            'session_manager_available': self.session_manager is not None,
+            'purchase_mode': 'persistent_session' if self.use_real_purchasing else 'mock_fallback'
+        }
 
     async def _ensure_session_ready(self):
         """Ensure session is initialized and ready"""
@@ -102,22 +201,44 @@ class BulletproofPurchaseManager:
         try:
             print("[SESSION] Starting session initialization...")
 
+            # PRE-CHECK: Validate session file exists before opening browser
+            import json
+            from pathlib import Path
+            session_path = Path("target.json")
+
+            if not session_path.exists():
+                print("[SESSION] ⚠️  target.json not found - will attempt auto-login during initialization")
+                # Don't return False - let SessionManager initialize and auto-login
+            else:
+                try:
+                    with open(session_path, 'r') as f:
+                        session_data = json.load(f)
+
+                    # Check if cookies exist
+                    if 'cookies' not in session_data or not session_data['cookies']:
+                        print("[SESSION] ⚠️  target.json has no cookies - will attempt auto-login")
+                    else:
+                        print(f"[SESSION] ✅ Found {len(session_data['cookies'])} cookies in session file")
+
+                except Exception as e:
+                    print(f"[SESSION] ⚠️  Invalid target.json: {e} - will attempt auto-login")
+
             # Initialize session manager
             if await self.session_manager.initialize():
-                print("[SESSION]  Session manager initialized")
+                print("[SESSION] ✅ Session manager initialized")
 
                 # Start keep-alive service
                 self.session_keepalive.start()
-                print("[SESSION]  Keep-alive service started")
+                print("[SESSION] ✅ Keep-alive service started")
 
                 self.session_initialized = True
                 return True
             else:
-                print("[SESSION]  Session manager initialization failed")
+                print("[SESSION] ⚠️ Session manager initialization failed")
                 return False
 
         except Exception as e:
-            print(f"[SESSION]  Session initialization error: {e}")
+            print(f"[SESSION] ❌ Session initialization error: {e}")
             return False
 
     def check_and_complete_purchases(self):
@@ -133,25 +254,44 @@ class BulletproofPurchaseManager:
             for tcin, state in states.items():
                 if state.get('status') == 'attempting':
                     attempting_count += 1
-                    complete_time = state.get('completes_at', 0)
-                    started_time = state.get('started_at', 0)
-                    time_remaining = complete_time - current_time
-                    elapsed_time = current_time - started_time
 
-                    print(f"[PURCHASE_DEBUG] {tcin} attempting: {time_remaining:.1f}s remaining (started at {started_time:.3f}, completes at {complete_time:.3f})")
+                    # CRITICAL: Real purchases don't have completes_at - they complete when browser finishes
+                    is_real_purchase = state.get('real_purchase', False)
 
-                    # Force completion if purchase is overdue by more than 30 seconds (safety mechanism)
-                    if time_remaining < -30:
-                        print(f"[PURCHASE_FORCE_COMPLETE] {tcin} is severely overdue ({time_remaining:.1f}s), forcing completion")
-                        final_outcome = 'failed'  # Force failed if severely overdue
-                        self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
-                        completed_purchases.append((tcin, final_outcome))
-                    elif current_time >= complete_time:
-                        # Normal completion
-                        final_outcome = state.get('final_outcome', 'failed')
-                        print(f"[PURCHASE_DEBUG] {tcin} COMPLETING with outcome: {final_outcome} (was attempting for {elapsed_time:.1f}s)")
-                        self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
-                        completed_purchases.append((tcin, final_outcome))
+                    if is_real_purchase:
+                        # Real purchase - only check for timeout (no force-completion on timer)
+                        started_time = state.get('started_at', 0)
+                        elapsed_time = current_time - started_time
+
+                        print(f"[PURCHASE_DEBUG] {tcin} REAL purchase attempting: {elapsed_time:.1f}s elapsed (no timer)")
+
+                        # Only force-fail real purchases if they've been running for more than 120 seconds
+                        if elapsed_time > 120:
+                            print(f"[PURCHASE_FORCE_COMPLETE] {tcin} REAL purchase timeout after {elapsed_time:.1f}s, forcing completion")
+                            final_outcome = 'failed'
+                            self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
+                            completed_purchases.append((tcin, final_outcome))
+                    else:
+                        # Mock purchase - has timer
+                        complete_time = state.get('completes_at', 0)
+                        started_time = state.get('started_at', 0)
+                        time_remaining = complete_time - current_time
+                        elapsed_time = current_time - started_time
+
+                        print(f"[PURCHASE_DEBUG] {tcin} MOCK purchase attempting: {time_remaining:.1f}s remaining (started at {started_time:.3f}, completes at {complete_time:.3f})")
+
+                        # Force completion if purchase is overdue by more than 30 seconds (safety mechanism)
+                        if time_remaining < -30:
+                            print(f"[PURCHASE_FORCE_COMPLETE] {tcin} is severely overdue ({time_remaining:.1f}s), forcing completion")
+                            final_outcome = 'failed'  # Force failed if severely overdue
+                            self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
+                            completed_purchases.append((tcin, final_outcome))
+                        elif current_time >= complete_time:
+                            # Normal completion
+                            final_outcome = state.get('final_outcome', 'failed')
+                            print(f"[PURCHASE_DEBUG] {tcin} COMPLETING with outcome: {final_outcome} (was attempting for {elapsed_time:.1f}s)")
+                            self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
+                            completed_purchases.append((tcin, final_outcome))
 
             print(f"[PURCHASE_DEBUG] Completion check found {attempting_count} attempting purchases, completed {len(completed_purchases)}")
 
@@ -539,23 +679,31 @@ class BulletproofPurchaseManager:
             print(f"[PURCHASE] PREVENTED DUPLICATE: {tcin} already attempting")
             return {'success': False, 'reason': 'already_attempting'}
 
-        # Use real purchasing if available, otherwise fall back to mock
-        if self.use_real_purchasing and self.session_initialized:
+        # Use real purchasing if enabled (fallback to mock if needed)
+        print(f"[PURCHASE_MODE_DEBUG] use_real_purchasing={self.use_real_purchasing}, session_initialized={self.session_initialized}")
+
+        if self.use_real_purchasing:
+            # Force real purchase even if session validation failed
+            # (session may be healthy but validation too strict)
+            print(f"[PURCHASE_MODE] 🎯 Using REAL browser automation for {tcin}")
             return self._start_real_purchase(tcin, product_title, states)
         else:
+            # Mock mode available for testing without browser
+            print(f"[PURCHASE_MODE] 📋 Using MOCK mode for {tcin} (set use_real_purchasing=True to enable browser)")
             return self._start_mock_purchase(tcin, product_title, states)
 
     def _start_real_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
         """Start real purchase using PurchaseExecutor"""
         now = time.time()
 
-        # Create initial state
+        # Create initial state - NO TIMER for real purchases
+        # Purchase stays "attempting" until browser automation completes
         new_state = {
             'status': 'attempting',
             'tcin': tcin,
             'product_title': product_title,
             'started_at': now,
-            'completes_at': now + 60,  # Max 60 seconds for real purchase
+            # NO completes_at - real purchase completes when browser finishes
             'final_outcome': 'unknown',  # Will be determined by real purchase
             'attempt_count': 1,
             'real_purchase': True
@@ -574,17 +722,51 @@ class BulletproofPurchaseManager:
         # Start real purchase in background
         def execute_real_purchase():
             try:
-                # Run purchase in new event loop
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                result = loop.run_until_complete(self.purchase_executor.execute_purchase(tcin))
-                loop.close()
+                print(f"[REAL_PURCHASE_THREAD] 🚀 Starting async purchase execution for {tcin}")
+                print(f"[REAL_PURCHASE_THREAD] purchase_executor: {self.purchase_executor}")
+                print(f"[REAL_PURCHASE_THREAD] session_initialized: {self.session_initialized}")
+
+                # CRITICAL: Wait for session to be ready (don't initialize new one!)
+                if not self.session_initialized:
+                    print(f"[REAL_PURCHASE_THREAD] Waiting for session initialization to complete...")
+                    # Wait up to 30 seconds for main thread to finish initializing session
+                    max_wait = 30
+                    for i in range(max_wait):
+                        if self.session_initialized:
+                            print(f"[REAL_PURCHASE_THREAD] ✅ Session ready after {i}s wait")
+                            break
+                        time.sleep(1)
+
+                    if not self.session_initialized:
+                        print(f"[REAL_PURCHASE_THREAD] ❌ Session initialization timeout after {max_wait}s")
+                        failed_result = {
+                            'success': False,
+                            'tcin': tcin,
+                            'reason': 'session_init_timeout',
+                            'error': f'Session not ready after {max_wait}s wait'
+                        }
+                        self._update_purchase_result(tcin, failed_result)
+                        return
+
+                # Session is ready, proceed with purchase
+                # Submit task to main event loop (thread-safe)
+                print(f"[REAL_PURCHASE_THREAD] Submitting purchase task to main event loop...")
+                future = self.session_manager.submit_async_task(
+                    self.purchase_executor.execute_purchase(tcin)
+                )
+
+                print(f"[REAL_PURCHASE_THREAD] Waiting for purchase result...")
+                result = future.result(timeout=60)  # 60 second timeout
+
+                print(f"[REAL_PURCHASE_THREAD] ✅ Purchase execution completed: {result}")
 
                 # Update state with real result
                 self._update_purchase_result(tcin, result)
 
             except Exception as e:
-                print(f"[PURCHASE] Real purchase failed for {tcin}: {e}")
+                print(f"[PURCHASE] ❌ Real purchase failed for {tcin}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Mark as failed
                 failed_result = {
                     'success': False,
