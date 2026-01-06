@@ -8,7 +8,7 @@ import asyncio
 import random
 import os
 from datetime import datetime
-from playwright.async_api import async_playwright, Page
+from patchright.async_api import async_playwright, Page
 
 
 # Credentials
@@ -49,7 +49,7 @@ async def check_if_logged_in(page: Page) -> bool:
     """Check if currently logged in to Target.com"""
     try:
         # Navigate to Target homepage
-        await page.goto("https://www.target.com", wait_until='domcontentloaded', timeout=10000)
+        await page.goto("https://www.target.com", wait_until='commit', timeout=10000)
         await page.wait_for_timeout(2000)
 
         # Check for login indicators
@@ -89,7 +89,7 @@ async def perform_target_login(page: Page) -> bool:
 
         # Navigate to Target homepage
         print("1. Navigating to Target.com...")
-        await page.goto("https://www.target.com", wait_until='domcontentloaded')
+        await page.goto("https://www.target.com", wait_until='commit')
         await asyncio.sleep(2)
         await dismiss_popups(page)
 
@@ -183,6 +183,23 @@ async def perform_target_login(page: Page) -> bool:
                     await checkbox.check()
                     await asyncio.sleep(0.5)
                     print("   [OK] 'Keep me signed in' checked!")
+
+                # CRITICAL: Save preference to localStorage so Target remembers it
+                # This ensures persistent login like regular browsers
+                await page.evaluate("""
+                    () => {
+                        try {
+                            localStorage.setItem('keepMeSignedIn', 'true');
+                            localStorage.setItem('rememberMe', 'true');
+                            localStorage.setItem('persistentLogin', 'true');
+                            console.log('[TargetLogin] Saved "Keep me signed in" preference to localStorage');
+                        } catch (e) {
+                            console.error('[TargetLogin] Failed to save preference:', e);
+                        }
+                    }
+                """)
+                print("   [OK] Saved 'Keep me signed in' preference to localStorage")
+
                 checkbox_found = True
         except:
             pass
@@ -195,6 +212,20 @@ async def perform_target_login(page: Page) -> bool:
                     if not is_checked:
                         await checkbox.check()
                         print("   [OK] 'Keep me signed in' checked!")
+
+                    # Save preference to localStorage
+                    await page.evaluate("""
+                        () => {
+                            try {
+                                localStorage.setItem('keepMeSignedIn', 'true');
+                                localStorage.setItem('rememberMe', 'true');
+                                localStorage.setItem('persistentLogin', 'true');
+                                console.log('[TargetLogin] Saved "Keep me signed in" preference to localStorage');
+                            } catch (e) {}
+                        }
+                    """)
+                    print("   [OK] Saved 'Keep me signed in' preference to localStorage")
+
                     checkbox_found = True
             except:
                 pass
@@ -205,6 +236,19 @@ async def perform_target_login(page: Page) -> bool:
                 if await label.is_visible(timeout=2000):
                     await label.click()
                     print("   [OK] Clicked 'Keep me signed in' label!")
+
+                    # Save preference to localStorage
+                    await page.evaluate("""
+                        () => {
+                            try {
+                                localStorage.setItem('keepMeSignedIn', 'true');
+                                localStorage.setItem('rememberMe', 'true');
+                                localStorage.setItem('persistentLogin', 'true');
+                                console.log('[TargetLogin] Saved "Keep me signed in" preference to localStorage');
+                            } catch (e) {}
+                        }
+                    """)
+                    print("   [OK] Saved 'Keep me signed in' preference to localStorage")
             except:
                 print("   [WARNING] Could not find checkbox")
 

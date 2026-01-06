@@ -1,5 +1,5 @@
 import asyncio
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 from datetime import datetime
 from pathlib import Path
 import logging
@@ -36,9 +36,11 @@ class BuyBot:
         try:
             async with async_playwright() as p:
                 # Launch browser (headless for speed)
+                # No manual args needed - Patchright handles stealth automatically
                 browser = await p.chromium.launch(
                     headless=True,
-                    args=['--disable-blink-features=AutomationControlled']
+                    args=['--test-type'],  # Suppress Chrome security warnings
+                    chromium_sandbox=True
                 )
 
                 # Load saved session
@@ -54,7 +56,7 @@ class BuyBot:
                 url = f"https://www.target.com/p/-/A-{tcin}"
                 self.logger.info(f"Navigating to {url}")
 
-                await page.goto(url, wait_until='domcontentloaded')
+                await page.goto(url, wait_until='commit')
                 await page.wait_for_timeout(2000)
 
                 # Check if product page loaded
@@ -114,7 +116,7 @@ class BuyBot:
                     }
 
                 # Go to cart
-                await page.goto("https://www.target.com/cart", wait_until='domcontentloaded')
+                await page.goto("https://www.target.com/cart", wait_until='commit')
                 await page.wait_for_timeout(2000)
 
                 # Verify item is in cart

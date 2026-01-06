@@ -1,0 +1,15 @@
+2025/11/19-11:33:01.110 12c8ce Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2025/11/19-11:33:01.121 12c8ce Recovering log #166
+2025/11/19-11:33:01.121 12c8ce Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000166.log 
+2025/11/19-11:34:01.130 12c8d1 Level-0 table #170: started
+2025/11/19-11:34:01.151 12c8d1 Level-0 table #170: 279470 bytes OK
+2025/11/19-11:34:01.181 12c8d1 Delete type=0 #166
+2025/11/19-11:34:01.183 12c8d1 Compacting 4@0 + 1@1 files
+2025/11/19-11:34:01.201 12c8d1 Generated table #171@0: 58 keys, 357306 bytes
+2025/11/19-11:34:01.201 12c8d1 Compacted 4@0 + 1@1 files => 357306 bytes
+2025/11/19-11:34:01.231 12c8d1 compacted to: files[ 0 1 0 0 0 0 0 ]
+2025/11/19-11:34:01.234 12c8d1 Delete type=2 #161
+2025/11/19-11:34:01.234 12c8d1 Delete type=2 #167
+2025/11/19-11:34:01.234 12c8d1 Delete type=2 #164
+2025/11/19-11:34:01.234 12c8d1 Delete type=2 #170
+2025/11/19-11:34:01.234 12c8d1 Delete type=2 #159

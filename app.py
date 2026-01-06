@@ -10,11 +10,16 @@ import random
 import threading
 import queue
 import hashlib
+import asyncio
+import concurrent.futures
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 import logging
 import os
 import pickle
+import atexit
+import signal
+from waitress import serve
 
 # Import our bulletproof modules
 from src.monitoring import StockMonitor
@@ -63,6 +68,11 @@ class ThreadSafeData:
         self.last_api_failure_time = None
         self.circuit_breaker_timeout = 60  # 1 minute timeout
 
+        # Background initialization state
+        self.initialization_complete = False
+        self.initialization_status = "Starting..."
+        self.initialization_error = None
+
     def initialize_timer(self, is_manual_refresh=False):
         """Initialize timer with persistence logic"""
         log_message = None
@@ -90,12 +100,12 @@ class ThreadSafeData:
                     log_message = f"Manual refresh: starting new {new_duration}s cycle"
                     result = new_duration
             else:
-                # Server startup - fresh timer
+                # Server startup - fresh timer (10s for predictable first cycle with full sync)
                 self.timer_start_time = now
                 self.is_server_startup = False
-                new_duration = random.randint(15, 25)
+                new_duration = 10  # Fixed 10s for consistent startup (browser warmup + sync time)
                 self.timer_duration = new_duration
-                log_message = f"Server startup: starting fresh {new_duration}s timer"
+                log_message = f"Server startup: starting 10s initial timer (ensures full sync)"
                 result = new_duration
 
         # Log outside the lock to prevent deadlock
@@ -108,6 +118,18 @@ class ThreadSafeData:
         """Get current timer status with countdown"""
         with self.lock:
             if not self.timer_start_time:
+                # FIX #1: Stabilize fallback timer state (CRITICAL)
+                # Return active: False during initialization to prevent dashboard from syncing
+                # to a regenerating timestamp. Dashboard will continue polling until real timer starts.
+                if self.monitor_running:
+                    return {
+                        'active': False,  # Changed from True - prevents false sync
+                        'remaining': 20,  # Default cycle duration
+                        'total': 20,
+                        'elapsed': 0,
+                        'status': 'initializing',
+                        'message': 'Monitoring thread starting, waiting for first cycle...'
+                    }
                 return {'active': False, 'remaining': 0, 'total': 0}
 
             now = time.time()
@@ -247,14 +269,154 @@ class EventBus:
 shared_data = ThreadSafeData()
 event_bus = EventBus()
 
+# Global purchase manager and event loop (shared across app and monitoring)
+# This ensures only ONE browser instance runs throughout the application
+global_purchase_manager = None
+global_event_loop = None
+global_event_loop_thread = None
+
 # Core monitoring using purchase manager only
 realtime_validator = None
 
-# SSE event queue for real-time updates
-sse_queue = queue.Queue()
+# CRITICAL FIX: Per-client SSE queues for proper multi-client broadcasting
+# Single queue causes events to be distributed round-robin (each client gets 1/N of events)
+# Dict of client_id -> queue ensures ALL clients receive ALL events
+sse_client_queues = {}
+sse_queue_lock = threading.Lock()
 
 # Activity log persistence
 ACTIVITY_LOG_FILE = 'logs/activity_log.pkl'
+
+# ========== ACTIVITY LOG BACKGROUND PERSISTENCE ==========
+
+class ActivityLogPersistenceWorker:
+    """
+    Background thread for activity log file persistence.
+    Decouples file I/O from critical SSE broadcasting path.
+    """
+    def __init__(self, debounce_ms=100):
+        self.save_queue = queue.Queue(maxsize=1000)  # Prevent runaway memory
+        self.running = False
+        self.thread = None
+        self.debounce_seconds = debounce_ms / 1000.0
+        self.last_save_time = 0
+        self.save_count = 0
+        self.error_count = 0
+
+    def start(self):
+        """Start the background persistence thread"""
+        if self.running:
+            print("[PERSISTENCE] Worker already running")
+            return
+
+        self.running = True
+        self.thread = threading.Thread(
+            target=self._worker_loop,
+            daemon=True,
+            name="ActivityLogPersistenceWorker"
+        )
+        self.thread.start()
+        print("[PERSISTENCE] Background persistence worker started")
+
+    def stop(self, timeout=5):
+        """Stop the worker and wait for pending saves"""
+        if not self.running:
+            return
+
+        self.running = False
+
+        # Signal shutdown
+        try:
+            self.save_queue.put_nowait("SHUTDOWN")
+        except queue.Full:
+            print("[PERSISTENCE] Warning: Queue full during shutdown")
+
+        # Wait for thread to finish
+        if self.thread:
+            self.thread.join(timeout=timeout)
+            if self.thread.is_alive():
+                print(f"[PERSISTENCE] Warning: Worker did not shut down cleanly in {timeout}s")
+            else:
+                print(f"[PERSISTENCE] Worker stopped cleanly ({self.save_count} saves, {self.error_count} errors)")
+
+    def queue_save(self):
+        """Queue a save request (non-blocking)"""
+        try:
+            self.save_queue.put_nowait("SAVE")
+            return True
+        except queue.Full:
+            print("[PERSISTENCE] Warning: Save queue full, skipping save")
+            self.error_count += 1
+            return False
+
+    def _worker_loop(self):
+        """Main worker loop - runs in background thread"""
+        print("[PERSISTENCE] Worker loop started")
+        pending_save = False
+
+        while self.running:
+            try:
+                # Wait for save request with timeout (for debouncing)
+                try:
+                    msg = self.save_queue.get(timeout=self.debounce_seconds)
+
+                    if msg == "SHUTDOWN":
+                        print("[PERSISTENCE] Shutdown signal received")
+                        break
+                    elif msg == "SAVE":
+                        pending_save = True
+                        # Don't save immediately - wait for debounce window
+                        continue
+
+                except queue.Empty:
+                    # Timeout - if we have pending save, execute it now
+                    if pending_save:
+                        self._execute_save()
+                        pending_save = False
+
+            except Exception as e:
+                print(f"[PERSISTENCE] Worker loop error: {e}")
+                self.error_count += 1
+                time.sleep(0.1)  # Prevent tight loop on persistent errors
+
+        # Process final pending save on shutdown
+        if pending_save:
+            print("[PERSISTENCE] Processing final pending save on shutdown")
+            self._execute_save()
+
+        print("[PERSISTENCE] Worker loop exited")
+
+    def _execute_save(self):
+        """Execute the actual file save with retry logic"""
+        max_retries = 3
+        retry_delays = [0.1, 0.5, 2.0]  # Exponential backoff
+
+        for attempt in range(max_retries):
+            try:
+                save_activity_log()
+                self.save_count += 1
+                self.last_save_time = time.time()
+
+                # Log periodic stats (every 100 saves)
+                if self.save_count % 100 == 0:
+                    print(f"[PERSISTENCE] Stats: {self.save_count} saves, {self.error_count} errors")
+
+                return  # Success
+
+            except Exception as e:
+                self.error_count += 1
+
+                if attempt < max_retries - 1:
+                    delay = retry_delays[attempt]
+                    print(f"[PERSISTENCE] Save failed (attempt {attempt+1}/{max_retries}): {e}")
+                    print(f"[PERSISTENCE] Retrying in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"[PERSISTENCE] Save failed after {max_retries} attempts: {e}")
+                    print("[PERSISTENCE] Warning: Activity log may not be persisted to disk")
+
+# Global persistence worker instance
+activity_log_persistence_worker = ActivityLogPersistenceWorker(debounce_ms=100)
 
 def load_activity_log():
     """Load activity log from file (thread-safe)"""
@@ -276,7 +438,12 @@ def load_activity_log():
             shared_data.activity_log = []
 
 def save_activity_log():
-    """Save activity log to file with rotation (thread-safe)"""
+    """
+    Save activity log to file with rotation (thread-safe).
+
+    NOTE: This function is called from background thread only.
+    Do NOT call directly from main threads - use activity_log_persistence_worker.queue_save()
+    """
     try:
         os.makedirs('logs', exist_ok=True)
         with shared_data.lock:
@@ -288,7 +455,8 @@ def save_activity_log():
             if file_size > 10 * 1024 * 1024:  # 10MB rotation threshold
                 rotate_activity_log()
 
-        temp_file = f"{ACTIVITY_LOG_FILE}.tmp.{os.getpid()}"
+        # FIX: Add thread ID to prevent race condition when multiple threads try to save
+        temp_file = f"{ACTIVITY_LOG_FILE}.tmp.{os.getpid()}.{threading.get_ident()}"
         with open(temp_file, 'wb') as f:
             pickle.dump(log_copy, f)
 
@@ -299,7 +467,12 @@ def save_activity_log():
         print(f"[WARN] Failed to save activity log: {e}")
 
 def rotate_activity_log():
-    """Rotate activity log files for production archival"""
+    """
+    Rotate activity log files for production archival.
+
+    NOTE: This can be slow (1-2s with many archives), but that's OK
+    because it runs in background thread and doesn't block SSE events.
+    """
     try:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         archive_file = f"{ACTIVITY_LOG_FILE}.{timestamp}"
@@ -309,25 +482,50 @@ def rotate_activity_log():
             print(f"[LOG_ROTATION] Archived activity log to {archive_file}")
 
             # Clean up old archives (keep last 10)
-            log_dir = os.path.dirname(ACTIVITY_LOG_FILE)
-            archive_pattern = os.path.basename(ACTIVITY_LOG_FILE) + "."
+            log_dir = os.path.dirname(ACTIVITY_LOG_FILE) or '.'
+            archive_pattern = os.path.basename(ACTIVITY_LOG_FILE)
             archives = []
 
-            for file in os.listdir(log_dir):
-                if file.startswith(archive_pattern) and file != os.path.basename(ACTIVITY_LOG_FILE):
-                    archives.append(os.path.join(log_dir, file))
+            # OPTIMIZATION: Only scan logs/ directory, not entire codebase
+            try:
+                for file in os.listdir(log_dir):
+                    # Match pattern: activity_log.pkl.TIMESTAMP or activity_log N.pkl
+                    if (file.startswith(archive_pattern) and
+                        file != os.path.basename(ACTIVITY_LOG_FILE) and
+                        (file.endswith('.pkl') or '.pkl.' in file)):
+                        archives.append(os.path.join(log_dir, file))
+            except OSError as e:
+                print(f"[LOG_ROTATION] Warning: Could not list archives: {e}")
+                return
 
             # Sort by modification time and keep newest 10
-            archives.sort(key=os.path.getmtime, reverse=True)
+            archives.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
+
+            removed_count = 0
             for old_archive in archives[10:]:
-                os.remove(old_archive)
-                print(f"[LOG_ROTATION] Cleaned up old archive: {old_archive}")
+                try:
+                    os.remove(old_archive)
+                    removed_count += 1
+                except OSError as e:
+                    print(f"[LOG_ROTATION] Warning: Could not remove {old_archive}: {e}")
+
+            if removed_count > 0:
+                print(f"[LOG_ROTATION] Cleaned up {removed_count} old archive(s)")
 
     except Exception as e:
         print(f"[WARN] Failed to rotate activity log: {e}")
 
 def add_activity_log(message, level="info", category="system"):
-    """Add entry to activity log with timestamp and persistence (thread-safe)"""
+    """
+    Add entry to activity log with timestamp and persistence (thread-safe).
+
+    CRITICAL FIX: File I/O is decoupled from SSE broadcasting.
+    - Entry added to shared_data.activity_log immediately (fast)
+    - Save queued to background worker (non-blocking)
+    - SSE event broadcast immediately (no waiting for file I/O)
+
+    This ensures dashboard updates are never blocked by slow disk operations.
+    """
     timestamp = datetime.now()
 
     entry = {
@@ -340,6 +538,7 @@ def add_activity_log(message, level="info", category="system"):
         'full_time': timestamp.strftime('%Y-%m-%d %H:%M:%S')
     }
 
+    # STEP 1: Add to in-memory log (thread-safe, fast - ~50µs)
     with shared_data.lock:
         shared_data.activity_log.insert(0, entry)
 
@@ -347,13 +546,86 @@ def add_activity_log(message, level="info", category="system"):
         if len(shared_data.activity_log) > 500:
             shared_data.activity_log = shared_data.activity_log[:500]
 
-    # Save to file
-    save_activity_log()
+    # STEP 2: Queue save to background worker (non-blocking - ~20µs)
+    # CRITICAL FIX: File I/O happens asynchronously, doesn't block this function
+    activity_log_persistence_worker.queue_save()
 
-    # Broadcast to SSE clients using enhanced SSE (but prevent recursive logging)
+    # STEP 3: Broadcast to SSE clients IMMEDIATELY (fast - ~100µs)
+    # CRITICAL FIX: This happens BEFORE file save completes
+    # Dashboard receives update in <1ms instead of 1-2000ms
     broadcast_sse_event('activity_log', entry)
 
+    # STEP 4: Console logging (non-blocking)
     print(f"[{timestamp.strftime('%H:%M:%S')}] [{category.upper()}] {message}")
+
+def initialize_global_purchase_manager():
+    """Initialize global purchase manager and event loop - called once at startup"""
+    global global_purchase_manager, global_event_loop, global_event_loop_thread
+
+    if global_purchase_manager is not None:
+        print("[SYSTEM] Global purchase manager already initialized")
+        return
+
+    import asyncio
+    import concurrent.futures
+
+    print("[SYSTEM] ═══════════════════════════════════════════════")
+    print("[SYSTEM] Initializing global purchase manager...")
+    print("[SYSTEM] ═══════════════════════════════════════════════")
+
+    # Create event loop that will run forever in background thread
+    global_event_loop = asyncio.new_event_loop()
+
+    def run_event_loop(loop):
+        """Background thread function that runs the event loop forever"""
+        asyncio.set_event_loop(loop)
+        print("[EVENT_LOOP] Starting global event loop in background thread...")
+        loop.run_forever()
+        print("[EVENT_LOOP] Event loop stopped")
+
+    # Start event loop in dedicated thread
+    global_event_loop_thread = threading.Thread(
+        target=run_event_loop,
+        args=(global_event_loop,),
+        daemon=True,
+        name="GlobalAsyncIOEventLoop"
+    )
+    global_event_loop_thread.start()
+    print("[EVENT_LOOP] ✅ Global event loop thread started")
+
+    # Create global purchase manager
+    global_purchase_manager = BulletproofPurchaseManager(status_callback=purchase_status_callback)
+    print("[SYSTEM] ✅ Global purchase manager created")
+
+    # Initialize session asynchronously using the global event loop
+    try:
+        print("[SYSTEM] Initializing browser session (timeout: 90s)...")
+        future = asyncio.run_coroutine_threadsafe(
+            global_purchase_manager._ensure_session_ready(),
+            global_event_loop
+        )
+
+        # Wait for initialization to complete
+        session_ready = future.result(timeout=90)
+
+        if session_ready:
+            print("[SYSTEM] ✅ Browser session initialized successfully")
+            add_activity_log("Global purchase manager initialized - browser ready", "success", "system")
+        else:
+            print("[SYSTEM] ⚠️  Browser session initialization failed - mock mode")
+            add_activity_log("Browser session failed - using mock mode", "warning", "system")
+
+    except concurrent.futures.TimeoutError:
+        print("[SYSTEM] ❌ Browser session initialization timeout after 90s")
+        print("[SYSTEM] ⚠️  Browser failed to launch - check Playwright installation")
+        add_activity_log("Browser session timeout - check Playwright/Patchright installation", "error", "system")
+    except Exception as e:
+        print(f"[SYSTEM] ❌ Error initializing browser: {e}")
+        import traceback
+        traceback.print_exc()
+        add_activity_log(f"Browser initialization error: {str(e)}", "error", "system")
+
+    print("[SYSTEM] ═══════════════════════════════════════════════")
 
 def purchase_status_callback(tcin, status, state):
     """Callback for real-time purchase status updates"""
@@ -404,7 +676,17 @@ def broadcast_sse_event(event_type, data):
             'data': data,
             'timestamp': datetime.now().isoformat()
         }
-        sse_queue.put(event_data)
+        # CRITICAL FIX: Broadcast to ALL clients
+        with sse_queue_lock:
+            clients_count = len(sse_client_queues)
+            if clients_count == 0:
+                print(f"[SSE_WARN] No clients connected for {event_type} event!")
+            for client_id, client_queue in sse_client_queues.items():
+                try:
+                    client_queue.put(event_data, block=False)
+                    print(f"[SSE_DEBUG] Sent {event_type} to client {client_id[:8]}... (queue size: {client_queue.qsize()})")
+                except queue.Full:
+                    print(f"[SSE] ⚠️ ERROR: Queue FULL for client {client_id} on {event_type} event!")
     except Exception as e:
         print(f"[SSE] Failed to broadcast event: {e}")
 
@@ -425,6 +707,10 @@ def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, tim
         # Prepare timer sync info
         timer_status = shared_data.get_timer_status()
 
+        # BUGFIX: Include activity log in atomic event (last 50 entries for dashboard)
+        with shared_data.lock:
+            activity_log = shared_data.activity_log[-50:] if shared_data.activity_log else []
+
         # Create atomic event
         atomic_event = {
             'type': 'api_cycle_complete',
@@ -438,12 +724,29 @@ def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, tim
                     'total_duration': timer_status.get('total', 20),
                     'next_cycle_starts_at': time.time() + timer_status.get('remaining', 0)
                 },
-                'summary': summary
+                'summary': summary,
+                'activity_log': activity_log  # BUGFIX: Include activity log for real-time dashboard updates
             }
         }
 
-        sse_queue.put(atomic_event)
-        print(f"[SSE] Broadcast atomic API cycle event {cycle_id}")
+        # CRITICAL FIX: Broadcast to ALL connected clients, not just one
+        with sse_queue_lock:
+            clients_count = len(sse_client_queues)
+            if clients_count == 0:
+                print(f"[SSE] ⚠️ WARNING: No clients connected! Event {cycle_id} will not be delivered to any dashboard.")
+                print(f"[SSE] ⚠️ This means dashboards won't update in real-time. Check if EventSource connection is established.")
+            else:
+                print(f"[SSE_DEBUG] About to broadcast atomic event {cycle_id} to {clients_count} client(s)")
+                print(f"[SSE_DEBUG] Event contains {len(stock_updates)} stock updates, {len(activity_log)} activity log entries")
+                for client_id, client_queue in sse_client_queues.items():
+                    try:
+                        queue_size_before = client_queue.qsize()
+                        client_queue.put(atomic_event, block=False)
+                        queue_size_after = client_queue.qsize()
+                        print(f"[SSE_DEBUG] Client {client_id[:8]}... queue: {queue_size_before} → {queue_size_after}")
+                    except queue.Full:
+                        print(f"[SSE] ⚠️ ERROR: Queue FULL for client {client_id}, skipping event {cycle_id}!")
+        print(f"[SSE] ✅ Broadcast atomic API cycle event {cycle_id} to {clients_count} client(s)")
 
     except Exception as e:
         print(f"[SSE] Failed to broadcast atomic cycle event: {e}")
@@ -488,51 +791,79 @@ class StockMonitorThread:
 
         print(f"[STOCK_MONITOR] Starting with {initial_cycle_duration:.1f}s initial cycle")
 
-        # WARMUP DELAY ON STARTUP - Give browser time to launch and initialize before first purchase attempt
+        # Set timer immediately so dashboard shows countdown during warmup/initial wait
+        # This prevents the dashboard from being stuck on "loading" state
+        with self.shared_data.lock:
+            self.shared_data.timer_start_time = time.time()
+            self.shared_data.timer_duration = initial_cycle_duration
+        print(f"[STOCK_MONITOR] Timer initialized for {initial_cycle_duration}s - dashboard will show countdown")
+
+        # ULTRA-FAST WARMUP - Minimal delay for competitive bot performance
+        # Browser launches in ~2-3 seconds with optimized settings
+        # 5 second warmup is plenty for browser to be ready
         if not is_manual_refresh:
-            print("[STOCK_MONITOR] [WARMUP] Browser warmup: waiting 10 seconds for browser to launch and navigate to target.com...")
-            for i in range(10):
+            warmup_seconds = 5
+            print(f"[STOCK_MONITOR] [WARMUP] ⚡ FAST MODE: {warmup_seconds}s warmup for browser launch")
+            print("[STOCK_MONITOR] [WARMUP] ⚡ Optimized for competitive bot speed")
+
+            for i in range(warmup_seconds):
                 if not self.running:
                     return
                 time.sleep(1)
-            print("[STOCK_MONITOR] [OK] Browser warmup complete, ready for stock checks and purchases")
 
-        # IMMEDIATE STOCK CHECK ON STARTUP ONLY - for instant stock status display AND immediate purchase attempts
-        if not is_manual_refresh:
-            print("[STOCK_MONITOR] Performing IMMEDIATE startup stock check...")
-            startup_stock_data = self._check_stock()
-            if startup_stock_data:
-                print(f"[STOCK_MONITOR] Startup stock check completed: {len(startup_stock_data)} products")
+            print("[STOCK_MONITOR] [OK] ⚡ Ultra-fast warmup complete - ready for purchases!")
 
-                # Publish stock update event immediately - this will trigger immediate purchase attempts for in-stock items
-                self.event_bus.publish('stock_updated', {
-                    'stock_data': startup_stock_data,
-                    'timestamp': time.time()
-                })
-                print("[STOCK_MONITOR] Published startup stock update - purchase attempts will start immediately for in-stock items")
-            else:
-                print("[STOCK_MONITOR] Startup stock check failed, will retry in cycle")
-        else:
-            print("[STOCK_MONITOR] Manual refresh - respecting existing timer, no immediate check")
+        # CRITICAL FIX: First stock check happens INSIDE timer loop to sync with dashboard
+        print("[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
+        print("[STOCK_MONITOR] Entering timer-synchronized monitoring loop...")
+        print("[STOCK_MONITOR] First stock check will happen after initial timer countdown")
+        print("[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
 
-        # Wait for initial cycle duration with 1-second checks
-        print(f"[STOCK_MONITOR] Waiting {initial_cycle_duration:.1f}s for first cycle...")
-        for i in range(int(initial_cycle_duration)):
-            if not self.running:
-                return
-            time.sleep(1)
+        first_cycle = True  # Flag to handle first iteration
 
         while self.running:
             try:
                 # Generate new cycle duration for this iteration
-                cycle_duration = random.randint(15, 25)
+                # TEST_MODE uses longer cycles to ensure purchase + cart clear completes
+                if os.environ.get('TEST_MODE', 'false').lower() == 'true':
+                    cycle_duration = random.randint(25, 35)  # Longer for TEST_MODE
+                else:
+                    cycle_duration = random.randint(15, 25)  # Production
+
                 start_time = time.time()
 
+                # Start timer countdown
                 with self.shared_data.lock:
                     self.shared_data.timer_start_time = start_time
                     self.shared_data.timer_duration = cycle_duration
 
-                print(f"[STOCK_MONITOR] Starting {cycle_duration}s cycle...")
+                # FIRST CYCLE: Do stock check immediately, THEN start timer
+                # SUBSEQUENT CYCLES: Wait for timer first, THEN check stock
+                if first_cycle:
+                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
+                    print(f"[STOCK_MONITOR] FIRST CYCLE: Performing immediate stock check")
+                    print(f"[STOCK_MONITOR] Subsequent cycles will wait for full timer countdown")
+                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
+                    first_cycle = False
+                    # Skip wait on first iteration - go straight to stock check below
+                else:
+                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
+                    print(f"[STOCK_MONITOR] Starting {cycle_duration}s countdown...")
+                    print(f"[STOCK_MONITOR] Purchase will be processing during this countdown")
+                    print(f"[STOCK_MONITOR] Next stock check will happen when timer hits 0")
+                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
+
+                    # WAIT FIRST (let purchase happen during countdown)
+                    # This ensures browser stays on cart page until timer expires
+                    for i in range(cycle_duration):
+                        if not self.running:
+                            return
+                        time.sleep(1)
+
+                # THEN check stock when timer expires
+                print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
+                print(f"[STOCK_MONITOR] Timer expired - performing stock check NOW...")
+                print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
 
                 # Perform stock check with test mode awareness
                 with self.shared_data.lock:
@@ -542,13 +873,12 @@ class StockMonitorThread:
                     if test_mode_active:
                         scenario = self.shared_data.test_monitor.test_scenario
                         cycle_count = self.shared_data.test_monitor.test_cycle_count + 1
-                        print(f"[STOCK_MONITOR] Performing TEST MODE stock check (scenario: {scenario}, cycle: {cycle_count})...")
-                    else:
-                        print("[STOCK_MONITOR] Performing stock check...")
+                        print(f"[STOCK_MONITOR] TEST MODE stock check (scenario: {scenario}, cycle: {cycle_count})")
 
                 stock_data = self._check_stock()
 
                 if stock_data:
+                    print("[STOCK_MONITOR] [OK] Stock check complete - publishing to dashboard...")
                     # Publish stock update event (will trigger atomic API cycle processing)
                     self.event_bus.publish('stock_updated', {
                         'stock_data': stock_data,
@@ -562,14 +892,7 @@ class StockMonitorThread:
                     # by atomic api_cycle_complete event from PurchaseManagerThread._handle_stock_update()
 
                 else:
-                    print("[STOCK_MONITOR] Stock check failed, continuing cycle")
-
-                # Wait for cycle duration with 1-second checks
-                print(f"[STOCK_MONITOR] Waiting {cycle_duration}s for next cycle...")
-                for i in range(cycle_duration):
-                    if not self.running:
-                        return
-                    time.sleep(1)
+                    print("[STOCK_MONITOR] [WARNING] Stock check failed, will retry next cycle")
 
             except Exception as e:
                 print(f"[STOCK_MONITOR] Error in monitoring loop: {e}")
@@ -640,12 +963,34 @@ class StockMonitorThread:
 
 class PurchaseManagerThread:
     """Dedicated thread for purchase management with atomic state transitions"""
-    def __init__(self, event_bus, shared_data):
+    def __init__(self, event_bus, shared_data, purchase_manager=None, event_loop=None):
         self.event_bus = event_bus
         self.shared_data = shared_data
-        self.purchase_manager = BulletproofPurchaseManager(status_callback=purchase_status_callback)
+
+        # Use global purchase manager if provided, otherwise create new one
+        if purchase_manager is not None:
+            self.purchase_manager = purchase_manager
+            self.using_global_manager = True
+            print("[SYSTEM] Using global purchase manager instance")
+        else:
+            self.purchase_manager = BulletproofPurchaseManager(status_callback=purchase_status_callback)
+            self.using_global_manager = False
+            print("[SYSTEM] Created new purchase manager instance")
+
         self.running = False
         self.thread = None
+
+        # Event loop management for async operations
+        # Use global event loop if provided
+        if event_loop is not None:
+            self.event_loop = event_loop
+            self.event_loop_thread = None  # Not managing the thread
+            self.using_global_event_loop = True
+            print("[SYSTEM] Using global event loop")
+        else:
+            self.event_loop = None
+            self.event_loop_thread = None
+            self.using_global_event_loop = False
 
         # Initialize real-time validation system
         # Removed test validation system - using core purchase manager only
@@ -656,27 +1001,71 @@ class PurchaseManagerThread:
 
     def _initialize_session_system(self):
         """Initialize persistent session system - called only once"""
+        def run_event_loop(loop):
+            """Background thread function that runs the event loop forever"""
+            import asyncio
+            asyncio.set_event_loop(loop)
+            print("[EVENT_LOOP] Starting event loop in background thread...")
+            loop.run_forever()
+            print("[EVENT_LOOP] Event loop stopped")
+
         def session_init_task():
             try:
-                print("[PURCHASE_THREAD] [INIT] Initializing persistent session system...")
+                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                print("[PURCHASE_THREAD] [INIT] Starting persistent session system initialization...")
+                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                init_start_time = time.time()
 
-                # Run async session initialization
+                # Create event loop and start it in background thread
                 import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                self.event_loop = asyncio.new_event_loop()
 
-                session_ready = loop.run_until_complete(self.purchase_manager._ensure_session_ready())
-                # loop.close()  # Keep loop alive for session manager
+                # Start event loop in dedicated thread (MUST use run_forever() for run_coroutine_threadsafe to work)
+                self.event_loop_thread = threading.Thread(
+                    target=run_event_loop,
+                    args=(self.event_loop,),
+                    daemon=True,
+                    name="AsyncIOEventLoop"
+                )
+                self.event_loop_thread.start()
+                print("[EVENT_LOOP] ✅ Event loop thread started")
+
+                # Run async session initialization using run_coroutine_threadsafe
+                print("[PURCHASE_THREAD] [INIT] Calling _ensure_session_ready() (timeout: 30s)...")
+                print("[PURCHASE_THREAD] [INIT] This will launch browser and navigate to Target.com...")
+                future = asyncio.run_coroutine_threadsafe(
+                    self.purchase_manager._ensure_session_ready(),
+                    self.event_loop
+                )
+
+                # Wait for initialization to complete (30s timeout - browser should init in 3-10s)
+                print("[PURCHASE_THREAD] [INIT] Waiting for session initialization to complete...")
+                session_ready = future.result(timeout=30)
+
+                init_duration = time.time() - init_start_time
 
                 if session_ready:
-                    print("[PURCHASE_THREAD] [OK] Persistent session system ready - browser should be at Target.com")
-                    add_activity_log("Persistent session initialized - browser at Target.com", "success", "session")
+                    print(f"[PURCHASE_THREAD] [INIT] ✅ SUCCESS! Session initialized in {init_duration:.1f}s")
+                    print("[PURCHASE_THREAD] [INIT] Browser is now at Target.com and ready for purchases")
+                    print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                    add_activity_log(f"Session initialized successfully ({init_duration:.1f}s) - browser ready", "success", "session")
                 else:
-                    print("[PURCHASE_THREAD] [WARNING] Session system failed - falling back to mock purchasing")
-                    add_activity_log("Session system failed - using mock purchasing mode", "warning", "session")
+                    print(f"[PURCHASE_THREAD] [INIT] ❌ FAILED after {init_duration:.1f}s - falling back to mock mode")
+                    print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                    add_activity_log("Session initialization failed - using mock purchasing", "warning", "session")
 
+            except concurrent.futures.TimeoutError:
+                init_duration = time.time() - init_start_time
+                print(f"[PURCHASE_THREAD] [INIT] ❌ TIMEOUT after {init_duration:.1f}s")
+                print("[PURCHASE_THREAD] [INIT] Session initialization took too long - falling back to mock mode")
+                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                add_activity_log(f"Session initialization timeout ({init_duration:.1f}s) - using mock mode", "error", "session")
             except Exception as e:
-                print(f"[PURCHASE_THREAD] [ERROR] Session initialization error: {e}")
+                init_duration = time.time() - init_start_time
+                print(f"[PURCHASE_THREAD] [INIT] ❌ ERROR after {init_duration:.1f}s: {e}")
+                import traceback
+                traceback.print_exc()
+                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
                 add_activity_log(f"Session initialization error: {str(e)}", "error", "session")
 
         # Run session initialization in background to avoid blocking startup
@@ -686,8 +1075,11 @@ class PurchaseManagerThread:
         """Start the purchase management thread"""
         self.running = True
 
-        # Initialize session system ONCE at startup
-        self._initialize_session_system()
+        # Initialize session system ONCE at startup (only if NOT using global manager)
+        if not self.using_global_manager:
+            self._initialize_session_system()
+        else:
+            print("[SYSTEM] Skipping session initialization (using global manager)")
 
         self.thread = threading.Thread(target=self._purchase_loop, daemon=True)
         self.thread.start()
@@ -724,16 +1116,41 @@ class PurchaseManagerThread:
                     print("[SESSION] Keep-alive service stopped")
 
                 if hasattr(self.purchase_manager, 'session_manager') and self.purchase_manager.session_manager:
-                    # Run async cleanup
-                    import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self.purchase_manager.session_manager.cleanup())
-                    loop.close()
-                    print("[SESSION] Session manager cleaned up")
+                    # Run async cleanup using existing event loop (if available)
+                    if self.event_loop and self.event_loop.is_running():
+                        print("[SESSION] Running cleanup via existing event loop...")
+                        import asyncio
+                        future = asyncio.run_coroutine_threadsafe(
+                            self.purchase_manager.session_manager.cleanup(),
+                            self.event_loop
+                        )
+                        future.result(timeout=10)
+                        print("[SESSION] Session manager cleaned up")
+                    else:
+                        print("[SESSION] Event loop not available, skipping async cleanup")
+
+                # Stop event loop if it's running
+                if self.event_loop and self.event_loop.is_running():
+                    print("[EVENT_LOOP] Stopping event loop...")
+                    self.event_loop.call_soon_threadsafe(self.event_loop.stop)
+
+                    # Wait for event loop thread to finish (with timeout)
+                    if self.event_loop_thread and self.event_loop_thread.is_alive():
+                        self.event_loop_thread.join(timeout=5)
+                        if self.event_loop_thread.is_alive():
+                            print("[EVENT_LOOP] Warning: Event loop thread did not stop gracefully")
+                        else:
+                            print("[EVENT_LOOP] Event loop thread stopped")
+
+                    # Close the event loop
+                    if self.event_loop:
+                        self.event_loop.close()
+                        print("[EVENT_LOOP] Event loop closed")
 
             except Exception as e:
                 print(f"[SESSION] Cleanup error: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Run cleanup in background
         threading.Thread(target=cleanup_task, daemon=True).start()
@@ -787,6 +1204,12 @@ class PurchaseManagerThread:
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Starting API cycle processing at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Stock data contains {len(stock_data)} products")
 
+            # CRITICAL FIX: Sync fresh stock data to shared_data for dashboard consistency
+            # This ensures /api/status endpoint returns current data, not stale cache
+            with shared_data.lock:
+                shared_data.stock_data = stock_data.copy()
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ Synced fresh stock data to shared_data cache")
+
             # STEP 1: Stock-aware reset of completed purchases (only for OUT OF STOCK products)
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 1: Stock-aware reset of completed purchases...")
 
@@ -800,49 +1223,103 @@ class PurchaseManagerThread:
                 state = all_states_before.get(tcin, {})
                 print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Before reset - {tcin}: {state.get('status')} (order: {state.get('order_number', 'N/A')})")
 
-            # Perform the stock-aware reset (only resets OUT OF STOCK completed purchases)
-            reset_count = self.purchase_manager.reset_completed_purchases_by_stock_status(stock_data)
+            # CRITICAL SAFETY CHECK: Wait for any background threads to finish
+            # This prevents race condition where thread is completing but state not yet saved
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Checking for active background threads...")
+            max_wait_cycles = 30  # 30 seconds max wait
+            wait_cycle = 0
+            while wait_cycle < max_wait_cycles:
+                with self.purchase_manager._state_lock:
+                    active_threads = dict(self.purchase_manager._active_purchases)
 
-            # Verify the stock-aware reset completed correctly
-            all_states_after = self.purchase_manager.get_all_states()
-            reset_verification_errors = []
+                if not active_threads:
+                    if wait_cycle == 0:
+                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ No active background threads")
+                    break
 
-            # Create stock status lookup for verification
-            stock_lookup = {}
-            for tcin, data in stock_data.items():
-                in_stock = data.get('in_stock', False)
-                stock_lookup[tcin] = in_stock
+                if wait_cycle == 0:
+                    for tcin, info in active_threads.items():
+                        elapsed = time.time() - info['started_at']
+                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Waiting for thread: {tcin} (running {elapsed:.1f}s, status: {info['status']})")
 
-            for tcin in reset_tcins:
-                before_state = all_states_before.get(tcin, {})
-                after_state = all_states_after.get(tcin, {})
-                before_status = before_state.get('status')
-                actual_status = after_state.get('status')
-                is_in_stock = stock_lookup.get(tcin, False)
+                time.sleep(1)
+                wait_cycle += 1
 
-                if is_in_stock:
-                    # IN STOCK products should keep their purchase status unchanged
-                    if actual_status != before_status:
-                        reset_verification_errors.append(f"{tcin}: IN STOCK should remain '{before_status}' but got '{actual_status}'")
-                    else:
-                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified unchanged - {tcin}: {actual_status} (IN STOCK)")
-                else:
-                    # OUT OF STOCK products should be reset to ready
-                    if actual_status != 'ready':
-                        reset_verification_errors.append(f"{tcin}: OUT OF STOCK should be 'ready' but got '{actual_status}'")
-                    else:
-                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified reset - {tcin}: {actual_status} (OUT OF STOCK)")
+            if wait_cycle >= max_wait_cycles:
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ⚠️ WARNING: Thread timeout after {max_wait_cycles}s")
+                # Force-remove from active (safety fallback)
+                with self.purchase_manager._state_lock:
+                    if self.purchase_manager._active_purchases:
+                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Force-clearing {len(self.purchase_manager._active_purchases)} stuck threads")
+                        self.purchase_manager._active_purchases.clear()
+            elif wait_cycle > 0:
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ Background threads completed after {wait_cycle}s wait")
 
-            if reset_verification_errors:
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR STOCK-AWARE RESET VERIFICATION FAILED:")
-                for error in reset_verification_errors:
-                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR   {error}")
-                # Continue processing but log the error
-                add_activity_log(f"Cycle {cycle_id}: Stock-aware reset verification failed for {len(reset_verification_errors)} purchases", "error", "purchase_reset")
+            # TEST_MODE: Reset all completed purchases for continuous testing loop
+            # PROD_MODE: Only reset OUT OF STOCK completed purchases (stock-aware reset)
+            if os.environ.get('TEST_MODE', 'false').lower() == 'true':
+                reset_count = self.purchase_manager.reset_completed_purchases_to_ready()
             else:
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Stock-aware reset verification passed for all {len(reset_tcins)} purchases")
+                reset_count = self.purchase_manager.reset_completed_purchases_by_stock_status(stock_data)
+
+            # Verify the stock-aware reset completed correctly (only in PROD_MODE)
+            # TEST_MODE resets ALL, so stock-aware verification doesn't apply
+            if os.environ.get('TEST_MODE', 'false').lower() != 'true':
+                all_states_after = self.purchase_manager.get_all_states()
+                reset_verification_errors = []
+
+                # Create stock status lookup for verification
+                stock_lookup = {}
+                for tcin, data in stock_data.items():
+                    in_stock = data.get('in_stock', False)
+                    stock_lookup[tcin] = in_stock
+
+                for tcin in reset_tcins:
+                    before_state = all_states_before.get(tcin, {})
+                    after_state = all_states_after.get(tcin, {})
+                    before_status = before_state.get('status')
+                    actual_status = after_state.get('status')
+                    is_in_stock = stock_lookup.get(tcin, False)
+
+                    if is_in_stock:
+                        # IN STOCK products should keep their purchase status unchanged
+                        if actual_status != before_status:
+                            reset_verification_errors.append(f"{tcin}: IN STOCK should remain '{before_status}' but got '{actual_status}'")
+                        else:
+                            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified unchanged - {tcin}: {actual_status} (IN STOCK)")
+                    else:
+                        # OUT OF STOCK products should be reset to ready
+                        if actual_status != 'ready':
+                            reset_verification_errors.append(f"{tcin}: OUT OF STOCK should be 'ready' but got '{actual_status}'")
+                        else:
+                            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified reset - {tcin}: {actual_status} (OUT OF STOCK)")
+
+                if reset_verification_errors:
+                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR STOCK-AWARE RESET VERIFICATION FAILED:")
+                    for error in reset_verification_errors:
+                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR   {error}")
+                    # Continue processing but log the error
+                    add_activity_log(f"Cycle {cycle_id}: Stock-aware reset verification failed for {len(reset_verification_errors)} purchases", "error", "purchase_reset")
+                else:
+                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Stock-aware reset verification passed for all {len(reset_tcins)} purchases")
 
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Reset {reset_count} purchases to ready")
+
+            # CRITICAL: Sync resets to shared_data BEFORE starting new purchases
+            # This prevents race conditions where resets are invisible to dashboard
+            with shared_data.lock:
+                shared_data.purchase_states = self.purchase_manager.get_all_states()
+            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Synced {reset_count} resets to shared_data")
+
+            # CRITICAL FIX (TEST_MODE): Force immediate dashboard update for resets
+            # Ensures dashboard shows "ready" status immediately after "purchased"
+            if os.environ.get('TEST_MODE', 'false').lower() == 'true' and reset_count > 0:
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] [TEST_MODE] Broadcasting reset state changes to dashboard...")
+                for tcin in reset_tcins:
+                    state = self.purchase_manager.get_all_states().get(tcin, {})
+                    if state.get('status') == 'ready':
+                        purchase_status_callback(tcin, 'ready', state)
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] [TEST_MODE] ✅ Reset broadcasts sent for {reset_count} purchases")
 
             # STEP 2: Process stock data according to state rules
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 2: Processing stock data...")
@@ -850,6 +1327,13 @@ class PurchaseManagerThread:
             out_stock_tcins = [tcin for tcin, data in stock_data.items() if not data.get('in_stock')]
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] IN STOCK: {in_stock_tcins}")
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OUT OF STOCK: {out_stock_tcins}")
+
+            # FIX: Add IN STOCK/OUT OF STOCK messages to activity log for dashboard display
+            # These messages were only going to console, not to the activity log that the dashboard reads
+            if in_stock_tcins:
+                add_activity_log(f"IN STOCK: {in_stock_tcins}", "success", "api_cycle")
+            if out_stock_tcins:
+                add_activity_log(f"OUT OF STOCK: {out_stock_tcins}", "info", "api_cycle")
 
             # IN STOCK + ready status -> go to "attempting"
             # OUT OF STOCK -> stay in "ready" status
@@ -893,9 +1377,12 @@ class PurchaseManagerThread:
                 summary=summary
             )
 
-            # Add activity log entry
+            # Add activity log entry with detailed TCIN information
+            in_stock_display = f"[{', '.join(in_stock_tcins)}]" if in_stock_tcins else "[]"
+            out_stock_display = f"[{', '.join(out_stock_tcins)}]" if out_stock_tcins else "[]"
+
             add_activity_log(
-                f"API Cycle {cycle_id}: {summary['total_products']} products • {summary['in_stock_count']} in stock • {summary['new_attempts_count']} new attempts • {summary['resets_count']} resets",
+                f"Stock Check: {summary['in_stock_count']} in stock {in_stock_display}, {len(out_stock_tcins)} out of stock {out_stock_display} • {summary['new_attempts_count']} attempts, {summary['resets_count']} resets",
                 "info", "api_cycle"
             )
 
@@ -944,18 +1431,45 @@ class PurchaseManagerThread:
 
 def monitoring_loop():
     """Legacy monitoring loop - replaced by event-driven architecture"""
-    print("[MONITOR] Starting bulletproof event-driven architecture...")
+    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
+    print("[MONITORING_LOOP] Starting bulletproof event-driven architecture...")
+    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
 
     # Initialize event-driven thread managers
+    # Use global purchase manager and event loop to avoid duplicate browser instances
+    print("[MONITORING_LOOP] Creating StockMonitorThread...")
     stock_thread = StockMonitorThread(event_bus, shared_data)
-    purchase_thread = PurchaseManagerThread(event_bus, shared_data)
+    print("[MONITORING_LOOP] [OK] StockMonitorThread created")
 
+    print("[MONITORING_LOOP] Creating PurchaseManagerThread...")
+    print(f"[MONITORING_LOOP] Using global_purchase_manager: {global_purchase_manager}")
+    print(f"[MONITORING_LOOP] Using global_event_loop: {global_event_loop}")
+    purchase_thread = PurchaseManagerThread(
+        event_bus,
+        shared_data,
+        purchase_manager=global_purchase_manager,
+        event_loop=global_event_loop
+    )
+    print("[MONITORING_LOOP] [OK] PurchaseManagerThread created")
+
+    print("[MONITORING_LOOP] Setting monitor_running=True...")
     with shared_data.lock:
         shared_data.monitor_running = True
+    print(f"[MONITORING_LOOP] [VERIFY] monitor_running: {shared_data.monitor_running}")
 
     # Start independent threads
+    print("[MONITORING_LOOP] Starting stock_thread...")
     stock_thread.start()
+    print(f"[MONITORING_LOOP] [OK] stock_thread started (is_alive: {stock_thread.thread.is_alive() if stock_thread.thread else 'N/A'})")
+
+    print("[MONITORING_LOOP] Starting purchase_thread...")
     purchase_thread.start()
+    print(f"[MONITORING_LOOP] [OK] purchase_thread started (is_alive: {purchase_thread.thread.is_alive() if purchase_thread.thread else 'N/A'})")
+
+    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
+    print("[MONITORING_LOOP] ✅ All threads started successfully")
+    print("[MONITORING_LOOP] Entering health monitoring loop...")
+    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
 
     add_activity_log("Bulletproof event-driven monitoring started", "success", "system")
 
@@ -978,7 +1492,13 @@ def monitoring_loop():
             if not purchase_thread.thread.is_alive():
                 print("[MONITOR] Purchase thread died, restarting...")
                 add_activity_log("Purchase manager thread crashed, restarting", "error", "system")
-                purchase_thread = PurchaseManagerThread(event_bus, shared_data)
+                # Reuse global purchase manager and event loop on restart
+                purchase_thread = PurchaseManagerThread(
+                    event_bus,
+                    shared_data,
+                    purchase_manager=global_purchase_manager,
+                    event_loop=global_event_loop
+                )
                 purchase_thread.start()
 
     finally:
@@ -990,14 +1510,62 @@ def monitoring_loop():
 
 def start_monitoring():
     """Start the background monitoring thread"""
-    # Initialize test monitor for simulated stock data
-    shared_data.test_monitor = StockMonitor()
-    print("[SYSTEM] Test monitor initialized for simulated stock data")
+    print("[START_MONITORING] ═══════════════════════════════════════════════")
+    print("[START_MONITORING] Initializing monitoring system...")
+    print("[START_MONITORING] ═══════════════════════════════════════════════")
 
-    monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
+    # Ensure global purchase manager is initialized
+    print(f"[START_MONITORING] Checking global_purchase_manager: {global_purchase_manager}")
+    if global_purchase_manager is None:
+        print("[START_MONITORING] [WARNING] global_purchase_manager is None, initializing...")
+        initialize_global_purchase_manager()
+        print(f"[START_MONITORING] After init: {global_purchase_manager}")
+    else:
+        print("[START_MONITORING] [OK] global_purchase_manager already initialized")
+
+    # Initialize test monitor for simulated stock data
+    print("[START_MONITORING] Creating StockMonitor instance...")
+    shared_data.test_monitor = StockMonitor()
+    print("[START_MONITORING] [OK] Test monitor initialized for simulated stock data")
+
+    # FIX #1: Pre-populate stock data on startup (CRITICAL)
+    # This ensures /api/current-state has data when dashboard first loads
+    print("[START_MONITORING] Running initial stock check to pre-populate data...")
+    try:
+        initial_stock_data = shared_data.test_monitor.check_stock()
+        if initial_stock_data:
+            with shared_data.lock:
+                shared_data.stock_data = initial_stock_data
+                from datetime import datetime
+                shared_data.last_update_time = datetime.now()
+            print(f"[START_MONITORING] ✓ Pre-populated stock data for {len(initial_stock_data)} products")
+            in_stock = [tcin for tcin, info in initial_stock_data.items() if info.get('in_stock', False)]
+            out_of_stock = [tcin for tcin, info in initial_stock_data.items() if not info.get('in_stock', False)]
+            print(f"[START_MONITORING] Initial Stock Status - IN STOCK: {in_stock}")
+            print(f"[START_MONITORING] Initial Stock Status - OUT OF STOCK: {out_of_stock}")
+        else:
+            print("[START_MONITORING] ⚠ Initial stock check returned no data")
+    except Exception as e:
+        print(f"[START_MONITORING] ⚠ Error during initial stock check: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Start monitoring thread
+    print("[START_MONITORING] Creating monitoring thread...")
+    monitor_thread = threading.Thread(target=monitoring_loop, daemon=True, name="MonitoringLoop")
+    print("[START_MONITORING] Starting monitoring thread...")
     monitor_thread.start()
+    print(f"[START_MONITORING] [OK] Monitoring thread started: {monitor_thread.name} (is_alive: {monitor_thread.is_alive()})")
+
+    # Wait a moment to let monitoring loop set monitor_running flag
+    import time
+    time.sleep(0.5)
+
+    print(f"[START_MONITORING] [VERIFY] shared_data.monitor_running: {shared_data.monitor_running}")
+    print("[START_MONITORING] ═══════════════════════════════════════════════")
+
     add_activity_log("Background monitoring started", "success", "system")
-    print("[SYSTEM] Background monitoring started")
+    print("[START_MONITORING] Monitoring system initialization complete")
 
 @app.route('/')
 def index():
@@ -1093,48 +1661,110 @@ def index():
 
 @app.route('/api/stream')
 def sse_stream():
-    """Server-Sent Events stream for real-time updates"""
+    """Server-Sent Events stream for real-time updates with per-client queues"""
     def event_stream():
-        client_id = id(threading.current_thread())
+        # FIX #2: Use UUID instead of thread ID for reliable client identification
+        # Thread IDs can be reused when Flask recycles threads from the pool
+        import uuid
+        client_id = str(uuid.uuid4())
         shared_data.connected_clients.add(client_id)
+
+        # CRITICAL FIX: Create dedicated queue for this client
+        client_queue = queue.Queue(maxsize=100)  # Prevent memory issues with max size
+        with sse_queue_lock:
+            sse_client_queues[client_id] = client_queue
+            print(f"[SSE] Client {client_id} connected (total clients: {len(sse_client_queues)})")
+
+        # FIX #3: Send initial connection event immediately to establish SSE stream
+        # This prevents the generator from blocking on queue.get() before any data flows
+        yield f"data: {json.dumps({'type': 'connected', 'client_id': client_id, 'timestamp': datetime.now().isoformat()})}\n\n"
 
         try:
             while True:
                 try:
-                    # Get event from queue with timeout
-                    event = sse_queue.get(timeout=30)
+                    # CRITICAL FIX: Use short timeout (1s) to process events immediately
+                    # Previous 30s timeout caused events to queue up without being sent
+                    event = client_queue.get(timeout=1)
 
-                    # Format SSE data
+                    print(f"[SSE_GENERATOR] Client {client_id[:8]}... got event type={event.get('type')}, queue_remaining={client_queue.qsize()}")
+
+                    # Format SSE data and yield immediately
                     yield f"data: {json.dumps(event)}\n\n"
 
+                    # CRITICAL: Continue processing if more events are queued
+                    # Don't wait for timeout if queue has items
+                    drained = 0
+                    while not client_queue.empty():
+                        try:
+                            event = client_queue.get_nowait()
+                            drained += 1
+                            yield f"data: {json.dumps(event)}\n\n"
+                        except queue.Empty:
+                            break
+
+                    if drained > 0:
+                        print(f"[SSE_GENERATOR] Client {client_id[:8]}... drained {drained} additional events")
+
                 except queue.Empty:
-                    # Send heartbeat to keep connection alive
+                    # Send heartbeat every 1s to keep connection alive
                     yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': datetime.now().isoformat()})}\n\n"
 
                 except Exception as e:
-                    print(f"[SSE] Error in event stream: {e}")
+                    print(f"[SSE] Error in event stream for client {client_id}: {e}")
                     break
 
         finally:
+            # CRITICAL: Clean up client queue on disconnect
+            with sse_queue_lock:
+                if client_id in sse_client_queues:
+                    del sse_client_queues[client_id]
+                    print(f"[SSE] Client {client_id} disconnected (remaining: {len(sse_client_queues)})")
             shared_data.connected_clients.discard(client_id)
 
     response = Response(event_stream(), content_type='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
-    response.headers['Connection'] = 'keep-alive'
+    # FIX: Remove Connection header - Waitress rejects it as "hop-by-hop" header (PEP 3333)
+    # Waitress handles keep-alive automatically, explicit header causes AssertionError
+    # response.headers['Connection'] = 'keep-alive'  # REMOVED - incompatible with Waitress
     response.headers['Access-Control-Allow-Origin'] = '*'
+    # FIX #1 (CRITICAL): Disable response buffering for SSE streaming
+    response.headers['X-Accel-Buffering'] = 'no'
     return response
 
 @app.route('/api/status')
 def api_status():
     """API endpoint for current status"""
     with shared_data.lock:
+        # Transform stock_data to match SSE event format
+        # This ensures /api/current-state and SSE events use identical field names
+        stock_updates = {}
+        for tcin, data in shared_data.stock_data.items():
+            stock_updates[tcin] = {
+                'title': data.get('title', f'Product {tcin}'),
+                'in_stock': data.get('in_stock', False),
+                'status_detail': data.get('status_detail', 'UNKNOWN'),
+                'last_checked': data.get('last_checked'),
+                'is_preorder': data.get('is_preorder', False)
+            }
+
+        # FIX: Calculate in_stock_count for polling fallback UI updates
+        # Frontend polling handler expects this field to update the in-stock count statistic
+        in_stock_count = sum(1 for data in stock_updates.values() if data.get('in_stock', False))
+
         return jsonify({
-            'stock_data': shared_data.stock_data,
+            'stock_data': stock_updates,  # Use transformed data with consistent field names
             'purchase_states': shared_data.purchase_states,
             'monitoring': shared_data.monitor_running,
             'connected_clients': len(shared_data.connected_clients),
-            'last_update': shared_data.last_update_time.isoformat() if shared_data.last_update_time else None
+            'last_update': shared_data.last_update_time.isoformat() if shared_data.last_update_time else None,
+            'activity_log': shared_data.activity_log[-100:] if shared_data.activity_log else [],  # Include activity log
+            'in_stock_count': in_stock_count  # FIX: Add in_stock_count field for dashboard stats
         })
+
+@app.route('/api/current-state')
+def api_current_state():
+    """API endpoint for current state (alias for /api/status for dashboard compatibility)"""
+    return api_status()
 
 @app.route('/api/timer-status')
 def api_timer_status():
@@ -1830,8 +2460,13 @@ def enhanced_broadcast_sse_event(event_type, data, event_id=None):
         if len(sse_event_tracker['last_events']) > 50:
             sse_event_tracker['last_events'] = sse_event_tracker['last_events'][-50:]
 
-        # Add to queue
-        sse_queue.put(event_data)
+        # CRITICAL FIX: Broadcast to ALL client queues
+        with sse_queue_lock:
+            for client_id, client_queue in sse_client_queues.items():
+                try:
+                    client_queue.put(event_data, block=False)
+                except queue.Full:
+                    print(f"[SSE] Warning: Queue full for client {client_id}")
 
         # Log successful broadcast (but don't create recursive loops)
         if event_type != 'activity_log':  # Prevent recursive logging for activity log events
@@ -2571,10 +3206,37 @@ if __name__ == '__main__':
 
     # Initialize
     load_activity_log()
+
+    # ========== START BACKGROUND PERSISTENCE WORKER ==========
+    # CRITICAL: Must start before any add_activity_log() calls
+    print("[SYSTEM] Starting activity log persistence worker...")
+    activity_log_persistence_worker.start()
+
     add_activity_log("Bulletproof monitoring dashboard initialized", "info", "system")
+    add_activity_log("Activity log persistence worker started", "success", "system")
 
     # Start background monitoring
     start_monitoring()
 
-    # Run Flask app
-    app.run(host='127.0.0.1', port=5001, debug=False, threaded=True)
+    # ========== GRACEFUL SHUTDOWN HANDLER ==========
+    def shutdown_handler(signum=None, frame=None):
+        """Graceful shutdown - ensure activity log is saved"""
+        print("\n[SYSTEM] Shutting down gracefully...")
+        add_activity_log("Application shutting down", "info", "system")
+
+        # Stop persistence worker (waits for pending saves)
+        activity_log_persistence_worker.stop(timeout=5)
+
+        print("[SYSTEM] Shutdown complete")
+
+    # Register shutdown handlers
+    atexit.register(shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    # Run Flask app with Waitress (production-grade WSGI server)
+    # FIX: Replace Flask dev server with Waitress for proper SSE streaming (no buffering)
+    # Waitress handles Server-Sent Events correctly without response buffering
+    print("[WAITRESS] Starting production WSGI server for SSE streaming...")
+    print("[WAITRESS] Dashboard accessible at http://127.0.0.1:5001")
+    serve(app, host='127.0.0.1', port=5001, threads=6, channel_timeout=300)

@@ -1,0 +1,6 @@
+2025/11/13-14:12:09.829 8f901 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2025/11/13-14:12:09.840 8f901 Recovering log #144
+2025/11/13-14:12:09.841 8f901 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000144.log 
+2025/11/13-14:13:28.793 8f904 Level-0 table #149: started
+2025/11/13-14:13:28.810 8f904 Level-0 table #149: 18195 bytes OK
+2025/11/13-14:13:28.842 8f904 Delete type=0 #144

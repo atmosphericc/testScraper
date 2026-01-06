@@ -67,6 +67,15 @@ class BulletproofPurchaseManager:
         self.session_circuit_open = False  # Circuit breaker state
         self.use_real_purchasing = self.feature_flags['enable_persistent_session'] and not self.feature_flags['force_mock_mode']
 
+        # DIAGNOSTIC LOGGING: Show configuration at startup
+        print("=" * 80)
+        print("[INIT] BulletproofPurchaseManager Configuration:")
+        print(f"[INIT]   enable_persistent_session: {self.feature_flags['enable_persistent_session']}")
+        print(f"[INIT]   force_mock_mode: {self.feature_flags['force_mock_mode']}")
+        print(f"[INIT]   use_real_purchasing: {self.use_real_purchasing}")
+        print(f"[INIT]   TEST_MODE: {os.environ.get('TEST_MODE', 'false')}")
+        print("=" * 80)
+
         # Thread synchronization
         self._file_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -78,8 +87,69 @@ class BulletproofPurchaseManager:
         # Ensure logs directory exists
         os.makedirs('logs', exist_ok=True)
 
+        # Clean up stale purchase states from previous runs
+        self._cleanup_stale_states()
+
         # Initialize session system
         self._initialize_session_system()
+
+    def _cleanup_stale_states(self):
+        """Clean up stale purchase states on startup (prevents old states from blocking new purchases)"""
+        try:
+            with self._state_lock:
+                states = self._load_states_unsafe()
+                if not states:
+                    print("[STARTUP_CLEANUP] No existing purchase states to clean up")
+                    return
+
+                current_time = time.time()
+                stale_states = []
+                cleaned_count = 0
+
+                print(f"[STARTUP_CLEANUP] Checking {len(states)} purchase states for stale entries...")
+
+                for tcin, state in states.items():
+                    status = state.get('status')
+                    started_at = state.get('started_at', 0)
+
+                    # AGGRESSIVE CLEANUP: Clean up "queued" states older than 5 seconds
+                    # "queued" should quickly become "attempting" (within 1-2s)
+                    # If still queued after 5s, something is broken - reset it
+                    if status == 'queued' and started_at:
+                        age_seconds = current_time - started_at
+                        if age_seconds > 5:  # Changed from 120 to 5
+                            stale_states.append({
+                                'tcin': tcin,
+                                'status': status,
+                                'age_seconds': age_seconds
+                            })
+                            # Reset to ready
+                            states[tcin] = {'status': 'ready'}
+                            cleaned_count += 1
+                            print(f"[STARTUP_CLEANUP] Cleaned up stale QUEUED state: {tcin} was queued for {age_seconds:.1f}s (should be <5s)")
+
+                    # Clean up "attempting" states older than 120 seconds
+                    elif status == 'attempting' and started_at:
+                        age_seconds = current_time - started_at
+                        if age_seconds > 120:
+                            stale_states.append({
+                                'tcin': tcin,
+                                'status': status,
+                                'age_seconds': age_seconds
+                            })
+                            # Reset to ready
+                            states[tcin] = {'status': 'ready'}
+                            cleaned_count += 1
+                            print(f"[STARTUP_CLEANUP] Cleaned up stale ATTEMPTING state: {tcin} was attempting for {age_seconds:.1f}s")
+
+                if cleaned_count > 0:
+                    self._save_states_unsafe(states)
+                    print(f"[STARTUP_CLEANUP] ✅ Cleaned up {cleaned_count} stale purchase state(s)")
+                else:
+                    print("[STARTUP_CLEANUP] ✅ No stale purchase states found")
+
+        except Exception as e:
+            print(f"[STARTUP_CLEANUP] ⚠️ Cleanup error (non-fatal): {e}")
 
     def _initialize_session_system(self):
         """Initialize persistent session management system with safety measures"""
@@ -153,6 +223,9 @@ class BulletproofPurchaseManager:
             )
 
             print("[SESSION] [OK] Session system components created successfully")
+            print("[SESSION] [INFO] Browser will be launched when _ensure_session_ready() is called")
+            # NOTE: Don't set session_initialized here - let _ensure_session_ready() set it
+            # after browser actually launches. This ensures browser opens on startup.
 
         except Exception as e:
             print(f"[SESSION] [ERROR] Failed to initialize session system: {e}")
@@ -163,8 +236,9 @@ class BulletproofPurchaseManager:
                 self.session_failure_count >= self.feature_flags['max_session_failures']):
                 self._trigger_circuit_breaker(f"Initialization failure: {e}")
             else:
-                print("[SESSION] [RETRY] Falling back to mock purchasing (system remains functional)")
-                self.use_real_purchasing = False
+                print("[SESSION] [WARNING] Session component initialization had error")
+                print("[SESSION] [INFO] Browser will be launched on-demand when _ensure_session_ready() is called")
+                # DON'T disable use_real_purchasing - let _ensure_session_ready() try to launch browser
 
     def _trigger_circuit_breaker(self, reason: str):
         """Trigger circuit breaker to disable persistent sessions"""
@@ -197,18 +271,36 @@ class BulletproofPurchaseManager:
         }
 
     async def _ensure_session_ready(self):
-        """Ensure session is initialized and ready"""
-        if self.session_initialized:
-            return True
+        """Ensure session is initialized and ready - GUARANTEES browser launch"""
+        print(f"[SESSION_DEBUG] _ensure_session_ready() called")
+        print(f"[SESSION_DEBUG] session_initialized={self.session_initialized}")
+        print(f"[SESSION_DEBUG] session_manager={self.session_manager}")
+
+        # CRITICAL FIX: Check if browser is ACTUALLY running, not just if components exist
+        # Previous logic: if flag is True, return early (prevented browser launch)
+        # New logic: if browser context exists, session is ready; otherwise launch browser
+        if self.session_manager and hasattr(self.session_manager, 'context'):
+            print(f"[SESSION_DEBUG] session_manager.context={self.session_manager.context}")
+            if self.session_manager.context:
+                print("[SESSION] ✅ Browser already running - session ready")
+                return True
+
+        # If components exist but browser isn't running, FORCE initialization
+        print("[SESSION] ⚡ Browser NOT running - launching now (GUARANTEED)...")
+        self.session_initialized = False  # Reset to allow initialization
 
         try:
+            print("[SESSION] ═══════════════════════════════════════════════")
             print("[SESSION] Starting session initialization...")
+            print("[SESSION] ═══════════════════════════════════════════════")
+            session_start_time = time.time()
 
             # PRE-CHECK: Validate session file exists before opening browser
             import json
             from pathlib import Path
             session_path = Path("target.json")
 
+            print("[SESSION] [STEP 1/3] Checking session file...")
             if not session_path.exists():
                 print("[SESSION] [WARNING] target.json not found - will attempt auto-login during initialization")
                 # Don't return False - let SessionManager initialize and auto-login
@@ -221,27 +313,51 @@ class BulletproofPurchaseManager:
                     if 'cookies' not in session_data or not session_data['cookies']:
                         print("[SESSION] [WARNING] target.json has no cookies - will attempt auto-login")
                     else:
-                        print(f"[SESSION] [OK] Found {len(session_data['cookies'])} cookies in session file")
+                        print(f"[SESSION] [OK] ✅ Found {len(session_data['cookies'])} cookies in session file")
 
                 except Exception as e:
                     print(f"[SESSION] [WARNING] Invalid target.json: {e} - will attempt auto-login")
 
             # Initialize session manager
-            if await self.session_manager.initialize():
-                print("[SESSION] [OK] Session manager initialized")
+            print("[SESSION] [STEP 2/3] ⚡ Initializing SessionManager (ultra-fast mode)...")
+            print("[SESSION] ⚡ This will:")
+            print("[SESSION] ⚡   - Launch Chromium browser (~2-3 seconds)")
+            print("[SESSION] ⚡   - Skip initial navigation (on-demand only)")
+            print("[SESSION] ⚡   - Be ready for purchases immediately")
+            print("[SESSION] ⚡ Optimized for competitive bot speed...")
 
-                # Start keep-alive service
-                self.session_keepalive.start()
-                print("[SESSION] [OK] Keep-alive service started")
+            init_start = time.time()
+            if await self.session_manager.initialize():
+                init_duration = time.time() - init_start
+                print(f"[SESSION] [OK] ✅ SessionManager initialized in {init_duration:.1f}s")
+
+                # DISABLED: Keep-alive not needed - stock monitoring maintains session activity
+                # Stock monitor makes API calls every 15-22 seconds, which keeps session alive
+                # Keep-alive was causing race conditions (navigating to /account during purchases)
+                # self.session_keepalive.start()
+                # print("[SESSION] [OK] Keep-alive service started")
+
+                print("[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session")
 
                 self.session_initialized = True
+                total_duration = time.time() - session_start_time
+                print("[SESSION] ═══════════════════════════════════════════════")
+                print(f"[SESSION] ✅ Session ready in {total_duration:.1f}s total")
+                print("[SESSION] Browser is at Target.com and ready for purchases")
+                print("[SESSION] ═══════════════════════════════════════════════")
                 return True
             else:
-                print("[SESSION] [WARNING] Session manager initialization failed")
+                init_duration = time.time() - init_start
+                print(f"[SESSION] [ERROR] ❌ SessionManager initialization failed after {init_duration:.1f}s")
+                print("[SESSION] ═══════════════════════════════════════════════")
                 return False
 
         except Exception as e:
-            print(f"[SESSION] [ERROR] Session initialization error: {e}")
+            total_duration = time.time() - session_start_time
+            print(f"[SESSION] [ERROR] ❌ Session initialization error after {total_duration:.1f}s: {e}")
+            print("[SESSION] ═══════════════════════════════════════════════")
+            import traceback
+            traceback.print_exc()
             return False
 
     def check_and_complete_purchases(self):
@@ -319,11 +435,31 @@ class BulletproofPurchaseManager:
     def reset_completed_purchases_to_ready(self):
         """Reset all completed purchases to ready state for next cycle"""
         with self._state_lock:
-            print(f"[PURCHASE_RESET_DEBUG] Starting reset operation at timestamp {time.time():.3f}")
+            # Check if running in TEST_MODE
+            test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
+            mode_label = "[TEST_MODE]" if test_mode else "[PROD_MODE]"
+
+            print(f"[PURCHASE_RESET_DEBUG] {mode_label} Starting reset operation at timestamp {time.time():.3f}")
+            if test_mode:
+                print(f"[PURCHASE_RESET_DEBUG] {mode_label} TEST MODE: Resetting ALL completed purchases for endless loop")
+                print(f"[TEST_MODE_RESET] ════════════════════════════════════════════════")
+                print(f"[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'")
+                print(f"[TEST_MODE_RESET] This allows the same product to be purchased again")
+                print(f"[TEST_MODE_RESET] ════════════════════════════════════════════════")
 
             # Load current states
             states = self._load_states_unsafe()
             print(f"[PURCHASE_RESET_DEBUG] Loaded {len(states)} total purchase states")
+
+            # DIAGNOSTIC: Show ALL states for debugging
+            if test_mode:
+                print(f"[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:")
+                for tcin, state in states.items():
+                    status = state.get('status', 'unknown')
+                    completed_at = state.get('completed_at', 'N/A')
+                    started_at = state.get('started_at', 'N/A')
+                    age = f"{time.time() - started_at:.1f}s ago" if isinstance(started_at, (int, float)) and started_at > 0 else "N/A"
+                    print(f"[TEST_MODE_DIAGNOSTIC]   {tcin}: status='{status}', started={age}, completed={completed_at}")
 
             # Log current state before reset
             completed_states = {tcin: state for tcin, state in states.items() if state.get('status') in ['purchased', 'failed']}
@@ -355,6 +491,8 @@ class BulletproofPurchaseManager:
                     reset_details.append(reset_info)
 
                     print(f"[PURCHASE_RESET_DEBUG] {tcin}: {current_status} -> ready (was order: {old_order})")
+                    if test_mode:
+                        print(f"[TEST_MODE_RESET] ✅ {tcin}: '{current_status}' → 'ready' (will re-attempt next cycle)")
 
                 # ALSO reset very old attempting states (older than 60 seconds) as they're likely stuck
                 elif current_status == 'attempting':
@@ -373,6 +511,26 @@ class BulletproofPurchaseManager:
 
                         print(f"[PURCHASE_RESET_DEBUG] {tcin}: {current_status} -> ready (stuck timeout after 60s)")
 
+                # ALSO reset very old queued states (older than 5 seconds) as they're likely stuck
+                # This handles the bug where status wasn't saved before purchase execution
+                elif current_status == 'queued':
+                    started_at = state.get('started_at', 0)
+                    if started_at and (time.time() - started_at) > 5:  # Older than 5 seconds (reduced from 30)
+                        states[tcin] = {'status': 'ready'}
+                        reset_count += 1
+
+                        reset_info = {
+                            'tcin': tcin,
+                            'old_status': current_status,
+                            'order_number': 'N/A',
+                            'completed_at': 'stuck_queued'
+                        }
+                        reset_details.append(reset_info)
+
+                        print(f"[PURCHASE_RESET_DEBUG] {tcin}: {current_status} -> ready (stuck in queued after 5s)")
+                        if test_mode:
+                            print(f"[TEST_MODE_RESET] ✅ {tcin}: 'queued' → 'ready' (stuck state cleared)")
+
             # Save states if any resets occurred
             if reset_count > 0:
                 print(f"[PURCHASE_RESET_DEBUG] Saving {reset_count} resets to file...")
@@ -380,6 +538,11 @@ class BulletproofPurchaseManager:
 
                 if save_success:
                     print(f"[PURCHASE_RESET_DEBUG] Successfully saved {reset_count} resets to file")
+                    if test_mode and reset_count > 0:
+                        print(f"[TEST_MODE_RESET] ════════════════════════════════════════════════")
+                        print(f"[TEST_MODE_RESET] ✅ Reset complete: {reset_count} purchases → 'ready'")
+                        print(f"[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock")
+                        print(f"[TEST_MODE_RESET] ════════════════════════════════════════════════")
 
                     # Verify the save by re-loading and checking
                     verification_states = self._load_states_unsafe()
@@ -404,11 +567,15 @@ class BulletproofPurchaseManager:
                 else:
                     print(f"[PURCHASE_RESET_ERROR] Failed to save resets to file!")
 
-                print(f"[PURCHASE] Reset {reset_count} completed purchases to ready state")
+                print(f"[PURCHASE] {mode_label} Reset {reset_count} completed purchases to ready state")
+                if test_mode:
+                    print(f"[PURCHASE] {mode_label} ✅ Purchases reset - ready for next endless loop iteration")
             else:
                 print(f"[PURCHASE_RESET_DEBUG] No completed purchases found to reset")
 
-            print(f"[PURCHASE_RESET_DEBUG] Reset operation completed at timestamp {time.time():.3f}")
+            print(f"[PURCHASE_RESET_DEBUG] {mode_label} Reset operation completed at timestamp {time.time():.3f}")
+            if test_mode and reset_count > 0:
+                print(f"[PURCHASE] {mode_label} ✅ TEST MODE LOOP: {reset_count} purchases ready to restart")
             return reset_count
 
     def reset_completed_purchases_by_stock_status(self, stock_data):
@@ -479,11 +646,34 @@ class BulletproofPurchaseManager:
             for tcin, state in states.items():
                 current_status = state.get('status')
 
-                # Only reset completed states for OUT OF STOCK products
+                # CORRECTED LOGIC: Reset based on status and stock combination
                 if current_status in ['purchased', 'failed']:
                     is_in_stock = stock_status.get(tcin, False)
 
-                    if not is_in_stock:  # Product is OUT OF STOCK - reset to ready
+                    if is_in_stock:  # Product is IN STOCK
+                        if current_status == 'failed':
+                            # IN STOCK + FAILED -> Reset to ready to RETRY purchase
+                            old_failure = state.get('failure_reason', 'unknown')
+                            old_completed_at = state.get('completed_at', 'unknown')
+
+                            states[tcin] = {'status': 'ready'}
+                            reset_count += 1
+
+                            reset_info = {
+                                'tcin': tcin,
+                                'old_status': current_status,
+                                'order_number': 'N/A',
+                                'completed_at': old_completed_at,
+                                'reason': 'retry_failed_in_stock'
+                            }
+                            reset_details.append(reset_info)
+
+                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (IN STOCK + FAILED, retry purchase - was: {old_failure})")
+                        else:
+                            # IN STOCK + PURCHASED -> Keep as purchased (don't buy twice!)
+                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> unchanged (IN STOCK + PURCHASED, no double-buy)")
+                    else:
+                        # Product is OUT OF STOCK - reset everything to ready for next cycle
                         old_order = state.get('order_number', 'N/A')
                         old_completed_at = state.get('completed_at', 'unknown')
 
@@ -501,9 +691,6 @@ class BulletproofPurchaseManager:
                         reset_details.append(reset_info)
 
                         print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (OUT OF STOCK, was order: {old_order})")
-                    else:
-                        # Product is IN STOCK - keep purchase status unchanged
-                        print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> unchanged (IN STOCK)")
 
                 # Also reset very old attempting states (older than 60 seconds) regardless of stock
                 elif current_status == 'attempting':
@@ -678,22 +865,40 @@ class BulletproofPurchaseManager:
         states = self._load_states_unsafe()
         current_state = states.get(tcin, {'status': 'ready'})
 
-        # CRITICAL: NO duplicate attempts during existing attempts
-        if current_state.get('status') == 'attempting':
-            print(f"[PURCHASE] PREVENTED DUPLICATE: {tcin} already attempting")
-            return {'success': False, 'reason': 'already_attempting'}
+        # RACE CONDITION FIX: Check for ANY active purchase (not just this TCIN)
+        active_purchase_tcin = None
+        for check_tcin, check_state in states.items():
+            if check_state.get('status') in ['attempting', 'queued']:
+                active_purchase_tcin = check_tcin
+                break
+
+        if active_purchase_tcin:
+            if active_purchase_tcin == tcin:
+                print(f"[PURCHASE] PREVENTED DUPLICATE: {tcin} already attempting")
+                return {'success': False, 'reason': 'already_attempting'}
+            else:
+                print(f"[PURCHASE] PREVENTED CONCURRENT: {tcin} blocked, {active_purchase_tcin} already active")
+                return {'success': False, 'reason': 'another_purchase_active', 'active_tcin': active_purchase_tcin}
 
         # Use real purchasing if enabled (fallback to mock if needed)
-        print(f"[PURCHASE_MODE_DEBUG] use_real_purchasing={self.use_real_purchasing}, session_initialized={self.session_initialized}")
+        print("=" * 80)
+        print(f"[PURCHASE_TRIGGER] Product IN STOCK: {product_title} (TCIN: {tcin})")
+        print(f"[PURCHASE_MODE_DEBUG] use_real_purchasing={self.use_real_purchasing}")
+        print(f"[PURCHASE_MODE_DEBUG] session_initialized={self.session_initialized}")
+        print(f"[PURCHASE_MODE_DEBUG] session_manager={self.session_manager}")
+        print(f"[PURCHASE_MODE_DEBUG] purchase_executor={self.purchase_executor}")
+        print("=" * 80)
 
         if self.use_real_purchasing:
             # Force real purchase even if session validation failed
             # (session may be healthy but validation too strict)
-            print(f"[PURCHASE_MODE] [TARGET] Using REAL browser automation for {tcin}")
+            print(f"[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for {tcin}")
+            print(f"[PURCHASE_MODE] ✅ Browser should open and begin checkout process...")
             return self._start_real_purchase(tcin, product_title, states)
         else:
             # Mock mode available for testing without browser
-            print(f"[PURCHASE_MODE] [MOCK] Using MOCK mode for {tcin} (set use_real_purchasing=True to enable browser)")
+            print(f"[PURCHASE_MODE] ⚠️  [MOCK] Using MOCK mode for {tcin}")
+            print(f"[PURCHASE_MODE] ⚠️  To enable browser: set use_real_purchasing=True")
             return self._start_mock_purchase(tcin, product_title, states)
 
     def _start_real_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
@@ -701,9 +906,10 @@ class BulletproofPurchaseManager:
         now = time.time()
 
         # Create initial state - NO TIMER for real purchases
-        # Purchase starts as "queued" until session ready, then "attempting"
+        # FIX: Purchase starts as "attempting" immediately (not "queued")
+        # This prevents dashboard showing stale status during session wait
         new_state = {
-            'status': 'queued',
+            'status': 'attempting',  # Changed from 'queued' to 'attempting'
             'tcin': tcin,
             'product_title': product_title,
             'started_at': now,
@@ -713,14 +919,16 @@ class BulletproofPurchaseManager:
             'real_purchase': True
         }
 
-        # Save state
+        # Save state immediately
         states[tcin] = new_state
         self._save_states_unsafe(states)
 
-        print(f"[PURCHASE] Queuing REAL purchase: {product_title} (TCIN: {tcin}) - waiting for session...")
+        print(f"[PURCHASE] Starting REAL purchase: {product_title} (TCIN: {tcin}) - status: attempting")
 
-        # Don't notify "attempting" yet - wait until actual execution starts
-        # Status will be updated when browser automation actually begins
+        # Notify callback immediately with 'attempting' status
+        if self.status_callback:
+            self.status_callback(tcin, 'attempting', new_state)
+            print(f"[PURCHASE] Dashboard notified immediately: {tcin} -> attempting")
 
         # Start real purchase in background
         def execute_real_purchase():
@@ -732,12 +940,16 @@ class BulletproofPurchaseManager:
                 # CRITICAL: Wait for session to be ready (don't initialize new one!)
                 if not self.session_initialized:
                     print(f"[REAL_PURCHASE_THREAD] Waiting for session initialization to complete...")
-                    # Wait up to 30 seconds for main thread to finish initializing session
-                    max_wait = 30
+                    # Wait up to 60 seconds for main thread to finish initializing session
+                    # (increased from 30s to handle slower browser launches)
+                    max_wait = 60
                     for i in range(max_wait):
                         if self.session_initialized:
                             print(f"[REAL_PURCHASE_THREAD] [OK] Session ready after {i}s wait")
                             break
+                        # Show progress every 10 seconds
+                        if i > 0 and i % 10 == 0:
+                            print(f"[REAL_PURCHASE_THREAD] Still waiting for session... ({i}s elapsed)")
                         time.sleep(1)
 
                     if not self.session_initialized:
@@ -754,11 +966,22 @@ class BulletproofPurchaseManager:
                 # Session is ready, proceed with purchase using subprocess (bypasses asyncio threading issues)
                 print(f"[REAL_PURCHASE_THREAD] Session ready - NOW starting actual purchase execution...")
 
-                # NOW notify attempting status since execution is actually starting
-                if self.status_callback:
-                    current_state = self._load_states_unsafe().get(tcin, {})
-                    self.status_callback(tcin, 'attempting', current_state)
-                    print(f"[REAL_PURCHASE_THREAD] Dashboard notified: {tcin} -> attempting")
+                # BUGFIX: Set purchase lock to prevent session validation during purchase
+                if self.session_manager:
+                    self.session_manager.set_purchase_in_progress(True)
+
+                # CRITICAL: Register thread in active purchases tracking
+                # This prevents race condition where next cycle starts before state is saved
+                with self._state_lock:
+                    self._active_purchases[tcin] = {
+                        'thread': threading.current_thread(),
+                        'started_at': time.time(),
+                        'status': 'executing'
+                    }
+                    print(f"[REAL_PURCHASE_THREAD] Registered thread in active purchases: {tcin}")
+
+                # NOTE: Status already set to 'attempting' when purchase was queued
+                # No need to update again here - prevents race condition with dashboard
 
                 # Use existing PurchaseExecutor with thread-safe async execution
                 print(f"[REAL_PURCHASE_THREAD] Executing purchase using existing session...")
@@ -774,8 +997,18 @@ class BulletproofPurchaseManager:
 
                     print(f"[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {result}")
 
-                    # Update state with real result
-                    self._update_purchase_result(tcin, result)
+                    # CRITICAL: Update state ATOMICALLY with lock held
+                    # This prevents race condition where next cycle sees stale "attempting" status
+                    with self._state_lock:
+                        # Mark as completing to block new cycles
+                        if tcin in self._active_purchases:
+                            self._active_purchases[tcin]['status'] = 'completing'
+                            print(f"[REAL_PURCHASE_THREAD] Marked thread as completing: {tcin}")
+
+                        # Update state file immediately
+                        self._update_purchase_result(tcin, result)
+
+                        print(f"[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle")
 
                 except TimeoutError:
                     print(f"[REAL_PURCHASE_THREAD] [ERROR] Purchase execution timed out after 60s")
@@ -804,6 +1037,20 @@ class BulletproofPurchaseManager:
                     'error': str(e)
                 }
                 self._update_purchase_result(tcin, failed_result)
+
+            finally:
+                # BUGFIX: Always clear purchase lock when purchase completes (success or failure)
+                if self.session_manager:
+                    self.session_manager.set_purchase_in_progress(False)
+
+                # CRITICAL: Remove from active purchases tracking
+                # This signals to next cycle that thread has completed
+                with self._state_lock:
+                    if tcin in self._active_purchases:
+                        print(f"[REAL_PURCHASE_THREAD] Removing {tcin} from active purchases")
+                        del self._active_purchases[tcin]
+                    else:
+                        print(f"[REAL_PURCHASE_THREAD] Note: {tcin} already removed from active purchases")
 
         # Start purchase thread
         import threading
@@ -1019,8 +1266,93 @@ class BulletproofPurchaseManager:
                 self._save_states_unsafe(states)
                 print(f"[PURCHASE_PROCESS_FORCE] Force-reset completed and saved")
 
-            # Process each product according to state rules
-            for tcin, product_data in stock_data.items():
+            # BUG FIX #1: Check for active purchases - enforce single purchase at a time
+            # BUT also check if active purchase is stuck and force-reset if needed
+            active_purchase = None
+            for tcin, state in states.items():
+                if state.get('status') in ['attempting', 'queued']:
+                    started_at = state.get('started_at', 0)
+                    elapsed = time.time() - started_at if started_at else 0
+
+                    # If active purchase is stuck (>60s), force-reset and allow new purchase
+                    if elapsed > 60:
+                        print(f"[PURCHASE_CONCURRENCY] ⚠️ Force-resetting stuck purchase: {tcin} ({elapsed:.1f}s in status '{state.get('status')}')")
+                        states[tcin] = {'status': 'ready'}
+                        self._save_states_unsafe(states)
+                        print(f"[PURCHASE_CONCURRENCY] ✅ Stuck purchase reset, continuing to check for new purchases...")
+                        # Don't set active_purchase - allow new purchase to start
+                    else:
+                        active_purchase = tcin
+                        print(f"[PURCHASE_CONCURRENCY] Active purchase detected: {tcin} (status: {state.get('status')}, running {elapsed:.1f}s)")
+                        break
+
+            # CRITICAL: Also check RUNTIME state (background threads)
+            # Prevents race condition where thread is completing but file status not yet updated
+            if not active_purchase:
+                # DEADLOCK FIX: Don't re-acquire lock - we're already inside self._state_lock from line 1220
+                if self._active_purchases:
+                    active_tcin = list(self._active_purchases.keys())[0]
+                    thread_info = self._active_purchases[active_tcin]
+                    elapsed = time.time() - thread_info['started_at']
+                    active_purchase = active_tcin
+                    print(f"[PURCHASE_CONCURRENCY] Background thread still active: {active_purchase} (running {elapsed:.1f}s, status: {thread_info['status']})")
+
+                    # RACE CONDITION FIX: If thread is marked as 'completing' (in cleanup phase),
+                    # poll until it finishes before starting new purchase (cart clearing takes 20-30s)
+                    if thread_info.get('status') == 'completing':
+                        print(f"[PURCHASE_CONCURRENCY] Thread is completing (cleanup phase) - waiting up to 30s...")
+
+                        max_wait = 30.0  # 30 second maximum
+                        poll_interval = 2.0  # Check every 2 seconds
+                        waited = 0.0
+
+                        while waited < max_wait:
+                            time.sleep(poll_interval)
+                            waited += poll_interval
+
+                            # Check if thread has completed
+                            if active_tcin not in self._active_purchases:
+                                print(f"[PURCHASE_CONCURRENCY] Thread completed after {waited:.1f}s - safe to start new purchase")
+                                active_purchase = None  # Clear flag to allow new purchase
+                                break
+
+                            print(f"[PURCHASE_CONCURRENCY] Still waiting for cleanup... ({waited:.1f}s / {max_wait}s)")
+                        else:
+                            # Timeout - thread still active after 30s
+                            elapsed_total = time.time() - thread_info['started_at']
+                            print(f"[PURCHASE_CONCURRENCY] Thread still active after {max_wait}s wait ({elapsed_total:.1f}s total) - will skip new purchases this cycle")
+                            # Keep active_purchase set to block new purchases
+
+            # BUG FIX #2: Load product priority order from config
+            try:
+                import json
+                config_path = 'config/product_config.json'
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                # Config format: {"products": [{"tcin": "...", "name": "..."}, ...]}
+                products_list = config.get('products', [])
+                product_priority_order = [p['tcin'] for p in products_list if 'tcin' in p]
+                print(f"[PURCHASE_PRIORITY] Loaded priority order: {len(product_priority_order)} products")
+            except Exception as e:
+                print(f"[PURCHASE_PRIORITY_ERROR] Could not load product priority: {e}")
+                import traceback
+                traceback.print_exc()
+                # Fallback to stock_data order
+                product_priority_order = list(stock_data.keys())
+
+            # BUG FIX #2: Sort stock_data by priority order
+            def get_priority_index(tcin):
+                try:
+                    return product_priority_order.index(tcin)
+                except ValueError:
+                    return 999999  # Unknown products go to end
+
+            sorted_tcins = sorted(stock_data.keys(), key=get_priority_index)
+            print(f"[PURCHASE_PRIORITY] Processing {len(sorted_tcins)} products in priority order")
+
+            # Process each product according to state rules (in priority order)
+            for tcin in sorted_tcins:
+                product_data = stock_data[tcin]
                 current_state = states.get(tcin, {'status': 'ready'})
                 current_status = current_state.get('status', 'ready')
 
@@ -1029,9 +1361,17 @@ class BulletproofPurchaseManager:
                 if product_data.get('in_stock'):
                     # CRITICAL STATE RULE: IN STOCK + ready -> IMMEDIATELY go to "attempting"
                     if current_status == 'ready':
+                        # BUG FIX #1: Only start if no active purchase
+                        if active_purchase:
+                            print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
+                            continue
+
                         # Start new purchase attempt
                         result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'))
                         if result.get('success'):
+                            # Mark as active to prevent other purchases this cycle
+                            active_purchase = tcin
+
                             # Reload states to get updated completion info
                             updated_states = self._load_states_unsafe()
                             state = updated_states.get(tcin, {})

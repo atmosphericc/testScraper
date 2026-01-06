@@ -2463,6 +2463,8 @@
 
         // Real-time countdown with server synchronization
         let countdown = 20;
+        let timerStartTime = null;  // Server's cycle start time (Unix timestamp)
+        let timerDuration = 20;     // Total cycle duration in seconds
         let isRefreshing = false;
         let lastServerSync = 0;
         let countdownInterval = null;
@@ -2473,7 +2475,14 @@
                 return;
             }
 
-            countdown--;
+            // Calculate countdown based on server time (accurate even if page opens mid-cycle)
+            if (timerStartTime && timerDuration) {
+                const now = Date.now() / 1000;  // Current time in seconds
+                countdown = Math.max(0, Math.ceil((timerStartTime + timerDuration) - now));
+            } else {
+                // Fallback to simple decrement if no server time available
+                countdown--;
+            }
 
             if (countdownElement) {
                 countdownElement.textContent = countdown;
@@ -2487,7 +2496,56 @@
                     countdownElement.classList.add('refreshing');
                 }
 
-                console.log('🔄 Waiting for next SSE data refresh...');
+                // FIX: Manually fetch current state when timer expires (CRITICAL)
+                // Don't passively wait for SSE - actively fetch fresh data
+                console.log('🔄 Timer expired - fetching fresh stock data and activity log...');
+                fetch('/api/current-state')
+                    .then(response => response.json())
+                    .then(data => {
+                        console.log('✅ Timer refresh complete - updating dashboard:', data);
+
+                        // Update stock badges
+                        if (data.stock_data) {
+                            let updateCount = 0;
+                            Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
+                                updateStockStatus(tcin, stockInfo);
+                                updateCount++;
+                            });
+                            console.log(`✅ Updated ${updateCount} stock badges from timer refresh`);
+                        }
+
+                        // BUGFIX: Update activity log from timer refresh
+                        if (data.activity_log && Array.isArray(data.activity_log)) {
+                            const logContainer = document.querySelector('.log-container');
+                            if (logContainer) {
+                                // Clear existing entries and reload to avoid duplicates
+                                logContainer.innerHTML = '';
+                                console.log(`🔄 Cleared activity log, loading ${data.activity_log.length} entries...`);
+
+                                // Add entries in reverse order (newest first)
+                                data.activity_log.forEach(entry => {
+                                    addActivityEntryToDOM(entry);
+                                });
+                                console.log(`✅ Updated activity log with ${data.activity_log.length} entries from timer refresh`);
+                            } else {
+                                console.warn('⚠️ Log container not found, cannot update activity log');
+                            }
+                        } else {
+                            console.warn('⚠️ No activity_log in timer refresh response');
+                        }
+
+                        // Update in-stock count if available
+                        if (data.in_stock_count !== undefined) {
+                            const inStockElement = document.querySelector('.status-card.warning .status-card-value');
+                            if (inStockElement) {
+                                inStockElement.textContent = data.in_stock_count;
+                                console.log(`✅ Updated in-stock count: ${data.in_stock_count}`);
+                            }
+                        }
+                    })
+                    .catch(error => {
+                        console.error('❌ Timer refresh failed:', error);
+                    });
 
                 // Reset countdown for next cycle - get fresh random timer from server
                 setTimeout(() => {
@@ -2496,10 +2554,16 @@
                         .then(response => response.json())
                         .then(data => {
                             if (data.active) {
+                                // Store server's timer reference for accurate countdown
+                                timerStartTime = data.start_time;
+                                timerDuration = data.total;
                                 countdown = Math.ceil(data.remaining);
-                                console.log(`🔄 Timer reset with fresh random value: ${countdown}s`);
+                                console.log(`🔄 Timer reset: start=${timerStartTime}, duration=${timerDuration}, remaining=${countdown}s`);
                             } else {
-                                countdown = 20; // Fallback only if server fails
+                                // Fallback only if server fails
+                                timerStartTime = Date.now() / 1000;
+                                timerDuration = 20;
+                                countdown = 20;
                             }
                             isRefreshing = false;
                             if (countdownElement) {
@@ -2514,7 +2578,10 @@
                         })
                         .catch(error => {
                             console.warn('⚠️ Timer reset failed, using fallback:', error);
-                            countdown = 20; // Fallback on error
+                            // Fallback on error
+                            timerStartTime = Date.now() / 1000;
+                            timerDuration = 20;
+                            countdown = 20;
                             isRefreshing = false;
                             if (countdownElement) {
                                 countdownElement.classList.remove('refreshing');
@@ -2669,6 +2736,7 @@
         }
 
         // Sync timer with server (ONLY on page load/refresh)
+        // POLLING VERSION - Waits for monitoring to start before syncing timer
         function syncTimerWithServer() {
             // Only sync once on page load or manual refresh - never during countdown
             if (lastServerSync > 0) {
@@ -2678,27 +2746,56 @@
 
             lastServerSync = Date.now();
 
-            fetch('/api/timer-status')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.active) {
-                        countdown = Math.ceil(data.remaining);
-                        console.log(`🔁 Initial timer sync: ${countdown}s remaining`);
-                        if (countdownElement) {
-                            countdownElement.textContent = countdown;
+            // Show "waiting for monitoring" state
+            if (countdownElement) {
+                countdownElement.textContent = '...';
+                countdownElement.style.opacity = '0.5';
+            }
+            console.log('⏳ Waiting for monitoring to start...');
+
+            // Poll every second until monitoring becomes active
+            function pollForTimer() {
+                fetch('/api/timer-status')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.active && data.start_time) {
+                            // ✅ Monitoring started! Sync with real backend values
+                            timerStartTime = data.start_time;
+                            timerDuration = data.total;
+                            countdown = Math.ceil(data.remaining);
+
+                            console.log(`✅ Monitoring active! Timer synced with backend:`);
+                            console.log(`   - Start time: ${timerStartTime}`);
+                            console.log(`   - Duration: ${timerDuration}s (random 15-25s)`);
+                            console.log(`   - Remaining: ${countdown}s`);
+
+                            // Restore normal opacity and show countdown
+                            if (countdownElement) {
+                                countdownElement.textContent = countdown;
+                                countdownElement.style.opacity = '1';
+                            }
+
+                            // Start countdown interval (1 second updates)
+                            if (countdownInterval) {
+                                clearInterval(countdownInterval);
+                            }
+                            countdownInterval = setInterval(updateCountdown, 1000);
+                            console.log('✅ Countdown interval started - timer and API now synchronized!');
+                        } else {
+                            // ⏳ Not active yet, poll again in 1 second
+                            console.log('⏳ Monitoring not started yet, polling again in 1s...');
+                            setTimeout(pollForTimer, 1000);
                         }
-                        // Start the independent countdown interval after sync
-                        // Clear any existing interval first to prevent multiple timers
-                        if (countdownInterval) {
-                            clearInterval(countdownInterval);
-                        }
-                        countdownInterval = setInterval(updateCountdown, 1000);
-                        console.log('🔄 Started countdown interval');
-                    }
-                })
-                .catch(error => {
-                    console.warn('⚠️ Timer sync failed:', error);
-                });
+                    })
+                    .catch(error => {
+                        // ❌ Error fetching status, retry in 2 seconds
+                        console.warn('⚠️ Timer status fetch failed, retrying in 2s:', error);
+                        setTimeout(pollForTimer, 2000);
+                    });
+            }
+
+            // Start polling
+            pollForTimer();
         }
 
         // ===============================================
@@ -2707,6 +2804,9 @@
 
         let eventSource = null;
         const activeCountdowns = {};
+
+        // FIX #3: Initialization guard (SAFETY)
+        let realTimeUpdatesInitialized = false;
 
         // SSE Fallback and Recovery Configuration
         let sseFailureCount = 0;
@@ -2719,14 +2819,68 @@
         const POLLING_INTERVAL_MS = 5000; // 5 second polling fallback
         const SSE_HEALTH_CHECK_MS = 10000; // Check SSE health every 10 seconds
 
-        function initializeRealTimeUpdates() {
+        async function initializeRealTimeUpdates() {
+            // FIX #3: Initialization guard (SAFETY)
+            // Prevent multiple initializations from duplicate event listeners or manual calls
+            if (realTimeUpdatesInitialized) {
+                console.log('⚠️ Real-time updates already initialized, skipping duplicate initialization');
+                return;
+            }
+
             console.log('🚀 BULLETPROOF: Initializing real-time updates with fallback mechanisms...');
+
+            // CRITICAL FIX: Fetch initial data BEFORE SSE connection
+            // This prevents dashboard from being stuck on "LOADING..." if SSE is slow/fails
+            console.log('📥 Fetching initial dashboard state...');
+            try {
+                const response = await fetch('/api/current-state');
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log('✅ Initial data loaded:', data);
+
+                    // Populate stock data from initial fetch
+                    if (data.stock_data) {
+                        Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
+                            updateStockStatus(tcin, stockInfo);
+                        });
+                        console.log(`✅ Pre-populated ${Object.keys(data.stock_data).length} products`);
+                    }
+
+                    // Update purchase states
+                    if (data.purchase_states) {
+                        Object.entries(data.purchase_states).forEach(([tcin, state]) => {
+                            updatePurchaseStatus(tcin, state.status, state);
+                        });
+                    }
+
+                    // FIX #1: Process activity log from initial fetch (CRITICAL)
+                    // Backend sends activity_log array in /api/current-state response
+                    // This ensures activity log displays stock check results on page load
+                    if (data.activity_log && Array.isArray(data.activity_log)) {
+                        console.log(`✅ INITIAL FETCH: Loading ${data.activity_log.length} activity log entries`);
+                        data.activity_log.forEach(entry => {
+                            addActivityEntryToDOM(entry);
+                        });
+                    } else {
+                        console.log('⚠️ INITIAL FETCH: No activity_log in response');
+                    }
+                } else {
+                    console.warn('⚠️ Failed to fetch initial data:', response.status);
+                }
+            } catch (error) {
+                console.error('❌ Failed to fetch initial data:', error);
+                // Continue anyway - SSE will provide updates
+            }
 
             // Start SSE health monitoring
             startSSEHealthMonitoring();
 
             // Connect to SSE stream with enhanced error handling
             connectSSE();
+
+            // FIX #3: Mark initialization as complete (SAFETY)
+            realTimeUpdatesInitialized = true;
+            console.log('✅ Real-time updates initialization complete');
         }
 
         function connectSSE() {
@@ -2750,6 +2904,27 @@
                     if (pollingFallbackActive) {
                         disablePollingFallback();
                     }
+
+                    // FIX #2: Post-SSE state refresh (IMPORTANT)
+                    // Immediately fetch current state after SSE connects to catch any updates
+                    // that may have occurred before the connection was fully established
+                    console.log('🔄 Fetching current state post-SSE connection...');
+                    fetch('/api/current-state')
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log('📥 Post-SSE connection state refresh:', data);
+                            if (data.stock_data && Object.keys(data.stock_data).length > 0) {
+                                console.log(`✓ Applying stock data for ${Object.keys(data.stock_data).length} products`);
+                                Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
+                                    updateStockStatus(tcin, stockInfo);
+                                });
+                            } else {
+                                console.log('⚠ Post-SSE refresh: No stock data available yet');
+                            }
+                        })
+                        .catch(error => {
+                            console.error('❌ Post-SSE state refresh failed:', error);
+                        });
                 };
 
                 eventSource.onmessage = function(event) {
@@ -2757,17 +2932,38 @@
                         lastSSEEventTime = Date.now(); // Update last event time
                         const data = JSON.parse(event.data);
 
+                        // DIAGNOSTIC FIX: Log every SSE event received
+                        console.log('📡 SSE EVENT RECEIVED:', {
+                            type: data.type,
+                            timestamp: data.timestamp,
+                            hasData: !!data.data,
+                            dataKeys: data.data ? Object.keys(data.data) : []
+                        });
+
                         // Enhanced event handling with fallback tracking
                         handleRealTimeEventWithFallback(data);
 
                     } catch (error) {
                         console.error('❌ Failed to parse SSE data:', error);
+                        console.error('Raw event data:', event.data);
                         handleSSEFailure('Parse error', error);
                     }
                 };
 
                 eventSource.onerror = function(event) {
                     console.error('❌ SSE connection error:', event);
+                    console.error('❌ SSE readyState:', eventSource?.readyState);
+                    console.error('❌ SSE url:', eventSource?.url);
+
+                    // Log detailed error information
+                    const errorDetails = {
+                        readyState: eventSource?.readyState,
+                        url: eventSource?.url,
+                        type: event.type,
+                        timestamp: new Date().toISOString()
+                    };
+                    console.error('❌ SSE ERROR DETAILS:', errorDetails);
+
                     handleSSEFailure('Connection error', event);
                 };
 
@@ -2888,14 +3084,41 @@
         function handlePollingUpdate(data) {
             console.log('📡 POLLING UPDATE RECEIVED:', data);
 
+            // FIX #3: Enhanced polling validation (SAFETY NET)
+            // Ensure fallback validates and applies stock data updates even if SSE fails completely
+
+            // Validate data structure
+            if (!data || typeof data !== 'object') {
+                console.error('❌ POLLING: Invalid data structure received', data);
+                return;
+            }
+
             // Process polling data similar to SSE events
-            if (data.stock_data) {
-                Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
-                    const updateResult = updateStockStatus(tcin, stockInfo);
-                    if (!updateResult) {
-                        console.warn(`⚠️ POLLING: Stock update failed for ${tcin}`);
+            if (data.stock_data && typeof data.stock_data === 'object') {
+                const stockEntries = Object.entries(data.stock_data);
+                console.log(`✓ POLLING: Processing ${stockEntries.length} stock entries`);
+
+                let successCount = 0;
+                let failCount = 0;
+
+                stockEntries.forEach(([tcin, stockInfo]) => {
+                    try {
+                        const updateResult = updateStockStatus(tcin, stockInfo);
+                        if (updateResult) {
+                            successCount++;
+                        } else {
+                            failCount++;
+                            console.warn(`⚠️ POLLING: Stock update failed for ${tcin}`);
+                        }
+                    } catch (error) {
+                        failCount++;
+                        console.error(`❌ POLLING: Error updating ${tcin}:`, error);
                     }
                 });
+
+                console.log(`✓ POLLING: Updated ${successCount} products (${failCount} failed)`);
+            } else {
+                console.log('⚠ POLLING: No stock_data in response or invalid format');
             }
 
             // Update statistics
@@ -2903,7 +3126,20 @@
                 const inStockElement = document.querySelector('.status-card.warning .status-card-value');
                 if (inStockElement) {
                     inStockElement.textContent = data.in_stock_count;
+                    console.log(`✓ POLLING: Updated in_stock_count to ${data.in_stock_count}`);
                 }
+            }
+
+            // FIX #2: Process activity log from polling updates (CRITICAL)
+            // When SSE fails and polling fallback is active, activity log must still update
+            // This ensures stock check results appear in activity log even in polling mode
+            if (data.activity_log && Array.isArray(data.activity_log)) {
+                console.log(`✓ POLLING: Processing ${data.activity_log.length} activity log entries`);
+                data.activity_log.forEach(entry => {
+                    addActivityEntryToDOM(entry);
+                });
+            } else {
+                console.log('⚠️ POLLING: No activity_log in response');
             }
 
             // Update last update time
@@ -2911,7 +3147,83 @@
             if (lastUpdateElement && lastUpdateElement.closest('.header-stat').querySelector('.header-stat-label').textContent === 'Last Update') {
                 const now = new Date();
                 lastUpdateElement.textContent = now.toLocaleTimeString();
+                console.log(`✓ POLLING: Updated last update time to ${now.toLocaleTimeString()}`);
+
+                // FIX #3: Show visual feedback that polling update occurred
+                // Users expect to see that "something happened" even when stock status doesn't change
+                if (successCount > 0 || failCount > 0) {
+                    showPollingUpdateToast(successCount, failCount);
+                }
             }
+        }
+
+        // FIX #3: Visual feedback toast for polling updates
+        // Displays subtle notification when polling refreshes data
+        // Helps users know the dashboard is actively updating without manual refresh
+        function showPollingUpdateToast(successCount, failCount) {
+            // Remove any existing toast
+            const existingToast = document.querySelector('.polling-toast');
+            if (existingToast) {
+                existingToast.remove();
+            }
+
+            // Create new toast notification
+            const toast = document.createElement('div');
+            toast.className = 'polling-toast';
+
+            // Build message based on success/fail counts
+            let message = '';
+            if (successCount > 0 && failCount === 0) {
+                message = `✓ Updated ${successCount} product${successCount > 1 ? 's' : ''}`;
+                toast.style.background = '#28a745';
+            } else if (successCount > 0 && failCount > 0) {
+                message = `⚠ Updated ${successCount}, ${failCount} failed`;
+                toast.style.background = '#ffc107';
+                toast.style.color = '#000';
+            } else if (failCount > 0) {
+                message = `✗ ${failCount} update${failCount > 1 ? 's' : ''} failed`;
+                toast.style.background = '#dc3545';
+            }
+
+            toast.textContent = message;
+            toast.style.cssText += `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                color: white;
+                padding: 12px 24px;
+                border-radius: 8px;
+                z-index: 9999;
+                font-size: 14px;
+                font-weight: 500;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                animation: fadeInOut 3s ease-in-out;
+                pointer-events: none;
+            `;
+
+            // Add CSS animation if not already present
+            if (!document.querySelector('#polling-toast-styles')) {
+                const style = document.createElement('style');
+                style.id = 'polling-toast-styles';
+                style.textContent = `
+                    @keyframes fadeInOut {
+                        0% { opacity: 0; transform: translateY(20px); }
+                        10% { opacity: 1; transform: translateY(0); }
+                        90% { opacity: 1; transform: translateY(0); }
+                        100% { opacity: 0; transform: translateY(20px); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+
+            document.body.appendChild(toast);
+
+            // Remove toast after animation completes
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.remove();
+                }
+            }, 3000);
         }
 
         function handleRealTimeEventWithFallback(data) {
@@ -3015,6 +3327,16 @@
                 const oldCountdown = countdown;
                 const newCountdown = Math.ceil(timerSync.current_remaining);
 
+                // Update timer reference for accurate calculation
+                if (timerSync.total_duration !== undefined) {
+                    const now = Date.now() / 1000;
+                    timerDuration = timerSync.total_duration;
+                    // Calculate when the cycle started: now - elapsed
+                    const elapsed = timerDuration - timerSync.current_remaining;
+                    timerStartTime = now - elapsed;
+                    console.log(`🔄 ATOMIC: Timer updated - start=${timerStartTime}, duration=${timerDuration}, remaining=${newCountdown}s`);
+                }
+
                 // IMPROVED TIMER DRIFT DETECTION - with validation
                 const shouldMeasureDrift = validateTimerMeasurement(oldCountdown, newCountdown, eventData.cycle_id);
 
@@ -3041,16 +3363,29 @@
 
             // STEP 2: Process purchase resets atomically
             const resetTcins = purchaseChanges.resets || [];
+            const actuallyReset = [];
             resetTcins.forEach(tcin => {
+                // CRITICAL FIX: Don't override recent completions - let user see purchased/failed status
+                if (window.recentCompletions && window.recentCompletions.has(tcin)) {
+                    const completedAt = window.recentCompletions.get(tcin);
+                    const timeSince = Date.now() - completedAt;
+                    console.log(`⏸️  ATOMIC RESET DELAYED: ${tcin} completed ${timeSince}ms ago, waiting for user to see status`);
+                    return; // Skip this reset for now
+                }
+
                 updatePurchaseStatus(tcin, 'ready', {});
                 // Clear any existing countdown for this TCIN
                 if (activeCountdowns[tcin]) {
                     clearInterval(activeCountdowns[tcin]);
                     delete activeCountdowns[tcin];
                 }
+                actuallyReset.push(tcin);
             });
-            if (resetTcins.length > 0) {
-                console.log(`🔄 ATOMIC: Reset ${resetTcins.length} purchase states to ready`);
+            if (actuallyReset.length > 0) {
+                console.log(`🔄 ATOMIC: Reset ${actuallyReset.length} purchase states to ready`);
+            }
+            if (resetTcins.length > actuallyReset.length) {
+                console.log(`⏸️  ATOMIC: Delayed ${resetTcins.length - actuallyReset.length} resets (waiting for completion display)`);
             }
 
             // STEP 3: Update stock statuses atomically with enhanced error handling
@@ -3113,7 +3448,8 @@
 
                     // Emergency fallback: Try to mark the element as having an error
                     try {
-                        const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+                        // FIX: Exclude preorder badges - must match selector used everywhere else
+                        const stockBadge = document.querySelector(`.badge[data-tcin="${tcin}"]:not(.preorder-badge)`);
                         if (stockBadge) {
                             stockBadge.className = 'badge unknown';
                             stockBadge.textContent = '⚠️ ERROR';
@@ -3148,14 +3484,27 @@
 
             // STEP 4: Start new purchase attempts atomically
             const newAttempts = purchaseChanges.new_attempts || [];
+            const actuallyStarted = [];
             newAttempts.forEach(attempt => {
+                // CRITICAL FIX: Don't override recent completions - let user see purchased/failed status
+                if (window.recentCompletions && window.recentCompletions.has(attempt.tcin)) {
+                    const completedAt = window.recentCompletions.get(attempt.tcin);
+                    const timeSince = Date.now() - completedAt;
+                    console.log(`⏸️  ATOMIC ATTEMPT DELAYED: ${attempt.tcin} completed ${timeSince}ms ago, waiting for user to see status`);
+                    return; // Skip this attempt for now
+                }
+
                 updatePurchaseStatus(attempt.tcin, 'attempting', attempt);
                 if (attempt.completes_at) {
                     startRealTimeCountdown(attempt.tcin, attempt);
                 }
+                actuallyStarted.push(attempt.tcin);
             });
-            if (newAttempts.length > 0) {
-                console.log(`🔄 ATOMIC: Started ${newAttempts.length} purchase attempts`);
+            if (actuallyStarted.length > 0) {
+                console.log(`🔄 ATOMIC: Started ${actuallyStarted.length} purchase attempts`);
+            }
+            if (newAttempts.length > actuallyStarted.length) {
+                console.log(`⏸️  ATOMIC: Delayed ${newAttempts.length - actuallyStarted.length} attempts (waiting for completion display)`);
             }
 
             // STEP 5: Update header statistics
@@ -3164,6 +3513,23 @@
                 if (inStockElement) {
                     inStockElement.textContent = summary.in_stock_count;
                 }
+            }
+
+            // STEP 5.5: BUGFIX - Update activity log from SSE event
+            if (cycleData.activity_log && Array.isArray(cycleData.activity_log)) {
+                const logContainer = document.querySelector('.log-container');
+                if (logContainer) {
+                    // Clear and reload activity log to avoid duplicates
+                    logContainer.innerHTML = '';
+                    cycleData.activity_log.forEach(entry => {
+                        addActivityEntryToDOM(entry);
+                    });
+                    console.log(`🔄 ATOMIC: Updated activity log (${cycleData.activity_log.length} entries)`);
+                } else {
+                    console.warn('⚠️ ATOMIC: Log container not found, cannot update activity log');
+                }
+            } else {
+                console.log('🔄 ATOMIC: No activity_log in event data (older backend version?)');
             }
 
             // STEP 6: Update last update time in header
@@ -3193,7 +3559,8 @@
             const productRows = document.querySelectorAll('tr[data-tcin]');
             productRows.forEach(row => {
                 const tcin = row.getAttribute('data-tcin');
-                const stockBadge = row.querySelector('.badge[data-tcin]');
+                // FIX: Exclude preorder badges - must match selector used in updateStockStatus()
+                const stockBadge = row.querySelector('.badge[data-tcin]:not(.preorder-badge)');
                 const purchaseBadge = row.querySelector(`#purchase-status-${tcin}`);
 
                 uiState[tcin] = {
@@ -3211,7 +3578,8 @@
             /**
              * Get current stock status for a specific TCIN from UI
              */
-            const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+            // FIX: Exclude preorder badges - must match selector used in updateStockStatus()
+            const stockBadge = document.querySelector(`.badge[data-tcin="${tcin}"]:not(.preorder-badge)`);
             if (!stockBadge) return 'UNKNOWN';
 
             const text = stockBadge.textContent.trim();
@@ -3268,12 +3636,28 @@
             if (data.remaining !== undefined && (isRefreshing || Math.abs(countdown - data.remaining) > 3)) {
                 // Only sync if we're refreshing or if there's a significant difference
                 countdown = Math.ceil(data.remaining);
+
+                // Update timer reference if available
+                if (data.start_time !== undefined && data.total !== undefined) {
+                    timerStartTime = data.start_time;
+                    timerDuration = data.total;
+                    console.log(`🔁 Timer synced via SSE: start=${timerStartTime}, duration=${timerDuration}, remaining=${countdown}s`);
+                } else if (data.total !== undefined) {
+                    // Calculate start time from available data
+                    const now = Date.now() / 1000;
+                    timerDuration = data.total;
+                    const elapsed = timerDuration - data.remaining;
+                    timerStartTime = now - elapsed;
+                    console.log(`🔁 Timer synced via SSE (calculated): start=${timerStartTime}, duration=${timerDuration}, remaining=${countdown}s`);
+                } else {
+                    console.log(`🔁 Timer synced via SSE: ${countdown}s`);
+                }
+
                 isRefreshing = false;
                 if (countdownElement) {
                     countdownElement.textContent = countdown;
                     countdownElement.classList.remove('refreshing');
                 }
-                console.log(`🔁 Timer synced via SSE: ${countdown}s`);
             }
         }
 
@@ -3312,6 +3696,22 @@
                 }
 
                 updatePurchaseStatus(tcin, status, state);
+
+                // CRITICAL FIX: Track completed statuses (purchased/failed) to prevent atomic cycle override
+                // This ensures user sees the completion status before it gets reset
+                if (status === 'purchased' || status === 'failed') {
+                    if (!window.recentCompletions) window.recentCompletions = new Map();
+                    window.recentCompletions.set(tcin, Date.now());
+                    console.log(`✅ Tracked completion: ${tcin} -> ${status} (protected from override for 8 seconds)`);
+
+                    // Clear after 8 seconds (long enough to see the status, but not interfere with next cycle)
+                    setTimeout(() => {
+                        if (window.recentCompletions) {
+                            window.recentCompletions.delete(tcin);
+                            console.log(`🔓 Completion protection expired for ${tcin}`);
+                        }
+                    }, 8000);
+                }
             }
         }
 
@@ -3411,10 +3811,27 @@
         }
 
         function handleActivityLogUpdate(entry) {
-            console.log(`📋 New activity: ${entry.message}`);
+            // DIAGNOSTIC FIX: Enhanced logging and error handling for activity log updates
+            try {
+                console.log(`📋 ACTIVITY LOG EVENT RECEIVED:`, entry);
+                console.log(`  - Message: ${entry.message}`);
+                console.log(`  - Level: ${entry.level}`);
+                console.log(`  - Category: ${entry.category}`);
+                console.log(`  - Time: ${entry.time_str}`);
 
-            // Add to activity log display
-            addActivityEntryToDOM(entry);
+                // Validate entry structure
+                if (!entry || !entry.message) {
+                    console.error('❌ Invalid activity log entry - missing message:', entry);
+                    return;
+                }
+
+                // Add to activity log display
+                addActivityEntryToDOM(entry);
+                console.log('✅ Activity log entry added to DOM successfully');
+            } catch (error) {
+                console.error('❌ Error handling activity log update:', error);
+                console.error('Entry that caused error:', entry);
+            }
         }
 
         function handleLogsClearedUpdate(data) {
@@ -3496,16 +3913,21 @@
                 console.log(`📊 STOCK UPDATE ATTEMPT ${attempt + 1}/${MAX_STOCK_UPDATE_RETRIES}: ${updateId}`);
 
                 // Pre-validation: Check if elements exist (target stock status column specifically)
-                const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+                // FIX: Exclude preorder badges - only target stock status badges
+                // Use :not() to skip preorder-badge class
+                const stockBadge = document.querySelector(`.badge[data-tcin="${tcin}"]:not(.preorder-badge)`);
                 if (!stockBadge) {
-                    console.error(`❌ STOCK UPDATE FAILED: ${updateId} - Stock badge not found for ${tcin}`);
-                    throw new Error(`Stock badge not found for TCIN ${tcin}`);
+                    // FIX #2: Return false instead of throw - don't let missing badge block other updates
+                    // Badge might not be ready yet, will retry on next polling cycle
+                    console.warn(`⚠️ STOCK UPDATE SKIPPED: ${updateId} - Badge not ready for ${tcin}, will retry on next poll`);
+                    return false;
                 }
 
                 const productRow = stockBadge.closest('tr');
                 if (!productRow) {
-                    console.error(`❌ STOCK UPDATE FAILED: ${updateId} - Product row not found for ${tcin}`);
-                    throw new Error(`Product row not found for TCIN ${tcin}`);
+                    // FIX #2: Return false instead of throw - defensive coding
+                    console.warn(`⚠️ STOCK UPDATE SKIPPED: ${updateId} - Row not ready for ${tcin}, will retry on next poll`);
+                    return false;
                 }
 
                 // Record old state for comparison
@@ -3546,17 +3968,25 @@
                     throw new Error(errorMsg);
                 }
 
-                // Update product name if available (with error handling)
+                // Update product name if available (OPTIONAL - don't fail if missing)
                 try {
                     const productNameCell = document.querySelector(`tr[data-tcin="${tcin}"] .product-name`);
-                    if (productNameCell && stockInfo.title) {
-                        const oldName = productNameCell.textContent;
-                        productNameCell.textContent = stockInfo.title;
-                        console.log(`📝 PRODUCT NAME UPDATED: ${updateId} - "${oldName}" -> "${stockInfo.title}"`);
+
+                    // CRITICAL FIX: Make title optional - warn if missing but continue update
+                    if (stockInfo.title && stockInfo.title.trim()) {
+                        if (productNameCell) {
+                            const oldName = productNameCell.textContent;
+                            productNameCell.textContent = stockInfo.title;
+                            console.log(`📝 PRODUCT NAME UPDATED: ${updateId} - "${oldName}" -> "${stockInfo.title}"`);
+                        } else {
+                            console.warn(`⚠️ PRODUCT NAME CELL NOT FOUND for ${tcin} using selector: tr[data-tcin="${tcin}"] .product-name`);
+                        }
+                    } else {
+                        console.warn(`⚠️ No title provided for ${tcin}, keeping existing product name`);
                     }
                 } catch (nameError) {
                     console.warn(`⚠️ PRODUCT NAME UPDATE FAILED: ${updateId}`, nameError);
-                    // Don't fail the entire update for name issues
+                    // Don't fail the entire update - title is optional
                 }
 
                 // Also update product config section name if it exists (with error handling)
@@ -3634,17 +4064,12 @@
                     const retryDelay = STOCK_UPDATE_RETRY_DELAY * Math.pow(2, attempt);
                     console.log(`🔄 STOCK UPDATE RETRY: ${updateId} - Retrying in ${retryDelay}ms (attempt ${attempt + 2}/${MAX_STOCK_UPDATE_RETRIES})`);
 
-                    // Track retry attempts
-                    if (!stockUpdateRetries.has(tcin)) {
-                        stockUpdateRetries.set(tcin, 0);
-                    }
-                    stockUpdateRetries.set(tcin, stockUpdateRetries.get(tcin) + 1);
-
-                    setTimeout(() => {
-                        updateStockStatusWithRetry(tcin, stockInfo, attempt + 1, updateId);
-                    }, retryDelay);
-
-                    return false; // Indicate retry in progress
+                    // FIX #1: Remove async setTimeout retry - let next polling cycle retry naturally
+                    // Previous code used setTimeout which returned false BEFORE retry completed
+                    // This caused polling handler to think update failed when it was still pending
+                    // Now we return false immediately and let the next poll cycle (5s) retry
+                    console.log(`⏭️ STOCK UPDATE DEFERRED: ${updateId} - Will retry on next polling cycle (5s)`);
+                    return false; // Let next polling cycle handle retry
                 } else {
                     console.error(`❌ STOCK UPDATE FAILED PERMANENTLY: ${updateId} - All ${MAX_STOCK_UPDATE_RETRIES} attempts failed`);
 
@@ -3657,7 +4082,8 @@
 
                     // Mark element as failed for manual attention
                     try {
-                        const stockBadge = document.querySelector(`tr[data-tcin="${tcin}"] td:nth-child(4) .badge[data-tcin="${tcin}"]`);
+                        // FIX #3: Simplified selector - more reliable, less prone to HTML structure changes
+                const stockBadge = document.querySelector(`.badge[data-tcin="${tcin}"]`);
                         if (stockBadge) {
                             stockBadge.className = 'badge unknown';
                             stockBadge.textContent = '❌ UPDATE FAILED';
@@ -3673,22 +4099,47 @@
         }
 
         function addActivityEntryToDOM(entry) {
+            // DIAGNOSTIC FIX: DOM element validation with detailed logging
+            console.log('🔍 addActivityEntryToDOM called with:', entry);
+
             const logContainer = document.querySelector('.log-container');
-            if (!logContainer) return;
+            if (!logContainer) {
+                console.error('❌ CRITICAL: .log-container element not found in DOM!');
+                console.error('   This means activity log entries cannot be displayed.');
+                console.error('   Searching for alternative containers...');
 
-            const entryDiv = document.createElement('div');
-            entryDiv.className = `log-entry ${entry.level}`;
-            entryDiv.innerHTML = `
-                <span style="opacity: 0.7;">[${entry.time_str}]</span>
-                📋 ${entry.message}
-            `;
+                // Try to find any log-related containers
+                const alternativeContainers = document.querySelectorAll('[class*="log"], [class*="activity"]');
+                console.error('   Found alternative containers:', alternativeContainers);
+                return;
+            }
 
-            // Insert at the beginning
-            const firstEntry = logContainer.querySelector('.log-entry');
-            if (firstEntry) {
-                logContainer.insertBefore(entryDiv, firstEntry);
-            } else {
-                logContainer.appendChild(entryDiv);
+            console.log('✅ Log container found:', logContainer);
+
+            try {
+                const entryDiv = document.createElement('div');
+                entryDiv.className = `log-entry ${entry.level}`;
+                entryDiv.innerHTML = `
+                    <span style="opacity: 0.7;">[${entry.time_str}]</span>
+                    📋 ${entry.message}
+                `;
+
+                console.log('✅ Entry div created:', entryDiv);
+
+                // Insert at the beginning
+                const firstEntry = logContainer.querySelector('.log-entry');
+                if (firstEntry) {
+                    logContainer.insertBefore(entryDiv, firstEntry);
+                    console.log('✅ Entry inserted before first entry');
+                } else {
+                    logContainer.appendChild(entryDiv);
+                    console.log('✅ Entry appended (first entry in log)');
+                }
+
+                console.log(`✅ Activity log entry successfully added to DOM. Total entries: ${logContainer.querySelectorAll('.log-entry').length}`);
+            } catch (error) {
+                console.error('❌ Error creating/inserting log entry:', error);
+                throw error;
             }
 
             // Keep only last 50 entries visible
@@ -3709,11 +4160,67 @@
             }
         }
 
-        // Initialize real-time updates when page loads
-        window.addEventListener('load', () => {
+        // Initialize real-time updates when DOM is ready
+        // CRITICAL FIX: Use DOMContentLoaded for faster initialization and await async functions
+        window.addEventListener('DOMContentLoaded', async () => {
             console.log('🚀 BULLETPROOF: Starting real-time dashboard...');
-            initializeRealTimeUpdates();
+
+            try {
+                // CRITICAL FIX: Await async function to ensure initial data loads before continuing
+                await initializeRealTimeUpdates();
+                console.log('✅ Real-time updates initialized successfully');
+            } catch (error) {
+                console.error('❌ CRITICAL: Failed to initialize real-time updates:', error);
+                // Show error to user
+                alert('Failed to initialize dashboard. Please refresh the page. Error: ' + error.message);
+            }
+
+            // Initialize other components
             initializeTimer();
+
+            // FIX: Add periodic polling as safety net (15 seconds - matches backend cycle)
+            // This ensures badges and activity log update even if SSE fails or timer doesn't trigger refresh
+            console.log('🔄 Starting periodic polling safety net...');
+            setInterval(async () => {
+                try {
+                    const response = await fetch('/api/current-state');
+                    if (response.ok) {
+                        const data = await response.json();
+
+                        // Update stock badges
+                        if (data.stock_data) {
+                            Object.entries(data.stock_data).forEach(([tcin, stockInfo]) => {
+                                updateStockStatus(tcin, stockInfo);
+                            });
+                            console.log('✅ Periodic poll - updated stock badges');
+                        }
+
+                        // BUGFIX: Also update activity log during periodic polling
+                        if (data.activity_log && Array.isArray(data.activity_log)) {
+                            const logContainer = document.querySelector('.log-container');
+                            if (logContainer) {
+                                // Clear and reload to avoid duplicates
+                                logContainer.innerHTML = '';
+                                data.activity_log.forEach(entry => {
+                                    addActivityEntryToDOM(entry);
+                                });
+                                console.log(`✅ Periodic poll - updated activity log (${data.activity_log.length} entries)`);
+                            }
+                        }
+
+                        // Update in-stock count
+                        if (data.in_stock_count !== undefined) {
+                            const inStockElement = document.querySelector('.status-card.warning .status-card-value');
+                            if (inStockElement) {
+                                inStockElement.textContent = data.in_stock_count;
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.warn('⚠️ Periodic poll failed:', error);
+                }
+            }, 15000); // Every 15 seconds (matches backend monitoring cycle)
+            console.log('✅ Periodic polling safety net active (15s interval)');
 
             // Initialize countdowns for any existing "attempting" purchases
             initializeExistingCountdowns();
@@ -3925,58 +4432,13 @@
             }
         });
 
-        // Initialize when page loads
-        window.addEventListener('load', () => {
-            console.log('🚀 BULLETPROOF: Starting real-time dashboard...');
-            initializeRealTimeUpdates();
-            initializeTimer();
-
-            // Initialize countdowns for any existing "attempting" purchases
-            const attemptingRows = document.querySelectorAll('tr[data-purchase-status="attempting"]');
-            attemptingRows.forEach(row => {
-                const tcin = row.dataset.tcin;
-                const completesAt = row.dataset.completesAt;
-                if (completesAt) {
-                    const completesAtTime = parseFloat(completesAt);
-                    const currentTime = Date.now() / 1000; // Current time in seconds
-                    const remainingTime = completesAtTime - currentTime;
-
-                    console.log(`🔄 COUNTDOWN INIT: ${tcin} completes at ${completesAtTime}, current time ${currentTime}, remaining: ${remainingTime.toFixed(1)}s`);
-
-                    if (remainingTime > 0) {
-                        // Purchase is still valid, start countdown
-                        startRealTimeCountdown(tcin, { completes_at: completesAtTime });
-                        console.log(`✅ COUNTDOWN STARTED: ${tcin} with ${remainingTime.toFixed(1)}s remaining`);
-                    } else {
-                        // Purchase timer has expired - fetch final outcome and complete immediately
-                        console.log(`⏰ EXPIRED PURCHASE: ${tcin} expired ${Math.abs(remainingTime).toFixed(1)}s ago - fetching final outcome`);
-
-                        // Fetch current purchase state to get final outcome
-                        fetch('/api/purchase-states')
-                            .then(response => response.json())
-                            .then(states => {
-                                const purchaseState = states[tcin];
-                                if (purchaseState && purchaseState.final_outcome) {
-                                    console.log(`🎯 COMPLETING EXPIRED: ${tcin} -> ${purchaseState.final_outcome}`);
-                                    updatePurchaseStatus(tcin, purchaseState.final_outcome, purchaseState);
-                                } else {
-                                    console.log(`❌ NO FINAL OUTCOME: ${tcin} - defaulting to failed`);
-                                    updatePurchaseStatus(tcin, 'failed', { status: 'failed' });
-                                }
-                            })
-                            .catch(error => {
-                                console.error(`Error fetching purchase state for ${tcin}:`, error);
-                                updatePurchaseStatus(tcin, 'failed', { status: 'failed' });
-                            });
-                    }
-                }
-            });
-
-            // Add synthetic loading for demonstration
-            setTimeout(() => {
-                updateConnectionStatus(true);
-            }, 1000);
-        });
+        // FIX #2: Removed duplicate 'load' event listener (IMPORTANT)
+        // This listener was causing duplicate initialization, race conditions, and duplicate SSE connections.
+        // All initialization is now handled by the DOMContentLoaded listener (line 3889) which:
+        // - Fires earlier (when DOM is ready)
+        // - Properly awaits async functions
+        // - Has error handling
+        // - Calls initializeExistingCountdowns() which handles countdown initialization
 
     </script>
 </body>

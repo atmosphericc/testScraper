@@ -1,0 +1,15 @@
+2025/12/04-14:57:23.884 dc53f Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/MANIFEST-000001
+2025/12/04-14:57:23.888 dc53f Recovering log #111
+2025/12/04-14:57:23.889 dc53f Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000111.log 
+2025/12/04-14:57:27.082 dc542 Level-0 table #115: started
+2025/12/04-14:57:27.096 dc542 Level-0 table #115: 15430 bytes OK
+2025/12/04-14:57:27.126 dc542 Delete type=0 #111
+2025/12/04-14:57:27.128 dc53f Compacting 4@0 + 1@1 files
+2025/12/04-14:57:27.153 dc53f Generated table #116@0: 10187 keys, 338005 bytes
+2025/12/04-14:57:27.153 dc53f Compacted 4@0 + 1@1 files => 338005 bytes
+2025/12/04-14:57:27.176 dc53f compacted to: files[ 0 1 1 0 0 0 0 ]
+2025/12/04-14:57:27.179 dc53f Delete type=2 #115
+2025/12/04-14:57:27.179 dc53f Delete type=2 #110
+2025/12/04-14:57:27.179 dc53f Delete type=2 #104
+2025/12/04-14:57:27.179 dc53f Delete type=2 #107
+2025/12/04-14:57:27.179 dc53f Delete type=2 #112

@@ -1,0 +1,20 @@
+2025/11/13-13:16:52.029 84752 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2025/11/13-13:16:52.041 84752 Recovering log #140
+2025/11/13-13:16:52.044 84752 Level-0 table #143: started
+2025/11/13-13:16:52.078 84752 Level-0 table #143: 173078 bytes OK
+2025/11/13-13:16:52.079 84752 Recovering log #143
+2025/11/13-13:16:52.080 84752 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000143.log 
+2025/11/13-13:16:52.110 84752 Delete type=2 #144
+2025/11/13-13:16:52.110 84752 Delete type=0 #140
+2025/11/13-13:18:53.336 84755 Level-0 table #145: started
+2025/11/13-13:18:53.352 84755 Level-0 table #145: 24064 bytes OK
+2025/11/13-13:18:53.389 84755 Delete type=0 #143
+2025/11/13-13:18:53.391 84755 Compacting 4@0 + 1@1 files
+2025/11/13-13:18:53.406 84755 Generated table #146@0: 56 keys, 11630 bytes
+2025/11/13-13:18:53.407 84755 Compacted 4@0 + 1@1 files => 11630 bytes
+2025/11/13-13:18:53.443 84755 compacted to: files[ 0 1 0 0 0 0 0 ]
+2025/11/13-13:18:53.445 84755 Delete type=2 #138
+2025/11/13-13:18:53.445 84755 Delete type=2 #141
+2025/11/13-13:18:53.445 84755 Delete type=2 #143
+2025/11/13-13:18:53.445 84755 Delete type=2 #145
+2025/11/13-13:18:53.445 84755 Delete type=2 #136

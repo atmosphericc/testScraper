@@ -1,0 +1,4 @@
+2025/11/14-14:00:52.594 acad6 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/MANIFEST-000001
+2025/11/14-14:00:52.597 acad6 Recovering log #83
+2025/11/14-14:00:52.598 acad6 (ignoring error) /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000083.log: dropping 8939 bytes; Corruption: checksum mismatch
+2025/11/14-14:00:52.598 acad6 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000083.log 

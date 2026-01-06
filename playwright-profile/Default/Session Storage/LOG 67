@@ -1,0 +1,9 @@
+2025/12/02-13:40:58.454 41caa Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/MANIFEST-000001
+2025/12/02-13:40:58.459 41caa Recovering log #98
+2025/12/02-13:40:58.459 41caa (ignoring error) /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000098.log: dropping 1510 bytes; Corruption: checksum mismatch
+2025/12/02-13:40:58.459 41caa (ignoring error) /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000098.log: dropping 1114 bytes; Corruption: missing start of fragmented record(2)
+2025/12/02-13:40:58.459 41caa Level-0 table #101: started
+2025/12/02-13:40:58.473 41caa Level-0 table #101: 11435 bytes OK
+2025/12/02-13:40:58.474 41caa Recovering log #101
+2025/12/02-13:40:58.475 41caa Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000101.log 
+2025/12/02-13:40:58.543 41caa Delete type=0 #98

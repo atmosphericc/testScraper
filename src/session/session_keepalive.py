@@ -29,7 +29,8 @@ class SessionKeepAlive:
         self._stop_event = threading.Event()
 
         # Keep-alive configuration
-        self.validation_interval = 300  # 5 minutes
+        # BUGFIX: Increased validation interval to reduce collision probability
+        self.validation_interval = 900  # 15 minutes (increased from 5 min)
         self.keep_alive_interval = 600  # 10 minutes
         self.max_idle_time = 1800  # 30 minutes before forced refresh
 
@@ -131,12 +132,19 @@ class SessionKeepAlive:
 
     async def _perform_validation(self, current_time: datetime):
         """Validate session if needed"""
+        # BUGFIX: Skip validation if purchase is in progress
+        if self.session_manager.is_purchase_in_progress():
+            self.logger.debug("[PURCHASE_LOCK] Skipping validation - purchase in progress")
+            print("[KEEPALIVE] ⏸️ Skipping validation - purchase active")
+            return
+
         if (not self.last_validation or
             (current_time - self.last_validation).total_seconds() > self.validation_interval):
 
             self.logger.debug("Performing session validation...")
 
-            if await self.session_manager._validate_session():
+            # BUGFIX: Use skip_initial_navigation=True to avoid redirects
+            if await self.session_manager._validate_session(skip_initial_navigation=True):
                 self.last_validation = current_time
                 self.logger.debug(" Session validation passed")
                 self._notify_status("session_validated", {"timestamp": current_time.isoformat()})

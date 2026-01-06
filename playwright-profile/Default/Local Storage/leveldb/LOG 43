@@ -1,0 +1,8 @@
+2025/11/18-13:33:18.893 10528d Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2025/11/18-13:33:18.901 10528d Recovering log #162
+2025/11/18-13:33:18.903 10528d Level-0 table #164: started
+2025/11/18-13:33:18.929 10528d Level-0 table #164: 130313 bytes OK
+2025/11/18-13:33:18.966 10528d Delete type=0 #162
+2025/11/18-13:34:18.969 105290 Level-0 table #167: started
+2025/11/18-13:34:18.983 105290 Level-0 table #167: 77331 bytes OK
+2025/11/18-13:34:19.006 105290 Delete type=0 #165

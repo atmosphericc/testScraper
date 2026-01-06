@@ -1,0 +1,33 @@
+2025/10/27-12:35:11.183 45f27 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2025/10/27-12:35:11.192 45f27 Recovering log #32
+2025/10/27-12:35:11.193 45f27 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000032.log 
+2025/10/27-12:38:00.735 45f2a Level-0 table #37: started
+2025/10/27-12:38:00.757 45f2a Level-0 table #37: 28450 bytes OK
+2025/10/27-12:38:00.784 45f2a Delete type=0 #32
+2025/10/27-12:44:35.895 45f2a Level-0 table #39: started
+2025/10/27-12:44:35.908 45f2a Level-0 table #39: 14192 bytes OK
+2025/10/27-12:44:35.934 45f2a Delete type=0 #36
+2025/10/27-13:27:31.557 45f2a Level-0 table #41: started
+2025/10/27-13:27:31.614 45f2a Level-0 table #41: 359947 bytes OK
+2025/10/27-13:27:31.655 45f2a Delete type=0 #38
+2025/10/27-13:30:01.085 45f2a Level-0 table #43: started
+2025/10/27-13:30:01.110 45f2a Level-0 table #43: 19348 bytes OK
+2025/10/27-13:30:01.150 45f2a Delete type=0 #40
+2025/10/27-13:30:01.154 45f2a Compacting 4@0 + 1@1 files
+2025/10/27-13:30:01.192 45f2a Generated table #44@0: 51 keys, 77309 bytes
+2025/10/27-13:30:01.192 45f2a Compacted 4@0 + 1@1 files => 77309 bytes
+2025/10/27-13:30:01.225 45f2a compacted to: files[ 0 1 0 0 0 0 0 ]
+2025/10/27-13:30:01.230 45f2a Delete type=2 #39
+2025/10/27-13:30:01.230 45f2a Delete type=2 #34
+2025/10/27-13:30:01.231 45f2a Delete type=2 #37
+2025/10/27-13:30:01.231 45f2a Delete type=2 #43
+2025/10/27-13:30:01.231 45f2a Delete type=2 #41
+2025/10/27-13:30:30.677 45f2a Level-0 table #46: started
+2025/10/27-13:30:30.709 45f2a Level-0 table #46: 57437 bytes OK
+2025/10/27-13:30:30.751 45f2a Delete type=0 #42
+2025/10/27-13:38:01.119 45f2a Level-0 table #48: started
+2025/10/27-13:38:01.133 45f2a Level-0 table #48: 15653 bytes OK
+2025/10/27-13:38:01.163 45f2a Delete type=0 #45
+2025/10/27-13:40:09.872 45f27 Level-0 table #50: started
+2025/10/27-13:40:09.896 45f27 Level-0 table #50: 79116 bytes OK
+2025/10/27-13:40:09.928 45f27 Delete type=0 #47

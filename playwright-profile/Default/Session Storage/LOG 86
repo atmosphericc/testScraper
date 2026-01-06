@@ -1,0 +1,27 @@
+2026/01/06-10:20:27.005 439fa Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/MANIFEST-000001
+2026/01/06-10:20:27.009 439fa Recovering log #118
+2026/01/06-10:20:27.010 439fa Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000118.log 
+2026/01/06-10:27:05.335 439fd Level-0 table #122: started
+2026/01/06-10:27:05.354 439fd Level-0 table #122: 11600 bytes OK
+2026/01/06-10:27:05.381 439fd Delete type=0 #118
+2026/01/06-10:43:21.600 439fd Level-0 table #124: started
+2026/01/06-10:43:21.612 439fd Level-0 table #124: 13407 bytes OK
+2026/01/06-10:43:21.643 439fd Delete type=0 #121
+2026/01/06-10:57:45.470 439fd Level-0 table #126: started
+2026/01/06-10:57:45.485 439fd Level-0 table #126: 15074 bytes OK
+2026/01/06-10:57:45.522 439fd Delete type=0 #123
+2026/01/06-10:57:45.524 439fd Compacting 4@0 + 1@1 files
+2026/01/06-10:57:45.555 439fd Generated table #127@0: 11314 keys, 377762 bytes
+2026/01/06-10:57:45.556 439fd Compacted 4@0 + 1@1 files => 377762 bytes
+2026/01/06-10:57:45.580 439fd compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/01/06-10:57:45.583 439fd Delete type=2 #116
+2026/01/06-10:57:45.583 439fd Delete type=2 #122
+2026/01/06-10:57:45.584 439fd Delete type=2 #119
+2026/01/06-10:57:45.584 439fd Delete type=2 #124
+2026/01/06-10:57:45.584 439fd Delete type=2 #126
+2026/01/06-11:05:55.212 439fd Level-0 table #129: started
+2026/01/06-11:05:55.233 439fd Level-0 table #129: 16144 bytes OK
+2026/01/06-11:05:55.258 439fd Delete type=0 #125
+2026/01/06-11:11:12.380 439fd Level-0 table #131: started
+2026/01/06-11:11:12.397 439fd Level-0 table #131: 16684 bytes OK
+2026/01/06-11:11:12.426 439fd Delete type=0 #128

@@ -1,0 +1,15 @@
+2025/10/24-12:52:23.217 2208f Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
+2025/10/24-12:52:23.226 2208f Recovering log #19
+2025/10/24-12:52:23.227 2208f Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000019.log 
+2025/10/24-12:52:37.474 2208f Level-0 table #23: started
+2025/10/24-12:52:37.491 2208f Level-0 table #23: 17995 bytes OK
+2025/10/24-12:52:37.518 2208f Delete type=0 #19
+2025/10/24-12:52:37.519 2208f Compacting 4@0 + 1@1 files
+2025/10/24-12:52:37.536 2208f Generated table #24@0: 49 keys, 8524 bytes
+2025/10/24-12:52:37.536 2208f Compacted 4@0 + 1@1 files => 8524 bytes
+2025/10/24-12:52:37.562 2208f compacted to: files[ 0 1 0 0 0 0 0 ]
+2025/10/24-12:52:37.564 2208f Delete type=2 #15
+2025/10/24-12:52:37.564 2208f Delete type=2 #13
+2025/10/24-12:52:37.564 2208f Delete type=2 #20
+2025/10/24-12:52:37.564 2208f Delete type=2 #23
+2025/10/24-12:52:37.564 2208f Delete type=2 #18
