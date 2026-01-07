@@ -451,15 +451,19 @@
         }
 
         .badge.ready {
-            background: rgba(63, 185, 80, 0.15);
-            color: var(--success-color);
-            border: 1px solid rgba(63, 185, 80, 0.3);
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(5, 150, 105, 0.2));
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            font-weight: 600;
+            box-shadow: 0 2px 4px rgba(16, 185, 129, 0.1);
         }
 
         .badge.attempting {
-            background: rgba(247, 133, 0, 0.15);
-            color: var(--warning-color);
-            border: 1px solid rgba(247, 133, 0, 0.3);
+            background: linear-gradient(135deg, rgba(251, 146, 60, 0.25), rgba(249, 115, 22, 0.25));
+            color: #f97316;
+            border: 1px solid rgba(251, 146, 60, 0.5);
+            font-weight: 600;
+            box-shadow: 0 2px 4px rgba(251, 146, 60, 0.2);
             animation: pulse 1s ease-in-out infinite;
         }
 
@@ -1224,7 +1228,6 @@
 
 
     <div class="container">
-
 
         <!-- Live Stock Analytics -->
         <div class="section">
@@ -3362,30 +3365,19 @@
             }
 
             // STEP 2: Process purchase resets atomically
+            // SIMPLIFIED: Just reset status badge to ready
+            // Last Attempt column is separate and persistent (never reset)
             const resetTcins = purchaseChanges.resets || [];
-            const actuallyReset = [];
             resetTcins.forEach(tcin => {
-                // CRITICAL FIX: Don't override recent completions - let user see purchased/failed status
-                if (window.recentCompletions && window.recentCompletions.has(tcin)) {
-                    const completedAt = window.recentCompletions.get(tcin);
-                    const timeSince = Date.now() - completedAt;
-                    console.log(`⏸️  ATOMIC RESET DELAYED: ${tcin} completed ${timeSince}ms ago, waiting for user to see status`);
-                    return; // Skip this reset for now
-                }
-
                 updatePurchaseStatus(tcin, 'ready', {});
                 // Clear any existing countdown for this TCIN
                 if (activeCountdowns[tcin]) {
                     clearInterval(activeCountdowns[tcin]);
                     delete activeCountdowns[tcin];
                 }
-                actuallyReset.push(tcin);
             });
-            if (actuallyReset.length > 0) {
-                console.log(`🔄 ATOMIC: Reset ${actuallyReset.length} purchase states to ready`);
-            }
-            if (resetTcins.length > actuallyReset.length) {
-                console.log(`⏸️  ATOMIC: Delayed ${resetTcins.length - actuallyReset.length} resets (waiting for completion display)`);
+            if (resetTcins.length > 0) {
+                console.log(`🔄 ATOMIC: Reset ${resetTcins.length} purchase states to ready (Last Attempt preserved)`);
             }
 
             // STEP 3: Update stock statuses atomically with enhanced error handling
@@ -3483,28 +3475,17 @@
             }
 
             // STEP 4: Start new purchase attempts atomically
+            // SIMPLIFIED: Just update status badge to attempting
+            // Last Attempt column is separate and persistent
             const newAttempts = purchaseChanges.new_attempts || [];
-            const actuallyStarted = [];
             newAttempts.forEach(attempt => {
-                // CRITICAL FIX: Don't override recent completions - let user see purchased/failed status
-                if (window.recentCompletions && window.recentCompletions.has(attempt.tcin)) {
-                    const completedAt = window.recentCompletions.get(attempt.tcin);
-                    const timeSince = Date.now() - completedAt;
-                    console.log(`⏸️  ATOMIC ATTEMPT DELAYED: ${attempt.tcin} completed ${timeSince}ms ago, waiting for user to see status`);
-                    return; // Skip this attempt for now
-                }
-
                 updatePurchaseStatus(attempt.tcin, 'attempting', attempt);
                 if (attempt.completes_at) {
                     startRealTimeCountdown(attempt.tcin, attempt);
                 }
-                actuallyStarted.push(attempt.tcin);
             });
-            if (actuallyStarted.length > 0) {
-                console.log(`🔄 ATOMIC: Started ${actuallyStarted.length} purchase attempts`);
-            }
-            if (newAttempts.length > actuallyStarted.length) {
-                console.log(`⏸️  ATOMIC: Delayed ${newAttempts.length - actuallyStarted.length} attempts (waiting for completion display)`);
+            if (newAttempts.length > 0) {
+                console.log(`🔄 ATOMIC: Started ${newAttempts.length} purchase attempts (Last Attempt preserved)`);
             }
 
             // STEP 5: Update header statistics
@@ -3678,15 +3659,8 @@
 
             console.log(`🔄 Real-time purchase update: ${tcin} -> ${status}`);
 
-            // Don't override recent countdown completions with "attempting" status
-            if (status === 'attempting' && window.recentCompletions && window.recentCompletions.has(tcin)) {
-                const completedAt = window.recentCompletions.get(tcin);
-                const timeSince = Date.now() - completedAt;
-                console.log(`🔄 Ignoring "attempting" update for ${tcin} - recently completed ${timeSince}ms ago`);
-                return;
-            }
-
             if (status === 'attempting') {
+                // Start countdown for attempting status
                 startRealTimeCountdown(tcin, state);
             } else {
                 // Clear any existing countdown
@@ -3695,23 +3669,8 @@
                     delete activeCountdowns[tcin];
                 }
 
+                // Update status badge
                 updatePurchaseStatus(tcin, status, state);
-
-                // CRITICAL FIX: Track completed statuses (purchased/failed) to prevent atomic cycle override
-                // This ensures user sees the completion status before it gets reset
-                if (status === 'purchased' || status === 'failed') {
-                    if (!window.recentCompletions) window.recentCompletions = new Map();
-                    window.recentCompletions.set(tcin, Date.now());
-                    console.log(`✅ Tracked completion: ${tcin} -> ${status} (protected from override for 8 seconds)`);
-
-                    // Clear after 8 seconds (long enough to see the status, but not interfere with next cycle)
-                    setTimeout(() => {
-                        if (window.recentCompletions) {
-                            window.recentCompletions.delete(tcin);
-                            console.log(`🔓 Completion protection expired for ${tcin}`);
-                        }
-                    }, 8000);
-                }
             }
         }
 
@@ -3731,53 +3690,13 @@
                 if (remaining > 0) {
                     updatePurchaseStatusWithCountdown(tcin, 'attempting', remaining);
                 } else {
-                    // Countdown finished - fetch current server state to get real final outcome
+                    // Countdown finished - just show "Processing..." and wait for real SSE event
+                    // Don't guess the outcome - the backend will send purchase_status event with real result
                     clearInterval(activeCountdowns[tcin]);
                     delete activeCountdowns[tcin];
 
-                    console.log(`🔄 Countdown completed for ${tcin} - fetching current server state for final outcome`);
-
-                    // SURGICAL FIX: Always fetch fresh server state when countdown completes
-                    fetch('/api/purchase-states')
-                        .then(response => response.json())
-                        .then(currentStates => {
-                            const currentState = currentStates[tcin];
-                            let finalStatus;
-
-                            if (currentState && (currentState.status === 'purchased' || currentState.status === 'failed')) {
-                                // Server has definitive final state
-                                finalStatus = currentState.status;
-                                console.log(`🔄 Server has final state for ${tcin}: ${finalStatus}`);
-                                updatePurchaseStatus(tcin, finalStatus, currentState);
-                            } else if (state.final_outcome && state.final_outcome !== 'attempting') {
-                                // Use final_outcome from original state as backup
-                                finalStatus = state.final_outcome;
-                                console.log(`🔄 Using final_outcome from state for ${tcin}: ${finalStatus}`);
-                                updatePurchaseStatus(tcin, finalStatus, state);
-                            } else {
-                                // Last resort: assume failed if no clear outcome
-                                finalStatus = 'failed';
-                                console.log(`🔄 No clear outcome for ${tcin}, defaulting to failed`);
-                                updatePurchaseStatus(tcin, finalStatus, { status: 'failed', failure_reason: 'Timeout' });
-                            }
-
-                            // Store completion to prevent immediate SSE override
-                            if (!window.recentCompletions) window.recentCompletions = new Map();
-                            window.recentCompletions.set(tcin, Date.now());
-                            // Clear after 5 seconds to allow legitimate updates
-                            setTimeout(() => {
-                                if (window.recentCompletions) {
-                                    window.recentCompletions.delete(tcin);
-                                }
-                            }, 5000);
-                        })
-                        .catch(error => {
-                            console.error(`🔄 Failed to fetch final state for ${tcin}:`, error);
-                            // Fallback to failed on fetch error
-                            const finalStatus = state.final_outcome || 'failed';
-                            console.log(`🔄 Fetch failed for ${tcin}, using fallback: ${finalStatus}`);
-                            updatePurchaseStatus(tcin, finalStatus, state);
-                        });
+                    console.log(`⏰ Countdown expired for ${tcin} - waiting for completion event from backend`);
+                    updatePurchaseStatusWithCountdown(tcin, 'attempting', '...');
                 }
             }
 
@@ -3848,31 +3767,32 @@
         function updatePurchaseStatus(tcin, status, state = {}) {
             const badge = document.getElementById(`purchase-status-${tcin}`);
             if (badge) {
-                badge.className = `badge ${status}`;
-
+                // Simplified: Only show current activity (attempting/ready)
+                // Completion results (purchased/failed) now go to Last Attempt column
                 let text = '';
+                let className = '';
+
                 switch (status) {
                     case 'ready':
                         text = '✅ READY';
+                        className = 'badge ready';
                         break;
                     case 'attempting':
                         text = '⏳ ATTEMPTING';
+                        className = 'badge attempting';
                         break;
                     case 'purchased':
-                        text = '🎉 PURCHASED';
-                        if (state.order_number) {
-                            badge.title = `Order: ${state.order_number}`;
-                        }
-                        break;
                     case 'failed':
-                        text = '❌ FAILED';
-                        if (state.failure_reason) {
-                            badge.title = `Failed: ${state.failure_reason}`;
-                        }
+                        // These now update Last Attempt column instead
+                        // Set status back to ready after completion
+                        text = '✅ READY';
+                        className = 'badge ready';
                         break;
                     default:
-                        text = status.toUpperCase();
+                        text = '✅ READY';
+                        className = 'badge ready';
                 }
+                badge.className = className;
                 badge.textContent = text;
             }
         }

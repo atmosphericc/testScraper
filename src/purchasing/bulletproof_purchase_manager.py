@@ -78,7 +78,7 @@ class BulletproofPurchaseManager:
 
         # Thread synchronization
         self._file_lock = threading.Lock()
-        self._state_lock = threading.Lock()
+        self._state_lock = threading.RLock()  # CRITICAL: RLock allows same thread to acquire multiple times
         self._active_purchases = {}  # Track active purchase threads
 
         # Status callback for real-time updates
