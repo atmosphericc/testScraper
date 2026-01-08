@@ -1,6 +1,0 @@
-2025/12/03-17:25:11.097 9bf9b Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/shared_proto_db/MANIFEST-000001
-2025/12/03-17:25:11.103 9bf9b Recovering log #10
-2025/12/03-17:25:11.105 9bf9b Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/shared_proto_db/000010.log 
-2025/12/03-17:25:23.417 9bf9a Level-0 table #14: started
-2025/12/03-17:25:23.437 9bf9a Level-0 table #14: 108870 bytes OK
-2025/12/03-17:25:23.473 9bf9a Delete type=0 #10

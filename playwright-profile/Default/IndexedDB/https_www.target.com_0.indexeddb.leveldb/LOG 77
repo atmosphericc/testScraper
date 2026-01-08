@@ -1,6 +1,0 @@
-2025/12/03-17:25:13.430 9bf85 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/IndexedDB/https_www.target.com_0.indexeddb.leveldb/MANIFEST-000001
-2025/12/03-17:25:13.433 9bf85 Recovering log #23
-2025/12/03-17:25:13.442 9bf85 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/IndexedDB/https_www.target.com_0.indexeddb.leveldb/000023.log 
-2025/12/03-17:25:14.240 9bf9a Level-0 table #28: started
-2025/12/03-17:25:14.279 9bf9a Level-0 table #28: 819610 bytes OK
-2025/12/03-17:25:14.304 9bf9a Delete type=0 #23

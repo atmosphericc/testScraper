@@ -26,6 +26,7 @@ wheels/
 *.egg
 target_products.json
 target_profile/
+playwright-profile/
 
 .vscode/
 .idea/

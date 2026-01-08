@@ -1,4 +1,0 @@
-2025/11/14-14:04:36.816 ad809 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/MANIFEST-000001
-2025/11/14-14:04:36.818 ad809 Recovering log #83
-2025/11/14-14:04:36.819 ad809 (ignoring error) /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000083.log: dropping 9981 bytes; Corruption: checksum mismatch
-2025/11/14-14:04:36.819 ad809 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000083.log 

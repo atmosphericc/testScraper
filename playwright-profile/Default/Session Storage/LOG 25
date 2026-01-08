@@ -1,4 +1,0 @@
-2025/11/12-11:39:46.871 5c15e Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/MANIFEST-000001
-2025/11/12-11:39:46.873 5c15e Recovering log #79
-2025/11/12-11:39:46.874 5c15e (ignoring error) /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000079.log: dropping 70 bytes; Corruption: missing start of fragmented record(2)
-2025/11/12-11:39:46.874 5c15e Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Session Storage/000079.log 

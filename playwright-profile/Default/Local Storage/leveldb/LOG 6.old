@@ -1,6 +1,0 @@
-2025/11/24-17:44:29.249 17a817 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2025/11/24-17:44:29.257 17a817 Recovering log #169
-2025/11/24-17:44:29.258 17a817 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000169.log 
-2025/11/24-17:44:54.391 17a81a Level-0 table #174: started
-2025/11/24-17:44:54.408 17a81a Level-0 table #174: 312838 bytes OK
-2025/11/24-17:44:54.440 17a81a Delete type=0 #169

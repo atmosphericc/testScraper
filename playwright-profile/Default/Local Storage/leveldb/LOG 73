@@ -1,9 +1,0 @@
-2025/12/03-16:39:02.092 8e243 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2025/12/03-16:39:02.103 8e243 Recovering log #198
-2025/12/03-16:39:02.104 8e243 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000198.log 
-2025/12/03-16:39:16.444 8e243 Level-0 table #202: started
-2025/12/03-16:39:16.465 8e243 Level-0 table #202: 168533 bytes OK
-2025/12/03-16:39:16.494 8e243 Delete type=0 #198
-2025/12/03-16:40:02.109 8e246 Level-0 table #204: started
-2025/12/03-16:40:02.121 8e246 Level-0 table #204: 88960 bytes OK
-2025/12/03-16:40:02.145 8e246 Delete type=0 #201

@@ -1,6 +1,0 @@
-2025/11/24-18:43:48.836 188fce Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/shared_proto_db/MANIFEST-000001
-2025/11/24-18:43:48.837 188fce Recovering log #7
-2025/11/24-18:43:48.839 188fce Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/shared_proto_db/000007.log 
-2025/11/24-18:44:04.138 188fcc Level-0 table #11: started
-2025/11/24-18:44:04.155 188fcc Level-0 table #11: 108254 bytes OK
-2025/11/24-18:44:04.185 188fcc Delete type=0 #7

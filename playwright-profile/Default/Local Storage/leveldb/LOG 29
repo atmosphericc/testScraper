@@ -1,6 +1,0 @@
-2025/11/14-13:33:46.598 a74c5 Reusing MANIFEST /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2025/11/14-13:33:46.608 a74c5 Recovering log #151
-2025/11/14-13:33:46.609 a74c5 Reusing old log /Users/Eric/Desktop/testScraper/playwright-profile/Default/Local Storage/leveldb/000151.log 
-2025/11/14-13:34:46.616 a74c8 Level-0 table #155: started
-2025/11/14-13:34:46.635 a74c8 Level-0 table #155: 149886 bytes OK
-2025/11/14-13:34:46.662 a74c8 Delete type=0 #151
