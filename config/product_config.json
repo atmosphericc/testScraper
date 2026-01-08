@@ -1,23 +1,8 @@
 {
   "products": [
     {
-      "tcin": "94724987",
-      "name": "Product 94724987",
-      "enabled": true
-    },
-    {
       "tcin": "94681784",
       "name": "Product 94681784",
-      "enabled": true
-    },
-    {
-      "tcin": "94681786",
-      "name": "Product 94681786",
-      "enabled": true
-    },
-    {
-      "tcin": "94681763",
-      "name": "Product 94681763",
       "enabled": true
     },
     {
@@ -26,26 +11,9 @@
       "enabled": true
     },
     {
-      "tcin": "94681773",
-      "name": "Pok\u00e9mon Trading Card Game:Lugia ex & Latias ex Premium Collection",
+      "tcin": "94898414",
+      "name": "Product 94898414",
       "enabled": true
-    },
-    {
-      "tcin": "94681777",
-      "name": "Pok\u00e9mon Trading Card Game:Mimikyu ex & Alcremie ex Premium Collection",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681777"
-    },
-    {
-      "tcin": "94636856",
-      "name": "Product 94636856",
-      "enabled": true
-    },
-    {
-      "tcin": "89542109",
-      "name": "Test Product - Always In Stock",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-89542109"
     }
   ]
 }
