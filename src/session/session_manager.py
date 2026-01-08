@@ -225,6 +225,22 @@ class SessionManager:
             print("[SESSION_INIT] ✅ Patchright context created - STEALTH MODE ACTIVE!")
             print("[SESSION_INIT] 🌐 BROWSER WINDOW OPENED - Check for maximized Chrome window!")
 
+            # Listen for new pages and close them immediately to prevent flash
+            async def close_popup_pages(new_page):
+                """Close popup pages immediately to minimize visual flash"""
+                try:
+                    # Wait a tiny bit to let the page event fully register
+                    await asyncio.sleep(0.05)
+                    # Only close if we now have multiple pages (keep the first one)
+                    if len(self.context.pages) > 1:
+                        self.logger.debug(f"[POPUP_BLOCK] Closing popup tab to prevent flash")
+                        await new_page.close()
+                except Exception as e:
+                    self.logger.debug(f"Error closing popup: {e}")
+
+            self.context.on("page", close_popup_pages)
+            print("[SESSION_INIT] 🚫 Popup closer activated - will minimize tab flash")
+
             # No Browser object with persistent context - it's built-in
             self.browser = None
 
@@ -1242,6 +1258,17 @@ class SessionManager:
                     if self.context:
                         pages = self.context.pages
                         print(f"[DEBUG_FLASH] Context has {len(pages)} pages available")
+
+                        # Page cleanup disabled - popup handler should prevent accumulation
+                        # (Re-enable if pages still accumulate over time)
+                        # if len(pages) > 2:
+                        #     for old_page in pages[1:]:
+                        #         try:
+                        #             await old_page.close()
+                        #         except Exception as e:
+                        #             self.logger.debug(f"Error closing stale page: {e}")
+                        #     print(f"[DEBUG_FLASH] Closed {len(pages) - 1} stale pages")
+
                         if pages:
                             page = pages[0]
                             print(f"[DEBUG_FLASH] [OK] Using existing page[0] - NO NEW TAB")
