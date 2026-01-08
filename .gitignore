@@ -27,6 +27,7 @@ wheels/
 target_products.json
 target_profile/
 playwright-profile/
+logs/
 
 .vscode/
 .idea/
