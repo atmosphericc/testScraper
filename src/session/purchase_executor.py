@@ -603,11 +603,11 @@ class PurchaseExecutor:
             # SHAPE FIX: Use domcontentloaded (faster, more realistic) + random delay
             # Humans don't wait for all images/resources, just for page to be interactive
             self.logger.info("[PURCHASE] Navigating to checkout page...")
-            await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=15000)
+            await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=5000)
 
             # SHAPE FIX: Random delay mimics human variance (network speed, rendering, processing)
-            # 1.5-3.5s range = 2s variance (not fingerprint-able across cycles)
-            human_delay = random.uniform(1.5, 3.5)
+            # 0.3-0.8s range = fast but still human-like for familiar users
+            human_delay = random.uniform(0.3, 0.8)
             self.logger.info(f"[PURCHASE] Page loaded, waiting {human_delay:.1f}s (human-like variance)...")
             await asyncio.sleep(human_delay)
 
@@ -652,10 +652,10 @@ class PurchaseExecutor:
 
                 for selector in remove_selectors:
                     try:
-                        remove_button = await page.wait_for_selector(selector, timeout=1000)
+                        remove_button = await page.wait_for_selector(selector, timeout=500)
                         if remove_button and await remove_button.is_visible():
                             await remove_button.click()
-                            await asyncio.sleep(random.uniform(0.3, 0.7))
+                            await asyncio.sleep(random.uniform(0.1, 0.3))
                             removed_count += 1
                             button_found = True
                             break
