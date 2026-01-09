@@ -106,7 +106,8 @@
       "Bash(grep:*)",
       "Bash(open http://localhost:5002)",
       "WebFetch(domain:botsthatwork.com)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(wc:*)"
     ],
     "deny": [],
     "ask": []

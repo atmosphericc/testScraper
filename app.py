@@ -1659,6 +1659,93 @@ def index():
                          activity_log=current_activity_log,
                          timestamp=datetime.now())
 
+@app.route('/v2')
+def index_v2():
+    """New modern dashboard route (v2)"""
+    try:
+        # Load product configuration
+        stock_monitor = StockMonitor()
+        config = stock_monitor.get_config()
+
+        # Load catalog
+        try:
+            with open('config/product_catalog.json', 'r') as f:
+                catalog_config = json.load(f)
+        except Exception as e:
+            print(f"[V2] Catalog load error: {e}")
+            catalog_config = {'catalog': []}
+
+        # Get current data (thread-safe)
+        with shared_data.lock:
+            current_stock_data = shared_data.stock_data.copy()
+            current_purchase_states = shared_data.purchase_states.copy()
+            current_activity_log = shared_data.activity_log.copy()
+            last_update = shared_data.last_update_time
+
+        # Prepare products for template
+        for product in config.get('products', []):
+            tcin = product.get('tcin')
+
+            # Get stock data
+            stock_info = current_stock_data.get(tcin, {})
+
+            # Get purchase state
+            purchase_state = current_purchase_states.get(tcin, {'status': 'ready'})
+
+            # Update product with combined data
+            product.update({
+                'display_name': stock_info.get('title') or product.get('name', f'Product {tcin}'),
+                'available': stock_info.get('in_stock', False),
+                'stock_status': stock_info.get('status_detail', 'LOADING'),
+                'status': stock_info.get('status_detail', 'LOADING'),
+                'has_data': bool(stock_info),
+                'url': f"https://www.target.com/p/-/A-{tcin}",
+                'enabled': product.get('enabled', True),
+
+                # Purchase status
+                'purchase_status': purchase_state.get('status', 'ready'),
+                'purchase_attempt_count': purchase_state.get('attempt_count', 0),
+                'order_number': purchase_state.get('order_number'),
+                'last_purchase_attempt': purchase_state.get('last_attempt'),
+                'purchase_completed_at': purchase_state.get('completed_at'),
+                'completes_at': purchase_state.get('completes_at')  # For countdown
+            })
+
+        # Build status
+        in_stock_count = sum(1 for p in config.get('products', []) if p.get('available', False))
+
+        with shared_data.lock:
+            monitor_running = shared_data.monitor_running
+
+        status = {
+            'monitoring': monitor_running,
+            'in_stock_count': in_stock_count,
+            'last_update': last_update.isoformat() if last_update else datetime.now().isoformat(),
+            'data_age_seconds': int((datetime.now() - last_update).total_seconds()) if last_update else 0,
+            'timestamp': datetime.now(),
+            'data_loaded': bool(current_stock_data)
+        }
+
+        # Get list of TCINs actively being monitored
+        active_tcins = [p.get('tcin') for p in config.get('products', [])]
+
+        # Add active monitoring status to each catalog item
+        for catalog_item in catalog_config.get('catalog', []):
+            catalog_item['is_actively_monitored'] = catalog_item['tcin'] in active_tcins
+
+        return render_template('simple_dashboard_v2.html',
+                             config=config,
+                             catalog=catalog_config,
+                             status=status,
+                             activity_log=current_activity_log,
+                             timestamp=datetime.now())
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[V2] Route error: {e}")
+        print(error_details)
+        return f"<h1>Error loading V2 dashboard</h1><pre>{error_details}</pre>", 500
+
 @app.route('/api/stream')
 def sse_stream():
     """Server-Sent Events stream for real-time updates with per-client queues"""
