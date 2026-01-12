@@ -492,15 +492,19 @@
         }
 
         .badge.in-stock {
-            background: rgba(63, 185, 80, 0.15);
-            color: var(--success-color);
-            border: 1px solid rgba(63, 185, 80, 0.3);
+            background: rgba(63, 185, 80, 0.35);
+            color: #22c55e;
+            border: 2px solid rgba(63, 185, 80, 0.7);
+            font-weight: 700;
+            box-shadow: 0 0 8px rgba(63, 185, 80, 0.3);
         }
 
         .badge.out-of-stock {
-            background: rgba(248, 81, 73, 0.15);
-            color: var(--danger-color);
-            border: 1px solid rgba(248, 81, 73, 0.3);
+            background: rgba(248, 81, 73, 0.35);
+            color: #ef4444;
+            border: 2px solid rgba(248, 81, 73, 0.7);
+            font-weight: 700;
+            box-shadow: 0 0 8px rgba(248, 81, 73, 0.3);
         }
 
         .badge.unknown {
@@ -2012,9 +2016,9 @@
                         <input
                             type="text"
                             name="tcin"
-                            placeholder="Enter 8-digit TCIN..."
-                            pattern="[0-9]{8}"
-                            maxlength="8"
+                            placeholder="Enter TCIN (8-10 digits)..."
+                            pattern="[0-9]{8,10}"
+                            maxlength="10"
                             required
                             style="
                                 flex: 1;
@@ -2105,9 +2109,9 @@
                                     <input
                                         type="text"
                                         name="tcin"
-                                        placeholder="Enter 8-digit TCIN..."
-                                        pattern="[0-9]{8}"
-                                        maxlength="8"
+                                        placeholder="Enter TCIN (8-10 digits)..."
+                                        pattern="[0-9]{8,10}"
+                                        maxlength="10"
                                         required
                                         style="
                                             flex: 1;
@@ -2316,6 +2320,9 @@
                     // Update tab counters
                     updateTabCounters();
 
+                    // Update metrics immediately
+                    updateMetrics();
+
                     showSuccessToast('Product activated for monitoring: ' + result.product.name);
                 } else {
                     showErrorToast('Error: ' + result.error);
@@ -2472,6 +2479,40 @@
             document.getElementById('catalog-tab').textContent = `📚 Product Catalog (${catalogCount})`;
         }
 
+        function updateMetrics() {
+            // Count active products from the main table
+            const totalProducts = document.querySelector('table tbody')?.querySelectorAll('tr').length || 0;
+
+            // Count in-stock products
+            const inStockCount = document.querySelectorAll('table tbody tr .badge.in-stock').length || 0;
+
+            // Update Total Products metric card
+            const totalProductsMetric = document.querySelector('#metric-total-products .metric-value');
+            if (totalProductsMetric) {
+                totalProductsMetric.textContent = totalProducts;
+                console.log(`📊 INSTANT METRIC UPDATE: Total products = ${totalProducts}`);
+            }
+
+            // Update In Stock metric card
+            const inStockMetric = document.querySelector('#metric-in-stock .metric-value');
+            if (inStockMetric) {
+                inStockMetric.textContent = inStockCount;
+                console.log(`📊 INSTANT METRIC UPDATE: In stock = ${inStockCount}`);
+            }
+
+            // Update header stat for Products
+            const headerProductsStat = document.querySelectorAll('.header-stat');
+            headerProductsStat.forEach(stat => {
+                const label = stat.querySelector('.header-stat-label');
+                if (label && label.textContent === 'Products') {
+                    const value = stat.querySelector('.header-stat-value');
+                    if (value) {
+                        value.textContent = totalProducts;
+                    }
+                }
+            });
+        }
+
         // Override the existing handleRemoveProduct to also update catalog button states
         const originalHandleRemoveProduct = window.handleRemoveProduct;
         window.handleRemoveProduct = async function(tcin) {
@@ -2479,7 +2520,12 @@
 
             // Update catalog button state if the product was removed from active
             updateCatalogButtonState(tcin, false);
-            updateTabCounters();
+
+            // Wait for animation to complete (300ms) before updating counters/metrics
+            setTimeout(() => {
+                updateTabCounters();
+                updateMetrics();
+            }, 350);
 
             return result;
         };
@@ -3889,6 +3935,9 @@
                 case 'api_cycle_complete':
                     handleAtomicApiCycleUpdate(data);
                     break;
+                case 'metric_update':
+                    handleMetricUpdate(data.data);
+                    break;
                 case 'purchase_status':
                     handlePurchaseStatusUpdate(data.data);
                     break;
@@ -3912,6 +3961,38 @@
                     break;
                 default:
                     console.log('📡 Real-time event:', data.type, data.data);
+            }
+        }
+
+        function handleMetricUpdate(data) {
+            // Update Total Products metric
+            if (data.total_products !== undefined) {
+                const totalProductsMetric = document.querySelector('#metric-total-products .metric-value');
+                if (totalProductsMetric) {
+                    totalProductsMetric.textContent = data.total_products;
+                    console.log(`📊 INSTANT UPDATE: Total products = ${data.total_products}`);
+                }
+
+                // Update header stat
+                const headerProductsStat = document.querySelectorAll('.header-stat');
+                headerProductsStat.forEach(stat => {
+                    const label = stat.querySelector('.header-stat-label');
+                    if (label && label.textContent === 'Products') {
+                        const value = stat.querySelector('.header-stat-value');
+                        if (value) {
+                            value.textContent = data.total_products;
+                        }
+                    }
+                });
+            }
+
+            // Update In Stock metric
+            if (data.in_stock_count !== undefined) {
+                const inStockMetric = document.querySelector('#metric-in-stock .metric-value');
+                if (inStockMetric) {
+                    inStockMetric.textContent = data.in_stock_count;
+                    console.log(`📊 INSTANT UPDATE: In stock = ${data.in_stock_count}`);
+                }
             }
         }
 
@@ -4096,12 +4177,40 @@
                 console.log(`🔄 ATOMIC: Started ${newAttempts.length} purchase attempts (Last Attempt preserved)`);
             }
 
-            // STEP 5: Update header statistics
+            // STEP 5: Update header statistics and metric cards
             if (summary.in_stock_count !== undefined) {
-                const inStockElement = document.querySelector('.status-card.warning .status-card-value');
-                if (inStockElement) {
-                    inStockElement.textContent = summary.in_stock_count;
+                // Update the In Stock metric card (FIX: Use correct selector)
+                const inStockMetric = document.querySelector('#metric-in-stock .metric-value');
+                if (inStockMetric) {
+                    inStockMetric.textContent = summary.in_stock_count;
+                    console.log(`📊 METRIC UPDATE: In Stock count updated to ${summary.in_stock_count}`);
+                } else {
+                    console.warn('⚠️ METRIC UPDATE: #metric-in-stock .metric-value not found');
                 }
+            }
+
+            if (summary.total_products !== undefined) {
+                // Update the Total Products metric card (NEW: Was missing)
+                const totalProductsMetric = document.querySelector('#metric-total-products .metric-value');
+                if (totalProductsMetric) {
+                    totalProductsMetric.textContent = summary.total_products;
+                    console.log(`📊 METRIC UPDATE: Total products updated to ${summary.total_products}`);
+                } else {
+                    console.warn('⚠️ METRIC UPDATE: #metric-total-products .metric-value not found');
+                }
+
+                // Update the header stat for Products (in the top right)
+                const headerProductsStat = document.querySelectorAll('.header-stat');
+                headerProductsStat.forEach(stat => {
+                    const label = stat.querySelector('.header-stat-label');
+                    if (label && label.textContent === 'Products') {
+                        const value = stat.querySelector('.header-stat-value');
+                        if (value) {
+                            value.textContent = summary.total_products;
+                            console.log(`📊 HEADER UPDATE: Products count updated to ${summary.total_products}`);
+                        }
+                    }
+                });
             }
 
             // STEP 5.5: BUGFIX - Update activity log from SSE event

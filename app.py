@@ -1733,6 +1733,23 @@ def index_v2():
         for catalog_item in catalog_config.get('catalog', []):
             catalog_item['is_actively_monitored'] = catalog_item['tcin'] in active_tcins
 
+        # SIMPLE FIX: Broadcast metric update immediately when page loads
+        # This ensures when you edit config and refresh, other dashboards update instantly
+        metric_update_event = {
+            'type': 'metric_update',
+            'timestamp': datetime.now().isoformat(),
+            'data': {
+                'total_products': len(config.get('products', [])),
+                'in_stock_count': in_stock_count
+            }
+        }
+        with sse_queue_lock:
+            for client_id, client_queue in sse_client_queues.items():
+                try:
+                    client_queue.put(metric_update_event, block=False)
+                except queue.Full:
+                    pass
+
         return render_template('simple_dashboard_v2.html',
                              config=config,
                              catalog=catalog_config,
@@ -1966,8 +1983,8 @@ def add_product():
         else:
             tcin = request.form.get('tcin', '').strip()
 
-        if not tcin or not tcin.isdigit() or len(tcin) != 8:
-            error_msg = "Invalid TCIN format (must be 8 digits)"
+        if not tcin or not tcin.isdigit() or len(tcin) < 8 or len(tcin) > 10:
+            error_msg = "Invalid TCIN format (must be 8-10 digits)"
             add_activity_log(f"Failed to add product: {error_msg}", "error", "config")
             return jsonify({'success': False, 'error': error_msg})
 
@@ -2175,9 +2192,9 @@ def add_to_catalog():
         data = request.get_json()
         tcin = data.get('tcin', '').strip()
 
-        # Validate TCIN
-        if not tcin or len(tcin) != 8 or not tcin.isdigit():
-            return jsonify({'success': False, 'error': 'Invalid TCIN format'})
+        # Validate TCIN (Target uses 8-10 digit TCINs)
+        if not tcin or not tcin.isdigit() or len(tcin) < 8 or len(tcin) > 10:
+            return jsonify({'success': False, 'error': 'Invalid TCIN format (must be 8-10 digits)'})
 
         # Load catalog
         catalog_config = get_catalog_config()
