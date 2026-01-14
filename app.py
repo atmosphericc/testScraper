@@ -19,6 +19,7 @@ import os
 import pickle
 import atexit
 import signal
+import sys
 from waitress import serve
 
 # Import our bulletproof modules
@@ -3332,6 +3333,7 @@ if __name__ == '__main__':
         activity_log_persistence_worker.stop(timeout=5)
 
         print("[SYSTEM] Shutdown complete")
+        sys.exit(0)
 
     # Register shutdown handlers
     atexit.register(shutdown_handler)

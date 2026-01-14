@@ -100,6 +100,140 @@ class PurchaseExecutor:
                 'error': 'Could not acquire page lock within 120 seconds'
             }
 
+    async def _wait_for_click_handler(self, page, button, max_wait: float = 5.0) -> bool:
+        """
+        Wait for Shape Security to attach click event handlers.
+        Buttons may appear clickable but have no event listeners yet.
+        """
+        print("[SHAPE] Waiting for click event handlers to be attached...")
+        start_time = time.time()
+
+        while (time.time() - start_time) < max_wait:
+            try:
+                # Check if button has click handlers using JavaScript
+                has_handler = await button.evaluate('''(element) => {
+                    // Check for onclick attribute
+                    if (element.onclick) return true;
+
+                    // Check for addEventListener event listeners (harder to detect)
+                    // Check if element has event listeners by looking at internal properties
+                    const listeners = window.getEventListeners ? window.getEventListeners(element) : null;
+                    if (listeners && listeners.click && listeners.click.length > 0) return true;
+
+                    // Fallback: check if element has any event-related attributes
+                    if (element.hasAttribute('onclick')) return true;
+
+                    // Check parent elements for delegated handlers
+                    let parent = element.parentElement;
+                    let depth = 0;
+                    while (parent && depth < 5) {
+                        if (parent.onclick || parent.hasAttribute('onclick')) return true;
+                        parent = parent.parentElement;
+                        depth++;
+                    }
+
+                    return false;
+                }''')
+
+                if has_handler:
+                    print(f"[SHAPE] ✓ Click handler detected after {time.time() - start_time:.2f}s")
+                    return True
+
+            except Exception as e:
+                print(f"[SHAPE] Handler check error: {e}")
+
+            await asyncio.sleep(0.2)
+
+        print(f"[SHAPE] ⚠ No click handler detected after {max_wait}s, proceeding anyway...")
+        return False
+
+    async def _humanized_click(self, page, button, action_name: str):
+        """
+        Perform human-like click with mouse movement to bypass Shape Security.
+        Shape Security detects: straight lines, instant clicks, no hover time.
+        """
+        try:
+            print(f"[HUMANIZE] Starting humanized click for {action_name}...")
+
+            # CRITICAL: Wait for Shape Security to attach event handlers
+            await self._wait_for_click_handler(page, button, max_wait=3.0)
+
+            # Scroll into view first (humans scroll to see buttons)
+            try:
+                await button.scroll_into_view_if_needed(timeout=3000)
+                await asyncio.sleep(random.uniform(0.3, 0.6))
+                print(f"[HUMANIZE] Scrolled {action_name} button into view")
+            except Exception as e:
+                print(f"[HUMANIZE] Scroll warning: {e}")
+
+            # Get button position
+            box = await button.bounding_box()
+            if not box:
+                print(f"[HUMANIZE] Warning: Could not get bounding box for {action_name}")
+                await button.click()
+                return True
+
+            # Calculate target position (center with slight randomness)
+            target_x = box['x'] + (box['width'] / 2) + random.uniform(-10, 10)
+            target_y = box['y'] + (box['height'] / 2) + random.uniform(-10, 10)
+
+            # HUMAN BEHAVIOR: Move mouse in curved path (not straight line)
+            # Shape Security detects perfectly straight mouse movements
+            current_pos = await page.evaluate('() => ({x: window.mouseX || 0, y: window.mouseY || 0})')
+            start_x = current_pos.get('x', 0)
+            start_y = current_pos.get('y', 0)
+
+            # Create curved path with 3-5 intermediate points
+            steps = random.randint(3, 5)
+            print(f"[HUMANIZE] Moving mouse in {steps} curved steps to {action_name} button")
+
+            for i in range(steps + 1):
+                progress = i / steps
+                # Add bezier-like curve
+                curve_offset_x = random.uniform(-20, 20) * (1 - abs(2 * progress - 1))
+                curve_offset_y = random.uniform(-20, 20) * (1 - abs(2 * progress - 1))
+
+                intermediate_x = start_x + (target_x - start_x) * progress + curve_offset_x
+                intermediate_y = start_y + (target_y - start_y) * progress + curve_offset_y
+
+                await page.mouse.move(intermediate_x, intermediate_y)
+                # Variable speed (faster in middle, slower at start/end)
+                delay = random.uniform(0.05, 0.15) if i in [0, steps] else random.uniform(0.02, 0.05)
+                await asyncio.sleep(delay)
+
+            # HUMAN BEHAVIOR: Hover before clicking (humans don't instant-click)
+            hover_time = random.uniform(0.2, 0.5)
+            print(f"[HUMANIZE] Hovering for {hover_time:.2f}s before clicking {action_name}")
+            await asyncio.sleep(hover_time)
+
+            # HUMAN BEHAVIOR: Small final adjustment (humans fine-tune position)
+            await page.mouse.move(
+                target_x + random.uniform(-2, 2),
+                target_y + random.uniform(-2, 2)
+            )
+            await asyncio.sleep(random.uniform(0.05, 0.1))
+
+            # Click with realistic mouse down/up timing
+            print(f"[HUMANIZE] Clicking {action_name} button...")
+            await page.mouse.down()
+            await asyncio.sleep(random.uniform(0.08, 0.15))  # Human click duration
+            await page.mouse.up()
+
+            # HUMAN BEHAVIOR: Slight pause after click (humans don't instant-move away)
+            await asyncio.sleep(random.uniform(0.1, 0.3))
+
+            print(f"[HUMANIZE] ✓ Humanized click completed for {action_name}")
+            return True
+
+        except Exception as e:
+            print(f"[HUMANIZE] ✗ Humanized click failed for {action_name}: {e}")
+            # Fallback to regular click
+            try:
+                await button.click()
+                return True
+            except:
+                return False
+
     async def _execute_purchase_impl(self, tcin: str) -> Dict[str, Any]:
         """Execute purchase for given TCIN using persistent session"""
         start_time = time.time()
@@ -123,7 +257,11 @@ class PurchaseExecutor:
             # Navigate to product page
             product_url = f"https://www.target.com/p/-/A-{tcin}"
             try:
-                await page.goto(product_url, wait_until='commit', timeout=3000)
+                print(f"[PURCHASE] Navigating to {product_url}")
+                await page.goto(product_url, wait_until='domcontentloaded', timeout=10000)
+                # Wait for Shape Security to initialize
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+                print(f"[PURCHASE] Page loaded, waiting for Shape Security...")
             except Exception as nav_error:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
@@ -138,23 +276,16 @@ class PurchaseExecutor:
                     'execution_time': time.time() - start_time
                 }
 
-            # Click button with F5-safe mouse movement
-            try:
-                await add_button.scroll_into_view_if_needed()
-            except:
-                pass
+            # Use humanized click to bypass Shape Security
+            click_success = await self._humanized_click(page, add_button, "Add to cart/Preorder")
+            if not click_success:
+                return {
+                    'success': False,
+                    'tcin': tcin,
+                    'reason': 'click_failed',
+                    'execution_time': time.time() - start_time
+                }
 
-            try:
-                box = await add_button.bounding_box()
-                if box:
-                    target_x = box['x'] + (box['width'] / 2) + random.uniform(-3, 3)
-                    target_y = box['y'] + (box['height'] / 2) + random.uniform(-3, 3)
-                    await page.mouse.move(target_x, target_y)
-                    await asyncio.sleep(random.uniform(0.02, 0.05))
-            except:
-                pass
-
-            await add_button.click()
             print(f"[PURCHASE] Added to cart (t={time.time() - start_time:.1f}s)")
 
             # Navigate to checkout
@@ -189,30 +320,44 @@ class PurchaseExecutor:
 
             print(f"[PURCHASE] Checkout complete (t={time.time() - start_time:.1f}s)")
 
-            # Navigate to cart and clear it
-            await page.goto("https://www.target.com/cart", wait_until='commit', timeout=2000)
-            await asyncio.sleep(random.uniform(0.1, 0.15))
+            # TEST_MODE: Navigate to cart and clear it
+            # PROD_MODE: Stay on confirmation page until next cycle
+            if self.test_mode:
+                # TEST_MODE: Go back to cart and clear it
+                await page.goto("https://www.target.com/cart", wait_until='commit', timeout=2000)
+                await asyncio.sleep(random.uniform(0.1, 0.15))
 
-            clear_result = await self._clear_cart(page)
-            execution_time = time.time() - start_time
+                clear_result = await self._clear_cart(page)
+                execution_time = time.time() - start_time
 
-            if not clear_result:
-                self._notify_status(tcin, 'failed', {
-                    'error': 'Cart clearing failed',
-                    'execution_time': execution_time,
-                    'timestamp': datetime.now().isoformat(),
-                    'failure_reason': 'cart_clear_failed'
-                })
-                return {
-                    'success': False,
-                    'tcin': tcin,
-                    'reason': 'cart_clear_failed',
-                    'error': 'Failed to clear cart after checkout',
-                    'execution_time': execution_time
-                }
+                if not clear_result:
+                    self._notify_status(tcin, 'failed', {
+                        'error': 'Cart clearing failed',
+                        'execution_time': execution_time,
+                        'timestamp': datetime.now().isoformat(),
+                        'failure_reason': 'cart_clear_failed'
+                    })
+                    return {
+                        'success': False,
+                        'tcin': tcin,
+                        'reason': 'cart_clear_failed',
+                        'error': 'Failed to clear cart after checkout',
+                        'execution_time': execution_time
+                    }
 
-            # Success
-            print(f"[PURCHASE] ✓ Cycle complete: {tcin} in {execution_time:.2f}s")
+                print(f"[PURCHASE] ✓ TEST_MODE: Cart cleared, cycle complete: {tcin} in {execution_time:.2f}s")
+            else:
+                # PROD_MODE: Stay on confirmation page
+                execution_time = time.time() - start_time
+
+                # Wait a moment to ensure confirmation page is fully loaded
+                try:
+                    # Wait for confirmation page to be stable
+                    await page.wait_for_load_state('domcontentloaded', timeout=3000)
+                except:
+                    pass
+
+                print(f"[PURCHASE] ✓ PROD_MODE: Staying on confirmation page, order complete: {tcin} in {execution_time:.2f}s")
 
             # CRITICAL: Save session after successful purchase
             await self.session_manager.save_session_state()
@@ -476,35 +621,84 @@ class PurchaseExecutor:
             return 300   # Reduced from 1000ms to 300ms (70% faster)
 
     async def _find_add_to_cart_button(self, page):
-        """Find add-to-cart button with fast timeout strategy"""
-        # Try top 5 most reliable selectors (500ms each)
+        """Find add-to-cart/preorder button with Shape Security bypass"""
+        print("[BUTTON_FIND] Searching for add-to-cart/preorder button...")
+
+        # Comprehensive selector list including all preorder variations
         priority_selectors = [
+            # Primary selectors from working buy_bot
             'button[id^="addToCartButtonOrTextIdFor"]',
             'button[data-test="addToCartButton"]',
-            'button:has-text("Add to cart")',
+
+            # Preorder variations (CRITICAL)
             'button:has-text("Preorder")',
-            '[data-testid*="add-to-cart"]'
+            'button:has-text("Pre-order")',
+            'button:has-text("Pre order")',
+            'button:has-text("PRE-ORDER")',
+            'button:has-text("PREORDER")',
+            'button[data-test*="preorder"]',
+            'button[data-testid*="preorder"]',
+            'button[aria-label*="Preorder"]',
+            'button[aria-label*="Pre-order"]',
+
+            # Add to cart variations
+            'button:has-text("Add to cart")',
+            'button:has-text("Add to Cart")',
+            'button:has-text("ADD TO CART")',
+            '[data-testid*="add-to-cart"]',
+            '[data-test*="addToCart"]',
+
+            # Fallbacks
+            'button:has-text("Add to bag")',
+            'button:has-text("Add")'
         ]
 
-        for selector in priority_selectors:
-            try:
-                button = await page.wait_for_selector(selector, timeout=500)
-                if button and await button.is_visible():
-                    return button
-            except:
-                continue
-
-        # Fallback search
+        # Wait for page to be fully loaded and Shape to initialize
+        print("[BUTTON_FIND] Waiting for Shape Security to initialize...")
         try:
-            button = await page.wait_for_selector(
-                'button:has-text("Add"), button:has-text("cart"), button:has-text("Preorder")',
-                timeout=1000
-            )
-            if button and await button.is_visible():
-                return button
+            await page.wait_for_load_state('domcontentloaded', timeout=5000)
+            # Additional wait for Shape to attach event handlers
+            await asyncio.sleep(random.uniform(1.5, 2.5))
         except:
             pass
 
+        for selector in priority_selectors:
+            try:
+                print(f"[BUTTON_FIND] Trying: {selector}")
+                button = await page.wait_for_selector(selector, timeout=2000)
+                if button and await button.is_visible():
+                    # Check if button is actually enabled
+                    is_disabled = await button.get_attribute('disabled')
+                    if not is_disabled:
+                        print(f"[BUTTON_FIND] ✓ Found button: {selector}")
+                        return button
+                    else:
+                        print(f"[BUTTON_FIND] Button disabled: {selector}")
+            except Exception as e:
+                print(f"[BUTTON_FIND] Selector failed: {selector} - {e}")
+                continue
+
+        # Fallback: try case-insensitive text search
+        print("[BUTTON_FIND] Trying fallback selectors...")
+        fallback_texts = ['preorder', 'pre-order', 'add to cart', 'add to bag']
+        for text in fallback_texts:
+            try:
+                # Use evaluate to find buttons by case-insensitive text
+                button = await page.evaluate(f'''() => {{
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    return buttons.find(b =>
+                        b.textContent.toLowerCase().includes('{text}') &&
+                        !b.disabled &&
+                        b.offsetParent !== null
+                    );
+                }}''')
+                if button:
+                    print(f"[BUTTON_FIND] ✓ Found via fallback: {text}")
+                    return await page.query_selector(f'button:has-text("{text}")')
+            except:
+                continue
+
+        print("[BUTTON_FIND] ✗ Could not find add-to-cart/preorder button")
         await self._take_debug_screenshot(page, "no_add_to_cart_button")
         return None
 
@@ -752,60 +946,140 @@ class PurchaseExecutor:
             pass
 
     async def _complete_payment(self, page) -> bool:
-        """Complete payment process - ULTRA-FAST for TEST_MODE"""
+        """Complete payment process with improved button detection and clicking"""
         try:
-            # COMPETITIVE: Top 5 most reliable selectors only
+            print("[PAYMENT] Starting payment completion process...")
+
+            # Expanded selector list with more variations
             place_order_selectors = [
                 'button:has-text("Place order")',
                 'button:has-text("Place Order")',
+                'button:has-text("PLACE ORDER")',
+                'button:has-text("Place your order")',
+                'button:has-text("Place Your Order")',
+                '[data-test="placeOrderButton"]',
                 '[data-test*="place-order"]',
+                '[data-testid="placeOrderButton"]',
+                '[data-testid*="place-order"]',
                 'button:has-text("Buy now")',
-                'button[data-test="placeOrderButton"]'
+                'button:has-text("Complete order")',
+                'button:has-text("Complete Order")',
+                'button[aria-label*="Place order"]',
+                'button[aria-label*="place order"]',
+                '#placeOrderButton',
+                '.place-order-button',
+                'button[class*="place-order"]',
+                'button[class*="placeOrder"]'
             ]
 
-            # ULTRA-FAST: Minimal wait for payment page (200-400ms)
-            await asyncio.sleep(random.uniform(0.2, 0.4))
+            # Wait for payment page to stabilize
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+            print("[PAYMENT] Waiting for page to stabilize...")
 
+            # Try to find the button with longer timeout
             place_order_button = None
+            found_selector = None
+
             for selector in place_order_selectors:
                 try:
-                    # COMPETITIVE: Fast timeout (1s per selector)
-                    button = await page.wait_for_selector(selector, timeout=1000)
-                    if button and await button.is_visible():
-                        is_disabled = await button.get_attribute('disabled')
-                        if not is_disabled:
-                            place_order_button = button
-                            break
-                except:
+                    print(f"[PAYMENT] Trying selector: {selector}")
+                    button = await page.wait_for_selector(selector, timeout=3000)
+                    if button:
+                        is_visible = await button.is_visible()
+                        print(f"[PAYMENT] Button found, visible: {is_visible}")
+
+                        if is_visible:
+                            # Scroll into view
+                            try:
+                                await button.scroll_into_view_if_needed(timeout=2000)
+                                print("[PAYMENT] Scrolled button into view")
+                            except:
+                                pass
+
+                            # Wait for button to be enabled (up to 5 seconds)
+                            for attempt in range(10):
+                                is_disabled = await button.get_attribute('disabled')
+                                if not is_disabled:
+                                    place_order_button = button
+                                    found_selector = selector
+                                    print(f"[PAYMENT] ✓ Button ready with selector: {selector}")
+                                    break
+                                print(f"[PAYMENT] Button disabled, waiting... (attempt {attempt + 1}/10)")
+                                await asyncio.sleep(0.5)
+
+                            if place_order_button:
+                                break
+                except Exception as e:
+                    print(f"[PAYMENT] Selector {selector} failed: {e}")
                     continue
 
-            if place_order_button:
-                # TEST_MODE: Stop before clicking (for testing)
-                if self.test_mode:
-                    try:
-                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        screenshot_path = f"logs/test_mode_final_step_{timestamp}.png"
-                        await page.screenshot(path=screenshot_path)
-                    except:
-                        pass
-                    return True
-
-                # PRODUCTION MODE: Click place order button
-                await place_order_button.click()
-
-                # Wait for confirmation
+            if not place_order_button:
+                print("[PAYMENT] ✗ Could not find enabled Place Order button")
+                # Take debug screenshot
                 try:
-                    await page.wait_for_url('**/confirmation**', timeout=10000)
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    screenshot_path = f"logs/payment_button_not_found_{timestamp}.png"
+                    await page.screenshot(path=screenshot_path, full_page=True)
+                    print(f"[PAYMENT] Debug screenshot saved: {screenshot_path}")
                 except:
-                    try:
-                        await page.wait_for_load_state('networkidle', timeout=5000)
-                    except:
-                        pass
-                return True
-            else:
+                    pass
                 return False
 
-        except:
+            # TEST_MODE: Stop before clicking (for testing)
+            if self.test_mode:
+                print("[PAYMENT] TEST_MODE: Stopping before clicking Place Order button")
+                try:
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    screenshot_path = f"logs/test_mode_final_step_{timestamp}.png"
+                    await page.screenshot(path=screenshot_path)
+                    print(f"[PAYMENT] Screenshot saved: {screenshot_path}")
+                except:
+                    pass
+                return True
+
+            # PRODUCTION MODE: Click place order button with humanization
+            print(f"[PAYMENT] Clicking Place Order button with selector: {found_selector}")
+            click_success = await self._humanized_click(page, place_order_button, "Place Your Order")
+            if not click_success:
+                print("[PAYMENT] ✗ Humanized click failed, trying direct click...")
+                try:
+                    await place_order_button.click(timeout=5000)
+                    print("[PAYMENT] ✓ Direct click succeeded")
+                except Exception as click_error:
+                    print(f"[PAYMENT] ✗ All click methods failed: {click_error}")
+                    return False
+
+            # Wait for confirmation page
+            print("[PAYMENT] Waiting for order confirmation...")
+            try:
+                await page.wait_for_url('**/confirmation**', timeout=15000)
+                print("[PAYMENT] ✓ Reached confirmation page")
+            except:
+                print("[PAYMENT] URL didn't change to confirmation, checking load state...")
+                try:
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                    print("[PAYMENT] ✓ Page loaded (networkidle)")
+                except:
+                    print("[PAYMENT] Network idle timeout, checking current URL...")
+                    current_url = page.url
+                    print(f"[PAYMENT] Current URL: {current_url}")
+                    if 'confirmation' in current_url.lower() or 'thank' in current_url.lower() or 'order' in current_url.lower():
+                        print("[PAYMENT] ✓ On confirmation-related page")
+                    else:
+                        print("[PAYMENT] ⚠ May not be on confirmation page")
+
+            return True
+
+        except Exception as e:
+            print(f"[PAYMENT] ✗ Payment completion error: {e}")
+            # Take error screenshot
+            try:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                screenshot_path = f"logs/payment_error_{timestamp}.png"
+                await page.screenshot(path=screenshot_path, full_page=True)
+                print(f"[PAYMENT] Error screenshot saved: {screenshot_path}")
+            except:
+                pass
             return False
 
     async def _verify_order_completion(self, page) -> bool:
