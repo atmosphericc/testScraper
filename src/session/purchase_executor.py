@@ -100,6 +100,61 @@ class PurchaseExecutor:
                 'error': 'Could not acquire page lock within 120 seconds'
             }
 
+    async def _dismiss_sticky_banners(self, page) -> None:
+        """
+        Dismiss or hide sticky banners/overlays that can intercept clicks.
+        Target commonly shows app download banners at the bottom of the page.
+        """
+        try:
+            print("[BANNER] Checking for sticky banners...")
+
+            # Method 1: Try to find and close Target app banner specifically
+            app_banner_close_selectors = [
+                '[data-test="app-banner-close"]',
+                '[aria-label*="close" i][class*="banner" i]',
+                '[aria-label*="dismiss" i][class*="banner" i]',
+                'button[class*="AppBanner"] svg',
+                '[data-test*="app-banner"] button',
+                '[class*="sticky"] button[aria-label*="close" i]',
+                '[class*="fixed"] button[aria-label*="close" i]',
+            ]
+
+            for selector in app_banner_close_selectors:
+                try:
+                    close_btn = await page.wait_for_selector(selector, timeout=500)
+                    if close_btn and await close_btn.is_visible():
+                        await close_btn.click()
+                        print(f"[BANNER] ✓ Closed banner via: {selector}")
+                        await asyncio.sleep(0.3)
+                        return
+                except:
+                    continue
+
+            # Method 2: Hide all fixed/sticky positioned elements at bottom via JS
+            await page.evaluate('''() => {
+                const viewportHeight = window.innerHeight;
+                const elements = document.querySelectorAll('*');
+
+                elements.forEach(el => {
+                    const style = window.getComputedStyle(el);
+                    const position = style.position;
+
+                    // Check if element is fixed or sticky
+                    if (position === 'fixed' || position === 'sticky') {
+                        const rect = el.getBoundingClientRect();
+                        // If element is in the bottom 20% of viewport, hide it
+                        if (rect.top > viewportHeight * 0.8) {
+                            el.style.setProperty('display', 'none', 'important');
+                            console.log('[BANNER] Hidden sticky element at bottom');
+                        }
+                    }
+                });
+            }''')
+            print("[BANNER] ✓ Executed JS to hide bottom sticky elements")
+
+        except Exception as e:
+            print(f"[BANNER] Warning during banner dismissal: {e}")
+
     async def _wait_for_click_handler(self, page, button, max_wait: float = 5.0) -> bool:
         """
         Wait for Shape Security to attach click event handlers.
@@ -158,9 +213,16 @@ class PurchaseExecutor:
             # CRITICAL: Wait for Shape Security to attach event handlers
             await self._wait_for_click_handler(page, button, max_wait=3.0)
 
+            # CRITICAL: Dismiss any sticky banners that could intercept the click
+            await self._dismiss_sticky_banners(page)
+
             # Scroll into view first (humans scroll to see buttons)
             try:
                 await button.scroll_into_view_if_needed(timeout=3000)
+
+                # Scroll up a bit more to ensure button isn't at very bottom where banners live
+                await page.evaluate('window.scrollBy(0, -100)')
+
                 await asyncio.sleep(random.uniform(0.3, 0.6))
                 print(f"[HUMANIZE] Scrolled {action_name} button into view")
             except Exception as e:
@@ -227,11 +289,19 @@ class PurchaseExecutor:
 
         except Exception as e:
             print(f"[HUMANIZE] ✗ Humanized click failed for {action_name}: {e}")
-            # Fallback to regular click
+            # Fallback to regular click with force option for intercepted clicks
             try:
-                await button.click()
+                # First try normal click
+                await button.click(timeout=5000)
                 return True
-            except:
+            except Exception as click_error:
+                if "intercept" in str(click_error).lower():
+                    print(f"[HUMANIZE] Click intercepted, trying force click...")
+                    try:
+                        await button.click(force=True)
+                        return True
+                    except:
+                        return False
                 return False
 
     async def _execute_purchase_impl(self, tcin: str) -> Dict[str, Any]:
@@ -259,8 +329,17 @@ class PurchaseExecutor:
             try:
                 print(f"[PURCHASE] Navigating to {product_url}")
                 await page.goto(product_url, wait_until='domcontentloaded', timeout=10000)
-                # Wait for Shape Security to initialize
-                await asyncio.sleep(random.uniform(1.0, 2.0))
+                # Wait for add-to-cart button to be interactive (replaces static sleep)
+                print(f"[PURCHASE] Waiting for add-to-cart button to be ready...")
+                try:
+                    await page.wait_for_selector(
+                        'button[id^="addToCartButtonOrTextIdFor"], button:has-text("Add to cart"), button:has-text("Preorder")',
+                        state='visible',
+                        timeout=15000
+                    )
+                    print(f"[PURCHASE] ✓ Add-to-cart button visible")
+                except Exception as wait_error:
+                    print(f"[PURCHASE] Button wait warning: {wait_error}, proceeding anyway...")
                 print(f"[PURCHASE] Page loaded, waiting for Shape Security...")
             except Exception as nav_error:
                 print(f"[ERROR] Navigation failed: {nav_error}")
@@ -277,24 +356,73 @@ class PurchaseExecutor:
                 }
 
             # Use humanized click to bypass Shape Security
-            click_success = await self._humanized_click(page, add_button, "Add to cart/Preorder")
-            if not click_success:
-                return {
-                    'success': False,
-                    'tcin': tcin,
-                    'reason': 'click_failed',
-                    'execution_time': time.time() - start_time
-                }
+            # Wait for add-to-cart API response while clicking (event-driven)
+            try:
+                async with page.expect_response(
+                    lambda r: 'cart' in r.url.lower() and r.request.method == 'POST' and r.status in [200, 201],
+                    timeout=15000
+                ) as response_info:
+                    click_success = await self._humanized_click(page, add_button, "Add to cart/Preorder")
 
-            print(f"[PURCHASE] Added to cart (t={time.time() - start_time:.1f}s)")
+                if not click_success:
+                    return {
+                        'success': False,
+                        'tcin': tcin,
+                        'reason': 'click_failed',
+                        'execution_time': time.time() - start_time
+                    }
 
-            # Navigate to checkout
-            await asyncio.sleep(random.uniform(0.1, 0.2))
+                response = await response_info.value
+                print(f"[PURCHASE] ✓ Cart API responded: {response.status} (t={time.time() - start_time:.1f}s)")
+
+            except TimeoutError:
+                # Fallback: check DOM for cart confirmation
+                print("[PURCHASE] Cart API response not intercepted, checking DOM...")
+                cart_confirmed = await self._verify_cart_addition(page)
+                if not cart_confirmed:
+                    return {
+                        'success': False,
+                        'tcin': tcin,
+                        'reason': 'cart_addition_timeout',
+                        'execution_time': time.time() - start_time
+                    }
+                print(f"[PURCHASE] ✓ Cart confirmed via DOM (t={time.time() - start_time:.1f}s)")
+            except Exception as e:
+                # Handle other exceptions (click failed, etc.)
+                if not click_success:
+                    return {
+                        'success': False,
+                        'tcin': tcin,
+                        'reason': 'click_failed',
+                        'execution_time': time.time() - start_time
+                    }
+                print(f"[PURCHASE] Cart response exception: {e}, checking DOM...")
+                cart_confirmed = await self._verify_cart_addition(page)
+                if not cart_confirmed:
+                    return {
+                        'success': False,
+                        'tcin': tcin,
+                        'reason': 'cart_addition_timeout',
+                        'execution_time': time.time() - start_time
+                    }
+                print(f"[PURCHASE] ✓ Cart confirmed via DOM fallback (t={time.time() - start_time:.1f}s)")
+
+            # Navigate to checkout (no static sleep needed - cart confirmed above)
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
 
             try:
-                await page.goto("https://www.target.com/checkout", wait_until='commit', timeout=3000)
-                await asyncio.sleep(random.uniform(0.1, 0.2))
+                await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=10000)
+                # Wait for checkout page to be ready (replaces static sleep)
+                print("[PURCHASE] Waiting for checkout page elements...")
+                try:
+                    await page.wait_for_selector(
+                        'button:has-text("Place order"), button:has-text("Continue"), [data-test*="checkout"]',
+                        state='visible',
+                        timeout=15000
+                    )
+                    print("[PURCHASE] ✓ Checkout page ready")
+                except Exception as wait_error:
+                    print(f"[PURCHASE] Checkout element wait warning: {wait_error}")
 
                 current_url = page.url
                 checkout_result = 'checkout' in current_url.lower()
@@ -848,8 +976,20 @@ class PurchaseExecutor:
                     try:
                         remove_button = await page.wait_for_selector(selector, timeout=500)
                         if remove_button and await remove_button.is_visible():
+                            # Get current cart item count before removal
+                            current_count = await page.evaluate(
+                                'document.querySelectorAll("[data-test=\\"cartItem-remove\\"], button[aria-label*=\\"remove\\"], button[aria-label*=\\"Remove\\"]").length'
+                            )
                             await remove_button.click()
-                            await asyncio.sleep(random.uniform(0.1, 0.3))
+                            # Wait for item to be removed from DOM instead of static sleep
+                            try:
+                                await page.wait_for_function(
+                                    f'document.querySelectorAll("[data-test=\\"cartItem-remove\\"], button[aria-label*=\\"remove\\"], button[aria-label*=\\"Remove\\"]").length < {current_count}',
+                                    timeout=5000
+                                )
+                            except:
+                                # Fallback to short delay if function wait fails
+                                await asyncio.sleep(0.2)
                             removed_count += 1
                             button_found = True
                             break
@@ -904,9 +1044,9 @@ class PurchaseExecutor:
         return None
 
     async def _handle_delivery_options(self, page):
-        """Handle shipping/delivery selection - ULTRA-FAST for TEST_MODE"""
+        """Handle shipping/delivery selection - event-driven waits"""
         try:
-            # COMPETITIVE: Fast shipping selection (500ms max per selector)
+            # Fast shipping selection (500ms max per selector)
             shipping_selectors = [
                 'button:has-text("Ship")',
                 'button:has-text("Shipping")',
@@ -919,12 +1059,20 @@ class PurchaseExecutor:
                     element = await page.wait_for_selector(selector, timeout=500)
                     if element and await element.is_visible():
                         await element.click()
-                        await asyncio.sleep(random.uniform(0.1, 0.2))
+                        # Wait for next UI element instead of static sleep
+                        try:
+                            await page.wait_for_selector(
+                                'button:has-text("Continue"), button:has-text("Next"), [data-test*="continue"]',
+                                state='visible',
+                                timeout=3000
+                            )
+                        except:
+                            pass  # Continue anyway if selector not found
                         break
                 except:
                     continue
 
-            # COMPETITIVE: Fast continue button (500ms max per selector)
+            # Fast continue button (500ms max per selector)
             continue_selectors = [
                 'button:has-text("Continue")',
                 'button:has-text("Next")',
@@ -936,8 +1084,15 @@ class PurchaseExecutor:
                     button = await page.wait_for_selector(selector, timeout=500)
                     if button and await button.is_visible():
                         await button.click()
-                        # ULTRA-FAST: Minimal wait for page transition
-                        await asyncio.sleep(random.uniform(0.2, 0.4))
+                        # Wait for payment/place-order section instead of static sleep
+                        try:
+                            await page.wait_for_selector(
+                                'button:has-text("Place order"), button:has-text("Place Order"), [data-test*="payment"], [data-test*="placeOrder"]',
+                                state='visible',
+                                timeout=5000
+                            )
+                        except:
+                            pass  # Continue anyway if selector not found
                         break
                 except:
                     continue
@@ -972,9 +1127,8 @@ class PurchaseExecutor:
                 'button[class*="placeOrder"]'
             ]
 
-            # Wait for payment page to stabilize
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-            print("[PAYMENT] Waiting for page to stabilize...")
+            # Wait for place order button to exist (event-driven, no arbitrary sleep)
+            print("[PAYMENT] Searching for Place Order button...")
 
             # Try to find the button with longer timeout
             place_order_button = None

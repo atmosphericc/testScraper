@@ -1,50 +1,10 @@
 {
   "products": [
     {
-      "tcin": "94681784",
-      "name": "Product 94681784",
-      "enabled": true
-    },
-    {
-      "tcin": "94681776",
-      "name": "Product 94681776",
+      "tcin": "94898414",
+      "name": "Magic:The Gathering | Avatar:The Last Airbender Beginner Box",
       "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681776"
-    },
-    {
-      "tcin": "94681786",
-      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution Three-Booster Blister- Golduck",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681786"
-    },
-    {
-      "tcin": "94884496",
-      "name": "Product 94884496",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94884496"
-    },
-    {
-      "tcin": "94636866",
-      "name": "Product 94636866",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94636866"
-    },
-    {
-      "tcin": "88897908",
-      "name": "Product 88897908",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-88897908"
-    },
-    {
-      "tcin": "94681790",
-      "name": "Product 94681790",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681790"
-    },
-    {
-      "tcin": "95082138",
-      "name": "Product 95082138",
-      "enabled": true
+      "url": "https://www.target.com/p/-/A-94898414"
     }
   ]
 }
