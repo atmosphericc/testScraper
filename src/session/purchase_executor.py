@@ -121,7 +121,7 @@ class PurchaseExecutor:
 
             for selector in app_banner_close_selectors:
                 try:
-                    close_btn = await page.wait_for_selector(selector, timeout=500)
+                    close_btn = await page.wait_for_selector(selector, timeout=150)
                     if close_btn and await close_btn.is_visible():
                         await close_btn.click()
                         print(f"[BANNER] ✓ Closed banner via: {selector}")
@@ -213,9 +213,6 @@ class PurchaseExecutor:
             # CRITICAL: Wait for Shape Security to attach event handlers
             await self._wait_for_click_handler(page, button, max_wait=3.0)
 
-            # CRITICAL: Dismiss any sticky banners that could intercept the click
-            await self._dismiss_sticky_banners(page)
-
             # Scroll into view first (humans scroll to see buttons)
             try:
                 await button.scroll_into_view_if_needed(timeout=3000)
@@ -223,7 +220,7 @@ class PurchaseExecutor:
                 # Scroll up a bit more to ensure button isn't at very bottom where banners live
                 await page.evaluate('window.scrollBy(0, -100)')
 
-                await asyncio.sleep(random.uniform(0.3, 0.6))
+                await asyncio.sleep(random.uniform(0.15, 0.3))
                 print(f"[HUMANIZE] Scrolled {action_name} button into view")
             except Exception as e:
                 print(f"[HUMANIZE] Scroll warning: {e}")
@@ -232,7 +229,7 @@ class PurchaseExecutor:
             box = await button.bounding_box()
             if not box:
                 print(f"[HUMANIZE] Warning: Could not get bounding box for {action_name}")
-                await button.click()
+                await button.dispatch_event('click')
                 return True
 
             # Calculate target position (center with slight randomness)
@@ -264,7 +261,7 @@ class PurchaseExecutor:
                 await asyncio.sleep(delay)
 
             # HUMAN BEHAVIOR: Hover before clicking (humans don't instant-click)
-            hover_time = random.uniform(0.2, 0.5)
+            hover_time = random.uniform(0.1, 0.25)
             print(f"[HUMANIZE] Hovering for {hover_time:.2f}s before clicking {action_name}")
             await asyncio.sleep(hover_time)
 
@@ -275,33 +272,26 @@ class PurchaseExecutor:
             )
             await asyncio.sleep(random.uniform(0.05, 0.1))
 
-            # Click with realistic mouse down/up timing
+            # Click using dispatchEvent - completely ignores any overlays/banners
+            # This dispatches a click event directly to the element regardless of what's on top
             print(f"[HUMANIZE] Clicking {action_name} button...")
-            await page.mouse.down()
-            await asyncio.sleep(random.uniform(0.08, 0.15))  # Human click duration
-            await page.mouse.up()
+            await button.dispatch_event('click')
 
             # HUMAN BEHAVIOR: Slight pause after click (humans don't instant-move away)
-            await asyncio.sleep(random.uniform(0.1, 0.3))
+            await asyncio.sleep(random.uniform(0.05, 0.15))
 
             print(f"[HUMANIZE] ✓ Humanized click completed for {action_name}")
             return True
 
         except Exception as e:
             print(f"[HUMANIZE] ✗ Humanized click failed for {action_name}: {e}")
-            # Fallback to regular click with force option for intercepted clicks
+            # Fallback: try JS-based click which also bypasses overlays
             try:
-                # First try normal click
-                await button.click(timeout=5000)
+                print(f"[HUMANIZE] Falling back to JS click for {action_name}...")
+                await button.evaluate('el => el.click()')
                 return True
             except Exception as click_error:
-                if "intercept" in str(click_error).lower():
-                    print(f"[HUMANIZE] Click intercepted, trying force click...")
-                    try:
-                        await button.click(force=True)
-                        return True
-                    except:
-                        return False
+                print(f"[HUMANIZE] JS click also failed: {click_error}")
                 return False
 
     async def _execute_purchase_impl(self, tcin: str) -> Dict[str, Any]:
@@ -786,7 +776,7 @@ class PurchaseExecutor:
         try:
             await page.wait_for_load_state('domcontentloaded', timeout=5000)
             # Additional wait for Shape to attach event handlers
-            await asyncio.sleep(random.uniform(1.5, 2.5))
+            await asyncio.sleep(random.uniform(0.8, 1.2))
         except:
             pass
 
@@ -1106,12 +1096,13 @@ class PurchaseExecutor:
             print("[PAYMENT] Starting payment completion process...")
 
             # Expanded selector list with more variations
+            # OPTIMIZED: "Place your order" moved to top - this is the one that works per logs
             place_order_selectors = [
+                'button:has-text("Place your order")',  # PRIORITY - this one works!
+                'button:has-text("Place Your Order")',
                 'button:has-text("Place order")',
                 'button:has-text("Place Order")',
                 'button:has-text("PLACE ORDER")',
-                'button:has-text("Place your order")',
-                'button:has-text("Place Your Order")',
                 '[data-test="placeOrderButton"]',
                 '[data-test*="place-order"]',
                 '[data-testid="placeOrderButton"]',
