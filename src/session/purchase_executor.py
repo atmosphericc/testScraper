@@ -544,7 +544,7 @@ class PurchaseExecutor:
                     if element:
                         self.logger.info(f"[PURCHASE] ✅ Cart addition confirmed via: {indicator}")
                         # Small delay after confirmation (human behavior)
-                        await asyncio.sleep(random.uniform(0.5, 1.0))
+                        await asyncio.sleep(random.uniform(0.2, 0.4))
                         return True
                 except:
                     continue
@@ -564,12 +564,12 @@ class PurchaseExecutor:
 
             # No error message, assume success with longer wait
             self.logger.info("[PURCHASE] Assuming success, waiting for page to settle...")
-            await asyncio.sleep(random.uniform(2.0, 3.0))  # Human-like patience
+            await asyncio.sleep(random.uniform(0.5, 0.8))  # Faster fallback
             return True
 
         except Exception as e:
             self.logger.warning(f"[PURCHASE] Cart verification warning: {e}")
-            await asyncio.sleep(random.uniform(2.0, 3.0))
+            await asyncio.sleep(random.uniform(0.5, 0.8))
             return True
 
     async def _dismiss_popups(self, page) -> bool:

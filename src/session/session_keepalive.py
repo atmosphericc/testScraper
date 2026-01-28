@@ -131,27 +131,12 @@ class SessionKeepAlive:
                 self.keep_alive_failures = 0
 
     async def _perform_validation(self, current_time: datetime):
-        """Validate session if needed"""
-        # BUGFIX: Skip validation if purchase is in progress
-        if self.session_manager.is_purchase_in_progress():
-            self.logger.debug("[PURCHASE_LOCK] Skipping validation - purchase in progress")
-            print("[KEEPALIVE] ⏸️ Skipping validation - purchase active")
-            return
-
-        if (not self.last_validation or
-            (current_time - self.last_validation).total_seconds() > self.validation_interval):
-
-            self.logger.debug("Performing session validation...")
-
-            # BUGFIX: Use skip_initial_navigation=True to avoid redirects
-            if await self.session_manager._validate_session(skip_initial_navigation=True):
-                self.last_validation = current_time
-                self.logger.debug(" Session validation passed")
-                self._notify_status("session_validated", {"timestamp": current_time.isoformat()})
-            else:
-                self.logger.warning(" Session validation failed")
-                self.keep_alive_failures += 1
-                self._notify_status("session_validation_failed", {"failures": self.keep_alive_failures})
+        """Validate session if needed - DISABLED (session validation removed, login handled manually)"""
+        # Session validation has been removed - login is handled manually via separate file
+        # This method is now a no-op to prevent errors
+        self.last_validation = current_time
+        self.logger.debug("[OK] Session validation skipped (handled manually)")
+        return
 
     async def _perform_keep_alive(self, current_time: datetime):
         """Perform keep-alive interaction if needed - bulletproof None handling"""
