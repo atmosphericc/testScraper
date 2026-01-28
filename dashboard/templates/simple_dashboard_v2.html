@@ -3204,7 +3204,8 @@
                         console.error('❌ Timer refresh failed:', error);
                     });
 
-                // Reset countdown for next cycle - get fresh random timer from server
+                // Reset countdown for next cycle - fetch timer immediately (no delay)
+                // The SSE event should have the correct timer, but fetch as fallback
                 setTimeout(() => {
                     // Fetch fresh timer value from server for new cycle
                     fetch('/api/timer-status')
@@ -3250,7 +3251,7 @@
                                 console.log('🔄 Restarted countdown interval after error');
                             }
                         });
-                }, 2000);
+                }, 100);  // Reduced from 2000ms - SSE now has accurate timer
             }
             // No need for setTimeout here - interval handles the timing
         }

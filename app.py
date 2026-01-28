@@ -824,19 +824,22 @@ class StockMonitorThread:
 
         while self.running:
             try:
-                # Generate new cycle duration for this iteration
-                # TEST_MODE uses longer cycles to ensure purchase + cart clear completes
-                if os.environ.get('TEST_MODE', 'false').lower() == 'true':
-                    cycle_duration = random.randint(25, 35)  # Longer for TEST_MODE
-                else:
-                    cycle_duration = random.randint(15, 25)  # Production
-
-                start_time = time.time()
-
-                # Start timer countdown
+                # FIX: On first cycle, generate new timer. On subsequent cycles, use pre-set timer
+                # (Timer is pre-set after stock check, before SSE broadcast)
                 with self.shared_data.lock:
-                    self.shared_data.timer_start_time = start_time
-                    self.shared_data.timer_duration = cycle_duration
+                    if first_cycle or self.shared_data.timer_start_time is None:
+                        # Generate new cycle duration for first iteration
+                        if os.environ.get('TEST_MODE', 'false').lower() == 'true':
+                            cycle_duration = random.randint(25, 35)
+                        else:
+                            cycle_duration = random.randint(15, 25)
+
+                        start_time = time.time()
+                        self.shared_data.timer_start_time = start_time
+                        self.shared_data.timer_duration = cycle_duration
+                    else:
+                        # Use timer that was pre-set after previous stock check
+                        cycle_duration = self.shared_data.timer_duration
 
                 # FIRST CYCLE: Do stock check immediately, THEN start timer
                 # SUBSEQUENT CYCLES: Wait for timer first, THEN check stock
@@ -880,10 +883,26 @@ class StockMonitorThread:
 
                 if stock_data:
                     print("[STOCK_MONITOR] [OK] Stock check complete - publishing to dashboard...")
+
+                    # FIX: Pre-compute and set NEXT cycle's timer BEFORE publishing event
+                    # This ensures the SSE contains accurate timer info for the next cycle
+                    if os.environ.get('TEST_MODE', 'false').lower() == 'true':
+                        next_cycle_duration = random.randint(25, 35)
+                    else:
+                        next_cycle_duration = random.randint(15, 25)
+
+                    next_start_time = time.time()
+                    with self.shared_data.lock:
+                        self.shared_data.timer_start_time = next_start_time
+                        self.shared_data.timer_duration = next_cycle_duration
+                    print(f"[STOCK_MONITOR] Timer set for next cycle: {next_cycle_duration}s")
+
                     # Publish stock update event (will trigger atomic API cycle processing)
+                    # Now the SSE will include the NEW timer, not the expired one
                     self.event_bus.publish('stock_updated', {
                         'stock_data': stock_data,
-                        'timestamp': time.time()
+                        'timestamp': time.time(),
+                        'next_cycle_duration': next_cycle_duration  # Pass to handler
                     })
 
                     # Mark cycle complete
@@ -1224,37 +1243,17 @@ class PurchaseManagerThread:
                 state = all_states_before.get(tcin, {})
                 print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Before reset - {tcin}: {state.get('status')} (order: {state.get('order_number', 'N/A')})")
 
-            # CRITICAL SAFETY CHECK: Wait for any background threads to finish
-            # This prevents race condition where thread is completing but state not yet saved
+            # Log active purchases (non-blocking) - process_stock_data will skip "attempting" TCINs
             print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Checking for active background threads...")
-            max_wait_cycles = 30  # 30 seconds max wait
-            wait_cycle = 0
-            while wait_cycle < max_wait_cycles:
-                with self.purchase_manager._state_lock:
-                    active_threads = dict(self.purchase_manager._active_purchases)
+            with self.purchase_manager._state_lock:
+                active_threads = dict(self.purchase_manager._active_purchases)
 
-                if not active_threads:
-                    if wait_cycle == 0:
-                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ No active background threads")
-                    break
-
-                if wait_cycle == 0:
-                    for tcin, info in active_threads.items():
-                        elapsed = time.time() - info['started_at']
-                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Waiting for thread: {tcin} (running {elapsed:.1f}s, status: {info['status']})")
-
-                time.sleep(1)
-                wait_cycle += 1
-
-            if wait_cycle >= max_wait_cycles:
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ⚠️ WARNING: Thread timeout after {max_wait_cycles}s")
-                # Force-remove from active (safety fallback)
-                with self.purchase_manager._state_lock:
-                    if self.purchase_manager._active_purchases:
-                        print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Force-clearing {len(self.purchase_manager._active_purchases)} stuck threads")
-                        self.purchase_manager._active_purchases.clear()
-            elif wait_cycle > 0:
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ Background threads completed after {wait_cycle}s wait")
+            if active_threads:
+                for tcin, info in active_threads.items():
+                    elapsed = time.time() - info['started_at']
+                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Active purchase: {tcin} (running {elapsed:.1f}s) - skipping")
+            else:
+                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ No active background threads")
 
             # TEST_MODE: Reset all completed purchases for continuous testing loop
             # PROD_MODE: Only reset OUT OF STOCK completed purchases (stock-aware reset)
