@@ -1,10 +1,9 @@
 {
   "products": [
     {
-      "tcin": "94898414",
-      "name": "Magic:The Gathering | Avatar:The Last Airbender Beginner Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94898414"
+      "tcin": "82867916",
+      "name": "Product 82867916",
+      "enabled": true
     }
   ]
 }

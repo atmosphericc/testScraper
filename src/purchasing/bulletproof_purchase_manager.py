@@ -651,27 +651,27 @@ class BulletproofPurchaseManager:
                     is_in_stock = stock_status.get(tcin, False)
 
                     if is_in_stock:  # Product is IN STOCK
-                        if current_status == 'failed':
-                            # IN STOCK + FAILED -> Reset to ready to RETRY purchase
-                            old_failure = state.get('failure_reason', 'unknown')
-                            old_completed_at = state.get('completed_at', 'unknown')
+                        # IN STOCK + COMPLETED (purchased or failed) -> Reset to ready for immediate re-purchase
+                        old_order = state.get('order_number', 'N/A')
+                        old_failure = state.get('failure_reason', 'unknown')
+                        old_completed_at = state.get('completed_at', 'unknown')
 
-                            states[tcin] = {'status': 'ready'}
-                            reset_count += 1
+                        states[tcin] = {'status': 'ready'}
+                        reset_count += 1
 
-                            reset_info = {
-                                'tcin': tcin,
-                                'old_status': current_status,
-                                'order_number': 'N/A',
-                                'completed_at': old_completed_at,
-                                'reason': 'retry_failed_in_stock'
-                            }
-                            reset_details.append(reset_info)
+                        reset_info = {
+                            'tcin': tcin,
+                            'old_status': current_status,
+                            'order_number': old_order if current_status == 'purchased' else 'N/A',
+                            'completed_at': old_completed_at,
+                            'reason': 'in_stock_repeat_purchase'
+                        }
+                        reset_details.append(reset_info)
 
-                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (IN STOCK + FAILED, retry purchase - was: {old_failure})")
+                        if current_status == 'purchased':
+                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (IN STOCK, repeat purchase - was order: {old_order})")
                         else:
-                            # IN STOCK + PURCHASED -> Keep as purchased (don't buy twice!)
-                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> unchanged (IN STOCK + PURCHASED, no double-buy)")
+                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (IN STOCK + FAILED, retry - was: {old_failure})")
                     else:
                         # Product is OUT OF STOCK - reset everything to ready for next cycle
                         old_order = state.get('order_number', 'N/A')
@@ -941,19 +941,22 @@ class BulletproofPurchaseManager:
                 if not self.session_initialized:
                     print(f"[REAL_PURCHASE_THREAD] Waiting for session initialization to complete...")
                     # Wait up to 60 seconds for main thread to finish initializing session
-                    # (increased from 30s to handle slower browser launches)
+                    # Poll every 0.2s for faster response (was 1s)
                     max_wait = 60
-                    for i in range(max_wait):
+                    polls = 0
+                    max_polls = max_wait * 5  # 5 polls per second
+                    while polls < max_polls:
                         if self.session_initialized:
-                            print(f"[REAL_PURCHASE_THREAD] [OK] Session ready after {i}s wait")
+                            print(f"[REAL_PURCHASE_THREAD] [OK] Session ready after {polls * 0.2:.1f}s wait")
                             break
-                        # Show progress every 10 seconds
-                        if i > 0 and i % 10 == 0:
-                            print(f"[REAL_PURCHASE_THREAD] Still waiting for session... ({i}s elapsed)")
-                        time.sleep(1)
+                        # Show progress every 50 polls (10 seconds)
+                        if polls > 0 and polls % 50 == 0:
+                            print(f"[REAL_PURCHASE_THREAD] Still waiting for session... ({polls * 0.2:.1f}s elapsed)")
+                        time.sleep(0.2)
+                        polls += 1
 
                     if not self.session_initialized:
-                        print(f"[REAL_PURCHASE_THREAD] [ERROR] Session initialization timeout after {max_wait}s")
+                        print(f"[REAL_PURCHASE_THREAD] [ERROR] Session initialization timeout after {polls * 0.2:.1f}s")
                         failed_result = {
                             'success': False,
                             'tcin': tcin,
@@ -1303,7 +1306,7 @@ class BulletproofPurchaseManager:
                         print(f"[PURCHASE_CONCURRENCY] Thread is completing (cleanup phase) - waiting up to 30s...")
 
                         max_wait = 30.0  # 30 second maximum
-                        poll_interval = 2.0  # Check every 2 seconds
+                        poll_interval = 0.5  # Check every 0.5 seconds (was 2s)
                         waited = 0.0
 
                         while waited < max_wait:

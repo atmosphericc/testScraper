@@ -246,8 +246,8 @@ class SessionManager:
             self.logger.info(f"[OK] Persistent context will auto-load cookies from: {self.user_data_dir / 'Default' / 'Cookies'}")
             print(f"[SESSION_INIT] 📁 Cookies stored in: {self.user_data_dir / 'Default' / 'Cookies'}")
 
-            # Small wait for browser window to fully initialize
-            await asyncio.sleep(1)
+            # Small wait for browser window to fully initialize (reduced from 1s)
+            await asyncio.sleep(0.3)
 
             # Create page and navigate to Target.com with timeout
             print("[SESSION_INIT] ⚡ Creating page and navigating to target.com...")
@@ -303,9 +303,9 @@ class SessionManager:
                         except Exception as ls_error:
                             self.logger.warning(f"[LOCALSTORAGE] Failed to restore (non-fatal): {ls_error}")
 
-                    # Extra wait to ensure rendering completes
-                    await asyncio.sleep(2)
-                    print("[SESSION_INIT] ✅ Page fully rendered")
+                    # Quick wait for rendering (reduced from 2s - commit already loaded)
+                    await asyncio.sleep(0.5)
+                    print("[SESSION_INIT] ✅ Page rendering")
                 except Exception as nav_error:
                     print(f"[SESSION_INIT] ⚠️ Navigation timed out or failed (non-fatal): {nav_error}")
                     print(f"[SESSION_INIT] Current URL: {page.url}")
@@ -342,7 +342,7 @@ class SessionManager:
             # Retry if we haven't exhausted attempts
             if self._initialization_attempts < self._max_init_attempts:
                 self.logger.info("[RETRY] Retrying session initialization...")
-                await asyncio.sleep(5)  # Wait longer between full retries
+                await asyncio.sleep(2)  # Reduced from 5s
                 return await self.initialize()
             else:
                 self.logger.error("[CRITICAL] Exhausted all initialization attempts")
@@ -373,7 +373,7 @@ class SessionManager:
             except Exception as e:
                 self.logger.error(f"Context creation attempt {attempt + 1} failed: {e}")
                 if attempt < max_attempts - 1:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(0.5)  # Reduced from 2s
 
         return False
 
@@ -1104,22 +1104,20 @@ class SessionManager:
                 x = (1-t)**2 * start_x + 2*(1-t)*t * control_x + t**2 * target_x
                 y = (1-t)**2 * start_y + 2*(1-t)*t * control_y + t**2 * target_y
 
-                # Move mouse with slight random delay between steps
+                # Move mouse (no delay - fast movement)
                 await page.mouse.move(x, y)
-                if i < steps:  # Don't delay after last step
-                    await asyncio.sleep(random.uniform(0.001, 0.005))
 
             # Store position for next movement
             await page.evaluate(f"() => {{ window.lastMouseX = {target_x}; window.lastMouseY = {target_y}; }}")
 
-            # Human-like pause before click
-            await asyncio.sleep(random.uniform(0.05, 0.15))
+            # Fast pause before click (reduced from 0.05-0.15s)
+            await asyncio.sleep(random.uniform(0.01, 0.03))
 
             # Click at final position
             await page.mouse.click(target_x, target_y)
 
-            # Human-like pause after click
-            await asyncio.sleep(random.uniform(0.1, 0.3))
+            # Fast pause after click (reduced from 0.1-0.3s)
+            await asyncio.sleep(random.uniform(0.02, 0.05))
 
             return True
 
@@ -1191,14 +1189,12 @@ class SessionManager:
                     x = (1-t)**2 * start_x + 2*(1-t)*t * control_x + t**2 * target_x
                     y = (1-t)**2 * start_y + 2*(1-t)*t * control_y + t**2 * target_y
                     await page.mouse.move(x, y)
-                    if j < steps:
-                        await asyncio.sleep(0.002)
 
                 # Store position
                 await page.evaluate(f"() => {{ window.lastMouseX = {target_x}; window.lastMouseY = {target_y}; }}")
 
-                # Random pause to simulate reading
-                await asyncio.sleep(random.uniform(time_per_movement * 0.5, time_per_movement * 1.5))
+                # Fast pause (reduced for speed)
+                await asyncio.sleep(random.uniform(0.05, 0.15))
 
                 # Occasionally scroll (30% chance per movement)
                 if random.random() < 0.3 and scroll_height > height:
@@ -1222,7 +1218,6 @@ class SessionManager:
                         eased = 1 - (1 - progress) ** 3
                         scroll_pos = current_scroll + (target_scroll - current_scroll) * eased
                         await page.evaluate(f"() => window.scrollTo(0, {scroll_pos})")
-                        await asyncio.sleep(0.01)
 
             return True
 
@@ -1288,9 +1283,9 @@ class SessionManager:
             except Exception as e:
                 self.logger.error(f"Get page attempt {attempt + 1} failed: {e}")
 
-            # Wait briefly before retry
+            # Wait briefly before retry (reduced from 1s)
             if attempt < max_attempts - 1:
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.3)
 
         # BULLETPROOF FALLBACK: If all attempts failed, return None but log clearly
         self.logger.error("[CRITICAL] Failed to get healthy page after all attempts - session system needs restart")
@@ -1379,13 +1374,13 @@ class SessionManager:
                     if element and await element.is_visible():
                         self.logger.info(f"Found popup: {selector}, dismissing...")
 
-                        # Human-like delay before clicking
-                        await asyncio.sleep(random.uniform(0.3, 0.8))
+                        # Fast click (reduced from 0.3-0.8s)
+                        await asyncio.sleep(random.uniform(0.05, 0.1))
                         await element.click()
                         dismissed_count += 1
 
-                        # Wait for popup to disappear
-                        await asyncio.sleep(random.uniform(0.5, 1.0))
+                        # Wait for popup to disappear (reduced from 0.5-1.0s)
+                        await asyncio.sleep(random.uniform(0.1, 0.2))
 
                 except Exception:
                     continue  # Element not found or not clickable
@@ -1423,8 +1418,8 @@ class SessionManager:
                               wait_until='load',
                               timeout=30000)
 
-            # Wait for page to load and tokens to refresh
-            await asyncio.sleep(3)
+            # Wait for page to load and tokens to refresh (reduced from 3s)
+            await asyncio.sleep(1)
 
             # Check if we're redirected to login (means refreshToken expired)
             current_url = page.url
