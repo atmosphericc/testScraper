@@ -478,6 +478,17 @@ class PurchaseExecutor:
                 'timestamp': datetime.now().isoformat()
             })
 
+            # Clear cart so next cycle can find the Add to Cart button
+            try:
+                context = self.session_manager.context
+                if context and context.pages:
+                    page = context.pages[0]
+                    await page.goto("https://www.target.com/cart", wait_until='commit', timeout=6000)
+                    await self._clear_cart(page)
+                    print(f"[PURCHASE] Error recovery: cart cleared")
+            except Exception:
+                pass
+
             return {
                 'success': False,
                 'tcin': tcin,
