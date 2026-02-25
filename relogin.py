@@ -3,8 +3,8 @@ from patchright.async_api import async_playwright
 import os
 import json
 
-STORAGE_PATH = "target_storage.json"
-USER_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chrome_user_data")
+STORAGE_PATH = "target.json"
+USER_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "playwright-profile")
 
 async def relogin():
     async with async_playwright() as p:
