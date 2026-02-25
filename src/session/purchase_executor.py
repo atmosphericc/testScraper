@@ -383,14 +383,14 @@ class PurchaseExecutor:
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
 
             try:
-                await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=10000)
+                await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=8000)
                 # Wait for checkout page to be ready (replaces static sleep)
                 print("[PURCHASE] Waiting for checkout page elements...")
                 try:
                     await page.wait_for_selector(
-                        'button:has-text("Place order"), button:has-text("Continue"), [data-test*="checkout"]',
+                        'button:has-text("Place order"), button:has-text("Continue"), button:has-text("Save and continue"), button:has-text("Save and Continue"), [data-test*="checkout"], [data-test="save-and-continue-button"]',
                         state='visible',
-                        timeout=15000
+                        timeout=3000
                     )
                     print("[PURCHASE] ✓ Checkout page ready")
                 except Exception as wait_error:
@@ -423,9 +423,8 @@ class PurchaseExecutor:
             # TEST_MODE: Navigate to cart and clear it
             # PROD_MODE: Stay on confirmation page until next cycle
             if self.test_mode:
-                # TEST_MODE: Go back to cart and clear it
-                await page.goto("https://www.target.com/cart", wait_until='commit', timeout=2000)
-                await asyncio.sleep(random.uniform(0.1, 0.15))
+                # TEST_MODE: _complete_payment already navigated to cart; just wait for it to settle
+                await asyncio.sleep(0.2)
 
                 clear_result = await self._clear_cart(page)
                 execution_time = time.time() - start_time
@@ -873,12 +872,12 @@ class PurchaseExecutor:
             # SHAPE FIX: Use domcontentloaded (faster, more realistic) + random delay
             # Humans don't wait for all images/resources, just for page to be interactive
             self.logger.info("[PURCHASE] Navigating to checkout page...")
-            await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=5000)
+            await page.goto("https://www.target.com/checkout", wait_until='domcontentloaded', timeout=10000)
 
-            # Fast proceed - page already loaded via domcontentloaded
-            # Reduced from 0.3-0.8s (Shape doesn't monitor checkout page timing)
-            human_delay = random.uniform(0.1, 0.2)
-            self.logger.info(f"[PURCHASE] Page loaded, proceeding...")
+            # Wait for checkout page to initialize and begin loading account data
+            # Target makes async calls to fetch saved addresses/payment after DOM loads
+            human_delay = random.uniform(1.0, 1.5)
+            self.logger.info(f"[PURCHASE] Page loaded, waiting for account data to load...")
             await asyncio.sleep(human_delay)
 
             # Verify we're on checkout page
@@ -922,7 +921,7 @@ class PurchaseExecutor:
 
                 for selector in remove_selectors:
                     try:
-                        remove_button = await page.wait_for_selector(selector, timeout=500)
+                        remove_button = await page.wait_for_selector(selector, timeout=2000)
                         if remove_button and await remove_button.is_visible():
                             # Get current cart item count before removal
                             current_count = await page.evaluate(
@@ -992,8 +991,22 @@ class PurchaseExecutor:
         return None
 
     async def _handle_delivery_options(self, page):
-        """Handle shipping/delivery selection - event-driven waits"""
+        """Handle shipping/delivery selection - only if not already in review state"""
         try:
+            # GUARD: If "Place your order" is already visible, we're in the fully pre-confirmed state.
+            # Do NOT click anything — any click on Continue/Ship/etc will clear the pre-filled form.
+            for po_selector in ['button:has-text("Place your order")', '[data-test="placeOrderButton"]']:
+                try:
+                    btn = await page.wait_for_selector(po_selector, timeout=2000)
+                    if btn and await btn.is_visible():
+                        print("[DELIVERY] ✓ Already in review state (Place Order visible) — skipping delivery option clicks")
+                        return
+                except:
+                    continue
+
+            # Only reach here if Place Order is NOT visible — page needs stepping through
+            print("[DELIVERY] Place Order not visible yet, checking for delivery option buttons...")
+
             # Fast shipping selection (500ms max per selector)
             shipping_selectors = [
                 'button:has-text("Ship")',
@@ -1007,7 +1020,6 @@ class PurchaseExecutor:
                     element = await page.wait_for_selector(selector, timeout=500)
                     if element and await element.is_visible():
                         await element.click()
-                        # Wait for next UI element instead of static sleep
                         try:
                             await page.wait_for_selector(
                                 'button:has-text("Continue"), button:has-text("Next"), [data-test*="continue"]',
@@ -1015,7 +1027,7 @@ class PurchaseExecutor:
                                 timeout=3000
                             )
                         except:
-                            pass  # Continue anyway if selector not found
+                            pass
                         break
                 except:
                     continue
@@ -1032,7 +1044,6 @@ class PurchaseExecutor:
                     button = await page.wait_for_selector(selector, timeout=500)
                     if button and await button.is_visible():
                         await button.click()
-                        # Wait for payment/place-order section instead of static sleep
                         try:
                             await page.wait_for_selector(
                                 'button:has-text("Place order"), button:has-text("Place Order"), [data-test*="payment"], [data-test*="placeOrder"]',
@@ -1040,7 +1051,7 @@ class PurchaseExecutor:
                                 timeout=5000
                             )
                         except:
-                            pass  # Continue anyway if selector not found
+                            pass
                         break
                 except:
                     continue
@@ -1084,144 +1095,58 @@ class PurchaseExecutor:
             place_order_button = None
             found_selector = None
 
-            # DYNAMIC CHECKOUT FLOW: Check if "Place your order" is already enabled FIRST
-            # This handles Scenario A (fastest path) - skip "Save and Continue" entirely
-            if not self.test_mode:
-                print("[PAYMENT] ⚡ DYNAMIC FLOW: Checking if Place Order is already enabled...")
+            # Always click Save and Continue to step through shipping → payment → Place Order enabled.
+            # The page lands with address pre-filled but steps not yet confirmed, so S&C is required.
+            print("[PAYMENT] Clicking Save and Continue to progress through checkout steps...")
+            if True:  # always run S&C flow
+                print("[PAYMENT] → Proceeding with Save and Continue flow...")
 
-                for selector in place_order_selectors[:5]:  # Check top 5 most common selectors
-                    try:
-                        button = await page.wait_for_selector(selector, timeout=500)
-                        if button and await button.is_visible():
-                            is_disabled = await button.get_attribute('disabled')
-                            if not is_disabled:
-                                print(f"[PAYMENT] ✓ SCENARIO A: Place Order already enabled! Using fast path")
-                                print(f"[PAYMENT] ⚡ Found with selector: {selector}")
-                                place_order_button = button
-                                found_selector = selector
-                                break
-                    except:
-                        continue
+                # Give the checkout page a moment to hydrate before clicking S&C
+                print("[PAYMENT] Waiting 0.3s for checkout to hydrate...")
+                await asyncio.sleep(0.3)
 
-                # Only go through Save and Continue flow if Place Order is NOT ready (Scenario B)
-                if not place_order_button:
-                    print("[PAYMENT] → SCENARIO B: Place Order not ready, proceeding with Save and Continue flow...")
+                # Click "Save and Continue" buttons to progress through checkout steps
+                # Target checkout has multiple steps: shipping → payment → place order
+                print("[PAYMENT] Looking for Save and Continue buttons...")
+                save_continue_selectors = [
+                    '[data-test="save-and-continue-button"]',
+                    'button:has-text("Save and continue")',
+                    'button:has-text("Save & continue")',
+                    'button:has-text("Save and Continue")',
+                    'button:has-text("Save & Continue")',
+                ]
 
-                    print("[PAYMENT] Waiting for address/payment autofill...")
-                    try:
-                        # Wait for shipping address to be filled (indicates autofill happened)
-                        await page.wait_for_selector(
-                            '[data-test*="address"] :has-text("Ship to"), [data-test*="shipping"] :has-text("Ship"), :has-text("Shipping address")',
-                            state='visible',
-                            timeout=10000
-                        )
-                        print("[PAYMENT] ✓ Shipping info detected")
-                    except:
-                        print("[PAYMENT] ⚠ Shipping selector not found, checking for payment...")
-
-                    try:
-                        # Wait for payment method to be visible
-                        await page.wait_for_selector(
-                            '[data-test*="payment"], [data-test*="card"], :has-text("Payment"), :has-text("Credit"), :has-text("Debit")',
-                            state='visible',
-                            timeout=5000
-                        )
-                        print("[PAYMENT] ✓ Payment info detected")
-                    except:
-                        print("[PAYMENT] ⚠ Payment selector not found, proceeding...")
-
-                    # Click "Save and Continue" buttons to progress through checkout steps
-                    # Target checkout has multiple steps: shipping → payment → place order
-                    print("[PAYMENT] Looking for Save and Continue buttons...")
-                    save_continue_selectors = [
-                        'button:has-text("Save and continue")',
-                        'button:has-text("Save & continue")',
-                        'button:has-text("Save and Continue")',
-                        'button:has-text("Save & Continue")',
-                        '[data-test*="save-and-continue"]',
-                        '[data-test*="saveAndContinue"]',
-                        'button[data-test="save-and-continue-button"]',
-                    ]
-
-                    # May need to click multiple times (shipping, then payment sections)
-                    for step in range(3):  # Max 3 steps
-                        clicked = False
-                        for selector in save_continue_selectors:
-                            try:
-                                button = await page.wait_for_selector(selector, timeout=2000)
-                                if button and await button.is_visible():
-                                    is_disabled = await button.get_attribute('disabled')
-                                    if not is_disabled:
-                                        await button.dispatch_event('click')
-                                        print(f"[PAYMENT] ✓ Clicked Save and Continue (step {step + 1})")
-                                        clicked = True
-                                        # Wait for UI to update (event-driven, not static sleep)
-                                        try:
-                                            await page.wait_for_selector(
-                                                'button:has-text("Save and continue"):not([disabled]), button:has-text("Place your order"):not([disabled])',
-                                                state='visible',
-                                                timeout=3000
-                                            )
-                                        except:
-                                            await asyncio.sleep(0.3)  # Short fallback only if selector fails
-                                        break
-                            except:
-                                continue
-
-                        if not clicked:
-                            print(f"[PAYMENT] No more Save and Continue buttons found after {step} clicks")
-                            break
-
-                    # After Save and Continue flow, now search for Place Order button
-                    print("[PAYMENT] Searching for Place Order button after Save and Continue...")
-                    for selector in place_order_selectors:
+                # May need to click multiple times (shipping step, then payment step)
+                for step in range(3):  # Max 3 steps
+                    clicked = False
+                    for selector in save_continue_selectors:
                         try:
-                            print(f"[PAYMENT] Trying selector: {selector}")
-                            button = await page.wait_for_selector(selector, timeout=1000)
-                            if button:
-                                is_visible = await button.is_visible()
-                                print(f"[PAYMENT] Button found, visible: {is_visible}")
-
-                                if is_visible:
-                                    # PROD: Wait for button to be enabled (autofill may take a moment)
-                                    # Check up to 10 times over 5 seconds
-                                    for attempt in range(10):
-                                        is_disabled = await button.get_attribute('disabled')
-                                        if not is_disabled:
-                                            place_order_button = button
-                                            found_selector = selector
-                                            print(f"[PAYMENT] ✓ Button enabled after {attempt * 0.2}s with selector: {selector}")
-                                            break
-                                        if attempt < 9:
-                                            print(f"[PAYMENT] Button disabled, waiting for autofill... ({attempt + 1}/10)")
-                                            await asyncio.sleep(0.2)
-
-                                    if place_order_button:
-                                        break
-                        except Exception as e:
-                            print(f"[PAYMENT] Selector {selector} failed: {e}")
-                            continue
-                else:
-                    print("[PAYMENT] ⚡ FAST PATH: Skipping Save and Continue - button already found!")
-
-            # TEST_MODE: Find button for display only (don't click)
-            if self.test_mode:
-                print("[PAYMENT] TEST_MODE: Searching for Place Order button...")
-                for selector in place_order_selectors:
-                    try:
-                        button = await page.wait_for_selector(selector, timeout=1000)
-                        if button and await button.is_visible():
-                            try:
-                                await button.scroll_into_view_if_needed(timeout=2000)
-                                print("[PAYMENT] Scrolled button into view")
-                            except:
-                                pass
-                            place_order_button = button
-                            found_selector = selector
-                            print(f"[PAYMENT] ✓ TEST_MODE: Button found with selector: {selector}")
+                            loc = page.locator(selector).first
+                            await loc.wait_for(state='visible', timeout=400)
+                            await loc.scroll_into_view_if_needed()
+                            await loc.click()
+                            print(f"[PAYMENT] ✓ Clicked Save and Continue (step {step + 1}) with: {selector}")
+                            clicked = True
+                            await asyncio.sleep(0.5)  # wait for next step to render
                             break
-                    except:
-                        continue
+                        except:
+                            continue
+
+                    if not clicked:
+                        print(f"[PAYMENT] No more S&C buttons found after {step} clicks — proceeding")
+                        break
+
+                # After Save and Continue flow, now search for Place Order button
+                print("[PAYMENT] Waiting for Place Order button to become enabled...")
+                try:
+                    loc = page.locator('button:has-text("Place your order"), [data-test="placeOrderButton"]').first
+                    await loc.wait_for(state='visible', timeout=4000)
+                    await loc.scroll_into_view_if_needed()
+                    place_order_button = loc
+                    found_selector = 'button:has-text("Place your order")'
+                    print("[PAYMENT] ✓ Place Order button found and visible")
+                except Exception as e:
+                    print(f"[PAYMENT] ⚠ Place Order button not found: {e}")
 
             if not place_order_button:
                 print("[PAYMENT] ✗ Could not find enabled Place Order button")
@@ -1235,16 +1160,11 @@ class PurchaseExecutor:
                     pass
                 return False
 
-            # TEST_MODE: Stop before clicking (for testing)
+            # TEST_MODE: Stop before clicking, screenshot, then navigate back to cart
             if self.test_mode:
                 print("[PAYMENT] TEST_MODE: Stopping before clicking Place Order button")
-                try:
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    screenshot_path = f"logs/test_mode_final_step_{timestamp}.png"
-                    await page.screenshot(path=screenshot_path)
-                    print(f"[PAYMENT] Screenshot saved: {screenshot_path}")
-                except:
-                    pass
+                print("[PAYMENT] TEST_MODE: Navigating back to cart...")
+                await page.goto("https://www.target.com/cart", wait_until='commit', timeout=6000)
                 return True
 
             # PRODUCTION MODE: Instant click for speed (no humanization needed at checkout)

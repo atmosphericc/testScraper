@@ -107,7 +107,14 @@
       "Bash(open http://localhost:5002)",
       "WebFetch(domain:botsthatwork.com)",
       "Bash(git rm:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "WebFetch(domain:help.target.com)",
+      "WebFetch(domain:help.refractbot.com)",
+      "WebFetch(domain:www.justanswer.com)",
+      "WebFetch(domain:wesupplylabs.com)",
+      "WebFetch(domain:tech.target.com)",
+      "WebFetch(domain:shippingpolicies.net)",
+      "WebFetch(domain:www.botbro.io)"
     ],
     "deny": [],
     "ask": []
