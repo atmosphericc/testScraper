@@ -129,8 +129,9 @@ class PurchaseExecutor:
             pass
 
     async def _screenshot(self, tab, path: str):
-        """Take a screenshot"""
+        """Take a screenshot, creating parent dirs as needed."""
         try:
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             await tab.save_screenshot(path)
         except Exception:
             pass
@@ -1040,18 +1041,13 @@ class PurchaseExecutor:
             return False
 
     async def _handle_delivery_options(self, tab):
-        """Handle shipping/delivery selection - only if not already in review state"""
+        """Handle shipping/delivery selection - only if not already in review state.
+
+        Uses targeted CSS selectors instead of broad text matching to avoid
+        accidentally clicking navigation links or unrelated buttons.
+        """
         try:
             # GUARD: If "Place your order" is already visible, skip everything
-            for po_text in ["Place your order", "Place Order"]:
-                try:
-                    btn = await tab.find(po_text, best_match=True, timeout=2)
-                    if btn and await self._is_visible(btn):
-                        print("[DELIVERY] Already in review state (Place Order visible) — skipping")
-                        return
-                except Exception:
-                    continue
-
             try:
                 btn = await tab.select('[data-test="placeOrderButton"]', timeout=1)
                 if btn and await self._is_visible(btn):
@@ -1060,180 +1056,511 @@ class PurchaseExecutor:
             except Exception:
                 pass
 
-            print("[DELIVERY] Place Order not visible yet, checking for delivery option buttons...")
-
-            # Click Shipping option if present
-            shipping_texts = ["Ship", "Shipping"]
-            for text in shipping_texts:
+            for po_text in ["Place your order", "Place Order"]:
                 try:
-                    element = await tab.find(text, best_match=True, timeout=0.5)
+                    btn = await tab.find(po_text, best_match=True, timeout=1)
+                    if btn and await self._is_visible(btn):
+                        print("[DELIVERY] Already in review state (Place Order visible) — skipping")
+                        return
+                except Exception:
+                    continue
+
+            print("[DELIVERY] Checking for delivery option buttons...")
+
+            # Click the Shipping/Ship-it radio button if the delivery-method picker is visible.
+            # Use specific data-test selectors to avoid matching navigation or section headers.
+            shipping_css = [
+                '[data-test="shipping-option"]',
+                '[data-test="ship-option"]',
+                'input[value="SHIPPING"]',
+                'input[id*="shipping"]',
+                'input[id*="ship-"]',
+                '[data-test*="fulfillment"] [data-test*="ship"]',
+            ]
+            for sel in shipping_css:
+                try:
+                    element = await tab.select(sel, timeout=0.5)
                     if element and await self._is_visible(element):
                         await element.click()
-                        try:
-                            await tab.find("Continue", best_match=True, timeout=3)
-                        except Exception:
-                            pass
+                        print(f"[DELIVERY] Selected shipping option via: {sel}")
+                        await asyncio.sleep(0.5)
                         break
                 except Exception:
                     continue
 
-            # Click continue button
-            continue_texts = ["Continue", "Next"]
-            for text in continue_texts:
-                try:
-                    button = await tab.find(text, best_match=True, timeout=0.5)
-                    if button and await self._is_visible(button):
-                        await button.click()
-                        try:
-                            await tab.find("Place order", best_match=True, timeout=5)
-                        except Exception:
-                            pass
-                        break
-                except Exception:
-                    continue
+            # Do NOT click generic "Continue"/"Next" text here — that is handled
+            # by _complete_payment's S&C loop with the empty-form guard in place.
 
         except Exception:
             pass
 
-    async def _complete_payment(self, tab) -> bool:
-        """Complete payment process with dynamic checkout flow detection."""
+    async def _check_checkout_form_state(self, tab) -> dict:
+        """Inspect the checkout page to determine the form's current state before clicking S&C.
+
+        Returns a dict with keys:
+          state   : 'no_sac' | 'no_form' | 'empty_form' | 'mostly_empty' | 'has_data'
+          total   : total visible text-type inputs found
+          empty   : number of those that are empty
+          filled  : number of those that have a value
+        """
         try:
-            print("[PAYMENT] Starting payment completion process...")
+            result = await tab.evaluate('''(() => {
+                const sacBtn = document.querySelector('[data-test="save-and-continue-button"]');
+                if (!sacBtn) return {state: "no_sac", total: 0, empty: 0, filled: 0};
 
-            # Give checkout page a moment to hydrate
-            print("[PAYMENT] Waiting 0.3s for checkout to hydrate...")
-            await asyncio.sleep(0.3)
+                // 1) Prefer the nearest <form> ancestor
+                let container = sacBtn.closest("form");
 
-            # Click "Save and Continue" buttons to progress through checkout steps
-            print("[PAYMENT] Looking for Save and Continue buttons...")
-            save_continue_css = ['[data-test="save-and-continue-button"]']
-            save_continue_texts = [
-                "Save and continue", "Save & continue",
-                "Save and Continue", "Save & Continue",
-            ]
+                // 2) If no <form>, walk up looking for an ancestor that holds >= 2 visible inputs
+                if (!container) {
+                    let node = sacBtn.parentElement;
+                    for (let depth = 0; depth < 30 && node && node !== document.body; depth++) {
+                        const vis = Array.from(node.querySelectorAll(
+                            'input[type="text"], input[type="tel"], input[type="email"]'
+                        )).filter(i => i.offsetParent !== null);
+                        if (vis.length >= 2) { container = node; break; }
+                        node = node.parentElement;
+                    }
+                }
 
-            for step in range(3):
+                if (!container) return {state: "no_form", total: 0, empty: 0, filled: 0};
+
+                const inputs = Array.from(container.querySelectorAll(
+                    'input[type="text"], input[type="tel"], input[type="email"]'
+                )).filter(i => i.offsetParent !== null && i.getBoundingClientRect().height > 0);
+
+                const names = inputs.map(i => (i.name || i.id || i.placeholder || "?").substring(0, 30));
+                const emptyCount  = inputs.filter(i => i.value.trim() === "").length;
+                const filledCount = inputs.filter(i => i.value.trim() !== "").length;
+
+                let state = "has_data";
+                if (inputs.length >= 2 && filledCount === 0) state = "empty_form";
+                else if (inputs.length >= 3 && emptyCount / inputs.length >= 0.67) state = "mostly_empty";
+
+                return {state, total: inputs.length, empty: emptyCount, filled: filledCount, names};
+            })()''')
+
+            if isinstance(result, dict):
+                return result
+            return {'state': 'unknown', 'total': 0, 'empty': 0, 'filled': 0}
+        except Exception as e:
+            print(f"[PAYMENT] Form-state check error: {e}")
+            return {'state': 'error', 'total': 0, 'empty': 0, 'filled': 0}
+
+    async def _wait_for_checkout_ready(self, tab, timeout: float = 5.0) -> str:
+        """Poll until either Place Order or S&C appears on the checkout page.
+
+        Returns one of:
+          'place_order' — Place Order button is visible (may still be disabled)
+          'sac'         — Save & Continue button is visible
+          'timeout'     — neither appeared within `timeout` seconds
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                state = await tab.evaluate("""() => {
+                    const po  = document.querySelector('[data-test="placeOrderButton"]');
+                    const sac = document.querySelector('[data-test="save-and-continue-button"]');
+                    if (po  && po.offsetParent  !== null) return 'place_order';
+                    if (sac && sac.offsetParent !== null) return 'sac';
+                    return 'none';
+                }""")
+                if state in ('place_order', 'sac'):
+                    elapsed = time.time() - start
+                    print(f"[PAYMENT] Checkout ready ({state}) in {elapsed:.2f}s")
+                    return state
+            except Exception:
+                pass
+            await asyncio.sleep(0.15)
+        print(f"[PAYMENT] Checkout ready timeout after {timeout}s")
+        return 'timeout'
+
+    async def _wait_for_sac_transition(self, tab, timeout: float = 5.0) -> str:
+        """After clicking S&C, poll until the page advances to the next state.
+
+        Returns one of:
+          'place_order_enabled' — Place Order is visible and enabled
+          'sac_again'           — Another S&C appeared (next step)
+          'timeout'             — didn't transition within `timeout` seconds
+        """
+        # Brief minimum wait so Target has time to process the click server-side
+        await asyncio.sleep(0.4)
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                state = await tab.evaluate("""() => {
+                    const po = document.querySelector('[data-test="placeOrderButton"]');
+                    if (po && po.offsetParent !== null) {
+                        // Check if genuinely enabled
+                        const style = window.getComputedStyle(po);
+                        const enabled = !po.disabled
+                            && po.getAttribute('aria-disabled') !== 'true'
+                            && !(po.className || '').toLowerCase().includes('disabled')
+                            && style.pointerEvents !== 'none'
+                            && parseFloat(style.opacity) >= 0.6;
+                        if (enabled) return 'place_order_enabled';
+                    }
+                    // Next S&C appeared (e.g. payment step loaded after address step)
+                    const sac = document.querySelector('[data-test="save-and-continue-button"]');
+                    if (sac && sac.offsetParent !== null) return 'sac_again';
+                    return 'transitioning';
+                }""")
+                if state in ('place_order_enabled', 'sac_again'):
+                    elapsed = time.time() - start + 0.4
+                    print(f"[PAYMENT] S&C transition → {state} in {elapsed:.2f}s")
+                    return state
+            except Exception:
+                pass
+            await asyncio.sleep(0.15)
+        return 'timeout'
+
+    async def _is_sac_on_empty_form(self, tab) -> bool:
+        """Returns True if the S&C button is sitting on top of a form with no filled inputs.
+
+        Logs the full form state for debugging regardless of outcome.
+        """
+        info = await self._check_checkout_form_state(tab)
+        state  = info.get('state', 'unknown')
+        total  = info.get('total', 0)
+        empty  = info.get('empty', 0)
+        filled = info.get('filled', 0)
+        names  = info.get('names', [])
+
+        print(f"[PAYMENT] Checkout form state: state={state} | "
+              f"inputs={total} total / {filled} filled / {empty} empty")
+        if names:
+            print(f"[PAYMENT] Visible input fields: {names}")
+
+        return state in ('empty_form', 'mostly_empty')
+
+    async def _is_place_order_enabled(self, element) -> bool:
+        """Return True only if the Place Order button is genuinely clickable.
+
+        Target disables the button via CSS / aria-disabled, NOT the HTML `disabled`
+        attribute.  Checking getAttribute('disabled') always returns None for it,
+        making `not None` → True — which was the false-positive causing premature
+        cart redirects before payment was selected.  This checks all four signals.
+        """
+        try:
+            return await element.apply("""el => {
+                // 1. HTML disabled property (most reliable for real <button> elements)
+                if (el.disabled) return false;
+                // 2. ARIA disabled (common in React / accessible UIs)
+                if (el.getAttribute('aria-disabled') === 'true') return false;
+                // 3. CSS class containing 'disabled' or 'inactive'
+                const cls = (el.className || '').toLowerCase();
+                if (cls.includes('disabled') || cls.includes('inactive')) return false;
+                // 4. Pointer events cut off (button looks greyed, clicks ignored)
+                const style = window.getComputedStyle(el);
+                if (style.pointerEvents === 'none') return false;
+                // 5. Heavily faded opacity (greyed-out visual state)
+                if (parseFloat(style.opacity) < 0.6) return false;
+                return true;
+            }""")
+        except Exception:
+            return False
+
+    async def _find_place_order_button(self, tab):
+        """Find the Place Order button only if it is visible AND truly enabled.
+        Returns (element, selector_string) or (None, None).
+        """
+        place_order_css = [
+            '[data-test="placeOrderButton"]',
+            '[data-testid="placeOrderButton"]',
+            '#placeOrderButton',
+            'button[class*="place-order"]',
+            'button[class*="placeOrder"]',
+        ]
+        place_order_texts = [
+            "Place your order", "Place Your Order",
+            "Place order", "Place Order", "PLACE ORDER",
+            "Complete order", "Complete Order",
+        ]
+
+        # CSS selectors first — more precise than text matching
+        for selector in place_order_css:
+            try:
+                elem = await tab.select(selector, timeout=1)
+                if elem and await self._is_visible(elem):
+                    if await self._is_place_order_enabled(elem):
+                        print(f"[PAYMENT] Place Order ENABLED via CSS: {selector}")
+                        return elem, selector
+                    print(f"[PAYMENT] Place Order found but disabled: {selector}")
+            except Exception:
+                continue
+
+        # Text fallback
+        for text in place_order_texts:
+            try:
+                elem = await tab.find(text, best_match=True, timeout=1)
+                if elem and await self._is_visible(elem):
+                    if await self._is_place_order_enabled(elem):
+                        print(f"[PAYMENT] Place Order ENABLED via text: {text}")
+                        return elem, text
+                    print(f"[PAYMENT] Place Order found but disabled: {text}")
+            except Exception:
+                continue
+
+        return None, None
+
+    async def _handle_step_radio(self, tab) -> str:
+        """Detect which checkout step is currently active (by its radio buttons) and
+        select the right option before clicking Save & Continue.
+
+        Handles all three radio-button steps Target may show:
+          • Delivery step  → select "Ship it" / "Shipping" (not Store Pickup / Drive Up)
+          • Payment step   → select first saved card (not Apple Pay / PayPal / etc.)
+          • No radios      → address form or review page — nothing to do
+
+        Returns a string describing what happened (for logging).
+        """
+        try:
+            result = await tab.evaluate('''(() => {
+                const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
+                    .filter(r => r.offsetParent !== null);
+
+                if (radios.length === 0) return {action: "no_radios"};
+                if (radios.some(r => r.checked)) return {action: "already_selected"};
+
+                // Keywords that identify each step type
+                const deliveryKW  = ['ship', 'shipping', 'pickup', 'drive up', 'same-day',
+                                      'same day', 'order pickup', 'store pickup', 'in-store'];
+                const walletKW    = ['apple pay', 'paypal', 'cash app', 'affirm',
+                                     'venmo', 'klarna', 'afterpay', 'sezzle', 'zip'];
+                const shipKW      = ['ship', 'shipping', 'delivered'];
+                const pickupKW    = ['pickup', 'pick up', 'drive up', 'in-store', 'store'];
+
+                // Label text helper
+                function labelOf(radio) {
+                    const c = radio.closest('label') ||
+                              radio.closest('[class*="payment"]') ||
+                              radio.closest('[class*="fulfillment"]') ||
+                              radio.closest('[class*="delivery"]') ||
+                              radio.parentElement;
+                    return c ? c.innerText.toLowerCase() : '';
+                }
+
+                // Determine step type by scanning all radio labels
+                const allLabels = radios.map(r => labelOf(r));
+                const isDelivery = allLabels.some(t => deliveryKW.some(k => t.includes(k)));
+                const isPayment  = !isDelivery;   // if no delivery keywords → payment step
+
+                if (isDelivery) {
+                    // Select the Shipping option (first radio whose label contains a
+                    // ship keyword, or the first radio that does NOT say pickup/drive-up)
+                    for (let i = 0; i < radios.length; i++) {
+                        if (radios[i].disabled) continue;
+                        const txt = allLabels[i];
+                        if (shipKW.some(k => txt.includes(k)) &&
+                            !pickupKW.some(k => txt.includes(k))) {
+                            return {action: "delivery", index: i, label: txt.trim().slice(0,40)};
+                        }
+                    }
+                    // Fallback: first enabled radio
+                    for (let i = 0; i < radios.length; i++) {
+                        if (!radios[i].disabled)
+                            return {action: "delivery_fallback", index: i,
+                                    label: allLabels[i].trim().slice(0,40)};
+                    }
+                }
+
+                if (isPayment) {
+                    // Select the first saved card — skip digital wallets
+                    for (let i = 0; i < radios.length; i++) {
+                        if (radios[i].disabled) continue;
+                        const txt = allLabels[i];
+                        if (!walletKW.some(k => txt.includes(k)))
+                            return {action: "payment", index: i, label: txt.trim().slice(0,40)};
+                    }
+                    return {action: "payment_no_card"};
+                }
+
+                return {action: "unknown"};
+            })()''')
+
+            if not isinstance(result, dict):
+                return "error"
+
+            action = result.get('action', '')
+            label  = result.get('label', '')
+            idx    = result.get('index', 0)
+
+            if action == 'no_radios':
+                return 'no_radios'
+            if action == 'already_selected':
+                print("[STEP] Radio already selected — skipping")
+                return 'already_selected'
+            if action in ('payment_no_card', 'unknown'):
+                print(f"[STEP] Radio state: {action}")
+                return action
+            if action not in ('delivery', 'delivery_fallback', 'payment'):
+                return action
+
+            step_type = 'Delivery' if 'delivery' in action else 'Payment'
+            await tab.evaluate(f'''(() => {{
+                const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
+                    .filter(r => r.offsetParent !== null);
+                if (radios[{idx}]) {{
+                    radios[{idx}].scrollIntoView({{block: 'center', behavior: 'smooth'}});
+                    radios[{idx}].click();
+                }}
+            }})()''')
+            print(f"[STEP] Selected {step_type} radio (index {idx}): \"{label}\"")
+            await asyncio.sleep(0.25)   # short React state-update settle
+            return action
+
+        except Exception as e:
+            print(f"[STEP] _handle_step_radio error: {e}")
+            return 'error'
+
+    async def _place_order(self, tab) -> bool:
+        """Find the enabled Place Order button and click it (production only)."""
+        place_order_button, found_selector = await self._find_place_order_button(tab)
+        if not place_order_button:
+            print("[PAYMENT] Place Order not found or still disabled")
+            try:
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                await self._screenshot(tab, f"logs/checkout_no_place_order_{ts}.png")
+                print(f"[PAYMENT] Screenshot: logs/checkout_no_place_order_{ts}.png")
+            except Exception:
+                pass
+            return False
+
+        await self._scroll_into_view(place_order_button)
+        print(f"[PAYMENT] Clicking Place Order ({found_selector})")
+        try:
+            await self._dispatch_click(place_order_button)
+            print("[PAYMENT] Click dispatched")
+        except Exception as click_error:
+            print(f"[PAYMENT] dispatch click failed ({click_error}), trying fallback")
+            try:
+                await place_order_button.click()
+                print("[PAYMENT] Fallback click succeeded")
+            except Exception:
+                return False
+
+        print("[PAYMENT] Waiting for order confirmation...")
+        try:
+            if await self._wait_for_url_contains(tab, 'confirmation', timeout=5.0):
+                print("[PAYMENT] Reached confirmation page")
+            else:
+                url = tab.url
+                if 'confirmation' in url.lower() or 'thank' in url.lower():
+                    print("[PAYMENT] On confirmation page")
+                else:
+                    print(f"[PAYMENT] URL after click: {url}")
+        except Exception:
+            pass
+        return True
+
+    async def _complete_payment(self, tab) -> bool:
+        """Drive the checkout to completion.
+
+        Handles every flow Target may present:
+          A. Review page already loaded (Place Order enabled) — skip S&C loop entirely.
+          B. Address step needs S&C  → no radios, just click S&C.
+          C. Delivery step needs S&C → select Ship, then click S&C.
+          D. Payment step needs S&C  → select saved card, then click S&C.
+          E. Multiple steps pending  → loop handles them in sequence.
+          F. F5 kicks us off checkout (URL changes) → detected, fail gracefully.
+
+        TEST_MODE: navigate back to cart as soon as no more S&C buttons exist.
+        PROD MODE: click the enabled Place Order button.
+        """
+        try:
+            print("[PAYMENT] Starting checkout completion...")
+
+            # Screenshot on entry — check logs/ folder to see what the bot saw.
+            try:
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                await self._screenshot(tab, f"logs/checkout_entry_{ts}.png")
+                print(f"[PAYMENT] Screenshot: logs/checkout_entry_{ts}.png")
+            except Exception:
+                pass
+
+            # Wait for checkout to hydrate — poll for Place Order or S&C (max 5s).
+            # Replaces the old fixed 3.0s sleep; exits as soon as the page is ready.
+            ready = await self._wait_for_checkout_ready(tab, timeout=5.0)
+
+            # ── FLOW A: Place Order already enabled (everything pre-confirmed) ─────────
+            if ready == 'place_order':
+                po_btn, po_sel = await self._find_place_order_button(tab)
+                if po_btn:
+                    print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
+                    if self.test_mode:
+                        print("[PAYMENT] TEST_MODE: going to cart")
+                        await tab.get("https://www.target.com/cart")
+                        return True
+                    return await self._place_order(tab)
+
+            # ── FLOWS B/C/D/E: S&C loop ───────────────────────────────────────────────
+            for step in range(6):
+                # Validate we're still on the checkout page (F5 may redirect us away).
+                current_url = tab.url
+                if 'checkout' not in current_url.lower():
+                    print(f"[PAYMENT] FLOW F: no longer on checkout (url={current_url}) — aborting")
+                    return False
+
+                # Handle any radio button that needs selecting on this step.
+                await self._handle_step_radio(tab)
+
+                # Find and click the S&C button (CSS first, text fallback).
                 clicked = False
-
-                for selector in save_continue_css:
+                for selector in ['[data-test="save-and-continue-button"]']:
                     try:
-                        elem = await tab.select(selector, timeout=0.4)
+                        elem = await tab.select(selector, timeout=1)
                         if elem and await self._is_visible(elem):
                             await self._scroll_into_view(elem)
-                            await elem.click()
-                            print(f"[PAYMENT] Clicked Save and Continue (step {step + 1}) via CSS")
+                            await self._dispatch_click(elem)   # JS click — no pre-delay needed
+                            print(f"[PAYMENT] Clicked S&C (step {step + 1})")
                             clicked = True
-                            await asyncio.sleep(0.5)
                             break
                     except Exception:
                         continue
 
                 if not clicked:
-                    for text in save_continue_texts:
+                    for text in ["Save and continue", "Save & continue",
+                                 "Save and Continue", "Save & Continue"]:
                         try:
-                            elem = await tab.find(text, best_match=True, timeout=0.4)
+                            elem = await tab.find(text, best_match=True, timeout=1)
                             if elem and await self._is_visible(elem):
                                 await self._scroll_into_view(elem)
-                                await elem.click()
-                                print(f"[PAYMENT] Clicked Save and Continue (step {step + 1}): {text}")
+                                await self._dispatch_click(elem)
+                                print(f"[PAYMENT] Clicked S&C (step {step + 1}): '{text}'")
                                 clicked = True
-                                await asyncio.sleep(0.5)
                                 break
                         except Exception:
                             continue
 
                 if not clicked:
-                    print(f"[PAYMENT] No more S&C buttons found after {step} clicks — proceeding")
+                    print(f"[PAYMENT] No S&C button at step {step + 1} — loop done")
                     break
 
-            # Find Place Order button
-            print("[PAYMENT] Waiting for Place Order button to become enabled...")
-            place_order_button = None
-            found_selector = None
+                # Poll for next state — exits as soon as Place Order enables or next S&C loads.
+                transition = await self._wait_for_sac_transition(tab, timeout=5.0)
 
-            place_order_texts = [
-                "Place your order", "Place Your Order",
-                "Place order", "Place Order", "PLACE ORDER",
-                "Buy now", "Complete order", "Complete Order",
-            ]
-            place_order_css = [
-                '[data-test="placeOrderButton"]',
-                '[data-testid="placeOrderButton"]',
-                '#placeOrderButton',
-                '.place-order-button',
-                'button[class*="place-order"]',
-                'button[class*="placeOrder"]',
-            ]
+                if transition == 'place_order_enabled':
+                    po_btn, _ = await self._find_place_order_button(tab)
+                    if po_btn:
+                        print(f"[PAYMENT] Place Order enabled after S&C step {step + 1}")
+                        if self.test_mode:
+                            print("[PAYMENT] TEST_MODE: going to cart")
+                            await tab.get("https://www.target.com/cart")
+                            return True
+                        return await self._place_order(tab)
 
-            for text in place_order_texts:
-                try:
-                    elem = await tab.find(text, best_match=True, timeout=4)
-                    if elem and await self._is_visible(elem):
-                        place_order_button = elem
-                        found_selector = text
-                        print(f"[PAYMENT] Place Order button found: {text}")
-                        break
-                except Exception:
-                    continue
+                # 'sac_again' or 'timeout' → continue loop (next step or retry)
 
-            if not place_order_button:
-                for selector in place_order_css:
-                    try:
-                        elem = await tab.select(selector, timeout=2)
-                        if elem and await self._is_visible(elem):
-                            place_order_button = elem
-                            found_selector = selector
-                            print(f"[PAYMENT] Place Order button found via CSS: {selector}")
-                            break
-                    except Exception:
-                        continue
-
-            if not place_order_button:
-                print("[PAYMENT] Could not find enabled Place Order button")
-                try:
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    await self._screenshot(tab, f"logs/payment_button_not_found_{timestamp}.png")
-                except Exception:
-                    pass
-                return False
-
-            await self._scroll_into_view(place_order_button)
-
-            # TEST_MODE: stop before clicking, navigate back to cart
+            # ── Loop exhausted without finding Place Order ─────────────────────────────
             if self.test_mode:
-                print("[PAYMENT] TEST_MODE: Stopping before clicking Place Order button")
-                print("[PAYMENT] TEST_MODE: Navigating back to cart...")
+                # In test mode success = we tried everything and cycled back to cart.
+                print("[PAYMENT] TEST_MODE: S&C loop exhausted — going to cart")
                 await tab.get("https://www.target.com/cart")
                 return True
 
-            # PRODUCTION: Click Place Order
-            print(f"[PAYMENT] PROD: Clicking Place Order button ({found_selector})")
-            try:
-                await self._dispatch_click(place_order_button)
-                print("[PAYMENT] Click dispatched")
-            except Exception as click_error:
-                print(f"[PAYMENT] dispatch click failed: {click_error}")
-                try:
-                    await place_order_button.click()
-                    print("[PAYMENT] Fallback click succeeded")
-                except Exception:
-                    return False
-
-            print("[PAYMENT] Waiting for order confirmation...")
-            try:
-                if await self._wait_for_url_contains(tab, 'confirmation', timeout=5.0):
-                    print("[PAYMENT] Reached confirmation page")
-                else:
-                    current_url = tab.url
-                    print(f"[PAYMENT] Current URL: {current_url}")
-                    if 'confirmation' in current_url.lower() or 'thank' in current_url.lower():
-                        print("[PAYMENT] On confirmation page")
-                    else:
-                        print("[PAYMENT] Proceeding (click sent)")
-            except Exception:
-                pass
-
-            return True
+            # Prod: one final attempt to find Place Order.
+            print("[PAYMENT] Final Place Order check...")
+            return await self._place_order(tab)
 
         except Exception as e:
             print(f"[PAYMENT] Payment completion error: {e}")

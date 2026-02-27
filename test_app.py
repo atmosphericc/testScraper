@@ -220,39 +220,72 @@ if __name__ == '__main__':
 
                 add_activity_log(f"Fatal error - monitoring failed: {str(e)}", "error", "system")
 
-    # Add graceful shutdown handler to save session on exit
+    # ── Graceful shutdown ──────────────────────────────────────────────────────
+    import atexit
+    from src.session.session_manager import _chrome_pid as _initial_chrome_pid
+
+    def _kill_browser_now():
+        """Kill the entire Chrome process tree — works from signal handlers and atexit."""
+        import subprocess, sys as _sys
+        from src.session import session_manager as _sm_mod
+
+        # Try via SessionManager first (has the process ref)
+        sm = global_purchase_manager.session_manager if global_purchase_manager else None
+        if sm:
+            sm.close_browser_sync()
+            return
+
+        # Fallback: use the module-level PID we stored at browser launch
+        pid = _sm_mod._chrome_pid
+        if pid and _sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=5
+                )
+                print(f"[CLEANUP] taskkill /F /T /PID {pid} (fallback)")
+            except Exception as e:
+                print(f"[CLEANUP] fallback taskkill failed: {e}")
+
+    atexit.register(_kill_browser_now)   # fires when sys.exit() is called
+
     def graceful_shutdown(signum, frame):
-        """Save session and exit gracefully when Ctrl+C is pressed"""
+        """Save session, close browser, and exit when Ctrl+C / SIGTERM is received."""
         print("\n\n" + "=" * 60)
-        print("SHUTTING DOWN - Saving session...")
+        print("SHUTTING DOWN - Saving session and closing browser...")
         print("=" * 60)
 
-        # Save session if session manager exists
-        if global_purchase_manager and global_purchase_manager.session_manager:
-            try:
-                # Use global event loop to save session
-                future = asyncio.run_coroutine_threadsafe(
-                    global_purchase_manager.session_manager.save_session_state(),
-                    global_event_loop
-                )
-                save_success = future.result(timeout=10)
+        loop = app_module.global_event_loop
+        sm   = global_purchase_manager.session_manager if global_purchase_manager else None
 
-                if save_success:
-                    print("[OK] ✅ Session saved successfully!")
-                    print("[OK] Your login will be remembered next time you start the program")
-                else:
-                    print("[WARNING] Failed to save session")
+        # Save session via async (best effort, skip if loop not running)
+        if sm and loop and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    sm.save_session_state(), loop
+                )
+                future.result(timeout=5)
+                print("[OK] Session saved")
             except Exception as e:
-                print(f"[ERROR] Error saving session: {e}")
+                print(f"[WARNING] Session save error: {e}")
+
+        # Kill browser synchronously — uses taskkill /F /T to kill entire Chrome tree
+        _kill_browser_now()
 
         print("=" * 60)
         print("Goodbye!")
         print("=" * 60)
-        sys.exit(0)
+        # os._exit bypasses Waitress cleanup that could block sys.exit
+        os._exit(0)
 
     # Register signal handlers for Ctrl+C and other termination signals
-    signal.signal(signal.SIGINT, graceful_shutdown)  # Ctrl+C
-    signal.signal(signal.SIGTERM, graceful_shutdown)  # Termination signal
+    signal.signal(signal.SIGINT,  graceful_shutdown)   # Ctrl+C
+    signal.signal(signal.SIGTERM, graceful_shutdown)   # kill / Task Manager
+    if sys.platform == "win32":
+        try:
+            signal.signal(signal.SIGBREAK, graceful_shutdown)  # Ctrl+Break on Windows
+        except (AttributeError, OSError):
+            pass
 
     # Start background initialization thread (doesn't block Flask startup)
     print("[STARTUP] Starting background initialization thread...")

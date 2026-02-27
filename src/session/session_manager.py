@@ -17,6 +17,10 @@ from typing import Optional, Dict, Any
 
 import zendriver as uc
 
+# Module-level Chrome PID — set at browser launch so it survives even if self.browser is cleared.
+# Used by close_browser_sync() to kill the entire Chrome process tree on Windows.
+_chrome_pid: Optional[int] = None
+
 
 class SessionManager:
     """Manages persistent browser session for Target.com automation using nodriver"""
@@ -175,6 +179,12 @@ class SessionManager:
             self.logger.info("[OK] nodriver browser launched successfully")
             print("[SESSION_INIT] Browser launched - STEALTH MODE ACTIVE!")
 
+            # Store Chrome PID globally so shutdown can kill the whole process tree
+            global _chrome_pid
+            _chrome_pid = getattr(self.browser, '_process_pid', None)
+            if _chrome_pid:
+                print(f"[SESSION_INIT] Chrome PID stored: {_chrome_pid}")
+
             # Get or create main tab
             if self.browser.tabs:
                 self._active_tab = self.browser.tabs[0]
@@ -310,7 +320,7 @@ class SessionManager:
 
             if self.browser:
                 try:
-                    self.browser.stop()
+                    await self.browser.stop()
                     self.logger.info("[CLEANUP] Browser stopped")
                 except Exception as e:
                     self.logger.warning(f"[CLEANUP] Error stopping browser: {e}")
@@ -1173,6 +1183,54 @@ class SessionManager:
         self.logger.info("Starting session cleanup...")
         await self._safe_cleanup()
         self.logger.info("[OK] Session cleanup completed")
+
+    def close_browser_sync(self):
+        """Synchronously kill the entire Chrome process tree — safe to call from signal handlers.
+
+        NOTE: browser.stop() is async and silently does nothing without await.
+        On Windows we use 'taskkill /F /T /PID' which kills the main Chrome process
+        AND all its children (renderers, GPU process, etc.) — this is the only reliable
+        way to fully close Chrome on Windows.
+        """
+        import subprocess as _sp
+        import sys as _sys
+
+        global _chrome_pid
+
+        # Collect PID before clearing references
+        pid = getattr(self.browser, '_process_pid', None) if self.browser else None
+        if not pid:
+            pid = _chrome_pid  # fall back to module-level stored PID
+
+        # Clear all refs immediately
+        self.browser        = None
+        self._active_tab    = None
+        self.session_active = False
+        _chrome_pid         = None   # clear so a second call is a no-op
+
+        if not pid:
+            print("[CLEANUP] No Chrome PID available — nothing to kill")
+            return
+
+        if _sys.platform == "win32":
+            # taskkill /F /T kills the process AND every child (renderer, GPU, etc.)
+            # proc.terminate() alone only kills the launcher; children keep running.
+            try:
+                result = _sp.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=5
+                )
+                print(f"[CLEANUP] taskkill /F /T /PID {pid} → exit {result.returncode}")
+            except Exception as e:
+                print(f"[CLEANUP] taskkill failed: {e}")
+        else:
+            # Unix: kill the process group so all Chrome child processes die
+            try:
+                import os as _os, signal as _sig
+                _os.kill(pid, _sig.SIGKILL)
+                print(f"[CLEANUP] os.kill({pid}, SIGKILL) executed")
+            except Exception as e:
+                print(f"[CLEANUP] kill failed: {e}")
 
     def set_purchase_in_progress(self, in_progress: bool):
         """Set purchase lock to prevent session validation during purchases"""

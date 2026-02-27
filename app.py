@@ -3323,21 +3323,65 @@ if __name__ == '__main__':
     start_monitoring()
 
     # ========== GRACEFUL SHUTDOWN HANDLER ==========
+    def _kill_browser_now():
+        """Kill the entire Chrome process tree — works from signal handlers and atexit."""
+        import subprocess as _sp, sys as _sys
+        from src.session import session_manager as _sm_mod
+
+        sm = global_purchase_manager.session_manager if global_purchase_manager else None
+        if sm:
+            sm.close_browser_sync()
+            return
+
+        # Fallback: module-level PID stored at browser launch
+        pid = _sm_mod._chrome_pid
+        if pid and _sys.platform == "win32":
+            try:
+                _sp.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=5
+                )
+                print(f"[CLEANUP] taskkill /F /T /PID {pid} (fallback)")
+            except Exception as e:
+                print(f"[CLEANUP] fallback taskkill failed: {e}")
+
+    atexit.register(_kill_browser_now)   # fires when sys.exit() is called
+
     def shutdown_handler(signum=None, frame=None):
-        """Graceful shutdown - ensure activity log is saved"""
+        """Graceful shutdown - save session, close browser, persist activity log"""
         print("\n[SYSTEM] Shutting down gracefully...")
         add_activity_log("Application shutting down", "info", "system")
 
-        # Stop persistence worker (waits for pending saves)
+        sm   = global_purchase_manager.session_manager if global_purchase_manager else None
+        loop = global_event_loop
+
+        # Save session via async (best effort)
+        if sm and loop and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(sm.save_session_state(), loop)
+                future.result(timeout=5)
+                print("[SYSTEM] Session saved")
+            except Exception as e:
+                print(f"[SYSTEM] Session save error: {e}")
+
+        # Kill browser synchronously — uses taskkill /F /T to kill entire Chrome tree
+        _kill_browser_now()
+        print("[SYSTEM] Browser closed")
+
+        # Stop persistence worker
         activity_log_persistence_worker.stop(timeout=5)
 
         print("[SYSTEM] Shutdown complete")
-        sys.exit(0)
+        # os._exit bypasses Waitress cleanup that could block sys.exit
+        os._exit(0)
 
-    # Register shutdown handlers
-    atexit.register(shutdown_handler)
-    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGINT,  shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
+    if sys.platform == "win32":
+        try:
+            signal.signal(signal.SIGBREAK, shutdown_handler)  # Ctrl+Break on Windows
+        except (AttributeError, OSError):
+            pass
 
     # Run Flask app with Waitress (production-grade WSGI server)
     # FIX: Replace Flask dev server with Waitress for proper SSE streaming (no buffering)
