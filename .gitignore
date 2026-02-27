@@ -29,7 +29,10 @@ target_storage.json
 target_profile/
 playwright-profile/
 chrome_user_data/
+nodriver-profile/
 logs/
+target.json
+.claude/settings.local.json
 
 .vscode/
 .idea/
