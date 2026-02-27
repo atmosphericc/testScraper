@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Target.com Login Automation
+Target.com Login Automation using nodriver
 Handles login flow with passkey bypass and "Keep me signed in" checkbox
 """
 
@@ -8,7 +8,7 @@ import asyncio
 import random
 import os
 from datetime import datetime
-from patchright.async_api import async_playwright, Page
+import zendriver as uc
 
 
 # Credentials
@@ -17,55 +17,55 @@ PASSWORD = "Cars123!"
 STORAGE_PATH = "target.json"
 
 
-async def dismiss_popups(page: Page):
+async def dismiss_popups(tab):
     """Dismiss any popup overlays"""
-    popup_selectors = [
-        'button:has-text("Cancel")',
-        'button:has-text("Skip")',
-        'button:has-text("Skip for now")',
-        'button:has-text("Not now")',
-        'button:has-text("Maybe later")',
-        'button:has-text("No thanks")',
-        '[aria-label*="Close"]',
-        '[aria-label*="Dismiss"]',
-    ]
+    popup_texts = ["Cancel", "Skip", "Skip for now", "Not now", "Maybe later", "No thanks"]
+    popup_selectors = ['[aria-label*="Close"]', '[aria-label*="Dismiss"]']
 
     dismissed = 0
-    for selector in popup_selectors:
+    for text in popup_texts:
         try:
-            element = await page.query_selector(selector)
-            if element and await element.is_visible():
+            element = await tab.find(text, best_match=True, timeout=0.5)
+            if element:
                 await asyncio.sleep(random.uniform(0.3, 0.8))
                 await element.click()
                 dismissed += 1
                 await asyncio.sleep(random.uniform(0.5, 1.0))
-        except:
+        except Exception:
+            continue
+
+    for selector in popup_selectors:
+        try:
+            element = await tab.select(selector, timeout=0.5)
+            if element:
+                await asyncio.sleep(random.uniform(0.3, 0.8))
+                await element.click()
+                dismissed += 1
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+        except Exception:
             continue
 
     return dismissed
 
 
-async def check_if_logged_in(page: Page) -> bool:
+async def check_if_logged_in(tab) -> bool:
     """Check if currently logged in to Target.com"""
     try:
-        # Navigate to Target homepage
-        await page.goto("https://www.target.com", wait_until='commit', timeout=10000)
-        await page.wait_for_timeout(2000)
+        await tab.get("https://www.target.com")
+        await asyncio.sleep(2)
 
-        # Check for login indicators
         login_indicators = [
             '[data-test="@web/AccountLink"]',
             'button[aria-label*="Hi,"]',
-            'button:has-text("Hi,")',
-            '[data-test="accountNav"]'
+            '[data-test="accountNav"]',
         ]
 
         for indicator in login_indicators:
             try:
-                element = await page.wait_for_selector(indicator, timeout=2000)
+                element = await tab.select(indicator, timeout=2)
                 if element:
                     return True
-            except:
+            except Exception:
                 continue
 
         return False
@@ -74,10 +74,10 @@ async def check_if_logged_in(page: Page) -> bool:
         return False
 
 
-async def perform_target_login(page: Page) -> bool:
+async def perform_target_login(tab) -> bool:
     """
-    Perform full Target.com login flow
-    Returns True if successful, False otherwise
+    Perform full Target.com login flow using nodriver tab.
+    Returns True if successful, False otherwise.
     """
     try:
         print("=" * 60)
@@ -89,9 +89,9 @@ async def perform_target_login(page: Page) -> bool:
 
         # Navigate to Target homepage
         print("1. Navigating to Target.com...")
-        await page.goto("https://www.target.com", wait_until='commit')
+        await tab.get("https://www.target.com")
         await asyncio.sleep(2)
-        await dismiss_popups(page)
+        await dismiss_popups(tab)
 
         # Find and click Account menu
         print("2. Opening Account menu...")
@@ -103,10 +103,11 @@ async def perform_target_login(page: Page) -> bool:
         account_button = None
         for selector in account_selectors:
             try:
-                account_button = await page.wait_for_selector(selector, timeout=3000)
-                if account_button and await account_button.is_visible():
+                element = await tab.select(selector, timeout=3)
+                if element:
+                    account_button = element
                     break
-            except:
+            except Exception:
                 continue
 
         if not account_button:
@@ -119,18 +120,13 @@ async def perform_target_login(page: Page) -> bool:
 
         # Click Sign in
         print("3. Clicking 'Sign in'...")
-        signin_selectors = [
-            'button:has-text("Sign in")',
-            'a:has-text("Sign in")',
-        ]
-
         signin_link = None
-        for selector in signin_selectors:
+        for text in ["Sign in"]:
             try:
-                signin_link = await page.wait_for_selector(selector, timeout=3000)
-                if signin_link and await signin_link.is_visible():
+                signin_link = await tab.find(text, best_match=True, timeout=3)
+                if signin_link:
                     break
-            except:
+            except Exception:
                 continue
 
         if not signin_link:
@@ -143,7 +139,7 @@ async def perform_target_login(page: Page) -> bool:
 
         # Enter email
         print("4. Entering email...")
-        email_field = await page.wait_for_selector('input[name="username"]', timeout=5000)
+        email_field = await tab.select('input[name="username"]', timeout=5)
         if not email_field:
             print("[ERROR] Could not find email field")
             return False
@@ -153,119 +149,108 @@ async def perform_target_login(page: Page) -> bool:
         await asyncio.sleep(random.uniform(0.2, 0.4))
 
         for char in EMAIL:
-            await email_field.type(char)
+            await email_field.send_keys(char)
             await asyncio.sleep(random.uniform(0.05, 0.15))
 
         print(f"   [OK] Email entered: {EMAIL}")
 
         # Click Continue
         print("5. Clicking Continue...")
-        continue_button = await page.wait_for_selector('button:has-text("Continue")', timeout=3000)
+        continue_button = await tab.find("Continue", best_match=True, timeout=3)
         if not continue_button:
             print("[ERROR] Could not find Continue button")
             return False
 
         await asyncio.sleep(random.uniform(0.3, 0.7))
         await continue_button.click()
-        await asyncio.sleep(4)  # Wait for page transition
+        await asyncio.sleep(4)
 
-        # Check "Keep me signed in" checkbox (before clicking Enter Password)
+        # Check "Keep me signed in" checkbox
         print("6. Checking 'Keep me signed in' checkbox...")
         await asyncio.sleep(1)
 
         checkbox_found = False
+
+        # Try finding by label text
         try:
-            checkbox = page.get_by_label('Keep me signed in')
-            if await checkbox.is_visible(timeout=2000):
-                is_checked = await checkbox.is_checked()
-                if not is_checked:
-                    await asyncio.sleep(random.uniform(0.3, 0.7))
-                    await checkbox.check()
-                    await asyncio.sleep(0.5)
-                    print("   [OK] 'Keep me signed in' checked!")
+            label = await tab.find("Keep me signed in", best_match=True, timeout=2)
+            if label:
+                # Find associated checkbox - check if label has 'for' attr
+                for_id = None
+                try:
+                    for_id = await tab.evaluate("el => el.getAttribute('for')", label)
+                except Exception:
+                    pass
 
-                # CRITICAL: Save preference to localStorage so Target remembers it
-                # This ensures persistent login like regular browsers
-                await page.evaluate("""
-                    () => {
-                        try {
-                            localStorage.setItem('keepMeSignedIn', 'true');
-                            localStorage.setItem('rememberMe', 'true');
-                            localStorage.setItem('persistentLogin', 'true');
-                            console.log('[TargetLogin] Saved "Keep me signed in" preference to localStorage');
-                        } catch (e) {
-                            console.error('[TargetLogin] Failed to save preference:', e);
+                checkbox = None
+                if for_id:
+                    try:
+                        checkbox = await tab.select(f"#{for_id}", timeout=1)
+                    except Exception:
+                        pass
+
+                if not checkbox:
+                    try:
+                        checkbox = await tab.select("input[type='checkbox']", timeout=1)
+                    except Exception:
+                        pass
+
+                if checkbox:
+                    is_checked = await tab.evaluate("el => el.checked", checkbox)
+                    if not is_checked:
+                        await asyncio.sleep(random.uniform(0.3, 0.7))
+                        await checkbox.click()
+                        await asyncio.sleep(0.5)
+                        print("   [OK] 'Keep me signed in' checked!")
+
+                    await tab.evaluate("""
+                        () => {
+                            try {
+                                localStorage.setItem('keepMeSignedIn', 'true');
+                                localStorage.setItem('rememberMe', 'true');
+                                localStorage.setItem('persistentLogin', 'true');
+                            } catch (e) {}
                         }
-                    }
-                """)
-                print("   [OK] Saved 'Keep me signed in' preference to localStorage")
-
-                checkbox_found = True
-        except:
+                    """)
+                    print("   [OK] Saved 'Keep me signed in' preference to localStorage")
+                    checkbox_found = True
+        except Exception:
             pass
 
         if not checkbox_found:
             try:
-                checkbox = page.get_by_role('checkbox')
-                if await checkbox.is_visible(timeout=2000):
-                    is_checked = await checkbox.is_checked()
+                checkbox = await tab.select("input[type='checkbox']", timeout=2)
+                if checkbox:
+                    is_checked = await tab.evaluate("el => el.checked", checkbox)
                     if not is_checked:
-                        await checkbox.check()
+                        await checkbox.click()
                         print("   [OK] 'Keep me signed in' checked!")
-
-                    # Save preference to localStorage
-                    await page.evaluate("""
+                    await tab.evaluate("""
                         () => {
                             try {
                                 localStorage.setItem('keepMeSignedIn', 'true');
                                 localStorage.setItem('rememberMe', 'true');
                                 localStorage.setItem('persistentLogin', 'true');
-                                console.log('[TargetLogin] Saved "Keep me signed in" preference to localStorage');
                             } catch (e) {}
                         }
                     """)
                     print("   [OK] Saved 'Keep me signed in' preference to localStorage")
-
                     checkbox_found = True
-            except:
+            except Exception:
                 pass
 
         if not checkbox_found:
-            try:
-                label = page.locator('text=Keep me signed in')
-                if await label.is_visible(timeout=2000):
-                    await label.click()
-                    print("   [OK] Clicked 'Keep me signed in' label!")
-
-                    # Save preference to localStorage
-                    await page.evaluate("""
-                        () => {
-                            try {
-                                localStorage.setItem('keepMeSignedIn', 'true');
-                                localStorage.setItem('rememberMe', 'true');
-                                localStorage.setItem('persistentLogin', 'true');
-                                console.log('[TargetLogin] Saved "Keep me signed in" preference to localStorage');
-                            } catch (e) {}
-                        }
-                    """)
-                    print("   [OK] Saved 'Keep me signed in' preference to localStorage")
-            except:
-                print("   [WARNING] Could not find checkbox")
+            print("   [WARNING] Could not find checkbox")
 
         # Click "Enter your password"
         print("7. Clicking 'Enter your password'...")
-        enter_pwd_selectors = [
-            'button:has-text("Enter your password")',
-            ':text("Enter your password")',
-        ]
-
         password_option = None
-        for selector in enter_pwd_selectors:
+        for text in ["Enter your password"]:
             try:
-                password_option = await page.wait_for_selector(selector, timeout=3000)
-                if password_option and await password_option.is_visible():
+                password_option = await tab.find(text, best_match=True, timeout=3)
+                if password_option:
                     break
-            except:
+            except Exception:
                 continue
 
         if not password_option:
@@ -278,7 +263,7 @@ async def perform_target_login(page: Page) -> bool:
 
         # Enter password
         print("8. Entering password...")
-        password_field = await page.wait_for_selector('input[type="password"]', timeout=5000)
+        password_field = await tab.select('input[type="password"]', timeout=5)
         if not password_field:
             print("[ERROR] Could not find password field")
             return False
@@ -287,9 +272,9 @@ async def perform_target_login(page: Page) -> bool:
         await password_field.click()
         await asyncio.sleep(random.uniform(0.3, 0.7))
 
-        # Type password slowly for F5 security
         for i, char in enumerate(PASSWORD):
-            await password_field.type(char, delay=random.uniform(80, 200))
+            await password_field.send_keys(char)
+            await asyncio.sleep(random.uniform(0.08, 0.2))
             if i > 0 and i % 3 == 0:
                 await asyncio.sleep(random.uniform(0.1, 0.3))
 
@@ -300,21 +285,23 @@ async def perform_target_login(page: Page) -> bool:
         print("9. Clicking 'Sign in' button...")
         await asyncio.sleep(random.uniform(0.8, 1.5))
 
-        signin_selectors = [
-            'button[type="submit"]',
-            'button:has-text("Sign in")',
-        ]
-
         signin_button = None
-        for selector in signin_selectors:
+        for selector in ['button[type="submit"]']:
             try:
-                signin_button = await page.wait_for_selector(selector, timeout=3000)
-                if signin_button and await signin_button.is_visible():
-                    is_disabled = await signin_button.get_attribute('disabled')
-                    if not is_disabled:
+                btn = await tab.select(selector, timeout=3)
+                if btn:
+                    disabled = await tab.evaluate("el => el.disabled", btn)
+                    if not disabled:
+                        signin_button = btn
                         break
-            except:
+            except Exception:
                 continue
+
+        if not signin_button:
+            try:
+                signin_button = await tab.find("Sign in", best_match=True, timeout=3)
+            except Exception:
+                pass
 
         if not signin_button:
             print("[ERROR] Could not find sign-in button")
@@ -327,9 +314,9 @@ async def perform_target_login(page: Page) -> bool:
         # Wait for login to complete
         print("10. Waiting for login response...")
         await asyncio.sleep(4)
-        await dismiss_popups(page)
+        await dismiss_popups(tab)
         await asyncio.sleep(2)
-        await dismiss_popups(page)
+        await dismiss_popups(tab)
 
         # Verify login success
         print("11. Verifying login success...")
@@ -342,14 +329,25 @@ async def perform_target_login(page: Page) -> bool:
 
         for selector in login_indicators:
             try:
-                element = await page.wait_for_selector(selector, timeout=3000)
-                if element and await element.is_visible():
+                element = await tab.select(selector, timeout=3)
+                if element:
                     print("\n" + "=" * 60)
                     print("[SUCCESS] LOGIN SUCCESSFUL!")
                     print("=" * 60)
                     return True
-            except:
+            except Exception:
                 continue
+
+        # Also try text-based check
+        try:
+            hi_elem = await tab.find("Hi,", best_match=True, timeout=2)
+            if hi_elem:
+                print("\n" + "=" * 60)
+                print("[SUCCESS] LOGIN SUCCESSFUL!")
+                print("=" * 60)
+                return True
+        except Exception:
+            pass
 
         print("[ERROR] Login verification failed")
         return False
@@ -357,5 +355,3 @@ async def perform_target_login(page: Page) -> bool:
     except Exception as e:
         print(f"[ERROR] Login failed with error: {e}")
         return False
-
-

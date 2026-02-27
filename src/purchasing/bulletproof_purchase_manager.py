@@ -279,9 +279,9 @@ class BulletproofPurchaseManager:
         # CRITICAL FIX: Check if browser is ACTUALLY running, not just if components exist
         # Previous logic: if flag is True, return early (prevented browser launch)
         # New logic: if browser context exists, session is ready; otherwise launch browser
-        if self.session_manager and hasattr(self.session_manager, 'context'):
-            print(f"[SESSION_DEBUG] session_manager.context={self.session_manager.context}")
-            if self.session_manager.context:
+        if self.session_manager and hasattr(self.session_manager, 'browser'):
+            print(f"[SESSION_DEBUG] session_manager.browser={self.session_manager.browser}")
+            if self.session_manager.browser and self.session_manager.session_active:
                 print("[SESSION] ✅ Browser already running - session ready")
                 return True
 

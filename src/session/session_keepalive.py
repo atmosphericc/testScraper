@@ -171,7 +171,7 @@ class SessionKeepAlive:
                 # BULLETPROOF CHECK 2: Test page validity before use
                 try:
                     # Quick health check - this will fail if page is broken
-                    await page.evaluate("() => document.readyState", timeout=3000)
+                    await page.evaluate("document.readyState")
                 except Exception as health_error:
                     self.logger.warning(f"[WARNING] Keep-alive: Page health check failed: {health_error}")
                     # Try to get a fresh page
@@ -179,7 +179,7 @@ class SessionKeepAlive:
                         await self.session_manager.refresh_session()
                         page = await self.session_manager.get_page()
                         if page:
-                            await page.evaluate("() => document.readyState", timeout=3000)
+                            await page.evaluate("document.readyState")
                         else:
                             raise Exception("No page after refresh")
                     except Exception:
@@ -197,7 +197,7 @@ class SessionKeepAlive:
 
                     # Simple health check - validates page is responsive WITHOUT navigation
                     # This prevents interference with purchase thread which needs to navigate freely
-                    await page.evaluate("() => document.readyState", timeout=3000)
+                    await page.evaluate("document.readyState")
 
                     # Mark success
                     self.last_keep_alive = current_time
@@ -234,7 +234,7 @@ class SessionKeepAlive:
                     page = await self.session_manager.get_page()
                     if page:
                         # Lightweight check - NO navigation to avoid interfering with purchases
-                        await page.evaluate("() => document.readyState", timeout=3000)
+                        await page.evaluate("document.readyState")
                         self.last_activity = current_time
                         self.logger.info("[OK] Idle session validated (non-intrusive)")
                     else:
