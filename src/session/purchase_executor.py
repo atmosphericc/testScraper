@@ -19,6 +19,8 @@ from zendriver import cdp
 
 from .session_manager import SessionManager
 
+CARD_CVV = '464'
+
 
 class PurchaseExecutor:
     """Executes real purchases using persistent session and buy_bot logic"""
@@ -681,6 +683,107 @@ class PurchaseExecutor:
         except Exception as e:
             self.logger.debug(f"[POPUP] Popup dismissal check: {e}")
             return True
+
+    async def _handle_cvv_modal(self, tab) -> bool:
+        """Detect and fill a CVV/security-code verification modal after Place Order.
+
+        Returns True if a CVV modal was found and handled, False if none present.
+        """
+        try:
+            found_sel = await tab.evaluate("""
+(() => {
+    const selectors = [
+        'input[name="cvv"]', 'input[name="cvc"]',
+        'input[id*="cvv" i]', 'input[id*="cvc" i]',
+        'input[placeholder*="CVV" i]', 'input[placeholder*="security" i]',
+        'input[aria-label*="CVV" i]', 'input[aria-label*="security code" i]',
+        'input[data-test*="cvv" i]',
+    ];
+    for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return sel;
+        }
+    }
+    return null;
+})()
+""")
+            if not found_sel:
+                return False
+
+            print(f"[PAYMENT] CVV modal detected ({found_sel}) — entering CVV")
+
+            filled = await tab.evaluate(f"""
+(() => {{
+    const selectors = [
+        'input[name="cvv"]', 'input[name="cvc"]',
+        'input[id*="cvv" i]', 'input[id*="cvc" i]',
+        'input[placeholder*="CVV" i]', 'input[placeholder*="security" i]',
+        'input[aria-label*="CVV" i]', 'input[aria-label*="security code" i]',
+        'input[data-test*="cvv" i]',
+    ];
+    for (const sel of selectors) {{
+        const el = document.querySelector(sel);
+        if (el) {{
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {{
+                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                    window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(el, '{CARD_CVV}');
+                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return true;
+            }}
+        }}
+    }}
+    return false;
+}})()
+""")
+            if not filled:
+                print("[PAYMENT] CVV fill failed")
+                return False
+
+            await asyncio.sleep(0.1)
+
+            confirmed = await tab.evaluate("""
+(() => {
+    const confirmSelectors = [
+        '[data-test*="confirm"]', '[data-test*="submit"]',
+        '[data-test*="cvv"]',
+        'button[type="submit"]',
+    ];
+    for (const sel of confirmSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+                el.click();
+                return 'clicked: ' + sel;
+            }
+        }
+    }
+    // Fallback: any button whose text matches confirm/submit/continue
+    const buttons = Array.from(document.querySelectorAll('button'));
+    for (const btn of buttons) {
+        const txt = btn.textContent.trim().toLowerCase();
+        if (['confirm', 'submit', 'continue'].some(w => txt.includes(w))) {
+            const r = btn.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+                btn.click();
+                return 'clicked text: ' + btn.textContent.trim();
+            }
+        }
+    }
+    return 'no confirm button found';
+})()
+""")
+            print(f"[PAYMENT] CVV confirm: {confirmed}")
+            return True
+
+        except Exception as e:
+            print(f"[PAYMENT] CVV modal error: {e}")
+            return False
 
     # -------------------------------------------------------------------------
     # Login validation
@@ -1473,18 +1576,22 @@ class PurchaseExecutor:
             except Exception:
                 return False
 
-        print("[PAYMENT] Waiting for order confirmation...")
-        try:
-            if await self._wait_for_url_contains(tab, 'confirmation', timeout=5.0):
+        print("[PAYMENT] Waiting for confirmation or CVV modal...")
+        start = time.time()
+        cvv_handled = False
+        while time.time() - start < 10.0:
+            url = tab.url
+            if 'confirmation' in url.lower() or 'thank' in url.lower():
                 print("[PAYMENT] Reached confirmation page")
-            else:
-                url = tab.url
-                if 'confirmation' in url.lower() or 'thank' in url.lower():
-                    print("[PAYMENT] On confirmation page")
-                else:
-                    print(f"[PAYMENT] URL after click: {url}")
-        except Exception:
-            pass
+                return True
+            if not cvv_handled:
+                cvv_handled = await self._handle_cvv_modal(tab)
+                if cvv_handled:
+                    print("[PAYMENT] CVV submitted — waiting for confirmation...")
+            await asyncio.sleep(0.1)
+
+        url = tab.url
+        print(f"[PAYMENT] URL after Place Order: {url}")
         return True
 
     async def _complete_payment(self, tab, initial_state: str = 'unknown') -> bool:
@@ -1622,8 +1729,8 @@ class PurchaseExecutor:
                     po_btn, _ = await self._find_place_order_button(tab)
                     if po_btn:
                         print(f"[PAYMENT] *** PLACE ORDER IS ENABLED (step {step + 1}) ***")
-                        await asyncio.sleep(1.0)               # pause on checkout before redirect
                         if self.test_mode:
+                            await asyncio.sleep(1.0)           # pause so state is visible before redirect
                             print("[PAYMENT] TEST_MODE: going to cart")
                             await tab.get("https://www.target.com/cart")
                             return True
