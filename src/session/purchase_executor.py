@@ -1664,6 +1664,23 @@ class PurchaseExecutor:
                 await self._handle_step_radio(tab)
                 await tab  # flush CDP event queue — lets React finish processing the radio click
 
+                # Wait for S&C button to appear using MutationObserver (event-driven, not polling).
+                # Resolves the instant React renders the button; immediate return if already present.
+                try:
+                    await tab.evaluate("""new Promise((resolve) => {
+                        const check = () => {
+                            const el = document.querySelector('[data-test="save-and-continue-button"]');
+                            if (el && el.getBoundingClientRect().height > 0) { resolve('found'); return true; }
+                            return false;
+                        };
+                        if (check()) return;
+                        const obs = new MutationObserver(() => { if (check()) obs.disconnect(); });
+                        obs.observe(document.body, { childList: true, subtree: true });
+                        setTimeout(() => { obs.disconnect(); resolve('timeout'); }, 5000);
+                    })""", await_promise=True)
+                except Exception:
+                    pass  # S&C click loop below is still the safety net
+
                 # Diagnostic: log every visible button's data-test + text so we can see
                 # exactly what's on the page if clicking fails.
                 try:
