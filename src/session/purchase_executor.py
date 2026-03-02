@@ -104,7 +104,7 @@ class PurchaseExecutor:
         while time.time() - start < timeout:
             if check in tab.url.lower():
                 return True
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.05)
         return False
 
     async def _wait_for_function(self, tab, js: str, timeout: float = 5.0) -> bool:
@@ -117,7 +117,7 @@ class PurchaseExecutor:
                     return True
             except Exception:
                 pass
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
         return False
 
     async def _press_escape(self, tab):
@@ -180,14 +180,14 @@ class PurchaseExecutor:
                 try:
                     close_btn = await tab.select(selector, timeout=0.15)
                     if close_btn and await self._is_visible(close_btn):
-                        await close_btn.click()
+                        await close_btn.apply("(el) => el.click()")
                         print(f"[BANNER] Closed banner via: {selector}")
                         return
                 except Exception:
                     continue
 
             # Hide all fixed/sticky elements at the bottom of the viewport via JS
-            await tab.evaluate('''() => {
+            await tab.evaluate('''(() => {
                 const viewportHeight = window.innerHeight;
                 document.querySelectorAll('*').forEach(el => {
                     const style = window.getComputedStyle(el);
@@ -198,7 +198,7 @@ class PurchaseExecutor:
                         }
                     }
                 });
-            }''')
+            })()''')
             print("[BANNER] Executed JS to hide bottom sticky elements")
 
         except Exception as e:
@@ -420,15 +420,30 @@ class PurchaseExecutor:
 
             try:
                 await tab.get("https://www.target.com/checkout")
+                await tab  # flush CDP event queue before interacting (zendriver pattern)
                 print("[PURCHASE] Waiting for checkout page elements...")
                 try:
-                    btn = await tab.find("Place order", best_match=True, timeout=3)
-                    if not btn:
-                        btn = await tab.find("Continue", best_match=True, timeout=3)
-                    if not btn:
-                        btn = await tab.select('[data-test="save-and-continue-button"]', timeout=3)
-                    if btn:
-                        print("[PURCHASE] Checkout page ready")
+                    _co_state = 'unknown'  # ensure always defined even if evaluate throws
+                    _co_start = time.time()
+                    while time.time() - _co_start < 10.0:
+                        _co_state = await tab.evaluate("""(() => {
+                            function vis(el) {
+                                if (!el) return false;
+                                const r = el.getBoundingClientRect();
+                                return r.width > 0 && r.height > 0;
+                            }
+                            const po  = document.querySelector('[data-test="placeOrderButton"]');
+                            const sac = document.querySelector('[data-test="save-and-continue-button"]');
+                            if (vis(po))  return 'place_order';
+                            if (vis(sac)) return 'sac';
+                            const radios = document.querySelectorAll('input[type="radio"]');
+                            if (Array.from(radios).some(r => vis(r))) return 'sac';
+                            return 'none';
+                        })()""")
+                        if _co_state in ('place_order', 'sac'):
+                            print(f"[PURCHASE] Checkout page ready ({_co_state}) in {time.time()-_co_start:.2f}s")
+                            break
+                        await asyncio.sleep(0.05)
                 except Exception as wait_error:
                     print(f"[PURCHASE] Checkout element wait warning: {wait_error}")
 
@@ -439,7 +454,7 @@ class PurchaseExecutor:
 
             if checkout_result:
                 await self._handle_delivery_options(tab)
-                payment_result = await self._complete_payment(tab)
+                payment_result = await self._complete_payment(tab, initial_state=_co_state)
                 if not payment_result:
                     checkout_result = False
 
@@ -908,7 +923,7 @@ class PurchaseExecutor:
                                 ' button[aria-label*=\\"remove\\"],'
                                 ' button[aria-label*=\\"Remove\\"]").length'
                             )
-                            await remove_button.click()
+                            await remove_button.apply("(el) => el.click()")
                             await self._wait_for_function(
                                 tab,
                                 f'document.querySelectorAll'
@@ -927,7 +942,7 @@ class PurchaseExecutor:
                     try:
                         remove_btn = await tab.find("Remove", best_match=True, timeout=2)
                         if remove_btn and await self._is_visible(remove_btn):
-                            await remove_btn.click()
+                            await remove_btn.apply("(el) => el.click()")
                             await asyncio.sleep(0.3)
                             removed_count += 1
                             button_found = True
@@ -1001,7 +1016,7 @@ class PurchaseExecutor:
             if not checkout_button:
                 return False
 
-            await checkout_button.click()
+            await checkout_button.apply("(el) => el.click()")
 
             if not await self._wait_for_url_contains(tab, 'checkout', timeout=10.0):
                 if 'checkout' not in tab.url.lower():
@@ -1043,53 +1058,54 @@ class PurchaseExecutor:
     async def _handle_delivery_options(self, tab):
         """Handle shipping/delivery selection - only if not already in review state.
 
-        Uses targeted CSS selectors instead of broad text matching to avoid
-        accidentally clicking navigation links or unrelated buttons.
+        Uses a single JS evaluate for instant state detection (no CDP lag from
+        sequential tab.select calls).
         """
         try:
-            # GUARD: If "Place your order" is already visible, skip everything
-            try:
-                btn = await tab.select('[data-test="placeOrderButton"]', timeout=1)
-                if btn and await self._is_visible(btn):
-                    print("[DELIVERY] Already in review state — skipping")
-                    return
-            except Exception:
-                pass
+            # Single JS check — instant, no CDP lag from sequential tab.select calls
+            state = await tab.evaluate("""(() => {
+                function vis(el) {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }
+                const po = document.querySelector('[data-test="placeOrderButton"]');
+                if (vis(po)) return 'review';
+                const sac = document.querySelector('[data-test="save-and-continue-button"]');
+                if (vis(sac)) return 'sac';
+                return 'delivery';
+            })()""")
 
-            for po_text in ["Place your order", "Place Order"]:
-                try:
-                    btn = await tab.find(po_text, best_match=True, timeout=1)
-                    if btn and await self._is_visible(btn):
-                        print("[DELIVERY] Already in review state (Place Order visible) — skipping")
-                        return
-                except Exception:
-                    continue
+            if state == 'review':
+                print("[DELIVERY] Already in review state — skipping")
+                return
 
+            if state == 'sac':
+                print("[DELIVERY] S&C visible — delivery not needed")
+                return
+
+            # Only reach here if delivery step is active
             print("[DELIVERY] Checking for delivery option buttons...")
-
-            # Click the Shipping/Ship-it radio button if the delivery-method picker is visible.
-            # Use specific data-test selectors to avoid matching navigation or section headers.
-            shipping_css = [
-                '[data-test="shipping-option"]',
-                '[data-test="ship-option"]',
-                'input[value="SHIPPING"]',
-                'input[id*="shipping"]',
-                'input[id*="ship-"]',
-                '[data-test*="fulfillment"] [data-test*="ship"]',
-            ]
-            for sel in shipping_css:
-                try:
-                    element = await tab.select(sel, timeout=0.5)
-                    if element and await self._is_visible(element):
-                        await element.click()
-                        print(f"[DELIVERY] Selected shipping option via: {sel}")
-                        await asyncio.sleep(0.5)
-                        break
-                except Exception:
-                    continue
-
-            # Do NOT click generic "Continue"/"Next" text here — that is handled
-            # by _complete_payment's S&C loop with the empty-form guard in place.
+            clicked = await tab.evaluate("""(() => {
+                const selectors = [
+                    '[data-test="shipping-option"]',
+                    '[data-test="ship-option"]',
+                    'input[value="SHIPPING"]',
+                    'input[id*="shipping"]',
+                    'input[id*="ship-"]',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.getBoundingClientRect().height > 0) {
+                        el.click();
+                        return sel;
+                    }
+                }
+                return null;
+            })()""")
+            if clicked:
+                print(f"[DELIVERY] Selected shipping option via: {clicked}")
+                await asyncio.sleep(0.15)
 
         except Exception:
             pass
@@ -1155,23 +1171,34 @@ class PurchaseExecutor:
           'sac'         — Save & Continue button is visible
           'timeout'     — neither appeared within `timeout` seconds
         """
+        print("[PAYMENT] Waiting for checkout page to be ready...")
         start = time.time()
         while time.time() - start < timeout:
             try:
-                state = await tab.evaluate("""() => {
+                state = await tab.evaluate("""(() => {
+                    function visible(el) {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    }
                     const po  = document.querySelector('[data-test="placeOrderButton"]');
                     const sac = document.querySelector('[data-test="save-and-continue-button"]');
-                    if (po  && po.offsetParent  !== null) return 'place_order';
-                    if (sac && sac.offsetParent !== null) return 'sac';
+                    if (visible(sac)) return 'sac';
+                    if (visible(po))  return 'place_order';
+                    // Checkout page is hydrated when payment radios are visible —
+                    // S&C only appears after a radio is selected, so radios alone
+                    // mean we should proceed immediately rather than waiting 5s.
+                    const radios = document.querySelectorAll('input[type="radio"]');
+                    if (Array.from(radios).some(r => visible(r))) return 'sac';
                     return 'none';
-                }""")
+                })()""")
                 if state in ('place_order', 'sac'):
                     elapsed = time.time() - start
                     print(f"[PAYMENT] Checkout ready ({state}) in {elapsed:.2f}s")
                     return state
             except Exception:
                 pass
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.05)
         print(f"[PAYMENT] Checkout ready timeout after {timeout}s")
         return 'timeout'
 
@@ -1184,13 +1211,18 @@ class PurchaseExecutor:
           'timeout'             — didn't transition within `timeout` seconds
         """
         # Brief minimum wait so Target has time to process the click server-side
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.1)
         start = time.time()
         while time.time() - start < timeout:
             try:
-                state = await tab.evaluate("""() => {
+                state = await tab.evaluate("""(() => {
+                    function visible(el) {
+                        if (!el) return false;
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    }
                     const po = document.querySelector('[data-test="placeOrderButton"]');
-                    if (po && po.offsetParent !== null) {
+                    if (visible(po)) {
                         // Check if genuinely enabled
                         const style = window.getComputedStyle(po);
                         const enabled = !po.disabled
@@ -1202,16 +1234,16 @@ class PurchaseExecutor:
                     }
                     // Next S&C appeared (e.g. payment step loaded after address step)
                     const sac = document.querySelector('[data-test="save-and-continue-button"]');
-                    if (sac && sac.offsetParent !== null) return 'sac_again';
+                    if (visible(sac)) return 'sac_again';
                     return 'transitioning';
-                }""")
+                })()""")
                 if state in ('place_order_enabled', 'sac_again'):
                     elapsed = time.time() - start + 0.4
                     print(f"[PAYMENT] S&C transition → {state} in {elapsed:.2f}s")
                     return state
             except Exception:
                 pass
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.05)
         return 'timeout'
 
     async def _is_sac_on_empty_form(self, tab) -> bool:
@@ -1285,7 +1317,9 @@ class PurchaseExecutor:
                     if await self._is_place_order_enabled(elem):
                         print(f"[PAYMENT] Place Order ENABLED via CSS: {selector}")
                         return elem, selector
+                    # Button exists but is disabled — no point trying remaining fallbacks
                     print(f"[PAYMENT] Place Order found but disabled: {selector}")
+                    return None, None
             except Exception:
                 continue
 
@@ -1297,7 +1331,9 @@ class PurchaseExecutor:
                     if await self._is_place_order_enabled(elem):
                         print(f"[PAYMENT] Place Order ENABLED via text: {text}")
                         return elem, text
+                    # Button exists but is disabled — no point trying remaining fallbacks
                     print(f"[PAYMENT] Place Order found but disabled: {text}")
+                    return None, None
             except Exception:
                 continue
 
@@ -1401,12 +1437,10 @@ class PurchaseExecutor:
                 const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
                     .filter(r => r.offsetParent !== null);
                 if (radios[{idx}]) {{
-                    radios[{idx}].scrollIntoView({{block: 'center', behavior: 'smooth'}});
                     radios[{idx}].click();
                 }}
             }})()''')
             print(f"[STEP] Selected {step_type} radio (index {idx}): \"{label}\"")
-            await asyncio.sleep(0.25)   # short React state-update settle
             return action
 
         except Exception as e:
@@ -1453,7 +1487,7 @@ class PurchaseExecutor:
             pass
         return True
 
-    async def _complete_payment(self, tab) -> bool:
+    async def _complete_payment(self, tab, initial_state: str = 'unknown') -> bool:
         """Drive the checkout to completion.
 
         Handles every flow Target may present:
@@ -1478,23 +1512,41 @@ class PurchaseExecutor:
             except Exception:
                 pass
 
-            # Wait for checkout to hydrate — poll for Place Order or S&C (max 5s).
-            # Replaces the old fixed 3.0s sleep; exits as soon as the page is ready.
-            ready = await self._wait_for_checkout_ready(tab, timeout=5.0)
+            # Skip duplicate wait if the nav wait already confirmed page-ready state.
+            if initial_state in ('place_order', 'sac'):
+                ready = initial_state
+                print(f"[PAYMENT] Page already confirmed ready ({ready}) — skipping wait")
+            else:
+                ready = await self._wait_for_checkout_ready(tab, timeout=5.0)
 
             # ── FLOW A: Place Order already enabled (everything pre-confirmed) ─────────
             if ready == 'place_order':
-                po_btn, po_sel = await self._find_place_order_button(tab)
-                if po_btn:
+                # Fast JS check — avoids tab.select() timeouts from fallback selectors
+                _po_enabled = await tab.evaluate("""(() => {
+                    const po = document.querySelector('[data-test="placeOrderButton"]');
+                    if (!po) return false;
+                    const r = po.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    const style = window.getComputedStyle(po);
+                    return !po.disabled
+                        && po.getAttribute('aria-disabled') !== 'true'
+                        && !(po.className || '').toLowerCase().includes('disabled')
+                        && style.pointerEvents !== 'none'
+                        && parseFloat(style.opacity) >= 0.6;
+                })()""")
+                if _po_enabled:
                     print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
+                    await asyncio.sleep(0.8)  # brief pause so the state is visible before redirect
                     if self.test_mode:
                         print("[PAYMENT] TEST_MODE: going to cart")
                         await tab.get("https://www.target.com/cart")
                         return True
                     return await self._place_order(tab)
+                print("[PAYMENT] FLOW A: Place Order visible but disabled — entering S&C loop")
 
             # ── FLOWS B/C/D/E: S&C loop ───────────────────────────────────────────────
             for step in range(6):
+                print(f"[PAYMENT] --- Step {step + 1}: waiting for checkout step to load ---")
                 # Validate we're still on the checkout page (F5 may redirect us away).
                 current_url = tab.url
                 if 'checkout' not in current_url.lower():
@@ -1503,36 +1555,63 @@ class PurchaseExecutor:
 
                 # Handle any radio button that needs selecting on this step.
                 await self._handle_step_radio(tab)
+                await tab  # flush CDP event queue — lets React finish processing the radio click
 
-                # Find and click the S&C button (CSS first, text fallback).
-                clicked = False
-                for selector in ['[data-test="save-and-continue-button"]']:
+                # Diagnostic: log every visible button's data-test + text so we can see
+                # exactly what's on the page if clicking fails.
+                try:
+                    btn_info = await tab.evaluate("""(() => {
+                        return Array.from(document.querySelectorAll('button, [role="button"], a[class*="button"]'))
+                            .filter(el => { const r = el.getBoundingClientRect(); return r.height > 0; })
+                            .map(el => ({
+                                dt: el.getAttribute('data-test') || '',
+                                txt: (el.innerText || '').trim().slice(0, 50)
+                            }));
+                    })()""")
+                    print(f"[PAYMENT] Visible buttons: {btn_info}")
+                except Exception:
+                    pass
+
+                # Click S&C via evaluate — avoids stale element references that occur when
+                # tab.select() grabs a node right as React is re-rendering after the radio click.
+                clicked = 'not_found'
+                for _attempt in range(15):
                     try:
-                        elem = await tab.select(selector, timeout=1)
-                        if elem and await self._is_visible(elem):
-                            await self._scroll_into_view(elem)
-                            await self._dispatch_click(elem)   # JS click — no pre-delay needed
-                            print(f"[PAYMENT] Clicked S&C (step {step + 1})")
-                            clicked = True
-                            break
-                    except Exception:
-                        continue
+                        clicked = await tab.evaluate("""(() => {
+                            // Find by data-test first, then by visible button text
+                            let el = document.querySelector('[data-test="save-and-continue-button"]');
+                            if (!el) {
+                                el = Array.from(document.querySelectorAll(
+                                    'button, [role="button"], a[class*="button"]'
+                                )).find(b => {
+                                    const t = (b.innerText || '').toLowerCase().trim();
+                                    return t === 'save and continue' || t === 'save & continue' ||
+                                           (t.includes('save') && t.includes('continue'));
+                                }) || null;
+                            }
+                            if (!el) return 'not_found';
+                            const r = el.getBoundingClientRect();
+                            if (r.height === 0) return 'hidden';
+                            el.scrollIntoView({block: 'center', behavior: 'instant'});
+                            // Full mouse event sequence — most reliable for React synthetic events
+                            ['mousedown', 'mouseup', 'click'].forEach(type => {
+                                el.dispatchEvent(new MouseEvent(type, {
+                                    bubbles: true, cancelable: true, view: window
+                                }));
+                            });
+                            return 'clicked';
+                        })()""")
+                    except Exception as ev_err:
+                        clicked = f'error:{ev_err}'
+                    if clicked == 'clicked':
+                        print(f"[PAYMENT] Clicked S&C (step {step + 1}, attempt {_attempt + 1})")
+                        break
+                    # Log reason on first failure so we can diagnose
+                    if _attempt == 0:
+                        print(f"[PAYMENT] S&C attempt 1 result: {clicked}")
+                    await asyncio.sleep(0.3)
 
-                if not clicked:
-                    for text in ["Save and continue", "Save & continue",
-                                 "Save and Continue", "Save & Continue"]:
-                        try:
-                            elem = await tab.find(text, best_match=True, timeout=1)
-                            if elem and await self._is_visible(elem):
-                                await self._scroll_into_view(elem)
-                                await self._dispatch_click(elem)
-                                print(f"[PAYMENT] Clicked S&C (step {step + 1}): '{text}'")
-                                clicked = True
-                                break
-                        except Exception:
-                            continue
-
-                if not clicked:
+                if clicked != 'clicked':
                     print(f"[PAYMENT] No S&C button at step {step + 1} — loop done")
                     break
 
@@ -1542,7 +1621,8 @@ class PurchaseExecutor:
                 if transition == 'place_order_enabled':
                     po_btn, _ = await self._find_place_order_button(tab)
                     if po_btn:
-                        print(f"[PAYMENT] Place Order enabled after S&C step {step + 1}")
+                        print(f"[PAYMENT] *** PLACE ORDER IS ENABLED (step {step + 1}) ***")
+                        await asyncio.sleep(1.0)               # pause on checkout before redirect
                         if self.test_mode:
                             print("[PAYMENT] TEST_MODE: going to cart")
                             await tab.get("https://www.target.com/cart")
