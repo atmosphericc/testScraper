@@ -12,10 +12,19 @@
       "url": "https://www.target.com/p/-/A-94681790"
     },
     {
-      "tcin": "94886162",
-      "name": "Disney Lorcana Trading Card Deck Set",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94886162"
+      "tcin": "95230445",
+      "name": "Product 95230445",
+      "enabled": true
+    },
+    {
+      "tcin": "95225595",
+      "name": "Product 95225595",
+      "enabled": true
+    },
+    {
+      "tcin": "95252674",
+      "name": "Product 95252674",
+      "enabled": true
     }
   ]
 }
