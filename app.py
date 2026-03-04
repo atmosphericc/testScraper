@@ -49,6 +49,9 @@ class ThreadSafeData:
         self.last_cycle_completion = None
         self.is_server_startup = True  # True on fresh server start
 
+        # Proxy mode — True when proxy workers are active
+        self.proxy_mode = False
+
         # Cycle tracking for atomic events
         self.cycle_counter = 0
         self.last_cycle_id = None
@@ -723,7 +726,8 @@ def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, tim
                 'timer_sync': {
                     'current_remaining': timer_status.get('remaining', 0),
                     'total_duration': timer_status.get('total', 20),
-                    'next_cycle_starts_at': time.time() + timer_status.get('remaining', 0)
+                    'next_cycle_starts_at': time.time() + timer_status.get('remaining', 0),
+                    'proxy_mode': shared_data.proxy_mode,
                 },
                 'summary': summary,
                 'activity_log': activity_log  # BUGFIX: Include activity log for real-time dashboard updates
@@ -759,6 +763,13 @@ class StockMonitorThread:
         self.event_bus = event_bus
         self.shared_data = shared_data
         self.stock_monitor = StockMonitor()
+        self._proxy_workers = self.stock_monitor.start_proxy_monitoring(
+            self._on_proxy_stock_detected
+        )
+        if self._proxy_workers:
+            with self.shared_data.lock:
+                self.shared_data.proxy_mode = True
+            print(f"[PROXY] Proxy mode active — timer hidden on dashboard")
         self.running = False
         self.thread = None
 
@@ -775,6 +786,19 @@ class StockMonitorThread:
         self.running = False
         if self.thread:
             self.thread.join(timeout=5)
+
+    def _on_proxy_stock_detected(self, stock_data):
+        """Called by proxy workers on IN_STOCK detection. Thread-safe."""
+        if not self.running:
+            return
+        with self.shared_data.lock:
+            for tcin, data in stock_data.items():
+                self.shared_data.stock_data[tcin] = data
+        self.event_bus.publish('stock_updated', {
+            'stock_data': stock_data,
+            'timestamp': time.time(),
+            'source': 'proxy',
+        })
 
     def _monitor_loop(self):
         """Main stock monitoring loop with timer persistence"""
@@ -879,7 +903,12 @@ class StockMonitorThread:
                         cycle_count = self.shared_data.test_monitor.test_cycle_count + 1
                         print(f"[STOCK_MONITOR] TEST MODE stock check (scenario: {scenario}, cycle: {cycle_count})")
 
-                stock_data = self._check_stock()
+                with self.shared_data.lock:
+                    _proxy_mode = self.shared_data.proxy_mode
+                if _proxy_mode:
+                    stock_data = None  # proxies handle detection; loop still runs for SSE/timer
+                else:
+                    stock_data = self._check_stock()
 
                 if stock_data:
                     print("[STOCK_MONITOR] [OK] Stock check complete - publishing to dashboard...")

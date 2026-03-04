@@ -346,6 +346,13 @@ class PurchaseExecutor:
             # Find add-to-cart button
             add_button = await self._find_add_to_cart_button(tab)
             if not add_button:
+                print(f"[PURCHASE] Add-to-cart button not found, clearing cart and waiting...")
+                try:
+                    await tab.get("https://www.target.com/cart")
+                    await self._clear_cart(tab)
+                    print(f"[PURCHASE] Cart cleared after button_not_found, waiting for next cycle")
+                except Exception:
+                    pass
                 return {
                     'success': False,
                     'tcin': tcin,
@@ -379,6 +386,13 @@ class PurchaseExecutor:
                     click_success = False
 
                 if not click_success:
+                    print(f"[PURCHASE] Click failed, clearing cart and waiting...")
+                    try:
+                        await tab.get("https://www.target.com/cart")
+                        await self._clear_cart(tab)
+                        print(f"[PURCHASE] Cart cleared after click_failed, waiting for next cycle")
+                    except Exception:
+                        pass
                     return {
                         'success': False,
                         'tcin': tcin,
@@ -397,6 +411,13 @@ class PurchaseExecutor:
 
             except Exception as e:
                 if not click_success:
+                    print(f"[PURCHASE] Click failed (exception), clearing cart and waiting...")
+                    try:
+                        await tab.get("https://www.target.com/cart")
+                        await self._clear_cart(tab)
+                        print(f"[PURCHASE] Cart cleared after click_failed (exception), waiting for next cycle")
+                    except Exception:
+                        pass
                     return {
                         'success': False,
                         'tcin': tcin,
@@ -407,6 +428,13 @@ class PurchaseExecutor:
                 cart_confirmed = await self._verify_cart_addition(tab)
 
             if not cart_confirmed:
+                print(f"[PURCHASE] Cart addition not confirmed, clearing cart and waiting...")
+                try:
+                    await tab.get("https://www.target.com/cart")
+                    await self._clear_cart(tab)
+                    print(f"[PURCHASE] Cart cleared after cart_addition_timeout, waiting for next cycle")
+                except Exception:
+                    pass
                 return {
                     'success': False,
                     'tcin': tcin,
@@ -461,6 +489,13 @@ class PurchaseExecutor:
                     checkout_result = False
 
             if not checkout_result:
+                print(f"[PURCHASE] Checkout failed, clearing cart and waiting...")
+                try:
+                    await tab.get("https://www.target.com/cart")
+                    await self._clear_cart(tab)
+                    print(f"[PURCHASE] Cart cleared after checkout_navigation_failed, waiting for next cycle")
+                except Exception:
+                    pass
                 return {
                     'success': False,
                     'tcin': tcin,
@@ -783,6 +818,72 @@ class PurchaseExecutor:
 
         except Exception as e:
             print(f"[PAYMENT] CVV modal error: {e}")
+            return False
+
+    async def _handle_address_verify_modal(self, tab) -> bool:
+        """Detect and dismiss Target's 'Verify address / Sorry something went wrong' modal.
+
+        This appears on some networks when the address validation backend returns an error
+        after clicking Save & Continue. The address is still valid (saved in account) —
+        the modal is a soft error. Dismissing it lets the checkout flow continue normally.
+
+        Returns True if the modal was found and dismissed, False if not present.
+        """
+        try:
+            result = await tab.evaluate("""(() => {
+                // Find any visible dialog/modal
+                const dialogs = Array.from(document.querySelectorAll(
+                    '[role="dialog"], [role="alertdialog"], [class*="modal" i], [class*="Modal" i], ' +
+                    '[data-test*="modal"], [data-test*="dialog"], [class*="overlay" i]'
+                )).filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                });
+
+                for (const dialog of dialogs) {
+                    const text = (dialog.innerText || '').toLowerCase();
+                    const isAddressModal = (text.includes('verify') && text.includes('address')) ||
+                                           text.includes('something went wrong') ||
+                                           text.includes('address not found') ||
+                                           text.includes('confirm your address');
+                    if (!isAddressModal) continue;
+
+                    // Try to click a dismiss/confirm button inside the dialog
+                    const btnSelectors = [
+                        '[data-test*="confirm"]', '[data-test*="use-address"]',
+                        '[data-test*="keep"]', '[data-test*="continue"]',
+                        'button[class*="primary" i]', 'button[class*="confirm" i]',
+                    ];
+                    for (const sel of btnSelectors) {
+                        const btn = dialog.querySelector(sel);
+                        if (btn && btn.getBoundingClientRect().height > 0) {
+                            btn.click();
+                            return 'dismissed:' + sel;
+                        }
+                    }
+                    // Fallback: find any visible button in the dialog that isn't "cancel"
+                    const btns = Array.from(dialog.querySelectorAll('button')).filter(b => {
+                        const r = b.getBoundingClientRect();
+                        const t = (b.innerText || '').toLowerCase().trim();
+                        return r.height > 0 && !t.includes('cancel');
+                    });
+                    if (btns.length > 0) {
+                        btns[0].click();
+                        return 'dismissed:fallback:' + (btns[0].innerText || '').trim().slice(0, 30);
+                    }
+                    return 'found_no_button';
+                }
+                return 'not_found';
+            })()""")
+
+            if isinstance(result, str) and result != 'not_found':
+                print(f"[PAYMENT] Address verify modal: {result}")
+                if result == 'found_no_button':
+                    await self._press_escape(tab)
+                return True
+            return False
+        except Exception as e:
+            print(f"[PAYMENT] Address modal check error: {e}")
             return False
 
     # -------------------------------------------------------------------------
@@ -1313,10 +1414,10 @@ class PurchaseExecutor:
           'sac_again'           — Another S&C appeared (next step)
           'timeout'             — didn't transition within `timeout` seconds
         """
-        # Brief minimum wait so Target has time to process the click server-side
-        await asyncio.sleep(0.1)
         start = time.time()
         while time.time() - start < timeout:
+            # Dismiss address-verify modal if it appeared after S&C click
+            await self._handle_address_verify_modal(tab)
             try:
                 state = await tab.evaluate("""(() => {
                     function visible(el) {
@@ -1643,7 +1744,6 @@ class PurchaseExecutor:
                 })()""")
                 if _po_enabled:
                     print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
-                    await asyncio.sleep(0.8)  # brief pause so the state is visible before redirect
                     if self.test_mode:
                         print("[PAYMENT] TEST_MODE: going to cart")
                         await tab.get("https://www.target.com/cart")
@@ -1662,7 +1762,6 @@ class PurchaseExecutor:
 
                 # Handle any radio button that needs selecting on this step.
                 await self._handle_step_radio(tab)
-                await tab  # flush CDP event queue — lets React finish processing the radio click
 
                 # Wait for S&C button to appear using MutationObserver (event-driven, not polling).
                 # Resolves the instant React renders the button; immediate return if already present.
@@ -1680,21 +1779,6 @@ class PurchaseExecutor:
                     })""", await_promise=True)
                 except Exception:
                     pass  # S&C click loop below is still the safety net
-
-                # Diagnostic: log every visible button's data-test + text so we can see
-                # exactly what's on the page if clicking fails.
-                try:
-                    btn_info = await tab.evaluate("""(() => {
-                        return Array.from(document.querySelectorAll('button, [role="button"], a[class*="button"]'))
-                            .filter(el => { const r = el.getBoundingClientRect(); return r.height > 0; })
-                            .map(el => ({
-                                dt: el.getAttribute('data-test') || '',
-                                txt: (el.innerText || '').trim().slice(0, 50)
-                            }));
-                    })()""")
-                    print(f"[PAYMENT] Visible buttons: {btn_info}")
-                except Exception:
-                    pass
 
                 # Click S&C via evaluate — avoids stale element references that occur when
                 # tab.select() grabs a node right as React is re-rendering after the radio click.

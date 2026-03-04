@@ -33,6 +33,7 @@ nodriver-profile/
 logs/
 target.json
 .claude/settings.local.json
+config/proxyIps.json
 
 .vscode/
 .idea/

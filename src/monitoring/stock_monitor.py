@@ -7,8 +7,10 @@ Checks stock status every 15-25 seconds with clean data output
 import json
 import time
 import random
+import threading
 import requests
 import html
+import os
 from datetime import datetime
 from pathlib import Path
 import logging
@@ -21,6 +23,7 @@ class StockMonitor:
             "9f36aeafbe60771e321a7cc95a78140772ab3e96"
         ]
         self.last_check_time = None
+        self.proxies = self._load_proxies()
 
         # TEST MODE: Comprehensive testing infrastructure
         self.test_mode = False
@@ -35,6 +38,19 @@ class StockMonitor:
             'sync_stress': self._test_sync_stress_test
         }
         self.test_data_override = {}
+
+    def _load_proxies(self):
+        proxy_file = "config/proxyIps.json"
+        try:
+            if os.path.exists(proxy_file):
+                with open(proxy_file, 'r') as f:
+                    proxies = json.load(f).get('proxies', [])
+                    if proxies:
+                        print(f"[PROXY] Loaded {len(proxies)} proxies — rate: {len(proxies)/15:.2f} checks/sec")
+                    return proxies
+        except Exception as e:
+            print(f"[PROXY] Failed to load proxyIps.json: {e}")
+        return []
 
     def get_config(self):
         """Load product configuration"""
@@ -66,7 +82,7 @@ class StockMonitor:
             'connection': 'keep-alive'
         }
 
-    def check_stock(self):
+    def check_stock(self, proxy=None):
         """
         Check stock for all configured products
         Returns: {tcin: {title, in_stock, last_checked, status_detail}}
@@ -99,6 +115,7 @@ class StockMonitor:
         }
 
         headers = self.get_headers()
+        proxies_dict = {"http": proxy, "https": proxy} if proxy else None
 
         try:
             start_time = time.time()
@@ -106,7 +123,8 @@ class StockMonitor:
                 self.api_endpoint,
                 params=params,
                 headers=headers,
-                timeout=8  # Reduced from 15 to 8 seconds for threading compatibility
+                timeout=8,  # Reduced from 15 to 8 seconds for threading compatibility
+                proxies=proxies_dict,
             )
             response_time = (time.time() - start_time) * 1000
 
@@ -129,6 +147,45 @@ class StockMonitor:
         except Exception as e:
             print(f"[STOCK] Exception: {e}")
             return self._get_error_result(tcins, str(e))
+
+    def start_proxy_monitoring(self, on_stock_detected):
+        """
+        Round-robin proxy rotation: Proxy 1 at t=0, Proxy 2 at t=1, ...,
+        Proxy N at t=N-1, Proxy 1 again at t=15, etc.
+        Each proxy fires every 15s. With 15 proxies: 1 check/second total.
+        Returns [] if no proxies configured (caller uses normal loop instead).
+        """
+        if not self.proxies:
+            return []
+
+        n = len(self.proxies)
+        stagger = 15.0 / n  # seconds between each proxy's launch
+
+        threads = []
+        for i, proxy in enumerate(self.proxies):
+            t = threading.Thread(
+                target=self._proxy_worker,
+                args=(proxy, i * stagger, on_stock_detected),
+                daemon=True,
+                name=f"ProxyWorker-{i+1}",
+            )
+            t.start()
+            threads.append(t)
+
+        print(f"[PROXY] {n} workers started — 1 check every {15/n:.1f}s")
+        return threads
+
+    def _proxy_worker(self, proxy, initial_delay, callback):
+        """Wait for stagger offset then loop every 15s."""
+        time.sleep(initial_delay)
+        while True:
+            try:
+                stock_data = self.check_stock(proxy=proxy)
+                if stock_data and any(v.get('in_stock') for v in stock_data.values()):
+                    callback(stock_data)
+            except Exception as e:
+                print(f"[PROXY] Worker error: {e}")
+            time.sleep(15)
 
     def _process_response(self, data, response_time):
         """Process API response into clean format"""

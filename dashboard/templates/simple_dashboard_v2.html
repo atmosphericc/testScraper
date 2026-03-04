@@ -3180,7 +3180,7 @@
                                 console.log(`🔄 Cleared activity log, loading ${data.activity_log.length} entries...`);
 
                                 // Add entries in reverse order (newest first)
-                                data.activity_log.forEach(entry => {
+                                [...data.activity_log].reverse().forEach(entry => {
                                     addActivityEntryToDOM(entry);
                                 });
                                 console.log(`✅ Updated activity log with ${data.activity_log.length} entries from timer refresh`);
@@ -3516,7 +3516,7 @@
                     // This ensures activity log displays stock check results on page load
                     if (data.activity_log && Array.isArray(data.activity_log)) {
                         console.log(`✅ INITIAL FETCH: Loading ${data.activity_log.length} activity log entries`);
-                        data.activity_log.forEach(entry => {
+                        [...data.activity_log].reverse().forEach(entry => {
                             addActivityEntryToDOM(entry);
                         });
                     } else {
@@ -3793,7 +3793,7 @@
             // This ensures stock check results appear in activity log even in polling mode
             if (data.activity_log && Array.isArray(data.activity_log)) {
                 console.log(`✓ POLLING: Processing ${data.activity_log.length} activity log entries`);
-                data.activity_log.forEach(entry => {
+                [...data.activity_log].reverse().forEach(entry => {
                     addActivityEntryToDOM(entry);
                 });
             } else {
@@ -4220,7 +4220,7 @@
                 if (logContainer) {
                     // Clear and reload activity log to avoid duplicates
                     logContainer.innerHTML = '';
-                    cycleData.activity_log.forEach(entry => {
+                    [...cycleData.activity_log].reverse().forEach(entry => {
                         addActivityEntryToDOM(entry);
                     });
                     console.log(`🔄 ATOMIC: Updated activity log (${cycleData.activity_log.length} entries)`);
@@ -4839,7 +4839,7 @@
                             if (logContainer) {
                                 // Clear and reload to avoid duplicates
                                 logContainer.innerHTML = '';
-                                data.activity_log.forEach(entry => {
+                                [...data.activity_log].reverse().forEach(entry => {
                                     addActivityEntryToDOM(entry);
                                 });
                                 console.log(`✅ Periodic poll - updated activity log (${data.activity_log.length} entries)`);

@@ -1,9 +1,21 @@
 {
   "products": [
     {
-      "tcin": "94886162",
-      "name": "Product 94886162",
+      "tcin": "95082118",
+      "name": "Product 95082118",
       "enabled": true
+    },
+    {
+      "tcin": "94681790",
+      "name": "Pok\u00e9mon Trading Card Game : Charizard X ex Ultra-Premium Collection",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94681790"
+    },
+    {
+      "tcin": "94886162",
+      "name": "Disney Lorcana Trading Card Deck Set",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94886162"
     }
   ]
 }

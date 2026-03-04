@@ -1,12 +1,6 @@
 {
   "catalog": [
     {
-      "tcin": "89542109",
-      "name": "3-Cycle Login Persistence Test Product",
-      "date_added": "2025-10-02T16:00:00.000000",
-      "url": "https://www.target.com/p/-/A-89542109"
-    },
-    {
       "tcin": "94724987",
       "name": "Pok\u00e9mon Trading Card Game: Blooming Waters Premium Collection",
       "date_added": "2025-10-04T23:40:04.560802",
@@ -119,6 +113,12 @@
       "name": "Disney Lorcana Trading Card Deck Set",
       "date_added": "2026-02-24T23:11:01.510619",
       "url": "https://www.target.com/p/-/A-94886162"
+    },
+    {
+      "tcin": "95082118",
+      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution\u2014 Ascended Heroes Elite Trainer Box",
+      "date_added": "2026-03-02T14:26:56.096088",
+      "url": "https://www.target.com/p/-/A-95082118"
     }
   ]
 }

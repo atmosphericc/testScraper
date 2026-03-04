@@ -2526,7 +2526,7 @@
                                 console.log(`🔄 Cleared activity log, loading ${data.activity_log.length} entries...`);
 
                                 // Add entries in reverse order (newest first)
-                                data.activity_log.forEach(entry => {
+                                [...data.activity_log].reverse().forEach(entry => {
                                     addActivityEntryToDOM(entry);
                                 });
                                 console.log(`✅ Updated activity log with ${data.activity_log.length} entries from timer refresh`);
@@ -2861,7 +2861,7 @@
                     // This ensures activity log displays stock check results on page load
                     if (data.activity_log && Array.isArray(data.activity_log)) {
                         console.log(`✅ INITIAL FETCH: Loading ${data.activity_log.length} activity log entries`);
-                        data.activity_log.forEach(entry => {
+                        [...data.activity_log].reverse().forEach(entry => {
                             addActivityEntryToDOM(entry);
                         });
                     } else {
@@ -3138,7 +3138,7 @@
             // This ensures stock check results appear in activity log even in polling mode
             if (data.activity_log && Array.isArray(data.activity_log)) {
                 console.log(`✓ POLLING: Processing ${data.activity_log.length} activity log entries`);
-                data.activity_log.forEach(entry => {
+                [...data.activity_log].reverse().forEach(entry => {
                     addActivityEntryToDOM(entry);
                 });
             } else {
@@ -3319,6 +3319,7 @@
             const stockUpdates = cycleData.stock_updates || {};
             const purchaseChanges = cycleData.purchase_state_changes || {};
             const timerSync = cycleData.timer_sync || {};
+            const proxyMode = timerSync.proxy_mode || false;
             const summary = cycleData.summary || {};
 
             // VALIDATION: Log state BEFORE changes for comparison
@@ -3326,7 +3327,13 @@
             console.log(`📋 PRE-UPDATE UI STATE:`, preUpdateState);
 
             // STEP 1: Update timer FIRST (critical for sync)
-            if (timerSync.current_remaining !== undefined) {
+            if (proxyMode) {
+                // Hide countdown, show proxy indicator
+                const stickyTimer = document.querySelector('.sticky-timer');
+                if (stickyTimer) stickyTimer.style.display = 'none';
+                const timerContainer = countdownElement ? countdownElement.closest('.timer-container') : null;
+                if (timerContainer) timerContainer.style.display = 'none';
+            } else if (timerSync.current_remaining !== undefined) {
                 const oldCountdown = countdown;
                 const newCountdown = Math.ceil(timerSync.current_remaining);
 
@@ -3502,7 +3509,7 @@
                 if (logContainer) {
                     // Clear and reload activity log to avoid duplicates
                     logContainer.innerHTML = '';
-                    cycleData.activity_log.forEach(entry => {
+                    [...cycleData.activity_log].reverse().forEach(entry => {
                         addActivityEntryToDOM(entry);
                     });
                     console.log(`🔄 ATOMIC: Updated activity log (${cycleData.activity_log.length} entries)`);
@@ -4121,7 +4128,7 @@
                             if (logContainer) {
                                 // Clear and reload to avoid duplicates
                                 logContainer.innerHTML = '';
-                                data.activity_log.forEach(entry => {
+                                [...data.activity_log].reverse().forEach(entry => {
                                     addActivityEntryToDOM(entry);
                                 });
                                 console.log(`✅ Periodic poll - updated activity log (${data.activity_log.length} entries)`);
