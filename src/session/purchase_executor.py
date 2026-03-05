@@ -1693,6 +1693,9 @@ class PurchaseExecutor:
 
         url = tab.url
         print(f"[PAYMENT] URL after Place Order: {url}")
+        if 'checkout' in url.lower():
+            print("[PAYMENT] Still on checkout after Place Order wait — likely out of stock, signaling failure")
+            return False
         return True
 
     async def _complete_payment(self, tab, initial_state: str = 'unknown') -> bool:
