@@ -1117,9 +1117,13 @@ class BulletproofPurchaseManager:
             states = self._load_states_unsafe()
             current_state = states.get(tcin, {})
 
-            if current_state.get('status') != 'attempting':
-                print(f"[PURCHASE] Warning: {tcin} not in attempting state, ignoring result")
-                return
+            current_status = current_state.get('status')
+            if current_status != 'attempting':
+                # State was reset by the stuck-timeout while purchase was still running.
+                # Still honour the result so successful purchases are recorded.
+                print(f"[PURCHASE] Warning: {tcin} state is '{current_status}' (not 'attempting') — purchase thread finished late. Still applying result.")
+                # Re-create a minimal state so the result can be saved properly
+                current_state = {'status': 'attempting', 'tcin': tcin}
 
             now = time.time()
 
@@ -1293,6 +1297,19 @@ class BulletproofPurchaseManager:
             # Prevents race condition where thread is completing but file status not yet updated
             if not active_purchase:
                 # DEADLOCK FIX: Don't re-acquire lock - we're already inside self._state_lock from line 1220
+                # First, clean up any dead threads that failed to remove themselves
+                dead_threads = [t for t, info in self._active_purchases.items()
+                                if not info['thread'].is_alive()]
+                for dead_tcin in dead_threads:
+                    elapsed = time.time() - self._active_purchases[dead_tcin]['started_at']
+                    print(f"[PURCHASE_CONCURRENCY] Cleaning up dead thread for {dead_tcin} (ran {elapsed:.1f}s, never cleaned up)")
+                    del self._active_purchases[dead_tcin]
+                    # Also reset the file state if it's stuck in attempting
+                    if states.get(dead_tcin, {}).get('status') == 'attempting':
+                        states[dead_tcin] = {'status': 'ready'}
+                        self._save_states_unsafe(states)
+                        print(f"[PURCHASE_CONCURRENCY] Reset stuck attempting state for dead thread: {dead_tcin}")
+
                 if self._active_purchases:
                     active_tcin = list(self._active_purchases.keys())[0]
                     thread_info = self._active_purchases[active_tcin]

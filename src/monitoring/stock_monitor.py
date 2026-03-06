@@ -216,12 +216,18 @@ class StockMonitor:
                 shipping = fulfillment.get('shipping_options', {})
                 availability_status = shipping.get('availability_status', 'UNKNOWN')
                 relationship_code = item.get('relationship_type_code', 'UNKNOWN')
-                is_target_direct = relationship_code == 'SA'
+                # 'SA' = sold & fulfilled by Target directly
+                # 'VC' = variation child (also Target-direct, common for standalone items)
+                # 'VPC' = vendor-partner content (marketplace — skip)
+                is_target_direct = relationship_code in ('SA', 'VC')
+                print(f"[STOCK] {tcin}: availability={availability_status}, relationship_code={relationship_code}, is_target_direct={is_target_direct}")
 
                 # Determine if in stock
-                is_preorder = 'PRE_ORDER' in availability_status
+                services = shipping.get('services', [])
+                # is_preorder = True only when actively in a sellable preorder window
+                is_preorder = availability_status == 'PRE_ORDER_SELLABLE'
                 if is_preorder:
-                    base_available = availability_status == 'PRE_ORDER_SELLABLE'
+                    base_available = len(services) > 0
                 else:
                     base_available = availability_status == 'IN_STOCK'
 

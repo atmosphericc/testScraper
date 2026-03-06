@@ -3864,6 +3864,18 @@
 
                 console.log(`📋 STOCK UPDATE STATE: ${updateId} - Old: ${oldStatus} (${oldText})`);
 
+                // Don't flip badge to OUT OF STOCK while a purchase attempt is in progress.
+                // The item was in stock when the attempt started; showing OUT OF STOCK mid-attempt
+                // is misleading and causes the flicker the user sees.
+                if (!stockInfo.in_stock) {
+                    const purchaseBadge = productRow.querySelector('.status-badge, [class*="status"]');
+                    const purchaseText = purchaseBadge ? purchaseBadge.textContent.trim().toUpperCase() : '';
+                    if (purchaseText.includes('ATTEMPTING')) {
+                        console.log(`⏳ STOCK UPDATE DEFERRED: ${tcin} is ATTEMPTING — keeping IN STOCK badge until attempt resolves`);
+                        return true;
+                    }
+                }
+
                 // Remove loading animation and waiting state
                 stockBadge.classList.remove('unknown');
                 const loadingSpinner = stockBadge.querySelector('.loading');

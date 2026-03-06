@@ -4575,6 +4575,16 @@
 
                 console.log(`📋 STOCK UPDATE STATE: ${updateId} - Old: ${oldStatus} (${oldText})`);
 
+                // Don't flip badge to OUT OF STOCK while a purchase attempt is in progress.
+                if (!stockInfo.in_stock) {
+                    const purchaseBadge = productRow.querySelector('.status-badge, [class*="status"]');
+                    const purchaseText = purchaseBadge ? purchaseBadge.textContent.trim().toUpperCase() : '';
+                    if (purchaseText.includes('ATTEMPTING')) {
+                        console.log(`⏳ STOCK UPDATE DEFERRED: ${tcin} is ATTEMPTING — keeping IN STOCK badge until attempt resolves`);
+                        return true;
+                    }
+                }
+
                 // Remove loading animation and waiting state
                 stockBadge.classList.remove('unknown');
                 const loadingSpinner = stockBadge.querySelector('.loading');

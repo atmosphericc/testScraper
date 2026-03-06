@@ -1651,52 +1651,123 @@ class PurchaseExecutor:
             print(f"[STEP] _handle_step_radio error: {e}")
             return 'error'
 
-    async def _place_order(self, tab) -> bool:
-        """Find the enabled Place Order button and click it (production only)."""
-        place_order_button, found_selector = await self._find_place_order_button(tab)
-        if not place_order_button:
-            print("[PAYMENT] Place Order not found or still disabled")
-            try:
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                await self._screenshot(tab, f"logs/checkout_no_place_order_{ts}.png")
-                print(f"[PAYMENT] Screenshot: logs/checkout_no_place_order_{ts}.png")
-            except Exception:
-                pass
+    async def _handle_busy_modal(self, tab) -> bool:
+        """Detect and dismiss Target's 'busier than expected' cart error modal.
+
+        This modal appears after clicking Place Order when Target's cart service
+        is overloaded. The OK button must be clicked and Place Order retried.
+        Returns True if the modal was found and dismissed, False if not present.
+        """
+        try:
+            result = await tab.evaluate("""(() => {
+                const dialogs = Array.from(document.querySelectorAll(
+                    '[role="dialog"], [role="alertdialog"], [class*="modal" i], ' +
+                    '[data-test*="modal"], [data-test*="dialog"]'
+                )).filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                });
+
+                for (const dialog of dialogs) {
+                    const text = (dialog.innerText || '').toLowerCase();
+                    if (!text.includes('busier') && !text.includes('temporary issue') &&
+                        !text.includes("can't view") && !text.includes('try again')) continue;
+
+                    // Click OK or any primary/confirm button
+                    const btns = Array.from(dialog.querySelectorAll('button')).filter(b => {
+                        const r = b.getBoundingClientRect();
+                        return r.height > 0;
+                    });
+                    for (const btn of btns) {
+                        const t = (btn.innerText || '').trim().toLowerCase();
+                        if (['ok', 'okay', 'close', 'dismiss', 'got it'].some(w => t.includes(w)) || btns.length === 1) {
+                            btn.click();
+                            return 'dismissed:' + btn.innerText.trim();
+                        }
+                    }
+                    if (btns.length > 0) {
+                        btns[0].click();
+                        return 'dismissed:fallback:' + (btns[0].innerText || '').trim();
+                    }
+                    return 'found_no_button';
+                }
+                return 'not_found';
+            })()""")
+
+            if isinstance(result, str) and result != 'not_found':
+                print(f"[PAYMENT] Busy modal detected and dismissed: {result}")
+                if result == 'found_no_button':
+                    await self._press_escape(tab)
+                return True
+            return False
+        except Exception as e:
+            print(f"[PAYMENT] Busy modal check error: {e}")
             return False
 
-        await self._scroll_into_view(place_order_button)
-        print(f"[PAYMENT] Clicking Place Order ({found_selector})")
-        try:
-            await self._dispatch_click(place_order_button)
-            print("[PAYMENT] Click dispatched")
-        except Exception as click_error:
-            print(f"[PAYMENT] dispatch click failed ({click_error}), trying fallback")
-            try:
-                await place_order_button.click()
-                print("[PAYMENT] Fallback click succeeded")
-            except Exception:
+    async def _place_order(self, tab) -> bool:
+        """Find the enabled Place Order button and click it (production only).
+
+        Retries up to 3 times if the 'busier than expected' modal appears.
+        """
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            place_order_button, found_selector = await self._find_place_order_button(tab)
+            if not place_order_button:
+                print("[PAYMENT] Place Order not found or still disabled")
+                try:
+                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    await self._screenshot(tab, f"logs/checkout_no_place_order_{ts}.png")
+                    print(f"[PAYMENT] Screenshot: logs/checkout_no_place_order_{ts}.png")
+                except Exception:
+                    pass
                 return False
 
-        print("[PAYMENT] Waiting for confirmation or CVV modal...")
-        start = time.time()
-        cvv_handled = False
-        while time.time() - start < 10.0:
-            url = tab.url
-            if 'confirmation' in url.lower() or 'thank' in url.lower():
-                print("[PAYMENT] Reached confirmation page")
-                return True
-            if not cvv_handled:
-                cvv_handled = await self._handle_cvv_modal(tab)
-                if cvv_handled:
-                    print("[PAYMENT] CVV submitted — waiting for confirmation...")
-            await asyncio.sleep(0.1)
+            await self._scroll_into_view(place_order_button)
+            print(f"[PAYMENT] Clicking Place Order ({found_selector}) attempt {attempt}/{max_attempts}")
+            try:
+                await self._dispatch_click(place_order_button)
+                print("[PAYMENT] Click dispatched")
+            except Exception as click_error:
+                print(f"[PAYMENT] dispatch click failed ({click_error}), trying fallback")
+                try:
+                    await place_order_button.click()
+                    print("[PAYMENT] Fallback click succeeded")
+                except Exception:
+                    return False
 
-        url = tab.url
-        print(f"[PAYMENT] URL after Place Order: {url}")
-        if 'checkout' in url.lower():
-            print("[PAYMENT] Still on checkout after Place Order wait — likely out of stock, signaling failure")
-            return False
-        return True
+            print("[PAYMENT] Waiting for confirmation, CVV modal, or busy modal...")
+            start = time.time()
+            cvv_handled = False
+            busy_dismissed = False
+            while time.time() - start < 10.0:
+                url = tab.url
+                if 'confirmation' in url.lower() or 'thank' in url.lower():
+                    print("[PAYMENT] Reached confirmation page")
+                    return True
+                if not cvv_handled:
+                    cvv_handled = await self._handle_cvv_modal(tab)
+                    if cvv_handled:
+                        print("[PAYMENT] CVV submitted — waiting for confirmation...")
+                if not busy_dismissed:
+                    busy_dismissed = await self._handle_busy_modal(tab)
+                    if busy_dismissed:
+                        print(f"[PAYMENT] Busy modal dismissed — retrying Place Order (attempt {attempt}/{max_attempts})")
+                        await asyncio.sleep(1.0)
+                        break  # break inner loop to retry Place Order click
+                await asyncio.sleep(0.1)
+            else:
+                # Inner loop completed without break — timed out
+                url = tab.url
+                print(f"[PAYMENT] URL after Place Order: {url}")
+                if 'checkout' in url.lower():
+                    print("[PAYMENT] Still on checkout after Place Order wait — signaling failure")
+                    return False
+                return True
+
+            # busy_dismissed caused break — loop back to retry Place Order
+
+        print(f"[PAYMENT] Place Order failed after {max_attempts} attempts (busy modal)")
+        return False
 
     async def _complete_payment(self, tab, initial_state: str = 'unknown') -> bool:
         """Drive the checkout to completion.
