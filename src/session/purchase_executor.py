@@ -46,6 +46,7 @@ class PurchaseExecutor:
         self._warmup_tab = None                             # single shared background tab
         self._warmup_in_progress: bool = False              # prevent concurrent warmups
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
+        self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -313,27 +314,43 @@ class PurchaseExecutor:
         label = "warmup" if persistent else "main"
 
         async def _on_request_paused(event: cdp.fetch.RequestPaused):
+            # FIX 1: deduplicate — accumulated handlers each fire; only first processes
+            req_id = str(event.request_id)
+            if req_id in self._cdp_continued_ids:
+                return
+            self._cdp_continued_ids.add(req_id)
+
             try:
                 url = event.request.url if hasattr(event, 'request') else ''
                 method = event.request.method if hasattr(event.request, 'method') else '?'
                 if 'carts.target.com' in url or 'cart_items' in url:
                     headers = dict(event.request.headers) if event.request.headers else {}
                     header_names = list(headers.keys())
-                    if headers:
+                    shape_headers = [h for h in header_names if h.lower().startswith('x-')]
+                    # FIX 2: only cache POST — GET/OPTIONS/PUT don't carry Shape tokens
+                    if method == 'POST' and headers:
+                        prev_shape_count = len([h for h in self._cached_cart_headers if h.lower().startswith('x-')])
                         self._cached_cart_headers = headers
                         self._cached_cart_headers_ts = time.time()
                         print(f"[INTERCEPTOR:{label}] {method} {url[:80]}")
-                        print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers: {header_names}")
+                        print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers (Shape X-headers: {len(shape_headers)}, prev cache had {prev_shape_count}): {header_names}")
+                    elif headers:
+                        # non-POST carts request — log but don't overwrite cache
+                        cache_age = time.time() - self._cached_cart_headers_ts if self._cached_cart_headers_ts else -1
+                        cached_shape = len([h for h in self._cached_cart_headers if h.lower().startswith('x-')])
+                        print(f"[INTERCEPTOR:{label}] {method} {url[:80]} — skipping cache (not POST, has {len(headers)} headers, {len(shape_headers)} X-headers)")
+                        print(f"[INTERCEPTOR:{label}]   cache preserved: {len(self._cached_cart_headers)} headers, {cached_shape} Shape tokens, age={cache_age:.1f}s")
                     else:
                         print(f"[INTERCEPTOR:{label}] {method} {url[:80]} — no headers found")
                 else:
-                    print(f"[INTERCEPTOR:{label}] Unexpected URL paused: {url[:80]}")
+                    # non-carts URL — logged once per request (fix 1 prevents repeats)
+                    print(f"[INTERCEPTOR:{label}] Unexpected URL paused: {url[:80]} (method={method})")
             except Exception as e:
                 print(f"[INTERCEPTOR:{label}] Handler error: {e}")
             try:
                 await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
             except Exception as e:
-                print(f"[INTERCEPTOR:{label}] continue_request failed: {e}")
+                print(f"[INTERCEPTOR:{label}] continue_request failed (req_id={req_id}): {e}")
 
         try:
             await tab.send(cdp.fetch.enable(
@@ -352,7 +369,8 @@ class PurchaseExecutor:
             print(f"[INTERCEPTOR:{label}] Added cdp.fetch to enabled_domains")
 
         tab.add_handler(cdp.fetch.RequestPaused, _on_request_paused)
-        print(f"[INTERCEPTOR:{label}] CDP fetch interceptor ready")
+        handler_count = len([h for h in getattr(tab, 'handlers', {}).get(cdp.fetch.RequestPaused, []) if True])
+        print(f"[INTERCEPTOR:{label}] CDP fetch interceptor ready (total RequestPaused handlers on tab: {handler_count})")
 
     async def warm_shape_headers(self) -> bool:
         """Refresh Shape headers via cart page visit on the shared background warmup tab."""
@@ -410,6 +428,8 @@ class PurchaseExecutor:
         """Execute purchase for given TCIN using persistent session"""
         start_time = time.time()
         tab = None  # ensure tab is accessible in finally block
+        self._cdp_continued_ids.clear()
+        print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin})")
 
         try:
             print(f"[PURCHASE] Starting purchase for {tcin}")
