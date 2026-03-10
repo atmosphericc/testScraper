@@ -148,7 +148,7 @@ class PurchaseExecutor:
         Uses lock to prevent concurrent tab access.
         """
         try:
-            async with asyncio.timeout(120):
+            async with asyncio.timeout(140):  # slightly less than thread's 150s so coroutine self-cancels cleanly
                 async with self._page_lock:
                     return await self._execute_purchase_impl(tcin)
         except asyncio.TimeoutError:
@@ -320,127 +320,102 @@ class PurchaseExecutor:
             try:
                 print(f"[PURCHASE] Navigating to {product_url}")
                 await tab.get(product_url)
-
-                print(f"[PURCHASE] Waiting for add-to-cart button to be ready...")
-                try:
-                    btn = await tab.select('button[id^="addToCartButtonOrTextIdFor"]', timeout=5)
-                    if not btn:
-                        btn = await tab.select('button[data-test="addToCartButton"]', timeout=3)
-                    if not btn:
-                        btn = await tab.find("Add to cart", best_match=True, timeout=3)
-                    if not btn:
-                        btn = await tab.find("Preorder", best_match=True, timeout=3)
-                    if btn:
-                        print(f"[PURCHASE] Add-to-cart button visible")
-                except Exception as wait_error:
-                    print(f"[PURCHASE] Button wait warning: {wait_error}, proceeding anyway...")
-
-                print(f"[PURCHASE] Page loaded, waiting for Shape Security...")
             except Exception as nav_error:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
 
-            # Select "Shipping" fulfillment option
-            await self._select_shipping_option(tab)
+            # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
+            # The cart API only needs valid session cookies, not full page render
+            print(f"[PURCHASE] Firing fetch ATC immediately (t={time.time()-start_time:.2f}s)")
+            atc_result = await tab.evaluate(f"""(async () => {{
+                try {{
+                    const resp = await fetch(
+                        'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                        {{
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {{'Content-Type': 'application/json', 'Accept': 'application/json'}},
+                            body: JSON.stringify({{
+                                cart_item: {{tcin: '{tcin}', quantity: 1, item_channel_id: '10'}},
+                                cart_type: 'REGULAR',
+                                channel_id: '10',
+                                shopping_context: 'DIGITAL'
+                            }})
+                        }}
+                    );
+                    return resp.status;
+                }} catch(e) {{
+                    return 0;
+                }}
+            }})()""", await_promise=True)
 
-            # Find add-to-cart button
-            add_button = await self._find_add_to_cart_button(tab)
-            if not add_button:
-                print(f"[PURCHASE] Add-to-cart button not found, clearing cart and waiting...")
+            print(f"[PURCHASE] ATC fetch status: {atc_result} (t={time.time()-start_time:.2f}s)")
+
+            # Success status → skip DOM polling entirely, go straight to checkout
+            if atc_result in (200, 201):
+                print(f"[PURCHASE] Fetch ATC succeeded ({atc_result}), skipping cart signal wait")
+                cart_confirmed = True
+            else:
+                # Ambiguous/failed status — check DOM briefly (page had time to render by now)
+                cart_confirmed = await self._wait_for_cart_signal(tab, timeout=1.5)
+
+            # Attempt 2: button click fallback if fetch didn't work
+            # Now we need the button to be ready — wait only if not already confirmed
+            button_ready = True  # optimistic default; set False below if needed
+            if not cart_confirmed:
+                # Check if button is ready (may already be since fetch took some time)
+                btn_state = await tab.evaluate("""(() => {
+                    const selectors = [
+                        'button[id^="addToCartButtonOrTextIdFor"]',
+                        'button[data-test="addToCartButton"]',
+                        'button[data-testid="addToCartButton"]',
+                        '[data-testid*="add-to-cart"]',
+                        'button[data-test*="addToCart"]',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        const r = el.getBoundingClientRect();
+                        if (r.width === 0 || r.height === 0) continue;
+                        return el.disabled || el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'ready';
+                    }
+                    return 'absent';
+                })()""")
+                if btn_state == 'ready':
+                    button_ready = True
+                elif btn_state in ('absent', 'disabled'):
+                    # Button not ready yet — wait up to remaining time
+                    remaining = max(0.0, 8.0 - (time.time() - start_time))
+                    button_ready = await self._wait_for_atc_button_ready(tab, timeout=remaining)
+                if not button_ready:
+                    await self._take_debug_screenshot(tab, "atc_button_not_ready")
+                    return {'success': False, 'tcin': tcin, 'reason': 'page_not_ready',
+                            'execution_time': time.time() - start_time}
+                print(f"[PURCHASE] Fetch ATC not confirmed, trying button click...")
+                await self._dismiss_error_flyout(tab)
+                await self._select_shipping_option(tab)
+                await asyncio.sleep(0.2)
+                add_button = await self._find_add_to_cart_button(tab)
+                if not add_button:
+                    await self._take_debug_screenshot(tab, "button_not_found_post_ready")
+                    return {'success': False, 'tcin': tcin, 'reason': 'button_not_found',
+                            'execution_time': time.time() - start_time}
                 try:
-                    await tab.get("https://www.target.com/cart")
-                    await self._clear_cart(tab)
-                    print(f"[PURCHASE] Cart cleared after button_not_found, waiting for next cycle")
-                except Exception:
-                    pass
-                return {
-                    'success': False,
-                    'tcin': tcin,
-                    'reason': 'button_not_found',
-                    'execution_time': time.time() - start_time
-                }
-
-            # Click add-to-cart with CDP response monitoring
-            click_success = False
-            cart_confirmed = False
-
-            try:
-                cart_event = asyncio.Event()
-
-                async def on_response(event: cdp.network.ResponseReceived):
-                    url = event.response.url
-                    status = event.response.status
-                    if 'cart' in url.lower() and status in [200, 201]:
-                        cart_event.set()
-
-                tab.add_handler(cdp.network.ResponseReceived, on_response)
-
-                print(f"[PURCHASE] Clicking add-to-cart button...")
-                try:
-                    await self._scroll_into_view(add_button)
                     await self._dispatch_click(add_button)
-                    click_success = True
-                    print(f"[PURCHASE] Add-to-cart clicked")
-                except Exception as click_err:
-                    print(f"[PURCHASE] Click error: {click_err}")
-                    click_success = False
-
-                if not click_success:
-                    print(f"[PURCHASE] Click failed, clearing cart and waiting...")
-                    try:
-                        await tab.get("https://www.target.com/cart")
-                        await self._clear_cart(tab)
-                        print(f"[PURCHASE] Cart cleared after click_failed, waiting for next cycle")
-                    except Exception:
-                        pass
-                    return {
-                        'success': False,
-                        'tcin': tcin,
-                        'reason': 'click_failed',
-                        'execution_time': time.time() - start_time
-                    }
-
-                # Wait for cart API response
-                try:
-                    await asyncio.wait_for(cart_event.wait(), timeout=15.0)
-                    print(f"[PURCHASE] Cart API responded (t={time.time() - start_time:.1f}s)")
-                    cart_confirmed = True
-                except asyncio.TimeoutError:
-                    print("[PURCHASE] Cart API timeout, checking DOM...")
-                    cart_confirmed = await self._verify_cart_addition(tab)
-
-            except Exception as e:
-                if not click_success:
-                    print(f"[PURCHASE] Click failed (exception), clearing cart and waiting...")
-                    try:
-                        await tab.get("https://www.target.com/cart")
-                        await self._clear_cart(tab)
-                        print(f"[PURCHASE] Cart cleared after click_failed (exception), waiting for next cycle")
-                    except Exception:
-                        pass
-                    return {
-                        'success': False,
-                        'tcin': tcin,
-                        'reason': 'click_failed',
-                        'execution_time': time.time() - start_time
-                    }
-                print(f"[PURCHASE] Cart response exception: {e}, checking DOM...")
-                cart_confirmed = await self._verify_cart_addition(tab)
+                    print(f"[PURCHASE] ATC button clicked (t={time.time()-start_time:.2f}s)")
+                    cart_confirmed = await self._wait_for_cart_signal(tab, timeout=4.0)
+                except Exception as e:
+                    print(f"[PURCHASE] Button click error: {e}")
 
             if not cart_confirmed:
-                print(f"[PURCHASE] Cart addition not confirmed, clearing cart and waiting...")
+                await self._take_debug_screenshot(tab, "atc_not_confirmed")
                 try:
                     await tab.get("https://www.target.com/cart")
                     await self._clear_cart(tab)
-                    print(f"[PURCHASE] Cart cleared after cart_addition_timeout, waiting for next cycle")
                 except Exception:
                     pass
-                return {
-                    'success': False,
-                    'tcin': tcin,
-                    'reason': 'cart_addition_timeout',
-                    'execution_time': time.time() - start_time
-                }
+                return {'success': False, 'tcin': tcin, 'reason': 'cart_addition_failed',
+                        'execution_time': time.time() - start_time}
 
             print(f"[PURCHASE] Cart confirmed (t={time.time() - start_time:.1f}s)")
 
@@ -449,7 +424,7 @@ class PurchaseExecutor:
             checkout_result = False
 
             try:
-                await tab.get("https://www.target.com/checkout")
+                await tab.get("https://www.target.com/checkout/start")
                 await tab  # flush CDP event queue before interacting (zendriver pattern)
                 print("[PURCHASE] Waiting for checkout page elements...")
                 try:
@@ -489,6 +464,18 @@ class PurchaseExecutor:
                     checkout_result = False
 
             if not checkout_result:
+                # Diagnose: F5 block vs sold out vs other
+                try:
+                    url_now = tab.url
+                    page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
+                    if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests']):
+                        print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
+                    elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
+                        print(f"[PURCHASE] DIAGNOSIS: Item sold out during checkout")
+                    else:
+                        print(f"[PURCHASE] DIAGNOSIS: Unknown failure — url={url_now}")
+                except Exception:
+                    pass
                 print(f"[PURCHASE] Checkout failed, clearing cart and waiting...")
                 try:
                     await tab.get("https://www.target.com/cart")
@@ -577,61 +564,140 @@ class PurchaseExecutor:
             }
 
     # -------------------------------------------------------------------------
+    # ATC readiness and cart signal helpers
+    # -------------------------------------------------------------------------
+
+    async def _wait_for_atc_button_ready(self, tab, timeout: float = 8.0) -> bool:
+        """Poll until the ATC button is present and enabled (React + Shape initialized)."""
+        js = """(() => {
+            const selectors = [
+                'button[id^="addToCartButtonOrTextIdFor"]',
+                'button[data-test="addToCartButton"]',
+                'button[data-testid="addToCartButton"]',
+                '[data-testid*="add-to-cart"]',
+                'button[data-test*="addToCart"]',
+            ];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (!el) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) continue;
+                const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+                return disabled ? 'disabled' : 'ready';
+            }
+            return 'absent';
+        })()"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                state = await tab.evaluate(js)
+                if state == 'ready':
+                    print(f"[READY] ATC button enabled after {time.time()-start:.2f}s")
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+        print(f"[READY] ATC button not ready after {timeout}s")
+        return False
+
+    async def _wait_for_cart_signal(self, tab, timeout: float = 4.0) -> bool:
+        """Poll DOM for cart confirmation: badge > 0, flyout, or drawer. No API field-name guessing."""
+        js = """(() => {
+            const badge = document.querySelector('[data-test="cart-count"], [data-testid="cart-count"]');
+            if (badge && parseInt((badge.textContent||'').trim(),10) > 0) return 'badge';
+            const confirm = document.querySelector('[data-test="add-to-cart-confirmation"]');
+            if (confirm && confirm.getBoundingClientRect().height > 0) return 'flyout';
+            const drawer = document.querySelector('[data-test="cart-drawer"], [class*="CartDrawer"]');
+            if (drawer && drawer.getBoundingClientRect().height > 0) return 'drawer';
+            return 'none';
+        })()"""
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                result = await tab.evaluate(js)
+                if result != 'none':
+                    print(f"[CART_SIGNAL] {result} detected in {time.time()-start:.2f}s")
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+        print(f"[CART_SIGNAL] No signal within {timeout}s")
+        return False
+
+    async def _dismiss_error_flyout(self, tab) -> bool:
+        """Dismiss Target's 'Item not added to cart' error modal if present."""
+        try:
+            dismissed = await tab.evaluate("""(() => {
+                const closeSelectors = [
+                    '[data-test="close-modal"]',
+                    '[aria-label="close"]',
+                    '[aria-label="Close"]',
+                    'button[data-test*="close"]',
+                    '[data-testid="close-modal"]',
+                ];
+                for (const sel of closeSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el && el.getBoundingClientRect().height > 0) {
+                        el.click();
+                        return true;
+                    }
+                }
+                for (const btn of document.querySelectorAll('button')) {
+                    const t = (btn.textContent || '').trim().toLowerCase();
+                    if (t === 'continue shopping') {
+                        btn.click();
+                        return true;
+                    }
+                }
+                return false;
+            })()""")
+            if dismissed:
+                print("[DISMISS] Error flyout dismissed")
+                await asyncio.sleep(0.3)
+            return dismissed
+        except Exception:
+            return False
+
+    # -------------------------------------------------------------------------
     # Cart verification
     # -------------------------------------------------------------------------
 
     async def _verify_cart_addition(self, tab) -> bool:
-        """Verify item was successfully added to cart via visual indicators"""
+        """Verify item was actually added to cart — fast single JS check, no page navigation."""
         try:
-            self.logger.info("[PURCHASE] Waiting for cart UI to update...")
+            result = await tab.evaluate("""(() => {
+                // Cart count badge in header
+                const badge = document.querySelector('[data-test="cart-count"], [data-testid="cart-count"]');
+                if (badge) {
+                    const n = parseInt((badge.textContent || '').trim(), 10);
+                    if (n > 0) return 'badge:' + n;
+                }
+                // Add-to-cart confirmation flyout
+                const confirm = document.querySelector('[data-test="add-to-cart-confirmation"]');
+                if (confirm && confirm.getBoundingClientRect().height > 0) return 'confirmation';
+                // If already on cart page, check for items or empty state
+                if (window.location.href.includes('/cart')) {
+                    const items = document.querySelectorAll('[data-test="cart-item"], [data-testid="cart-item"]');
+                    if (items.length > 0) return 'cart:' + items.length;
+                    const body = (document.body.innerText || '').toLowerCase();
+                    if (body.includes('your cart is empty') || body.includes('nothing in your cart')) return 'empty';
+                }
+                return 'unknown';
+            })()""")
 
-            css_success_selectors = [
-                '[data-test="cart-count"]',
-                '[data-testid="cart-count"]',
-                'span[data-test="@web/CartIcon"]',
-                '[data-test="add-to-cart-confirmation"]',
-                '[aria-label*="cart"][aria-label*="item"]',
-            ]
-            success_texts = ["Added to cart", "Item added"]
-
-            for selector in css_success_selectors:
-                try:
-                    element = await tab.select(selector, timeout=4)
-                    if element:
-                        self.logger.info(f"[PURCHASE] Cart confirmed via: {selector}")
-                        await asyncio.sleep(random.uniform(0.05, 0.1))
-                        return True
-                except Exception:
-                    continue
-
-            for text in success_texts:
-                try:
-                    element = await tab.find(text, best_match=True, timeout=2)
-                    if element:
-                        self.logger.info(f"[PURCHASE] Cart confirmed via text: {text}")
-                        await asyncio.sleep(random.uniform(0.05, 0.1))
-                        return True
-                except Exception:
-                    continue
-
-            # Check for error messages
-            self.logger.warning("[PURCHASE] No visual cart confirmation, checking for errors...")
-            try:
-                error_elem = await tab.find("Something went wrong", best_match=True, timeout=2)
-                if error_elem:
-                    self.logger.error("[PURCHASE] Target returned error - likely anti-bot detection")
-                    return False
-            except Exception:
-                pass
-
-            self.logger.info("[PURCHASE] Assuming success, proceeding...")
-            await asyncio.sleep(random.uniform(0.1, 0.2))
-            return True
+            if result == 'empty':
+                print(f"[PURCHASE] Cart is empty — ATC rejected by Target")
+                return False
+            if result and result != 'unknown':
+                print(f"[PURCHASE] Cart confirmed: {result}")
+                return True
+            # Unknown state — treat as failure to avoid proceeding with empty cart
+            print(f"[PURCHASE] Cart state unclear, treating as failure")
+            return False
 
         except Exception as e:
-            self.logger.warning(f"[PURCHASE] Cart verification warning: {e}")
-            await asyncio.sleep(random.uniform(0.1, 0.2))
-            return True
+            self.logger.warning(f"[PURCHASE] Cart verification error: {e}")
+            return False
 
     # -------------------------------------------------------------------------
     # Popup / overlay dismissal
@@ -948,93 +1014,64 @@ class PurchaseExecutor:
             return 300
 
     async def _find_add_to_cart_button(self, tab):
-        """Find add-to-cart/preorder button"""
+        """Find add-to-cart/preorder button — single JS sweep for speed."""
         print("[BUTTON_FIND] Searching for add-to-cart/preorder button...")
 
-        # PRIMARY: CSS selectors (fastest)
-        primary_css = [
-            'button[id^="addToCartButtonOrTextIdFor"]',
-            'button[data-test="addToCartButton"]',
-            'button[data-testid="addToCartButton"]',
-        ]
-        for sel in primary_css:
-            try:
-                button = await tab.select(sel, timeout=2)
-                if button and await self._is_visible(button):
-                    is_disabled = await self._get_attribute(button, 'disabled')
-                    if not is_disabled:
-                        print(f"[BUTTON_FIND] Found button (primary CSS): {sel}")
-                        return button
-            except Exception:
-                continue
+        # Single JS call checks all selectors and text patterns at once
+        found_selector = None
+        try:
+            found_selector = await tab.evaluate("""(() => {
+                function visible(el) {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }
+                function enabled(el) {
+                    return !el.disabled && el.getAttribute('aria-disabled') !== 'true';
+                }
+                // CSS selectors in priority order
+                const selectors = [
+                    'button[id^="addToCartButtonOrTextIdFor"]',
+                    'button[data-test="addToCartButton"]',
+                    'button[data-testid="addToCartButton"]',
+                    '[data-testid*="add-to-cart"]',
+                    'button[data-test*="addToCart"]',
+                    'button[data-test*="add-to-cart"]',
+                    'button[data-test="chooseOptionsButton"]',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el && visible(el) && enabled(el)) return sel;
+                }
+                // Text-based fallback
+                const keywords = ['add to cart', 'preorder', 'pre-order', 'add to bag', 'ship it'];
+                for (const btn of document.querySelectorAll('button')) {
+                    if (!visible(btn) || !enabled(btn)) continue;
+                    const t = (btn.textContent || '').trim().toLowerCase();
+                    if (keywords.some(k => t.includes(k))) return 'text:' + btn.textContent.trim();
+                }
+                return null;
+            })()""")
+        except Exception as e:
+            print(f"[BUTTON_FIND] JS sweep error: {e}")
 
-        # PRIMARY: Text-based
-        primary_texts = ["Add to cart", "Add to Cart", "Preorder", "Pre-order"]
-        for text in primary_texts:
-            try:
+        if not found_selector:
+            print("[BUTTON_FIND] Could not find add-to-cart/preorder button")
+            await self._take_debug_screenshot(tab, "no_add_to_cart_button")
+            return None
+
+        # Now fetch the actual element
+        try:
+            if found_selector.startswith('text:'):
+                text = found_selector[5:]
                 button = await tab.find(text, best_match=True, timeout=1)
-                if button and await self._is_visible(button):
-                    is_disabled = await self._get_attribute(button, 'disabled')
-                    if not is_disabled:
-                        print(f"[BUTTON_FIND] Found button (primary text): {text}")
-                        return button
-            except Exception:
-                continue
-
-        # SECONDARY: CSS selectors
-        secondary_css = [
-            '[data-testid*="add-to-cart"]',
-            'button[data-testid="add-to-cart-button"]',
-            'button[data-testid="pdp-add-to-cart"]',
-            'button[data-testid="add-to-cart-cta"]',
-            'button[data-test*="addToCart"]',
-            'button[data-test*="add-to-cart"]',
-            'button[data-test="chooseOptionsButton"]',
-        ]
-        for sel in secondary_css:
-            try:
-                button = await tab.select(sel, timeout=0.5)
-                if button and await self._is_visible(button):
-                    is_disabled = await self._get_attribute(button, 'disabled')
-                    if not is_disabled:
-                        print(f"[BUTTON_FIND] Found button (secondary CSS): {sel}")
-                        return button
-            except Exception:
-                continue
-
-        # SECONDARY: Text-based
-        secondary_texts = ["PRE-ORDER", "PREORDER", "Add to bag", "Add to Bag", "Ship it"]
-        for text in secondary_texts:
-            try:
-                button = await tab.find(text, best_match=True, timeout=0.5)
-                if button and await self._is_visible(button):
-                    is_disabled = await self._get_attribute(button, 'disabled')
-                    if not is_disabled:
-                        print(f"[BUTTON_FIND] Found button (secondary text): {text}")
-                        return button
-            except Exception:
-                continue
-
-        # FALLBACK: JS-based case-insensitive search
-        print("[BUTTON_FIND] Trying JS fallback...")
-        fallback_texts = ['preorder', 'pre-order', 'add to cart']
-        for text in fallback_texts:
-            try:
-                result = await tab.evaluate(f'''(() => {{
-                    const buttons = Array.from(document.querySelectorAll('button'));
-                    return buttons.some(b =>
-                        b.textContent.toLowerCase().includes('{text}') &&
-                        !b.disabled &&
-                        b.offsetParent !== null
-                    );
-                }})()''')
-                if result:
-                    button = await tab.find(text, best_match=True, timeout=1)
-                    if button:
-                        print(f"[BUTTON_FIND] Found via JS fallback: {text}")
-                        return button
-            except Exception:
-                continue
+            else:
+                button = await tab.select(found_selector, timeout=1)
+            if button:
+                print(f"[BUTTON_FIND] Found button: {found_selector}")
+                return button
+        except Exception as e:
+            print(f"[BUTTON_FIND] Element fetch error: {e}")
 
         print("[BUTTON_FIND] Could not find add-to-cart/preorder button")
         await self._take_debug_screenshot(tab, "no_add_to_cart_button")
@@ -1497,49 +1534,68 @@ class PurchaseExecutor:
             return False
 
     async def _find_place_order_button(self, tab):
-        """Find the Place Order button only if it is visible AND truly enabled.
-        Returns (element, selector_string) or (None, None).
-        """
-        place_order_css = [
-            '[data-test="placeOrderButton"]',
-            '[data-testid="placeOrderButton"]',
-            '#placeOrderButton',
-            'button[class*="place-order"]',
-            'button[class*="placeOrder"]',
-        ]
-        place_order_texts = [
-            "Place your order", "Place Your Order",
-            "Place order", "Place Order", "PLACE ORDER",
-            "Complete order", "Complete Order",
-        ]
+        """Find the Place Order button only if visible AND enabled — single JS sweep."""
+        try:
+            result = await tab.evaluate("""(() => {
+                function enabled(el) {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 || r.height === 0) return false;
+                    if (el.disabled) return false;
+                    if (el.getAttribute('aria-disabled') === 'true') return false;
+                    const cls = (el.className || '').toLowerCase();
+                    if (cls.includes('disabled') || cls.includes('inactive')) return false;
+                    const style = window.getComputedStyle(el);
+                    if (style.pointerEvents === 'none') return false;
+                    if (parseFloat(style.opacity) < 0.6) return false;
+                    return true;
+                }
+                const selectors = [
+                    '[data-test="placeOrderButton"]',
+                    '[data-testid="placeOrderButton"]',
+                    '#placeOrderButton',
+                    'button[class*="place-order"]',
+                    'button[class*="placeOrder"]',
+                ];
+                for (const sel of selectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        if (enabled(el)) return {found: true, sel: sel, disabled: false};
+                        return {found: true, sel: sel, disabled: true};
+                    }
+                }
+                // Text fallback
+                const keywords = ['place your order', 'place order', 'complete order'];
+                for (const btn of document.querySelectorAll('button')) {
+                    const t = (btn.textContent || '').trim().toLowerCase();
+                    if (keywords.some(k => t.includes(k))) {
+                        if (enabled(btn)) return {found: true, sel: 'text:' + btn.textContent.trim(), disabled: false};
+                        return {found: true, sel: 'text:' + btn.textContent.trim(), disabled: true};
+                    }
+                }
+                return {found: false};
+            })()""")
 
-        # CSS selectors first — more precise than text matching
-        for selector in place_order_css:
-            try:
-                elem = await tab.select(selector, timeout=1)
-                if elem and await self._is_visible(elem):
-                    if await self._is_place_order_enabled(elem):
-                        print(f"[PAYMENT] Place Order ENABLED via CSS: {selector}")
-                        return elem, selector
-                    # Button exists but is disabled — no point trying remaining fallbacks
-                    print(f"[PAYMENT] Place Order found but disabled: {selector}")
-                    return None, None
-            except Exception:
-                continue
+            if not result or not result.get('found'):
+                return None, None
 
-        # Text fallback
-        for text in place_order_texts:
-            try:
-                elem = await tab.find(text, best_match=True, timeout=1)
-                if elem and await self._is_visible(elem):
-                    if await self._is_place_order_enabled(elem):
-                        print(f"[PAYMENT] Place Order ENABLED via text: {text}")
-                        return elem, text
-                    # Button exists but is disabled — no point trying remaining fallbacks
-                    print(f"[PAYMENT] Place Order found but disabled: {text}")
-                    return None, None
-            except Exception:
-                continue
+            sel = result['sel']
+            if result.get('disabled'):
+                print(f"[PAYMENT] Place Order found but disabled: {sel}")
+                return None, None
+
+            # Fetch the actual element
+            if sel.startswith('text:'):
+                elem = await tab.find(sel[5:], best_match=True, timeout=1)
+            else:
+                elem = await tab.select(sel, timeout=1)
+
+            if elem:
+                print(f"[PAYMENT] Place Order ENABLED: {sel}")
+                return elem, sel
+
+        except Exception as e:
+            print(f"[PAYMENT] _find_place_order_button error: {e}")
 
         return None, None
 
@@ -1655,11 +1711,16 @@ class PurchaseExecutor:
         """Detect and dismiss Target's 'busier than expected' cart error modal.
 
         This modal appears after clicking Place Order when Target's cart service
-        is overloaded. The OK button must be clicked and Place Order retried.
-        Returns True if the modal was found and dismissed, False if not present.
+        is overloaded. It can appear as a modal dialog OR as inline page content.
+        Returns True if the error was found and dismissed/handled, False if not present.
         """
         try:
             result = await tab.evaluate("""(() => {
+                const BUSY_PHRASES = ['busier', 'temporary issue', "can't view", 'try again soon',
+                                      'busy right now', 'limiting how many guests', 'please keep trying'];
+                const isBusy = text => BUSY_PHRASES.some(p => text.includes(p));
+
+                // --- Check 1: modal/dialog overlays ---
                 const dialogs = Array.from(document.querySelectorAll(
                     '[role="dialog"], [role="alertdialog"], [class*="modal" i], ' +
                     '[data-test*="modal"], [data-test*="dialog"]'
@@ -1670,8 +1731,7 @@ class PurchaseExecutor:
 
                 for (const dialog of dialogs) {
                     const text = (dialog.innerText || '').toLowerCase();
-                    if (!text.includes('busier') && !text.includes('temporary issue') &&
-                        !text.includes("can't view") && !text.includes('try again')) continue;
+                    if (!isBusy(text)) continue;
 
                     // Click OK or any primary/confirm button
                     const btns = Array.from(dialog.querySelectorAll('button')).filter(b => {
@@ -1691,12 +1751,56 @@ class PurchaseExecutor:
                     }
                     return 'found_no_button';
                 }
+
+                // --- Check 2: inline page error (no dialog wrapper) ---
+                // Also handles the "Checkout is busy right now" banner with an X close button
+                const bodyText = (document.body && document.body.innerText || '').toLowerCase();
+                if (isBusy(bodyText)) {
+                    // First try: find the banner element itself and click its close/X button
+                    const allEls = Array.from(document.querySelectorAll('*')).filter(el => {
+                        const r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0 && r.height < 300;
+                    });
+                    for (const el of allEls) {
+                        const t = (el.innerText || '').toLowerCase();
+                        if (!isBusy(t)) continue;
+                        // Found the banner — look for close/X button inside or nearby
+                        const closeBtn = el.querySelector('button[aria-label*="close" i], button[aria-label*="dismiss" i], button[title*="close" i], button svg, button[class*="close" i]');
+                        if (closeBtn) {
+                            closeBtn.click();
+                            return 'banner_closed:' + (closeBtn.ariaLabel || closeBtn.title || 'x');
+                        }
+                        // If the element itself is small (just the banner), click any button in it
+                        const btnsInBanner = Array.from(el.querySelectorAll('button')).filter(b => {
+                            const r = b.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        });
+                        if (btnsInBanner.length > 0) {
+                            btnsInBanner[0].click();
+                            return 'banner_btn_clicked:' + (btnsInBanner[0].innerText || '').trim();
+                        }
+                    }
+                    // Second try: any visible button with dismiss-type text
+                    const allBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                        const r = b.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    });
+                    for (const btn of allBtns) {
+                        const t = (btn.innerText || '').trim().toLowerCase();
+                        if (['ok', 'okay', 'close', 'dismiss', 'got it', 'try again'].some(w => t.includes(w))) {
+                            btn.click();
+                            return 'inline_dismissed:' + btn.innerText.trim();
+                        }
+                    }
+                    return 'inline_no_button';
+                }
+
                 return 'not_found';
             })()""")
 
             if isinstance(result, str) and result != 'not_found':
-                print(f"[PAYMENT] Busy modal detected and dismissed: {result}")
-                if result == 'found_no_button':
+                print(f"[PAYMENT] Busy error detected: {result}")
+                if result in ('found_no_button', 'inline_no_button'):
                     await self._press_escape(tab)
                 return True
             return False
@@ -1709,6 +1813,12 @@ class PurchaseExecutor:
 
         Retries up to 3 times if the 'busier than expected' modal appears.
         """
+        # Dismiss any "Checkout is busy right now" banner before attempting Place Order
+        pre_dismissed = await self._handle_busy_modal(tab)
+        if pre_dismissed:
+            print("[PAYMENT] Dismissed busy banner before Place Order click")
+            await asyncio.sleep(0.5)
+
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             place_order_button, found_selector = await self._find_place_order_button(tab)
@@ -1738,8 +1848,7 @@ class PurchaseExecutor:
             print("[PAYMENT] Waiting for confirmation, CVV modal, or busy modal...")
             start = time.time()
             cvv_handled = False
-            busy_dismissed = False
-            while time.time() - start < 10.0:
+            while time.time() - start < 12.0:
                 url = tab.url
                 if 'confirmation' in url.lower() or 'thank' in url.lower():
                     print("[PAYMENT] Reached confirmation page")
@@ -1748,25 +1857,53 @@ class PurchaseExecutor:
                     cvv_handled = await self._handle_cvv_modal(tab)
                     if cvv_handled:
                         print("[PAYMENT] CVV submitted — waiting for confirmation...")
-                if not busy_dismissed:
-                    busy_dismissed = await self._handle_busy_modal(tab)
-                    if busy_dismissed:
-                        print(f"[PAYMENT] Busy modal dismissed — retrying Place Order (attempt {attempt}/{max_attempts})")
-                        await asyncio.sleep(1.0)
-                        break  # break inner loop to retry Place Order click
-                await asyncio.sleep(0.1)
+                # Check for busy error on every iteration (it may load after a delay)
+                busy_dismissed = await self._handle_busy_modal(tab)
+                if busy_dismissed:
+                    print(f"[PAYMENT] Busy error detected — retrying Place Order (attempt {attempt}/{max_attempts})")
+                    await asyncio.sleep(1.5)
+                    break  # break inner loop to retry Place Order click
+                await asyncio.sleep(0.2)
             else:
                 # Inner loop completed without break — timed out
                 url = tab.url
                 print(f"[PAYMENT] URL after Place Order: {url}")
+                # Take screenshot to diagnose what happened
+                try:
+                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    await self._screenshot(tab, f"logs/place_order_timeout_{ts}.png")
+                    print(f"[PAYMENT] Timeout screenshot: logs/place_order_timeout_{ts}.png")
+                except Exception:
+                    pass
+                # Check one final time for busy error before giving up
+                if await self._handle_busy_modal(tab):
+                    print("[PAYMENT] Busy error found on timeout — will retry")
+                    await asyncio.sleep(1.5)
+                    break  # retry Place Order
                 if 'checkout' in url.lower():
                     print("[PAYMENT] Still on checkout after Place Order wait — signaling failure")
                     return False
+                # Navigated away from checkout but not to confirmation — check page content
+                page_text = ''
+                try:
+                    page_text = (await tab.evaluate("document.body.innerText || ''")).lower()
+                except Exception:
+                    pass
+                if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now']):
+                    print("[PAYMENT] Busy error on redirected page — will retry")
+                    await asyncio.sleep(1.5)
+                    break  # retry Place Order
                 return True
 
             # busy_dismissed caused break — loop back to retry Place Order
 
         print(f"[PAYMENT] Place Order failed after {max_attempts} attempts (busy modal)")
+        try:
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            await self._screenshot(tab, f"logs/busy_fail_{ts}.png")
+            print(f"[PAYMENT] Screenshot saved: logs/busy_fail_{ts}.png")
+        except Exception:
+            pass
         return False
 
     async def _complete_payment(self, tab, initial_state: str = 'unknown') -> bool:

@@ -363,7 +363,6 @@ class BulletproofPurchaseManager:
     def check_and_complete_purchases(self):
         """Check and complete purchases - called during stock refresh cycles only"""
         current_time = time.time()
-        print(f"[PURCHASE_DEBUG] Completion check running at timestamp {current_time:.3f}")
 
         with self._state_lock:
             states = self._load_states_unsafe()
@@ -383,7 +382,6 @@ class BulletproofPurchaseManager:
                         elapsed_time = current_time - started_time
 
                         status = state.get('status')
-                        print(f"[PURCHASE_DEBUG] {tcin} REAL purchase {status}: {elapsed_time:.1f}s elapsed (no timer)")
 
                         # Only force-fail real purchases if they've been running for more than 120 seconds
                         if elapsed_time > 120:
@@ -398,7 +396,6 @@ class BulletproofPurchaseManager:
                         time_remaining = complete_time - current_time
                         elapsed_time = current_time - started_time
 
-                        print(f"[PURCHASE_DEBUG] {tcin} MOCK purchase attempting: {time_remaining:.1f}s remaining (started at {started_time:.3f}, completes at {complete_time:.3f})")
 
                         # Force completion if purchase is overdue by more than 30 seconds (safety mechanism)
                         if time_remaining < -30:
@@ -409,14 +406,9 @@ class BulletproofPurchaseManager:
                         elif current_time >= complete_time:
                             # Normal completion
                             final_outcome = state.get('final_outcome', 'failed')
-                            print(f"[PURCHASE_DEBUG] {tcin} COMPLETING with outcome: {final_outcome} (was attempting for {elapsed_time:.1f}s)")
                             self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
                             completed_purchases.append((tcin, final_outcome))
 
-            print(f"[PURCHASE_DEBUG] Completion check found {attempting_count} attempting purchases, completed {len(completed_purchases)}")
-
-            if completed_purchases:
-                print(f"[PURCHASE_DEBUG] Completed {len(completed_purchases)} purchases this cycle")
 
             return completed_purchases
 
@@ -581,17 +573,11 @@ class BulletproofPurchaseManager:
     def reset_completed_purchases_by_stock_status(self, stock_data):
         """Stock-aware reset: only reset completed purchases for products that are OUT OF STOCK"""
         with self._state_lock:
-            print(f"[STOCK_AWARE_RESET_DEBUG] Starting stock-aware reset operation at timestamp {time.time():.3f}")
-
             # Load current states
             states = self._load_states_unsafe()
-            print(f"[STOCK_AWARE_RESET_DEBUG] Loaded {len(states)} total purchase states")
 
             # Create stock status lookup (handle different stock_data formats)
             stock_status = {}
-
-            print(f"[STOCK_AWARE_RESET_DEBUG] Raw stock_data type: {type(stock_data)}")
-            print(f"[STOCK_AWARE_RESET_DEBUG] Raw stock_data (first 200 chars): {str(stock_data)[:200]}")
 
             try:
                 # Handle different possible formats of stock_data
@@ -620,8 +606,6 @@ class BulletproofPurchaseManager:
                     else:
                         print(f"[STOCK_AWARE_RESET_ERROR] Unexpected product format: {type(product)} - {product}")
 
-                print(f"[STOCK_AWARE_RESET_DEBUG] Stock status for {len(stock_status)} products: {stock_status}")
-
             except Exception as e:
                 print(f"[STOCK_AWARE_RESET_ERROR] Error processing stock_data: {e}")
                 return 0
@@ -635,10 +619,6 @@ class BulletproofPurchaseManager:
                 if not is_in_stock:  # Product is OUT OF STOCK
                     out_of_stock_completed[tcin] = state
 
-            print(f"[STOCK_AWARE_RESET_DEBUG] Found {len(out_of_stock_completed)} completed purchases for OUT OF STOCK products to reset:")
-            for tcin, state in out_of_stock_completed.items():
-                in_stock_status = "IN STOCK" if stock_status.get(tcin, False) else "OUT OF STOCK"
-                print(f"[STOCK_AWARE_RESET_DEBUG]   {tcin}: {state.get('status')} -> reset to ready ({in_stock_status})")
 
             reset_count = 0
             reset_details = []
@@ -668,10 +648,6 @@ class BulletproofPurchaseManager:
                         }
                         reset_details.append(reset_info)
 
-                        if current_status == 'purchased':
-                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (IN STOCK, repeat purchase - was order: {old_order})")
-                        else:
-                            print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (IN STOCK + FAILED, retry - was: {old_failure})")
                     else:
                         # Product is OUT OF STOCK - reset everything to ready for next cycle
                         old_order = state.get('order_number', 'N/A')
@@ -690,7 +666,6 @@ class BulletproofPurchaseManager:
                         }
                         reset_details.append(reset_info)
 
-                        print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (OUT OF STOCK, was order: {old_order})")
 
                 # Also reset very old attempting states (older than 60 seconds) regardless of stock
                 elif current_status == 'attempting':
@@ -708,44 +683,13 @@ class BulletproofPurchaseManager:
                         }
                         reset_details.append(reset_info)
 
-                        print(f"[STOCK_AWARE_RESET_DEBUG] {tcin}: {current_status} -> ready (stuck timeout after 60s)")
 
             # Save states if any resets occurred
             if reset_count > 0:
-                print(f"[STOCK_AWARE_RESET_DEBUG] Saving {reset_count} resets to file...")
                 save_success = self._save_states_unsafe(states)
 
-                if save_success:
-                    print(f"[STOCK_AWARE_RESET_DEBUG] Successfully saved {reset_count} resets to file")
-
-                    # Verify the save by re-loading and checking
-                    verification_states = self._load_states_unsafe()
-                    verification_errors = []
-
-                    for reset_info in reset_details:
-                        tcin = reset_info['tcin']
-                        if tcin in verification_states:
-                            actual_status = verification_states[tcin].get('status')
-                            if actual_status != 'ready':
-                                verification_errors.append(f"{tcin} expected 'ready' but got '{actual_status}'")
-                        else:
-                            verification_errors.append(f"{tcin} missing from saved states")
-
-                    if verification_errors:
-                        print(f"[STOCK_AWARE_RESET_ERROR] Verification failed after save:")
-                        for error in verification_errors:
-                            print(f"[STOCK_AWARE_RESET_ERROR]   {error}")
-                    else:
-                        print(f"[STOCK_AWARE_RESET_DEBUG] Verification passed - all {reset_count} resets confirmed in file")
-
-                else:
+                if not save_success:
                     print(f"[STOCK_AWARE_RESET_ERROR] Failed to save resets to file!")
-
-                print(f"[PURCHASE] Stock-aware reset: {reset_count} completed purchases reset to ready (OUT OF STOCK only)")
-            else:
-                print(f"[STOCK_AWARE_RESET_DEBUG] No completed purchases for OUT OF STOCK products found to reset")
-
-            print(f"[STOCK_AWARE_RESET_DEBUG] Stock-aware reset operation completed at timestamp {time.time():.3f}")
             return reset_count
 
     def _acquire_file_lock(self):
@@ -883,17 +827,12 @@ class BulletproofPurchaseManager:
         # Use real purchasing if enabled (fallback to mock if needed)
         print("=" * 80)
         print(f"[PURCHASE_TRIGGER] Product IN STOCK: {product_title} (TCIN: {tcin})")
-        print(f"[PURCHASE_MODE_DEBUG] use_real_purchasing={self.use_real_purchasing}")
-        print(f"[PURCHASE_MODE_DEBUG] session_initialized={self.session_initialized}")
-        print(f"[PURCHASE_MODE_DEBUG] session_manager={self.session_manager}")
-        print(f"[PURCHASE_MODE_DEBUG] purchase_executor={self.purchase_executor}")
         print("=" * 80)
 
         if self.use_real_purchasing:
             # Force real purchase even if session validation failed
             # (session may be healthy but validation too strict)
             print(f"[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for {tcin}")
-            print(f"[PURCHASE_MODE] ✅ Browser should open and begin checkout process...")
             return self._start_real_purchase(tcin, product_title, states)
         else:
             # Mock mode available for testing without browser
@@ -934,8 +873,6 @@ class BulletproofPurchaseManager:
         def execute_real_purchase():
             try:
                 print(f"[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for {tcin}")
-                print(f"[REAL_PURCHASE_THREAD] purchase_executor: {self.purchase_executor}")
-                print(f"[REAL_PURCHASE_THREAD] session_initialized: {self.session_initialized}")
 
                 # CRITICAL: Wait for session to be ready (don't initialize new one!)
                 if not self.session_initialized:
@@ -967,7 +904,6 @@ class BulletproofPurchaseManager:
                         return
 
                 # Session is ready, proceed with purchase using subprocess (bypasses asyncio threading issues)
-                print(f"[REAL_PURCHASE_THREAD] Session ready - NOW starting actual purchase execution...")
 
                 # BUGFIX: Set purchase lock to prevent session validation during purchase
                 if self.session_manager:
@@ -981,13 +917,11 @@ class BulletproofPurchaseManager:
                         'started_at': time.time(),
                         'status': 'executing'
                     }
-                    print(f"[REAL_PURCHASE_THREAD] Registered thread in active purchases: {tcin}")
 
                 # NOTE: Status already set to 'attempting' when purchase was queued
                 # No need to update again here - prevents race condition with dashboard
 
                 # Use existing PurchaseExecutor with thread-safe async execution
-                print(f"[REAL_PURCHASE_THREAD] Executing purchase using existing session...")
 
                 try:
                     # Use submit_async_task to safely call async method from thread
@@ -996,7 +930,7 @@ class BulletproofPurchaseManager:
                     )
 
                     # Wait for result with timeout
-                    result = future.result(timeout=60)
+                    result = future.result(timeout=150)
 
                     print(f"[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {result}")
 
@@ -1014,7 +948,8 @@ class BulletproofPurchaseManager:
                         print(f"[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle")
 
                 except TimeoutError:
-                    print(f"[REAL_PURCHASE_THREAD] [ERROR] Purchase execution timed out after 60s")
+                    print(f"[REAL_PURCHASE_THREAD] [ERROR] Purchase execution timed out after 150s — cancelling coroutine")
+                    future.cancel()  # CRITICAL: cancels the asyncio Task, releasing _page_lock
                     failed_result = {
                         'success': False,
                         'tcin': tcin,
@@ -1026,6 +961,10 @@ class BulletproofPurchaseManager:
 
                 except Exception as e:
                     print(f"[REAL_PURCHASE_THREAD] [ERROR] Purchase execution failed: {e}")
+                    try:
+                        future.cancel()  # Cancel to avoid orphan coroutines holding _page_lock
+                    except Exception:
+                        pass
                     raise
 
             except Exception as e:
@@ -1226,7 +1165,6 @@ class BulletproofPurchaseManager:
 
         with self._state_lock:
             states = self._load_states_unsafe()
-            print(f"[PURCHASE_PROCESS_DEBUG] Starting stock data processing with {len(stock_data)} products")
 
             # Initialize states for any new TCINs that don't exist yet
             states_modified = False
@@ -1290,7 +1228,6 @@ class BulletproofPurchaseManager:
                         # Don't set active_purchase - allow new purchase to start
                     else:
                         active_purchase = tcin
-                        print(f"[PURCHASE_CONCURRENCY] Active purchase detected: {tcin} (status: {state.get('status')}, running {elapsed:.1f}s)")
                         break
 
             # CRITICAL: Also check RUNTIME state (background threads)
@@ -1352,7 +1289,6 @@ class BulletproofPurchaseManager:
                 # Config format: {"products": [{"tcin": "...", "name": "..."}, ...]}
                 products_list = config.get('products', [])
                 product_priority_order = [p['tcin'] for p in products_list if 'tcin' in p]
-                print(f"[PURCHASE_PRIORITY] Loaded priority order: {len(product_priority_order)} products")
             except Exception as e:
                 print(f"[PURCHASE_PRIORITY_ERROR] Could not load product priority: {e}")
                 import traceback
@@ -1368,7 +1304,6 @@ class BulletproofPurchaseManager:
                     return 999999  # Unknown products go to end
 
             sorted_tcins = sorted(stock_data.keys(), key=get_priority_index)
-            print(f"[PURCHASE_PRIORITY] Processing {len(sorted_tcins)} products in priority order")
 
             # Process each product according to state rules (in priority order)
             for tcin in sorted_tcins:
@@ -1376,7 +1311,6 @@ class BulletproofPurchaseManager:
                 current_state = states.get(tcin, {'status': 'ready'})
                 current_status = current_state.get('status', 'ready')
 
-                print(f"[PURCHASE_PROCESS_DEBUG] {tcin}: stock={product_data.get('in_stock')}, status={current_status}")
 
                 if product_data.get('in_stock'):
                     # CRITICAL STATE RULE: IN STOCK + ready -> IMMEDIATELY go to "attempting"
@@ -1414,13 +1348,10 @@ class BulletproofPurchaseManager:
                         self._save_states_unsafe(states)
                         print(f"[PURCHASE_EMERGENCY] Emergency reset {tcin} to ready and will retry purchase next cycle")
                     else:
-                        # Already attempting - let it continue
-                        print(f"[PURCHASE] {tcin} IN STOCK but status={current_status} - let continue")
+                        pass  # Already attempting - let it continue
                 else:
-                    # OUT OF STOCK: Status managed by reset_completed_purchases_to_ready()
-                    print(f"[PURCHASE] {tcin} OUT OF STOCK - status={current_status} (no action)")
+                    pass  # OUT OF STOCK: Status managed by reset_completed_purchases_to_ready()
 
-            print(f"[PURCHASE_PROCESS_DEBUG] Stock processing completed, generated {len(results)} new purchase actions")
 
         return results
 

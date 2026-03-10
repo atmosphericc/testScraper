@@ -1826,7 +1826,7 @@
                         {{ 'LIVE' if status.monitoring else 'OFF' }}
                     </div>
                 </div>
-                <div class="header-stat">
+                <div class="header-stat" id="next-refresh-stat">
                     <div class="header-stat-label">Next Refresh</div>
                     <div class="header-stat-value" style="color: var(--accent-color); display: flex; align-items: center; gap: 0.5rem;">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -3422,6 +3422,11 @@
                             timerDuration = data.total;
                             countdown = Math.ceil(data.remaining);
 
+                            if (data.proxy_mode) {
+                                const nextRefreshStat = document.getElementById('next-refresh-stat');
+                                if (nextRefreshStat) nextRefreshStat.style.display = 'none';
+                            }
+
                             console.log(`✅ Monitoring active! Timer synced with backend:`);
                             console.log(`   - Start time: ${timerStartTime}`);
                             console.log(`   - Duration: ${timerDuration}s (random 15-25s)`);
@@ -4010,6 +4015,12 @@
             const purchaseChanges = cycleData.purchase_state_changes || {};
             const timerSync = cycleData.timer_sync || {};
             const summary = cycleData.summary || {};
+
+            const proxyMode = timerSync.proxy_mode || false;
+            const nextRefreshStat = document.getElementById('next-refresh-stat');
+            if (nextRefreshStat) {
+                nextRefreshStat.style.display = proxyMode ? 'none' : '';
+            }
 
             // VALIDATION: Log state BEFORE changes for comparison
             const preUpdateState = validateCurrentUIState();

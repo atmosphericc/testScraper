@@ -875,32 +875,24 @@ class SessionManager:
     async def get_page(self):
         """Get the main tab - bulletproof with auto-recovery. Returns nodriver tab."""
         max_attempts = 3
-        print(f"[DEBUG_FLASH] [DEBUG] get_page() called - checking for tabs...")
 
         for attempt in range(max_attempts):
             try:
                 with self._context_lock:
                     if not self.browser or not self.session_active:
-                        print(f"[DEBUG_FLASH] [WARNING] Browser invalid on attempt {attempt + 1}")
                         break
 
                     # Get active tab
                     if self.browser.tabs:
                         tab = self.browser.tabs[0]
                         self._active_tab = tab
-                        print(f"[DEBUG_FLASH] [OK] Using existing tab[0] - NO NEW TAB")
                     else:
-                        print(f"[DEBUG_FLASH] [WARNING] NO TABS EXIST - CREATING NEW TAB")
                         tab = await self.browser.get("about:blank")
                         self._active_tab = tab
-                        print(f"[DEBUG_FLASH] [OK] New tab created in get_page()")
 
                     # Test tab health
                     if tab and await self._test_tab_health(tab):
-                        print(f"[DEBUG_FLASH] [OK] Returning healthy tab from get_page()")
                         return tab
-                    else:
-                        print(f"[DEBUG_FLASH] [ERROR] Tab unhealthy on attempt {attempt + 1}")
 
             except Exception as e:
                 self.logger.error(f"Get page attempt {attempt + 1} failed: {e}")

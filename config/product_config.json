@@ -75,6 +75,16 @@
       "tcin": "93954446",
       "name": "Product 93954446",
       "enabled": true
+    },
+    {
+      "tcin": "95230447",
+      "name": "Product 95230447",
+      "enabled": true
+    },
+    {
+      "tcin": "95093982",
+      "name": "Product 95093982",
+      "enabled": true
     }
   ]
 }

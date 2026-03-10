@@ -100,7 +100,6 @@ class StockMonitor:
             return {}
 
         tcins = [p['tcin'] for p in enabled_products]
-        print(f"[STOCK] Checking {len(tcins)} products: {tcins}")
 
         # Prepare API call
         api_key = random.choice(self.api_keys)
@@ -132,7 +131,6 @@ class StockMonitor:
                 data = response.json()
                 result = self._process_response(data, response_time)
                 self.last_check_time = datetime.now()
-                print(f"[STOCK] Success: {len(result)} products processed in {response_time:.0f}ms")
                 return result
             else:
                 print(f"[STOCK] API Error: HTTP {response.status_code}")
@@ -181,7 +179,7 @@ class StockMonitor:
         while True:
             try:
                 stock_data = self.check_stock(proxy=proxy)
-                if stock_data and any(v.get('in_stock') for v in stock_data.values()):
+                if stock_data:
                     callback(stock_data)
             except Exception as e:
                 print(f"[PROXY] Worker error: {e}")
@@ -220,16 +218,32 @@ class StockMonitor:
                 # 'VC' = variation child (also Target-direct, common for standalone items)
                 # 'VPC' = vendor-partner content (marketplace — skip)
                 is_target_direct = relationship_code in ('SA', 'VC')
-                print(f"[STOCK] {tcin}: availability={availability_status}, relationship_code={relationship_code}, is_target_direct={is_target_direct}")
 
                 # Determine if in stock
                 services = shipping.get('services', [])
-                # is_preorder = True only when actively in a sellable preorder window
-                is_preorder = availability_status == 'PRE_ORDER_SELLABLE'
-                if is_preorder:
+                atp_qty = shipping.get('available_to_promise_quantity', -1)
+
+                # Explicit blocklist — these statuses are never purchasable
+                BLOCKED_STATUSES = {
+                    'PRE_ORDER_UNSELLABLE',
+                    'OUT_OF_STOCK',
+                    'UNAVAILABLE',
+                    'NOT_AVAILABLE',
+                    'UNKNOWN',
+                }
+
+                if availability_status in BLOCKED_STATUSES:
+                    base_available = False
+                elif availability_status == 'PRE_ORDER_SELLABLE':
+                    # Only purchasable if shipping services are actually offered
                     base_available = len(services) > 0
+                elif availability_status == 'IN_STOCK':
+                    # Guard against sell-through race: qty=0 but status not yet updated
+                    base_available = atp_qty != 0
                 else:
-                    base_available = availability_status == 'IN_STOCK'
+                    # Unknown status — treat as unavailable to avoid false positives
+                    base_available = False
+                    print(f"[STOCK] Unknown availability_status '{availability_status}' for {tcin} — treating as OOS")
 
                 in_stock = base_available and is_target_direct
 
@@ -247,7 +261,7 @@ class StockMonitor:
                     'last_checked': datetime.now().isoformat(),
                     'status_detail': status_detail,
                     'availability_status': availability_status,
-                    'is_preorder': is_preorder,
+                    'is_preorder': availability_status == 'PRE_ORDER_SELLABLE',
                     'is_target_direct': is_target_direct,
                     'response_time_ms': response_time
                 }

@@ -146,7 +146,8 @@ class ThreadSafeData:
                 'remaining': remaining,
                 'total': cycle_duration,
                 'elapsed': elapsed,
-                'start_time': self.timer_start_time
+                'start_time': self.timer_start_time,
+                'proxy_mode': self.proxy_mode,
             }
 
     def mark_cycle_complete(self):
@@ -519,7 +520,7 @@ def rotate_activity_log():
     except Exception as e:
         print(f"[WARN] Failed to rotate activity log: {e}")
 
-def add_activity_log(message, level="info", category="system"):
+def add_activity_log(message, level="info", category="system", console=True):
     """
     Add entry to activity log with timestamp and persistence (thread-safe).
 
@@ -560,7 +561,8 @@ def add_activity_log(message, level="info", category="system"):
     broadcast_sse_event('activity_log', entry)
 
     # STEP 4: Console logging (non-blocking)
-    print(f"[{timestamp.strftime('%H:%M:%S')}] [{category.upper()}] {message}")
+    if console:
+        print(f"[{timestamp.strftime('%H:%M:%S')}] [{category.upper()}] {message}")
 
 def initialize_global_purchase_manager():
     """Initialize global purchase manager and event loop - called once at startup"""
@@ -666,7 +668,7 @@ def purchase_status_callback(tcin, status, state):
 
     # Log purchase events
     if status == 'attempting':
-        add_activity_log(f"MOCK: Starting purchase attempt: {state.get('product_title', tcin)}", "info", "purchase")
+        add_activity_log(f"Starting purchase attempt: {state.get('product_title', tcin)}", "info", "purchase", console=False)
     elif status == 'purchased':
         add_activity_log(f"MOCK: Purchase successful: {state.get('product_title', tcin)} - Order: {state.get('order_number')}", "success", "purchase")
     elif status == 'failed':
@@ -684,11 +686,10 @@ def broadcast_sse_event(event_type, data):
         with sse_queue_lock:
             clients_count = len(sse_client_queues)
             if clients_count == 0:
-                print(f"[SSE_WARN] No clients connected for {event_type} event!")
+                pass  # No dashboard open, silently skip
             for client_id, client_queue in sse_client_queues.items():
                 try:
                     client_queue.put(event_data, block=False)
-                    print(f"[SSE_DEBUG] Sent {event_type} to client {client_id[:8]}... (queue size: {client_queue.qsize()})")
                 except queue.Full:
                     print(f"[SSE] ⚠️ ERROR: Queue FULL for client {client_id} on {event_type} event!")
     except Exception as e:
@@ -738,20 +739,13 @@ def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, tim
         with sse_queue_lock:
             clients_count = len(sse_client_queues)
             if clients_count == 0:
-                print(f"[SSE] ⚠️ WARNING: No clients connected! Event {cycle_id} will not be delivered to any dashboard.")
-                print(f"[SSE] ⚠️ This means dashboards won't update in real-time. Check if EventSource connection is established.")
+                pass  # No dashboard open, silently skip
             else:
-                print(f"[SSE_DEBUG] About to broadcast atomic event {cycle_id} to {clients_count} client(s)")
-                print(f"[SSE_DEBUG] Event contains {len(stock_updates)} stock updates, {len(activity_log)} activity log entries")
                 for client_id, client_queue in sse_client_queues.items():
                     try:
-                        queue_size_before = client_queue.qsize()
                         client_queue.put(atomic_event, block=False)
-                        queue_size_after = client_queue.qsize()
-                        print(f"[SSE_DEBUG] Client {client_id[:8]}... queue: {queue_size_before} → {queue_size_after}")
                     except queue.Full:
                         print(f"[SSE] ⚠️ ERROR: Queue FULL for client {client_id}, skipping event {cycle_id}!")
-        print(f"[SSE] ✅ Broadcast atomic API cycle event {cycle_id} to {clients_count} client(s)")
 
     except Exception as e:
         print(f"[SSE] Failed to broadcast atomic cycle event: {e}")
@@ -802,47 +796,26 @@ class StockMonitorThread:
 
     def _monitor_loop(self):
         """Main stock monitoring loop with timer persistence"""
-        print("[STOCK_MONITOR] Initializing with timer persistence...")
-
         # Initialize timer with persistence logic
         is_manual_refresh = not self.shared_data.is_server_startup
-        print(f"[STOCK_MONITOR] is_manual_refresh: {is_manual_refresh}")
         initial_cycle_duration = self.shared_data.initialize_timer(is_manual_refresh)
-        print(f"[STOCK_MONITOR] initialize_timer returned: {initial_cycle_duration}")
 
         if initial_cycle_duration is None:
-            print("[STOCK_MONITOR] WARNING: initial_cycle_duration is None, using default 20s")
             initial_cycle_duration = 20
-
-        print(f"[STOCK_MONITOR] Starting with {initial_cycle_duration:.1f}s initial cycle")
 
         # Set timer immediately so dashboard shows countdown during warmup/initial wait
         # This prevents the dashboard from being stuck on "loading" state
         with self.shared_data.lock:
             self.shared_data.timer_start_time = time.time()
             self.shared_data.timer_duration = initial_cycle_duration
-        print(f"[STOCK_MONITOR] Timer initialized for {initial_cycle_duration}s - dashboard will show countdown")
 
         # ULTRA-FAST WARMUP - Minimal delay for competitive bot performance
-        # Browser launches in ~2-3 seconds with optimized settings
-        # 5 second warmup is plenty for browser to be ready
         if not is_manual_refresh:
             warmup_seconds = 5
-            print(f"[STOCK_MONITOR] [WARMUP] ⚡ FAST MODE: {warmup_seconds}s warmup for browser launch")
-            print("[STOCK_MONITOR] [WARMUP] ⚡ Optimized for competitive bot speed")
-
             for i in range(warmup_seconds):
                 if not self.running:
                     return
                 time.sleep(1)
-
-            print("[STOCK_MONITOR] [OK] ⚡ Ultra-fast warmup complete - ready for purchases!")
-
-        # CRITICAL FIX: First stock check happens INSIDE timer loop to sync with dashboard
-        print("[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
-        print("[STOCK_MONITOR] Entering timer-synchronized monitoring loop...")
-        print("[STOCK_MONITOR] First stock check will happen after initial timer countdown")
-        print("[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
 
         first_cycle = True  # Flag to handle first iteration
 
@@ -868,18 +841,9 @@ class StockMonitorThread:
                 # FIRST CYCLE: Do stock check immediately, THEN start timer
                 # SUBSEQUENT CYCLES: Wait for timer first, THEN check stock
                 if first_cycle:
-                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
-                    print(f"[STOCK_MONITOR] FIRST CYCLE: Performing immediate stock check")
-                    print(f"[STOCK_MONITOR] Subsequent cycles will wait for full timer countdown")
-                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
                     first_cycle = False
                     # Skip wait on first iteration - go straight to stock check below
                 else:
-                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
-                    print(f"[STOCK_MONITOR] Starting {cycle_duration}s countdown...")
-                    print(f"[STOCK_MONITOR] Purchase will be processing during this countdown")
-                    print(f"[STOCK_MONITOR] Next stock check will happen when timer hits 0")
-                    print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
 
                     # WAIT FIRST (let purchase happen during countdown)
                     # This ensures browser stays on cart page until timer expires
@@ -889,9 +853,6 @@ class StockMonitorThread:
                         time.sleep(1)
 
                 # THEN check stock when timer expires
-                print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
-                print(f"[STOCK_MONITOR] Timer expired - performing stock check NOW...")
-                print(f"[STOCK_MONITOR] ═══════════════════════════════════════════════════════")
 
                 # Perform stock check with test mode awareness
                 with self.shared_data.lock:
@@ -911,8 +872,6 @@ class StockMonitorThread:
                     stock_data = self._check_stock()
 
                 if stock_data:
-                    print("[STOCK_MONITOR] [OK] Stock check complete - publishing to dashboard...")
-
                     # FIX: Pre-compute and set NEXT cycle's timer BEFORE publishing event
                     # This ensures the SSE contains accurate timer info for the next cycle
                     if os.environ.get('TEST_MODE', 'false').lower() == 'true':
@@ -924,7 +883,6 @@ class StockMonitorThread:
                     with self.shared_data.lock:
                         self.shared_data.timer_start_time = next_start_time
                         self.shared_data.timer_duration = next_cycle_duration
-                    print(f"[STOCK_MONITOR] Timer set for next cycle: {next_cycle_duration}s")
 
                     # Publish stock update event (will trigger atomic API cycle processing)
                     # Now the SSE will include the NEW timer, not the expired one
@@ -941,7 +899,7 @@ class StockMonitorThread:
                     # by atomic api_cycle_complete event from PurchaseManagerThread._handle_stock_update()
 
                 else:
-                    print("[STOCK_MONITOR] [WARNING] Stock check failed, will retry next cycle")
+                    pass  # Stock check failed, will retry next cycle
 
             except Exception as e:
                 print(f"[STOCK_MONITOR] Error in monitoring loop: {e}")
@@ -1243,46 +1201,26 @@ class PurchaseManagerThread:
             if hasattr(self, '_last_stock_update_time'):
                 time_since_last = current_time - self._last_stock_update_time
                 if time_since_last < 0.5:  # Short window to prevent race conditions
-                    print(f"[PURCHASE_DEBUG] Preventing rapid-fire stock update (only {time_since_last:.2f}s since last)")
                     return
 
             self._last_stock_update_time = current_time
 
             # Generate unique cycle ID
             cycle_id = shared_data.get_next_cycle_id()
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Starting API cycle processing at {datetime.now().strftime('%H:%M:%S.%f')[:-3]}")
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Stock data contains {len(stock_data)} products")
 
             # CRITICAL FIX: Sync fresh stock data to shared_data for dashboard consistency
             # This ensures /api/status endpoint returns current data, not stale cache
             with shared_data.lock:
                 shared_data.stock_data = stock_data.copy()
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ Synced fresh stock data to shared_data cache")
 
             # STEP 1: Stock-aware reset of completed purchases (only for OUT OF STOCK products)
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 1: Stock-aware reset of completed purchases...")
-
             # Get detailed state before reset
             reset_tcins = self.purchase_manager.get_completed_purchase_tcins()  # Get list before reset
             all_states_before = self.purchase_manager.get_all_states()
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Found {len(reset_tcins)} completed purchases to evaluate: {reset_tcins}")
-
-            # Log current states for debugging
-            for tcin in reset_tcins:
-                state = all_states_before.get(tcin, {})
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Before reset - {tcin}: {state.get('status')} (order: {state.get('order_number', 'N/A')})")
 
             # Log active purchases (non-blocking) - process_stock_data will skip "attempting" TCINs
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Checking for active background threads...")
             with self.purchase_manager._state_lock:
                 active_threads = dict(self.purchase_manager._active_purchases)
-
-            if active_threads:
-                for tcin, info in active_threads.items():
-                    elapsed = time.time() - info['started_at']
-                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Active purchase: {tcin} (running {elapsed:.1f}s) - skipping")
-            else:
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ✅ No active background threads")
 
             # TEST_MODE: Reset all completed purchases for continuous testing loop
             # PROD_MODE: Only reset OUT OF STOCK completed purchases (stock-aware reset)
@@ -1311,17 +1249,11 @@ class PurchaseManagerThread:
                     is_in_stock = stock_lookup.get(tcin, False)
 
                     if is_in_stock:
-                        # IN STOCK products should keep their purchase status unchanged
                         if actual_status != before_status:
                             reset_verification_errors.append(f"{tcin}: IN STOCK should remain '{before_status}' but got '{actual_status}'")
-                        else:
-                            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified unchanged - {tcin}: {actual_status} (IN STOCK)")
                     else:
-                        # OUT OF STOCK products should be reset to ready
                         if actual_status != 'ready':
                             reset_verification_errors.append(f"{tcin}: OUT OF STOCK should be 'ready' but got '{actual_status}'")
-                        else:
-                            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Verified reset - {tcin}: {actual_status} (OUT OF STOCK)")
 
                 if reset_verification_errors:
                     print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR STOCK-AWARE RESET VERIFICATION FAILED:")
@@ -1329,45 +1261,36 @@ class PurchaseManagerThread:
                         print(f"[CYCLE ATOMIC CYCLE {cycle_id}] ERROR   {error}")
                     # Continue processing but log the error
                     add_activity_log(f"Cycle {cycle_id}: Stock-aware reset verification failed for {len(reset_verification_errors)} purchases", "error", "purchase_reset")
-                else:
-                    print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK Stock-aware reset verification passed for all {len(reset_tcins)} purchases")
-
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Reset {reset_count} purchases to ready")
 
             # CRITICAL: Sync resets to shared_data BEFORE starting new purchases
             # This prevents race conditions where resets are invisible to dashboard
             with shared_data.lock:
                 shared_data.purchase_states = self.purchase_manager.get_all_states()
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Synced {reset_count} resets to shared_data")
 
             # CRITICAL FIX (TEST_MODE): Force immediate dashboard update for resets
             # Ensures dashboard shows "ready" status immediately after "purchased"
             if os.environ.get('TEST_MODE', 'false').lower() == 'true' and reset_count > 0:
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] [TEST_MODE] Broadcasting reset state changes to dashboard...")
                 for tcin in reset_tcins:
                     state = self.purchase_manager.get_all_states().get(tcin, {})
                     if state.get('status') == 'ready':
                         purchase_status_callback(tcin, 'ready', state)
-                print(f"[CYCLE ATOMIC CYCLE {cycle_id}] [TEST_MODE] ✅ Reset broadcasts sent for {reset_count} purchases")
 
             # STEP 2: Process stock data according to state rules
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 2: Processing stock data...")
             in_stock_tcins = [tcin for tcin, data in stock_data.items() if data.get('in_stock')]
             out_stock_tcins = [tcin for tcin, data in stock_data.items() if not data.get('in_stock')]
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] IN STOCK: {in_stock_tcins}")
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OUT OF STOCK: {out_stock_tcins}")
+            if in_stock_tcins:
+                print(f"[STOCK] IN STOCK: {', '.join(in_stock_tcins)}")
+            else:
+                print(f"[STOCK] All out of stock")
 
             # FIX: Add IN STOCK/OUT OF STOCK messages to activity log for dashboard display
             # These messages were only going to console, not to the activity log that the dashboard reads
             if in_stock_tcins:
                 add_activity_log(f"IN STOCK: {in_stock_tcins}", "success", "api_cycle")
-            if out_stock_tcins:
-                add_activity_log(f"OUT OF STOCK: {out_stock_tcins}", "info", "api_cycle")
 
             # IN STOCK + ready status -> go to "attempting"
             # OUT OF STOCK -> stay in "ready" status
             purchase_actions = self.purchase_manager.process_stock_data(stock_data)
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Generated {len(purchase_actions)} purchase actions")
 
             # STEP 3: Prepare atomic purchase changes data
             purchase_changes = {
@@ -1395,9 +1318,6 @@ class PurchaseManagerThread:
             }
 
             # STEP 5: Broadcast single atomic event with ALL changes
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] STEP 5: Broadcasting atomic SSE event...")
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Event contains: {summary['total_products']} products, {summary['in_stock_count']} in stock, {summary['new_attempts_count']} attempts, {summary['resets_count']} resets")
-
             broadcast_atomic_api_cycle_event(
                 cycle_id=cycle_id,
                 stock_data=stock_data,
@@ -1412,11 +1332,8 @@ class PurchaseManagerThread:
 
             add_activity_log(
                 f"Stock Check: {summary['in_stock_count']} in stock {in_stock_display}, {len(out_stock_tcins)} out of stock {out_stock_display} • {summary['new_attempts_count']} attempts, {summary['resets_count']} resets",
-                "info", "api_cycle"
+                "info", "api_cycle", console=False
             )
-
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] OK COMPLETED at {datetime.now().strftime('%H:%M:%S.%f')[:-3]} - {len(purchase_actions)} attempts started, {reset_count} resets")
-            print(f"[CYCLE ATOMIC CYCLE {cycle_id}] Next cycle will be #{cycle_id + 1}")
 
             # ENHANCED MONITORING: Record comprehensive cycle data
             try:
@@ -1433,10 +1350,8 @@ class PurchaseManagerThread:
                     purchase_states=final_purchase_states
                 )
 
-                print(f"[CYCLE MONITORING] Cycle {cycle_id} data recorded - duration: {cycle_duration:.3f}s")
-
-            except Exception as monitor_error:
-                print(f"[CYCLE MONITORING] Error recording cycle data: {monitor_error}")
+            except Exception:
+                pass
 
         except Exception as e:
             print(f"[PURCHASE_MANAGER] Error in atomic stock update: {e}")
@@ -1455,8 +1370,8 @@ class PurchaseManagerThread:
                         resets=0,
                         purchase_states={}
                     )
-            except Exception as monitor_error:
-                print(f"[CYCLE MONITORING] Error recording failed cycle: {monitor_error}")
+            except Exception:
+                pass
 
 def monitoring_loop():
     """Legacy monitoring loop - replaced by event-driven architecture"""
@@ -1819,7 +1734,6 @@ def sse_stream():
                     # Previous 30s timeout caused events to queue up without being sent
                     event = client_queue.get(timeout=1)
 
-                    print(f"[SSE_GENERATOR] Client {client_id[:8]}... got event type={event.get('type')}, queue_remaining={client_queue.qsize()}")
 
                     # Format SSE data and yield immediately
                     yield f"data: {json.dumps(event)}\n\n"
@@ -1835,8 +1749,6 @@ def sse_stream():
                         except queue.Empty:
                             break
 
-                    if drained > 0:
-                        print(f"[SSE_GENERATOR] Client {client_id[:8]}... drained {drained} additional events")
 
                 except queue.Empty:
                     # Send heartbeat every 1s to keep connection alive
@@ -2574,10 +2486,6 @@ def enhanced_broadcast_sse_event(event_type, data, event_id=None):
             'server_time': time.time()
         }
 
-        # Enhanced logging
-        print(f"[SSE_ENHANCED] Broadcasting event {event_id}: {event_type}")
-        print(f"[SSE_ENHANCED] Client count: {len(shared_data.connected_clients)}")
-        print(f"[SSE_ENHANCED] Event data preview: {str(data)[:200]}...")
 
         # Track event statistics
         sse_event_tracker['events_sent'] += 1
@@ -2601,9 +2509,6 @@ def enhanced_broadcast_sse_event(event_type, data, event_id=None):
                 except queue.Full:
                     print(f"[SSE] Warning: Queue full for client {client_id}")
 
-        # Log successful broadcast (but don't create recursive loops)
-        if event_type != 'activity_log':  # Prevent recursive logging for activity log events
-            add_activity_log(f"SSE event {event_id} ({event_type}) broadcast to {len(shared_data.connected_clients)} clients", "info", "sse")
 
         return event_id
 
