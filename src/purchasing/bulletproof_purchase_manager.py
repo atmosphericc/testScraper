@@ -80,6 +80,7 @@ class BulletproofPurchaseManager:
         self._file_lock = threading.Lock()
         self._state_lock = threading.RLock()  # CRITICAL: RLock allows same thread to acquire multiple times
         self._active_purchases = {}  # Track active purchase threads
+        self._warmup_cycle_counter: int = 0
 
         # Status callback for real-time updates
         self.status_callback = status_callback
@@ -92,6 +93,16 @@ class BulletproofPurchaseManager:
 
         # Initialize session system
         self._initialize_session_system()
+
+        # Queue initial Shape header warmup (fires once event loop is running)
+        if self.purchase_executor and getattr(self.purchase_executor.session_manager, '_event_loop', None):
+            try:
+                self.purchase_executor.session_manager.submit_async_task(
+                    self.purchase_executor.warm_shape_headers()
+                )
+                print("[WARMUP] Initial Shape header warmup queued")
+            except Exception as e:
+                print(f"[WARMUP] Could not queue initial warmup (event loop not ready yet): {e}")
 
     def _cleanup_stale_states(self):
         """Clean up stale purchase states on startup (prevents old states from blocking new purchases)"""
@@ -1304,6 +1315,22 @@ class BulletproofPurchaseManager:
                     return 999999  # Unknown products go to end
 
             sorted_tcins = sorted(stock_data.keys(), key=get_priority_index)
+
+            # Refresh Shape headers on first cycle and every 90 cycles (~90s) thereafter
+            self._warmup_cycle_counter += 1
+            if (self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 90 == 0) and self.purchase_executor:
+                headers_age = time.time() - getattr(self.purchase_executor, '_cached_cart_headers_ts', 0)
+                in_progress = getattr(self.purchase_executor, '_warmup_in_progress', False)
+                print(f"[WARMUP_CYCLE] Cycle {self._warmup_cycle_counter}: "
+                      f"headers_age={headers_age:.0f}s, in_progress={in_progress}")
+                if not in_progress:
+                    print("[WARMUP_CYCLE] Queuing Shape header refresh...")
+                    try:
+                        self.purchase_executor.session_manager.submit_async_task(
+                            self.purchase_executor.warm_shape_headers()
+                        )
+                    except Exception as e:
+                        print(f"[WARMUP_CYCLE] Could not queue warmup: {e}")
 
             # Process each product according to state rules (in priority order)
             for tcin in sorted_tcins:

@@ -40,6 +40,13 @@ class PurchaseExecutor:
         # Lock to prevent concurrent page access
         self._page_lock = asyncio.Lock()
 
+        # Cached auth headers captured from Target's own fetch interceptor
+        self._cached_cart_headers: Dict[str, str] = {}
+        self._cached_cart_headers_ts: float = 0.0          # timestamp of last capture
+        self._warmup_tab = None                             # single shared background tab
+        self._warmup_in_progress: bool = False              # prevent concurrent warmups
+        self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
+
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
     # -------------------------------------------------------------------------
@@ -296,12 +303,113 @@ class PurchaseExecutor:
                 return False
 
     # -------------------------------------------------------------------------
+    # CDP fetch interceptor helpers
+    # -------------------------------------------------------------------------
+
+    async def _setup_cdp_fetch_interceptor(self, tab, persistent: bool = False) -> None:
+        """Install CDP fetch interceptor. persistent=True for warmup tab (never disabled).
+           persistent=False for main tab (disabled after each purchase)."""
+        from zendriver import cdp
+        label = "warmup" if persistent else "main"
+
+        async def _on_request_paused(event: cdp.fetch.RequestPaused):
+            try:
+                url = event.request.url if hasattr(event, 'request') else ''
+                method = event.request.method if hasattr(event.request, 'method') else '?'
+                if 'carts.target.com' in url or 'cart_items' in url:
+                    headers = dict(event.request.headers) if event.request.headers else {}
+                    header_names = list(headers.keys())
+                    if headers:
+                        self._cached_cart_headers = headers
+                        self._cached_cart_headers_ts = time.time()
+                        print(f"[INTERCEPTOR:{label}] {method} {url[:80]}")
+                        print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers: {header_names}")
+                    else:
+                        print(f"[INTERCEPTOR:{label}] {method} {url[:80]} — no headers found")
+                else:
+                    print(f"[INTERCEPTOR:{label}] Unexpected URL paused: {url[:80]}")
+            except Exception as e:
+                print(f"[INTERCEPTOR:{label}] Handler error: {e}")
+            try:
+                await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
+            except Exception as e:
+                print(f"[INTERCEPTOR:{label}] continue_request failed: {e}")
+
+        try:
+            await tab.send(cdp.fetch.enable(
+                patterns=[cdp.fetch.RequestPattern(
+                    url_pattern='*carts.target.com*',
+                    request_stage=cdp.fetch.RequestStage.REQUEST
+                )]
+            ))
+            print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() sent with pattern *carts.target.com*")
+        except Exception as e:
+            print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() FAILED: {e}")
+            return
+
+        if cdp.fetch not in tab.enabled_domains:
+            tab.enabled_domains.append(cdp.fetch)
+            print(f"[INTERCEPTOR:{label}] Added cdp.fetch to enabled_domains")
+
+        tab.add_handler(cdp.fetch.RequestPaused, _on_request_paused)
+        print(f"[INTERCEPTOR:{label}] CDP fetch interceptor ready")
+
+    async def warm_shape_headers(self) -> bool:
+        """Refresh Shape headers via cart page visit on the shared background warmup tab."""
+        if self._warmup_in_progress:
+            return bool(self._cached_cart_headers)
+        self._warmup_in_progress = True
+        try:
+            browser = self.session_manager.browser
+            if not browser:
+                return False
+
+            ts_before = self._cached_cart_headers_ts
+
+            if not self._warmup_tab:
+                print("[WARMUP] Opening new background warmup tab...")
+                self._warmup_tab = await browser.get(
+                    "https://www.target.com/cart", new_tab=True
+                )
+                print(f"[WARMUP] Warmup tab opened, URL={self._warmup_tab.url}")
+                await self._setup_cdp_fetch_interceptor(self._warmup_tab, persistent=True)
+            else:
+                current_url = getattr(self._warmup_tab, 'url', 'unknown')
+                print(f"[WARMUP] Navigating warmup tab to cart (was at {current_url})")
+                await self._warmup_tab.get("https://www.target.com/cart")
+
+            print("[WARMUP] Waiting for carts.target.com request interception (up to 3s)...")
+
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                if self._cached_cart_headers_ts > ts_before:
+                    age = time.time() - self._cached_cart_headers_ts
+                    print(f"[WARMUP] Shape headers captured successfully (age={age:.1f}s): "
+                          f"{list(self._cached_cart_headers.keys())}")
+                    return True
+                await asyncio.sleep(0.1)
+
+            elapsed = time.time() - ts_before
+            print(f"[WARMUP] TIMEOUT after {elapsed:.1f}s — carts.target.com GET was NOT intercepted")
+            print(f"[WARMUP] Possible causes: Target cart page didn't load, no cart API call on empty cart, "
+                  f"or CDP interceptor not active")
+            print(f"[WARMUP] Stale headers available: {bool(self._cached_cart_headers)}, "
+                  f"age={time.time()-self._cached_cart_headers_ts:.0f}s")
+            return bool(self._cached_cart_headers)
+        except Exception as e:
+            print(f"[WARMUP] Error: {e}")
+            return False
+        finally:
+            self._warmup_in_progress = False
+
+    # -------------------------------------------------------------------------
     # Core purchase implementation
     # -------------------------------------------------------------------------
 
     async def _execute_purchase_impl(self, tcin: str) -> Dict[str, Any]:
         """Execute purchase for given TCIN using persistent session"""
         start_time = time.time()
+        tab = None  # ensure tab is accessible in finally block
 
         try:
             print(f"[PURCHASE] Starting purchase for {tcin}")
@@ -324,17 +432,39 @@ class PurchaseExecutor:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
 
+            # Set up CDP interceptor on main tab to capture button-click POST headers
+            if not self._main_tab_interceptor_active:
+                await self._setup_cdp_fetch_interceptor(tab, persistent=False)
+                self._main_tab_interceptor_active = True
+
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
-            print(f"[PURCHASE] Firing fetch ATC immediately (t={time.time()-start_time:.2f}s)")
+            headers_age = time.time() - self._cached_cart_headers_ts
+            use_cached = bool(self._cached_cart_headers) and headers_age < 180  # 3-min TTL
+            extra_headers_js = json.dumps(self._cached_cart_headers if use_cached else {})
+            if use_cached:
+                print(f"[PURCHASE] Injecting Shape headers (age={headers_age:.0f}s): "
+                      f"{list(self._cached_cart_headers.keys())}")
+            elif self._cached_cart_headers:
+                print(f"[PURCHASE] Shape headers STALE (age={headers_age:.0f}s > 180s) — sending fetch WITHOUT Shape headers")
+            else:
+                print(f"[PURCHASE] No Shape headers cached yet — warmup tab may not have captured yet")
+            print(f"[PURCHASE] Firing ATC fetch (t={time.time()-start_time:.2f}s)")
             atc_result = await tab.evaluate(f"""(async () => {{
                 try {{
+                    const cachedHeaders = {extra_headers_js};
                     const resp = await fetch(
                         'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
                         {{
                             method: 'POST',
                             credentials: 'include',
-                            headers: {{'Content-Type': 'application/json', 'Accept': 'application/json'}},
+                            headers: {{
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'Referer': 'https://www.target.com/p/-/A-{tcin}',
+                                ...cachedHeaders,
+                            }},
                             body: JSON.stringify({{
                                 cart_item: {{tcin: '{tcin}', quantity: 1, item_channel_id: '10'}},
                                 cart_type: 'REGULAR',
@@ -343,18 +473,35 @@ class PurchaseExecutor:
                             }})
                         }}
                     );
-                    return resp.status;
+                    const body = (await resp.text()).slice(0, 300);
+                    return {{status: resp.status, body: body}};
                 }} catch(e) {{
-                    return 0;
+                    return {{status: 0, body: String(e)}};
                 }}
             }})()""", await_promise=True)
 
-            print(f"[PURCHASE] ATC fetch status: {atc_result} (t={time.time()-start_time:.2f}s)")
+            atc_status = atc_result.get('status', 0) if isinstance(atc_result, dict) else atc_result
+            atc_body = atc_result.get('body', '') if isinstance(atc_result, dict) else ''
+            # Classify the failure for better diagnostics
+            if atc_status == 403 and ('<html' in atc_body.lower() or '<!doctype' in atc_body.lower()):
+                print(f"[PURCHASE] ATC fetch blocked by Shape Security (403 HTML) (t={time.time()-start_time:.2f}s)")
+            elif atc_status in (422, 409) and 'OUT_OF_STOCK' in atc_body.upper():
+                print(f"[PURCHASE] ATC fetch: item OOS at cart API ({atc_status}) (t={time.time()-start_time:.2f}s)")
+            elif atc_status not in (200, 201):
+                print(f"[PURCHASE] ATC fetch status: {atc_status} body={atc_body!r} (t={time.time()-start_time:.2f}s)")
+            else:
+                print(f"[PURCHASE] ATC fetch status: {atc_status} (t={time.time()-start_time:.2f}s)")
 
             # Success status → skip DOM polling entirely, go straight to checkout
-            if atc_result in (200, 201):
-                print(f"[PURCHASE] Fetch ATC succeeded ({atc_result}), skipping cart signal wait")
+            skip_signal_wait = False
+            if atc_status in (200, 201):
+                print(f"[PURCHASE] Fetch ATC succeeded ({atc_status}), skipping cart signal wait")
                 cart_confirmed = True
+            elif atc_status == 401:
+                # Auth denied — no cart signal will ever come; skip wait and go straight to button click
+                print(f"[PURCHASE] ATC fetch 401 auth denied, skipping signal wait")
+                cart_confirmed = False
+                skip_signal_wait = True
             else:
                 # Ambiguous/failed status — check DOM briefly (page had time to render by now)
                 cart_confirmed = await self._wait_for_cart_signal(tab, timeout=1.5)
@@ -385,7 +532,8 @@ class PurchaseExecutor:
                     button_ready = True
                 elif btn_state in ('absent', 'disabled'):
                     # Button not ready yet — wait up to remaining time
-                    remaining = max(0.0, 8.0 - (time.time() - start_time))
+                    budget = 9.5 if skip_signal_wait else 8.0  # 401 path saved ~1.5s, extend budget
+                    remaining = max(0.0, budget - (time.time() - start_time))
                     button_ready = await self._wait_for_atc_button_ready(tab, timeout=remaining)
                 if not button_ready:
                     await self._take_debug_screenshot(tab, "atc_button_not_ready")
@@ -404,11 +552,33 @@ class PurchaseExecutor:
                     await self._dispatch_click(add_button)
                     print(f"[PURCHASE] ATC button clicked (t={time.time()-start_time:.2f}s)")
                     cart_confirmed = await self._wait_for_cart_signal(tab, timeout=4.0)
+                    if cart_confirmed and self._cached_cart_headers_ts > start_time:
+                        print(f"[PURCHASE] Button-click cart headers captured: "
+                              f"{list(self._cached_cart_headers.keys())}")
                 except Exception as e:
                     print(f"[PURCHASE] Button click error: {e}")
 
             if not cart_confirmed:
                 await self._take_debug_screenshot(tab, "atc_not_confirmed")
+                # Diagnose what the page is showing
+                try:
+                    page_msg = await tab.evaluate("""(() => {
+                        const OOS_PHRASES = ['out of stock', 'no longer in stock', 'sold out',
+                                             'not available', 'item is unavailable', 'no longer available'];
+                        const WRONG_PHRASES = ['something went wrong', 'error adding', 'unable to add'];
+                        const text = (document.body && document.body.innerText || '').toLowerCase();
+                        if (OOS_PHRASES.some(p => text.includes(p))) return 'oos';
+                        if (WRONG_PHRASES.some(p => text.includes(p))) return 'error';
+                        return 'unknown';
+                    })()""")
+                    if page_msg == 'oos':
+                        print("[PURCHASE] ATC failed: item appears OUT OF STOCK on page")
+                    elif page_msg == 'error':
+                        print("[PURCHASE] ATC failed: 'something went wrong' on page")
+                    else:
+                        print("[PURCHASE] ATC failed: unknown page state")
+                except Exception:
+                    pass
                 try:
                     await tab.get("https://www.target.com/cart")
                     await self._clear_cart(tab)
@@ -562,6 +732,18 @@ class PurchaseExecutor:
                 'error': str(e),
                 'execution_time': execution_time
             }
+
+        finally:
+            # Disable main tab CDP interceptor so it can be re-enabled on next purchase
+            if tab and self._main_tab_interceptor_active:
+                try:
+                    from zendriver import cdp
+                    await tab.send(cdp.fetch.disable())
+                    self._main_tab_interceptor_active = False
+                    if cdp.fetch in tab.enabled_domains:
+                        tab.enabled_domains.remove(cdp.fetch)
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------------
     # ATC readiness and cart signal helpers
@@ -1808,6 +1990,46 @@ class PurchaseExecutor:
             print(f"[PAYMENT] Busy modal check error: {e}")
             return False
 
+    async def _handle_stock_error_modal(self, tab) -> bool:
+        """Detect Target's 'out of stock' or 'no longer available' error after Place Order.
+
+        Checks both modal dialogs and inline page text for OOS indicators.
+        Returns True if detected. These errors are not dismissible, so no click is attempted.
+        """
+        try:
+            result = await tab.evaluate("""(() => {
+                const OOS_PHRASES = ['out of stock', 'no longer in stock', 'no longer available',
+                                     'not available', 'sold out', 'item is unavailable'];
+                const isOOS = text => OOS_PHRASES.some(p => text.includes(p));
+
+                // Check modal/dialog overlays first
+                const dialogs = Array.from(document.querySelectorAll(
+                    '[role="dialog"], [role="alertdialog"], [class*="modal" i], ' +
+                    '[data-test*="modal"], [data-test*="dialog"]'
+                )).filter(el => {
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                });
+                for (const dialog of dialogs) {
+                    const text = (dialog.innerText || '').toLowerCase();
+                    if (isOOS(text)) return 'modal:' + text.slice(0, 100);
+                }
+
+                // Check inline page body
+                const bodyText = (document.body && document.body.innerText || '').toLowerCase();
+                if (isOOS(bodyText)) return 'inline:' + bodyText.slice(0, 100);
+
+                return 'not_found';
+            })()""")
+
+            if isinstance(result, str) and result != 'not_found':
+                print(f"[PAYMENT] Stock error detected: {result}")
+                return True
+            return False
+        except Exception as e:
+            print(f"[PAYMENT] Stock error modal check error: {e}")
+            return False
+
     async def _place_order(self, tab) -> bool:
         """Find the enabled Place Order button and click it (production only).
 
@@ -1863,6 +2085,11 @@ class PurchaseExecutor:
                     print(f"[PAYMENT] Busy error detected — retrying Place Order (attempt {attempt}/{max_attempts})")
                     await asyncio.sleep(1.5)
                     break  # break inner loop to retry Place Order click
+                # Check for out-of-stock error — no point waiting further if detected
+                stock_error = await self._handle_stock_error_modal(tab)
+                if stock_error:
+                    print("[PAYMENT] OUT OF STOCK detected after Place Order — item sold out during checkout")
+                    return False
                 await asyncio.sleep(0.2)
             else:
                 # Inner loop completed without break — timed out
