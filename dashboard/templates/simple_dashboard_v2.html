@@ -1874,6 +1874,7 @@
                     <table>
                         <thead>
                             <tr>
+                                <th>Priority</th>
                                 <th>TCIN</th>
                                 <th>Product Name</th>
                                 <th>Preorder</th>
@@ -1885,6 +1886,12 @@
                         <tbody>
                             {% for product in config.products %}
                             <tr data-tcin="{{ product.tcin }}">
+                                <td style="white-space: nowrap;">
+                                    <button onclick="movePriority(this, -1)" title="Move Up"
+                                        style="background:none;border:1px solid var(--border-subtle);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer;margin-right:2px;">▲</button>
+                                    <button onclick="movePriority(this, 1)" title="Move Down"
+                                        style="background:none;border:1px solid var(--border-subtle);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer;">▼</button>
+                                </td>
                                 <td>
                                     <code style="background: var(--secondary-bg); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem;">
                                         {{ product.tcin }}
@@ -3005,6 +3012,12 @@
             row.style.transition = 'all 0.3s ease';
 
             row.innerHTML = `
+                <td style="white-space: nowrap;">
+                    <button onclick="movePriority(this, -1)" title="Move Up"
+                        style="background:none;border:1px solid var(--border-subtle);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer;margin-right:2px;">▲</button>
+                    <button onclick="movePriority(this, 1)" title="Move Down"
+                        style="background:none;border:1px solid var(--border-subtle);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer;">▼</button>
+                </td>
                 <td>
                     <code style="background: var(--secondary-bg); padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.875rem;">
                         ${product.tcin}
@@ -4983,7 +4996,7 @@
             const mainTableRows = document.querySelectorAll('table tbody tr[data-tcin]');
             mainTableRows.forEach(row => {
                 const tcin = row.getAttribute('data-tcin');
-                const nameCell = row.querySelector('td:nth-child(2)');
+                const nameCell = row.querySelector('td:nth-child(3)');
                 const name = nameCell ? nameCell.textContent.trim() : `Product ${tcin}`;
                 activeProducts.push({ tcin, name });
             });
@@ -5025,6 +5038,39 @@
                 updateTabCounters();
                 console.log('🔗 COHESIVE: Catalog system initialization complete');
             }, 200);
+        }
+
+        // Priority reorder functions
+        function movePriority(btn, direction) {
+            const row = btn.closest('tr');
+            const tbody = row.closest('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr[data-tcin]'));
+            const idx = rows.indexOf(row);
+            const targetIdx = idx + direction;
+            if (targetIdx < 0 || targetIdx >= rows.length) return;
+            if (direction === -1) {
+                tbody.insertBefore(row, rows[targetIdx]);
+            } else {
+                tbody.insertBefore(rows[targetIdx], row);
+            }
+            savePriorityOrder();
+        }
+
+        async function savePriorityOrder() {
+            const tbody = document.querySelector('table tbody');
+            if (!tbody) return;
+            const order = Array.from(tbody.querySelectorAll('tr[data-tcin]')).map(r => r.getAttribute('data-tcin'));
+            try {
+                const res = await fetch('/reorder-products', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({order})
+                });
+                const data = await res.json();
+                if (!data.success) console.error('Reorder failed:', data.error);
+            } catch(e) {
+                console.error('Reorder error:', e);
+            }
         }
 
         // Clear activity logs function

@@ -20,7 +20,15 @@ import pickle
 import atexit
 import signal
 import sys
+import ctypes
 from waitress import serve
+
+# Prevent Windows from sleeping while the app is running.
+# ES_CONTINUOUS | ES_SYSTEM_REQUIRED keeps the system awake; the screen can
+# still turn off (omit ES_DISPLAY_REQUIRED intentionally to save power).
+_ES_CONTINUOUS      = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
 
 # Import our bulletproof modules
 from src.monitoring import StockMonitor
@@ -2091,6 +2099,43 @@ def remove_product(tcin):
         add_activity_log(f"Failed to remove product {tcin}: {error_msg}", "error", "config")
         return jsonify({'success': False, 'error': error_msg})
 
+@app.route('/reorder-products', methods=['POST'])
+def reorder_products():
+    """Reorder products in config by accepting a new ordered list of TCINs."""
+    try:
+        data = request.get_json()
+        new_order = data.get('order', [])
+        if not new_order:
+            return jsonify({'success': False, 'error': 'No order provided'})
+
+        stock_monitor = StockMonitor()
+        config = stock_monitor.get_config()
+        products = config.get('products', [])
+
+        # Build a lookup by tcin, then reorder
+        product_map = {p['tcin']: p for p in products}
+        reordered = [product_map[tcin] for tcin in new_order if tcin in product_map]
+        # Append any products not in new_order list (safety net)
+        seen = set(new_order)
+        reordered += [p for p in products if p['tcin'] not in seen]
+
+        config['products'] = reordered
+
+        config_path = "config/product_config.json"
+        temp_config_path = f"{config_path}.tmp.{os.getpid()}"
+        with open(temp_config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        if os.path.exists(config_path):
+            os.remove(config_path)
+        os.rename(temp_config_path, config_path)
+
+        add_activity_log("Product priority order updated", "success", "config")
+        return jsonify({'success': True})
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
 # ========== PRODUCT CATALOG API ENDPOINTS ==========
 
 def get_catalog_config():
@@ -3231,6 +3276,11 @@ def api_set_manual_stock_data():
             'error': error_msg,
             'timestamp': datetime.now().isoformat()
         }), 500
+
+def _release_sleep_lock():
+    ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+
+atexit.register(_release_sleep_lock)
 
 if __name__ == '__main__':
     print("=" * 60)

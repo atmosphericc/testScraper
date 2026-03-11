@@ -1,8 +1,31 @@
 {
   "products": [
     {
-      "tcin": "95082118",
-      "name": "Product 95082118",
+      "tcin": "94724987",
+      "name": "Pok\u00e9mon Trading Card Game: Blooming Waters Premium Collection",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94724987"
+    },
+    {
+      "tcin": "93954435",
+      "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Prismatic Evolutions Elite Trainer Box",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-93954435"
+    },
+    {
+      "tcin": "94300072",
+      "name": "Product 94300072",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94300072"
+    },
+    {
+      "tcin": "93954446",
+      "name": "Product 93954446",
+      "enabled": true
+    },
+    {
+      "tcin": "94300069",
+      "name": "Product 94300069",
       "enabled": true
     },
     {
@@ -12,78 +35,20 @@
       "url": "https://www.target.com/p/-/A-94681790"
     },
     {
-      "tcin": "95230445",
-      "name": "Product 95230445",
-      "enabled": true
+      "tcin": "95082118",
+      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution\u2014 Ascended Heroes Elite Trainer Box",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95082118"
+    },
+    {
+      "tcin": "91619922",
+      "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet - Surging Sparks Elite Trainer Box",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-91619922"
     },
     {
       "tcin": "95225595",
       "name": "Product 95225595",
-      "enabled": true
-    },
-    {
-      "tcin": "95252674",
-      "name": "Product 95252674",
-      "enabled": true
-    },
-    {
-      "tcin": "95230446",
-      "name": "Product 95230446",
-      "enabled": true
-    },
-    {
-      "tcin": "95093981",
-      "name": "Product 95093981",
-      "enabled": true
-    },
-    {
-      "tcin": "95082138",
-      "name": "Product 95082138",
-      "enabled": true
-    },
-    {
-      "tcin": "95173525",
-      "name": "Product 95173525",
-      "enabled": true
-    },
-    {
-      "tcin": "91619959",
-      "name": "Product 91619959",
-      "enabled": true
-    },
-    {
-      "tcin": "91619962",
-      "name": "Product 91619962",
-      "enabled": true
-    },
-    {
-      "tcin": "91619922",
-      "name": "Product 91619922",
-      "enabled": true
-    },
-    {
-      "tcin": "93954435",
-      "name": "Product 93954435",
-      "enabled": true
-    },
-    {
-      "tcin": "94681777",
-      "name": "Product 94681777",
-      "enabled": true
-    },
-    {
-      "tcin": "93954446",
-      "name": "Product 93954446",
-      "enabled": true
-    },
-    {
-      "tcin": "95230447",
-      "name": "Product 95230447",
-      "enabled": true
-    },
-    {
-      "tcin": "95093982",
-      "name": "Product 95093982",
       "enabled": true
     }
   ]

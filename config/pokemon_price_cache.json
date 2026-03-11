@@ -1,0 +1,2279 @@
+{
+  "fetched_at": 1773204409.021416,
+  "prices": {
+    "MKangaskhan EX|79|World Championship Decks": {
+      "found": true,
+      "normal": 2.84,
+      "holofoil": null,
+      "reverseHolofoil": null
+    },
+    "Keldeo EX|45|World Championship Decks": {
+      "found": true,
+      "normal": 7.02,
+      "holofoil": null,
+      "reverseHolofoil": null
+    },
+    "Xerneas EX|97|World Championship Decks": {
+      "found": true,
+      "normal": 30.18,
+      "holofoil": null,
+      "reverseHolofoil": null
+    },
+    "Kingdra EX|73|Fates Collide": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.44,
+      "reverseHolofoil": null
+    },
+    "MSwampert EX|XY87|XY Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 65.31,
+      "reverseHolofoil": null
+    },
+    "MLucario EX|113|Furious Fists": {
+      "found": true,
+      "normal": null,
+      "holofoil": 169.86,
+      "reverseHolofoil": null
+    },
+    "Emolga EX|143|XY Base": {
+      "found": true,
+      "normal": null,
+      "holofoil": 42.78,
+      "reverseHolofoil": null
+    },
+    "Gengar EX|114|Phantom Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 833.9,
+      "reverseHolofoil": null
+    },
+    "Pikachu & Zekrom GX|168|SM Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 150.01,
+      "reverseHolofoil": null
+    },
+    "Carracosta GX|239|SM Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.31,
+      "reverseHolofoil": null
+    },
+    "Charizard GX|211|SM Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 10.58,
+      "reverseHolofoil": null
+    },
+    "Gyrados GX|212|SM Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.62,
+      "reverseHolofoil": null
+    },
+    "Raichu GX|213|SM Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.78,
+      "reverseHolofoil": null
+    },
+    "Armored Mewtwo|228|SM Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 219.72,
+      "reverseHolofoil": null
+    },
+    "Incineroar GX|97|Team Up": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.64,
+      "reverseHolofoil": null
+    },
+    "Jirachi GX|79a|Alternate Art Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 14.41,
+      "reverseHolofoil": null
+    },
+    "Togepi & Clefairy & Igglypuff GX|143a|Alternate Art Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 222.48,
+      "reverseHolofoil": null
+    },
+    "Starmie GX|14|Hidden Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.49,
+      "reverseHolofoil": null
+    },
+    "Garchomp|SV40|Hidden Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 8.6,
+      "reverseHolofoil": null
+    },
+    "Guzzlord GX|SV71|Hidden Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.32,
+      "reverseHolofoil": null
+    },
+    "Charmeleon|SV7|Hidden Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.89,
+      "reverseHolofoil": null
+    },
+    "Wooper|SV9|Hidden Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 9.92,
+      "reverseHolofoil": null
+    },
+    "Misty's Water Command|63|Hidden Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.94,
+      "reverseHolofoil": 1.78
+    },
+    "Chansey|70|XY Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.13,
+      "reverseHolofoil": 2.02
+    },
+    "Clefairy|63|XY Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.24,
+      "reverseHolofoil": 2.94
+    },
+    "Machop|57|XY Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": null,
+      "reverseHolofoil": 0.41
+    },
+    "Pikachu|60|Jungle": {
+      "found": true,
+      "normal": 4.11,
+      "holofoil": null,
+      "reverseHolofoil": null
+    },
+    "Metal Energy|163|Sun & Moon Base": {
+      "found": true,
+      "normal": null,
+      "holofoil": 12.03,
+      "reverseHolofoil": null
+    },
+    "Pikachu Birthday|24|Celebrations": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.44,
+      "reverseHolofoil": null
+    },
+    "Teal Mask Ogerpon|123|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.43,
+      "reverseHolofoil": null
+    },
+    "Flutter Mane|97|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.27,
+      "reverseHolofoil": null
+    },
+    "Eevee|173|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 71.56,
+      "reverseHolofoil": null
+    },
+    "Palafin ex|126|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.72,
+      "reverseHolofoil": null
+    },
+    "Pikachu|27|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 15.87,
+      "reverseHolofoil": null
+    },
+    "Fidough|69|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.62,
+      "reverseHolofoil": null
+    },
+    "Greavard|70|SV Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.58,
+      "reverseHolofoil": null
+    },
+    "Zamazenta V|SWSH077|SWSH Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 6.8,
+      "reverseHolofoil": null
+    },
+    "Zacian V|SWSH076|SWSH Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 10.12,
+      "reverseHolofoil": null
+    },
+    "Kleavor VSTAR|SWSH249|SWSH Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.99,
+      "reverseHolofoil": null
+    },
+    "Hatterene V|SWSH055|SWSH Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.6,
+      "reverseHolofoil": null
+    },
+    "Kleavor V|SWSH248|SWSH Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.89,
+      "reverseHolofoil": null
+    },
+    "Gallade V|SWSH258|SWSH Promo": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.9,
+      "reverseHolofoil": null
+    },
+    "Eternatus Vmax|117|Darkness Ablaze": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.04,
+      "reverseHolofoil": null
+    },
+    "Charizard V|19|Darkness Ablaze": {
+      "found": true,
+      "normal": null,
+      "holofoil": 8.24,
+      "reverseHolofoil": null
+    },
+    "Rose|189|Darkness Ablaze": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.44,
+      "reverseHolofoil": null
+    },
+    "Big Parasol|199|Darkness Ablaze": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.22,
+      "reverseHolofoil": null
+    },
+    "Galarian Darmanitan VMAX|37|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.38,
+      "reverseHolofoil": null
+    },
+    "Togekiss VMAX|141|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.51,
+      "reverseHolofoil": null
+    },
+    "Aegislash V|126|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.66,
+      "reverseHolofoil": null
+    },
+    "Pikachu V|43|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.03,
+      "reverseHolofoil": null
+    },
+    "Talonflame V|29|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.84,
+      "reverseHolofoil": null
+    },
+    "Talonflame V|168|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.07,
+      "reverseHolofoil": null
+    },
+    "Togekiss V|140|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.85,
+      "reverseHolofoil": null
+    },
+    "Jirachi|119|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.51,
+      "reverseHolofoil": null
+    },
+    "Rayquaza|138|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.33,
+      "reverseHolofoil": null
+    },
+    "Charizard|25|Vivid Voltage": {
+      "found": true,
+      "normal": 2.29,
+      "holofoil": null,
+      "reverseHolofoil": 3.0
+    },
+    "Bea|193|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 6.41,
+      "reverseHolofoil": null
+    },
+    "Leon|182|Vivid Voltage": {
+      "found": true,
+      "normal": null,
+      "holofoil": 7.36,
+      "reverseHolofoil": null
+    },
+    "Gardevoir VMAX|17|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.2,
+      "reverseHolofoil": null
+    },
+    "Eldegoss V|5|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.77,
+      "reverseHolofoil": null
+    },
+    "Galarian Cursola V|21|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.91,
+      "reverseHolofoil": null
+    },
+    "Galarian Cursola V|71|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.37,
+      "reverseHolofoil": null
+    },
+    "Grapploct V|32|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.7,
+      "reverseHolofoil": null
+    },
+    "Grapploct V|72|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.31,
+      "reverseHolofoil": null
+    },
+    "Hop|73|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.36,
+      "reverseHolofoil": null
+    },
+    "Suspicious Food Tin|80|Champion's Path": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.69,
+      "reverseHolofoil": null
+    },
+    "Lycanroc VMAX|92|Evolving Skies": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.83,
+      "reverseHolofoil": null
+    },
+    "Sylveon V|74|Evolving Skies": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.09,
+      "reverseHolofoil": null
+    },
+    "Arceus V|122|Brilliant Stars": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.72,
+      "reverseHolofoil": null
+    },
+    "Galarian Articuno V|181|Brilliant Stars": {
+      "found": true,
+      "normal": null,
+      "holofoil": 10.99,
+      "reverseHolofoil": null
+    },
+    "Breloom V|6|Fushion Strike": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.7,
+      "reverseHolofoil": null
+    },
+    "Genesect V|255|Fushion Strike": {
+      "found": true,
+      "normal": null,
+      "holofoil": 24.24,
+      "reverseHolofoil": null
+    },
+    "Inteleon VMAX|266|Fushion Strike": {
+      "found": true,
+      "normal": null,
+      "holofoil": 28.61,
+      "reverseHolofoil": null
+    },
+    "Chili & Cilan & Cress|258|Fushion Strike": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.67,
+      "reverseHolofoil": null
+    },
+    "Dhelmise V|9|Sword & Shield Base": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.67,
+      "reverseHolofoil": null
+    },
+    "Magnezone V|175|Lost Origin": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.47,
+      "reverseHolofoil": null
+    },
+    "Mew VMAX|TG30|Lost Origin": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": null,
+      "reverseHolofoil": 0.18
+    },
+    "Rillaboom V|SV105|Shining Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.17,
+      "reverseHolofoil": null
+    },
+    "Hero's Cape|152|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 11.57,
+      "reverseHolofoil": null
+    },
+    "Reboot Pod|158|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.4,
+      "reverseHolofoil": null
+    },
+    "Farigiraf ex|108|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.7,
+      "reverseHolofoil": null
+    },
+    "Gouging Fire ex|38|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.61,
+      "reverseHolofoil": null
+    },
+    "Iron Boulder ex|99|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.55,
+      "reverseHolofoil": null
+    },
+    "Iron Crown ex|81|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.62,
+      "reverseHolofoil": null
+    },
+    "Iron Leaves ex|25|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.7,
+      "reverseHolofoil": null
+    },
+    "Raging Bolt ex|123|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.68,
+      "reverseHolofoil": null
+    },
+    "Charjabug|169|Temporal Forces": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.21,
+      "reverseHolofoil": null
+    },
+    "Sparkling Crystal|142|Stellar Crown": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.35,
+      "reverseHolofoil": null
+    },
+    "Archaludon|155|Stellar Crown": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.57,
+      "reverseHolofoil": null
+    },
+    "Raging Bolt|111|Stellar Crown": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.22,
+      "reverseHolofoil": 0.21
+    },
+    "Bulbasaur|143|Stellar Crown": {
+      "found": true,
+      "normal": null,
+      "holofoil": 79.02,
+      "reverseHolofoil": null
+    },
+    "Basic Water Energy (Holo)|11|Stellar Crown": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": null,
+      "reverseHolofoil": 0.12
+    },
+    "Basic Fire Energy (Holo)|10|Stellar Crown": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": null,
+      "reverseHolofoil": 0.19
+    },
+    "Basic Metal Energy (Holo)|16|Stellar Crown": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": null,
+      "reverseHolofoil": 0.17
+    },
+    "Basic Fighting Energy (Holo)|14|Stellar Crown": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.66,
+      "reverseHolofoil": null
+    },
+    "Basic Grass Energy (Holo)|9|Stellar Crown": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": null,
+      "reverseHolofoil": 0.17
+    },
+    "Basic Lightning Energy (Holo)|12|Stellar Crown": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": null,
+      "reverseHolofoil": 0.16
+    },
+    "Basic Psychic Energy (Holo)|13|Stellar Crown": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": null,
+      "reverseHolofoil": 0.17
+    },
+    "Murkrow|181|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.08,
+      "reverseHolofoil": null
+    },
+    "Shroodle|189|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.99,
+      "reverseHolofoil": null
+    },
+    "Xatu|152|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.83,
+      "reverseHolofoil": null
+    },
+    "Iron Treads ex|66|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.66,
+      "reverseHolofoil": null
+    },
+    "Palafin|225|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.46,
+      "reverseHolofoil": null
+    },
+    "Wugtrio|224|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.58,
+      "reverseHolofoil": null
+    },
+    "Mew ex|216|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 29.51,
+      "reverseHolofoil": null
+    },
+    "Paldean Student|231|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.71,
+      "reverseHolofoil": null
+    },
+    "Cyclizar|195|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.88,
+      "reverseHolofoil": null
+    },
+    "Kingambit|187|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.53,
+      "reverseHolofoil": null
+    },
+    "Natu|151|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.21,
+      "reverseHolofoil": null
+    },
+    "Paldean Tauros|111|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.71,
+      "reverseHolofoil": null
+    },
+    "Thundurus|139|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.36,
+      "reverseHolofoil": null
+    },
+    "Pawmi|226|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.55,
+      "reverseHolofoil": null
+    },
+    "Paldean Clodsire EX|219|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.82,
+      "reverseHolofoil": null
+    },
+    "Clive|236|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 14.9,
+      "reverseHolofoil": null
+    },
+    "Chien-Pao EX|242|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 6.92,
+      "reverseHolofoil": null
+    },
+    "Mankey|169|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.07,
+      "reverseHolofoil": null
+    },
+    "Scizor|191|Paldean Fates": {
+      "found": true,
+      "normal": null,
+      "holofoil": 6.65,
+      "reverseHolofoil": null
+    },
+    "Ceruledge ex|36|Surging Sparks": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.7,
+      "reverseHolofoil": null
+    },
+    "Slaking ex|147|Surging Sparks": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.58,
+      "reverseHolofoil": null
+    },
+    "Exeggcute|192|Surging Sparks": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.26,
+      "reverseHolofoil": null
+    },
+    "Copperajah ex|150|Paldea Evolved": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.56,
+      "reverseHolofoil": null
+    },
+    "Dedenne ex|93|Paldea Evolved": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.95,
+      "reverseHolofoil": null
+    },
+    "Quaquaval ex|52|Paldea Evolved": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.63,
+      "reverseHolofoil": null
+    },
+    "Pikachu|62|Paldea Evolved": {
+      "found": true,
+      "normal": 0.21,
+      "holofoil": null,
+      "reverseHolofoil": 0.23
+    },
+    "Squawkabilly ex|264|Paldea Evolved": {
+      "found": true,
+      "normal": null,
+      "holofoil": 8.63,
+      "reverseHolofoil": null
+    },
+    "Mismagius|212|Paldea Evolved": {
+      "found": true,
+      "normal": null,
+      "holofoil": 25.08,
+      "reverseHolofoil": null
+    },
+    "Melmetal ex|153|Obsidian Flames": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.79,
+      "reverseHolofoil": null
+    },
+    "Tyranitar ex|66|Obsidian Flames": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.24,
+      "reverseHolofoil": null
+    },
+    "Pidgey|207|Obsidian Flames": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.27,
+      "reverseHolofoil": null
+    },
+    "Palafin ex|61|Twilight Masquerade": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.63,
+      "reverseHolofoil": null
+    },
+    "Scream Tail ex|94|Twilight Masquerade": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.55,
+      "reverseHolofoil": null
+    },
+    "Finizen|59|Twilight Masquerade": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": null,
+      "reverseHolofoil": 0.18
+    },
+    "Palafin|60|Twilight Masquerade": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": null,
+      "reverseHolofoil": 0.18
+    },
+    "Hisuian Growlithe|181|Twilight Masquerade": {
+      "found": true,
+      "normal": null,
+      "holofoil": 19.92,
+      "reverseHolofoil": null
+    },
+    "Dragapult ex|200|Twilight Masquerade": {
+      "found": true,
+      "normal": null,
+      "holofoil": 11.9,
+      "reverseHolofoil": null
+    },
+    "Caretaker|203|Twilight Masquerade": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.82,
+      "reverseHolofoil": null
+    },
+    "Snorlax ex|76|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.07,
+      "reverseHolofoil": null
+    },
+    "Vaporeon ex|23|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.12,
+      "reverseHolofoil": null
+    },
+    "Pikachu ex|179|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 49.14,
+      "reverseHolofoil": null
+    },
+    "Hearthflame Mask Ogerpon ex|148|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 18.83,
+      "reverseHolofoil": null
+    },
+    "Teal Mask Ogerpon ex|145|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 21.36,
+      "reverseHolofoil": null
+    },
+    "Dudunsparce (Master Ball Pattern)|80|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.19
+    },
+    "Flareon ex|14|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.57,
+      "reverseHolofoil": null
+    },
+    "Munkidori (Master Ball Pattern)|44|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.23,
+      "reverseHolofoil": 0.46
+    },
+    "Pupitar (Master Ball Pattern)|48|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.11
+    },
+    "Amarys|132|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.6,
+      "reverseHolofoil": null
+    },
+    "Atticus|133|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.81,
+      "reverseHolofoil": null
+    },
+    "Brassius|135|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.57,
+      "reverseHolofoil": null
+    },
+    "Ortega|141|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.61,
+      "reverseHolofoil": null
+    },
+    "Eri|136|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.96,
+      "reverseHolofoil": null
+    },
+    "Maximum Belt|117|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.46,
+      "reverseHolofoil": null
+    },
+    "Max Rod|116|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.67,
+      "reverseHolofoil": null
+    },
+    "Prime Catcher|119|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.59,
+      "reverseHolofoil": null
+    },
+    "Scoop Up Cyclone|128|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.34,
+      "reverseHolofoil": null
+    },
+    "Treasure Tracker|131|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.38,
+      "reverseHolofoil": null
+    },
+    "Black Belt's Training (Poke Ball Pattern)|97|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.19
+    },
+    "Ciphermaniac's Codebreaking (Poke Ball Pattern)|104|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.35,
+      "reverseHolofoil": 0.19
+    },
+    "Crispin (Poke Ball Pattern)|105|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.13,
+      "holofoil": 0.38,
+      "reverseHolofoil": 0.28
+    },
+    "Festival Grounds (Poke Ball Pattern)|108|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.15
+    },
+    "Friends in Paldea (Poke Ball Pattern)|109|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.15,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.18
+    },
+    "Kieran (Poke Ball Pattern)|113|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.15
+    },
+    "Larry's Skill (Poke Ball Pattern)|115|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.16,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.18
+    },
+    "Ogre's Mask (Poke Ball Pattern)|118|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.13
+    },
+    "Professor Sada's Vitality (Poke Ball Pattern)|120|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.15
+    },
+    "Professor's Research (Poke Ball Pattern)|122|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.14
+    },
+    "Professor's Research (Poke Ball Pattern)|124|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.18
+    },
+    "Roto-Stick (Poke Ball Pattern)|127|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.32,
+      "reverseHolofoil": 0.22
+    },
+    "Techno Radar (Poke Ball Pattern)|130|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.17
+    },
+    "Cornerstone Mask Ogerpon ex|58|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.79,
+      "reverseHolofoil": null
+    },
+    "Glaceon ex|26|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.47,
+      "reverseHolofoil": null
+    },
+    "Hydrapple ex|11|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.81,
+      "reverseHolofoil": null
+    },
+    "Iron Thorns ex|32|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.55,
+      "reverseHolofoil": null
+    },
+    "Jolteon ex|30|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.28,
+      "reverseHolofoil": null
+    },
+    "Leafeon ex|6|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.18,
+      "reverseHolofoil": null
+    },
+    "Lucario ex|51|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.68,
+      "reverseHolofoil": null
+    },
+    "Lugia ex|82|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.94,
+      "reverseHolofoil": null
+    },
+    "Noivern ex|91|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.47,
+      "reverseHolofoil": null
+    },
+    "Pikachu ex|28|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.59,
+      "reverseHolofoil": null
+    },
+    "Teal Mask Ogerpon ex|12|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.68,
+      "reverseHolofoil": null
+    },
+    "Terapagos ex|92|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.9,
+      "reverseHolofoil": null
+    },
+    "Tyranitar ex|64|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.61,
+      "reverseHolofoil": null
+    },
+    "Buneary (Master Ball Pattern)|83|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.13
+    },
+    "Heatran (Master Ball Pattern)|68|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.12
+    },
+    "Larvitar (Master Ball Pattern)|47|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.4,
+      "reverseHolofoil": 0.14
+    },
+    "Spritzee (Master Ball Pattern)|38|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.13
+    },
+    "Archaludon (Poke Ball Pattern)|70|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.09,
+      "reverseHolofoil": 0.12
+    },
+    "Aromatisse (Poke Ball Pattern)|39|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.18
+    },
+    "Bronzong (Poke Ball Pattern)|67|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.15
+    },
+    "Dusclops (Poke Ball Pattern)|36|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.46,
+      "reverseHolofoil": 0.21
+    },
+    "Dusknoir (Poke Ball Pattern)|37|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.25,
+      "reverseHolofoil": 0.24
+    },
+    "Eevee (Poke Ball Pattern)|74|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.19,
+      "holofoil": 1.27,
+      "reverseHolofoil": 0.21
+    },
+    "Exeggcute (Poke Ball Pattern)|1|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.13
+    },
+    "Furfrou (Poke Ball Pattern)|88|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.27,
+      "reverseHolofoil": 0.18
+    },
+    "Hawlucha (Poke Ball Pattern)|89|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.38,
+      "reverseHolofoil": 0.19
+    },
+    "Heatran (Poke Ball Pattern)|68|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.12
+    },
+    "Houndoom (Poke Ball Pattern)|63|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.39,
+      "reverseHolofoil": 0.18
+    },
+    "Jolteon (Poke Ball Pattern)|29|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.18
+    },
+    "Litleo (Poke Ball Pattern)|15|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.09
+    },
+    "Lopunny (Poke Ball Pattern)|84|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.15
+    },
+    "Miltank (Poke Ball Pattern)|81|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.27,
+      "reverseHolofoil": 0.11
+    },
+    "Okidogi (Poke Ball Pattern)|57|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.1,
+      "reverseHolofoil": 0.16
+    },
+    "Pupitar (Poke Ball Pattern)|48|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.11
+    },
+    "Pyroar (Poke Ball Pattern)|16|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.13
+    },
+    "Regigigas (Poke Ball Pattern)|86|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.22
+    },
+    "Seaking (Poke Ball Pattern)|21|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.14
+    },
+    "Shaymin (Poke Ball Pattern)|87|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.16
+    },
+    "Slowpoke (Poke Ball Pattern)|18|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.43,
+      "reverseHolofoil": 0.16
+    },
+    "Sneasel (Poke Ball Pattern)|61|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.23,
+      "reverseHolofoil": 0.19
+    },
+    "Vaporeon (Poke Ball Pattern)|22|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.21
+    },
+    "Amarys|93|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.12
+    },
+    "Area Zero Underdepths|94|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.15,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.22
+    },
+    "Buddy-Buddy Poffin|101|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.24,
+      "holofoil": 0.71,
+      "reverseHolofoil": 0.24
+    },
+    "Bug Catching Set|102|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.59,
+      "reverseHolofoil": 0.21
+    },
+    "Binding Mochi|95|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.14,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.15
+    },
+    "Black Belt's Training|96|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.15
+    },
+    "Black Belt's Training|97|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.19
+    },
+    "Black Belt's Training|98|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.09
+    },
+    "Black Belt's Training|99|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.19
+    },
+    "Briar|100|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.14
+    },
+    "Carmine|103|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.15,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.15
+    },
+    "Ciphermaniac's Codebreaking|104|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.35,
+      "reverseHolofoil": 0.19
+    },
+    "Crispin|105|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.13,
+      "holofoil": 0.38,
+      "reverseHolofoil": 0.28
+    },
+    "Earthen Vessel|106|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.13,
+      "holofoil": 0.44,
+      "reverseHolofoil": 0.27
+    },
+    "Explorer's Guidance|107|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.22,
+      "reverseHolofoil": 0.14
+    },
+    "Festival Grounds|108|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.15
+    },
+    "Friends in Paldea|109|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.15,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.18
+    },
+    "Glass Trumpet|110|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.16
+    },
+    "Haban Berry|111|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.13
+    },
+    "Janine's Secret Art|112|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.13,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.21
+    },
+    "Kieran|113|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.15
+    },
+    "Lacey|114|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.14
+    },
+    "Larry's Skill|115|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.16,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.18
+    },
+    "Ogre's Mask|118|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.13
+    },
+    "Professor Sada's Vitality|120|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.15
+    },
+    "Professor's Research|122|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.14
+    },
+    "Professor's Research|123|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.14
+    },
+    "Professor's Research|125|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.15
+    },
+    "Professor Turo's Scenario|121|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.16,
+      "holofoil": 0.36,
+      "reverseHolofoil": 0.26
+    },
+    "Rescue Board|126|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.03,
+      "holofoil": 0.39,
+      "reverseHolofoil": 0.1
+    },
+    "Techno Radar|130|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.17
+    },
+    "Applin|9|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.12,
+      "holofoil": 0.34,
+      "reverseHolofoil": 0.18
+    },
+    "Archaludon|70|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.09,
+      "reverseHolofoil": 0.12
+    },
+    "Aromatisse|39|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.18
+    },
+    "Bloodmoon Ursaluna|54|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.1,
+      "reverseHolofoil": 0.16
+    },
+    "Bronzong|67|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.15
+    },
+    "Bronzor|66|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.22,
+      "reverseHolofoil": 0.11
+    },
+    "Budew|4|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.23,
+      "holofoil": 0.67,
+      "reverseHolofoil": 0.22
+    },
+    "Buneary|83|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.13
+    },
+    "Cottonee|7|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.09
+    },
+    "Dipplin|10|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.34,
+      "reverseHolofoil": 0.23
+    },
+    "Drakloak|72|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.14,
+      "holofoil": 0.63,
+      "reverseHolofoil": 0.18
+    },
+    "Dreepy|71|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.15,
+      "holofoil": 0.93,
+      "reverseHolofoil": 0.17
+    },
+    "Dudunsparce|80|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.19
+    },
+    "Dunsparce|79|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.12,
+      "holofoil": 0.36,
+      "reverseHolofoil": 0.15
+    },
+    "Duraludon|69|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.35,
+      "reverseHolofoil": 0.12
+    },
+    "Dusclops|36|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.46,
+      "reverseHolofoil": 0.21
+    },
+    "Dusknoir|37|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.25,
+      "reverseHolofoil": 0.24
+    },
+    "Duskull|35|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.61,
+      "reverseHolofoil": 0.17
+    },
+    "Eevee|74|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.19,
+      "holofoil": 1.27,
+      "reverseHolofoil": 0.21
+    },
+    "Espeon|33|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.22,
+      "reverseHolofoil": 0.33
+    },
+    "Exeggcute|1|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.13
+    },
+    "Exeggutor|2|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.14
+    },
+    "Fan Rotom|85|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.19,
+      "holofoil": 0.39,
+      "reverseHolofoil": 0.22
+    },
+    "Fezandipiti|45|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.09,
+      "reverseHolofoil": 0.1
+    },
+    "Flareon|13|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.2
+    },
+    "Flutter Mane|43|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.08,
+      "reverseHolofoil": 0.13
+    },
+    "Furfrou|88|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.27,
+      "reverseHolofoil": 0.18
+    },
+    "Glaceon|25|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.2,
+      "reverseHolofoil": 0.33
+    },
+    "Goldeen|20|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.32,
+      "reverseHolofoil": 0.14
+    },
+    "Great Tusk|55|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.13
+    },
+    "Groudon|49|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.11,
+      "reverseHolofoil": 0.13
+    },
+    "Hawlucha|89|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.38,
+      "reverseHolofoil": 0.19
+    },
+    "Heatran|68|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.26,
+      "reverseHolofoil": 0.12
+    },
+    "Hippopotas|52|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.09
+    },
+    "Hippowdon|53|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.05,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.13
+    },
+    "Hoothoot|77|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.19
+    },
+    "Houndoom|63|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.39,
+      "reverseHolofoil": 0.18
+    },
+    "Houndour|62|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.11
+    },
+    "Iron Boulder|46|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.1,
+      "reverseHolofoil": 0.14
+    },
+    "Jolteon|29|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.18
+    },
+    "Larvitar|47|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.4,
+      "reverseHolofoil": 0.14
+    },
+    "Leafeon|5|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.23
+    },
+    "Litleo|15|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.09
+    },
+    "Lopunny|84|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.28,
+      "reverseHolofoil": 0.15
+    },
+    "Miltank|81|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.1,
+      "holofoil": 0.27,
+      "reverseHolofoil": 0.11
+    },
+    "Munkidori|44|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.23,
+      "reverseHolofoil": 0.46
+    },
+    "Noctowl|78|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.15,
+      "reverseHolofoil": 0.19
+    },
+    "Noibat|90|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.36,
+      "reverseHolofoil": 0.16
+    },
+    "Okidogi|57|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.1,
+      "reverseHolofoil": 0.16
+    },
+    "Pinsir|3|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.08,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.1
+    },
+    "Pupitar|48|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.31,
+      "reverseHolofoil": 0.11
+    },
+    "Pyroar|16|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.3,
+      "reverseHolofoil": 0.13
+    },
+    "Regigigas|86|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.33,
+      "reverseHolofoil": 0.22
+    },
+    "Riolu|50|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.11,
+      "holofoil": 0.37,
+      "reverseHolofoil": 0.18
+    },
+    "Roaring Moon|65|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.1,
+      "reverseHolofoil": 0.14
+    },
+    "Scream Tail|42|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.07,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.14
+    },
+    "Shaymin|87|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.29,
+      "reverseHolofoil": 0.16
+    },
+    "Slowking|19|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.06,
+      "holofoil": 0.37,
+      "reverseHolofoil": 0.2
+    },
+    "Slowpoke|18|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.09,
+      "holofoil": 0.43,
+      "reverseHolofoil": 0.16
+    },
+    "Sneasel|61|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.23,
+      "reverseHolofoil": 0.19
+    },
+    "Spritzee|38|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.04,
+      "holofoil": 0.24,
+      "reverseHolofoil": 0.13
+    },
+    "Suicune|24|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.14,
+      "holofoil": 0.35,
+      "reverseHolofoil": 0.17
+    },
+    "Sylveon|40|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.23,
+      "reverseHolofoil": 0.25
+    },
+    "Umbreon|59|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.22,
+      "reverseHolofoil": 0.33
+    },
+    "Vaporeon|22|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.19,
+      "reverseHolofoil": 0.21
+    },
+    "Whimsicott|8|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.08,
+      "reverseHolofoil": 0.12
+    },
+    "Atticus|134|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.63,
+      "reverseHolofoil": null
+    },
+    "Friends in Paldea|137|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.76,
+      "reverseHolofoil": null
+    },
+    "Raifort|142|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.62,
+      "reverseHolofoil": null
+    },
+    "Drayton|172|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 16.59,
+      "reverseHolofoil": null
+    },
+    "Budew (Master Ball Pattern)|4|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.23,
+      "holofoil": 0.67,
+      "reverseHolofoil": 0.22
+    },
+    "Drakloak (Master Ball Pattern)|72|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.14,
+      "holofoil": 0.63,
+      "reverseHolofoil": 0.18
+    },
+    "Dunsparce (Master Ball Pattern)|79|Prismatic Evolutions": {
+      "found": true,
+      "normal": 0.12,
+      "holofoil": 0.36,
+      "reverseHolofoil": 0.15
+    },
+    "Vaporeon EX|23|Prismatic Evolutions": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.12,
+      "reverseHolofoil": null
+    },
+    "Diancie|GG13|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.77,
+      "reverseHolofoil": null
+    },
+    "Dunsparce|GG23|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.27,
+      "reverseHolofoil": null
+    },
+    "Pikachu|160|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 35.06,
+      "reverseHolofoil": null
+    },
+    "Regigigas VSTAR|114|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.39,
+      "reverseHolofoil": null
+    },
+    "Rotom VSTAR|46|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.2,
+      "reverseHolofoil": null
+    },
+    "Zeraora VSTAR|55|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.47,
+      "reverseHolofoil": null
+    },
+    "Friends in Hisui|148|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.44,
+      "reverseHolofoil": null
+    },
+    "Charizard VSTAR|19|Crown Zenith": {
+      "found": true,
+      "normal": null,
+      "holofoil": 9.42,
+      "reverseHolofoil": null
+    },
+    "Gardevoir|TG05|Astral Radiance Trainer Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.57,
+      "reverseHolofoil": null
+    },
+    "Stoutland|248|Cosmic Eclipse": {
+      "found": true,
+      "normal": null,
+      "holofoil": 6.32,
+      "reverseHolofoil": null
+    },
+    "Swablu|GG27|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.78,
+      "reverseHolofoil": null
+    },
+    "Comfey|GG14|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.69,
+      "reverseHolofoil": null
+    },
+    "Kricketune|GG02|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.99,
+      "reverseHolofoil": null
+    },
+    "Magnezone|GG18|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.1,
+      "reverseHolofoil": null
+    },
+    "Manaphy|GG06|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.84,
+      "reverseHolofoil": null
+    },
+    "Mareep|GG34|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.94,
+      "reverseHolofoil": null
+    },
+    "Paras|GG32|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.04,
+      "reverseHolofoil": null
+    },
+    "Poochyena|GG33|Crown Zenith Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.61,
+      "reverseHolofoil": null
+    },
+    "Big Charm|206|Rebel Clash": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.65,
+      "reverseHolofoil": null
+    },
+    "Hydreigon|10|Mcdonalds 2024": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.46,
+      "reverseHolofoil": null
+    },
+    "Rayquaza|14|Mcdonalds 2024": {
+      "found": true,
+      "normal": 0.45,
+      "holofoil": null,
+      "reverseHolofoil": null
+    },
+    "Korrina's Focus|174|Battle Styles": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.36,
+      "reverseHolofoil": null
+    },
+    "Tulip|259|Paradox Rift": {
+      "found": true,
+      "normal": null,
+      "holofoil": 7.63,
+      "reverseHolofoil": null
+    },
+    "Gholdengo ex|231|Paradox Rift": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.95,
+      "reverseHolofoil": null
+    },
+    "Drowzee|210|Scarlet & Violet Base": {
+      "found": true,
+      "normal": null,
+      "holofoil": 38.59,
+      "reverseHolofoil": null
+    },
+    "Flareon|TG01|Brilliant Stars Trainer Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 15.82,
+      "reverseHolofoil": null
+    },
+    "Umbreon VMAX|TG23|Brilliant Stars Trainer Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 76.86,
+      "reverseHolofoil": null
+    },
+    "Blastoise ex|184|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 24.01,
+      "reverseHolofoil": null
+    },
+    "Switch|206|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.79,
+      "reverseHolofoil": null
+    },
+    "Bill's Transfer|194|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.58,
+      "reverseHolofoil": null
+    },
+    "Erika's Invitation|196|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 8.48,
+      "reverseHolofoil": null
+    },
+    "Basic Psychic Energy|207|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.99,
+      "reverseHolofoil": null
+    },
+    "Dragonair|181|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 49.03,
+      "reverseHolofoil": null
+    },
+    "Bulbasaur|166|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 99.52,
+      "reverseHolofoil": null
+    },
+    "Ivysaur|167|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 55.6,
+      "reverseHolofoil": null
+    },
+    "Machoke|177|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 22.46,
+      "reverseHolofoil": null
+    },
+    "Mr. Mime|179|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.19,
+      "reverseHolofoil": null
+    },
+    "Omanyte|180|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.87,
+      "reverseHolofoil": null
+    },
+    "Wartortle|171|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 75.81,
+      "reverseHolofoil": null
+    },
+    "Alakazam EX|188|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 12.14,
+      "reverseHolofoil": null
+    },
+    "Blastoise EX|200|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 191.17,
+      "reverseHolofoil": null
+    },
+    "Jynx EX|191|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.93,
+      "reverseHolofoil": null
+    },
+    "Mew EX|193|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 44.51,
+      "reverseHolofoil": null
+    },
+    "Venusaur EX|182|Scarlet & Violet 151": {
+      "found": true,
+      "normal": null,
+      "holofoil": 15.37,
+      "reverseHolofoil": null
+    },
+    "Blaziken V|TG14|Silver Tempest Trainer Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 23.81,
+      "reverseHolofoil": null
+    },
+    "Chandelure|TG04|Lost Origin Trainer Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.56,
+      "reverseHolofoil": null
+    },
+    "Maractus|160|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 1.99,
+      "reverseHolofoil": null
+    },
+    "Swinub|165|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.71,
+      "reverseHolofoil": null
+    },
+    "Mamoswine EX|174|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 0.93,
+      "reverseHolofoil": null
+    },
+    "Lycanroc|166|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.42,
+      "reverseHolofoil": null
+    },
+    "N's Reshiram (Stamped)|167|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 13.47,
+      "reverseHolofoil": null
+    },
+    "Wailord|162|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 12.08,
+      "reverseHolofoil": null
+    },
+    "Lillie's Clefairy EX|173|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.97,
+      "reverseHolofoil": null
+    },
+    "N's Zoroark EX|175|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 4.98,
+      "reverseHolofoil": null
+    },
+    "Salamence EX|177|Journey Together": {
+      "found": true,
+      "normal": null,
+      "holofoil": 2.01,
+      "reverseHolofoil": null
+    },
+    "M Houndoom EX|154|XY - BREAKthrough": {
+      "found": true,
+      "normal": null,
+      "holofoil": 57.83,
+      "reverseHolofoil": null
+    },
+    "Origin Forme Palia VSTAR|GG67|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 87.66,
+      "reverseHolofoil": null
+    },
+    "Ditto|GG22|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 9.48,
+      "reverseHolofoil": null
+    },
+    "Pikachu|GG30|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 31.13,
+      "reverseHolofoil": null
+    },
+    "Raikou V|GG41|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 36.57,
+      "reverseHolofoil": null
+    },
+    "Suicune V|GG38|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 42.72,
+      "reverseHolofoil": null
+    },
+    "Hisuian Samurott VSTAR|GG52|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 9.07,
+      "reverseHolofoil": null
+    },
+    "Simisear VSTAR|GG37|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 23.36,
+      "reverseHolofoil": null
+    },
+    "Hatterene VMAX|GG47|Crown Zenith: Galarian Gallery": {
+      "found": true,
+      "normal": null,
+      "holofoil": 5.0,
+      "reverseHolofoil": null
+    },
+    "Blaziken VMAX|21|Chilling Reign": {
+      "found": true,
+      "normal": null,
+      "holofoil": 3.37,
+      "reverseHolofoil": null
+    }
+  }
+}

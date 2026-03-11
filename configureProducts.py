@@ -132,43 +132,43 @@ def index():
             background: var(--primary-bg);
             color: var(--text-primary);
             font-family: 'Segoe UI', system-ui, sans-serif;
-            font-size: 14px;
+            font-size: 17px;
             min-height: 100vh;
-            padding: 2rem;
+            padding: 2.5rem;
         }
         h1 {
-            font-size: 1.5rem;
+            font-size: 2rem;
             font-weight: 600;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.35rem;
             color: var(--text-primary);
         }
         .subtitle {
             color: var(--text-muted);
-            font-size: 0.8rem;
-            margin-bottom: 2rem;
+            font-size: 1rem;
+            margin-bottom: 2.5rem;
         }
         .card {
             background: var(--secondary-bg);
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1.5rem;
-            max-width: 800px;
+            border-radius: 14px;
+            padding: 2.25rem;
+            max-width: 1300px;
         }
         .tab-navigation {
             display: flex;
-            gap: 0.5rem;
-            margin-bottom: 1.5rem;
+            gap: 0.75rem;
+            margin-bottom: 2rem;
             border-bottom: 1px solid var(--border-color);
-            padding-bottom: 1rem;
+            padding-bottom: 1.25rem;
         }
         .tab-button {
             background: transparent;
             border: 1px solid var(--border-color);
             color: var(--text-secondary);
-            padding: 0.5rem 1rem;
-            border-radius: 6px;
+            padding: 0.7rem 1.4rem;
+            border-radius: 8px;
             cursor: pointer;
-            font-size: 0.875rem;
+            font-size: 1rem;
             transition: all 0.2s ease;
         }
         .tab-button.active, .tab-button:hover {
@@ -182,27 +182,27 @@ def index():
             display: flex;
             gap: 1rem;
             align-items: center;
-            max-width: 500px;
-            margin-bottom: 1.5rem;
+            max-width: 640px;
+            margin-bottom: 1.75rem;
         }
         .add-form input {
             flex: 1;
-            padding: 0.75rem 1rem;
+            padding: 0.9rem 1.2rem;
             background: var(--primary-bg);
             border: 1px solid var(--border-color);
-            border-radius: 6px;
+            border-radius: 8px;
             color: var(--text-primary);
-            font-size: 0.875rem;
+            font-size: 1rem;
             font-family: 'JetBrains Mono', monospace;
             outline: none;
         }
         .add-form input:focus { border-color: var(--accent-color); }
         .btn {
-            padding: 0.6rem 1.2rem;
+            padding: 0.75rem 1.5rem;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             cursor: pointer;
-            font-size: 0.8rem;
+            font-size: 0.95rem;
             font-weight: 500;
             transition: all 0.2s ease;
             white-space: nowrap;
@@ -216,15 +216,15 @@ def index():
         .btn-disabled { opacity: 0.5; cursor: not-allowed; background: #2a2d3e; color: var(--text-muted); }
         .product-list {
             border: 1px solid var(--border-color);
-            border-radius: 8px;
+            border-radius: 10px;
             overflow: hidden;
-            max-height: 360px;
+            max-height: 520px;
             overflow-y: auto;
         }
         .product-row {
             display: flex;
             align-items: center;
-            padding: 0.875rem 1rem;
+            padding: 1.1rem 1.4rem;
             border-bottom: 1px solid var(--border-color);
             background: var(--primary-bg);
             transition: background 0.15s;
@@ -234,29 +234,29 @@ def index():
         .product-info { flex: 1; min-width: 0; }
         .product-name {
             font-weight: 500;
+            font-size: 1rem;
             color: var(--text-primary);
-            margin-bottom: 0.2rem;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            margin-bottom: 0.3rem;
+            word-break: break-word;
         }
         .product-tcin {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.72rem;
+            font-size: 0.85rem;
             color: var(--text-muted);
         }
-        .product-actions { display: flex; gap: 0.5rem; align-items: center; }
+        .product-actions { display: flex; gap: 0.75rem; align-items: center; }
         .empty-state {
             text-align: center;
-            padding: 2.5rem;
+            padding: 3rem;
             color: var(--text-muted);
             font-style: italic;
+            font-size: 1rem;
         }
         .section-label {
-            font-size: 0.8rem;
+            font-size: 0.95rem;
             color: var(--text-secondary);
             font-weight: 500;
-            margin-bottom: 0.75rem;
+            margin-bottom: 1rem;
         }
         /* Toast */
         #toast {

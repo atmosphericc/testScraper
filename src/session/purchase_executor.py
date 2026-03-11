@@ -19,7 +19,7 @@ from zendriver import cdp
 
 from .session_manager import SessionManager
 
-CARD_CVV = '464'
+CARD_CVV = '229'
 
 
 class PurchaseExecutor:
@@ -396,7 +396,30 @@ class PurchaseExecutor:
                 print(f"[WARMUP] Navigating warmup tab to cart (was at {current_url})")
                 await self._warmup_tab.get("https://www.target.com/cart")
 
-            print("[WARMUP] Waiting for carts.target.com request interception (up to 3s)...")
+            # Wait for Shape JS to initialize, then fire a dummy POST so the CDP
+            # interceptor (REQUEST stage) can capture Shape headers.
+            # Cart page load only triggers GET/PUT — never a POST.
+            await asyncio.sleep(0.8)
+            print("[WARMUP] Firing dummy POST to trigger Shape header capture...")
+            await self._warmup_tab.evaluate("""
+                fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'Origin': 'https://www.target.com',
+                    },
+                    body: JSON.stringify({
+                        cart_item: {tcin: '00000000', quantity: 1, item_channel_id: '10'},
+                        cart_type: 'REGULAR',
+                        channel_id: '10',
+                        shopping_context: 'DIGITAL'
+                    })
+                }).catch(() => {});
+            """)
+
+            print("[WARMUP] Waiting for carts.target.com POST interception (up to 3s)...")
 
             deadline = time.time() + 3.0
             while time.time() < deadline:
@@ -408,8 +431,8 @@ class PurchaseExecutor:
                 await asyncio.sleep(0.1)
 
             elapsed = time.time() - ts_before
-            print(f"[WARMUP] TIMEOUT after {elapsed:.1f}s — carts.target.com GET was NOT intercepted")
-            print(f"[WARMUP] Possible causes: Target cart page didn't load, no cart API call on empty cart, "
+            print(f"[WARMUP] TIMEOUT after {elapsed:.1f}s — dummy POST was NOT intercepted")
+            print(f"[WARMUP] Possible causes: Target cart page didn't load, Shape JS not initialized, "
                   f"or CDP interceptor not active")
             print(f"[WARMUP] Stale headers available: {bool(self._cached_cart_headers)}, "
                   f"age={time.time()-self._cached_cart_headers_ts:.0f}s")
@@ -1340,39 +1363,34 @@ class PurchaseExecutor:
             return False
 
     async def _clear_cart(self, tab) -> bool:
-        """Clear all items from cart"""
+        """Clear all items from cart and saved-for-later section"""
         try:
-            remove_css_selectors = [
+            removed_count = 0
+
+            # --- Pass 1: regular cart items ---
+            cart_remove_selectors = [
                 'button[data-test="cartItem-remove"]',
                 'button[aria-label*="remove"]',
                 'button[aria-label*="Remove"]',
-                '[data-test*="remove"]',
-                '[data-testid*="remove"]',
             ]
+            count_expr = (
+                'document.querySelectorAll('
+                '"button[data-test=\\"cartItem-remove\\"],'
+                ' button[aria-label*=\\"remove\\"],'
+                ' button[aria-label*=\\"Remove\\"]").length'
+            )
 
-            removed_count = 0
-            max_attempts = 10
-
-            for attempt in range(max_attempts):
+            for _ in range(10):
                 button_found = False
-
-                for selector in remove_css_selectors:
+                for selector in cart_remove_selectors:
                     try:
-                        remove_button = await tab.select(selector, timeout=2)
-                        if remove_button and await self._is_visible(remove_button):
-                            current_count = await tab.evaluate(
-                                'document.querySelectorAll'
-                                '("[data-test=\\"cartItem-remove\\"],'
-                                ' button[aria-label*=\\"remove\\"],'
-                                ' button[aria-label*=\\"Remove\\"]").length'
-                            )
-                            await remove_button.apply("(el) => el.click()")
+                        btn = await tab.select(selector, timeout=2)
+                        if btn and await self._is_visible(btn):
+                            current_count = await tab.evaluate(count_expr)
+                            await btn.apply("(el) => el.click()")
                             await self._wait_for_function(
                                 tab,
-                                f'document.querySelectorAll'
-                                f'("[data-test=\\"cartItem-remove\\"],'
-                                f' button[aria-label*=\\"remove\\"],'
-                                f' button[aria-label*=\\"Remove\\"]").length < {current_count}',
+                                f'({count_expr}) < {current_count}',
                                 timeout=5.0
                             )
                             removed_count += 1
@@ -1380,18 +1398,44 @@ class PurchaseExecutor:
                             break
                     except Exception:
                         continue
-
                 if not button_found:
+                    break
+
+            # --- Pass 2: saved-for-later items ---
+            sfl_remove_selectors = [
+                'button[data-test="sflItem-remove"]',
+                'button[data-test="sfl-item-remove"]',
+                '[data-testid="sflItem-remove"]',
+                'button[aria-label*="saved for later"]',
+                'button[aria-label*="Saved for later"]',
+                'button[aria-label*="Saved For Later"]',
+            ]
+            sfl_count_expr = (
+                'document.querySelectorAll('
+                '"button[data-test=\\"sflItem-remove\\"],'
+                ' button[data-test=\\"sfl-item-remove\\"],'
+                ' [data-testid=\\"sflItem-remove\\"]").length'
+            )
+
+            for _ in range(10):
+                button_found = False
+                for selector in sfl_remove_selectors:
                     try:
-                        remove_btn = await tab.find("Remove", best_match=True, timeout=2)
-                        if remove_btn and await self._is_visible(remove_btn):
-                            await remove_btn.apply("(el) => el.click()")
-                            await asyncio.sleep(0.3)
+                        btn = await tab.select(selector, timeout=2)
+                        if btn and await self._is_visible(btn):
+                            current_count = await tab.evaluate(sfl_count_expr)
+                            await btn.apply("(el) => el.click()")
+                            await self._wait_for_function(
+                                tab,
+                                f'({sfl_count_expr}) < {current_count}',
+                                timeout=5.0
+                            )
                             removed_count += 1
                             button_found = True
+                            print(f"[CLEAR_CART] Removed 1 saved-for-later item (total removed: {removed_count})")
+                            break
                     except Exception:
-                        pass
-
+                        continue
                 if not button_found:
                     break
 
@@ -2202,6 +2246,35 @@ class PurchaseExecutor:
                 })()""")
                 if _po_enabled:
                     print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
+                    # The Place Order button appears in the HTML shell before React
+                    # finishes hydrating the page — clicking too early causes Target
+                    # to silently reject the order (item moves to Saved for Later).
+                    # Wait for a product image to load as the hydration signal.
+                    print("[PAYMENT] FLOW A: Waiting for cart item image (page hydration check)...")
+                    hydrated = False
+                    hydration_deadline = time.time() + 2.0
+                    while time.time() < hydration_deadline:
+                        try:
+                            img_ready = await tab.evaluate("""(() => {
+                                const imgs = document.querySelectorAll('img[src]');
+                                for (const img of imgs) {
+                                    const src = img.src || '';
+                                    if (!src || src.startsWith('data:')) continue;
+                                    if (!img.complete || img.naturalWidth < 40) continue;
+                                    const r = img.getBoundingClientRect();
+                                    if (r.width >= 40 && r.height >= 40) return true;
+                                }
+                                return false;
+                            })()""")
+                            if img_ready:
+                                hydrated = True
+                                print("[PAYMENT] FLOW A: Cart item image loaded — page fully hydrated")
+                                break
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.1)
+                    if not hydrated:
+                        print("[PAYMENT] FLOW A: Item image not detected after 2s — proceeding anyway")
                     if self.test_mode:
                         print("[PAYMENT] TEST_MODE: going to cart")
                         await tab.get("https://www.target.com/cart")
