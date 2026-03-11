@@ -555,24 +555,20 @@ class SessionManager:
 
                 # Get current cookies via CDP
                 try:
-                    result = await self._active_tab.send("Network.getCookies", urls=["https://www.target.com"])
-                    if hasattr(result, 'cookies'):
-                        target_cookies = [
-                            {
-                                'name': str(c.name),
-                                'value': str(c.value),
-                                'expires': float(getattr(c, 'expires', -1)) if getattr(c, 'expires', None) is not None else -1,
-                                'domain': str(getattr(c, 'domain', '')),
-                                'path': str(getattr(c, 'path', '/')),
-                                'httpOnly': bool(getattr(c, 'http_only', False)),
-                                'secure': bool(getattr(c, 'secure', False)),
-                            }
-                            for c in result.cookies
-                        ]
-                    elif isinstance(result, dict):
-                        target_cookies = result.get('cookies', [])
-                    else:
-                        target_cookies = []
+                    all_cookies = await self._active_tab.send(uc.cdp.storage.get_cookies())
+                    target_cookies = [
+                        {
+                            'name': str(c.name),
+                            'value': str(c.value),
+                            'expires': float(c.expires) if c.expires is not None else -1,
+                            'domain': str(getattr(c, 'domain', '')),
+                            'path': str(getattr(c, 'path', '/')),
+                            'httpOnly': bool(getattr(c, 'http_only', False)),
+                            'secure': bool(getattr(c, 'secure', False)),
+                        }
+                        for c in all_cookies
+                        if 'target.com' in str(getattr(c, 'domain', ''))
+                    ]
                 except Exception as get_err:
                     self.logger.warning(f"[WATCHDOG] Could not get cookies: {get_err}")
                     continue

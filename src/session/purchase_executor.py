@@ -2246,35 +2246,38 @@ class PurchaseExecutor:
                 })()""")
                 if _po_enabled:
                     print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
-                    # The Place Order button appears in the HTML shell before React
-                    # finishes hydrating the page — clicking too early causes Target
-                    # to silently reject the order (item moves to Saved for Later).
-                    # Wait for a product image to load as the hydration signal.
-                    print("[PAYMENT] FLOW A: Waiting for cart item image (page hydration check)...")
-                    hydrated = False
-                    hydration_deadline = time.time() + 2.0
-                    while time.time() < hydration_deadline:
+                    # Clicking Place Order too early causes Target to silently reject
+                    # the order (item moves to Saved for Later). The root cause is
+                    # Shape Security's JS needing time to collect telemetry and update
+                    # the _abck cookie. Poll for _abck being fully initialized (long
+                    # sensor-data value) — resolves in <100ms on a warm session.
+                    print("[PAYMENT] FLOW A: Waiting for Shape (_abck) to initialize...")
+                    shape_ready = False
+                    shape_deadline = time.time() + 1.5
+                    while time.time() < shape_deadline:
                         try:
-                            img_ready = await tab.evaluate("""(() => {
-                                const imgs = document.querySelectorAll('img[src]');
-                                for (const img of imgs) {
-                                    const src = img.src || '';
-                                    if (!src || src.startsWith('data:')) continue;
-                                    if (!img.complete || img.naturalWidth < 40) continue;
-                                    const r = img.getBoundingClientRect();
-                                    if (r.width >= 40 && r.height >= 40) return true;
-                                }
-                                return false;
+                            abck_ready = await tab.evaluate("""(() => {
+                                const c = document.cookie.split(';')
+                                    .find(x => x.trim().startsWith('_abck='));
+                                if (!c) return false;
+                                const val = decodeURIComponent(c.split('=').slice(1).join('='));
+                                // _abck format: payload~threshold~unknown~signal~...
+                                // parts[1] == -1 means uninitialized; >= 0 means Shape
+                                // has validated sensor data (Akamai SDK IsCookieValid).
+                                const parts = val.split('~');
+                                if (parts.length < 2) return false;
+                                const threshold = parseInt(parts[1], 10);
+                                return !isNaN(threshold) && threshold !== -1;
                             })()""")
-                            if img_ready:
-                                hydrated = True
-                                print("[PAYMENT] FLOW A: Cart item image loaded — page fully hydrated")
+                            if abck_ready:
+                                shape_ready = True
+                                print("[PAYMENT] FLOW A: Shape _abck initialized — proceeding")
                                 break
                         except Exception:
                             pass
-                        await asyncio.sleep(0.1)
-                    if not hydrated:
-                        print("[PAYMENT] FLOW A: Item image not detected after 2s — proceeding anyway")
+                        await asyncio.sleep(0.05)
+                    if not shape_ready:
+                        print("[PAYMENT] FLOW A: _abck not detected after 1.5s — proceeding anyway")
                     if self.test_mode:
                         print("[PAYMENT] TEST_MODE: going to cart")
                         await tab.get("https://www.target.com/cart")
