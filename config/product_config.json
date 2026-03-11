@@ -14,19 +14,21 @@
     },
     {
       "tcin": "94300072",
-      "name": "Product 94300072",
+      "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Prismatic Evolutions Super-Premium Collection",
       "enabled": true,
       "url": "https://www.target.com/p/-/A-94300072"
     },
     {
       "tcin": "93954446",
-      "name": "Product 93954446",
-      "enabled": true
+      "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014Prismatic Evolutions Booster Bundle",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-93954446"
     },
     {
       "tcin": "94300069",
-      "name": "Product 94300069",
-      "enabled": true
+      "name": "Pok\u00e9mon Trading Card Game: Scarlet & Violet\u2014 Destined Rivals Elite Trainer Box",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94300069"
     },
     {
       "tcin": "94681790",
@@ -47,8 +49,53 @@
       "url": "https://www.target.com/p/-/A-91619922"
     },
     {
+      "tcin": "95230445",
+      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution Perfect Order Elite Trainer Box",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95230445"
+    },
+    {
       "tcin": "95225595",
-      "name": "Product 95225595",
+      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution Perfect Order Booster Bundle",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95225595"
+    },
+    {
+      "tcin": "94886127",
+      "name": "Product 94886127",
+      "enabled": true
+    },
+    {
+      "tcin": "94884496",
+      "name": "Pok\u00e9mon Trading Card Game: Mega Evolution\u2014 Phantasmal Flames Booster Bundle",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94884496"
+    },
+    {
+      "tcin": "95230447",
+      "name": "Product 95230447",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95230447"
+    },
+    {
+      "tcin": "95093982",
+      "name": "Product 95093982",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95093982"
+    },
+    {
+      "tcin": "95230446",
+      "name": "Product 95230446",
+      "enabled": true
+    },
+    {
+      "tcin": "95252674",
+      "name": "Product 95252674",
+      "enabled": true
+    },
+    {
+      "tcin": "94681782",
+      "name": "Product 94681782",
       "enabled": true
     }
   ]

@@ -23,12 +23,12 @@ import sys
 import ctypes
 from waitress import serve
 
-# Prevent Windows from sleeping while the app is running.
-# ES_CONTINUOUS | ES_SYSTEM_REQUIRED keeps the system awake; the screen can
-# still turn off (omit ES_DISPLAY_REQUIRED intentionally to save power).
-_ES_CONTINUOUS      = 0x80000000
-_ES_SYSTEM_REQUIRED = 0x00000001
-ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+# Prevent system from sleeping while the app is running (Windows only).
+import platform
+if platform.system() == "Windows":
+    _ES_CONTINUOUS      = 0x80000000
+    _ES_SYSTEM_REQUIRED = 0x00000001
+    ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
 
 # Import our bulletproof modules
 from src.monitoring import StockMonitor

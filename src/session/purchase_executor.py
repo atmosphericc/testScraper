@@ -314,15 +314,43 @@ class PurchaseExecutor:
         label = "warmup" if persistent else "main"
 
         async def _on_request_paused(event: cdp.fetch.RequestPaused):
-            # FIX 1: deduplicate — accumulated handlers each fire; only first processes
+            # Deduplicate by (request_id + stage) — REQUEST and RESPONSE share the same
+            # request_id but are separate events; keying on id alone drops RESPONSE events.
             req_id = str(event.request_id)
-            if req_id in self._cdp_continued_ids:
+            is_response = event.response_status_code is not None or getattr(event, 'response_error_reason', None) is not None
+            dedup_key = req_id + (':resp' if is_response else ':req')
+            if dedup_key in self._cdp_continued_ids:
                 return
-            self._cdp_continued_ids.add(req_id)
+            self._cdp_continued_ids.add(dedup_key)
 
             try:
                 url = event.request.url if hasattr(event, 'request') else ''
                 method = event.request.method if hasattr(event.request, 'method') else '?'
+                is_checkout_post = 'web_checkouts/v1/checkout' in url and method == 'POST'
+
+                # RESPONSE stage — log status for checkout POST only
+                if is_response:
+                    status = event.response_status_code
+                    # response_headers is a list of HeaderEntry(name, value) objects, not a dict
+                    raw_resp_headers = event.response_headers or []
+                    try:
+                        resp_headers = {h.name.lower(): h.value for h in raw_resp_headers}
+                    except Exception:
+                        try:
+                            resp_headers = {h['name'].lower(): h['value'] for h in raw_resp_headers}
+                        except Exception:
+                            resp_headers = {}
+                    shape_pass = resp_headers.get('x-shape-pass', '?')
+                    cf_ray = resp_headers.get('cf-ray', '')
+                    print(f"[INTERCEPTOR:{label}] [RESPONSE] {method} {url[:80]} → HTTP {status} (shape-pass={shape_pass}{', cf-ray=' + cf_ray if cf_ray else ''})")
+                    if is_checkout_post:
+                        print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] HTTP {status} — {'SUCCESS' if status in (200, 201) else 'REJECTED'}")
+                        if status not in (200, 201):
+                            # Log all response headers to diagnose rejection reason
+                            print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] headers: {dict(list(resp_headers.items())[:10])}")
+                    await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
+                    return
+
                 if 'carts.target.com' in url or 'cart_items' in url:
                     headers = dict(event.request.headers) if event.request.headers else {}
                     header_names = list(headers.keys())
@@ -332,7 +360,8 @@ class PurchaseExecutor:
                         prev_shape_count = len([h for h in self._cached_cart_headers if h.lower().startswith('x-')])
                         self._cached_cart_headers = headers
                         self._cached_cart_headers_ts = time.time()
-                        print(f"[INTERCEPTOR:{label}] {method} {url[:80]}")
+                        tag = '[CHECKOUT_POST]' if is_checkout_post else ''
+                        print(f"[INTERCEPTOR:{label}] {tag} {method} {url[:80]}")
                         print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers (Shape X-headers: {len(shape_headers)}, prev cache had {prev_shape_count}): {header_names}")
                     elif headers:
                         # non-POST carts request — log but don't overwrite cache
@@ -354,12 +383,18 @@ class PurchaseExecutor:
 
         try:
             await tab.send(cdp.fetch.enable(
-                patterns=[cdp.fetch.RequestPattern(
-                    url_pattern='*carts.target.com*',
-                    request_stage=cdp.fetch.RequestStage.REQUEST
-                )]
+                patterns=[
+                    cdp.fetch.RequestPattern(
+                        url_pattern='*carts.target.com*',
+                        request_stage=cdp.fetch.RequestStage.REQUEST
+                    ),
+                    cdp.fetch.RequestPattern(
+                        url_pattern='*web_checkouts/v1/checkout*',
+                        request_stage=cdp.fetch.RequestStage.RESPONSE
+                    ),
+                ]
             ))
-            print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() sent with pattern *carts.target.com*")
+            print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE")
         except Exception as e:
             print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() FAILED: {e}")
             return
@@ -368,8 +403,15 @@ class PurchaseExecutor:
             tab.enabled_domains.append(cdp.fetch)
             print(f"[INTERCEPTOR:{label}] Added cdp.fetch to enabled_domains")
 
+        # Clear any stale handlers from previous cycles before adding new one
+        handlers = getattr(tab, 'handlers', {})
+        stale = len(handlers.get(cdp.fetch.RequestPaused, []))
+        if stale > 0:
+            handlers[cdp.fetch.RequestPaused] = []
+            print(f"[INTERCEPTOR:{label}] Cleared {stale} stale RequestPaused handler(s)")
+
         tab.add_handler(cdp.fetch.RequestPaused, _on_request_paused)
-        handler_count = len([h for h in getattr(tab, 'handlers', {}).get(cdp.fetch.RequestPaused, []) if True])
+        handler_count = len(handlers.get(cdp.fetch.RequestPaused, []))
         print(f"[INTERCEPTOR:{label}] CDP fetch interceptor ready (total RequestPaused handlers on tab: {handler_count})")
 
     async def warm_shape_headers(self) -> bool:
@@ -466,6 +508,11 @@ class PurchaseExecutor:
                     raise Exception("Browser not available")
                 tab = browser.tabs[0]
 
+            # Set up CDP interceptor BEFORE navigating — always re-run to clear stale
+            # handlers from previous purchase cycles before the new navigation starts
+            await self._setup_cdp_fetch_interceptor(tab, persistent=False)
+            self._main_tab_interceptor_active = True
+
             # Navigate to product page
             product_url = f"https://www.target.com/p/-/A-{tcin}"
             try:
@@ -475,16 +522,15 @@ class PurchaseExecutor:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
 
-            # Set up CDP interceptor on main tab to capture button-click POST headers
-            if not self._main_tab_interceptor_active:
-                await self._setup_cdp_fetch_interceptor(tab, persistent=False)
-                self._main_tab_interceptor_active = True
-
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
             headers_age = time.time() - self._cached_cart_headers_ts
             use_cached = bool(self._cached_cart_headers) and headers_age < 180  # 3-min TTL
-            extra_headers_js = json.dumps(self._cached_cart_headers if use_cached else {})
+            # Strip Cookie from cached headers — credentials:'include' sends live browser
+            # cookies automatically. Injecting a stale cached Cookie header overrides them
+            # and causes 401 auth errors if the session refreshed since warmup ran.
+            cached_no_cookie = {k: v for k, v in self._cached_cart_headers.items() if k.lower() != 'cookie'}
+            extra_headers_js = json.dumps(cached_no_cookie if use_cached else {})
             if use_cached:
                 print(f"[PURCHASE] Injecting Shape headers (age={headers_age:.0f}s): "
                       f"{list(self._cached_cart_headers.keys())}")
@@ -632,14 +678,62 @@ class PurchaseExecutor:
 
             print(f"[PURCHASE] Cart confirmed (t={time.time() - start_time:.1f}s)")
 
+            # Quick cart verification before navigating — confirms item actually in cart
+            try:
+                cart_count = await tab.evaluate("""(() => {
+                    const badge = document.querySelector('[data-test="cart-count"]');
+                    return badge ? badge.innerText.trim() : 'no-badge';
+                })()""")
+                print(f"[PURCHASE] Cart badge before checkout nav: {cart_count}")
+            except Exception:
+                pass
+
             # Navigate to checkout
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
             checkout_result = False
+            t_nav_start = time.time()
+
+            # Fire pre_checkout before navigating — Target's cart page normally calls this
+            # via JS before redirecting to checkout. Skipping it causes /checkout/start to
+            # immediately redirect back to /cart because checkout is in an uninitialized state.
+            try:
+                pre_result = await tab.evaluate(f"""(async () => {{
+                    try {{
+                        const resp = await fetch(
+                            'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT,PROMOTIONS',
+                            {{
+                                method: 'POST',
+                                credentials: 'include',
+                                headers: {{
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'application/json',
+                                    'Origin': 'https://www.target.com',
+                                    'Referer': 'https://www.target.com/cart',
+                                    'x-application-name': 'web',
+                                }},
+                                body: JSON.stringify({{cart_type: 'REGULAR'}})
+                            }}
+                        );
+                        return resp.status;
+                    }} catch(e) {{ return 'error:' + e.message; }}
+                }})()""", await_promise=True)
+                print(f"[PURCHASE] pre_checkout status: {pre_result} (t+{time.time()-t_nav_start:.3f}s)")
+            except Exception as e:
+                print(f"[PURCHASE] pre_checkout call failed: {e}")
 
             try:
                 await tab.get("https://www.target.com/checkout/start")
                 await tab  # flush CDP event queue before interacting (zendriver pattern)
-                print("[PURCHASE] Waiting for checkout page elements...")
+                # Use evaluate for reliable URL reading — tab.url can be stale during redirects
+                landed_url = await tab.evaluate("window.location.href")
+                print(f"[PURCHASE] Checkout nav done (t+{time.time()-t_nav_start:.3f}s) landed={landed_url}")
+                if 'checkout' not in landed_url.lower():
+                    print(f"[PURCHASE] Checkout redirect detected → {landed_url}")
+                    try:
+                        snippet = (await tab.evaluate("(document.body && document.body.innerText || '').slice(0,200)")).replace('\n',' ')
+                        print(f"[PURCHASE] Page text: {snippet!r}")
+                    except Exception:
+                        pass
                 try:
                     _co_state = 'unknown'  # ensure always defined even if evaluate throws
                     _co_start = time.time()
@@ -665,7 +759,7 @@ class PurchaseExecutor:
                 except Exception as wait_error:
                     print(f"[PURCHASE] Checkout element wait warning: {wait_error}")
 
-                checkout_result = 'checkout' in tab.url.lower()
+                checkout_result = 'checkout' in landed_url.lower()
             except Exception as nav_error:
                 print(f"[ERROR] Checkout navigation failed: {nav_error}")
                 checkout_result = False
@@ -1011,100 +1105,108 @@ class PurchaseExecutor:
             return True
 
     async def _handle_cvv_modal(self, tab) -> bool:
-        """Detect and fill a CVV/security-code verification modal after Place Order.
+        """Detect, fill, and confirm CVV modal in a single JS round trip.
 
+        Polls internally for the confirm button to enable (up to 300ms) then clicks.
         Returns True if a CVV modal was found and handled, False if none present.
         """
         try:
-            found_sel = await tab.evaluate("""
-(() => {
-    const selectors = [
+            t_cvv = time.time()
+            result = await tab.evaluate(f"""
+(async () => {{
+    const inputSelectors = [
         'input[name="cvv"]', 'input[name="cvc"]',
         'input[id*="cvv" i]', 'input[id*="cvc" i]',
         'input[placeholder*="CVV" i]', 'input[placeholder*="security" i]',
         'input[aria-label*="CVV" i]', 'input[aria-label*="security code" i]',
         'input[data-test*="cvv" i]',
     ];
-    for (const sel of selectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) return sel;
-        }
-    }
-    return null;
-})()
-""")
-            if not found_sel:
-                return False
-
-            print(f"[PAYMENT] CVV modal detected ({found_sel}) — entering CVV")
-
-            filled = await tab.evaluate(f"""
-(() => {{
-    const selectors = [
-        'input[name="cvv"]', 'input[name="cvc"]',
-        'input[id*="cvv" i]', 'input[id*="cvc" i]',
-        'input[placeholder*="CVV" i]', 'input[placeholder*="security" i]',
-        'input[aria-label*="CVV" i]', 'input[aria-label*="security code" i]',
-        'input[data-test*="cvv" i]',
+    // Require the confirm button to be inside a modal/dialog containing the CVV input,
+    // or match very specific CVV-related data-test values — avoids false positives on
+    // [data-test*="confirm"] elements that exist elsewhere on the checkout page.
+    const confirmSelectors = [
+        '[data-test*="cvv"]',
+        '[data-test="cvv-confirm-button"]',
+        '[data-test="confirm-cvv"]',
+        '[data-test*="confirm"]',
+        '[data-test*="submit"]',
+        'button[type="submit"]',
     ];
-    for (const sel of selectors) {{
+
+    // 1. Detect CVV input
+    let cvvEl = null, foundSel = null;
+    for (const sel of inputSelectors) {{
         const el = document.querySelector(sel);
         if (el) {{
             const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {{
-                const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                    window.HTMLInputElement.prototype, 'value').set;
-                nativeInputValueSetter.call(el, '{CARD_CVV}');
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                return true;
-            }}
+            if (r.width > 0 && r.height > 0) {{ cvvEl = el; foundSel = sel; break; }}
         }}
     }}
-    return false;
-}})()
-""")
-            if not filled:
-                print("[PAYMENT] CVV fill failed")
-                return False
+    if (!cvvEl) return 'no_modal';
 
-            await asyncio.sleep(0.1)
+    // 2. Fill CVV — full event sequence for react-hook-form / Formik validation
+    // focus first so the field is "touched", then fill, then blur to trigger validation
+    cvvEl.dispatchEvent(new FocusEvent('focus', {{ bubbles: true }}));
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    nativeSetter.call(cvvEl, '{CARD_CVV}');
+    cvvEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    cvvEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
+    cvvEl.dispatchEvent(new FocusEvent('blur', {{ bubbles: true }}));
 
-            confirmed = await tab.evaluate("""
-(() => {
-    const confirmSelectors = [
-        '[data-test*="confirm"]', '[data-test*="submit"]',
-        '[data-test*="cvv"]',
-        'button[type="submit"]',
-    ];
-    for (const sel of confirmSelectors) {
-        const el = document.querySelector(sel);
-        if (el) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
-                el.click();
-                return 'clicked: ' + sel;
-            }
-        }
-    }
-    // Fallback: any button whose text matches confirm/submit/continue
-    const buttons = Array.from(document.querySelectorAll('button'));
-    for (const btn of buttons) {
-        const txt = btn.textContent.trim().toLowerCase();
-        if (['confirm', 'submit', 'continue'].some(w => txt.includes(w))) {
-            const r = btn.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) {
+    function btnReady(btn) {{
+        if (!btn) return false;
+        const r = btn.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        if (btn.disabled) return false;
+        if (btn.getAttribute('aria-disabled') === 'true') return false;
+        const style = window.getComputedStyle(btn);
+        if (style.pointerEvents === 'none') return false;
+        return true;
+    }}
+
+    // Verify fill actually stuck before trying to confirm
+    if (cvvEl.value !== '{CARD_CVV}') return 'fill_failed (input:' + foundSel + ')';
+
+    // 3. Poll up to 500ms for confirm button to enable, then click
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline) {{
+        for (const sel of confirmSelectors) {{
+            const btn = document.querySelector(sel);
+            if (btnReady(btn)) {{
+                const btnTxt = btn.textContent.trim();
                 btn.click();
-                return 'clicked text: ' + btn.textContent.trim();
-            }
-        }
-    }
-    return 'no confirm button found';
-})()
-""")
-            print(f"[PAYMENT] CVV confirm: {confirmed}")
+                return 'clicked:' + sel + ' text="' + btnTxt + '" (input:' + foundSel + ')';
+            }}
+        }}
+        // Fallback: text-matched button
+        for (const btn of document.querySelectorAll('button')) {{
+            const txt = btn.textContent.trim().toLowerCase();
+            if (['confirm', 'submit', 'continue'].some(w => txt.includes(w))) {{
+                if (btnReady(btn)) {{
+                    btn.click();
+                    return 'clicked_text:"' + btn.textContent.trim() + '" (input:' + foundSel + ')';
+                }}
+            }}
+        }}
+        await new Promise(r => setTimeout(r, 20));
+    }}
+    // Log all visible buttons to diagnose what's on screen
+    const visibleBtns = Array.from(document.querySelectorAll('button')).filter(b => {{
+        const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0;
+    }}).map(b => '"' + b.textContent.trim() + '" disabled=' + b.disabled + ' aria-disabled=' + b.getAttribute('aria-disabled'));
+    return 'no_confirm_button (input:' + foundSel + ') visible_buttons=[' + visibleBtns.join(', ') + ']';
+}})()
+""", await_promise=True)
+            if result == 'no_modal':
+                return False
+            url_now = tab.url
+            if result and 'fill_failed' in str(result):
+                print(f"[PAYMENT] CVV fill failed (native setter rejected): {result} url={url_now}")
+                return False
+            if result and 'no_confirm_button' in str(result):
+                print(f"[PAYMENT] CVV filled but no confirm button in 500ms: {result} ({time.time()-t_cvv:.3f}s) url={url_now}")
+                return False
+            print(f"[PAYMENT] CVV confirm: {result} ({time.time()-t_cvv:.3f}s) url={url_now}")
             return True
 
         except Exception as e:
@@ -2120,14 +2222,16 @@ class PurchaseExecutor:
 
             await self._scroll_into_view(place_order_button)
             print(f"[PAYMENT] Clicking Place Order ({found_selector}) attempt {attempt}/{max_attempts}")
+            t_click = time.time()
             try:
                 await self._dispatch_click(place_order_button)
-                print("[PAYMENT] Click dispatched")
+                print(f"[PAYMENT] Click dispatched (t+{time.time()-t_click:.3f}s)")
+                await asyncio.sleep(0.05)  # brief yield so browser processes click event
             except Exception as click_error:
                 print(f"[PAYMENT] dispatch click failed ({click_error}), trying fallback")
                 try:
                     await place_order_button.click()
-                    print("[PAYMENT] Fallback click succeeded")
+                    print(f"[PAYMENT] Fallback click succeeded (t+{time.time()-t_click:.3f}s)")
                 except Exception:
                     return False
 
@@ -2136,29 +2240,37 @@ class PurchaseExecutor:
             cvv_handled = False
             while time.time() - start < 12.0:
                 url = tab.url
-                if 'confirmation' in url.lower() or 'thank' in url.lower():
-                    print("[PAYMENT] Reached confirmation page")
+                if 'order-confirmation' in url.lower() or 'thank' in url.lower() or 'confirmation' in url.lower():
+                    print(f"[PAYMENT] Reached confirmation page (t+{time.time()-t_click:.3f}s from click) url={url}")
                     return True
                 if not cvv_handled:
                     cvv_handled = await self._handle_cvv_modal(tab)
                     if cvv_handled:
-                        print("[PAYMENT] CVV submitted — waiting for confirmation...")
-                # Check for busy error on every iteration (it may load after a delay)
+                        print(f"[PAYMENT] CVV submitted (t+{time.time()-t_click:.3f}s from click) — waiting for confirmation...")
+                    # Don't run busy/stock checks until CVV is handled — saves round trips
+                    await asyncio.sleep(0.05)
+                    continue
+                # CVV already handled — check for busy/stock errors
                 busy_dismissed = await self._handle_busy_modal(tab)
                 if busy_dismissed:
-                    print(f"[PAYMENT] Busy error detected — retrying Place Order (attempt {attempt}/{max_attempts})")
+                    print(f"[PAYMENT] Busy error detected (t+{time.time()-t_click:.3f}s) — retrying Place Order (attempt {attempt}/{max_attempts})")
                     await asyncio.sleep(1.5)
                     break  # break inner loop to retry Place Order click
                 # Check for out-of-stock error — no point waiting further if detected
                 stock_error = await self._handle_stock_error_modal(tab)
                 if stock_error:
-                    print("[PAYMENT] OUT OF STOCK detected after Place Order — item sold out during checkout")
+                    print(f"[PAYMENT] OUT OF STOCK detected (t+{time.time()-t_click:.3f}s) — item sold out during checkout")
                     return False
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.05)
             else:
                 # Inner loop completed without break — timed out
                 url = tab.url
-                print(f"[PAYMENT] URL after Place Order: {url}")
+                print(f"[PAYMENT] Timed out after 12s — URL: {url}")
+                try:
+                    page_snippet = (await tab.evaluate("(document.body && document.body.innerText || '').slice(0, 300)")).replace('\n', ' ')
+                    print(f"[PAYMENT] Page text on timeout: {page_snippet!r}")
+                except Exception:
+                    pass
                 # Take screenshot to diagnose what happened
                 try:
                     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -2174,7 +2286,7 @@ class PurchaseExecutor:
                 if 'checkout' in url.lower():
                     print("[PAYMENT] Still on checkout after Place Order wait — signaling failure")
                     return False
-                # Navigated away from checkout but not to confirmation — check page content
+                # Navigated away from checkout — check page content before deciding
                 page_text = ''
                 try:
                     page_text = (await tab.evaluate("document.body.innerText || ''")).lower()
@@ -2184,7 +2296,15 @@ class PurchaseExecutor:
                     print("[PAYMENT] Busy error on redirected page — will retry")
                     await asyncio.sleep(1.5)
                     break  # retry Place Order
-                return True
+                # Only treat as success if URL or page content confirms the order
+                if any(p in url.lower() for p in ['order-confirmation', 'confirmation', 'thank']):
+                    print(f"[PAYMENT] Order confirmed via URL: {url}")
+                    return True
+                if any(p in page_text for p in ['order confirmation', 'thank you', 'your order', 'order number']):
+                    print("[PAYMENT] Order confirmed via page content")
+                    return True
+                print(f"[PAYMENT] Redirected to {url} without confirmation — treating as failure")
+                return False
 
             # busy_dismissed caused break — loop back to retry Place Order
 
@@ -2212,6 +2332,7 @@ class PurchaseExecutor:
         PROD MODE: click the enabled Place Order button.
         """
         try:
+            t_payment_start = time.time()
             print("[PAYMENT] Starting checkout completion...")
 
             # Screenshot on entry — check logs/ folder to see what the bot saw.
@@ -2225,9 +2346,10 @@ class PurchaseExecutor:
             # Skip duplicate wait if the nav wait already confirmed page-ready state.
             if initial_state in ('place_order', 'sac'):
                 ready = initial_state
-                print(f"[PAYMENT] Page already confirmed ready ({ready}) — skipping wait")
+                print(f"[PAYMENT] Page already confirmed ready ({ready}) — skipping wait (t+{time.time()-t_payment_start:.3f}s)")
             else:
                 ready = await self._wait_for_checkout_ready(tab, timeout=5.0)
+                print(f"[PAYMENT] Checkout ready state: {ready} (t+{time.time()-t_payment_start:.3f}s)")
 
             # ── FLOW A: Place Order already enabled (everything pre-confirmed) ─────────
             if ready == 'place_order':
@@ -2246,38 +2368,6 @@ class PurchaseExecutor:
                 })()""")
                 if _po_enabled:
                     print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
-                    # Clicking Place Order too early causes Target to silently reject
-                    # the order (item moves to Saved for Later). The root cause is
-                    # Shape Security's JS needing time to collect telemetry and update
-                    # the _abck cookie. Poll for _abck being fully initialized (long
-                    # sensor-data value) — resolves in <100ms on a warm session.
-                    print("[PAYMENT] FLOW A: Waiting for Shape (_abck) to initialize...")
-                    shape_ready = False
-                    shape_deadline = time.time() + 1.5
-                    while time.time() < shape_deadline:
-                        try:
-                            abck_ready = await tab.evaluate("""(() => {
-                                const c = document.cookie.split(';')
-                                    .find(x => x.trim().startsWith('_abck='));
-                                if (!c) return false;
-                                const val = decodeURIComponent(c.split('=').slice(1).join('='));
-                                // _abck format: payload~threshold~unknown~signal~...
-                                // parts[1] == -1 means uninitialized; >= 0 means Shape
-                                // has validated sensor data (Akamai SDK IsCookieValid).
-                                const parts = val.split('~');
-                                if (parts.length < 2) return false;
-                                const threshold = parseInt(parts[1], 10);
-                                return !isNaN(threshold) && threshold !== -1;
-                            })()""")
-                            if abck_ready:
-                                shape_ready = True
-                                print("[PAYMENT] FLOW A: Shape _abck initialized — proceeding")
-                                break
-                        except Exception:
-                            pass
-                        await asyncio.sleep(0.05)
-                    if not shape_ready:
-                        print("[PAYMENT] FLOW A: _abck not detected after 1.5s — proceeding anyway")
                     if self.test_mode:
                         print("[PAYMENT] TEST_MODE: going to cart")
                         await tab.get("https://www.target.com/cart")

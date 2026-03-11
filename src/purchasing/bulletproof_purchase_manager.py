@@ -642,10 +642,17 @@ class BulletproofPurchaseManager:
                     is_in_stock = stock_status.get(tcin, False)
 
                     if is_in_stock:  # Product is IN STOCK
-                        # IN STOCK + COMPLETED (purchased or failed) -> Reset to ready for immediate re-purchase
                         old_order = state.get('order_number', 'N/A')
                         old_failure = state.get('failure_reason', 'unknown')
-                        old_completed_at = state.get('completed_at', 'unknown')
+                        old_completed_at = state.get('completed_at', 0)
+
+                        # For failures, wait 30s before retrying to avoid hammering
+                        # the session and triggering auth lockouts
+                        if current_status == 'failed':
+                            time_since = time.time() - old_completed_at if old_completed_at else 999
+                            if time_since < 15:
+                                print(f"[RESET] {tcin}: failed {time_since:.0f}s ago, waiting for 15s backoff")
+                                continue
 
                         states[tcin] = {'status': 'ready'}
                         reset_count += 1
