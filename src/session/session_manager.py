@@ -462,7 +462,13 @@ class SessionManager:
             name, value = name_value.split('=', 1)
             from urllib.parse import urlparse
             parsed_url = urlparse(url)
-            domain = parsed_url.hostname
+            hostname = parsed_url.hostname or ''
+            # Use root domain with leading dot so cookie works across all Target subdomains
+            # (carts.target.com, checkout.target.com, etc.)
+            if 'target.com' in hostname:
+                domain = '.target.com'
+            else:
+                domain = hostname
 
             cookie_data = {
                 'name': name.strip(),
@@ -470,7 +476,7 @@ class SessionManager:
                 'domain': domain,
                 'path': '/',
                 'httpOnly': False,
-                'secure': False,
+                'secure': True,   # Target auth cookies are always HTTPS
                 'sameSite': 'Lax'
             }
 
@@ -505,7 +511,25 @@ class SessionManager:
                 cookie['expires'] = future_timestamp
                 self.logger.info(f"[CDP_COOKIE] Fixing cookie '{cookie['name']}' - converting to PERSISTENT (30 days)")
                 try:
-                    await self._active_tab.send("Network.setCookie", **cookie)
+                    ss = cookie.get('sameSite')
+                    same_site = uc.cdp.network.CookieSameSite.from_json(ss) if ss in ('Strict', 'Lax', 'None') else None
+                    exp = cookie.get('expires', -1)
+                    expires = uc.cdp.network.TimeSinceEpoch(exp) if exp and exp > 0 else None
+                    # Normalize domain to .target.com so cookie reaches all subdomains
+                    raw_domain = cookie.get('domain') or ''
+                    domain = '.target.com' if 'target.com' in raw_domain else (raw_domain or None)
+                    # sameSite=None requires Secure=True or browser rejects it
+                    is_secure = True if ss == 'None' else cookie.get('secure', True)
+                    await self._active_tab.send(uc.cdp.network.set_cookie(
+                        name=cookie['name'],
+                        value=cookie['value'],
+                        domain=domain,
+                        path=cookie.get('path', '/'),
+                        secure=is_secure,
+                        http_only=cookie.get('httpOnly', False),
+                        same_site=same_site,
+                        expires=expires,
+                    ))
                     self.logger.info(f"[CDP_COOKIE] Cookie '{cookie['name']}' now PERSISTENT!")
                     print(f"[CDP_COOKIE] Fixed '{cookie['name']}' - persistent for 30 days")
                 except Exception as set_err:
@@ -642,13 +666,32 @@ class SessionManager:
                         'domain': str(getattr(raw, 'domain', '.target.com')),
                         'path': str(getattr(raw, 'path', '/')),
                         'httpOnly': bool(getattr(raw, 'http_only', False)),
-                        'secure': bool(getattr(raw, 'secure', False)),
+                        'secure': bool(getattr(raw, 'secure', True)),
+                        'sameSite': raw.same_site.to_json() if getattr(raw, 'same_site', None) else None,
                     }
                 cookie['expires'] = future_timestamp
 
                 self.logger.info(f"[WATCHDOG] Fixing '{cookie_name}' via CDP (converting to persistent)")
                 try:
-                    await self._active_tab.send("Network.setCookie", **cookie)
+                    ss = cookie.get('sameSite')
+                    same_site = uc.cdp.network.CookieSameSite.from_json(ss) if ss in ('Strict', 'Lax', 'None') else None
+                    exp = cookie.get('expires', -1)
+                    expires = uc.cdp.network.TimeSinceEpoch(exp) if exp and exp > 0 else None
+                    # Normalize domain to .target.com so cookie works across all subdomains
+                    raw_domain = cookie.get('domain') or ''
+                    domain = '.target.com' if 'target.com' in raw_domain else (raw_domain or None)
+                    # sameSite=None requires Secure=True or browser rejects it
+                    is_secure = True if ss == 'None' else cookie.get('secure', True)
+                    await self._active_tab.send(uc.cdp.network.set_cookie(
+                        name=cookie['name'],
+                        value=cookie['value'],
+                        domain=domain,
+                        path=cookie.get('path', '/'),
+                        secure=is_secure,
+                        http_only=cookie.get('httpOnly', False),
+                        same_site=same_site,
+                        expires=expires,
+                    ))
                     self.logger.info(f"[WATCHDOG] '{cookie_name}' fixed via CDP")
                     print(f"[WATCHDOG] Fixed '{cookie_name}' - now persistent for 30 days")
                 except Exception as set_err:

@@ -346,8 +346,19 @@ class PurchaseExecutor:
                     if is_checkout_post:
                         print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] HTTP {status} — {'SUCCESS' if status in (200, 201) else 'REJECTED'}")
                         if status not in (200, 201):
-                            # Log all response headers to diagnose rejection reason
                             print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] headers: {dict(list(resp_headers.items())[:10])}")
+                            try:
+                                body_result = await tab.send(cdp.fetch.get_response_body(request_id=event.request_id))
+                                raw_body = getattr(body_result, 'body', '') or ''
+                                if getattr(body_result, 'base64_encoded', False):
+                                    import base64, zlib
+                                    try:
+                                        raw_body = zlib.decompress(base64.b64decode(raw_body), 16 + zlib.MAX_WBITS).decode('utf-8', errors='replace')
+                                    except Exception:
+                                        raw_body = base64.b64decode(raw_body).decode('utf-8', errors='replace')
+                                print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body: {raw_body[:500]!r}")
+                            except Exception as body_err:
+                                print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body capture failed: {body_err}")
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
                     return
 
@@ -493,7 +504,10 @@ class PurchaseExecutor:
         """Execute purchase for given TCIN using persistent session"""
         start_time = time.time()
         tab = None  # ensure tab is accessible in finally block
+        prior_ids = len(self._cdp_continued_ids)
         self._cdp_continued_ids.clear()
+        if prior_ids:
+            print(f"[STATE_CARRY] WARNING: {prior_ids} stale cdp_continued_ids from prior purchase — cleared")
         print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin})")
 
         try:
@@ -512,6 +526,16 @@ class PurchaseExecutor:
             # handlers from previous purchase cycles before the new navigation starts
             await self._setup_cdp_fetch_interceptor(tab, persistent=False)
             self._main_tab_interceptor_active = True
+
+            # Detect session reuse from a prior confirmation page
+            try:
+                prior_url = tab.url
+                if any(p in prior_url.lower() for p in ['confirmation', 'thank', 'order-confirmation']):
+                    print(f"[SESSION_REUSE] Tab is on prior confirmation page: {prior_url}")
+                elif prior_url and prior_url not in ('about:blank', ''):
+                    print(f"[SESSION_REUSE] Tab starting from: {prior_url}")
+            except Exception:
+                pass
 
             # Navigate to product page
             product_url = f"https://www.target.com/p/-/A-{tcin}"
@@ -555,7 +579,13 @@ class PurchaseExecutor:
                                 ...cachedHeaders,
                             }},
                             body: JSON.stringify({{
-                                cart_item: {{tcin: '{tcin}', quantity: 1, item_channel_id: '10'}},
+                                cart_item: {{
+                                    tcin: '{tcin}',
+                                    quantity: 1,
+                                    item_channel_id: '10',
+                                    fulfillment_type: 'SHIPPING',
+                                    fulfillment_type_code: '02'
+                                }},
                                 cart_type: 'REGULAR',
                                 channel_id: '10',
                                 shopping_context: 'DIGITAL'
@@ -589,6 +619,7 @@ class PurchaseExecutor:
             elif atc_status == 401:
                 # Auth denied — no cart signal will ever come; skip wait and go straight to button click
                 print(f"[PURCHASE] ATC fetch 401 auth denied, skipping signal wait")
+                await self._fix_auth_cookie_domains(tab)
                 cart_confirmed = False
                 skip_signal_wait = True
             else:
@@ -623,6 +654,7 @@ class PurchaseExecutor:
                     # Button not ready yet — wait up to remaining time
                     budget = 9.5 if skip_signal_wait else 8.0  # 401 path saved ~1.5s, extend budget
                     remaining = max(0.0, budget - (time.time() - start_time))
+                    print(f"[PURCHASE] ATC button {btn_state} — waiting up to {remaining:.1f}s for readiness")
                     button_ready = await self._wait_for_atc_button_ready(tab, timeout=remaining)
                 if not button_ready:
                     await self._take_debug_screenshot(tab, "atc_button_not_ready")
@@ -678,48 +710,40 @@ class PurchaseExecutor:
 
             print(f"[PURCHASE] Cart confirmed (t={time.time() - start_time:.1f}s)")
 
-            # Quick cart verification before navigating — confirms item actually in cart
-            try:
-                cart_count = await tab.evaluate("""(() => {
-                    const badge = document.querySelector('[data-test="cart-count"]');
-                    return badge ? badge.innerText.trim() : 'no-badge';
-                })()""")
-                print(f"[PURCHASE] Cart badge before checkout nav: {cart_count}")
-            except Exception:
-                pass
-
             # Navigate to checkout
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
             checkout_result = False
             t_nav_start = time.time()
 
-            # Fire pre_checkout before navigating — Target's cart page normally calls this
-            # via JS before redirecting to checkout. Skipping it causes /checkout/start to
-            # immediately redirect back to /cart because checkout is in an uninitialized state.
+            # Fire pre_checkout as fire-and-forget — mirrors exactly what Target's cart page
+            # JS does: fires the fetch then immediately redirects without awaiting the response.
+            # The HTTP request is already in-flight before navigation starts so the server
+            # receives and processes it. By the time Place Order fires (~1.5s later),
+            # pre_checkout has long since completed server-side (~200-300ms).
             try:
-                pre_result = await tab.evaluate(f"""(async () => {{
-                    try {{
-                        const resp = await fetch(
-                            'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT,PROMOTIONS',
-                            {{
-                                method: 'POST',
-                                credentials: 'include',
-                                headers: {{
-                                    'Content-Type': 'application/json',
-                                    'Accept': 'application/json',
-                                    'Origin': 'https://www.target.com',
-                                    'Referer': 'https://www.target.com/cart',
-                                    'x-application-name': 'web',
-                                }},
-                                body: JSON.stringify({{cart_type: 'REGULAR'}})
-                            }}
-                        );
-                        return resp.status;
-                    }} catch(e) {{ return 'error:' + e.message; }}
-                }})()""", await_promise=True)
-                print(f"[PURCHASE] pre_checkout status: {pre_result} (t+{time.time()-t_nav_start:.3f}s)")
+                await tab.evaluate(f"""(() => {{
+                    const shapeHeaders = {extra_headers_js};
+                    fetch(
+                        'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES',
+                        {{
+                            method: 'POST',
+                            keepalive: true,
+                            credentials: 'include',
+                            headers: {{
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'Referer': 'https://www.target.com/cart',
+                                'x-application-name': 'web',
+                                ...shapeHeaders,
+                            }},
+                            body: JSON.stringify({{cart_type: 'REGULAR'}})
+                        }}
+                    ).catch(() => {{}});
+                }})()""", await_promise=False)
+                print(f"[PURCHASE] pre_checkout fired (fire-and-forget) (t+{time.time()-t_nav_start:.3f}s)")
             except Exception as e:
-                print(f"[PURCHASE] pre_checkout call failed: {e}")
+                print(f"[PURCHASE] pre_checkout fire failed: {e}")
 
             try:
                 await tab.get("https://www.target.com/checkout/start")
@@ -766,6 +790,7 @@ class PurchaseExecutor:
 
             if checkout_result:
                 await self._handle_delivery_options(tab)
+                print(f"[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t={time.time()-start_time:.1f}s, co_state={_co_state})")
                 payment_result = await self._complete_payment(tab, initial_state=_co_state)
                 if not payment_result:
                     checkout_result = False
@@ -779,6 +804,8 @@ class PurchaseExecutor:
                         print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
                     elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
                         print(f"[PURCHASE] DIAGNOSIS: Item sold out during checkout")
+                    elif any(p in page_text for p in ['no longer be available', 'no longer available', "couldn't complete", 'reservation']):
+                        print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
                     else:
                         print(f"[PURCHASE] DIAGNOSIS: Unknown failure — url={url_now}")
                 except Exception:
@@ -879,8 +906,9 @@ class PurchaseExecutor:
                     self._main_tab_interceptor_active = False
                     if cdp.fetch in tab.enabled_domains:
                         tab.enabled_domains.remove(cdp.fetch)
-                except Exception:
-                    pass
+                    print(f"[PURCHASE] CDP fetch interceptor disabled (cleanup)")
+                except Exception as cleanup_err:
+                    print(f"[PURCHASE] CDP interceptor cleanup warning: {cleanup_err}")
 
     # -------------------------------------------------------------------------
     # ATC readiness and cart signal helpers
@@ -918,6 +946,41 @@ class PurchaseExecutor:
             await asyncio.sleep(0.05)
         print(f"[READY] ATC button not ready after {timeout}s")
         return False
+
+    async def _fix_auth_cookie_domains(self, tab):
+        """Re-inject auth cookies with .target.com domain so fetch() to carts.target.com sends them."""
+        try:
+            all_cookies = await tab.send(cdp.storage.get_cookies())
+            auth_names = {'accessToken', 'idToken', 'refreshToken'}
+            fixed = 0
+            for c in all_cookies:
+                if c.name not in auth_names:
+                    continue
+                domain = str(getattr(c, 'domain', ''))
+                if domain == 'www.target.com':
+                    # Delete narrow-scoped copy
+                    await tab.send(cdp.network.delete_cookies(name=c.name, domain='www.target.com'))
+                    # Re-inject with broad domain
+                    ss = c.same_site
+                    same_site = cdp.network.CookieSameSite.from_json(ss.to_json()) if ss else None
+                    exp = float(c.expires) if c.expires and float(c.expires) > 0 else None
+                    expires = cdp.network.TimeSinceEpoch(exp) if exp else None
+                    await tab.send(cdp.network.set_cookie(
+                        name=c.name,
+                        value=c.value,
+                        domain='.target.com',
+                        path=getattr(c, 'path', '/') or '/',
+                        secure=True,
+                        http_only=bool(getattr(c, 'http_only', False)),
+                        same_site=same_site,
+                        expires=expires,
+                    ))
+                    print(f"[AUTH_FIX] Re-injected '{c.name}' with domain .target.com")
+                    fixed += 1
+            if fixed == 0:
+                print(f"[AUTH_FIX] No www.target.com-scoped auth cookies found to fix")
+        except Exception as e:
+            print(f"[AUTH_FIX] Cookie domain fix failed: {e}")
 
     async def _wait_for_cart_signal(self, tab, timeout: float = 4.0) -> bool:
         """Poll DOM for cart confirmation: badge > 0, flyout, or drawer. No API field-name guessing."""
@@ -2335,14 +2398,6 @@ class PurchaseExecutor:
             t_payment_start = time.time()
             print("[PAYMENT] Starting checkout completion...")
 
-            # Screenshot on entry — check logs/ folder to see what the bot saw.
-            try:
-                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                await self._screenshot(tab, f"logs/checkout_entry_{ts}.png")
-                print(f"[PAYMENT] Screenshot: logs/checkout_entry_{ts}.png")
-            except Exception:
-                pass
-
             # Skip duplicate wait if the nav wait already confirmed page-ready state.
             if initial_state in ('place_order', 'sac'):
                 ready = initial_state
@@ -2462,6 +2517,10 @@ class PurchaseExecutor:
                         return await self._place_order(tab)
 
                 # 'sac_again' or 'timeout' → continue loop (next step or retry)
+                if transition == 'timeout':
+                    print(f"[PAYMENT] S&C transition timed out at step {step + 1} — continuing loop")
+                elif transition == 'sac_again':
+                    print(f"[PAYMENT] Next S&C appeared at step {step + 1} — continuing")
 
             # ── Loop exhausted without finding Place Order ─────────────────────────────
             if self.test_mode:
@@ -2471,7 +2530,7 @@ class PurchaseExecutor:
                 return True
 
             # Prod: one final attempt to find Place Order.
-            print("[PAYMENT] Final Place Order check...")
+            print(f"[PAYMENT] S&C loop exhausted after 6 steps — making final Place Order attempt (url={tab.url})")
             return await self._place_order(tab)
 
         except Exception as e:
