@@ -47,6 +47,8 @@ class PurchaseExecutor:
         self._warmup_in_progress: bool = False              # prevent concurrent warmups
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
+        self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
+        self._checkout_reject_reason: str = ''             # tgt-cart-error-key value from 424
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -346,6 +348,10 @@ class PurchaseExecutor:
                     if is_checkout_post:
                         print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] HTTP {status} — {'SUCCESS' if status in (200, 201) else 'REJECTED'}")
                         if status not in (200, 201):
+                            error_key = resp_headers.get('tgt-cart-error-key', '')
+                            self._checkout_rejected = True
+                            self._checkout_reject_reason = error_key
+                            print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] 424 flagged — short-circuiting wait loop (reason={error_key})")
                             print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] headers: {dict(list(resp_headers.items())[:10])}")
                             try:
                                 body_result = await tab.send(cdp.fetch.get_response_body(request_id=event.request_id))
@@ -509,6 +515,8 @@ class PurchaseExecutor:
         if prior_ids:
             print(f"[STATE_CARRY] WARNING: {prior_ids} stale cdp_continued_ids from prior purchase — cleared")
         print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin})")
+        self._checkout_rejected = False
+        self._checkout_reject_reason = ''
 
         try:
             print(f"[PURCHASE] Starting purchase for {tcin}")
@@ -550,14 +558,23 @@ class PurchaseExecutor:
             # The cart API only needs valid session cookies, not full page render
             headers_age = time.time() - self._cached_cart_headers_ts
             use_cached = bool(self._cached_cart_headers) and headers_age < 180  # 3-min TTL
-            # Strip Cookie from cached headers — credentials:'include' sends live browser
-            # cookies automatically. Injecting a stale cached Cookie header overrides them
-            # and causes 401 auth errors if the session refreshed since warmup ran.
-            cached_no_cookie = {k: v for k, v in self._cached_cart_headers.items() if k.lower() != 'cookie'}
-            extra_headers_js = json.dumps(cached_no_cookie if use_cached else {})
+            # Strip Cookie and Referer from cached headers.
+            # Cookie: credentials:'include' sends live cookies automatically; a stale cached
+            #         Cookie header overrides them and breaks auth.
+            # Referer: warmup runs on /cart, so cached Referer is cart-page. If we include it,
+            #          it overrides our product-page Referer (spread comes last in fetch headers)
+            #          and Shape may reject the token/Referer mismatch.
+            _strip_keys = {'cookie', 'referer'}
+            cached_shape_only = {k: v for k, v in self._cached_cart_headers.items()
+                                  if k.lower() not in _strip_keys}
+            # Always include x-application-name:'web' — present in every button-click POST
+            # (16 headers) but absent from our fetch (15 headers). Required for correct
+            # backend microservice routing and may affect Shape auth validation.
+            cached_shape_only['x-application-name'] = 'web'
+            extra_headers_js = json.dumps(cached_shape_only if use_cached else {'x-application-name': 'web'})
             if use_cached:
                 print(f"[PURCHASE] Injecting Shape headers (age={headers_age:.0f}s): "
-                      f"{list(self._cached_cart_headers.keys())}")
+                      f"{list(cached_shape_only.keys())}")
             elif self._cached_cart_headers:
                 print(f"[PURCHASE] Shape headers STALE (age={headers_age:.0f}s > 180s) — sending fetch WITHOUT Shape headers")
             else:
@@ -572,11 +589,12 @@ class PurchaseExecutor:
                             method: 'POST',
                             credentials: 'include',
                             headers: {{
+                                ...cachedHeaders,
                                 'Content-Type': 'application/json',
                                 'Accept': 'application/json',
                                 'Origin': 'https://www.target.com',
                                 'Referer': 'https://www.target.com/p/-/A-{tcin}',
-                                ...cachedHeaders,
+                                'x-application-name': 'web',
                             }},
                             body: JSON.stringify({{
                                 cart_item: {{
@@ -617,10 +635,74 @@ class PurchaseExecutor:
                 print(f"[PURCHASE] Fetch ATC succeeded ({atc_status}), skipping cart signal wait")
                 cart_confirmed = True
             elif atc_status == 401:
-                # Auth denied — no cart signal will ever come; skip wait and go straight to button click
-                print(f"[PURCHASE] ATC fetch 401 auth denied, skipping signal wait")
+                # Auth denied — write token expired. Target's React will silently refresh it during hydration.
+                # Poll until the ATC button becomes enabled (= React hydrated + write token refreshed),
+                # then immediately retry the fetch. Button-enabled is the only reliable write-auth indicator
+                # (GET /cart always returns 200 on read-only auth and is not a valid proxy for POST auth).
+                print(f"[PURCHASE] ATC fetch 401 auth denied — polling for token refresh (t={time.time()-start_time:.2f}s)")
                 await self._fix_auth_cookie_domains(tab)
-                cart_confirmed = False
+                token_fresh = False
+                for _poll_i in range(20):  # max 10s (20 x 0.5s)
+                    await asyncio.sleep(0.5)
+                    # Primary indicator: ATC button enabled = React hydrated + write token refreshed.
+                    # GET /cart always returns 200 (uses read-only auth) so it's not a reliable
+                    # indicator that the write token (needed for POST) has been refreshed.
+                    _btn_state = await tab.evaluate("""(() => {
+                        const sels = [
+                            'button[id^="addToCartButtonOrTextIdFor"]',
+                            'button[data-test="addToCartButton"]',
+                            'button[data-testid="addToCartButton"]',
+                            '[data-testid*="add-to-cart"]',
+                            'button[data-test*="addToCart"]',
+                        ];
+                        for (const sel of sels) {
+                            const el = document.querySelector(sel);
+                            if (!el) continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.width === 0 || r.height === 0) continue;
+                            return el.disabled || el.getAttribute('aria-disabled') === 'true'
+                                ? 'disabled' : 'ready';
+                        }
+                        return 'absent';
+                    })()""")
+                    if _btn_state == 'ready':
+                        token_fresh = True
+                        print(f"[PURCHASE] Token ready — button enabled after {(_poll_i+1)*0.5:.1f}s (t={time.time()-start_time:.2f}s)")
+                        break
+                if token_fresh:
+                    print(f"[PURCHASE] Retrying ATC fetch — button enabled, write token ready (t={time.time()-start_time:.2f}s)")
+                    atc_retry_result = await tab.evaluate(f"""(async () => {{
+                        try {{
+                            const h = {extra_headers_js};
+                            const resp = await fetch(
+                                'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                                {{method:'POST', credentials:'include',
+                                  headers:{{...h,'Content-Type':'application/json','Accept':'application/json',
+                                            'Origin':'https://www.target.com',
+                                            'Referer':'https://www.target.com/p/-/A-{tcin}',
+                                            'x-application-name':'web'}},
+                                  body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:1,
+                                    item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
+                                    cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
+                            );
+                            return {{status:resp.status, body:(await resp.text()).slice(0,300)}};
+                        }} catch(e) {{ return {{status:0, body:String(e)}}; }}
+                    }})()""", await_promise=True)
+                    retry_status = atc_retry_result.get('status', 0) if isinstance(atc_retry_result, dict) else atc_retry_result
+                    retry_body = atc_retry_result.get('body', '') if isinstance(atc_retry_result, dict) else ''
+                    print(f"[PURCHASE] ATC fetch retry: {retry_status} (t={time.time()-start_time:.2f}s)")
+                    if retry_status in (200, 201):
+                        print(f"[PURCHASE] ATC fetch retry succeeded ({retry_status})")
+                        cart_confirmed = True
+                    else:
+                        if retry_status == 401:
+                            print(f"[PURCHASE] ATC fetch retry still 401 — falling through to button click")
+                        else:
+                            print(f"[PURCHASE] ATC fetch retry failed ({retry_status}) body={retry_body!r}")
+                        cart_confirmed = False
+                else:
+                    print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
+                    cart_confirmed = False
                 skip_signal_wait = True
             else:
                 # Ambiguous/failed status — check DOM briefly (page had time to render by now)
@@ -652,32 +734,83 @@ class PurchaseExecutor:
                     button_ready = True
                 elif btn_state in ('absent', 'disabled'):
                     # Button not ready yet — wait up to remaining time
-                    budget = 9.5 if skip_signal_wait else 8.0  # 401 path saved ~1.5s, extend budget
+                    budget = 14.0 if skip_signal_wait else 8.0  # 401 path polls up to 10s, extend budget
                     remaining = max(0.0, budget - (time.time() - start_time))
                     print(f"[PURCHASE] ATC button {btn_state} — waiting up to {remaining:.1f}s for readiness")
                     button_ready = await self._wait_for_atc_button_ready(tab, timeout=remaining)
                 if not button_ready:
-                    await self._take_debug_screenshot(tab, "atc_button_not_ready")
-                    return {'success': False, 'tcin': tcin, 'reason': 'page_not_ready',
-                            'execution_time': time.time() - start_time}
-                print(f"[PURCHASE] Fetch ATC not confirmed, trying button click...")
-                await self._dismiss_error_flyout(tab)
-                await self._select_shipping_option(tab)
-                await asyncio.sleep(0.2)
-                add_button = await self._find_add_to_cart_button(tab)
-                if not add_button:
-                    await self._take_debug_screenshot(tab, "button_not_found_post_ready")
-                    return {'success': False, 'tcin': tcin, 'reason': 'button_not_found',
-                            'execution_time': time.time() - start_time}
-                try:
-                    await self._dispatch_click(add_button)
-                    print(f"[PURCHASE] ATC button clicked (t={time.time()-start_time:.2f}s)")
-                    cart_confirmed = await self._wait_for_cart_signal(tab, timeout=4.0)
-                    if cart_confirmed and self._cached_cart_headers_ts > start_time:
-                        print(f"[PURCHASE] Button-click cart headers captured: "
-                              f"{list(self._cached_cart_headers.keys())}")
-                except Exception as e:
-                    print(f"[PURCHASE] Button click error: {e}")
+                    # Button stayed disabled — try a forced programmatic click before giving up.
+                    # Target's React handler may still fire on el.click() even when the button
+                    # has disabled/aria-disabled set (e.g. during page hydration loading state).
+                    print("[PURCHASE] Button stayed disabled — attempting forced click")
+                    try:
+                        _forced = await tab.evaluate("""(() => {
+                            const sels = [
+                                'button[id^="addToCartButtonOrTextIdFor"]',
+                                'button[data-test="addToCartButton"]',
+                                'button[data-testid="addToCartButton"]',
+                                '[data-testid*="add-to-cart"]',
+                                'button[data-test*="addToCart"]',
+                            ];
+                            for (const sel of sels) {
+                                const el = document.querySelector(sel);
+                                if (!el) continue;
+                                const r = el.getBoundingClientRect();
+                                if (r.width === 0 || r.height === 0) continue;
+                                el.removeAttribute('disabled');
+                                el.removeAttribute('aria-disabled');
+                                el.click();
+                                return true;
+                            }
+                            return false;
+                        })()""")
+                        if _forced:
+                            print(f"[PURCHASE] Forced click dispatched — waiting 4s for signal")
+                            cart_confirmed = await self._wait_for_cart_signal(tab, timeout=4.0)
+                            if cart_confirmed:
+                                print("[PURCHASE] Forced click on disabled button succeeded")
+                    except Exception as _fe:
+                        print(f"[PURCHASE] Forced click error: {_fe}")
+                    if not cart_confirmed:
+                        await self._take_debug_screenshot(tab, "atc_button_not_ready")
+                        return {'success': False, 'tcin': tcin, 'reason': 'page_not_ready',
+                                'execution_time': time.time() - start_time}
+                if not cart_confirmed:
+                    print(f"[PURCHASE] Fetch ATC not confirmed, trying button click...")
+                    await self._dismiss_error_flyout(tab)
+                    await self._select_shipping_option(tab)
+                    await asyncio.sleep(0.2)
+                    add_button = await self._find_add_to_cart_button(tab)
+                    if not add_button:
+                        await self._take_debug_screenshot(tab, "button_not_found_post_ready")
+                        return {'success': False, 'tcin': tcin, 'reason': 'button_not_found',
+                                'execution_time': time.time() - start_time}
+                    try:
+                        _click_time = time.time()
+                        await self._dispatch_click(add_button)
+                        print(f"[PURCHASE] ATC button clicked (t={time.time()-start_time:.2f}s)")
+                        # 401 path: button click's initial POST also gets 401, then Target's JS
+                        # does a silent token refresh (~5-8s) and fires a retry POST. Give 8s for
+                        # the initial attempt, then detect if a late retry POST fired and extend.
+                        signal_timeout = 8.0 if skip_signal_wait else 4.0
+                        cart_confirmed = await self._wait_for_cart_signal(tab, timeout=signal_timeout)
+                        if not cart_confirmed and skip_signal_wait:
+                            # Check if a late retry POST was captured (>2s after click = token refresh retry,
+                            # not the immediate initial POST which fires in ~0.5s)
+                            _post_age = time.time() - self._cached_cart_headers_ts
+                            _post_is_retry = self._cached_cart_headers_ts > _click_time + 2.0
+                            if _post_is_retry and _post_age < 4.0:
+                                print(f"[PURCHASE] Late retry POST detected ({_post_age:.1f}s ago) — "
+                                      f"extending wait 5s for cart signal")
+                                cart_confirmed = await self._wait_for_cart_signal(tab, timeout=5.0)
+                            else:
+                                print(f"[PURCHASE] No late retry POST detected "
+                                      f"(last post age={_post_age:.1f}s, is_retry={_post_is_retry})")
+                        if cart_confirmed and self._cached_cart_headers_ts > start_time:
+                            print(f"[PURCHASE] Button-click cart headers captured: "
+                                  f"{list(self._cached_cart_headers.keys())}")
+                    except Exception as e:
+                        print(f"[PURCHASE] Button click error: {e}")
 
             if not cart_confirmed:
                 await self._take_debug_screenshot(tab, "atc_not_confirmed")
@@ -709,6 +842,27 @@ class PurchaseExecutor:
                         'execution_time': time.time() - start_time}
 
             print(f"[PURCHASE] Cart confirmed (t={time.time() - start_time:.1f}s)")
+
+            # Log cart contents to detect duplicate items from prior failed attempts
+            try:
+                cart_info = await tab.evaluate("""(async () => {
+                    try {
+                        const r = await fetch(
+                            'https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CART,CART_ITEMS',
+                            {credentials: 'include', headers: {'Accept': 'application/json'}}
+                        );
+                        const d = await r.json();
+                        const items = (d.cart_items || []).map(i => i.tcin + 'x' + (i.quantity || 1));
+                        return {count: (d.cart_items || []).length, items: items};
+                    } catch(e) { return {count: -1, items: [], error: String(e)}; }
+                })()""", await_promise=True)
+                count = cart_info.get('count', -1) if isinstance(cart_info, dict) else -1
+                items = cart_info.get('items', []) if isinstance(cart_info, dict) else []
+                print(f"[CART_STATE] {count} item(s) in cart before checkout: {items}")
+                if count > 1:
+                    print(f"[CART_STATE] WARNING: more than 1 item in cart — possible duplicate from prior failed attempt")
+            except Exception as ce:
+                print(f"[CART_STATE] Cart check failed: {ce}")
 
             # Navigate to checkout
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
@@ -796,18 +950,27 @@ class PurchaseExecutor:
                     checkout_result = False
 
             if not checkout_result:
-                # Diagnose: F5 block vs sold out vs other
+                # Diagnose: use interceptor reason if available (faster/more accurate than page text)
                 try:
                     url_now = tab.url
-                    page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
-                    if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests']):
-                        print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
-                    elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
-                        print(f"[PURCHASE] DIAGNOSIS: Item sold out during checkout")
-                    elif any(p in page_text for p in ['no longer be available', 'no longer available', "couldn't complete", 'reservation']):
-                        print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
+                    if self._checkout_rejected and self._checkout_reject_reason:
+                        reason = self._checkout_reject_reason
+                        if 'RESERVATION_FAILURE' in reason:
+                            print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
+                        elif 'INVENTORY_NOT_AVAILABLE' in reason or 'CART_COMPARISION_FAILURE' in reason:
+                            print(f"[PURCHASE] DIAGNOSIS: INVENTORY_NOT_AVAILABLE — item OOS at checkout submission")
+                        else:
+                            print(f"[PURCHASE] DIAGNOSIS: Checkout rejected by server — tgt-cart-error-key={reason}")
                     else:
-                        print(f"[PURCHASE] DIAGNOSIS: Unknown failure — url={url_now}")
+                        page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
+                        if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests']):
+                            print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
+                        elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
+                            print(f"[PURCHASE] DIAGNOSIS: Item sold out during checkout")
+                        elif any(p in page_text for p in ['no longer be available', 'no longer available', "couldn't complete", 'reservation']):
+                            print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
+                        else:
+                            print(f"[PURCHASE] DIAGNOSIS: Unknown failure — url={url_now}")
                 except Exception:
                     pass
                 print(f"[PURCHASE] Checkout failed, clearing cart and waiting...")
@@ -948,37 +1111,45 @@ class PurchaseExecutor:
         return False
 
     async def _fix_auth_cookie_domains(self, tab):
-        """Re-inject auth cookies with .target.com domain so fetch() to carts.target.com sends them."""
+        """Re-inject all www.target.com-scoped cookies with .target.com so fetch() to carts.target.com sends them."""
         try:
             all_cookies = await tab.send(cdp.storage.get_cookies())
-            auth_names = {'accessToken', 'idToken', 'refreshToken'}
+            # Skip analytics, survey, and tracking cookies — only widen potential auth cookies
+            skip_names = {
+                'visitorId', '__utma', '__utmb', '__utmc', '__utmz', '_ga', '_gid', '_fbp', '_gcl_au',
+                'lux_uid', 'bv_metrics',
+                'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleUserPercentile', 'kampyleSessionPageCounter',
+            }
+            www_cookies = [c for c in all_cookies if str(getattr(c, 'domain', '')) == 'www.target.com']
+            if www_cookies:
+                print(f"[AUTH_FIX] Found {len(www_cookies)} www.target.com-scoped cookies: {[c.name for c in www_cookies]}")
+            else:
+                print(f"[AUTH_FIX] No www.target.com-scoped cookies found — auth cookies may already be .target.com scoped")
             fixed = 0
-            for c in all_cookies:
-                if c.name not in auth_names:
+            for c in www_cookies:
+                if c.name in skip_names:
                     continue
-                domain = str(getattr(c, 'domain', ''))
-                if domain == 'www.target.com':
-                    # Delete narrow-scoped copy
-                    await tab.send(cdp.network.delete_cookies(name=c.name, domain='www.target.com'))
-                    # Re-inject with broad domain
-                    ss = c.same_site
-                    same_site = cdp.network.CookieSameSite.from_json(ss.to_json()) if ss else None
-                    exp = float(c.expires) if c.expires and float(c.expires) > 0 else None
-                    expires = cdp.network.TimeSinceEpoch(exp) if exp else None
-                    await tab.send(cdp.network.set_cookie(
-                        name=c.name,
-                        value=c.value,
-                        domain='.target.com',
-                        path=getattr(c, 'path', '/') or '/',
-                        secure=True,
-                        http_only=bool(getattr(c, 'http_only', False)),
-                        same_site=same_site,
-                        expires=expires,
-                    ))
-                    print(f"[AUTH_FIX] Re-injected '{c.name}' with domain .target.com")
-                    fixed += 1
+                # Delete narrow-scoped copy
+                await tab.send(cdp.network.delete_cookies(name=c.name, domain='www.target.com'))
+                # Re-inject with broad domain
+                ss = c.same_site
+                same_site = cdp.network.CookieSameSite.from_json(ss.to_json()) if ss else None
+                exp = float(c.expires) if c.expires and float(c.expires) > 0 else None
+                expires = cdp.network.TimeSinceEpoch(exp) if exp else None
+                await tab.send(cdp.network.set_cookie(
+                    name=c.name,
+                    value=c.value,
+                    domain='.target.com',
+                    path=getattr(c, 'path', '/') or '/',
+                    secure=True,
+                    http_only=bool(getattr(c, 'http_only', False)),
+                    same_site=same_site,
+                    expires=expires,
+                ))
+                print(f"[AUTH_FIX] Re-injected '{c.name}' with domain .target.com")
+                fixed += 1
             if fixed == 0:
-                print(f"[AUTH_FIX] No www.target.com-scoped auth cookies found to fix")
+                print(f"[AUTH_FIX] No cookies widened")
         except Exception as e:
             print(f"[AUTH_FIX] Cookie domain fix failed: {e}")
 

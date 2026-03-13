@@ -31,6 +31,39 @@ else:
     HAS_MSVCRT = False
     HAS_FCNTL = True
 
+class _PurchaseLogTee:
+    """Tees sys.stdout to a purchase log file so every attempt is saved regardless of console scroll."""
+    def __init__(self, original_stdout, log_path: Path):
+        self._orig = original_stdout
+        self._file = open(log_path, 'w', encoding='utf-8', buffering=1)
+        self._lock = threading.Lock()
+
+    def write(self, data):
+        with self._lock:
+            self._orig.write(data)
+            try:
+                self._file.write(data)
+            except Exception:
+                pass
+
+    def flush(self):
+        self._orig.flush()
+        try:
+            self._file.flush()
+        except Exception:
+            pass
+
+    def close(self):
+        try:
+            self._file.flush()
+            self._file.close()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
 class BulletproofPurchaseManager:
     def __init__(self, status_callback: Optional[Callable] = None):
         self.state_file = 'logs/purchase_states.json'
@@ -80,6 +113,7 @@ class BulletproofPurchaseManager:
         self._file_lock = threading.Lock()
         self._state_lock = threading.RLock()  # CRITICAL: RLock allows same thread to acquire multiple times
         self._active_purchases = {}  # Track active purchase threads
+        self._purchase_tee: Optional['_PurchaseLogTee'] = None  # Active purchase log tee
         self._warmup_cycle_counter: int = 0
 
         # Status callback for real-time updates
@@ -842,9 +876,18 @@ class BulletproofPurchaseManager:
                 print(f"[PURCHASE] PREVENTED CONCURRENT: {tcin} blocked, {active_purchase_tcin} already active")
                 return {'success': False, 'reason': 'another_purchase_active', 'active_tcin': active_purchase_tcin}
 
+        # Open per-attempt log file and tee stdout into it
+        _logs_dir = Path(__file__).parent.parent.parent / 'logs' / 'purchases'
+        _logs_dir.mkdir(parents=True, exist_ok=True)
+        _log_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        _log_path = _logs_dir / f'purchase_{tcin}_{_log_ts}.log'
+        self._purchase_tee = _PurchaseLogTee(sys.stdout, _log_path)
+        sys.stdout = self._purchase_tee
+
         # Use real purchasing if enabled (fallback to mock if needed)
         print("=" * 80)
         print(f"[PURCHASE_TRIGGER] Product IN STOCK: {product_title} (TCIN: {tcin})")
+        print(f"[PURCHASE_LOG] Saving to: {_log_path}")
         print("=" * 80)
 
         if self.use_real_purchasing:
@@ -1011,6 +1054,14 @@ class BulletproofPurchaseManager:
                         del self._active_purchases[tcin]
                     else:
                         print(f"[REAL_PURCHASE_THREAD] Note: {tcin} already removed from active purchases")
+
+                # Close purchase log and restore stdout
+                _tee = self._purchase_tee
+                if _tee is not None:
+                    self._purchase_tee = None
+                    if sys.stdout is _tee:
+                        sys.stdout = _tee._orig
+                    _tee.close()
 
         # Start purchase thread
         import threading
@@ -1323,14 +1374,17 @@ class BulletproofPurchaseManager:
 
             sorted_tcins = sorted(stock_data.keys(), key=get_priority_index)
 
-            # Refresh Shape headers on first cycle and every 90 cycles (~90s) thereafter
+            # Refresh Shape headers every 30 cycles (~30s) to keep auth tokens fresh.
+            # Auth tokens go stale in ~40-50s — 30s interval ensures the direct fetch ATC
+            # stays within the valid window and avoids the slow button-click fallback path.
             self._warmup_cycle_counter += 1
-            if (self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 90 == 0) and self.purchase_executor:
+            if (self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 30 == 0) and self.purchase_executor:
                 headers_age = time.time() - getattr(self.purchase_executor, '_cached_cart_headers_ts', 0)
                 in_progress = getattr(self.purchase_executor, '_warmup_in_progress', False)
                 print(f"[WARMUP_CYCLE] Cycle {self._warmup_cycle_counter}: "
                       f"headers_age={headers_age:.0f}s, in_progress={in_progress}")
-                if not in_progress:
+                # Skip if headers are already fresh (e.g. just refreshed by a completed purchase)
+                if not in_progress and headers_age > 15:
                     print("[WARMUP_CYCLE] Queuing Shape header refresh...")
                     try:
                         self.purchase_executor.session_manager.submit_async_task(
@@ -1338,6 +1392,8 @@ class BulletproofPurchaseManager:
                         )
                     except Exception as e:
                         print(f"[WARMUP_CYCLE] Could not queue warmup: {e}")
+                elif not in_progress:
+                    print(f"[WARMUP_CYCLE] Skipping — headers fresh ({headers_age:.0f}s old)")
 
             # Process each product according to state rules (in priority order)
             for tcin in sorted_tcins:
