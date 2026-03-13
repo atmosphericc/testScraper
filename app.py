@@ -1288,8 +1288,6 @@ class PurchaseManagerThread:
             out_stock_tcins = [tcin for tcin, data in stock_data.items() if not data.get('in_stock')]
             if in_stock_tcins:
                 print(f"[STOCK] IN STOCK: {', '.join(in_stock_tcins)}")
-            else:
-                print(f"[STOCK] All out of stock")
 
             # FIX: Add IN STOCK/OUT OF STOCK messages to activity log for dashboard display
             # These messages were only going to console, not to the activity log that the dashboard reads
@@ -1334,14 +1332,14 @@ class PurchaseManagerThread:
                 summary=summary
             )
 
-            # Add activity log entry with detailed TCIN information
-            in_stock_display = f"[{', '.join(in_stock_tcins)}]" if in_stock_tcins else "[]"
-            out_stock_display = f"[{', '.join(out_stock_tcins)}]" if out_stock_tcins else "[]"
-
-            add_activity_log(
-                f"Stock Check: {summary['in_stock_count']} in stock {in_stock_display}, {len(out_stock_tcins)} out of stock {out_stock_display} • {summary['new_attempts_count']} attempts, {summary['resets_count']} resets",
-                "info", "api_cycle", console=False
-            )
+            # Add activity log entry only when something is in stock
+            if in_stock_tcins:
+                in_stock_display = f"[{', '.join(in_stock_tcins)}]"
+                out_stock_display = f"[{', '.join(out_stock_tcins)}]" if out_stock_tcins else "[]"
+                add_activity_log(
+                    f"Stock Check: {summary['in_stock_count']} in stock {in_stock_display}, {len(out_stock_tcins)} out of stock {out_stock_display} • {summary['new_attempts_count']} attempts, {summary['resets_count']} resets",
+                    "info", "api_cycle", console=False
+                )
 
             # ENHANCED MONITORING: Record comprehensive cycle data
             try:
@@ -2363,6 +2361,113 @@ def get_catalog():
     except Exception as e:
         print(f"[CATALOG] Failed to get catalog: {e}")
         return jsonify({"catalog": []})
+
+def fetch_names_for_tcins(tcins: list) -> dict:
+    """Query Target Redsky API for product titles. Returns {tcin: title}."""
+    import requests as _requests
+    api_keys = [
+        "ff457966e64d5e877fdbad070f276d18ecec4a01",
+        "9f36aeafbe60771e321a7cc95a78140772ab3e96"
+    ]
+    api_endpoint = 'https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.target.com/',
+    }
+    params = {
+        'key': random.choice(api_keys),
+        'tcins': ','.join(tcins),
+        'store_id': '865',
+        'pricing_store_id': '865',
+        'has_pricing_context': 'true',
+        'has_promotions': 'true',
+        'is_bot': 'false'
+    }
+    try:
+        response = _requests.get(api_endpoint, params=params, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"[REFRESH] API returned HTTP {response.status_code}")
+            return {}
+        data = response.json()
+        results = {}
+        for product in data.get('data', {}).get('product_summaries', []):
+            tcin = product.get('tcin', '')
+            title = product.get('item', {}).get('product_description', {}).get('title', '')
+            if tcin and title:
+                import html as _html
+                results[tcin] = _html.unescape(title)
+        return results
+    except Exception as e:
+        print(f"[REFRESH] fetch_names_for_tcins error: {e}")
+        return {}
+
+
+@app.route('/refresh-product-names', methods=['POST'])
+def refresh_product_names():
+    """Find placeholder product names in both config files and replace with real names from API."""
+    try:
+        catalog_config = get_catalog_config()
+        product_config_path = 'config/product_config.json'
+        with open(product_config_path, 'r') as f:
+            product_config = json.load(f)
+
+        # Collect TCINs with placeholder names from catalog
+        catalog_placeholders = {}
+        for item in catalog_config.get('catalog', []):
+            tcin = item.get('tcin', '')
+            name = item.get('name', '')
+            if name == f'Product {tcin}':
+                catalog_placeholders[tcin] = item
+
+        # Collect TCINs with placeholder names from product_config
+        product_placeholders = {}
+        for item in product_config.get('products', []):
+            tcin = item.get('tcin', '')
+            name = item.get('name', '') or item.get('title', '')
+            if name == f'Product {tcin}':
+                product_placeholders[tcin] = item
+
+        all_tcins = list(set(list(catalog_placeholders.keys()) + list(product_placeholders.keys())))
+
+        if not all_tcins:
+            return jsonify({'updated': [], 'not_found': [], 'message': 'No placeholder names found'})
+
+        print(f"[REFRESH] Fetching names for {len(all_tcins)} TCINs: {all_tcins}")
+        fetched = fetch_names_for_tcins(all_tcins)
+
+        updated = []
+        not_found = []
+
+        for tcin in all_tcins:
+            if tcin in fetched:
+                real_name = fetched[tcin]
+                if tcin in catalog_placeholders:
+                    catalog_placeholders[tcin]['name'] = real_name
+                if tcin in product_placeholders:
+                    item = product_placeholders[tcin]
+                    if 'name' in item:
+                        item['name'] = real_name
+                    if 'title' in item:
+                        item['title'] = real_name
+                updated.append({'tcin': tcin, 'name': real_name})
+                print(f"[REFRESH] {tcin}: Product {tcin} -> {real_name}")
+            else:
+                not_found.append(tcin)
+                print(f"[REFRESH] {tcin}: no title returned from API")
+
+        if updated:
+            save_catalog_config(catalog_config)
+            with open(product_config_path, 'w') as f:
+                json.dump(product_config, f, indent=2)
+
+        return jsonify({'updated': updated, 'not_found': not_found})
+
+    except Exception as e:
+        print(f"[REFRESH] refresh_product_names error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 # ========== COMPREHENSIVE TEST MODE API ENDPOINTS ==========
 

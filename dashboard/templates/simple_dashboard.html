@@ -1525,6 +1525,20 @@
                                 </div>
                             </form>
 
+                            <!-- Refresh Names Button -->
+                            <div style="margin-bottom: 1.5rem;">
+                                <button
+                                    type="button"
+                                    class="btn btn-secondary"
+                                    onclick="refreshProductNames()"
+                                    id="refresh-names-btn"
+                                    style="padding: 0.5rem 1rem; font-size: 0.8rem;"
+                                >
+                                    🔄 Refresh Placeholder Names
+                                </button>
+                                <span id="refresh-names-status" style="margin-left: 0.75rem; font-size: 0.8rem; color: var(--text-secondary);"></span>
+                            </div>
+
                             <!-- Current Catalog Products -->
                             {% if catalog.catalog %}
                             <div style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem; font-weight: 500;">
@@ -1655,6 +1669,41 @@
             } catch (error) {
                 console.error('Error adding to catalog:', error);
                 showErrorToast('Error adding to catalog: ' + error.message);
+            }
+        }
+
+        async function refreshProductNames() {
+            const btn = document.getElementById('refresh-names-btn');
+            const status = document.getElementById('refresh-names-status');
+            btn.disabled = true;
+            status.textContent = 'Fetching names...';
+            try {
+                const response = await fetch('/refresh-product-names', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const data = await response.json();
+                if (data.updated && data.updated.length > 0) {
+                    status.style.color = 'var(--success-color, #4ade80)';
+                    status.textContent = `Updated ${data.updated.length} name(s).`;
+                    data.updated.forEach(u => {
+                        const catalogEl = document.querySelector(`[data-catalog-tcin="${u.tcin}"] .catalog-product-name`);
+                        if (catalogEl) catalogEl.textContent = u.name;
+                        const activeEl = document.querySelector(`[data-tcin="${u.tcin}"] .product-config-name`);
+                        if (activeEl) activeEl.textContent = u.name;
+                    });
+                } else if (data.message) {
+                    status.style.color = 'var(--text-secondary)';
+                    status.textContent = data.message;
+                } else {
+                    status.style.color = 'var(--text-secondary)';
+                    status.textContent = `No updates (${(data.not_found || []).length} not found).`;
+                }
+            } catch (error) {
+                status.style.color = 'var(--error-color, #f87171)';
+                status.textContent = 'Error: ' + error.message;
+            } finally {
+                btn.disabled = false;
             }
         }
 

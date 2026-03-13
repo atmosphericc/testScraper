@@ -316,6 +316,14 @@ def index():
                 <button class="btn btn-secondary" onclick="addToCatalog()">📚 Save to Catalog</button>
             </div>
 
+            <div style="margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.75rem;">
+                <button class="btn btn-secondary" onclick="refreshProductNames()" id="refresh-names-btn"
+                    style="padding: 0.5rem 1rem; font-size: 0.875rem;">
+                    🔄 Refresh Placeholder Names
+                </button>
+                <span id="refresh-names-status" style="font-size: 0.85rem; color: var(--text-secondary);"></span>
+            </div>
+
             <div class="section-label">Catalog Products:</div>
             <div class="product-list" id="catalog-list">''' + _render_catalog_products(catalog) + '''</div>
         </div>
@@ -450,6 +458,41 @@ def index():
                 showToast('Network error: ' + e.message, 'error');
             } finally {
                 btn.textContent = '📚 Save to Catalog';
+                btn.disabled = false;
+            }
+        }
+
+        async function refreshProductNames() {
+            const btn = document.getElementById('refresh-names-btn');
+            const status = document.getElementById('refresh-names-status');
+            btn.disabled = true;
+            status.textContent = 'Fetching names...';
+            try {
+                const res = await fetch('/refresh-product-names', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const data = await res.json();
+                if (data.updated && data.updated.length > 0) {
+                    status.style.color = 'var(--success-color)';
+                    status.textContent = `Updated ${data.updated.length} name(s).`;
+                    data.updated.forEach(u => {
+                        const catalogRow = document.querySelector(`[data-catalog-tcin="${u.tcin}"] .product-name`);
+                        if (catalogRow) catalogRow.textContent = u.name;
+                        const activeRow = document.querySelector(`[data-tcin="${u.tcin}"] .product-name`);
+                        if (activeRow) activeRow.textContent = u.name;
+                    });
+                } else if (data.message) {
+                    status.style.color = 'var(--text-secondary)';
+                    status.textContent = data.message;
+                } else {
+                    status.style.color = 'var(--text-secondary)';
+                    status.textContent = `No updates (${(data.not_found || []).length} not found via API).`;
+                }
+            } catch(e) {
+                status.style.color = 'var(--danger-color)';
+                status.textContent = 'Error: ' + e.message;
+            } finally {
                 btn.disabled = false;
             }
         }
@@ -788,6 +831,102 @@ def activate_from_catalog(tcin):
 
     except Exception as e:
         return jsonify({'success': False, 'error': f'Unexpected error: {str(e)}'})
+
+
+@app.route('/refresh-product-names', methods=['POST'])
+def refresh_product_names():
+    """Find placeholder product names and replace with real names from Target API."""
+    import requests as _requests
+    import random as _random
+    import html as _html
+
+    def fetch_names(tcins):
+        api_keys = [
+            "ff457966e64d5e877fdbad070f276d18ecec4a01",
+            "9f36aeafbe60771e321a7cc95a78140772ab3e96"
+        ]
+        params = {
+            'key': _random.choice(api_keys),
+            'tcins': ','.join(tcins),
+            'store_id': '865',
+            'pricing_store_id': '865',
+            'has_pricing_context': 'true',
+            'has_promotions': 'true',
+            'is_bot': 'false'
+        }
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Referer': 'https://www.target.com/',
+        }
+        try:
+            r = _requests.get(
+                'https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1',
+                params=params, headers=headers, timeout=10
+            )
+            if r.status_code != 200:
+                print(f"[REFRESH] API returned HTTP {r.status_code}")
+                return {}
+            results = {}
+            for product in r.json().get('data', {}).get('product_summaries', []):
+                tcin = product.get('tcin', '')
+                title = product.get('item', {}).get('product_description', {}).get('title', '')
+                if tcin and title:
+                    results[tcin] = _html.unescape(title)
+            return results
+        except Exception as e:
+            print(f"[REFRESH] API error: {e}")
+            return {}
+
+    try:
+        catalog_config = get_catalog_config()
+        product_config_path = 'config/product_config.json'
+        with open(product_config_path, 'r') as f:
+            product_config = json.load(f)
+
+        catalog_placeholders = {
+            item['tcin']: item for item in catalog_config.get('catalog', [])
+            if item.get('name', '') == f"Product {item.get('tcin', '')}"
+        }
+        product_placeholders = {
+            item['tcin']: item for item in product_config.get('products', [])
+            if (item.get('name', '') or item.get('title', '')) == f"Product {item.get('tcin', '')}"
+        }
+
+        all_tcins = list(set(list(catalog_placeholders) + list(product_placeholders)))
+        if not all_tcins:
+            return jsonify({'updated': [], 'not_found': [], 'message': 'No placeholder names found'})
+
+        print(f"[REFRESH] Fetching names for {len(all_tcins)} TCINs: {all_tcins}")
+        fetched = fetch_names(all_tcins)
+
+        updated, not_found = [], []
+        for tcin in all_tcins:
+            if tcin in fetched:
+                real_name = fetched[tcin]
+                if tcin in catalog_placeholders:
+                    catalog_placeholders[tcin]['name'] = real_name
+                if tcin in product_placeholders:
+                    item = product_placeholders[tcin]
+                    if 'name' in item:
+                        item['name'] = real_name
+                    if 'title' in item:
+                        item['title'] = real_name
+                updated.append({'tcin': tcin, 'name': real_name})
+                print(f"[REFRESH] {tcin}: Product {tcin} -> {real_name}")
+            else:
+                not_found.append(tcin)
+
+        if updated:
+            save_catalog_config(catalog_config)
+            with open(product_config_path, 'w') as f:
+                json.dump(product_config, f, indent=2)
+
+        return jsonify({'updated': updated, 'not_found': not_found})
+
+    except Exception as e:
+        print(f"[REFRESH] Error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ========== MAIN ==========

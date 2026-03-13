@@ -133,7 +133,6 @@ class StockMonitor:
                 self.last_check_time = datetime.now()
                 return result
             else:
-                print(f"[STOCK] API Error: HTTP {response.status_code}")
                 return self._get_error_result(tcins, f"HTTP {response.status_code}")
 
         except requests.exceptions.Timeout:
