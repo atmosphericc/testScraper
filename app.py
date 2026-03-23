@@ -572,6 +572,15 @@ def add_activity_log(message, level="info", category="system", console=True):
     if console:
         print(f"[{timestamp.strftime('%H:%M:%S')}] [{category.upper()}] {message}")
 
+    # STEP 5: Append errors to running plain-text log file
+    if level == "error":
+        try:
+            os.makedirs('logs', exist_ok=True)
+            with open('logs/error_log.txt', 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp.strftime('%Y-%m-%d %H:%M:%S')}] [{category.upper()}] {message}\n")
+        except Exception:
+            pass
+
 def initialize_global_purchase_manager():
     """Initialize global purchase manager and event loop - called once at startup"""
     global global_purchase_manager, global_event_loop, global_event_loop_thread

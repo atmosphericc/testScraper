@@ -92,6 +92,21 @@
       "name": "Pok\u00e9mon Trading Card Game: Mega Evolution Perfect Order Booster Bundle",
       "enabled": true,
       "url": "https://www.target.com/p/-/A-95230447"
+    },
+    {
+      "tcin": "95093981",
+      "name": "Product 95093981",
+      "enabled": true
+    },
+    {
+      "tcin": "95093989",
+      "name": "Product 95093989",
+      "enabled": true
+    },
+    {
+      "tcin": "95138464",
+      "name": "Product 95138464",
+      "enabled": true
     }
   ]
 }
