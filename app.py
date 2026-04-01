@@ -277,6 +277,7 @@ class EventBus:
                         callback(data)
                     except Exception as e:
                         print(f"[EVENT] Error in {event_type} callback: {e}")
+                        _write_error_log("event", f"Error in {event_type} callback: {e}")
 
 # Global thread-safe data and event system
 shared_data = ThreadSafeData()
@@ -299,6 +300,21 @@ sse_queue_lock = threading.Lock()
 
 # Activity log persistence
 ACTIVITY_LOG_FILE = 'logs/activity_log.pkl'
+
+def _write_error_log(tag, message, exc=None):
+    """Write directly to error_log.txt — safe to call from infrastructure code.
+    Pass exc=e to automatically include full traceback."""
+    try:
+        import traceback as _tb
+        os.makedirs('logs', exist_ok=True)
+        ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with open('logs/error_log.txt', 'a', encoding='utf-8') as f:
+            f.write(f"[{ts}] [{tag.upper()}] {message}\n")
+            if exc is not None:
+                f.write(_tb.format_exc())
+                f.write("\n")
+    except Exception:
+        pass
 
 # ========== ACTIVITY LOG BACKGROUND PERSISTENCE ==========
 
@@ -389,6 +405,7 @@ class ActivityLogPersistenceWorker:
 
             except Exception as e:
                 print(f"[PERSISTENCE] Worker loop error: {e}")
+                _write_error_log("persistence", f"Worker loop error: {e}")
                 self.error_count += 1
                 time.sleep(0.1)  # Prevent tight loop on persistent errors
 
@@ -422,6 +439,7 @@ class ActivityLogPersistenceWorker:
                 if attempt < max_retries - 1:
                     delay = retry_delays[attempt]
                     print(f"[PERSISTENCE] Save failed (attempt {attempt+1}/{max_retries}): {e}")
+                    _write_error_log("persistence", f"Save failed (attempt {attempt+1}/{max_retries}): {e}")
                     print(f"[PERSISTENCE] Retrying in {delay}s...")
                     time.sleep(delay)
                 else:
@@ -447,6 +465,7 @@ def load_activity_log():
             print("[SYSTEM] Created new activity log")
     except Exception as e:
         print(f"[WARN] Failed to load activity log: {e}")
+        _write_error_log("persistence", f"Failed to load activity log: {e}")
         with shared_data.lock:
             shared_data.activity_log = []
 
@@ -478,6 +497,7 @@ def save_activity_log():
         os.rename(temp_file, ACTIVITY_LOG_FILE)
     except Exception as e:
         print(f"[WARN] Failed to save activity log: {e}")
+        _write_error_log("persistence", f"Failed to save activity log: {e}")
 
 def rotate_activity_log():
     """
@@ -527,6 +547,7 @@ def rotate_activity_log():
 
     except Exception as e:
         print(f"[WARN] Failed to rotate activity log: {e}")
+        _write_error_log("persistence", f"Failed to rotate activity log: {e}")
 
 def add_activity_log(message, level="info", category="system", console=True):
     """
@@ -711,6 +732,7 @@ def broadcast_sse_event(event_type, data):
                     print(f"[SSE] ⚠️ ERROR: Queue FULL for client {client_id} on {event_type} event!")
     except Exception as e:
         print(f"[SSE] Failed to broadcast event: {e}")
+        _write_error_log("sse", f"Failed to broadcast event: {e}")
 
 def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, timer_info, summary):
     """Broadcast atomic API cycle completion event with all changes bundled"""
@@ -766,6 +788,7 @@ def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, tim
 
     except Exception as e:
         print(f"[SSE] Failed to broadcast atomic cycle event: {e}")
+        _write_error_log("sse", f"Failed to broadcast atomic cycle event: {e}")
 
 # Event-driven thread managers for bulletproof architecture
 class StockMonitorThread:
@@ -1091,6 +1114,7 @@ class PurchaseManagerThread:
                 traceback.print_exc()
                 print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
                 add_activity_log(f"Session initialization error: {str(e)}", "error", "session")
+                _write_error_log("session", f"Session initialization error after {init_duration:.1f}s: {e}", exc=e)
 
         # Run session initialization in background to avoid blocking startup
         threading.Thread(target=session_init_task, daemon=True).start()
@@ -1175,6 +1199,7 @@ class PurchaseManagerThread:
                 print(f"[SESSION] Cleanup error: {e}")
                 import traceback
                 traceback.print_exc()
+                _write_error_log("session", f"Cleanup error: {e}", exc=e)
 
         # Run cleanup in background
         threading.Thread(target=cleanup_task, daemon=True).start()
@@ -1203,6 +1228,7 @@ class PurchaseManagerThread:
             except Exception as e:
                 print(f"[PURCHASE_MANAGER] Error in purchase loop: {e}")
                 add_activity_log(f"Purchase management error: {str(e)}", "error", "purchase")
+                _write_error_log("purchase", f"Purchase loop error: {e}", exc=e)
                 time.sleep(1)
 
     def _handle_stock_update(self, event_data):
@@ -1371,6 +1397,7 @@ class PurchaseManagerThread:
         except Exception as e:
             print(f"[PURCHASE_MANAGER] Error in atomic stock update: {e}")
             add_activity_log(f"API cycle processing failed: {str(e)}", "error", "api_cycle")
+            _write_error_log("api_cycle", f"Atomic stock update failed: {e}", exc=e)
 
             # ENHANCED MONITORING: Record failed cycle
             try:
@@ -1508,6 +1535,7 @@ def start_monitoring():
         print(f"[START_MONITORING] ⚠ Error during initial stock check: {e}")
         import traceback
         traceback.print_exc()
+        _write_error_log("monitoring", f"Error during initial stock check: {e}", exc=e)
 
     # Start monitoring thread
     print("[START_MONITORING] Creating monitoring thread...")
@@ -1632,6 +1660,7 @@ def index_v2():
                 catalog_config = json.load(f)
         except Exception as e:
             print(f"[V2] Catalog load error: {e}")
+            _write_error_log("v2", f"Catalog load error: {e}")
             catalog_config = {'catalog': []}
 
         # Get current data (thread-safe)
@@ -1720,6 +1749,7 @@ def index_v2():
         error_details = traceback.format_exc()
         print(f"[V2] Route error: {e}")
         print(error_details)
+        _write_error_log("v2", f"Route error: {e}", exc=e)
         return f"<h1>Error loading V2 dashboard</h1><pre>{error_details}</pre>", 500
 
 @app.route('/api/stream')
@@ -1771,6 +1801,7 @@ def sse_stream():
 
                 except Exception as e:
                     print(f"[SSE] Error in event stream for client {client_id}: {e}")
+                    _write_error_log("sse", f"Error in event stream for client {client_id}: {e}")
                     break
 
         finally:
@@ -1966,6 +1997,7 @@ def add_product():
             product_name = temp_stock_data.get(tcin, {}).get('title', f'Product {tcin}')
         except Exception as e:
             print(f"[CONFIG] Failed to fetch product name: {e}")
+            _write_error_log("config", f"Failed to fetch product name for {tcin}: {e}")
             product_name = f'Product {tcin}'
 
         # Add to config
@@ -2032,6 +2064,7 @@ def add_product():
                 print(f"[COHESIVE] {tcin} already exists in catalog")
         except Exception as e:
             print(f"[COHESIVE] Warning: Failed to auto-add to catalog: {e}")
+            _write_error_log("config", f"Failed to auto-add {tcin} to catalog: {e}")
             # Don't fail the main operation if catalog update fails
 
         return jsonify({
