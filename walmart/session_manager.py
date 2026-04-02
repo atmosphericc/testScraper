@@ -89,9 +89,6 @@ class WalmartSessionManager:
                 headless=HEADLESS,
                 args=[
                     "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-infobars",
                 ],
                 viewport={"width": 1920, "height": 1080},
                 user_agent=(

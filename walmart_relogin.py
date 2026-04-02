@@ -52,8 +52,6 @@ async def walmart_relogin():
         headless=False,
         args=[
             "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
         ],
         viewport={"width": 1280, "height": 800},
         user_agent=(

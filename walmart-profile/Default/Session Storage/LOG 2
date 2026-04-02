@@ -1,0 +1,8 @@
+2026/04/02-14:44:30.189 5b6213 Reusing MANIFEST /Users/Eric/Desktop/testScraper/walmart-profile/Default/Session Storage/MANIFEST-000001
+2026/04/02-14:44:30.191 5b6213 Recovering log #3
+2026/04/02-14:44:30.191 5b6213 Level-0 table #3: started
+2026/04/02-14:44:30.218 5b6213 Level-0 table #3: 19117 bytes OK
+2026/04/02-14:44:30.219 5b6213 Recovering log #4
+2026/04/02-14:44:30.220 5b6213 Reusing old log /Users/Eric/Desktop/testScraper/walmart-profile/Default/Session Storage/000004.log 
+2026/04/02-14:44:30.243 5b6213 Delete type=0 #3
+2026/04/02-14:44:30.243 5b6213 Delete type=2 #5
