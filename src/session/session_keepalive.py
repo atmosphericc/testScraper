@@ -87,7 +87,25 @@ class SessionKeepAlive:
                     time.sleep(1)
 
             except Exception as e:
-                self.logger.error(f" Keep-alive service error: {e}")
+                err_str = str(e).lower()
+                is_ws_disconnect = any(x in err_str for x in (
+                    '1103', 'websocket', 'connection closed', 'disconnected',
+                    'connection reset', 'abnormal closure', 'ws closed'
+                ))
+                if is_ws_disconnect:
+                    self.logger.warning(f"[KEEPALIVE] WebSocket disconnect detected ({e}) - forcing session refresh")
+                    try:
+                        # Invalidate last_validation so is_healthy() returns False on next check
+                        self.session_manager.last_validation = None
+                        refresh_future = self.session_manager.submit_async_task(
+                            self.session_manager.refresh_session()
+                        )
+                        refresh_future.result(timeout=60)
+                        self.logger.info("[KEEPALIVE] Session refreshed after WebSocket disconnect")
+                    except Exception as refresh_err:
+                        self.logger.error(f"[KEEPALIVE] Refresh after disconnect failed: {refresh_err}")
+                else:
+                    self.logger.error(f" Keep-alive service error: {e}")
                 time.sleep(10)  # Wait before retry
 
         self.logger.info("Keep-alive service loop ended")

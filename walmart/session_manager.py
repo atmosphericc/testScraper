@@ -53,7 +53,6 @@ class WalmartSessionManager:
     def __init__(self, status_callback: Optional[Callable[[str], None]] = None):
         self._status_cb = status_callback or (lambda msg: None)
         self._playwright = None
-        self._browser = None
         self._context = None
         self._page = None
         self._cookies_path = Path(COOKIES_FILE)
@@ -83,9 +82,10 @@ class WalmartSessionManager:
 
         try:
             self._playwright = await async_playwright().start()
-            # Patchright does NOT support channel= (that's a Playwright-only feature).
-            # It patches Chromium directly; just launch without channel.
-            self._browser = await self._playwright.chromium.launch(
+            # Use persistent context so the walmart-profile/ login session survives restarts.
+            # Run walmart_relogin.py once to populate the profile before starting the bot.
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self._profile_dir),
                 headless=HEADLESS,
                 args=[
                     "--disable-blink-features=AutomationControlled",
@@ -93,8 +93,6 @@ class WalmartSessionManager:
                     "--disable-dev-shm-usage",
                     "--disable-infobars",
                 ],
-            )
-            self._context = await self._browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 user_agent=(
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -104,10 +102,7 @@ class WalmartSessionManager:
                 locale="en-US",
                 timezone_id="America/New_York",
             )
-            # Restore saved cookies if they exist
-            if self._cookies_path.exists():
-                await self._load_cookies()
-            self._page = await self._context.new_page()
+            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         except Exception as e:
             # Clean up all partially-initialized resources
             for attr, method in [
@@ -118,6 +113,14 @@ class WalmartSessionManager:
                 if obj:
                     try:
                         await getattr(obj, method)()
+                    except Exception:
+                        pass
+                setattr(self, attr, None)
+            for attr in ('_page', '_context', '_playwright'):
+                obj = getattr(self, attr, None)
+                if obj:
+                    try:
+                        await obj.close() if attr != '_playwright' else await obj.stop()
                     except Exception:
                         pass
                 setattr(self, attr, None)
@@ -133,8 +136,8 @@ class WalmartSessionManager:
         except Exception:
             pass
         try:
-            if self._browser:
-                await self._browser.close()
+            if self._context:
+                await self._context.close()
         except Exception:
             pass
         try:
@@ -144,7 +147,6 @@ class WalmartSessionManager:
             pass
         self._page = None
         self._context = None
-        self._browser = None
         self._playwright = None
         logger.info("[SESSION] Browser stopped")
 
@@ -385,7 +387,7 @@ class WalmartSessionManager:
         return self._context
 
     def is_ready(self) -> bool:
-        return self._page is not None and self._browser is not None
+        return self._page is not None and self._context is not None
 
     async def _find_input(self, selectors: list[str], timeout: int = 10000):
         """Try each selector individually and return the first matching input element.

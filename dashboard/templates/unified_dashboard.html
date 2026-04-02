@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIO Bot Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary:   #0a0e14;
+      --bg-secondary: #151a21;
+      --bg-elevated:  #1c2128;
+      --bg-card:      #1f2937;
+      --bg-hover:     #252d3a;
+      --border:       #2d3748;
+      --border-active:#4b5563;
+      --accent:       #60a5fa;
+      --accent-hover: #3b82f6;
+      --success:      #10b981;
+      --success-bg:   rgba(16,185,129,0.12);
+      --success-bdr:  rgba(16,185,129,0.35);
+      --warning:      #f59e0b;
+      --warning-bg:   rgba(245,158,11,0.12);
+      --warning-bdr:  rgba(245,158,11,0.35);
+      --danger:       #ef4444;
+      --danger-bg:    rgba(239,68,68,0.12);
+      --danger-bdr:   rgba(239,68,68,0.35);
+      --info:         #06b6d4;
+      --info-bg:      rgba(6,182,212,0.12);
+      --text-primary: #f9fafb;
+      --text-secondary:#d1d5db;
+      --text-muted:   #6b7280;
+      --font:         'Inter', -apple-system, sans-serif;
+      --mono:         'JetBrains Mono', Consolas, monospace;
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      font-size: 14px;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    .header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 16px;
+      color: var(--text-primary);
+    }
+    .header-brand span { color: var(--accent); }
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
+    .dot-green { background: var(--success); animation: pulse 2s infinite; }
+    .dot-red   { background: var(--danger); }
+    .dot-yellow{ background: var(--warning); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    /* ── Tab Nav ─────────────────────────────────────────────── */
+    .tab-nav {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      padding: 0 24px;
+      gap: 4px;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 12px 18px;
+      cursor: pointer;
+      color: var(--text-muted);
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: color 0.15s, border-color 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .tab-btn:hover { color: var(--text-secondary); }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .tab-status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+    .tab-btn.active .tab-status-dot { background: var(--success); animation: pulse 2s infinite; }
+    .tab-btn.stub { opacity: 0.45; cursor: default; }
+    .tab-btn.stub:hover { color: var(--text-muted); }
+    .tab-pill {
+      background: var(--bg-elevated);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* ── Content ─────────────────────────────────────────────── */
+    .content { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* ── Status Bar ──────────────────────────────────────────── */
+    .status-bar {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .status-bar-left { display: flex; align-items: center; gap: 12px; flex: 1; }
+    .status-bar-right { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .badge {
+      display: inline-flex; align-items: center;
+      padding: 3px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge-green  { background: var(--success-bg);  color: var(--success); border: 1px solid var(--success-bdr); }
+    .badge-yellow { background: var(--warning-bg);  color: var(--warning); border: 1px solid var(--warning-bdr); }
+    .badge-red    { background: var(--danger-bg);   color: var(--danger);  border: 1px solid var(--danger-bdr); }
+    .badge-blue   { background: var(--info-bg);     color: var(--info);    border: 1px solid rgba(6,182,212,0.35); }
+    .badge-gray   { background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    .btn {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      padding: 6px 14px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: var(--font);
+      font-size: 12px;
+      font-weight: 500;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .btn:hover { background: var(--bg-hover); border-color: var(--border-active); color: var(--text-primary); }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }
+    .btn-danger  { background: var(--danger-bg); border-color: var(--danger-bdr); color: var(--danger); }
+    .btn-danger:hover { background: rgba(239,68,68,0.2); }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
+    .active-tab-btn { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    /* ── Catalog rows ────────────────────────────────────────── */
+    .catalog-row {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+    }
+    .catalog-row:last-child { border-bottom: none; }
+    .catalog-row-info { flex: 1; min-width: 0; }
+    .catalog-row-name { font-weight: 500; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .catalog-row-meta { font-size: 11px; color: var(--text-muted); font-family: var(--mono); margin-top: 2px; }
+
+    /* ── Card ────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+    .card-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* ── Product Table ───────────────────────────────────────── */
+    .product-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .product-table th {
+      padding: 9px 14px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
+    .product-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(45,55,72,0.5);
+      vertical-align: middle;
+    }
+    .product-table tr:last-child td { border-bottom: none; }
+    .product-table tr:hover td { background: var(--bg-hover); }
+
+    .product-name { font-weight: 500; color: var(--text-primary); }
+    .product-id   { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+
+    /* ── Add Product Form ────────────────────────────────────── */
+    .add-form {
+      padding: 14px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .add-form input {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      padding: 7px 11px;
+      border-radius: 5px;
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .add-form input:focus { border-color: var(--accent); }
+    .add-form input::placeholder { color: var(--text-muted); }
+    .input-id    { width: 150px; }
+    .input-name  { width: 240px; }
+    .input-price { width: 100px; }
+    .input-pri   { width: 75px; }
+
+    /* ── Activity Log ────────────────────────────────────────── */
+    .log-box {
+      height: 280px;
+      overflow-y: auto;
+      padding: 10px 14px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    .log-line { color: var(--text-muted); }
+    .log-line.log-success { color: var(--success); }
+    .log-line.log-error   { color: var(--danger); }
+    .log-line.log-warning { color: var(--warning); }
+    .log-time { color: var(--text-muted); margin-right: 6px; }
+
+    /* ── Stats Row ───────────────────────────────────────────── */
+    .stats-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 18px;
+      flex: 1;
+      min-width: 130px;
+    }
+    .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    .stat-value { font-size: 22px; font-weight: 700; color: var(--text-primary); }
+    .stat-value.green { color: var(--success); }
+    .stat-value.yellow { color: var(--warning); }
+
+    /* ── Coming Soon ─────────────────────────────────────────── */
+    .coming-soon {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--text-muted);
+    }
+    .coming-soon .cs-icon { font-size: 48px; margin-bottom: 16px; }
+    .coming-soon h2 { font-size: 20px; color: var(--text-secondary); margin-bottom: 8px; }
+    .coming-soon p  { font-size: 14px; }
+
+    /* ── Scrollbar ───────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
+
+    /* ── Connection indicator ────────────────────────────────── */
+    .conn-indicator {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 11px; color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════ HEADER ══════════════════════ -->
+<div class="header">
+  <div class="header-brand">
+    <span>&#9679;</span> AIO Bot
+  </div>
+  <div class="header-meta">
+    <div class="conn-indicator" id="target-conn">
+      <span class="dot dot-yellow"></span> Target connecting…
+    </div>
+    <div class="conn-indicator" id="walmart-conn">
+      <span class="dot dot-yellow"></span> Walmart connecting…
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ TAB NAV ══════════════════════ -->
+<div class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('target')" id="tabBtn-target">
+    <span class="tab-status-dot" id="tabDot-target"></span>
+    &#127919; Target
+  </button>
+  <button class="tab-btn" onclick="switchTab('walmart')" id="tabBtn-walmart">
+    <span class="tab-status-dot" id="tabDot-walmart"></span>
+    &#x1F6D2; Walmart
+  </button>
+  <button class="tab-btn stub" id="tabBtn-best_buy" onclick="switchTab('best_buy')">
+    Best Buy <span class="tab-pill">soon</span>
+  </button>
+  <button class="tab-btn stub" id="tabBtn-costco" onclick="switchTab('costco')">
+    Costco <span class="tab-pill">soon</span>
+  </button>
+  <button class="tab-btn stub" id="tabBtn-pokemon_center" onclick="switchTab('pokemon_center')">
+    Pokemon Center <span class="tab-pill">soon</span>
+  </button>
+</div>
+
+<!-- ══════════════════════ CONTENT ══════════════════════ -->
+<div class="content">
+
+  <!-- ─── TARGET SECTION ─── -->
+  <div class="section active" id="section-target">
+    <div class="status-bar">
+      <div class="status-bar-left">
+        <span id="target-running-dot" class="dot dot-yellow"></span>
+        <strong id="target-running-text">Connecting…</strong>
+        <span id="target-mode-badge" class="badge badge-gray">TEST</span>
+        <span id="target-circuit-badge" style="display:none" class="badge badge-red">CIRCUIT OPEN</span>
+      </div>
+      <div class="status-bar-right">
+        <button class="btn btn-sm" onclick="targetTestMode(true)">Enable Test Mode</button>
+        <button class="btn btn-sm btn-danger" onclick="targetTestMode(false)">Live Mode</button>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Products</div>
+        <div class="stat-value" id="target-stat-total">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">In Stock</div>
+        <div class="stat-value green" id="target-stat-instock">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Cycle</div>
+        <div class="stat-value" id="target-stat-lastcycle" style="font-size:14px;margin-top:4px">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        Products
+        <span id="target-monitoring-badge" class="badge badge-gray" style="font-size:11px">STOPPED</span>
+      </div>
+      <table class="product-table" id="target-product-table">
+        <thead>
+          <tr>
+            <th>Priority</th>
+            <th>Product</th>
+            <th>Last Check</th>
+            <th>Stock</th>
+            <th>State</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="target-tbody">
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─── PRODUCT CATALOG CARD ─── -->
+    <div class="card">
+      <div class="card-header">
+        Product Catalog
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <button id="catalog-tab-btn" class="btn btn-sm active-tab-btn" onclick="switchCatalogTab('catalog')" style="font-size:11px">📚 Catalog (<span id="catalog-count">0</span>)</button>
+          <button id="active-tab-btn"  class="btn btn-sm" onclick="switchCatalogTab('active')"  style="font-size:11px">📊 Active (<span id="active-count">0</span>)</button>
+        </div>
+      </div>
+
+      <!-- Catalog tab -->
+      <div id="catalog-tab-panel">
+        <div class="add-form" style="padding:12px 0 8px">
+          <input class="input-id" id="catalog-add-tcin" placeholder="TCIN (8-10 digits)">
+          <button class="btn btn-primary" onclick="catalogAddToCatalog()">Save to Catalog</button>
+          <button class="btn btn-sm" id="catalog-refresh-btn" onclick="catalogRefreshNames()">↻ Refresh Names</button>
+          <span id="catalog-refresh-status" style="font-size:11px;color:var(--text-muted)"></span>
+        </div>
+        <div id="catalog-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+          <div style="text-align:center;padding:24px;color:var(--text-muted)">Loading catalog…</div>
+        </div>
+      </div>
+
+      <!-- Active tab -->
+      <div id="active-tab-panel" style="display:none">
+        <div id="active-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-top:8px">
+          <div style="text-align:center;padding:24px;color:var(--text-muted)">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Live Activity</div>
+      <div class="log-box" id="target-log">
+        <div class="log-line" style="color:var(--text-muted)">Connecting to Target stream…</div>
+      </div>
+    </div>
+  </div><!-- /target -->
+
+  <!-- ─── WALMART SECTION ─── -->
+  <div class="section" id="section-walmart">
+    <div class="status-bar">
+      <div class="status-bar-left">
+        <span id="walmart-running-dot" class="dot dot-yellow"></span>
+        <strong id="walmart-running-text">Connecting…</strong>
+        <span id="walmart-mode-badge" class="badge badge-gray">TEST</span>
+        <span id="walmart-circuit-badge" style="display:none" class="badge badge-red">CIRCUIT OPEN</span>
+      </div>
+      <div class="status-bar-right">
+        <button class="btn btn-sm" onclick="walmartTestMode(true)">Enable Test Mode</button>
+        <button class="btn btn-sm btn-danger" onclick="walmartTestMode(false)">Live Mode</button>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-label">Products</div>
+        <div class="stat-value" id="walmart-stat-total">—</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">In Stock</div>
+        <div class="stat-value green" id="walmart-stat-instock">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Last Cycle</div>
+        <div class="stat-value" id="walmart-stat-lastcycle" style="font-size:14px;margin-top:4px">—</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        Products
+        <span id="walmart-monitoring-badge" class="badge badge-gray" style="font-size:11px">STOPPED</span>
+      </div>
+      <table class="product-table" id="walmart-product-table">
+        <thead>
+          <tr>
+            <th>Priority</th>
+            <th>Product</th>
+            <th>Last Check</th>
+            <th>Stock</th>
+            <th>State</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="walmart-tbody">
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ─── WALMART ADD CARD ─── -->
+    <div class="card">
+      <div class="card-header">Add Product</div>
+      <div class="add-form" style="padding:12px 0 8px">
+        <input class="input-id"   id="w-add-id"   placeholder="Item ID (e.g. 15042474261)">
+        <input class="input-name" id="w-add-name" placeholder="Product name">
+        <button class="btn btn-primary" onclick="walmartAddProduct()">Add Product</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Live Activity</div>
+      <div class="log-box" id="walmart-log">
+        <div class="log-line" style="color:var(--text-muted)">Connecting to Walmart stream…</div>
+      </div>
+    </div>
+  </div><!-- /walmart -->
+
+  <!-- ─── BEST BUY STUB ─── -->
+  <div class="section" id="section-best_buy">
+    <div class="coming-soon">
+      <div class="cs-icon">&#x1F6CD;</div>
+      <h2>Best Buy</h2>
+      <p>Not yet implemented &mdash; coming soon.</p>
+    </div>
+  </div>
+
+  <!-- ─── COSTCO STUB ─── -->
+  <div class="section" id="section-costco">
+    <div class="coming-soon">
+      <div class="cs-icon">&#x1F6D2;</div>
+      <h2>Costco</h2>
+      <p>Not yet implemented &mdash; coming soon.</p>
+    </div>
+  </div>
+
+  <!-- ─── POKEMON CENTER STUB ─── -->
+  <div class="section" id="section-pokemon_center">
+    <div class="coming-soon">
+      <div class="cs-icon">&#x26BE;</div>
+      <h2>Pokemon Center</h2>
+      <p>Not yet implemented &mdash; coming soon.</p>
+    </div>
+  </div>
+
+</div><!-- /content -->
+
+<script>
+  // ══════════════════════════════════════════════
+  //  TAB SWITCHING
+  // ══════════════════════════════════════════════
+  function switchTab(id) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    const btn = document.getElementById('tabBtn-' + id);
+    if (btn) btn.classList.add('active');
+    const sec = document.getElementById('section-' + id);
+    if (sec) sec.classList.add('active');
+  }
+
+  // ══════════════════════════════════════════════
+  //  HELPERS
+  // ══════════════════════════════════════════════
+  function prependLog(boxId, time, message) {
+    const box = document.getElementById(boxId);
+    if (!box) return;
+    const isSuccess = message.includes('SUCCESS') || message.includes('ORDER PLACED') || message.includes('confirmed');
+    const isError   = /error|fail|failed/i.test(message);
+    const isWarning = /warn|circuit/i.test(message);
+    const cls = isSuccess ? 'log-success' : isError ? 'log-error' : isWarning ? 'log-warning' : '';
+    const line = document.createElement('div');
+    line.className = 'log-line ' + cls;
+    line.innerHTML = '<span class="log-time">[' + escapeHtml(time) + ']</span>' + escapeHtml(message);
+    box.insertBefore(line, box.firstChild);
+    while (box.children.length > 300) box.removeChild(box.lastChild);
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function stateBadge(state) {
+    const s = (state || '').toUpperCase();
+    if (s === 'SUCCESS' || s === 'PURCHASED') return '<span class="badge badge-green">' + s + '</span>';
+    if (s === 'PURCHASING' || s === 'IN_QUEUE' || s === 'ATTEMPTING') return '<span class="badge badge-yellow">' + s + '</span>';
+    if (s === 'FAILED' || s === 'CIRCUIT_OPEN') return '<span class="badge badge-red">' + s + '</span>';
+    return '<span class="badge badge-gray">' + (s || 'MONITORING') + '</span>';
+  }
+
+  function stockBadge(inStock) {
+    return inStock
+      ? '<span class="badge badge-green">&#9679; IN STOCK</span>'
+      : '<span class="badge badge-gray">&#9675; OUT</span>';
+  }
+
+  // ══════════════════════════════════════════════
+  //  TARGET
+  // ══════════════════════════════════════════════
+
+  let targetProducts = {}; // tcin → {title, in_stock, priority, state}
+  let targetTestModeOn = false;
+
+  // Only update a product's title if the new value is a real name,
+  // never overwrite a good cached name with a bare TCIN or empty string.
+  function setTargetTitle(tcin, incoming) {
+    const isRealName = incoming && incoming !== tcin && !/^\d+$/.test(incoming.trim());
+    if (isRealName) {
+      targetProducts[tcin].title = incoming;
+    } else if (!targetProducts[tcin].title || targetProducts[tcin].title === tcin) {
+      // Nothing good cached yet — store whatever we have as a fallback
+      targetProducts[tcin].title = incoming || tcin;
+    }
+    // else: keep the existing good name, ignore the bad incoming value
+  }
+
+  function buildTargetRow(tcin) {
+    const p = targetProducts[tcin];
+    const lastCheck = p.last_checked ? new Date(p.last_checked).toLocaleTimeString() : '—';
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-tcin', tcin);
+    tr.innerHTML = `
+      <td style="white-space:nowrap">
+        <button onclick="targetMovePriority(this,-1)" title="Move Up" style="background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer;margin-right:2px">▲</button>
+        <button onclick="targetMovePriority(this,1)" title="Move Down" style="background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer">▼</button>
+      </td>
+      <td>
+        <div class="product-name">${escapeHtml(p.title || tcin)}</div>
+        <div class="product-id">${escapeHtml(tcin)}</div>
+      </td>
+      <td class="cell-lastcheck" style="color:var(--text-muted);font-size:12px">${escapeHtml(lastCheck)}</td>
+      <td class="cell-stock">${stockBadge(p.in_stock)}</td>
+      <td class="cell-state">${stateBadge(p.state)}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="targetRemove('${escapeHtml(tcin)}')">Remove</button></td>`;
+    return tr;
+  }
+
+  function renderTargetTable() {
+    const tbody = document.getElementById('target-tbody');
+    const tcins = Object.keys(targetProducts).sort((a,b) =>
+      (targetProducts[a].priority || 999) - (targetProducts[b].priority || 999)
+    );
+
+    if (!tcins.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px">No products configured</td></tr>';
+      document.getElementById('target-stat-total').textContent = '0';
+      document.getElementById('target-stat-instock').textContent = '0';
+      return;
+    }
+
+    // Remove any placeholder rows (no data-tcin) so they don't linger after products arrive
+    tbody.querySelectorAll('tr:not([data-tcin])').forEach(r => r.remove());
+
+    // Figure out which TCINs are currently rendered
+    const existingRows = {};
+    tbody.querySelectorAll('tr[data-tcin]').forEach(r => { existingRows[r.getAttribute('data-tcin')] = r; });
+
+    const existingTcins = Object.keys(existingRows);
+    const added   = tcins.filter(t => !existingRows[t]);
+    const removed = existingTcins.filter(t => !targetProducts[t]);
+
+    // Remove rows for products that are gone
+    removed.forEach(t => existingRows[t].remove());
+
+    // Add rows for new products
+    added.forEach(t => tbody.appendChild(buildTargetRow(t)));
+
+    // For existing rows: only update the mutable cells — never touch the name cell
+    tcins.filter(t => existingRows[t]).forEach(tcin => {
+      const row = existingRows[tcin];
+      const p   = targetProducts[tcin];
+      const lastCheck = p.last_checked ? new Date(p.last_checked).toLocaleTimeString() : '—';
+      row.querySelector('.cell-lastcheck').textContent = lastCheck;
+      row.querySelector('.cell-stock').innerHTML = stockBadge(p.in_stock);
+      row.querySelector('.cell-state').innerHTML = stateBadge(p.state);
+      // Only update name if we now have a real name and the cell still shows a bare TCIN
+      const nameEl = row.querySelector('.product-name');
+      const isBareTcin = nameEl.textContent.trim() === tcin;
+      if (isBareTcin && p.title && p.title !== tcin && !/^\d+$/.test(p.title.trim())) {
+        nameEl.textContent = p.title;
+      }
+    });
+
+    // Re-sort rows in DOM to match priority order (only moves DOM nodes, no innerHTML)
+    tcins.forEach(tcin => {
+      const row = tbody.querySelector(`tr[data-tcin="${tcin}"]`);
+      if (row) tbody.appendChild(row); // appendChild moves existing node to end in order
+    });
+
+    document.getElementById('target-stat-total').textContent = tcins.length;
+    document.getElementById('target-stat-instock').textContent = tcins.filter(t => targetProducts[t].in_stock).length;
+  }
+
+  function targetMovePriority(btn, direction) {
+    const row = btn.closest('tr');
+    const tbody = row.closest('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr[data-tcin]'));
+    const idx = rows.indexOf(row);
+    const targetIdx = idx + direction;
+    if (targetIdx < 0 || targetIdx >= rows.length) return;
+    if (direction === -1) {
+      tbody.insertBefore(row, rows[targetIdx]);
+    } else {
+      tbody.insertBefore(rows[targetIdx], row);
+    }
+    targetSavePriorityOrder();
+  }
+
+  async function targetSavePriorityOrder() {
+    const tbody = document.getElementById('target-tbody');
+    if (!tbody) return;
+    const order = Array.from(tbody.querySelectorAll('tr[data-tcin]')).map(r => r.getAttribute('data-tcin'));
+    // Update local priority numbers so they stay consistent
+    order.forEach((tcin, i) => {
+      if (targetProducts[tcin]) targetProducts[tcin].priority = i + 1;
+    });
+    try {
+      const res = await fetch('/reorder-products', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order})
+      });
+      const data = await res.json();
+      if (!data.success) console.error('Target reorder failed:', data.error);
+    } catch(e) {
+      console.error('Target reorder error:', e);
+    }
+  }
+
+  async function loadTargetStatus() {
+    try {
+      const d = await fetch('/api/status').then(r => r.json());
+      // Merge stock_data
+      const stock = d.stock_data || {};
+      const states = d.purchase_states || {};
+      // Build product map
+      Object.keys(stock).forEach(tcin => {
+        const s = stock[tcin];
+        if (!targetProducts[tcin]) targetProducts[tcin] = {};
+        setTargetTitle(tcin, s.title);
+        targetProducts[tcin].in_stock    = s.in_stock || false;
+        targetProducts[tcin].last_checked= s.last_checked || null;
+        targetProducts[tcin].priority    = targetProducts[tcin].priority || 999;
+        const ps = states[tcin] || {};
+        targetProducts[tcin].state = ps.status || 'MONITORING';
+      });
+      // Load priority from config order (no direct API for it, so use table order if known)
+      targetTestModeOn = d.test_mode || false;
+      updateTargetStatusBar(d.monitoring, targetTestModeOn);
+
+      // Load priority/names from config — await so we render once with everything
+      await loadTargetProductConfig();
+      renderTargetTable();
+
+      // Load activity log (last 50)
+      const log = d.activity_log || [];
+      const box = document.getElementById('target-log');
+      box.innerHTML = '';
+      [...log].reverse().slice(0,80).forEach(e => {
+        prependLog('target-log', e.time_str || e.time || '', e.message || '');
+      });
+    } catch(err) {
+      console.warn('Target status load failed:', err);
+    }
+  }
+
+  async function loadTargetProductConfig() {
+    try {
+      const d = await fetch('/catalog/list').then(r => r.json());
+      const products = d.products || d || [];
+      products.forEach((p, i) => {
+        const tcin = p.tcin || p.id;
+        if (tcin) {
+          if (!targetProducts[tcin]) targetProducts[tcin] = {};
+          setTargetTitle(tcin, p.name || p.title);
+          targetProducts[tcin].priority = p.priority || (i + 1);
+        }
+      });
+    } catch(e) {
+      // catalog/list may not exist — priorities stay as 999
+    }
+  }
+
+  function updateTargetStatusBar(running, testMode) {
+    const dot  = document.getElementById('target-running-dot');
+    const text = document.getElementById('target-running-text');
+    const badge= document.getElementById('target-mode-badge');
+    const monBadge = document.getElementById('target-monitoring-badge');
+    dot.className  = 'dot ' + (running ? 'dot-green' : 'dot-red');
+    text.textContent = running ? 'Running' : 'Stopped';
+    badge.textContent = testMode ? 'TEST MODE' : 'LIVE';
+    badge.className   = 'badge ' + (testMode ? 'badge-yellow' : 'badge-green');
+    if (monBadge) {
+      monBadge.textContent = running ? 'MONITORING' : 'STOPPED';
+      monBadge.className   = 'badge ' + (running ? 'badge-blue' : 'badge-gray');
+    }
+    // Update header conn indicator
+    const conn = document.getElementById('target-conn');
+    if (conn) conn.innerHTML = '<span class="dot ' + (running ? 'dot-green' : 'dot-red') + '"></span> Target ' + (running ? 'live' : 'stopped');
+    // Update tab dot
+    const tabDot = document.getElementById('tabDot-target');
+    if (tabDot) tabDot.style.background = running ? 'var(--success)' : 'var(--danger)';
+  }
+
+  // Handle api_cycle_complete — the main atomic update from Target
+  function handleTargetCycle(eventData) {
+    const data = eventData.data || eventData;
+    const stock    = data.stock_updates || {};
+    const purchase = data.purchase_state_changes || {};
+    const timer    = data.timer_sync || {};
+
+    // Update stock
+    Object.keys(stock).forEach(tcin => {
+      if (!targetProducts[tcin]) targetProducts[tcin] = { priority: 999 };
+      targetProducts[tcin].in_stock     = stock[tcin].in_stock;
+      setTargetTitle(tcin, stock[tcin].title);
+      targetProducts[tcin].last_checked = stock[tcin].last_checked;
+    });
+
+    // Update purchase resets
+    const resets = purchase.resets || [];
+    resets.forEach(tcin => {
+      if (targetProducts[tcin]) targetProducts[tcin].state = 'MONITORING';
+    });
+
+    renderTargetTable();
+
+    // Update last cycle time
+    const lc = document.getElementById('target-stat-lastcycle');
+    if (lc) lc.textContent = new Date().toLocaleTimeString();
+  }
+
+  async function targetAddProduct() {
+    const tcin     = document.getElementById('t-add-tcin').value.trim();
+    const name = document.getElementById('t-add-name').value.trim() || 'Unknown';
+    if (!tcin) return;
+    try {
+      await fetch('/add-product', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({tcin, name})
+      });
+      document.getElementById('t-add-tcin').value = '';
+      document.getElementById('t-add-name').value = '';
+      await loadTargetStatus();
+      await loadCatalog();
+    } catch(e) { alert('Error adding product: ' + e); }
+  }
+
+  async function targetRemove(tcin) {
+    if (!confirm('Remove ' + tcin + '?')) return;
+    try {
+      await fetch('/remove-product/' + tcin, {method:'POST'});
+      delete targetProducts[tcin];
+      renderTargetTable();
+      renderActiveList(); // update the Active tab in the catalog card
+      // Mark as inactive in catalog
+      const item = catalogData.find(p => p.tcin === tcin);
+      if (item) { item.is_active = false; renderCatalogList(); }
+    } catch(e) { alert('Error removing product: ' + e); }
+  }
+
+  async function targetTestMode(enable) {
+    await fetch(enable ? '/api/test/enable' : '/api/test/disable', {method:'POST'});
+    targetTestModeOn = enable;
+    updateTargetStatusBar(true, enable);
+  }
+
+  // ══════════════════════════════════════════════
+  //  WALMART
+  // ══════════════════════════════════════════════
+
+  let walmartProducts = {}; // item_id → {name, state, priority, in_stock, last_checked}
+  let walmartTestModeOn = false;
+
+  function buildWalmartRow(id) {
+    const p = walmartProducts[id];
+    const lastCheck = p.last_checked ? new Date(p.last_checked).toLocaleTimeString() : '—';
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-id', id);
+    tr.innerHTML = `
+      <td style="white-space:nowrap">
+        <button onclick="walmartMovePriority(this,-1)" title="Move Up" style="background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer;margin-right:2px">▲</button>
+        <button onclick="walmartMovePriority(this,1)" title="Move Down" style="background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:4px;padding:2px 7px;cursor:pointer">▼</button>
+      </td>
+      <td>
+        <div class="product-name">${escapeHtml(p.name || id)}</div>
+        <div class="product-id">${escapeHtml(id)}</div>
+      </td>
+      <td class="cell-wlastcheck" style="color:var(--text-muted);font-size:12px">${escapeHtml(lastCheck)}</td>
+      <td class="cell-wstock">${stockBadge(p.in_stock)}</td>
+      <td class="cell-wstate">${stateBadge(p.state)}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="walmartRemove('${escapeHtml(id)}')">Remove</button></td>`;
+    return tr;
+  }
+
+  function renderWalmartTable() {
+    const tbody = document.getElementById('walmart-tbody');
+    const ids = Object.keys(walmartProducts).sort((a,b) =>
+      (walmartProducts[a].priority || 999) - (walmartProducts[b].priority || 999)
+    );
+
+    if (!ids.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px">No products configured</td></tr>';
+      document.getElementById('walmart-stat-total').textContent = '0';
+      document.getElementById('walmart-stat-instock').textContent = '0';
+      return;
+    }
+
+    tbody.querySelectorAll('tr:not([data-id])').forEach(r => r.remove());
+
+    const existingRows = {};
+    tbody.querySelectorAll('tr[data-id]').forEach(r => { existingRows[r.getAttribute('data-id')] = r; });
+
+    Object.keys(existingRows).filter(id => !walmartProducts[id]).forEach(id => existingRows[id].remove());
+    ids.filter(id => !existingRows[id]).forEach(id => tbody.appendChild(buildWalmartRow(id)));
+
+    ids.filter(id => existingRows[id]).forEach(id => {
+      const row = existingRows[id];
+      const p   = walmartProducts[id];
+      const lastCheck = p.last_checked ? new Date(p.last_checked).toLocaleTimeString() : '—';
+      row.querySelector('.cell-wlastcheck').textContent = lastCheck;
+      row.querySelector('.cell-wstock').innerHTML = stockBadge(p.in_stock);
+      row.querySelector('.cell-wstate').innerHTML = stateBadge(p.state);
+      const nameEl = row.querySelector('.product-name');
+      if (nameEl.textContent.trim() === id && p.name && p.name !== id) nameEl.textContent = p.name;
+    });
+
+    ids.forEach(id => { const r = tbody.querySelector(`tr[data-id="${id}"]`); if (r) tbody.appendChild(r); });
+
+    document.getElementById('walmart-stat-total').textContent = ids.length;
+    document.getElementById('walmart-stat-instock').textContent = ids.filter(id => walmartProducts[id].in_stock).length;
+  }
+
+  async function loadWalmartStatus() {
+    try {
+      const d = await fetch('/walmart/api/status').then(r => r.json());
+      const products = d.products || [];
+      const incoming = new Set(products.map(p => p.item_id));
+      Object.keys(walmartProducts).forEach(id => { if (!incoming.has(id)) delete walmartProducts[id]; });
+      products.forEach(p => {
+        const id = p.item_id;
+        if (!walmartProducts[id]) walmartProducts[id] = {};
+        if (p.name && p.name !== id && !/^\d+$/.test(p.name.trim())) {
+          walmartProducts[id].name = p.name;
+        } else if (!walmartProducts[id].name) {
+          walmartProducts[id].name = p.name || id;
+        }
+        walmartProducts[id].state       = p.state || 'MONITORING';
+        walmartProducts[id].priority    = p.priority || walmartProducts[id].priority || 999;
+        walmartProducts[id].in_stock    = p.in_stock || false;
+        walmartProducts[id].last_checked= p.last_checked || null;
+      });
+      walmartTestModeOn = d.test_mode || false;
+      const running = d.running || false;
+      updateWalmartStatusBar(running, walmartTestModeOn, d.circuit_open || false);
+      renderWalmartTable();
+      const lc = document.getElementById('walmart-stat-lastcycle');
+      if (lc && running) lc.textContent = new Date().toLocaleTimeString();
+    } catch(err) {
+      console.warn('Walmart status load failed:', err);
+      const tbody = document.getElementById('walmart-tbody');
+      if (tbody && !tbody.querySelector('tr[data-id]')) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px">Could not load — is unified_app.py running?</td></tr>';
+      }
+    }
+  }
+
+  function walmartMovePriority(btn, direction) {
+    const row = btn.closest('tr');
+    const tbody = row.closest('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr[data-id]'));
+    const idx = rows.indexOf(row);
+    const targetIdx = idx + direction;
+    if (targetIdx < 0 || targetIdx >= rows.length) return;
+    if (direction === -1) tbody.insertBefore(row, rows[targetIdx]);
+    else tbody.insertBefore(rows[targetIdx], row);
+    walmartSavePriorityOrder();
+  }
+
+  async function walmartSavePriorityOrder() {
+    const tbody = document.getElementById('walmart-tbody');
+    if (!tbody) return;
+    const order = Array.from(tbody.querySelectorAll('tr[data-id]')).map(r => r.getAttribute('data-id'));
+    order.forEach((id, i) => { if (walmartProducts[id]) walmartProducts[id].priority = i + 1; });
+    try {
+      await fetch('/walmart/reorder-products', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order})
+      });
+    } catch(e) { console.error('Walmart reorder error:', e); }
+  }
+
+  function updateWalmartStatusBar(running, testMode, circuitOpen) {
+    const dot    = document.getElementById('walmart-running-dot');
+    const text   = document.getElementById('walmart-running-text');
+    const badge  = document.getElementById('walmart-mode-badge');
+    const cbadge = document.getElementById('walmart-circuit-badge');
+    const monBadge = document.getElementById('walmart-monitoring-badge');
+    dot.className    = 'dot ' + (running ? 'dot-green' : 'dot-red');
+    text.textContent = running ? 'Running' : 'Stopped';
+    badge.textContent = testMode ? 'TEST MODE' : 'LIVE';
+    badge.className   = 'badge ' + (testMode ? 'badge-yellow' : 'badge-green');
+    if (cbadge) cbadge.style.display = circuitOpen ? 'inline-flex' : 'none';
+    if (monBadge) {
+      monBadge.textContent = running ? 'MONITORING' : 'STOPPED';
+      monBadge.className   = 'badge ' + (running ? 'badge-blue' : 'badge-gray');
+    }
+    const conn = document.getElementById('walmart-conn');
+    if (conn) conn.innerHTML = '<span class="dot ' + (running ? 'dot-green' : 'dot-red') + '"></span> Walmart ' + (running ? 'live' : 'stopped');
+    const tabDot = document.getElementById('tabDot-walmart');
+    if (tabDot) tabDot.style.background = running ? 'var(--success)' : 'var(--danger)';
+  }
+
+  async function walmartAddProduct() {
+    const item_id = document.getElementById('w-add-id').value.trim();
+    const name    = document.getElementById('w-add-name').value.trim() || 'Unknown';
+    if (!item_id) return;
+    try {
+      await fetch('/walmart/add-product', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({item_id, name})
+      });
+      document.getElementById('w-add-id').value = '';
+      document.getElementById('w-add-name').value = '';
+      await loadWalmartStatus();
+    } catch(e) { alert('Error adding product: ' + e); }
+  }
+
+  async function walmartRemove(item_id) {
+    if (!confirm('Remove ' + item_id + '?')) return;
+    try {
+      await fetch('/walmart/remove-product/' + item_id, {method:'POST'});
+      delete walmartProducts[item_id];
+      renderWalmartTable();
+    } catch(e) { alert('Error removing product: ' + e); }
+  }
+
+  async function walmartTestMode(enable) {
+    await fetch(enable ? '/walmart/api/test/enable' : '/walmart/api/test/disable', {method:'POST'});
+    walmartTestModeOn = enable;
+    updateWalmartStatusBar(true, enable, false);
+  }
+
+  // ══════════════════════════════════════════════
+  //  PRODUCT CATALOG (Target)
+  // ══════════════════════════════════════════════
+
+  let catalogData = []; // full list from /catalog/list
+
+  function switchCatalogTab(tab) {
+    const isCatalog = tab === 'catalog';
+    document.getElementById('catalog-tab-panel').style.display = isCatalog ? '' : 'none';
+    document.getElementById('active-tab-panel').style.display  = isCatalog ? 'none' : '';
+    document.getElementById('catalog-tab-btn').className = 'btn btn-sm' + (isCatalog ? ' active-tab-btn' : '');
+    document.getElementById('active-tab-btn').className  = 'btn btn-sm' + (isCatalog ? '' : ' active-tab-btn');
+    if (!isCatalog) renderActiveList();
+  }
+
+  async function loadCatalog() {
+    try {
+      const d = await fetch('/catalog/list').then(r => r.json());
+      catalogData = d.catalog || [];
+      renderCatalogList();
+      renderActiveList();
+      document.getElementById('catalog-count').textContent = catalogData.length;
+    } catch(e) {
+      document.getElementById('catalog-list').innerHTML =
+        '<div style="text-align:center;padding:24px;color:var(--text-muted)">Could not load catalog.</div>';
+    }
+  }
+
+  function renderCatalogList() {
+    const el = document.getElementById('catalog-list');
+    if (!catalogData.length) {
+      el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)">No products in catalog. Save a TCIN above.</div>';
+      return;
+    }
+    el.innerHTML = catalogData.map(p => {
+      const isActive = p.is_active;
+      const addBtn = isActive
+        ? `<button class="btn btn-sm" disabled style="opacity:.5;cursor:not-allowed;white-space:nowrap">✅ Active</button>`
+        : `<button class="btn btn-sm btn-primary" onclick="catalogActivate('${escapeHtml(p.tcin)}')" style="white-space:nowrap">🚀 Add to Monitor</button>`;
+      return `<div class="catalog-row" data-catalog-tcin="${escapeHtml(p.tcin)}">
+        <div class="catalog-row-info">
+          <div class="catalog-row-name">${escapeHtml(p.name || p.tcin)}</div>
+          <div class="catalog-row-meta">TCIN: ${escapeHtml(p.tcin)} • Added: ${(p.date_added||'').substring(0,10)}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          ${addBtn}
+          <button class="btn btn-sm btn-danger" onclick="catalogRemove('${escapeHtml(p.tcin)}')" style="white-space:nowrap">Remove</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderActiveList() {
+    const el = document.getElementById('active-list');
+    const active = Object.keys(targetProducts);
+    document.getElementById('active-count').textContent = active.length;
+    if (!active.length) {
+      el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)">No active products.</div>';
+      return;
+    }
+    const sorted = active.sort((a,b) => (targetProducts[a].priority||999) - (targetProducts[b].priority||999));
+    el.innerHTML = sorted.map(tcin => {
+      const p = targetProducts[tcin];
+      return `<div class="catalog-row" data-active-tcin="${escapeHtml(tcin)}">
+        <div class="catalog-row-info">
+          <div class="catalog-row-name">${escapeHtml(p.title || tcin)}</div>
+          <div class="catalog-row-meta">TCIN: ${escapeHtml(tcin)} • Pri: ${p.priority||'—'}</div>
+        </div>
+        <button class="btn btn-sm btn-danger" onclick="targetRemove('${escapeHtml(tcin)}')" style="white-space:nowrap;flex-shrink:0">Remove</button>
+      </div>`;
+    }).join('');
+  }
+
+  async function catalogAddToCatalog() {
+    const tcin = document.getElementById('catalog-add-tcin').value.trim();
+    if (!tcin) return;
+    try {
+      const d = await fetch('/catalog/add', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({tcin})
+      }).then(r => r.json());
+      if (d.success) {
+        document.getElementById('catalog-add-tcin').value = '';
+        await loadCatalog();
+      } else {
+        alert('Error: ' + d.error);
+      }
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  async function catalogRemove(tcin) {
+    if (!confirm('Remove ' + tcin + ' from catalog?')) return;
+    try {
+      await fetch('/catalog/remove/' + tcin, {method:'POST'});
+      catalogData = catalogData.filter(p => p.tcin !== tcin);
+      renderCatalogList();
+      document.getElementById('catalog-count').textContent = catalogData.length;
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  async function catalogActivate(tcin) {
+    try {
+      const d = await fetch('/catalog/activate/' + tcin, {method:'POST', headers:{'Content-Type':'application/json'}}).then(r => r.json());
+      if (d.success) {
+        // Mark as active in catalog list immediately
+        const item = catalogData.find(p => p.tcin === tcin);
+        if (item) item.is_active = true;
+        renderCatalogList();
+        // Reload target status so the monitoring table updates
+        await loadTargetStatus();
+      } else {
+        alert('Error: ' + d.error);
+      }
+    } catch(e) { alert('Error: ' + e); }
+  }
+
+  async function catalogRefreshNames() {
+    const btn = document.getElementById('catalog-refresh-btn');
+    const status = document.getElementById('catalog-refresh-status');
+    btn.disabled = true;
+    status.textContent = 'Fetching…';
+    try {
+      const d = await fetch('/refresh-product-names', {method:'POST', headers:{'Content-Type':'application/json'}}).then(r => r.json());
+      if (d.updated && d.updated.length) {
+        status.textContent = `Updated ${d.updated.length} name(s).`;
+        d.updated.forEach(u => {
+          const el = document.querySelector(`[data-catalog-tcin="${u.tcin}"] .catalog-row-name`);
+          if (el) el.textContent = u.name;
+          const item = catalogData.find(p => p.tcin === u.tcin);
+          if (item) item.name = u.name;
+        });
+      } else {
+        status.textContent = d.message || 'No updates.';
+      }
+    } catch(e) {
+      status.textContent = 'Error: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ══════════════════════════════════════════════
+  //  SSE — TARGET
+  // ══════════════════════════════════════════════
+  let targetSSE = null;
+
+  function connectTargetSSE() {
+    if (targetSSE) targetSSE.close();
+    targetSSE = new EventSource('/api/stream');
+
+    targetSSE.onopen = () => {
+      const conn = document.getElementById('target-conn');
+      if (conn) conn.innerHTML = '<span class="dot dot-green"></span> Target live';
+    };
+
+    targetSSE.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        switch (msg.type) {
+          case 'api_cycle_complete':
+            handleTargetCycle(msg);
+            break;
+          case 'activity_log':
+            if (msg.data) {
+              prependLog('target-log', msg.data.time_str || msg.data.time || '', msg.data.message || '');
+            }
+            break;
+          case 'purchase_status':
+            if (msg.data && msg.data.tcin) {
+              if (!targetProducts[msg.data.tcin]) targetProducts[msg.data.tcin] = {priority:999};
+              targetProducts[msg.data.tcin].state = msg.data.status || 'MONITORING';
+              renderTargetTable();
+            }
+            break;
+          case 'heartbeat':
+          case 'connected':
+            break;
+          default:
+            break;
+        }
+      } catch(err) {
+        console.warn('Target SSE parse error:', err);
+      }
+    };
+
+    targetSSE.onerror = () => {
+      const conn = document.getElementById('target-conn');
+      if (conn) conn.innerHTML = '<span class="dot dot-yellow"></span> Target reconnecting…';
+      setTimeout(connectTargetSSE, 5000);
+    };
+  }
+
+  // ══════════════════════════════════════════════
+  //  SSE — WALMART
+  // ══════════════════════════════════════════════
+  let walmartSSE = null;
+
+  function connectWalmartSSE() {
+    if (walmartSSE) walmartSSE.close();
+    walmartSSE = new EventSource('/walmart/api/stream');
+
+    walmartSSE.onopen = () => {
+      const conn = document.getElementById('walmart-conn');
+      if (conn) conn.innerHTML = '<span class="dot dot-green"></span> Walmart live';
+    };
+
+    walmartSSE.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'activity' && msg.data) {
+          prependLog('walmart-log', msg.data.time || '', msg.data.message || '');
+          // Refresh Walmart table on purchase-related activity
+          if (/purchased|success|order|state|PURCHASING|MONITORING/i.test(msg.data.message || '')) {
+            loadWalmartStatus();
+          }
+        }
+      } catch(err) {
+        console.warn('Walmart SSE parse error:', err);
+      }
+    };
+
+    walmartSSE.onerror = () => {
+      const conn = document.getElementById('walmart-conn');
+      if (conn) conn.innerHTML = '<span class="dot dot-yellow"></span> Walmart reconnecting…';
+      setTimeout(connectWalmartSSE, 5000);
+    };
+  }
+
+  // ══════════════════════════════════════════════
+  //  INIT
+  // ══════════════════════════════════════════════
+  (async function init() {
+    // Load initial data for both retailers + catalog
+    await Promise.allSettled([
+      loadTargetStatus(),
+      loadWalmartStatus(),
+      loadCatalog()
+    ]);
+
+    // Start SSE streams
+    connectTargetSSE();
+    connectWalmartSSE();
+
+    // Poll Walmart status every 15s (its SSE only sends activity, not state changes)
+    setInterval(loadWalmartStatus, 15000);
+  })();
+</script>
+</body>
+</html>

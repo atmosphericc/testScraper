@@ -359,24 +359,61 @@ class WalmartPurchaseExecutor:
         self._status_cb("[PURCHASE] On checkout page")
         return True
 
+    async def _select_delivery_option(self):
+        """Ensure Delivery (not Pickup/Drive-up) is selected if a fulfillment choice is shown."""
+        try:
+            delivery_radio = await self._find_element([
+                'input[id*="shipping"][type="radio"]',
+                'label:has-text("Delivery") input[type="radio"]',
+                'label:has-text("Ship") input[type="radio"]',
+                'button:has-text("Delivery")',
+            ], timeout=3000)
+            if delivery_radio:
+                await delivery_radio.click()
+                await asyncio.sleep(0.5)
+                self._status_cb("[PURCHASE] Delivery option selected")
+        except Exception:
+            pass  # no fulfillment choice shown — already past this step
+
     async def _confirm_shipping(self):
         """
-        Walmart checkout pre-fills the saved address. We just need to continue.
-        Click any "Continue" or "Deliver to this address" button if present.
+        Walmart checkout has 3 steps: address → payment → review.
+        Loop through all intermediate steps until Place Order is visible.
         """
-        await asyncio.sleep(1.5)
-        try:
-            continue_btn = await self._find_element([
-                'button:has-text("Continue")',
-                'button:has-text("Deliver here")',
-                'button:has-text("Use this address")',
-            ], timeout=4000)
+        # First ensure delivery (not pickup) is selected
+        await self._select_delivery_option()
+
+        CONTINUE_SELECTORS = [
+            'button:has-text("Continue")',
+            'button:has-text("Deliver here")',
+            'button:has-text("Use this address")',
+            'button:has-text("Continue to payment")',
+            'button:has-text("Review your order")',
+            'button:has-text("Deliver to this address")',
+        ]
+
+        MAX_STEPS = 6
+        for step_num in range(MAX_STEPS):
+            await asyncio.sleep(1.5)
+
+            # If Place Order button is now visible, we're on the review step — done
+            place_order_visible = await self._find_element(PLACE_ORDER_SELECTORS, timeout=2000)
+            if place_order_visible:
+                self._status_cb(f"[PURCHASE] Reached review step after {step_num} Continue click(s)")
+                return
+
+            # Click the next Continue/advance button
+            continue_btn = await self._find_element(CONTINUE_SELECTORS, timeout=4000)
             if continue_btn:
                 await continue_btn.click()
-                await asyncio.sleep(1.5)
-                self._status_cb("[PURCHASE] Shipping confirmed")
-        except Exception:
-            pass  # no continue button needed — already past shipping step
+                self._status_cb(f"[PURCHASE] Continue clicked (step {step_num + 1})")
+            else:
+                # No Continue and no Place Order — checkout stalled
+                self._status_cb("[PURCHASE] No Continue or Place Order button found — checkout may be stalled")
+                await self._screenshot("checkout_stalled")
+                break
+
+        self._status_cb("[PURCHASE] Checkout step advancement complete")
 
     async def _enter_cvv_if_needed(self):
         """Enter CVV if the payment page requires it."""

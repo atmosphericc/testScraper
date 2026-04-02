@@ -2,10 +2,59 @@
   "products": [
     {
       "item_id": "15042474261",
-      "name": "Pokemon Trading Card Games Scarlet & Violet 9 Journey Together Booster Bundle",
+      "name": "Pokemon TCG Scarlet & Violet 9 Journey Together Booster Bundle",
       "enabled": true,
-      "max_price": 35.00,
+      "max_price": null,
+      "priority": 1,
       "url": "https://www.walmart.com/ip/x/15042474261"
+    },
+    {
+      "item_id": "19012610850",
+      "name": "Pokemon TCG Mega Evolution Ascended Heroes First Partners Deluxe Pin Collection",
+      "enabled": true,
+      "max_price": null,
+      "priority": 2,
+      "url": "https://www.walmart.com/ip/x/19012610850"
+    },
+    {
+      "item_id": "13816151308",
+      "name": "Pokemon TCG Prismatic Evolutions Elite Trainer Box (ETB)",
+      "enabled": true,
+      "max_price": null,
+      "priority": 3,
+      "url": "https://www.walmart.com/ip/x/13816151308"
+    },
+    {
+      "item_id": "19402160990",
+      "name": "Pokemon TCG Mega Evolution Perfect Order Elite Trainer Box",
+      "enabled": true,
+      "max_price": null,
+      "priority": 4,
+      "url": "https://www.walmart.com/ip/x/19402160990"
+    },
+    {
+      "item_id": "19380764160",
+      "name": "Pokemon TCG Mega Evolution Perfect Order Booster Bundle",
+      "enabled": true,
+      "max_price": null,
+      "priority": 5,
+      "url": "https://www.walmart.com/ip/x/19380764160"
+    },
+    {
+      "item_id": "19283656289",
+      "name": "Pokemon TCG First Partner Illustration Collection Series 1",
+      "enabled": true,
+      "max_price": null,
+      "priority": 6,
+      "url": "https://www.walmart.com/ip/x/19283656289"
+    },
+    {
+      "item_id": "19009204107",
+      "name": "Pokemon TCG Mega Evolution 2.5 Ascended Heroes Premium Poster Collection",
+      "enabled": true,
+      "max_price": null,
+      "priority": 7,
+      "url": "https://www.walmart.com/ip/x/19009204107"
     }
   ]
 }

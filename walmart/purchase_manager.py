@@ -70,6 +70,7 @@ class WalmartPurchaseManager:
         # State
         self._lock = threading.Lock()
         self._state: dict[str, str] = {}   # item_id → PurchaseState
+        self._in_stock_ids: set[str] = set()  # items currently known in-stock
         self._consecutive_failures = 0
         self._circuit_open_until: float = 0.0
         self._cooldown_until: dict[str, float] = {}
@@ -176,6 +177,10 @@ class WalmartPurchaseManager:
             logger.debug("[MANAGER] Skipping purchase — not logged in")
             return
 
+        # Track which items are currently in-stock for priority selection
+        with self._lock:
+            self._in_stock_ids.add(item_id)
+
         with self._lock:
             current_state = self._state.get(item_id, PurchaseState.IDLE)
             if current_state in (PurchaseState.PURCHASING, PurchaseState.IN_QUEUE,
@@ -206,8 +211,37 @@ class WalmartPurchaseManager:
         self._log_activity(f"In-stock signal: {name} @ ${price}")
         logger.info("[MANAGER] In-stock signal for %s — scheduling purchase", item_id)
 
-        # Find the product URL
+        # Priority selection: if a higher-priority product is also in-stock and
+        # not in a terminal/active state, buy that one instead.
         products = get_enabled_products()
+        skip_states = (PurchaseState.PURCHASING, PurchaseState.SUCCESS, PurchaseState.IN_QUEUE)
+        with self._lock:
+            current_states = dict(self._state)
+            in_stock_ids = set(self._in_stock_ids) if hasattr(self, '_in_stock_ids') else {item_id}
+        in_stock_ids.add(item_id)  # always include the triggered item
+
+        eligible = [
+            p for p in products
+            if p["item_id"] in in_stock_ids
+            and current_states.get(p["item_id"]) not in skip_states
+        ]
+        if eligible:
+            best = min(eligible, key=lambda p: p.get("priority", 999))
+            if best["item_id"] != item_id:
+                logger.info(
+                    "[MANAGER] Priority override: purchasing %s (priority %s) instead of %s",
+                    best["item_id"], best.get("priority", "?"), item_id,
+                )
+                self._log_activity(
+                    f"Priority override: buying {best.get('name', best['item_id'])} "
+                    f"(priority {best.get('priority', '?')}) over {name}"
+                )
+                item_id = best["item_id"]
+                name = best.get("name", item_id)
+                # Mark the override target as PURCHASING
+                with self._lock:
+                    self._state[item_id] = PurchaseState.PURCHASING
+
         item_url = f"https://www.walmart.com/ip/x/{item_id}"
         for p in products:
             if p["item_id"] == item_id:
@@ -386,6 +420,7 @@ class WalmartPurchaseManager:
             product_status.append({
                 "item_id": iid,
                 "name": p.get("name", "Unknown"),
+                "priority": p.get("priority", 999),
                 "state": states.get(iid, PurchaseState.MONITORING),
             })
 

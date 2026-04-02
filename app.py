@@ -23,12 +23,16 @@ import sys
 import ctypes
 from waitress import serve
 
-# Prevent system from sleeping while the app is running (Windows only).
+# Prevent system from sleeping while the app is running (Windows + macOS).
 import platform
+_caffeinate_proc = None
 if platform.system() == "Windows":
     _ES_CONTINUOUS      = 0x80000000
     _ES_SYSTEM_REQUIRED = 0x00000001
     ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED)
+elif platform.system() == "Darwin":
+    import subprocess as _subprocess
+    _caffeinate_proc = _subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
 
 # Import our bulletproof modules
 from src.monitoring import StockMonitor
@@ -3391,8 +3395,16 @@ def api_set_manual_stock_data():
             'timestamp': datetime.now().isoformat()
         }), 500
 
+@app.route('/dashboard')
+def unified_dashboard():
+    """Unified single-page dashboard — all retailers in one tab-based view."""
+    return render_template('unified_dashboard.html')
+
+
 def _release_sleep_lock():
-    ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+    if platform.system() == "Windows":
+        ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)
+    # macOS: caffeinate exits automatically when the parent PID exits
 
 atexit.register(_release_sleep_lock)
 

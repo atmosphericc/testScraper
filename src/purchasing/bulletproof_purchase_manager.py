@@ -1365,12 +1365,19 @@ class BulletproofPurchaseManager:
                 # Fallback to stock_data order
                 product_priority_order = list(stock_data.keys())
 
-            # BUG FIX #2: Sort stock_data by priority order
+            # Sort stock_data by explicit priority field (lower number = higher priority)
+            # Falls back to config list order if priority field is missing
+            priority_map = {}
+            try:
+                for i, p in enumerate(products_list):
+                    if 'tcin' in p:
+                        # Use the priority field if present, otherwise use list position
+                        priority_map[p['tcin']] = p.get('priority', i + 1)
+            except Exception:
+                pass
+
             def get_priority_index(tcin):
-                try:
-                    return product_priority_order.index(tcin)
-                except ValueError:
-                    return 999999  # Unknown products go to end
+                return priority_map.get(tcin, 999999)
 
             sorted_tcins = sorted(stock_data.keys(), key=get_priority_index)
 

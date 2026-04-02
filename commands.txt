@@ -1,0 +1,163 @@
+================================================================
+  AIO BOT — COMMANDS REFERENCE
+  Last updated: 2026-04-02
+================================================================
+
+----------------------------------------------------------------
+  HOW TO RUN
+----------------------------------------------------------------
+
+  python unified_app.py
+  Unified dashboard  →  http://localhost:5000/dashboard    ← USE THIS
+
+----------------------------------------------------------------
+  SESSION SETUP (do this before first run)
+----------------------------------------------------------------
+
+  Target login:
+    python relogin.py
+    → Opens browser, log in manually, saves to nodriver-profile/ + target.json
+    → Re-run when Target session expires
+
+  Walmart login:
+    python walmart_relogin.py
+    → Opens browser, log in manually, saves to walmart-profile/cookies.json
+    → Re-run when Walmart session expires
+
+----------------------------------------------------------------
+  DEBUGGING / ONE-SHOT CHECKS
+----------------------------------------------------------------
+
+  Check Walmart stock (all configured SKUs):
+    python -m walmart.stock_monitor
+
+  Check Target stock (all configured TCINs):
+    python app.py   (starts full server, check dashboard)
+
+  Standalone Walmart only:
+    python -m walmart.walmart_app  → http://localhost:5001/
+
+  Standalone Target only:
+    python app.py                  → http://localhost:5001/
+
+----------------------------------------------------------------
+  ADDING PRODUCTS
+----------------------------------------------------------------
+
+  Target:
+    → Use dashboard at http://localhost:5000/dashboard (Product Catalog tab)
+    → Or edit config/product_config.json directly
+    → Field: "tcin" (8-10 digit Target item number from URL)
+
+  Walmart:
+    → Use dashboard at http://localhost:5000/dashboard (Walmart tab)
+    → Or edit walmart/walmart_config.json directly
+    → Field: "item_id" (numeric ID from walmart.com/ip/.../XXXXXXXXX)
+    → Example: walmart.com/ip/some-product/15042474261 → item_id = 15042474261
+
+----------------------------------------------------------------
+  SET THESE ENV VARS BEFORE RUNNING
+----------------------------------------------------------------
+
+  Mac (Terminal):
+    export WALMART_EMAIL="your@email.com"
+    export WALMART_PASSWORD="yourpassword"
+    export WALMART_CVV="123"
+    export TARGET_CVV="123"
+    export CHECKOUT_MODE="TEST"           # change to PRODUCTION when ready
+    export FINAL_PURCHASE="NO"            # change to YES to actually buy
+
+  Windows (PowerShell):
+    $env:WALMART_EMAIL    = "your@email.com"
+    $env:WALMART_PASSWORD = "yourpassword"
+    $env:WALMART_CVV      = "123"
+    $env:TARGET_CVV       = "123"
+    $env:CHECKOUT_MODE    = "TEST"
+    $env:FINAL_PURCHASE   = "NO"
+
+----------------------------------------------------------------
+  SAFETY CHECKLIST — before going LIVE
+----------------------------------------------------------------
+
+  1. Set CHECKOUT_MODE=PRODUCTION
+  2. Set FINAL_PURCHASE=YES
+  3. Set WALMART_CVV and TARGET_CVV to your actual card CVVs
+  4. Confirm saved shipping address on Target.com and Walmart.com
+  5. Confirm saved payment method on both accounts
+  6. Run relogin.py + walmart_relogin.py to ensure fresh sessions
+  7. Make sure the computer WON'T sleep (unified_app handles this,
+     but double-check System Settings → Displays/Energy on Mac,
+     or Power & Sleep on Windows)
+
+----------------------------------------------------------------
+  API ENDPOINTS (while unified_app.py is running)
+----------------------------------------------------------------
+
+  -- Unified --
+  GET  http://localhost:5000/dashboard               unified tab dashboard
+
+  -- Target --
+  GET  http://localhost:5000/api/status              state JSON
+  GET  http://localhost:5000/api/stream              SSE live feed
+  POST http://localhost:5000/api/test/enable         enable test mode
+  POST http://localhost:5000/api/test/disable        live mode
+  GET  http://localhost:5000/health                  health check
+  GET  http://localhost:5000/metrics                 performance metrics
+
+  -- Walmart --
+  GET  http://localhost:5000/walmart/api/status      state JSON
+  GET  http://localhost:5000/walmart/api/stream      SSE live feed
+  POST http://localhost:5000/walmart/api/test/enable enable test mode
+  POST http://localhost:5000/walmart/api/test/disable live mode
+  GET  http://localhost:5000/walmart/health          health check
+
+----------------------------------------------------------------
+  FILE LOCATIONS
+----------------------------------------------------------------
+
+  Entry point:         unified_app.py
+  Target logic:        src/
+  Walmart logic:       walmart/
+  Best Buy (stub):     best_buy/
+  Costco (stub):       costco/
+  Pokemon Ctr (stub):  pokemon_center/
+
+  Key scripts:
+    relogin.py              Target manual login / session save
+    walmart_relogin.py      Walmart manual login / session save
+
+  Dashboards:          dashboard/templates/
+    unified_dashboard.html   ← current main dashboard
+
+  Config / products:
+    config/product_config.json     Target TCINs + priority
+    walmart/walmart_config.json    Walmart item IDs + priority
+    config/proxyIps.json           50 proxies (shared by both)
+
+  Sessions:
+    nodriver-profile/    Target browser profile
+    target.json          Target saved cookies
+    walmart-profile/     Walmart browser profile + cookies.json
+
+  Logs:
+    logs/                Target logs + purchase states
+    walmart/logs/        Walmart screenshots
+
+----------------------------------------------------------------
+  RETAILER STATUS
+----------------------------------------------------------------
+
+  Target        → ACTIVE  — stock monitoring + checkout implemented
+  Walmart       → ACTIVE  — staggered proxy monitoring + checkout implemented
+  Best Buy      → STUB    (architecture ready, not implemented)
+  Costco        → STUB    (architecture ready, not implemented)
+  Pokemon Ctr   → STUB    (lowest priority, most anti-bot)
+
+----------------------------------------------------------------
+  GIT
+----------------------------------------------------------------
+
+  Branch: bugFix
+  Run: git add -A && git commit -m "your message"   to save
+
+================================================================

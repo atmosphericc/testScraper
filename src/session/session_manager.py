@@ -167,14 +167,19 @@ class SessionManager:
             print(f"[SESSION_INIT] Cookies persist via Chrome profile automatically!")
             print(f"[SESSION_INIT] UNDETECTED CHROME MODE - no automation detection!")
 
-            self.browser = await uc.start(
+            import platform as _platform
+            _config = uc.Config(
                 user_data_dir=str(self.user_data_dir.resolve()),
                 headless=False,
-                browser_args=[
-                    '--window-size=1920,1080',
-                ],
-                sandbox=True,
+                browser_args=['--window-size=1920,1080'],
+                # sandbox=True causes "Failed to connect to browser" on macOS
+                sandbox=_platform.system() != "Darwin",
+                # Increase connection retry window — macOS Chrome startup takes ~3-4s
+                # but the default timeout (0.25s × 10 tries = 2.5s) expires too fast.
+                browser_connection_timeout=1.0,
+                browser_connection_max_tries=30,
             )
+            self.browser = await uc.start(_config)
 
             self.logger.info("[OK] nodriver browser launched successfully")
             print("[SESSION_INIT] Browser launched - STEALTH MODE ACTIVE!")
@@ -1206,6 +1211,18 @@ class SessionManager:
             age = datetime.now() - self.last_validation
             if age > timedelta(minutes=10):
                 return False
+
+        # Check if the underlying WebSocket connection is still alive
+        try:
+            tab = getattr(self, '_active_tab', None)
+            if tab:
+                ws = getattr(tab, '_ws', None) or getattr(tab, 'websocket', None)
+                if ws and getattr(ws, 'closed', False):
+                    self.logger.warning("[HEALTH] WebSocket is closed - session unhealthy")
+                    self.session_active = False
+                    return False
+        except Exception:
+            pass
 
         return True
 

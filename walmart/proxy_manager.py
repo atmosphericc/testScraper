@@ -92,12 +92,12 @@ class ProxyManager:
         all_proxies = _load_proxies()
         total = len(all_proxies)
 
-        # Split: first N go to checkout pool, rest to monitor pool
+        # All proxies are available for monitoring (staggered workers each own one).
+        # A separate sticky subset is reserved for checkout sessions.
         checkout_count = min(CHECKOUT_PROXY_POOL_SIZE, total)
-        monitor_count = min(MONITOR_PROXY_POOL_SIZE, total - checkout_count)
 
-        self._checkout_proxies: list[str] = all_proxies[:checkout_count]
-        self._monitor_proxies: list[str] = all_proxies[checkout_count:checkout_count + monitor_count]
+        self._monitor_proxies: list[str] = all_proxies          # all 50
+        self._checkout_proxies: list[str] = all_proxies[:checkout_count]  # first 12
 
         logger.info(
             f"[PROXY] Monitor pool: {len(self._monitor_proxies)} | "

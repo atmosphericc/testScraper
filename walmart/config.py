@@ -32,18 +32,13 @@ WALMART_CHECKOUT_URL = "https://www.walmart.com/checkout"
 WALMART_ACCOUNT_URL = "https://www.walmart.com/account"
 
 # ---------------------------------------------------------------------------
-# Stock monitoring
+# Proxy pool sizes
 # ---------------------------------------------------------------------------
 
-CHECK_INTERVAL_MIN = 10   # seconds
-CHECK_INTERVAL_MAX = 20   # seconds — jitter applied between min and max
-
-# ---------------------------------------------------------------------------
-# Proxy pool sizes (out of 50 total proxies)
-# ---------------------------------------------------------------------------
-
-MONITOR_PROXY_POOL_SIZE = 38    # rotating, used for stock API calls
+# All proxies are used for monitoring (one worker per proxy, staggered).
+# A subset is reserved sticky for checkout sessions.
 CHECKOUT_PROXY_POOL_SIZE = 12   # sticky, one proxy per checkout session
+MONITOR_PROXY_POOL_SIZE = 50    # kept for reference — actual value = all loaded proxies
 
 PROXY_COOLDOWN_SECONDS = 300    # bench a proxy for 5 min after 403/429
 PROXY_ERROR_RATE_THRESHOLD = 0.10  # bench if error rate > 10% over last 100 reqs
