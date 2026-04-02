@@ -398,23 +398,38 @@ class PurchaseExecutor:
             except Exception as e:
                 print(f"[INTERCEPTOR:{label}] continue_request failed (req_id={req_id}): {e}")
 
-        try:
-            await tab.send(cdp.fetch.enable(
-                patterns=[
-                    cdp.fetch.RequestPattern(
-                        url_pattern='*carts.target.com*',
-                        request_stage=cdp.fetch.RequestStage.REQUEST
-                    ),
-                    cdp.fetch.RequestPattern(
-                        url_pattern='*web_checkouts/v1/checkout*',
-                        request_stage=cdp.fetch.RequestStage.RESPONSE
-                    ),
-                ]
-            ))
-            print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE")
-        except Exception as e:
-            print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() FAILED: {e}")
-            return
+        _cdp_enable_attempts = 3
+        for _attempt in range(1, _cdp_enable_attempts + 1):
+            try:
+                await tab.send(cdp.fetch.enable(
+                    patterns=[
+                        cdp.fetch.RequestPattern(
+                            url_pattern='*carts.target.com*',
+                            request_stage=cdp.fetch.RequestStage.REQUEST
+                        ),
+                        cdp.fetch.RequestPattern(
+                            url_pattern='*web_checkouts/v1/checkout*',
+                            request_stage=cdp.fetch.RequestStage.RESPONSE
+                        ),
+                    ]
+                ))
+                print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt {_attempt})")
+                break
+            except Exception as e:
+                print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() FAILED (attempt {_attempt}/{_cdp_enable_attempts}): {e}")
+                if _attempt < _cdp_enable_attempts:
+                    await asyncio.sleep(1.5)
+                else:
+                    import traceback as _tb
+                    _tb.print_exc()
+                    import os as _os, datetime as _dt
+                    try:
+                        _os.makedirs('logs', exist_ok=True)
+                        with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                            _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CDP] cdp.fetch.enable() failed after {_cdp_enable_attempts} attempts ({label}): {e}\n{_tb.format_exc()}\n")
+                    except Exception:
+                        pass
+                    return
 
         if cdp.fetch not in tab.enabled_domains:
             tab.enabled_domains.append(cdp.fetch)
@@ -530,6 +545,19 @@ class PurchaseExecutor:
                     raise Exception("Browser not available")
                 tab = browser.tabs[0]
 
+            # Log auth cookie state before purchase — helps diagnose 401s
+            try:
+                _cookies = await tab.send(cdp.storage.get_cookies())
+                _auth_names = [c.name for c in _cookies if 'target' in str(getattr(c, 'domain', '')).lower()
+                               and any(k in c.name.lower() for k in ['access', 'session', 'auth', 'token', 'guest', 'uid', 'tealeaf', 'cart'])]
+                print(f"[AUTH_CHECK] Target auth-related cookies present: {_auth_names}")
+                import os as _os, datetime as _dt
+                _os.makedirs('logs', exist_ok=True)
+                with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [AUTH_CHECK] Purchase start for {tcin} — auth cookies: {_auth_names} — url={tab.url}\n")
+            except Exception:
+                pass
+
             # Set up CDP interceptor BEFORE navigating — always re-run to clear stale
             # handlers from previous purchase cycles before the new navigation starts
             await self._setup_cdp_fetch_interceptor(tab, persistent=False)
@@ -557,7 +585,7 @@ class PurchaseExecutor:
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
             headers_age = time.time() - self._cached_cart_headers_ts
-            use_cached = bool(self._cached_cart_headers) and headers_age < 180  # 3-min TTL
+            use_cached = bool(self._cached_cart_headers) and headers_age < 90  # 90s TTL (Shape tokens rotate ~every 2min)
             # Strip Cookie and Referer from cached headers.
             # Cookie: credentials:'include' sends live cookies automatically; a stale cached
             #         Cookie header overrides them and breaks auth.
@@ -576,7 +604,7 @@ class PurchaseExecutor:
                 print(f"[PURCHASE] Injecting Shape headers (age={headers_age:.0f}s): "
                       f"{list(cached_shape_only.keys())}")
             elif self._cached_cart_headers:
-                print(f"[PURCHASE] Shape headers STALE (age={headers_age:.0f}s > 180s) — sending fetch WITHOUT Shape headers")
+                print(f"[PURCHASE] Shape headers STALE (age={headers_age:.0f}s > 90s) — sending fetch WITHOUT Shape headers")
             else:
                 print(f"[PURCHASE] No Shape headers cached yet — warmup tab may not have captured yet")
             print(f"[PURCHASE] Firing ATC fetch (t={time.time()-start_time:.2f}s)")
@@ -622,6 +650,13 @@ class PurchaseExecutor:
             # Classify the failure for better diagnostics
             if atc_status == 403 and ('<html' in atc_body.lower() or '<!doctype' in atc_body.lower()):
                 print(f"[PURCHASE] ATC fetch blocked by Shape Security (403 HTML) (t={time.time()-start_time:.2f}s)")
+                try:
+                    import os as _os, datetime as _dt
+                    _os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [SHAPE_BLOCK] ATC 403 Shape Security block — url={tab.url} headers_age={headers_age:.0f}s shape_headers_present={use_cached}\nResponse body: {atc_body}\n\n")
+                except Exception:
+                    pass
             elif atc_status in (422, 409) and 'OUT_OF_STOCK' in atc_body.upper():
                 print(f"[PURCHASE] ATC fetch: item OOS at cart API ({atc_status}) (t={time.time()-start_time:.2f}s)")
             elif atc_status not in (200, 201):
@@ -699,6 +734,13 @@ class PurchaseExecutor:
                             print(f"[PURCHASE] ATC fetch retry still 401 — falling through to button click")
                         else:
                             print(f"[PURCHASE] ATC fetch retry failed ({retry_status}) body={retry_body!r}")
+                        try:
+                            import os as _os, datetime as _dt
+                            _os.makedirs('logs', exist_ok=True)
+                            with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                                _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ATC_RETRY_FAIL] status={retry_status} url={tab.url}\nBody: {retry_body}\n\n")
+                        except Exception:
+                            pass
                         cart_confirmed = False
                 else:
                     print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
@@ -831,8 +873,18 @@ class PurchaseExecutor:
                         print("[PURCHASE] ATC failed: 'something went wrong' on page")
                     else:
                         print("[PURCHASE] ATC failed: unknown page state")
-                except Exception:
-                    pass
+                    import os as _os, datetime as _dt
+                    _os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ATC_FAIL] page_state={page_msg} url={tab.url}\n")
+                except Exception as _diag_e:
+                    import os as _os, datetime as _dt
+                    try:
+                        _os.makedirs('logs', exist_ok=True)
+                        with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                            _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ATC_FAIL] Diagnosis eval failed: {_diag_e}\n")
+                    except Exception:
+                        pass
                 try:
                     await tab.get("https://www.target.com/cart")
                     await self._clear_cart(tab)
@@ -971,8 +1023,18 @@ class PurchaseExecutor:
                             print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
                         else:
                             print(f"[PURCHASE] DIAGNOSIS: Unknown failure — url={url_now}")
-                except Exception:
-                    pass
+                    import os as _os, datetime as _dt
+                    _os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CHECKOUT_FAIL] url={url_now} reject_key={self._checkout_reject_reason or 'none'}\n")
+                except Exception as _diag_e:
+                    import os as _os, datetime as _dt
+                    try:
+                        _os.makedirs('logs', exist_ok=True)
+                        with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                            _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CHECKOUT_FAIL] Diagnosis eval failed: {_diag_e}\n")
+                    except Exception:
+                        pass
                 print(f"[PURCHASE] Checkout failed, clearing cart and waiting...")
                 try:
                     await tab.get("https://www.target.com/cart")
@@ -1033,10 +1095,24 @@ class PurchaseExecutor:
 
         except Exception as e:
             execution_time = time.time() - start_time
+            import traceback as _tb
+            _tb_str = _tb.format_exc()
+            failure_reason = f"{type(e).__name__}: {str(e)}"
             print(f"[ERROR] Purchase failed for {tcin}: {e}")
+            print(_tb_str)
+
+            # Write full traceback to error_log.txt so it's available for diagnosis
+            try:
+                import os as _os, datetime as _dt
+                _os.makedirs('logs', exist_ok=True)
+                with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [PURCHASE] Purchase failed for {tcin}: {failure_reason}\n{_tb_str}\n")
+            except Exception:
+                pass
 
             self._notify_status(tcin, 'failed', {
                 'error': str(e),
+                'failure_reason': failure_reason,
                 'execution_time': execution_time,
                 'timestamp': datetime.now().isoformat()
             })
@@ -1108,6 +1184,16 @@ class PurchaseExecutor:
                 pass
             await asyncio.sleep(0.05)
         print(f"[READY] ATC button not ready after {timeout}s")
+        await self._take_debug_screenshot(tab, "atc_button_not_ready")
+        try:
+            dom_snap = await tab.evaluate("(document.body && document.body.innerHTML.slice(0,2000) || '')")
+            url_now = tab.url
+            import os as _os, datetime as _dt
+            _os.makedirs('logs', exist_ok=True)
+            with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ATC_READY] Button not ready after {timeout}s — url={url_now}\nDOM: {dom_snap}\n\n")
+        except Exception:
+            pass
         return False
 
     async def _fix_auth_cookie_domains(self, tab):
@@ -1175,6 +1261,16 @@ class PurchaseExecutor:
                 pass
             await asyncio.sleep(0.05)
         print(f"[CART_SIGNAL] No signal within {timeout}s")
+        await self._take_debug_screenshot(tab, "cart_signal_timeout")
+        try:
+            dom_snap = await tab.evaluate("(document.body && document.body.innerHTML.slice(0,2000) || '')")
+            url_now = tab.url
+            import os as _os, datetime as _dt
+            _os.makedirs('logs', exist_ok=True)
+            with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CART_SIGNAL] No cart signal within {timeout}s — url={url_now}\nDOM: {dom_snap}\n\n")
+        except Exception:
+            pass
         return False
 
     async def _dismiss_error_flyout(self, tab) -> bool:
@@ -1643,11 +1739,23 @@ class PurchaseExecutor:
     # -------------------------------------------------------------------------
 
     async def _take_debug_screenshot(self, tab, reason: str) -> Optional[str]:
-        """Take debug screenshot for troubleshooting"""
+        """Take debug screenshot for troubleshooting and log path + URL to error_log.txt"""
         try:
+            import os as _os
+            _os.makedirs('logs/screenshots', exist_ok=True)
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            screenshot_path = f"logs/debug_{reason}_{timestamp}.png"
+            screenshot_path = f"logs/screenshots/debug_{reason}_{timestamp}.png"
             await self._screenshot(tab, screenshot_path)
+            try:
+                url_now = tab.url
+            except Exception:
+                url_now = 'unknown'
+            try:
+                _os.makedirs('logs', exist_ok=True)
+                with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [SCREENSHOT] {reason} — url={url_now} — saved: {screenshot_path}\n")
+            except Exception:
+                pass
             return screenshot_path
         except Exception:
             return None
@@ -2705,10 +2813,16 @@ class PurchaseExecutor:
             return await self._place_order(tab)
 
         except Exception as e:
+            import traceback as _tb
+            _tb_str = _tb.format_exc()
             print(f"[PAYMENT] Payment completion error: {e}")
+            print(_tb_str)
+            await self._take_debug_screenshot(tab, "payment_error")
             try:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                await self._screenshot(tab, f"logs/payment_error_{timestamp}.png")
+                import os as _os, datetime as _dt
+                _os.makedirs('logs', exist_ok=True)
+                with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [PAYMENT_ERROR] {type(e).__name__}: {e} — url={tab.url}\n{_tb_str}\n")
             except Exception:
                 pass
             return False

@@ -1030,8 +1030,15 @@ class BulletproofPurchaseManager:
 
             except Exception as e:
                 print(f"[PURCHASE] [ERROR] Real purchase failed for {tcin}: {e}")
-                import traceback
+                import traceback, os as _os, datetime as _dt
+                _tb_str = traceback.format_exc()
                 traceback.print_exc()
+                try:
+                    _os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [PURCHASE_THREAD] Real purchase failed for {tcin}: {type(e).__name__}: {e}\n{_tb_str}\n")
+                except Exception:
+                    pass
                 # Mark as failed
                 failed_result = {
                     'success': False,
