@@ -81,8 +81,8 @@ QUEUE_TIMEOUT = 1800        # 30 minutes — abandon if not passed through
 CHECKOUT_MODE = os.environ.get("CHECKOUT_MODE", "TEST")
 FINAL_PURCHASE = os.environ.get("FINAL_PURCHASE", "NO")
 
-# CVV for saved card — override via environment variable
-CARD_CVV = os.environ.get("WALMART_CVV", "")
+# CVV for saved card — set this directly (same pattern as Target's purchase_executor.py)
+CARD_CVV = "229"
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ def get_final_purchase() -> str:
 
 
 def get_card_cvv() -> str:
-    return os.environ.get("WALMART_CVV", "")
+    return CARD_CVV
 
 # Circuit breaker: pause purchase attempts for this many seconds after N failures
 CIRCUIT_BREAKER_FAILURES = 3

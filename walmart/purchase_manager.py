@@ -89,10 +89,10 @@ class WalmartPurchaseManager:
     # Startup / shutdown
     # ------------------------------------------------------------------
 
-    async def start(self, email: str, password: str):
+    async def start(self):
         """
         Start the Walmart bot:
-          1. Launch browser, restore/login session
+          1. Launch browser, restore session cookies from walmart_relogin.py
           2. Warm session on configured products
           3. Start stock monitor
         """
@@ -109,24 +109,19 @@ class WalmartPurchaseManager:
         # Start browser session (includes a 3s network-stack warm-up internally)
         await self._session.start()
 
-        # Validate or perform login
+        # Validate session using saved cookies from walmart_relogin.py
         session_ok = await self._session.validate_session()
         if not session_ok:
-            self._status_cb("[MANAGER] Logging in to Walmart...")
-            login_ok = await self._session.login(email, password)
-            if not login_ok:
-                self._status_cb(
-                    "[MANAGER] Login failed — stock monitor will still run but "
-                    "purchases will not be attempted. Check WALMART_EMAIL / WALMART_PASSWORD."
-                )
-                logger.error("[MANAGER] Login failed — running in monitor-only mode")
-                # Still start the monitor so we can see stock status in the dashboard,
-                # but set a flag so _on_in_stock_signal skips purchase attempts.
-                self._login_ok = False
-                await self._session.harvest_now()
-                self._session.start_harvester(self._loop)
-                self._monitor.start()
-                return
+            self._status_cb(
+                "[MANAGER] Session invalid — run walmart_relogin.py to refresh cookies. "
+                "Running in monitor-only mode."
+            )
+            logger.warning("[MANAGER] Session invalid — monitor-only mode. Run walmart_relogin.py.")
+            self._login_ok = False
+            await self._session.harvest_now()
+            self._session.start_harvester(self._loop)
+            self._monitor.start()
+            return
         self._login_ok = True
 
         # Warm session on products

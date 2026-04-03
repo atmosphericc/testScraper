@@ -32,6 +32,7 @@ from .config import (
     WALMART_CART_URL,
     WALMART_CHECKOUT_URL,
     LOGS_DIR,
+    get_card_cvv,
 )
 from .queue_handler import QueueHandler
 
@@ -204,7 +205,7 @@ class WalmartPurchaseExecutor:
             # TEST MODE — stop here (re-read env vars at purchase time so test/live toggle works)
             checkout_mode = os.environ.get("CHECKOUT_MODE", "TEST")
             final_purchase = os.environ.get("FINAL_PURCHASE", "NO")
-            card_cvv = os.environ.get("WALMART_CVV", "")
+            card_cvv = get_card_cvv()
 
             if checkout_mode != "PRODUCTION":
                 await self._screenshot(f"test_mode_stop_{item_id}")
@@ -241,7 +242,7 @@ class WalmartPurchaseExecutor:
 
     async def _navigate(self, url: str):
         self._status_cb(f"[PURCHASE] Navigating to {url}")
-        await self._page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATE_TIMEOUT)
+        await self._page.get(url)
         await asyncio.sleep(1.5)
 
     async def _add_to_cart(self, item_id: str) -> bool:
@@ -252,7 +253,7 @@ class WalmartPurchaseExecutor:
             logger.warning("[PURCHASE] ATC button not found for %s", item_id)
             return False
 
-        await btn.scroll_into_view_if_needed()
+        await btn.scroll_into_view()
         await self._human_delay(200, 400)
         await btn.click()
         self._status_cb("[PURCHASE] Clicked Add to Cart")
@@ -277,7 +278,7 @@ class WalmartPurchaseExecutor:
 
     async def _verify_cart(self, item_id: str) -> bool:
         self._status_cb("[PURCHASE] Verifying cart...")
-        await self._page.goto(WALMART_CART_URL, wait_until="domcontentloaded", timeout=20000)
+        await self._page.get(WALMART_CART_URL)
         await asyncio.sleep(1.5)
 
         # Check for at least one cart item
@@ -296,14 +297,14 @@ class WalmartPurchaseExecutor:
             logger.warning("[PURCHASE] Cart selector check failed — query raised exception")
 
         # Fallback: check URL still on cart and no "empty cart" text
-        if "cart" not in self._page.url:
+        if "cart" not in (self._page.url or ""):
             logger.warning("[PURCHASE] Cart URL check failed — current URL: %s", self._page.url)
             await self._screenshot(f"empty_cart_{item_id}")
             logger.warning("[PURCHASE] Cart appears empty after ATC")
             return False
         try:
-            body = await self._page.locator("body").inner_text(timeout=3000)
-            if "your cart is empty" not in body.lower():
+            body = await self._page.evaluate("document.body.innerText")
+            if body and "your cart is empty" not in body.lower():
                 return True
         except Exception:
             pass
@@ -321,17 +322,21 @@ class WalmartPurchaseExecutor:
             return False
 
         await btn.click()
-        # Wait for checkout page to load
-        try:
-            await self._page.wait_for_url("**/checkout**", timeout=15000)
-        except Exception:
+
+        # Wait for checkout URL — polling loop (zendriver has no wait_for_url)
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if "checkout" in (self._page.url or ""):
+                break
+            await asyncio.sleep(0.3)
+        else:
             await asyncio.sleep(3)
 
         # Verify checkout page actually loaded — look for checkout-specific content
         checkout_loaded = False
         try:
-            body = await self._page.locator("body").inner_text(timeout=3000)
-            body_lower = body.lower()
+            body = await self._page.evaluate("document.body.innerText")
+            body_lower = body.lower() if body else ""
             checkout_keywords = ("payment", "shipping", "order summary")
             if any(kw in body_lower for kw in checkout_keywords):
                 checkout_loaded = True
@@ -417,18 +422,18 @@ class WalmartPurchaseExecutor:
 
     async def _enter_cvv_if_needed(self):
         """Enter CVV if the payment page requires it."""
-        card_cvv = os.environ.get("WALMART_CVV", "")  # re-read at call time
+        card_cvv = get_card_cvv()
         if not card_cvv:
             return
         try:
             cvv_input = await self._find_element(CVV_SELECTORS, timeout=4000)
             if cvv_input:
-                await cvv_input.fill(card_cvv)
+                await cvv_input.set_value(card_cvv)
                 self._status_cb("[PURCHASE] CVV entered")
                 await self._human_delay(300, 600)
                 # Verify CVV was accepted by reading it back
                 try:
-                    filled_value = await cvv_input.input_value()
+                    filled_value = await cvv_input.apply("(e) => e.value")
                     if filled_value != card_cvv:
                         logger.warning(
                             "[PURCHASE] CVV verification failed — filled '%s' but read back '%s'",
@@ -454,16 +459,19 @@ class WalmartPurchaseExecutor:
         await btn.click()
         self._status_cb("[PURCHASE] Place Order clicked — waiting for confirmation...")
 
-        # Wait for order confirmation page
+        # Wait for order confirmation page — polling loop (zendriver has no wait_for_url)
         await asyncio.sleep(0.05)  # CDP flush yield
         pre_click_url = self._page.url
-        try:
-            # Regex matches Walmart's known confirmation URL patterns
-            await self._page.wait_for_url(
-                re.compile(r".*(order-confirmation|order/confirm|thank-you|order-placed).*"),
-                timeout=20000,
-            )
-        except Exception:
+
+        # Regex matches Walmart's known confirmation URL patterns
+        _confirm_pattern = re.compile(r".*(order-confirmation|order/confirm|thank-you|order-placed).*")
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline:
+            current_url = self._page.url or ""
+            if _confirm_pattern.match(current_url):
+                break
+            await asyncio.sleep(0.3)
+        else:
             # URL didn't match confirmation pattern — wait and check if page changed at all
             await asyncio.sleep(3)
             if self._page.url == pre_click_url:
@@ -479,7 +487,7 @@ class WalmartPurchaseExecutor:
             try:
                 el = await self._page.query_selector(selector)
                 if el:
-                    text = await el.inner_text()
+                    text = await el.apply("(e) => e.innerText")
                     if text:
                         # Try to pull just the numeric order ID
                         numbers = re.findall(r'\d{6,}', text)
@@ -490,7 +498,7 @@ class WalmartPurchaseExecutor:
                 continue
 
         # Check URL for order ID
-        url = self._page.url
+        url = self._page.url or ""
         if "order-confirmation" in url or "order" in url:
             numbers = re.findall(r'\d{7,}', url)
             if numbers:
@@ -509,7 +517,7 @@ class WalmartPurchaseExecutor:
         Navigates back to item_url afterward so the caller stays on the product page.
         """
         try:
-            await self._page.goto(WALMART_CART_URL, wait_until="domcontentloaded", timeout=NAVIGATE_TIMEOUT)
+            await self._page.get(WALMART_CART_URL)
             await asyncio.sleep(1)
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',
@@ -526,7 +534,7 @@ class WalmartPurchaseExecutor:
             # Always navigate back to the product page
             if item_url:
                 try:
-                    await self._page.goto(item_url, wait_until="domcontentloaded", timeout=NAVIGATE_TIMEOUT)
+                    await self._page.get(item_url)
                     await asyncio.sleep(1)
                 except Exception as e:
                     logger.warning("[PURCHASE] Could not navigate back to item URL after cart check: %s", e)
@@ -539,7 +547,7 @@ class WalmartPurchaseExecutor:
         Navigates to cart, checks item count, and clicks each remove button.
         """
         try:
-            await self._page.goto(WALMART_CART_URL, wait_until="domcontentloaded", timeout=NAVIGATE_TIMEOUT)
+            await self._page.get(WALMART_CART_URL)
             await asyncio.sleep(1)
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',
@@ -552,9 +560,14 @@ class WalmartPurchaseExecutor:
             self._status_cb(f"[PURCHASE] Clearing {len(cart_items)} existing cart item(s)")
             remove_btns = await self._query_selector_all([
                 'button[data-automation-id="remove-item"]',
-                'button:has-text("Remove")',
                 'button[aria-label*="Remove"]',
             ])
+            # Also try XPath for "Remove" text buttons
+            try:
+                xpath_btns = await self._page.xpath('//button[contains(., "Remove")]')
+                remove_btns.extend(xpath_btns)
+            except Exception:
+                pass
             for btn in remove_btns:
                 try:
                     await btn.click()
@@ -571,13 +584,18 @@ class WalmartPurchaseExecutor:
         Silently ignores errors — best-effort cleanup only.
         """
         try:
-            await self._page.goto(WALMART_CART_URL, wait_until="domcontentloaded", timeout=NAVIGATE_TIMEOUT)
+            await self._page.get(WALMART_CART_URL)
             await asyncio.sleep(1)
             remove_btns = await self._query_selector_all([
                 'button[data-automation-id="remove-item"]',
-                'button:has-text("Remove")',
                 'button[aria-label*="Remove"]',
             ])
+            # Also try XPath for "Remove" text buttons
+            try:
+                xpath_btns = await self._page.xpath('//button[contains(., "Remove")]')
+                remove_btns.extend(xpath_btns)
+            except Exception:
+                pass
             if not remove_btns:
                 return
             logger.info("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
@@ -598,29 +616,53 @@ class WalmartPurchaseExecutor:
         Returns True if ATC succeeded via this method.
         """
         self._status_cb("[PURCHASE] Trying Frequently Bought Together ATC bypass...")
-        fbt_selectors = [
+        fbt_css_selectors = [
             f'[data-item-id="{item_id}"] button[data-automation-id="add-to-cart-btn"]',
-            f'[data-item-id="{item_id}"] button:has-text("Add to cart")',
             '[data-testid="frequently-bought-together"] button[data-automation-id="add-to-cart-btn"]',
-            '[data-testid="frequently-bought-together"] button:has-text("Add to cart")',
             '.frequently-bought-together button[data-automation-id="add-to-cart-btn"]',
-            '.frequently-bought-together button:has-text("Add to cart")',
-            '[class*="frequently-bought"] button:has-text("Add to cart")',
-            '[class*="FBT"] button:has-text("Add to cart")',
         ]
-        for selector in fbt_selectors:
+        fbt_xpath_selectors = [
+            f'//*[@data-item-id="{item_id}"]//button[contains(., "Add to cart")]',
+            '//*[@data-testid="frequently-bought-together"]//button[contains(., "Add to cart")]',
+            '//*[contains(@class, "frequently-bought")]//button[contains(., "Add to cart")]',
+            '//*[contains(@class, "FBT")]//button[contains(., "Add to cart")]',
+        ]
+
+        # Try CSS selectors first
+        for selector in fbt_css_selectors:
             try:
                 btn = await self._page.query_selector(selector)
-                if btn and await btn.is_visible():
-                    await btn.scroll_into_view_if_needed()
-                    await asyncio.sleep(0.2)
-                    await btn.click()
-                    self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
-                    logger.info("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
-                    await asyncio.sleep(2)
-                    return True
+                if btn:
+                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)")
+                    if is_vis:
+                        await btn.scroll_into_view()
+                        await asyncio.sleep(0.2)
+                        await btn.click()
+                        self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
+                        logger.info("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
+                        await asyncio.sleep(2)
+                        return True
             except Exception:
                 continue
+
+        # Try XPath selectors
+        for xpath in fbt_xpath_selectors:
+            try:
+                els = await self._page.xpath(xpath)
+                if els:
+                    btn = els[0]
+                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)")
+                    if is_vis:
+                        await btn.scroll_into_view()
+                        await asyncio.sleep(0.2)
+                        await btn.click()
+                        self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
+                        logger.info("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
+                        await asyncio.sleep(2)
+                        return True
+            except Exception:
+                continue
+
         logger.debug("[PURCHASE] No FBT ATC button found for %s", item_id)
         return False
 
@@ -632,19 +674,36 @@ class WalmartPurchaseExecutor:
     async def _find_element(self, selectors: list[str], timeout: int = 5000):
         """Try each selector in order, return the first matching visible element.
 
-        Notes:
-        - Patchright does not support comma-separated selectors in wait_for_selector.
-        - `state=` parameter is not supported in patchright's wait_for_selector;
-          visibility is checked separately via is_visible().
+        Handles both plain CSS selectors and :has-text() patterns by converting
+        the latter to XPath queries (zendriver does not support :has-text()).
         """
         if not selectors:
             return None
-        per_selector_timeout = max(500, timeout // len(selectors))
+        per_selector_timeout = max(0.5, (timeout / len(selectors)) / 1000)  # seconds
         for selector in selectors:
             try:
-                el = await self._page.wait_for_selector(selector, timeout=per_selector_timeout)
-                if el and await el.is_visible():
-                    return el
+                if ':has-text(' in selector:
+                    # Convert to XPath
+                    import re as _re
+                    m = _re.match(r'(\w+):has-text\("([^"]+)"\)', selector)
+                    if m:
+                        tag, text = m.group(1), m.group(2)
+                        xpath = f'//{tag}[contains(., "{text}")]'
+                        deadline = time.monotonic() + per_selector_timeout
+                        while time.monotonic() < deadline:
+                            els = await self._page.xpath(xpath)
+                            if els:
+                                el = els[0]
+                                vis = await el.apply("(e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)")
+                                if vis:
+                                    return el
+                            await asyncio.sleep(0.1)
+                else:
+                    el = await self._page.wait_for(selector=selector, timeout=per_selector_timeout)
+                    if el:
+                        vis = await el.apply("(e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)")
+                        if vis:
+                            return el
             except Exception:
                 continue
         return None
@@ -652,14 +711,11 @@ class WalmartPurchaseExecutor:
     async def _query_selector_all(self, selectors: list[str]) -> list:
         """
         Query for all elements matching any selector in the list.
-        Patchright does not support comma-separated selectors in query_selector_all,
-        so we query each selector individually and deduplicate by DOM node identity.
+        Queries each selector individually and deduplicates by DOM node identity.
 
-        Deduplication uses evaluate() to get each element's outerHTML hash as a
-        proxy for node identity — two Python ElementHandle objects wrapping the
+        Deduplication uses apply() to get each element's outerHTML hash as a
+        proxy for node identity — two Python element objects wrapping the
         same DOM node will produce identical outerHTML strings at that moment.
-        We use the first selector's results as primary, skipping elements already
-        collected from prior selectors.
         """
         seen_keys = set()
         results = []
@@ -672,10 +728,10 @@ class WalmartPurchaseExecutor:
                     try:
                         # Build a stable identity key from immutable DOM attributes.
                         # outerHTML slice is reliable for attached nodes; for detached
-                        # nodes or evaluate failures we fall back to a unique counter
+                        # nodes or apply failures we fall back to a unique counter
                         # so each element still gets added exactly once per selector.
-                        node_key = await el.evaluate(
-                            "el => (el.getAttribute('data-automation-id') || "
+                        node_key = await el.apply(
+                            "(el) => (el.getAttribute('data-automation-id') || "
                             "el.getAttribute('data-testid') || "
                             "el.id || el.outerHTML.slice(0, 200))"
                         )
@@ -697,7 +753,7 @@ class WalmartPurchaseExecutor:
         try:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = f"{LOGS_DIR}/{label}_{ts}.png"
-            await self._page.screenshot(path=path, full_page=False)
+            await self._page.save_screenshot(filename=path)
             logger.debug("[PURCHASE] Screenshot: %s", path)
         except Exception as e:
             logger.warning("[PURCHASE] Screenshot failed: %s", e)

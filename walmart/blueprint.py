@@ -76,15 +76,6 @@ def start_manager():
     """Launch the Walmart SelfHealingAgent in a background thread."""
     global _manager
 
-    email = os.environ.get("WALMART_EMAIL", "")
-    password = os.environ.get("WALMART_PASSWORD", "")
-
-    if not email or not password:
-        logger.warning(
-            "[WALMART] WALMART_EMAIL or WALMART_PASSWORD not set — bot will start "
-            "but purchases will fail. Set env vars and restart."
-        )
-
     _manager = WalmartPurchaseManager(status_callback=_status_callback)
     manager_loop = asyncio.new_event_loop()
 
@@ -92,7 +83,7 @@ def start_manager():
         asyncio.set_event_loop(manager_loop)
         try:
             manager_loop.run_until_complete(
-                _manager.start(email=email, password=password)
+                _manager.start()
             )
         except Exception:
             logger.exception("[WALMART] Manager start() failed — bot will not run")

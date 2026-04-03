@@ -1,8 +1,8 @@
 """
-Walmart session manager — persistent Patchright browser session.
+Walmart session manager — persistent zendriver browser session.
 
 Handles:
-  - Browser startup with stealth config (Patchright + real Chrome channel)
+  - Browser startup with stealth config (zendriver + real Chrome)
   - Login flow
   - Cookie persistence to disk
   - Session validation
@@ -78,7 +78,7 @@ _cookie_file_lock = threading.Lock()
 
 class WalmartSessionManager:
     """
-    Manages a single persistent Patchright browser session for Walmart checkout.
+    Manages a single persistent zendriver browser session for Walmart checkout.
 
     Typical lifecycle:
         session = WalmartSessionManager()
@@ -92,10 +92,7 @@ class WalmartSessionManager:
 
     def __init__(self, status_callback: Optional[Callable[[str], None]] = None):
         self._status_cb = status_callback or (lambda msg: None)
-        self._zd_browser = None   # zendriver — launches real Chrome
-        self._pw_browser = None   # patchright — connects via CDP
-        self._playwright = None
-        self._context = None
+        self._browser = None
         self._page = None
         self._cookies_path = Path(COOKIES_FILE)
         self._profile_dir = Path(PROFILE_DIR)
@@ -116,92 +113,55 @@ class WalmartSessionManager:
     # ------------------------------------------------------------------
 
     async def start(self):
-        """Launch Chrome via zendriver, then connect Patchright over CDP."""
+        """Launch real Chrome via zendriver."""
         try:
             import zendriver as uc
         except ImportError:
-            raise RuntimeError("zendriver is not installed. Run: pip install zendriver")
-        try:
-            from patchright.async_api import async_playwright
-        except ImportError:
             raise RuntimeError(
-                "patchright is not installed. Run: pip install patchright && "
-                "python -m patchright install chromium"
+                "zendriver is not installed. Run: pip install zendriver"
             )
 
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         Path("walmart/logs").mkdir(parents=True, exist_ok=True)
 
-        self._status_cb("[SESSION] Starting Chrome via zendriver...")
+        self._status_cb("[SESSION] Starting browser...")
 
         try:
-            zd_config = uc.Config(
-                user_data_dir=str(self._profile_dir),
+            config = uc.Config(
                 headless=False,
                 browser_args=[
                     "--window-size=1920,1080",
-                    "--disable-blink-features=AutomationControlled",
                 ],
                 browser_connection_timeout=1.0,
                 browser_connection_max_tries=30,
             )
-            self._zd_browser = await uc.start(zd_config)
-            port = self._zd_browser.config.port
+            self._browser = await uc.start(config)
 
-            self._status_cb(f"[SESSION] Chrome started (port {port}), connecting Patchright...")
+            # Navigate to Walmart — browser.get() is reliable and returns the tab
+            self._page = await self._browser.get("https://www.walmart.com")
+            await self._page.activate()
 
-            # Give Chrome's network stack time to fully initialize
-            await asyncio.sleep(3)
-
-            self._playwright = await async_playwright().start()
-            self._pw_browser = await self._playwright.chromium.connect_over_cdp(
-                f"http://localhost:{port}"
+            # Inject stealth script via CDP so it runs on every subsequent document
+            from zendriver import cdp
+            await self._page.send(
+                cdp.page.add_script_to_evaluate_on_new_document(source=_STEALTH_SCRIPT)
             )
 
-            # Grab the context Chrome already opened for the profile
-            contexts = self._pw_browser.contexts
-            if contexts:
-                self._context = contexts[0]
-            else:
-                self._context = await self._pw_browser.new_context(
-                    viewport={"width": 1920, "height": 1080},
-                    locale="en-US",
-                    timezone_id="America/New_York",
-                )
-
-            await self._context.add_init_script(_STEALTH_SCRIPT)
-
-            pages = self._context.pages
-            self._page = pages[0] if pages else await self._context.new_page()
-
-            # Load saved cookies from walmart_relogin.py into the session
             await self._load_cookies()
+            await self._handle_blocked_page()
 
         except Exception as e:
-            for attr in ('_page', '_context'):
-                setattr(self, attr, None)
-            if self._pw_browser:
+            self._page = None
+            if self._browser:
                 try:
-                    await self._pw_browser.close()
+                    await self._browser.stop()
                 except Exception:
                     pass
-                self._pw_browser = None
-            if self._playwright:
-                try:
-                    await self._playwright.stop()
-                except Exception:
-                    pass
-                self._playwright = None
-            if self._zd_browser:
-                try:
-                    await self._zd_browser.stop()
-                except Exception:
-                    pass
-                self._zd_browser = None
+                self._browser = None
             raise RuntimeError(f"[SESSION] Failed to start browser: {e}") from e
 
         self._status_cb("[SESSION] Browser ready")
-        logger.info("[SESSION] zendriver+Patchright CDP browser started")
+        logger.info("[SESSION] Browser started")
 
     async def stop(self):
         """Save cookies and close the browser."""
@@ -210,25 +170,12 @@ class WalmartSessionManager:
         except Exception:
             pass
         self._page = None
-        self._context = None
         try:
-            if self._pw_browser:
-                await self._pw_browser.close()
+            if self._browser:
+                await self._browser.stop()
         except Exception:
             pass
-        self._pw_browser = None
-        try:
-            if self._playwright:
-                await self._playwright.stop()
-        except Exception:
-            pass
-        self._playwright = None
-        try:
-            if self._zd_browser:
-                await self._zd_browser.stop()
-        except Exception:
-            pass
-        self._zd_browser = None
+        self._browser = None
         logger.info("[SESSION] Browser stopped")
 
     # ------------------------------------------------------------------
@@ -245,29 +192,27 @@ class WalmartSessionManager:
 
         self._status_cb("[SESSION] Logging in to Walmart...")
         try:
-            await self._page.goto(WALMART_LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            await self._page.get(WALMART_LOGIN_URL)
             await self._handle_blocked_page()
             await asyncio.sleep(2)
 
-            # Fill email — try selectors individually (patchright doesn't support
-            # comma-separated CSS selectors in wait_for_selector)
+            # Fill email — try selectors individually
             email_input = await self._find_input(
                 ['input[name="email"]', 'input[type="email"]', '#email'], timeout=10000
             )
             if not email_input:
                 self._status_cb("[SESSION] Could not find email field")
                 return False
-            await email_input.fill(email)
+            await email_input.set_value(email)
             await asyncio.sleep(0.5)
 
             # Walmart desktop login shows both email + password simultaneously.
             # Some mobile/variant pages show a "Continue" step — try it but don't fail.
             try:
-                continue_btn = self._page.locator(
-                    'button:has-text("Continue")'
-                ).first
-                await continue_btn.click(timeout=5000)
-                await asyncio.sleep(1.5)
+                els = await self._page.xpath('//button[contains(., "Continue")]')
+                if els:
+                    await els[0].click()
+                    await asyncio.sleep(1.5)
             except Exception:
                 pass  # Single-step form — no Continue button, that's normal
 
@@ -279,14 +224,21 @@ class WalmartSessionManager:
             if not password_input:
                 self._status_cb("[SESSION] Could not find password field")
                 return False
-            await password_input.fill(password)
+            await password_input.set_value(password)
             await asyncio.sleep(0.5)
 
             # Submit
-            sign_in_btn = self._page.locator(
-                'button:has-text("Sign In"), button:has-text("Log in"), button[type="submit"]'
-            ).first
-            await sign_in_btn.click()
+            sign_in = None
+            for xpath in ['//button[contains(., "Sign In")]', '//button[contains(., "Log in")]', '//button[@type="submit"]']:
+                try:
+                    els = await self._page.xpath(xpath)
+                    if els:
+                        sign_in = els[0]
+                        break
+                except Exception:
+                    continue
+            if sign_in:
+                await sign_in.click()
             await asyncio.sleep(3)
 
             # Verify login success — should no longer be on the login page.
@@ -336,7 +288,7 @@ class WalmartSessionManager:
             return False
 
         try:
-            await self._page.goto(WALMART_ACCOUNT_URL, wait_until="domcontentloaded", timeout=15000)
+            await self._page.get(WALMART_ACCOUNT_URL)
             await self._handle_blocked_page()
             await asyncio.sleep(1)
             from urllib.parse import urlparse
@@ -377,14 +329,14 @@ class WalmartSessionManager:
         for item_id in warm_ids:
             try:
                 url = f"https://www.walmart.com/ip/x/{item_id}"
-                await self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                await self._page.get(url)
                 await self._handle_blocked_page()
                 await asyncio.sleep(2.5)  # dwell time — mimics human browsing
 
                 # Capture the _px3 cookie timestamp
-                cookies = await self._context.cookies()
-                for c in cookies:
-                    if c["name"] == "_px3":
+                all_cookies = await self._browser.cookies.get_all()
+                for c in all_cookies:
+                    if c.name == "_px3":
                         self._px3_timestamp = time.monotonic()
                         logger.info("[SESSION] Fresh _px3 cookie obtained")
                         break
@@ -411,11 +363,11 @@ class WalmartSessionManager:
 
     async def harvest_now(self):
         """Immediately snapshot current browser cookies into the live store."""
-        if not self._context:
+        if not self._browser:
             return
         try:
-            cookies = await self._context.cookies()
-            cookie_dict = {c["name"]: c["value"] for c in cookies if "name" in c}
+            all_cookies = await self._browser.cookies.get_all()
+            cookie_dict = {c.name: c.value for c in all_cookies}
             with self._live_cookies_lock:
                 self._live_cookies = cookie_dict
                 self._live_cookies_timestamp = time.monotonic()
@@ -448,25 +400,21 @@ class WalmartSessionManager:
         while True:
             try:
                 await asyncio.sleep(HARVEST_INTERVAL)
-                if not self._context:
+                if not self._browser:
                     continue
 
                 # Navigate a low-traffic Walmart page to trigger fresh _px3
                 if self._page:
                     try:
-                        await self._page.goto(
-                            HARVEST_URL,
-                            wait_until="domcontentloaded",
-                            timeout=15000,
-                        )
+                        await self._page.get(HARVEST_URL)
                         await self._handle_blocked_page()
                         await asyncio.sleep(1.5)
                     except Exception as e:
                         logger.debug("[HARVESTER] Navigation error: %s", e)
 
-                # Extract all cookies from the browser context
-                cookies = await self._context.cookies()
-                cookie_dict = {c["name"]: c["value"] for c in cookies if "name" in c}
+                # Extract all cookies from the browser
+                all_cookies = await self._browser.cookies.get_all()
+                cookie_dict = {c.name: c.value for c in all_cookies}
 
                 with self._live_cookies_lock:
                     self._live_cookies = cookie_dict
@@ -515,10 +463,24 @@ class WalmartSessionManager:
 
     async def save_cookies(self):
         """Persist browser cookies to disk (thread-safe via module-level lock)."""
-        if not self._context:
+        if not self._browser:
             return
         try:
-            cookies = await self._context.cookies()
+            all_cookies = await self._browser.cookies.get_all()
+            # Serialize Cookie objects to dicts for JSON storage
+            cookies = [
+                {
+                    "name": c.name,
+                    "value": c.value,
+                    "domain": c.domain,
+                    "path": c.path,
+                    "secure": c.secure,
+                    "httpOnly": c.http_only,
+                    "sameSite": c.same_site,
+                    "expires": c.expires,
+                }
+                for c in all_cookies
+            ]
             self._cookies_path.parent.mkdir(parents=True, exist_ok=True)
             with _cookie_file_lock:
                 with open(self._cookies_path, "w") as f:
@@ -528,15 +490,15 @@ class WalmartSessionManager:
             logger.warning("[SESSION] Failed to save cookies: %s", e)
 
     async def _load_cookies(self):
-        """Restore cookies from disk into the browser context (thread-safe read)."""
+        """Restore cookies from disk into the browser via CDP (thread-safe read)."""
         try:
             with _cookie_file_lock:
                 with open(self._cookies_path, "r") as f:
                     cookies = json.load(f)
-            if cookies and self._context:
+            if cookies and self._page:
                 if not isinstance(cookies, list):
                     logger.warning(
-                        "[SESSION] Cookie file has unexpected format (not a list) — skipping add_cookies()"
+                        "[SESSION] Cookie file has unexpected format (not a list) — skipping load"
                     )
                 else:
                     valid_cookies = []
@@ -547,8 +509,24 @@ class WalmartSessionManager:
                             logger.warning(
                                 "[SESSION] Skipping malformed cookie entry (missing name/value): %s", c
                             )
-                    await self._context.add_cookies(valid_cookies)
-                    logger.info("[SESSION] Restored %d cookies from disk", len(valid_cookies))
+                    if valid_cookies:
+                        from zendriver import cdp
+                        await self._page.send(
+                            cdp.network.set_cookies(
+                                cookies=[
+                                    cdp.network.CookieParam(
+                                        name=c["name"],
+                                        value=c["value"],
+                                        domain=c.get("domain"),
+                                        path=c.get("path", "/"),
+                                        secure=c.get("secure", False),
+                                        http_only=c.get("httpOnly", False),
+                                    )
+                                    for c in valid_cookies
+                                ]
+                            )
+                        )
+                        logger.info("[SESSION] Restored %d cookies from disk", len(valid_cookies))
         except Exception as e:
             logger.warning("[SESSION] Failed to load cookies: %s", e)
 
@@ -557,15 +535,15 @@ class WalmartSessionManager:
     # ------------------------------------------------------------------
 
     def get_page(self):
-        """Return the active Patchright page object for use by purchase executor."""
+        """Return the active zendriver Tab object for use by purchase executor."""
         return self._page
 
     def get_context(self):
-        """Return the active browser context."""
-        return self._context
+        """Return the active browser (zendriver Browser)."""
+        return self._browser
 
     def is_ready(self) -> bool:
-        return self._page is not None and self._context is not None
+        return self._page is not None and self._browser is not None
 
     # ------------------------------------------------------------------
     # Blocked page / press-and-hold challenge handler
@@ -578,7 +556,7 @@ class WalmartSessionManager:
         completions and may reverse the bar if released early).
         Returns True once cleared, False if all attempts exhausted.
         """
-        if not self._page or "/blocked" not in self._page.url:
+        if not self._page or "/blocked" not in (self._page.url or ""):
             return True  # not on a blocked page
 
         logger.warning("[SESSION] /blocked page detected — attempting press-and-hold solve")
@@ -594,17 +572,19 @@ class WalmartSessionManager:
             "div[class*='challenge']",
         ]
 
+        from zendriver import cdp
+
         for attempt in range(1, max_attempts + 1):
-            if "/blocked" not in self._page.url:
+            if "/blocked" not in (self._page.url or ""):
                 break
 
             logger.info("[SESSION] Challenge attempt %d/%d", attempt, max_attempts)
 
-            # Fast element scan — 500ms per selector instead of 3s
+            # Fast element scan — 0.5s per selector instead of 3s
             target = None
             for sel in _HOLD_SELECTORS:
                 try:
-                    el = await self._page.wait_for_selector(sel, timeout=500)
+                    el = await self._page.wait_for(selector=sel, timeout=0.5)
                     if el:
                         target = el
                         break
@@ -618,10 +598,12 @@ class WalmartSessionManager:
 
             try:
                 # Scroll element into view so coordinates are in the visible viewport
-                await target.scroll_into_view_if_needed()
+                await target.scroll_into_view()
                 await asyncio.sleep(0.2)
 
-                box = await target.bounding_box()
+                box = await target.apply(
+                    "(e) => { const r = e.getBoundingClientRect(); return {x: r.left, y: r.top, width: r.width, height: r.height}; }"
+                )
                 if not box:
                     await asyncio.sleep(0.5)
                     continue
@@ -631,31 +613,48 @@ class WalmartSessionManager:
                 cy = box["y"] + box["height"] * random.uniform(0.45, 0.55)
 
                 # Approach from a nearby point to mimic human cursor travel
-                await self._page.mouse.move(
+                await self._page.mouse_move(
                     cx + random.uniform(-40, 40),
                     cy + random.uniform(-20, 20),
                     steps=12,
                 )
                 await asyncio.sleep(random.uniform(0.1, 0.25))
-                await self._page.mouse.move(cx, cy, steps=6)
+                await self._page.mouse_move(cx, cy, steps=6)
                 await asyncio.sleep(0.15)
-                await self._page.mouse.down()
+
+                # Mouse down via CDP
+                await self._page.send(cdp.input_.dispatch_mouse_event(
+                    type_="mousePressed",
+                    x=cx,
+                    y=cy,
+                    button=cdp.input_.MouseButton.LEFT,
+                    buttons=1,
+                    click_count=1,
+                ))
 
                 # Hold dynamically — make tiny micro-movements while holding
                 # so the mouse looks like a real human hand (slight tremor)
                 hold_start = time.monotonic()
                 while time.monotonic() - hold_start < 20.0:
-                    if "/blocked" not in self._page.url:
+                    if "/blocked" not in (self._page.url or ""):
                         break
                     # Small jitter every ~400ms
                     await asyncio.sleep(random.uniform(0.35, 0.45))
-                    if "/blocked" not in self._page.url:
+                    if "/blocked" not in (self._page.url or ""):
                         break
                     jx = cx + random.uniform(-2, 2)
                     jy = cy + random.uniform(-2, 2)
-                    await self._page.mouse.move(jx, jy, steps=2)
+                    await self._page.mouse_move(jx, jy, steps=2)
 
-                await self._page.mouse.up()
+                # Mouse up via CDP
+                await self._page.send(cdp.input_.dispatch_mouse_event(
+                    type_="mouseReleased",
+                    x=cx,
+                    y=cy,
+                    button=cdp.input_.MouseButton.LEFT,
+                    buttons=0,
+                    click_count=1,
+                ))
 
                 # Short settle — then loop immediately to catch "Try again" rounds
                 await asyncio.sleep(0.8)
@@ -663,12 +662,19 @@ class WalmartSessionManager:
             except Exception as e:
                 logger.warning("[SESSION] Mouse interaction error: %s", e)
                 try:
-                    await self._page.mouse.up()
+                    await self._page.send(cdp.input_.dispatch_mouse_event(
+                        type_="mouseReleased",
+                        x=0,
+                        y=0,
+                        button=cdp.input_.MouseButton.LEFT,
+                        buttons=0,
+                        click_count=1,
+                    ))
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
 
-        cleared = "/blocked" not in self._page.url
+        cleared = "/blocked" not in (self._page.url or "")
         if cleared:
             logger.info("[SESSION] /blocked challenge cleared")
             self._status_cb("[SESSION] Challenge solved — continuing")
@@ -678,14 +684,13 @@ class WalmartSessionManager:
         return cleared
 
     async def _find_input(self, selectors: list[str], timeout: int = 10000):
-        """Try each selector individually and return the first matching input element.
-        Patchright does not support comma-separated selectors in wait_for_selector."""
+        """Try each selector individually and return the first matching input element."""
         if not selectors:
             return None
-        per = max(500, timeout // len(selectors))
+        per = max(0.5, (timeout / len(selectors)) / 1000)
         for selector in selectors:
             try:
-                el = await self._page.wait_for_selector(selector, timeout=per)
+                el = await self._page.wait_for(selector=selector, timeout=per)
                 if el:
                     return el
             except Exception:

@@ -30,12 +30,17 @@ from .config import QUEUE_POLL_INTERVAL, QUEUE_TIMEOUT
 logger = logging.getLogger(__name__)
 
 # Button text patterns to click in order to JOIN the queue
+# Note: :has-text() is patchright-specific; we use XPath in _find_entry_button instead
 QUEUE_ENTRY_SELECTORS = [
-    'button:has-text("Hold my spot and Keep shopping")',
-    'button:has-text("Hold my spot")',
-    'button:has-text("Keep my spot")',
-    'button:has-text("Join the queue")',
-    'button:has-text("Get in line")',
+    'Hold my spot and Keep shopping',
+    'Hold my spot',
+    'Keep my spot',
+    'Join the queue',
+    'Get in line',
+]
+
+# CSS-only queue entry selectors (no text matching needed)
+QUEUE_ENTRY_CSS_SELECTORS = [
     '[data-automation-id*="queue-entry"]',
     '[data-automation-id*="hold-spot"]',
 ]
@@ -63,25 +68,26 @@ QUEUE_PASSTHROUGH_SIGNALS = [
     "complete your purchase",
 ]
 
-# Selectors for the "it's your turn" floating widget / button
-PASSTHROUGH_CLICK_SELECTORS = [
-    "button:has-text(\"It's your turn\")",
-    'button:has-text("Your turn")',
-    'button:has-text("Checkout now")',
-    'button:has-text("Time to checkout")',
-    'button:has-text("Complete your purchase")',
-    '[class*="queue"]:has-text("turn")',
-    '[class*="widget"]:has-text("turn")',
-    '[class*="notification"]:has-text("turn")',
-    '[class*="floating"]:has-text("turn")',
+# Text patterns for passthrough click buttons (used with XPath)
+PASSTHROUGH_CLICK_TEXTS = [
+    "It's your turn",
+    "Your turn",
+    "Checkout now",
+    "Time to checkout",
+    "Complete your purchase",
 ]
 
 # ATC button selectors — becoming active is the primary pass-through signal
 ATC_SELECTORS = [
     'button[data-automation-id="add-to-cart-btn"]',
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
-    'button:has-text("Add to cart")',
-    'button:has-text("Add to Cart")',
+    'button[data-automation-id="add-to-cart-btn"]',
+]
+
+# ATC button text patterns (used with XPath)
+ATC_XPATH_TEXTS = [
+    "Add to cart",
+    "Add to Cart",
 ]
 
 
@@ -125,8 +131,8 @@ class QueueHandler:
         the user on the /ip/ product URL and uses a page overlay, not a redirect.
         """
         try:
-            body_text = await self._page.locator("body").inner_text(timeout=3000)
-            body_lower = body_text.lower()
+            body_text = await self._page.evaluate("document.body.innerText")
+            body_lower = body_text.lower() if body_text else ""
 
             for signal in QUEUE_ACTIVE_SIGNALS:
                 if signal in body_lower:
@@ -157,7 +163,7 @@ class QueueHandler:
         try:
             self._status_cb("[QUEUE] Found 'Hold my spot' button — joining queue...")
             logger.info("[QUEUE] Clicking queue entry button")
-            await entry_btn.scroll_into_view_if_needed()
+            await entry_btn.scroll_into_view()
             await entry_btn.click()
             await asyncio.sleep(2)  # wait for queue overlay to update
 
@@ -247,7 +253,7 @@ class QueueHandler:
         """
         try:
             self._status_cb(f"[QUEUE] Navigating to enter queue: {item_url}")
-            await self._page.goto(item_url, wait_until="domcontentloaded", timeout=30000)
+            await self._page.get(item_url)
             await asyncio.sleep(2)
 
             # Try to join if the entry button is visible
@@ -268,22 +274,41 @@ class QueueHandler:
     async def _find_entry_button(self):
         """Find the 'Hold my spot' / queue entry button if visible on the page."""
         deadline = time.monotonic() + 5.0
-        for selector in QUEUE_ENTRY_SELECTORS:
+
+        # Try text-based XPath selectors first
+        for text in QUEUE_ENTRY_SELECTORS:
+            if time.monotonic() > deadline:
+                break
+            try:
+                els = await self._page.xpath(f'//button[contains(., "{text}")]')
+                if els:
+                    btn = els[0]
+                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                    if is_vis:
+                        return btn
+            except Exception:
+                continue
+
+        # Try CSS-only selectors (no text matching)
+        for selector in QUEUE_ENTRY_CSS_SELECTORS:
             if time.monotonic() > deadline:
                 break
             try:
                 btn = await self._page.query_selector(selector)
-                if btn and await btn.is_visible():
-                    return btn
+                if btn:
+                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                    if is_vis:
+                        return btn
             except Exception:
                 continue
+
         return None
 
     async def _confirm_in_queue(self) -> bool:
         """Check page text for confirmation that we are now in the queue."""
         try:
-            body_text = await self._page.locator("body").inner_text(timeout=3000)
-            body_lower = body_text.lower()
+            body_text = await self._page.evaluate("document.body.innerText")
+            body_lower = body_text.lower() if body_text else ""
             for signal in QUEUE_ACTIVE_SIGNALS:
                 if signal in body_lower:
                     return True
@@ -300,21 +325,41 @@ class QueueHandler:
         publicly documented, we use text-based matching and a JS fallback to
         find fixed/absolute positioned elements near the viewport bottom.
         """
-        # Try known text-based selectors first
-        for selector in PASSTHROUGH_CLICK_SELECTORS:
+        # Try known text-based XPath selectors first
+        for text in PASSTHROUGH_CLICK_TEXTS:
             try:
-                btn = await self._page.query_selector(selector)
-                if btn and await btn.is_visible():
-                    await btn.click()
-                    return True
+                els = await self._page.xpath(f'//button[contains(., "{text}")]')
+                if els:
+                    btn = els[0]
+                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                    if is_vis:
+                        await btn.click()
+                        return True
+            except Exception:
+                continue
+
+        # Try CSS class-based selectors with JS visibility check
+        for css_pattern in ['[class*="queue"]', '[class*="widget"]', '[class*="notification"]', '[class*="floating"]']:
+            try:
+                els = await self._page.query_selector_all(css_pattern)
+                for el in els:
+                    try:
+                        text = await el.apply("(e) => e.innerText")
+                        if text and "turn" in text.lower():
+                            is_vis = await el.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                            if is_vis:
+                                await el.click()
+                                return True
+                    except Exception:
+                        continue
             except Exception:
                 continue
 
         # Fallback: scan page text for passthrough signals, then look for any
         # clickable element near the bottom of viewport
         try:
-            body_text = await self._page.locator("body").inner_text(timeout=2000)
-            body_lower = body_text.lower()
+            body_text = await self._page.evaluate("document.body.innerText")
+            body_lower = body_text.lower() if body_text else ""
             has_passthrough_text = any(
                 signal in body_lower for signal in QUEUE_PASSTHROUGH_SIGNALS
             )
@@ -352,15 +397,34 @@ class QueueHandler:
         """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            # Try CSS selectors first
             for selector in ATC_SELECTORS:
                 try:
                     btn = await self._page.query_selector(selector)
-                    if btn and await btn.is_visible():
-                        disabled = await btn.get_attribute("disabled")
-                        aria_disabled = await btn.get_attribute("aria-disabled")
-                        if disabled is None and aria_disabled != "true":
-                            return True
+                    if btn:
+                        is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                        if is_vis:
+                            disabled = await btn.apply("(e) => e.getAttribute('disabled')")
+                            aria_disabled = await btn.apply("(e) => e.getAttribute('aria-disabled')")
+                            if disabled is None and aria_disabled != "true":
+                                return True
                 except Exception:
                     pass
+
+            # Try XPath text-based selectors
+            for text in ATC_XPATH_TEXTS:
+                try:
+                    els = await self._page.xpath(f'//button[contains(., "{text}")]')
+                    if els:
+                        btn = els[0]
+                        is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                        if is_vis:
+                            disabled = await btn.apply("(e) => e.getAttribute('disabled')")
+                            aria_disabled = await btn.apply("(e) => e.getAttribute('aria-disabled')")
+                            if disabled is None and aria_disabled != "true":
+                                return True
+                except Exception:
+                    pass
+
             await asyncio.sleep(0.5)
         return False
