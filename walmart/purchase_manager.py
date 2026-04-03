@@ -63,6 +63,7 @@ class WalmartPurchaseManager:
         self._session = WalmartSessionManager(status_callback=self._status_cb)
         self._monitor = WalmartStockMonitor(
             proxy_manager=self._proxy_manager,
+            session=self._session,
             on_in_stock=self._on_in_stock_signal,
             status_callback=self._status_cb,
         )
@@ -129,6 +130,8 @@ class WalmartPurchaseManager:
                 # Still start the monitor so we can see stock status in the dashboard,
                 # but set a flag so _on_in_stock_signal skips purchase attempts.
                 self._login_ok = False
+                await self._session.harvest_now()
+                self._session.start_harvester(asyncio.get_event_loop())
                 self._monitor.start()
                 return
         self._login_ok = True
@@ -139,6 +142,12 @@ class WalmartPurchaseManager:
             item_ids = [p["item_id"] for p in products]
             await self._session.warm_session(item_ids)
 
+        # Do an immediate cookie harvest so workers have valid cookies from the first check
+        await self._session.harvest_now()
+
+        # Start cookie harvester — keeps _px3 fresh for proxy workers every 30s
+        self._session.start_harvester(asyncio.get_event_loop())
+
         # Start stock monitor
         self._monitor.start()
         self._status_cb("[MANAGER] Walmart bot running — monitoring stock")
@@ -148,6 +157,7 @@ class WalmartPurchaseManager:
         """Gracefully stop the bot."""
         self._running = False
         self._monitor.stop()
+        self._session.stop_harvester()
         await self._session.stop()
         if self._loop and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -305,6 +315,8 @@ class WalmartPurchaseManager:
                 if not login_ok:
                     self._login_ok = False
                     raise RuntimeError("Browser restarted but re-login failed")
+                # Re-wire the new page into the monitor
+                self._monitor.set_page(self._session.get_page())
 
             # Re-warm session if _px3 is stale
             if self._session.needs_rewarm():

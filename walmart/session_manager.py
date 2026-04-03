@@ -61,6 +61,14 @@ class WalmartSessionManager:
         self._last_activity: float = time.monotonic()
         self._px3_timestamp: float = 0.0   # when we last saw a fresh _px3 cookie
 
+        # Shared live cookie store — harvester writes, proxy workers read
+        self._live_cookies: dict = {}
+        self._live_cookies_lock = threading.Lock()
+        self._live_cookies_timestamp: float = 0.0
+
+        # Harvester background task
+        self._harvester_task: Optional[asyncio.Task] = None
+
     # ------------------------------------------------------------------
     # Startup / shutdown
     # ------------------------------------------------------------------
@@ -327,6 +335,109 @@ class WalmartSessionManager:
     def needs_rewarm(self) -> bool:
         """True if the _px3 cookie is stale and we should warm before checkout."""
         return (time.monotonic() - self._px3_timestamp) > PX3_MAX_AGE_SECONDS
+
+    # ------------------------------------------------------------------
+    # Cookie harvester — keeps live cookies fresh for proxy workers
+    # ------------------------------------------------------------------
+
+    async def harvest_now(self):
+        """Immediately snapshot current browser cookies into the live store."""
+        if not self._context:
+            return
+        try:
+            cookies = await self._context.cookies()
+            cookie_dict = {c["name"]: c["value"] for c in cookies if "name" in c}
+            with self._live_cookies_lock:
+                self._live_cookies = cookie_dict
+                self._live_cookies_timestamp = time.monotonic()
+            if "_px3" in cookie_dict:
+                self._px3_timestamp = time.monotonic()
+            logger.info("[HARVESTER] Initial cookie snapshot: %d cookies", len(cookie_dict))
+        except Exception as e:
+            logger.warning("[HARVESTER] harvest_now failed: %s", e)
+
+    def start_harvester(self, loop: asyncio.AbstractEventLoop):
+        """Start the background cookie harvester on the given event loop."""
+        self._harvester_task = asyncio.run_coroutine_threadsafe(
+            self._harvester_loop(), loop
+        )
+
+    def stop_harvester(self):
+        if self._harvester_task:
+            self._harvester_task.cancel()
+            self._harvester_task = None
+
+    async def _harvester_loop(self):
+        """
+        Every 30s: navigate a Walmart page silently, extract all cookies,
+        and publish them to _live_cookies for proxy workers to consume.
+        _px3 expires in ~60s so 30s refresh keeps workers always valid.
+        """
+        HARVEST_INTERVAL = 30.0
+        HARVEST_URL = "https://www.walmart.com/cp/movies-tv-shows/4096640"  # quiet category page
+
+        while True:
+            try:
+                await asyncio.sleep(HARVEST_INTERVAL)
+                if not self._context:
+                    continue
+
+                # Navigate a low-traffic Walmart page to trigger fresh _px3
+                if self._page:
+                    try:
+                        await self._page.goto(
+                            HARVEST_URL,
+                            wait_until="domcontentloaded",
+                            timeout=15000,
+                        )
+                        await asyncio.sleep(1.5)
+                    except Exception as e:
+                        logger.debug("[HARVESTER] Navigation error: %s", e)
+
+                # Extract all cookies from the browser context
+                cookies = await self._context.cookies()
+                cookie_dict = {c["name"]: c["value"] for c in cookies if "name" in c}
+
+                with self._live_cookies_lock:
+                    self._live_cookies = cookie_dict
+                    self._live_cookies_timestamp = time.monotonic()
+
+                # Track _px3 freshness
+                if "_px3" in cookie_dict:
+                    self._px3_timestamp = time.monotonic()
+                    logger.debug("[HARVESTER] Fresh cookies harvested (%d total)", len(cookie_dict))
+                else:
+                    logger.warning("[HARVESTER] _px3 not found in harvested cookies")
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("[HARVESTER] Unexpected error: %s", e)
+
+    def get_monitoring_cookies(self) -> dict:
+        """
+        Return the latest harvested cookies for use by proxy workers.
+        Falls back to loading from disk if harvester hasn't run yet.
+        """
+        with self._live_cookies_lock:
+            if self._live_cookies:
+                return dict(self._live_cookies)
+
+        # Harvester hasn't run yet — load from disk as fallback
+        path = Path(COOKIES_FILE)
+        if not path.exists():
+            return {}
+        try:
+            with _cookie_file_lock:
+                with open(path, "r") as f:
+                    cookie_list = json.load(f)
+            if isinstance(cookie_list, list):
+                return {c["name"]: c["value"] for c in cookie_list if "name" in c}
+            if isinstance(cookie_list, dict):
+                return cookie_list
+        except Exception as e:
+            logger.warning("[SESSION] Could not load fallback cookies: %s", e)
+        return {}
 
     # ------------------------------------------------------------------
     # Cookie persistence

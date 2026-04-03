@@ -30,8 +30,12 @@ target_profile/
 playwright-profile/
 chrome_user_data/
 nodriver-profile/
+walmart-profile/
 logs/
+walmart/logs/
 target.json
+walmart-profile/cookies.json
+config/proxyIps.json
 .claude/
 
 .vscode/

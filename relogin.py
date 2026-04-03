@@ -62,11 +62,16 @@ async def inject_cookies(tab, cookies: list):
 async def relogin():
     os.makedirs(USER_DATA_DIR, exist_ok=True)
 
-    browser = await uc.start(
+    import platform as _platform
+    _config = uc.Config(
         user_data_dir=USER_DATA_DIR,
         headless=False,
         browser_args=['--window-size=1920,1080'],
+        sandbox=_platform.system() != "Darwin",
+        browser_connection_timeout=1.0,
+        browser_connection_max_tries=30,
     )
+    browser = await uc.start(_config)
 
     tab = browser.tabs[0] if browser.tabs else await browser.get("about:blank")
 
@@ -111,9 +116,14 @@ async def relogin():
     print("Exporting cookies...")
     cookies_list = []
     try:
-        cookies_raw = await tab.send(cdp.storage.get_cookies())
+        cookies_raw = await asyncio.wait_for(
+            tab.send(cdp.storage.get_cookies()),
+            timeout=10.0,
+        )
         print(f"Got {len(cookies_raw)} cookies")
         cookies_list = [cookie_to_dict(c) for c in cookies_raw]
+    except asyncio.TimeoutError:
+        print("Cookie export timed out — session is saved via Chrome profile, this is OK.")
     except Exception as e:
         print(f"Cookie export failed: {e}")
 

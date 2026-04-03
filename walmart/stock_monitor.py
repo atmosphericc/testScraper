@@ -1,10 +1,16 @@
 """
-Walmart stock monitor — staggered proxy worker architecture.
+Walmart stock monitor — staggered proxy worker architecture with live cookie harvesting.
 
-50 proxy workers, each offset by WORKER_CYCLE / n seconds at startup.
-Every worker independently checks all configured products every WORKER_CYCLE
-seconds. Net result: one full sweep every WORKER_CYCLE/n seconds (~0.3s with
-50 proxies), matching Target's monitoring rate.
+The browser session (WalmartSessionManager) runs a background harvester that
+refreshes Walmart cookies (_px3, bm_sv, auth) every 30s by navigating a real
+page. Proxy workers pull from this live cookie store so every request carries
+valid PerimeterX tokens.
+
+Architecture:
+  - 50 proxy workers, each staggered by WORKER_CYCLE / 50 seconds at startup
+  - Each worker checks all configured products every WORKER_CYCLE seconds
+  - Net result: each product checked ~3.3 times/second (50/15)
+  - Browser harvester refreshes cookies every 30s — well within _px3's ~60s TTL
 """
 
 import json
@@ -12,26 +18,43 @@ import logging
 import requests
 import threading
 import time
-from pathlib import Path
 from typing import Callable, Optional
 
 from .config import (
-    COOKIES_FILE,
+    GRAPHQL_HASH,
+    WALMART_SELLER_ID,
     get_enabled_products,
 )
 from .proxy_manager import ProxyManager
 
-from .stock_check import fetch_item, parse_item
-from .session_manager import _cookie_file_lock
-
 logger = logging.getLogger(__name__)
 
 # Each worker repeats every WORKER_CYCLE seconds.
-# With n workers staggered, effective sweep rate = n / WORKER_CYCLE checks/sec.
+# With 50 workers staggered: 50 / 15 = 3.3 checks/sec per product.
 WORKER_CYCLE = 15.0
 
-# How often each worker refreshes cookies from disk
-COOKIE_REFRESH_INTERVAL = 300
+HEADERS = {
+    "accept": "application/json",
+    "accept-language": "en-US",
+    "content-type": "application/json",
+    "x-o-bu": "WALMART-US",
+    "x-o-mart": "B2C",
+    "x-o-platform": "rweb",
+    "x-o-segment": "oaoh",
+    "x-apollo-operation-name": "ItemByIdBtf",
+    "x-o-gql-query": "query ItemByIdBtf",
+    "wm_mp": "true",
+    "calltype": "CLIENT",
+    "origin": "https://www.walmart.com",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "user-agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
 
 
 def _format_proxy(proxy_str: Optional[str]) -> Optional[dict]:
@@ -42,34 +65,57 @@ def _format_proxy(proxy_str: Optional[str]) -> Optional[dict]:
     return {"http": proxy_str, "https": proxy_str}
 
 
-def _load_cookies_from_disk() -> dict:
-    """Load session cookies from walmart-profile/cookies.json."""
-    path = Path(COOKIES_FILE)
-    if not path.exists():
-        return {}
-    try:
-        with _cookie_file_lock:
-            with open(path, "r") as f:
-                cookie_list = json.load(f)
-        if isinstance(cookie_list, list):
-            return {c["name"]: c["value"] for c in cookie_list if "name" in c}
-        if isinstance(cookie_list, dict):
-            return cookie_list
-    except Exception as e:
-        logger.warning("[MONITOR] Could not load cookies: %s", e)
-    return {}
+def _build_body(item_id: str) -> dict:
+    return {
+        "variables": {
+            "isMobile": False,
+            "layout": ["itemPageThreeGridDesktop2"],
+            "channel": "WWW",
+            "version": "v1",
+            "postProcessingVersion": 1,
+            "p13nCls": {
+                "pageId": item_id,
+                "skipPtcFetch": True,
+                "p13NCallType": "BTF",
+            },
+            "fetchP13N": True,
+            "fMrkDscrp": False,
+            "pageType": "ItemPageGlobalDesktop",
+            "fIdml": False,
+            "fRev": False,
+            "iId": item_id,
+            "bbe": True,
+            "fSId": True,
+            "eSb": True,
+            "enableDetailedBeacon": False,
+            "enableMultiSave": False,
+            "enableClickTrackingURL": False,
+            "eCc": True,
+            "fIdmlOrMrkDscrp": False,
+            "tenant": "WM_GLASS",
+            "epsv": True,
+            "enableRxDrugScheduleModal": False,
+            "enablePromotionMessages": False,
+            "enableSignInToSeePrice": False,
+            "enableOptimisticWeightUpdate": False,
+        }
+    }
 
 
 class WalmartStockMonitor:
     """
-    Staggered proxy worker stock monitor.
+    Staggered proxy worker stock monitor with live cookie harvesting.
 
-    Spawns one thread per proxy. Workers are offset at startup so they spread
-    evenly across WORKER_CYCLE seconds. Each worker checks all configured
-    products on every cycle using its assigned proxy.
+    Spawns one thread per proxy, staggered across WORKER_CYCLE seconds.
+    Each worker fetches fresh cookies from the session's live cookie store
+    (populated every 30s by the browser harvester) before each cycle.
 
     Usage:
-        monitor = WalmartStockMonitor(proxy_manager=pm, on_in_stock=cb)
+        monitor = WalmartStockMonitor(
+            proxy_manager=pm,
+            session=session_manager,
+            on_in_stock=cb,
+        )
         monitor.start()
         monitor.stop()
     """
@@ -77,10 +123,14 @@ class WalmartStockMonitor:
     def __init__(
         self,
         proxy_manager: Optional[ProxyManager] = None,
+        session=None,  # WalmartSessionManager — provides get_monitoring_cookies()
         on_in_stock: Optional[Callable[[str, Optional[str], str, Optional[float]], None]] = None,
         status_callback: Optional[Callable[[str], None]] = None,
+        # legacy param kept for compatibility
+        page=None,
     ):
         self._proxy_manager = proxy_manager
+        self._session = session
         self._on_in_stock = on_in_stock
         self._status_cb = status_callback or (lambda msg: None)
 
@@ -111,9 +161,7 @@ class WalmartStockMonitor:
             self._stop_event.clear()
 
         proxies = self._proxy_manager._monitor_proxies if self._proxy_manager else []
-
         if not proxies:
-            # No proxies — fall back to a single no-proxy worker
             logger.warning("[MONITOR] No monitor proxies — running single worker without proxy")
             proxies = [None]
 
@@ -132,8 +180,8 @@ class WalmartStockMonitor:
             self._worker_threads.append(t)
 
         rate = n / WORKER_CYCLE
-        logger.info("[MONITOR] %d workers started — %.1f sweeps/sec", n, rate)
-        self._status_cb(f"[MONITOR] {n} proxy workers started — {rate:.1f} sweeps/sec")
+        logger.info("[MONITOR] %d workers started — %.1f checks/sec per product", n, rate)
+        self._status_cb(f"[MONITOR] {n} proxy workers — {rate:.1f} checks/sec per product")
 
     def stop(self):
         with self._running_lock:
@@ -149,33 +197,31 @@ class WalmartStockMonitor:
         self._worker_threads = []
         logger.info("[MONITOR] Stock monitor stopped")
 
+    def set_page(self, page):
+        """No-op — kept for call-site compatibility."""
+        pass
+
     # ------------------------------------------------------------------
     # Worker
     # ------------------------------------------------------------------
 
     def _worker(self, proxy: Optional[str], initial_delay: float):
         """Single proxy worker — waits for stagger offset then loops every WORKER_CYCLE."""
-        # Stagger startup
         if initial_delay > 0:
             self._stop_event.wait(timeout=initial_delay)
             if self._stop_event.is_set():
                 return
 
-        cookies = _load_cookies_from_disk()
-        last_cookie_refresh = time.monotonic()
-
         while not self._stop_event.is_set():
             cycle_start = time.monotonic()
-
-            # Refresh cookies periodically
-            if cycle_start - last_cookie_refresh > COOKIE_REFRESH_INTERVAL:
-                cookies = _load_cookies_from_disk()
-                last_cookie_refresh = cycle_start
 
             # Respect global hash-error pause
             if time.monotonic() < self._hash_error_pause_until:
                 self._stop_event.wait(timeout=5)
                 continue
+
+            # Pull fresh cookies from the browser harvester
+            cookies = self._session.get_monitoring_cookies() if self._session else {}
 
             products = get_enabled_products()
             if products:
@@ -184,7 +230,6 @@ class WalmartStockMonitor:
                         return
                     self._check_one(p["item_id"], proxy, cookies, products)
 
-            # Sleep only the remainder of WORKER_CYCLE so checks don't drift
             elapsed = time.monotonic() - cycle_start
             remaining = max(0.0, WORKER_CYCLE - elapsed)
             self._stop_event.wait(timeout=remaining)
@@ -201,6 +246,12 @@ class WalmartStockMonitor:
         products: list[dict],
     ):
         proxies_dict = _format_proxy(proxy)
+        url = (
+            f"https://www.walmart.com/orchestra/pdp/graphql/ItemByIdBtf"
+            f"/{GRAPHQL_HASH}/ip/{item_id}"
+        )
+        headers = {**HEADERS, "x-o-item-id": item_id}
+
         try:
             with requests.Session() as session:
                 if cookies:
@@ -208,17 +259,17 @@ class WalmartStockMonitor:
                 if proxies_dict:
                     session.proxies.update(proxies_dict)
 
-                raw = fetch_item(item_id, session)
+                resp = session.post(url, headers=headers, json=_build_body(item_id), timeout=10)
 
-                if "error" in raw:
-                    if raw.get("error") in (400, 404):
+                if resp.status_code != 200:
+                    if resp.status_code in (400, 403, 404):
                         with self._hash_error_lock:
                             self._consecutive_hash_errors += 1
                             if self._consecutive_hash_errors >= 5:
                                 self._consecutive_hash_errors = 0
                                 self._hash_error_pause_until = time.monotonic() + 300
                                 logger.critical(
-                                    "[MONITOR] GRAPHQL_HASH likely expired — all workers pausing 300s. "
+                                    "[MONITOR] GRAPHQL_HASH likely expired — pausing 300s. "
                                     "Update GRAPHQL_HASH in walmart/config.py."
                                 )
                     if proxy and self._proxy_manager:
@@ -230,16 +281,52 @@ class WalmartStockMonitor:
                 if proxy and self._proxy_manager:
                     self._proxy_manager.record_monitor_success(proxy)
 
-                parsed = parse_item(raw)
-                if parsed and "error" not in parsed:
-                    offer_id = self._extract_offer_id(raw.get("data", {}), item_id)
-                    parsed["offer_id"] = offer_id
+                data = resp.json()
+                parsed = self._parse(item_id, data)
+                if parsed:
                     self._handle_result(parsed, products)
 
         except Exception as e:
             if proxy and self._proxy_manager:
                 self._proxy_manager.mark_failed(proxy)
             logger.warning("[MONITOR] Fetch error for %s: %s", item_id, e)
+
+    # ------------------------------------------------------------------
+    # Parse GraphQL response
+    # ------------------------------------------------------------------
+
+    def _parse(self, item_id: str, data: dict) -> Optional[dict]:
+        modules = data.get("data", {}).get("contentLayout", {}).get("modules", [])
+        for module in modules:
+            if module.get("type") != "SoftBundles":
+                continue
+            for product in module.get("configs", {}).get("products", []):
+                if product.get("usItemId") != item_id:
+                    continue
+                seller_id = product.get("sellerId", "")
+                seller_name = product.get("sellerName", "")
+                is_direct = (
+                    seller_id.upper() == WALMART_SELLER_ID
+                    or seller_name.lower() == "walmart.com"
+                )
+                price = product.get("priceInfo", {}).get("currentPrice", {}).get("price")
+                availability = product.get("availabilityStatus", "UNKNOWN")
+                show_atc = product.get("showAtc", False)
+                offer_id = product.get("offerId")
+                return {
+                    "item_id": item_id,
+                    "name": product.get("name", "Unknown"),
+                    "price": price,
+                    "availability": availability,
+                    "show_atc": show_atc,
+                    "in_stock": availability in ("IN_STOCK", "PRE_ORDER_SELLABLE") and show_atc,
+                    "walmart_direct": is_direct,
+                    "seller_id": seller_id,
+                    "seller_name": seller_name,
+                    "order_limit": product.get("orderLimit"),
+                    "offer_id": offer_id,
+                }
+        return None
 
     # ------------------------------------------------------------------
     # Result handler
@@ -292,79 +379,38 @@ class WalmartStockMonitor:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _extract_offer_id(self, data: dict, item_id: str) -> Optional[str]:
-        try:
-            modules = data.get("data", {}).get("contentLayout", {}).get("modules", [])
-            for module in modules:
-                if module.get("type") != "SoftBundles":
-                    continue
-                for product in module.get("configs", {}).get("products", []):
-                    if product.get("usItemId") == item_id:
-                        return product.get("offerId")
-        except Exception as e:
-            logger.warning("[MONITOR] offer_id extraction failed for %s: %s", item_id, e)
-        return None
-
     def is_healthy(self) -> bool:
         with self._running_lock:
             return self._running
 
     def check_now(self) -> list[dict]:
         """One-shot synchronous check of all enabled products. For testing."""
-        cookies = _load_cookies_from_disk()
+        cookies = self._session.get_monitoring_cookies() if self._session else {}
         products = get_enabled_products()
         results = []
         for p in products:
             proxy = self._proxy_manager.get_monitor_proxy() if self._proxy_manager else None
             proxies_dict = _format_proxy(proxy)
+            url = (
+                f"https://www.walmart.com/orchestra/pdp/graphql/ItemByIdBtf"
+                f"/{GRAPHQL_HASH}/ip/{p['item_id']}"
+            )
             try:
                 with requests.Session() as session:
                     if cookies:
                         session.cookies.update(cookies)
                     if proxies_dict:
                         session.proxies.update(proxies_dict)
-                    raw = fetch_item(p["item_id"], session)
-                    parsed = parse_item(raw)
-                    if parsed:
-                        results.append(parsed)
+                    resp = session.post(
+                        url,
+                        headers={**HEADERS, "x-o-item-id": p["item_id"]},
+                        json=_build_body(p["item_id"]),
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        parsed = self._parse(p["item_id"], resp.json())
+                        if parsed:
+                            results.append(parsed)
             except Exception as e:
                 logger.warning("[MONITOR] check_now error for %s: %s", p["item_id"], e)
         return results
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-
-    from .config import get_enabled_products as _gep
-    products = _gep()
-    print("=" * 60)
-    print("  WALMART STOCK MONITOR — one-shot check")
-    print(f"  Checking {len(products)} configured product(s)")
-    print("=" * 60)
-    if not products:
-        print("  No products configured in walmart/walmart_config.json")
-        print("  Add products via the dashboard or edit the JSON directly.")
-    else:
-        for p in products:
-            print(f"  {p['item_id']} — {p['name']}")
-    print()
-
-    monitor = WalmartStockMonitor()
-    results = monitor.check_now()
-
-    print("Results:")
-    for r in results:
-        if "error" in r:
-            print(f"  [{r['item_id']}] ERROR: {r['error']}")
-        else:
-            stock  = "IN STOCK ✓" if r["in_stock"] else "OUT OF STOCK"
-            direct = "WALMART DIRECT" if r.get("walmart_direct") else "3RD PARTY — SKIPPED"
-            print(f"  [{stock}] [{direct}] {r['name']}")
-            print(f"    Item ID   : {r['item_id']}")
-            print(f"    Price     : ${r.get('price')}")
-            print(f"    Status    : {r.get('availability')}")
-            print(f"    showAtc   : {r.get('showAtc', 'n/a')}")
-            print(f"    Seller    : {r.get('seller_name')} ({r.get('seller_id', '')[:8]}...)")
-            print(f"    Offer ID  : {r.get('offer_id')}")
-            print(f"    Order lim : {r.get('order_limit')}")
-            print()
