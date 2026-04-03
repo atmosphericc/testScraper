@@ -107,7 +107,6 @@ async def walmart_relogin():
     except Exception as e:
         print(f"ERROR saving cookies: {e}")
 
-    input("Press ENTER to close the browser...")
     await browser.stop()
 
 

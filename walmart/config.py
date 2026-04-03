@@ -49,8 +49,8 @@ PROXY_ERROR_RATE_THRESHOLD = 0.10  # bench if error rate > 10% over last 100 req
 
 HEADLESS = False          # Patchright recommendation: False reduces detection risk
 BROWSER_CHANNEL = "chrome"  # Use real Chrome, not bundled Chromium
-PROFILE_DIR = "./walmart-profile"
-COOKIES_FILE = "./walmart-profile/cookies.json"
+PROFILE_DIR = "./walmart-profile-login"
+COOKIES_FILE = "./walmart-profile-login/cookies.json"
 LOGS_DIR = "./walmart/logs"
 
 # ---------------------------------------------------------------------------

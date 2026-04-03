@@ -1,6 +1,6 @@
 ================================================================
   AIO BOT — COMMANDS REFERENCE
-  Last updated: 2026-04-02
+  Last updated: 2026-04-03
 ================================================================
 
 ----------------------------------------------------------------
@@ -25,14 +25,8 @@
     → Re-run when Walmart session expires
 
 ----------------------------------------------------------------
-  DEBUGGING / ONE-SHOT CHECKS
+  STANDALONE APPS (debug / one-off use)
 ----------------------------------------------------------------
-
-  Check Walmart stock (all configured SKUs):
-    python -m walmart.stock_monitor
-
-  Check Target stock (all configured TCINs):
-    python app.py   (starts full server, check dashboard)
 
   Standalone Walmart only:
     python -m walmart.walmart_app  → http://localhost:5001/
@@ -40,20 +34,60 @@
   Standalone Target only:
     python app.py                  → http://localhost:5001/
 
+  Target test mode (stops before purchase):
+    python test_app.py             → http://localhost:5001/
+
+  Product config manager (no automation):
+    python configureProducts.py    → http://localhost:5002/
+    → Edit Target TCINs + catalog without starting a browser
+
+  Pokemon price comparison:
+    python compareInventory.py     → http://localhost:5003/
+    → Compare CSV inventory against TCGPlayer market prices
+
 ----------------------------------------------------------------
-  ADDING PRODUCTS
+  DEBUGGING / ONE-SHOT CHECKS
 ----------------------------------------------------------------
 
-  Target:
+  Check Walmart stock (all configured SKUs):
+    python -m walmart.stock_monitor
+
+  Kill a stuck port:
+    python clearPort.py <port>
+    → e.g. python clearPort.py 5000
+
+----------------------------------------------------------------
+  CONFIGURING PRODUCTS
+----------------------------------------------------------------
+
+  Target products:
     → Use dashboard at http://localhost:5000/dashboard (Product Catalog tab)
+    → Or use standalone config tool: python configureProducts.py
     → Or edit config/product_config.json directly
     → Field: "tcin" (8-10 digit Target item number from URL)
+    → Example: target.com/p/-/A-94724987 → tcin = "94724987"
 
-  Walmart:
+  Walmart products:
     → Use dashboard at http://localhost:5000/dashboard (Walmart tab)
     → Or edit walmart/walmart_config.json directly
     → Field: "item_id" (numeric ID from walmart.com/ip/.../XXXXXXXXX)
-    → Example: walmart.com/ip/some-product/15042474261 → item_id = 15042474261
+    → Example: walmart.com/ip/some-product/15042474261 → item_id = "15042474261"
+
+  Product config fields:
+    Target (config/product_config.json):
+      "tcin"      required  8-10 digit Target item ID
+      "name"      required  display name
+      "enabled"   required  true/false
+      "priority"  required  1 = highest priority (checked first)
+      "url"       optional  direct product link
+
+    Walmart (walmart/walmart_config.json):
+      "item_id"   required  numeric Walmart item ID
+      "name"      required  display name
+      "enabled"   required  true/false
+      "priority"  required  1 = highest priority
+      "max_price" optional  skip if price exceeds this
+      "url"       optional  direct product link
 
 ----------------------------------------------------------------
   SET THESE ENV VARS BEFORE RUNNING
@@ -125,6 +159,9 @@
   Key scripts:
     relogin.py              Target manual login / session save
     walmart_relogin.py      Walmart manual login / session save
+    clearPort.py            Kill process on a port
+    configureProducts.py    Standalone product config editor (port 5002)
+    compareInventory.py     TCGPlayer price comparison (port 5003)
 
   Dashboards:          dashboard/templates/
     unified_dashboard.html   ← current main dashboard
@@ -132,12 +169,13 @@
   Config / products:
     config/product_config.json     Target TCINs + priority
     walmart/walmart_config.json    Walmart item IDs + priority
-    config/proxyIps.json           50 proxies (shared by both)
+    config/product_catalog.json    Extended Target product catalog
+    config/proxyIps.json           50 proxies (used by Walmart)
 
   Sessions:
     nodriver-profile/    Target browser profile
     target.json          Target saved cookies
-    walmart-profile/     Walmart browser profile + cookies.json
+    walmart-profile-login/  Walmart browser profile + cookies.json
 
   Logs:
     logs/                Target logs + purchase states

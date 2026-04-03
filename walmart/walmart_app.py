@@ -28,7 +28,7 @@ from html import escape as _he
 from flask import Flask, Response, jsonify, request, stream_with_context
 
 from .config import get_config, save_config, get_enabled_products
-from .self_healing_agent import SelfHealingAgent
+from .purchase_manager import WalmartPurchaseManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ app = Flask(__name__)
 # Global state
 # ---------------------------------------------------------------------------
 
-_manager: SelfHealingAgent = None
+_manager: WalmartPurchaseManager = None
 _manager_loop: asyncio.AbstractEventLoop = None
 _test_mode = False
 
@@ -89,14 +89,14 @@ def _start_manager():
             "but purchases will fail. Set env vars and restart."
         )
 
-    _manager = SelfHealingAgent(status_callback=_status_callback)
+    _manager = WalmartPurchaseManager(status_callback=_status_callback)
     _manager_loop = asyncio.new_event_loop()
 
     def _run():
         asyncio.set_event_loop(_manager_loop)
         try:
             _manager_loop.run_until_complete(
-                _manager.start(email=email, password=password)
+                _manager.start()
             )
         except Exception:
             logger.exception("[APP] Manager start() failed — bot will not run")

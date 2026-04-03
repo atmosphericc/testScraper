@@ -128,6 +128,7 @@ class WalmartSessionManager:
 
         try:
             config = uc.Config(
+                user_data_dir=str(self._profile_dir),
                 headless=False,
                 browser_args=[
                     "--window-size=1920,1080",
@@ -326,20 +327,15 @@ class WalmartSessionManager:
         self._status_cb("[SESSION] Warming session...")
         warm_ids = item_ids[:3]  # visit up to 3 product pages
 
-        for item_id in warm_ids:
+        for i, item_id in enumerate(warm_ids, 1):
             try:
                 url = f"https://www.walmart.com/ip/x/{item_id}"
-                await self._page.get(url)
+                self._status_cb(f"[SESSION] Warming {i}/{len(warm_ids)}: {item_id}")
+                from zendriver import cdp
+                await self._page.send(cdp.page.navigate(url))
+                await asyncio.sleep(5.0)
                 await self._handle_blocked_page()
-                await asyncio.sleep(2.5)  # dwell time — mimics human browsing
-
-                # Capture the _px3 cookie timestamp
-                all_cookies = await self._browser.cookies.get_all()
-                for c in all_cookies:
-                    if c.name == "_px3":
-                        self._px3_timestamp = time.monotonic()
-                        logger.info("[SESSION] Fresh _px3 cookie obtained")
-                        break
+                await asyncio.sleep(2.5)
 
             except Exception as e:
                 logger.warning("[SESSION] Warm page error for %s: %s", item_id, e)
@@ -366,8 +362,9 @@ class WalmartSessionManager:
         if not self._browser:
             return
         try:
-            all_cookies = await self._browser.cookies.get_all()
-            cookie_dict = {c.name: c.value for c in all_cookies}
+            from zendriver import cdp
+            raw = await self._page.send(cdp.network.get_cookies())
+            cookie_dict = {c.name: c.value for c in raw}
             with self._live_cookies_lock:
                 self._live_cookies = cookie_dict
                 self._live_cookies_timestamp = time.monotonic()
@@ -406,15 +403,17 @@ class WalmartSessionManager:
                 # Navigate a low-traffic Walmart page to trigger fresh _px3
                 if self._page:
                     try:
-                        await self._page.get(HARVEST_URL)
+                        from zendriver import cdp as _cdp
+                        await self._page.send(_cdp.page.navigate(HARVEST_URL))
+                        await asyncio.sleep(3.0)
                         await self._handle_blocked_page()
-                        await asyncio.sleep(1.5)
                     except Exception as e:
                         logger.debug("[HARVESTER] Navigation error: %s", e)
 
-                # Extract all cookies from the browser
-                all_cookies = await self._browser.cookies.get_all()
-                cookie_dict = {c.name: c.value for c in all_cookies}
+                # Extract all cookies via CDP (cookies.get_all() hangs on busy pages)
+                from zendriver import cdp
+                raw = await self._page.send(cdp.network.get_cookies())
+                cookie_dict = {c.name: c.value for c in raw}
 
                 with self._live_cookies_lock:
                     self._live_cookies = cookie_dict
@@ -463,11 +462,11 @@ class WalmartSessionManager:
 
     async def save_cookies(self):
         """Persist browser cookies to disk (thread-safe via module-level lock)."""
-        if not self._browser:
+        if not self._browser or not self._page:
             return
         try:
-            all_cookies = await self._browser.cookies.get_all()
-            # Serialize Cookie objects to dicts for JSON storage
+            from zendriver import cdp
+            all_cookies = await self._page.send(cdp.network.get_cookies())
             cookies = [
                 {
                     "name": c.name,
@@ -476,8 +475,8 @@ class WalmartSessionManager:
                     "path": c.path,
                     "secure": c.secure,
                     "httpOnly": c.http_only,
-                    "sameSite": c.same_site,
-                    "expires": c.expires,
+                    "sameSite": str(c.same_site) if c.same_site else "None",
+                    "expires": float(c.expires) if c.expires else -1,
                 }
                 for c in all_cookies
             ]
