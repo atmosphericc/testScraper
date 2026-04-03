@@ -30,7 +30,8 @@ target_profile/
 playwright-profile/
 chrome_user_data/
 nodriver-profile/
-walmart-profile/
+walmart-profile*/
+.env
 logs/
 walmart/logs/
 target.json

@@ -177,7 +177,7 @@ class WalmartPurchaseExecutor:
             if already_in_cart:
                 self._status_cb("[PURCHASE] Item already in cart — skipping ATC")
                 logger.info("[PURCHASE] Skipping ATC: item already in cart for %s", item_id)
-                cart_ok = await self._verify_cart(item_id)
+                cart_ok = True  # already confirmed by _is_item_already_in_cart
             else:
                 await self._clear_cart_if_needed()
                 await self._navigate(item_url)  # cart clear navigates away — return to product page

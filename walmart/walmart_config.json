@@ -55,6 +55,14 @@
       "max_price": null,
       "priority": 7,
       "url": "https://www.walmart.com/ip/x/19009204107"
+    },
+    {
+      "item_id": "17823811037",
+      "name": "17823811037",
+      "enabled": true,
+      "max_price": null,
+      "priority": 8,
+      "url": "https://www.walmart.com/ip/x/17823811037"
     }
   ]
 }

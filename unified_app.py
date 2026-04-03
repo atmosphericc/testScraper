@@ -22,6 +22,20 @@ import os
 import platform
 import sys
 
+# Load .env file if present (WALMART_EMAIL, WALMART_PASSWORD, WALMART_CVV, etc.)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if os.path.exists(_env_path):
+        with open(_env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith("#") and "=" in _line:
+                    _k, _v = _line.split("=", 1)
+                    os.environ.setdefault(_k.strip(), _v.strip())
+
 # ---------------------------------------------------------------------------
 # Prevent system sleep (Windows + macOS)
 # ---------------------------------------------------------------------------
@@ -93,3 +107,9 @@ if __name__ == "__main__":
     except ImportError:
         logger.warning("[UNIFIED] waitress not installed — falling back to Flask dev server")
         app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        import os as _os
+        print("\n[UNIFIED] Shutting down...")
+        _os._exit(0)

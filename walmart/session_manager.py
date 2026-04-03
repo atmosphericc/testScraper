@@ -12,6 +12,7 @@ Handles:
 import asyncio
 import json
 import logging
+import random
 import threading
 import time
 from pathlib import Path
@@ -19,7 +20,6 @@ from typing import Optional, Callable
 
 from .config import (
     HEADLESS,
-    BROWSER_CHANNEL,
     PROFILE_DIR,
     COOKIES_FILE,
     WALMART_LOGIN_URL,
@@ -30,6 +30,46 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Injected before every page load to hide automation signals from PerimeterX / HUMAN Security
+_STEALTH_SCRIPT = """
+(function() {
+    // Remove navigator.webdriver
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
+
+    // Real Chrome always has plugins; automation contexts often have 0
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+        ],
+        configurable: true
+    });
+
+    // Spoof mimeTypes
+    Object.defineProperty(navigator, 'mimeTypes', {
+        get: () => [
+            { type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' },
+            { type: 'application/x-google-chrome-pdf', description: 'Portable Document Format', suffixes: 'pdf' },
+            { type: 'application/x-nacl', description: 'Native Client Executable', suffixes: '' },
+            { type: 'application/x-pnacl', description: 'Portable Native Client Executable', suffixes: '' }
+        ],
+        configurable: true
+    });
+
+    // Languages
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['en-US', 'en'],
+        configurable: true
+    });
+
+    // window.chrome must exist in real Chrome
+    if (!window.chrome) {
+        window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+    }
+})();
+"""
 
 # Module-level lock shared between session_manager (writer) and stock_monitor (reader)
 # to prevent cookie file corruption during concurrent access.
@@ -52,6 +92,8 @@ class WalmartSessionManager:
 
     def __init__(self, status_callback: Optional[Callable[[str], None]] = None):
         self._status_cb = status_callback or (lambda msg: None)
+        self._zd_browser = None   # zendriver — launches real Chrome
+        self._pw_browser = None   # patchright — connects via CDP
         self._playwright = None
         self._context = None
         self._page = None
@@ -74,7 +116,11 @@ class WalmartSessionManager:
     # ------------------------------------------------------------------
 
     async def start(self):
-        """Launch the Patchright browser and restore saved cookies."""
+        """Launch Chrome via zendriver, then connect Patchright over CDP."""
+        try:
+            import zendriver as uc
+        except ImportError:
+            raise RuntimeError("zendriver is not installed. Run: pip install zendriver")
         try:
             from patchright.async_api import async_playwright
         except ImportError:
@@ -86,53 +132,76 @@ class WalmartSessionManager:
         self._profile_dir.mkdir(parents=True, exist_ok=True)
         Path("walmart/logs").mkdir(parents=True, exist_ok=True)
 
-        self._status_cb("[SESSION] Starting Patchright browser...")
+        self._status_cb("[SESSION] Starting Chrome via zendriver...")
 
         try:
-            self._playwright = await async_playwright().start()
-            # Use persistent context so the walmart-profile/ login session survives restarts.
-            # Run walmart_relogin.py once to populate the profile before starting the bot.
-            self._context = await self._playwright.chromium.launch_persistent_context(
+            zd_config = uc.Config(
                 user_data_dir=str(self._profile_dir),
-                headless=HEADLESS,
-                args=[
+                headless=False,
+                browser_args=[
+                    "--window-size=1920,1080",
                     "--disable-blink-features=AutomationControlled",
                 ],
-                viewport={"width": 1920, "height": 1080},
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/New_York",
+                browser_connection_timeout=1.0,
+                browser_connection_max_tries=30,
             )
-            self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+            self._zd_browser = await uc.start(zd_config)
+            port = self._zd_browser.config.port
+
+            self._status_cb(f"[SESSION] Chrome started (port {port}), connecting Patchright...")
+
+            # Give Chrome's network stack time to fully initialize
+            await asyncio.sleep(3)
+
+            self._playwright = await async_playwright().start()
+            self._pw_browser = await self._playwright.chromium.connect_over_cdp(
+                f"http://localhost:{port}"
+            )
+
+            # Grab the context Chrome already opened for the profile
+            contexts = self._pw_browser.contexts
+            if contexts:
+                self._context = contexts[0]
+            else:
+                self._context = await self._pw_browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    locale="en-US",
+                    timezone_id="America/New_York",
+                )
+
+            await self._context.add_init_script(_STEALTH_SCRIPT)
+
+            pages = self._context.pages
+            self._page = pages[0] if pages else await self._context.new_page()
+
+            # Load saved cookies from walmart_relogin.py into the session
+            await self._load_cookies()
+
         except Exception as e:
-            # Clean up all partially-initialized resources
-            for attr, method in [
-                ('_page', 'close'), ('_context', 'close'),
-                ('_browser', 'close'), ('_playwright', 'stop')
-            ]:
-                obj = getattr(self, attr, None)
-                if obj:
-                    try:
-                        await getattr(obj, method)()
-                    except Exception:
-                        pass
+            for attr in ('_page', '_context'):
                 setattr(self, attr, None)
-            for attr in ('_page', '_context', '_playwright'):
-                obj = getattr(self, attr, None)
-                if obj:
-                    try:
-                        await obj.close() if attr != '_playwright' else await obj.stop()
-                    except Exception:
-                        pass
-                setattr(self, attr, None)
+            if self._pw_browser:
+                try:
+                    await self._pw_browser.close()
+                except Exception:
+                    pass
+                self._pw_browser = None
+            if self._playwright:
+                try:
+                    await self._playwright.stop()
+                except Exception:
+                    pass
+                self._playwright = None
+            if self._zd_browser:
+                try:
+                    await self._zd_browser.stop()
+                except Exception:
+                    pass
+                self._zd_browser = None
             raise RuntimeError(f"[SESSION] Failed to start browser: {e}") from e
 
         self._status_cb("[SESSION] Browser ready")
-        logger.info("[SESSION] Patchright browser started")
+        logger.info("[SESSION] zendriver+Patchright CDP browser started")
 
     async def stop(self):
         """Save cookies and close the browser."""
@@ -140,19 +209,26 @@ class WalmartSessionManager:
             await self.save_cookies()
         except Exception:
             pass
+        self._page = None
+        self._context = None
         try:
-            if self._context:
-                await self._context.close()
+            if self._pw_browser:
+                await self._pw_browser.close()
         except Exception:
             pass
+        self._pw_browser = None
         try:
             if self._playwright:
                 await self._playwright.stop()
         except Exception:
             pass
-        self._page = None
-        self._context = None
         self._playwright = None
+        try:
+            if self._zd_browser:
+                await self._zd_browser.stop()
+        except Exception:
+            pass
+        self._zd_browser = None
         logger.info("[SESSION] Browser stopped")
 
     # ------------------------------------------------------------------
@@ -170,6 +246,7 @@ class WalmartSessionManager:
         self._status_cb("[SESSION] Logging in to Walmart...")
         try:
             await self._page.goto(WALMART_LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+            await self._handle_blocked_page()
             await asyncio.sleep(2)
 
             # Fill email — try selectors individually (patchright doesn't support
@@ -260,6 +337,7 @@ class WalmartSessionManager:
 
         try:
             await self._page.goto(WALMART_ACCOUNT_URL, wait_until="domcontentloaded", timeout=15000)
+            await self._handle_blocked_page()
             await asyncio.sleep(1)
             from urllib.parse import urlparse
             url = self._page.url
@@ -268,19 +346,9 @@ class WalmartSessionManager:
                 self._status_cb("[SESSION] Session invalid — redirected to login")
                 return False
 
-            # Secondary check: page body may contain sign-in prompts even on non-login URLs
-            try:
-                body_text = await self._page.locator("body").inner_text(timeout=5000)
-                body_lower = body_text.lower()
-                if "sign in" in body_lower or "log in" in body_lower:
-                    logger.warning(
-                        "[SESSION] validate_session: page body contains sign-in text — "
-                        "session may be invalid (URL: %s)",
-                        url,
-                    )
-                    return False
-            except Exception as body_err:
-                logger.warning("[SESSION] Could not read page body during validation: %s", body_err)
+            # URL check is sufficient — Walmart's account page always contains
+            # "Sign in" text in the nav even for logged-in users, so a body text
+            # check produces false positives and triggers re-login every startup.
 
             self._last_validation = now
             self._last_activity = now
@@ -310,6 +378,7 @@ class WalmartSessionManager:
             try:
                 url = f"https://www.walmart.com/ip/x/{item_id}"
                 await self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                await self._handle_blocked_page()
                 await asyncio.sleep(2.5)  # dwell time — mimics human browsing
 
                 # Capture the _px3 cookie timestamp
@@ -390,6 +459,7 @@ class WalmartSessionManager:
                             wait_until="domcontentloaded",
                             timeout=15000,
                         )
+                        await self._handle_blocked_page()
                         await asyncio.sleep(1.5)
                     except Exception as e:
                         logger.debug("[HARVESTER] Navigation error: %s", e)
@@ -496,6 +566,116 @@ class WalmartSessionManager:
 
     def is_ready(self) -> bool:
         return self._page is not None and self._context is not None
+
+    # ------------------------------------------------------------------
+    # Blocked page / press-and-hold challenge handler
+    # ------------------------------------------------------------------
+
+    async def _handle_blocked_page(self, max_attempts: int = 8) -> bool:
+        """
+        Detect Walmart's /blocked PerimeterX press-and-hold challenge and solve it
+        via mouse simulation. Handles multiple rounds (Walmart often requires 2-3
+        completions and may reverse the bar if released early).
+        Returns True once cleared, False if all attempts exhausted.
+        """
+        if not self._page or "/blocked" not in self._page.url:
+            return True  # not on a blocked page
+
+        logger.warning("[SESSION] /blocked page detected — attempting press-and-hold solve")
+        self._status_cb("[SESSION] Bot challenge detected — solving press-and-hold...")
+
+        # PerimeterX press-and-hold selectors (most specific first)
+        _HOLD_SELECTORS = [
+            "#px-captcha",
+            "div[id*='px-captcha']",
+            "div[class*='px-captcha']",
+            "div[class*='hold']",
+            "div[class*='press']",
+            "div[class*='challenge']",
+        ]
+
+        for attempt in range(1, max_attempts + 1):
+            if "/blocked" not in self._page.url:
+                break
+
+            logger.info("[SESSION] Challenge attempt %d/%d", attempt, max_attempts)
+
+            # Fast element scan — 500ms per selector instead of 3s
+            target = None
+            for sel in _HOLD_SELECTORS:
+                try:
+                    el = await self._page.wait_for_selector(sel, timeout=500)
+                    if el:
+                        target = el
+                        break
+                except Exception:
+                    continue
+
+            if target is None:
+                # Element not ready yet — short wait and retry
+                await asyncio.sleep(0.5)
+                continue
+
+            try:
+                # Scroll element into view so coordinates are in the visible viewport
+                await target.scroll_into_view_if_needed()
+                await asyncio.sleep(0.2)
+
+                box = await target.bounding_box()
+                if not box:
+                    await asyncio.sleep(0.5)
+                    continue
+
+                # Aim slightly off-center — dead-center clicks can look robotic
+                cx = box["x"] + box["width"] * random.uniform(0.45, 0.55)
+                cy = box["y"] + box["height"] * random.uniform(0.45, 0.55)
+
+                # Approach from a nearby point to mimic human cursor travel
+                await self._page.mouse.move(
+                    cx + random.uniform(-40, 40),
+                    cy + random.uniform(-20, 20),
+                    steps=12,
+                )
+                await asyncio.sleep(random.uniform(0.1, 0.25))
+                await self._page.mouse.move(cx, cy, steps=6)
+                await asyncio.sleep(0.15)
+                await self._page.mouse.down()
+
+                # Hold dynamically — make tiny micro-movements while holding
+                # so the mouse looks like a real human hand (slight tremor)
+                hold_start = time.monotonic()
+                while time.monotonic() - hold_start < 20.0:
+                    if "/blocked" not in self._page.url:
+                        break
+                    # Small jitter every ~400ms
+                    await asyncio.sleep(random.uniform(0.35, 0.45))
+                    if "/blocked" not in self._page.url:
+                        break
+                    jx = cx + random.uniform(-2, 2)
+                    jy = cy + random.uniform(-2, 2)
+                    await self._page.mouse.move(jx, jy, steps=2)
+
+                await self._page.mouse.up()
+
+                # Short settle — then loop immediately to catch "Try again" rounds
+                await asyncio.sleep(0.8)
+
+            except Exception as e:
+                logger.warning("[SESSION] Mouse interaction error: %s", e)
+                try:
+                    await self._page.mouse.up()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+
+        cleared = "/blocked" not in self._page.url
+        if cleared:
+            logger.info("[SESSION] /blocked challenge cleared")
+            self._status_cb("[SESSION] Challenge solved — continuing")
+        else:
+            logger.error("[SESSION] Could not clear /blocked challenge after %d attempts", max_attempts)
+            self._status_cb("[SESSION] Challenge unsolved — may need manual intervention in browser")
+        return cleared
 
     async def _find_input(self, selectors: list[str], timeout: int = 10000):
         """Try each selector individually and return the first matching input element.

@@ -78,9 +78,8 @@ class WalmartPurchaseManager:
         self._running = False
         self._login_ok = False   # set True after successful login in start()
 
-        # Async event loop for purchase tasks (separate from monitor's loop)
+        # Running event loop — captured in start(), shared by browser + harvester + purchases
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._loop_thread: Optional[threading.Thread] = None
 
         # Recent activity log for dashboard
         self._activity_log: list[dict] = []
@@ -100,20 +99,14 @@ class WalmartPurchaseManager:
         self._running = True
         self._status_cb("[MANAGER] Starting Walmart purchase manager...")
 
-        # Start dedicated event loop thread for purchase tasks.
-        # Loop must be running before the stock monitor starts so _on_in_stock_signal
-        # can safely call run_coroutine_threadsafe.
-        self._loop = asyncio.new_event_loop()
-        self._loop_thread = threading.Thread(
-            target=self._run_event_loop,
-            daemon=True,
-            name="WalmartPurchaseLoop",
-        )
-        self._loop_thread.start()
-        # Give the loop a moment to enter run_forever() before we proceed
-        await asyncio.sleep(0.1)
+        # Capture the running event loop (manager_loop from blueprint.py).
+        # The browser session, harvester, and purchase executor must all share
+        # this same loop — Patchright objects are bound to the loop they were
+        # created on, so scheduling purchases on a separate loop causes
+        # cross-loop violations and silent browser failures.
+        self._loop = asyncio.get_event_loop()
 
-        # Start browser session
+        # Start browser session (includes a 3s network-stack warm-up internally)
         await self._session.start()
 
         # Validate or perform login
@@ -131,7 +124,7 @@ class WalmartPurchaseManager:
                 # but set a flag so _on_in_stock_signal skips purchase attempts.
                 self._login_ok = False
                 await self._session.harvest_now()
-                self._session.start_harvester(asyncio.get_event_loop())
+                self._session.start_harvester(self._loop)
                 self._monitor.start()
                 return
         self._login_ok = True
@@ -146,7 +139,7 @@ class WalmartPurchaseManager:
         await self._session.harvest_now()
 
         # Start cookie harvester — keeps _px3 fresh for proxy workers every 30s
-        self._session.start_harvester(asyncio.get_event_loop())
+        self._session.start_harvester(self._loop)
 
         # Start stock monitor
         self._monitor.start()
@@ -159,14 +152,8 @@ class WalmartPurchaseManager:
         self._monitor.stop()
         self._session.stop_harvester()
         await self._session.stop()
-        if self._loop and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._loop.stop)
         self._status_cb("[MANAGER] Walmart bot stopped")
         logger.info("[MANAGER] Bot stopped")
-
-    def _run_event_loop(self):
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
 
     # ------------------------------------------------------------------
     # In-stock callback (called from monitor's thread)

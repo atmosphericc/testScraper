@@ -1,7 +1,0 @@
-2026/04/02-14:41:42.019 5b4cbf Creating DB /Users/Eric/Desktop/testScraper/walmart-profile/Default/Local Storage/leveldb since it was missing.
-2026/04/02-14:41:42.118 5b4cbf Reusing MANIFEST /Users/Eric/Desktop/testScraper/walmart-profile/Default/Local Storage/leveldb/MANIFEST-000001
-2026/04/02-14:41:55.481 5b4cc6 Level-0 table #5: started
-2026/04/02-14:41:55.495 5b4cc6 Level-0 table #5: 141635 bytes OK
-2026/04/02-14:41:55.520 5b4cc6 Delete type=0 #3
-2026/04/02-14:42:19.072 5b4ce7 Level-0 table #7: started
-2026/04/02-14:42:19.187 5b4ce7 Level-0 table #7: 22274 bytes OK

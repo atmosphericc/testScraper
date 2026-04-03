@@ -296,37 +296,63 @@ class WalmartStockMonitor:
     # ------------------------------------------------------------------
 
     def _parse(self, item_id: str, data: dict) -> Optional[dict]:
-        modules = data.get("data", {}).get("contentLayout", {}).get("modules", [])
+        # Check top-level data.product first (some response shapes put it here)
+        top = data.get("data", {})
+        direct = top.get("product")
+        if isinstance(direct, dict):
+            result = self._extract_product(item_id, direct)
+            if result:
+                return result
+
+        # Scan all contentLayout modules — Walmart A/B tests put availability data
+        # in different module types (ItemTiles, SoftBundles, ItemPageAtf, etc.)
+        # so we check every module rather than hard-coding a single type.
+        modules = top.get("contentLayout", {}).get("modules", [])
         for module in modules:
-            if module.get("type") != "SoftBundles":
-                continue
-            for product in module.get("configs", {}).get("products", []):
-                if product.get("usItemId") != item_id:
-                    continue
-                seller_id = product.get("sellerId", "")
-                seller_name = product.get("sellerName", "")
-                is_direct = (
-                    seller_id.upper() == WALMART_SELLER_ID
-                    or seller_name.lower() == "walmart.com"
-                )
-                price = product.get("priceInfo", {}).get("currentPrice", {}).get("price")
-                availability = product.get("availabilityStatus", "UNKNOWN")
-                show_atc = product.get("showAtc", False)
-                offer_id = product.get("offerId")
-                return {
-                    "item_id": item_id,
-                    "name": product.get("name", "Unknown"),
-                    "price": price,
-                    "availability": availability,
-                    "show_atc": show_atc,
-                    "in_stock": availability in ("IN_STOCK", "PRE_ORDER_SELLABLE") and show_atc,
-                    "walmart_direct": is_direct,
-                    "seller_id": seller_id,
-                    "seller_name": seller_name,
-                    "order_limit": product.get("orderLimit"),
-                    "offer_id": offer_id,
-                }
+            configs = module.get("configs", {})
+
+            # configs.products — list form (SoftBundles, ItemTiles, …)
+            for product in configs.get("products", []):
+                result = self._extract_product(item_id, product)
+                if result:
+                    return result
+
+            # configs.product — singular form used by some module types
+            product = configs.get("product")
+            if isinstance(product, dict):
+                result = self._extract_product(item_id, product)
+                if result:
+                    return result
+
         return None
+
+    def _extract_product(self, item_id: str, product: dict) -> Optional[dict]:
+        """Extract availability info from a product dict if it matches item_id."""
+        if product.get("usItemId") != item_id:
+            return None
+        seller_id = product.get("sellerId", "")
+        seller_name = product.get("sellerName", "")
+        is_direct = (
+            seller_id.upper() == WALMART_SELLER_ID
+            or seller_name.lower() == "walmart.com"
+        )
+        price = product.get("priceInfo", {}).get("currentPrice", {}).get("price")
+        availability = product.get("availabilityStatus", "UNKNOWN")
+        show_atc = product.get("showAtc", False)
+        offer_id = product.get("offerId")
+        return {
+            "item_id": item_id,
+            "name": product.get("name", "Unknown"),
+            "price": price,
+            "availability": availability,
+            "show_atc": show_atc,
+            "in_stock": availability in ("IN_STOCK", "PRE_ORDER_SELLABLE") and show_atc,
+            "walmart_direct": is_direct,
+            "seller_id": seller_id,
+            "seller_name": seller_name,
+            "order_limit": product.get("orderLimit"),
+            "offer_id": offer_id,
+        }
 
     # ------------------------------------------------------------------
     # Result handler
