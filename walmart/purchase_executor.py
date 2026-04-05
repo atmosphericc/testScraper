@@ -47,6 +47,9 @@ ATC_SELECTORS = [
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
     'button:has-text("Add to cart")',
     'button:has-text("Add to Cart")',
+    'button:has-text("Pre-order")',
+    'button:has-text("Pre-Order")',
+    'button:has-text("Preorder")',
 ]
 
 CHECKOUT_SELECTORS = [
@@ -121,7 +124,7 @@ class WalmartPurchaseExecutor:
         Returns PurchaseResult with success/failure and order ID if successful.
         """
         self._status_cb(f"[PURCHASE] Starting purchase attempt for {item_id}")
-        logger.info("[PURCHASE] Starting: %s", item_id)
+        logger.debug("[PURCHASE] Starting: %s", item_id)
 
         try:
             # Step 1: Navigate to product page
@@ -159,7 +162,8 @@ class WalmartPurchaseExecutor:
                     final_purchase = os.environ.get("FINAL_PURCHASE", "NO")
                     if checkout_mode != "PRODUCTION":
                         await self._screenshot(f"test_mode_stop_fbt_{item_id}")
-                        self._status_cb("[PURCHASE] TEST MODE — stopping before Place Order")
+                        self._status_cb("[PURCHASE] TEST MODE — stopping before Place Order, clearing cart")
+                        await self._clear_cart()
                         return PurchaseResult(True, order_id="TEST_MODE")
                     if final_purchase != "YES":
                         await self._screenshot(f"pre_place_order_fbt_{item_id}")
@@ -177,7 +181,7 @@ class WalmartPurchaseExecutor:
             already_in_cart = await self._is_item_already_in_cart(item_url)
             if already_in_cart:
                 self._status_cb("[PURCHASE] Item already in cart — skipping ATC")
-                logger.info("[PURCHASE] Skipping ATC: item already in cart for %s", item_id)
+                logger.debug("[PURCHASE] Skipping ATC: item already in cart for %s", item_id)
                 cart_ok = True  # already confirmed by _is_item_already_in_cart
             else:
                 await self._clear_cart_if_needed()
@@ -209,8 +213,9 @@ class WalmartPurchaseExecutor:
 
             if checkout_mode != "PRODUCTION":
                 await self._screenshot(f"test_mode_stop_{item_id}")
-                self._status_cb("[PURCHASE] TEST MODE — stopping before Place Order")
-                logger.info("[PURCHASE] TEST MODE — would have placed order for %s", item_id)
+                self._status_cb("[PURCHASE] TEST MODE — stopping before Place Order, clearing cart")
+                logger.debug("[PURCHASE] TEST MODE — would have placed order for %s", item_id)
+                await self._clear_cart()
                 return PurchaseResult(True, order_id="TEST_MODE")
 
             # Step 8: Place order
@@ -222,7 +227,7 @@ class WalmartPurchaseExecutor:
             order_id = await self._place_order(item_id)
             if order_id:
                 self._status_cb(f"[PURCHASE] ORDER PLACED! ID: {order_id}")
-                logger.info("[PURCHASE] SUCCESS — order ID: %s", order_id)
+                logger.warning("[PURCHASE] SUCCESS — order ID: %s", order_id)
                 await self._clear_cart()
                 return PurchaseResult(True, order_id=order_id)
             else:
@@ -289,7 +294,7 @@ class WalmartPurchaseExecutor:
                 '.cart-item',
             ])
             if cart_items:
-                logger.info("[PURCHASE] Cart verified — %d item(s)", len(cart_items))
+                logger.debug("[PURCHASE] Cart verified — %d item(s)", len(cart_items))
                 return True
             else:
                 logger.warning("[PURCHASE] Cart selector check failed — no cart-item elements found")
@@ -441,7 +446,7 @@ class WalmartPurchaseExecutor:
                             filled_value,
                         )
                     else:
-                        logger.info("[PURCHASE] CVV verified successfully")
+                        logger.debug("[PURCHASE] CVV verified successfully")
                 except Exception as e:
                     logger.warning("[PURCHASE] CVV read-back failed: %s", e)
         except Exception as e:
@@ -526,7 +531,7 @@ class WalmartPurchaseExecutor:
             ])
             found = bool(cart_items)
             if found:
-                logger.info("[PURCHASE] Pre-check: %d item(s) already in cart", len(cart_items))
+                logger.debug("[PURCHASE] Pre-check: %d item(s) already in cart", len(cart_items))
         except Exception as e:
             logger.warning("[PURCHASE] Cart pre-check failed: %s", e)
             found = False
@@ -556,7 +561,7 @@ class WalmartPurchaseExecutor:
             ])
             if not cart_items:
                 return  # cart already empty — nothing to do
-            logger.info("[PURCHASE] Cart has %d item(s) — clearing before ATC", len(cart_items))
+            logger.debug("[PURCHASE] Cart has %d item(s) — clearing before ATC", len(cart_items))
             self._status_cb(f"[PURCHASE] Clearing {len(cart_items)} existing cart item(s)")
             remove_btns = await self._query_selector_all([
                 'button[data-automation-id="remove-item"]',
@@ -598,7 +603,7 @@ class WalmartPurchaseExecutor:
                 pass
             if not remove_btns:
                 return
-            logger.info("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
+            logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
             for btn in remove_btns:
                 try:
                     await btn.click()
@@ -639,7 +644,7 @@ class WalmartPurchaseExecutor:
                         await asyncio.sleep(0.2)
                         await btn.click()
                         self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
-                        logger.info("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
+                        logger.debug("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
                         await asyncio.sleep(2)
                         return True
             except Exception:
@@ -657,7 +662,7 @@ class WalmartPurchaseExecutor:
                         await asyncio.sleep(0.2)
                         await btn.click()
                         self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
-                        logger.info("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
+                        logger.debug("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
                         await asyncio.sleep(2)
                         return True
             except Exception:

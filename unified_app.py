@@ -12,7 +12,7 @@ Environment variables:
     WALMART_EMAIL      Walmart account email
     WALMART_PASSWORD   Walmart account password
     WALMART_CVV        Card CVV for Walmart checkout
-    CHECKOUT_MODE      TEST (default) or PRODUCTION
+    CHECKOUT_MODE      LIVE (default) or TEST
     FINAL_PURCHASE     YES to actually place orders (requires PRODUCTION mode)
 """
 

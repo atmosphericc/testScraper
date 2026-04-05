@@ -28,12 +28,15 @@ logger = logging.getLogger(__name__)
 
 walmart_bp = Blueprint("walmart", __name__, url_prefix="/walmart")
 
+# Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE)
+os.environ.setdefault("CHECKOUT_MODE", "LIVE")
+
 # ---------------------------------------------------------------------------
 # Global state (scoped to this module, not shared with Target)
 # ---------------------------------------------------------------------------
 
 _manager: WalmartPurchaseManager = None
-_test_mode = False
+_test_mode = False  # default to LIVE
 
 _sse_clients: list[queue.Queue] = []
 _sse_lock = threading.Lock()

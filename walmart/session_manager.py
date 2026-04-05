@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Optional, Callable
 
+import re as _re
+
 from .config import (
     HEADLESS,
     PROFILE_DIR,
@@ -27,6 +29,7 @@ from .config import (
     PX3_MAX_AGE_SECONDS,
     SESSION_VALIDATE_INTERVAL,
     SESSION_MAX_IDLE,
+    set_graphql_hash_atf,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,7 +96,8 @@ class WalmartSessionManager:
     def __init__(self, status_callback: Optional[Callable[[str], None]] = None):
         self._status_cb = status_callback or (lambda msg: None)
         self._browser = None
-        self._page = None
+        self._page = None          # Tab 1: harvester — roams product pages
+        self._checkout_page = None # Tab 2: checkout — stays on homepage, clean for purchases
         self._cookies_path = Path(COOKIES_FILE)
         self._profile_dir = Path(PROFILE_DIR)
         self._last_validation: float = 0.0
@@ -105,8 +109,27 @@ class WalmartSessionManager:
         self._live_cookies_lock = threading.Lock()
         self._live_cookies_timestamp: float = 0.0
 
-        # Harvester background task
+        # Harvester background task + event loop reference
         self._harvester_task: Optional[asyncio.Task] = None
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Stock intercept callback — set by WalmartStockMonitor to receive
+        # parsed GraphQL responses captured from the browser's real page loads
+        self._stock_intercept_cb: Optional[Callable[[dict], None]] = None
+        # Tracks pending GraphQL request IDs → item_id so we can match responses
+        self._pending_graphql: dict = {}  # requestId → item_id
+        self._pending_lock = threading.Lock()
+        # Signaled when a GraphQL response body has been captured, so the
+        # harvester loop knows it can safely navigate to the next product.
+        self._graphql_captured: Optional[asyncio.Event] = None
+
+    def set_stock_intercept_callback(self, cb: Callable[[dict], None]):
+        """
+        Register a callback invoked with raw GraphQL JSON whenever the browser
+        loads an ItemByIdBtf or ItemByIdAtf response. The stock monitor uses
+        this to extract stock status without needing proxy workers.
+        """
+        self._stock_intercept_cb = cb
 
     # ------------------------------------------------------------------
     # Startup / shutdown
@@ -149,10 +172,25 @@ class WalmartSessionManager:
             )
 
             await self._load_cookies()
-            await self._handle_blocked_page()
+
+            # Enable network event monitoring so we can sniff GraphQL hashes
+            await self._page.send(cdp.network.enable())
+            self._page.add_handler(
+                cdp.network.RequestWillBeSent,
+                self._on_network_request,
+            )
+            self._page.add_handler(
+                cdp.network.LoadingFinished,
+                self._on_loading_finished,
+            )
+
+            # Tab 2 is opened later via open_checkout_tab(), after warm_session() has
+            # run on Tab 1 and established clean cookies. Opening it now would mean
+            # Tab 2 starts with cold cookies and is likely to hit /blocked.
 
         except Exception as e:
             self._page = None
+            self._checkout_page = None
             if self._browser:
                 try:
                     await self._browser.stop()
@@ -162,7 +200,30 @@ class WalmartSessionManager:
             raise RuntimeError(f"[SESSION] Failed to start browser: {e}") from e
 
         self._status_cb("[SESSION] Browser ready")
-        logger.info("[SESSION] Browser started")
+        logger.debug("[SESSION] Browser started")
+
+    async def open_checkout_tab(self):
+        """
+        Open Tab 2 (checkout tab) after Tab 1 has warmed the session.
+        Called by the manager after warm_session() so Tab 2 inherits clean cookies
+        and is far less likely to hit the /blocked challenge.
+        """
+        if not self._browser:
+            return
+        from zendriver import cdp
+        self._status_cb("[SESSION] Opening checkout tab...")
+        self._checkout_page = await self._browser.get(
+            "https://www.walmart.com", new_tab=True
+        )
+        await self._checkout_page.send(
+            cdp.page.add_script_to_evaluate_on_new_document(source=_STEALTH_SCRIPT)
+        )
+        await asyncio.sleep(2.0)
+        await self._handle_blocked_page_on(self._checkout_page)
+        # Return focus to the harvester tab
+        await self._page.activate()
+        self._status_cb("[SESSION] Checkout tab ready")
+        logger.debug("[SESSION] Checkout tab opened")
 
     async def stop(self):
         """Save cookies and close the browser."""
@@ -171,13 +232,14 @@ class WalmartSessionManager:
         except Exception:
             pass
         self._page = None
+        self._checkout_page = None
         try:
             if self._browser:
                 await self._browser.stop()
         except Exception:
             pass
         self._browser = None
-        logger.info("[SESSION] Browser stopped")
+        logger.debug("[SESSION] Browser stopped")
 
     # ------------------------------------------------------------------
     # Login
@@ -257,7 +319,7 @@ class WalmartSessionManager:
             self._last_validation = time.monotonic()
             self._last_activity = time.monotonic()
             self._status_cb("[SESSION] Login successful")
-            logger.info("[SESSION] Login successful")
+            logger.warning("[SESSION] Login successful")
             return True
 
         except Exception as e:
@@ -289,19 +351,13 @@ class WalmartSessionManager:
             return False
 
         try:
-            await self._page.get(WALMART_ACCOUNT_URL)
-            await self._handle_blocked_page()
-            await asyncio.sleep(1)
-            from urllib.parse import urlparse
-            url = self._page.url
-            parsed_path = urlparse(url).path.lower()
-            if "login" in parsed_path or "signin" in parsed_path:
-                self._status_cb("[SESSION] Session invalid — redirected to login")
+            from zendriver import cdp
+            raw = await self._page.send(cdp.network.get_all_cookies())
+            cookie_names = {c.name for c in raw}
+            if "auth" not in cookie_names:
+                self._status_cb("[SESSION] No auth cookie — session invalid. Run walmart_relogin.py.")
+                logger.warning("[SESSION] No auth cookie found — not logged in")
                 return False
-
-            # URL check is sufficient — Walmart's account page always contains
-            # "Sign in" text in the nav even for logged-in users, so a body text
-            # check produces false positives and triggers re-login every startup.
 
             self._last_validation = now
             self._last_activity = now
@@ -316,38 +372,72 @@ class WalmartSessionManager:
 
     async def warm_session(self, item_ids: list[str]):
         """
-        Visit product pages before a drop to build a warm Akamai behavioral
-        profile and obtain a fresh _px3 PerimeterX clearance cookie.
+        Build a warm PerimeterX behavioral profile using low-risk pages only.
 
-        Should be called 1-2 minutes before a known drop time.
+        Product pages (/ip/...) are "sensitive routes" in PerimeterX — they always
+        trigger a live server-side risk evaluation regardless of _px3 cookie state,
+        meaning navigating to them repeatedly will keep triggering /blocked.
+
+        Instead we warm on homepage → category → search, which builds _pxvid
+        reputation and generates valid behavioral signals without the heightened
+        scrutiny applied to PDPs.
         """
         if not self._page:
             return
 
         self._status_cb("[SESSION] Warming session...")
-        warm_ids = item_ids[:3]  # visit up to 3 product pages
+        from zendriver import cdp
 
-        for i, item_id in enumerate(warm_ids, 1):
+        warm_pages = [
+            "https://www.walmart.com",
+            "https://www.walmart.com/browse/toys/trading-card-games/4171_4191_8134350",
+            "https://www.walmart.com/search?q=pokemon+trading+cards",
+        ]
+
+        for i, url in enumerate(warm_pages, 1):
             try:
-                url = f"https://www.walmart.com/ip/x/{item_id}"
-                self._status_cb(f"[SESSION] Warming {i}/{len(warm_ids)}: {item_id}")
-                from zendriver import cdp
+                self._status_cb(f"[SESSION] Warming {i}/{len(warm_pages)}...")
                 await self._page.send(cdp.page.navigate(url))
-                await asyncio.sleep(5.0)
+                await asyncio.sleep(random.uniform(3.5, 5.5))
                 await self._handle_blocked_page()
-                await asyncio.sleep(2.5)
-
+                # After each page, check if _px3 appeared — stop early if we have it
+                raw = await self._page.send(cdp.network.get_all_cookies())
+                cookie_dict = {c.name: c.value for c in raw}
+                if "_px3" in cookie_dict:
+                    with self._live_cookies_lock:
+                        self._live_cookies = cookie_dict
+                        self._live_cookies_timestamp = time.monotonic()
+                    self._px3_timestamp = time.monotonic()
+                    logger.warning("[SESSION] _px3 obtained after page %d/%d", i, len(warm_pages))
+                    break
             except Exception as e:
-                logger.warning("[SESSION] Warm page error for %s: %s", item_id, e)
+                logger.warning("[SESSION] Warm page error (%s): %s", url, e)
+
+        # If still no _px3, poll for up to 20s — it sometimes arrives a few seconds late
+        if self._px3_timestamp == 0.0:
+            self._status_cb("[SESSION] Waiting for _px3 cookie...")
+            for _ in range(20):
+                await asyncio.sleep(1.0)
+                try:
+                    raw = await self._page.send(cdp.network.get_all_cookies())
+                    cookie_dict = {c.name: c.value for c in raw}
+                    if "_px3" in cookie_dict:
+                        with self._live_cookies_lock:
+                            self._live_cookies = cookie_dict
+                            self._live_cookies_timestamp = time.monotonic()
+                        self._px3_timestamp = time.monotonic()
+                        logger.warning("[SESSION] _px3 obtained after wait")
+                        break
+                except Exception:
+                    pass
 
         self._last_activity = time.monotonic()
 
         if self._px3_timestamp == 0.0:
-            logger.warning(
-                "[SESSION] _px3 cookie not found after warming — anti-bot protection may trigger"
-            )
-
-        self._status_cb("[SESSION] Session warm — ready for checkout")
+            logger.warning("[SESSION] _px3 not obtained — proxy workers may get 429s")
+            self._status_cb("[SESSION] WARNING: no _px3 cookie — monitoring may fail")
+        else:
+            self._status_cb("[SESSION] Session warm — ready for checkout")
 
     def needs_rewarm(self) -> bool:
         """True if the _px3 cookie is stale and we should warm before checkout."""
@@ -363,19 +453,24 @@ class WalmartSessionManager:
             return
         try:
             from zendriver import cdp
-            raw = await self._page.send(cdp.network.get_cookies())
+            # get_all_cookies() returns ALL cookies regardless of current URL,
+            # unlike get_cookies() which filters by the current page's URL/domain.
+            raw = await self._page.send(cdp.network.get_all_cookies())
             cookie_dict = {c.name: c.value for c in raw}
             with self._live_cookies_lock:
                 self._live_cookies = cookie_dict
                 self._live_cookies_timestamp = time.monotonic()
             if "_px3" in cookie_dict:
                 self._px3_timestamp = time.monotonic()
-            logger.info("[HARVESTER] Initial cookie snapshot: %d cookies", len(cookie_dict))
+                logger.debug("[HARVESTER] Snapshot: %d cookies (has _px3)", len(cookie_dict))
+            else:
+                logger.warning("[HARVESTER] Snapshot: %d cookies — no _px3", len(cookie_dict))
         except Exception as e:
             logger.warning("[HARVESTER] harvest_now failed: %s", e)
 
     def start_harvester(self, loop: asyncio.AbstractEventLoop):
         """Start the background cookie harvester on the given event loop."""
+        self._event_loop = loop
         self._harvester_task = asyncio.run_coroutine_threadsafe(
             self._harvester_loop(), loop
         )
@@ -387,49 +482,179 @@ class WalmartSessionManager:
 
     async def _harvester_loop(self):
         """
-        Every 30s: navigate a Walmart page silently, extract all cookies,
-        and publish them to _live_cookies for proxy workers to consume.
-        _px3 expires in ~60s so 30s refresh keeps workers always valid.
-        """
-        HARVEST_INTERVAL = 30.0
-        HARVEST_URL = "https://www.walmart.com/cp/movies-tv-shows/4096640"  # quiet category page
+        One-time startup warmup on low-risk pages, then idles.
+        Re-warms only when _px3 is stale — always using low-risk pages, never PDPs.
 
-        while True:
+        Product pages (/ip/...) are PerimeterX sensitive routes that trigger a live
+        server-side risk call on every hit regardless of cookie state, causing
+        repeated /blocked challenges. Homepage/category/search are safe alternatives.
+        """
+        from .config import get_enabled_products
+
+        NAV_WAIT = 4.0
+        INTER_PRODUCT_DELAY = 2.0
+
+        # Low-risk pages for re-warming — never product pages (/ip/...).
+        # PDPs are PerimeterX "sensitive routes": they always trigger a live
+        # server-side risk call regardless of _px3 state, causing /blocked loops.
+        REWARM_PAGES = [
+            "https://www.walmart.com",
+            "https://www.walmart.com/browse/toys/trading-card-games/4171_4191_8134350",
+            "https://www.walmart.com/search?q=pokemon+trading+cards",
+        ]
+
+        async def _do_warmup():
+            # Ensure Tab 1 has focus before navigating
             try:
-                await asyncio.sleep(HARVEST_INTERVAL)
+                await self._page.activate()
+            except Exception:
+                pass
+
+            for url in REWARM_PAGES:
                 if not self._browser:
+                    return
+                try:
+                    from zendriver import cdp as _cdp
+                    await self._page.send(_cdp.page.navigate(url))
+                    await asyncio.sleep(NAV_WAIT)
+                    await self._handle_blocked_page()
+                except Exception as e:
+                    logger.debug("[HARVESTER] Navigation error (%s): %s", url, e)
+
+                try:
+                    from zendriver import cdp as _cdp2
+                    raw = await self._page.send(_cdp2.network.get_all_cookies())
+                    cookie_dict = {c.name: c.value for c in raw}
+                    with self._live_cookies_lock:
+                        self._live_cookies = cookie_dict
+                        self._live_cookies_timestamp = time.monotonic()
+                    if "_px3" in cookie_dict:
+                        self._px3_timestamp = time.monotonic()
+                        logger.debug("[HARVESTER] _px3 refreshed — %d cookies in jar", len(cookie_dict))
+                        break  # _px3 obtained — no need to visit more pages
+                except Exception as e:
+                    logger.debug("[HARVESTER] Cookie snapshot error: %s", e)
+
+                await asyncio.sleep(INTER_PRODUCT_DELAY)
+
+            # Park Tab 1 on the homepage when done — return focus to Tab 2
+            try:
+                from zendriver import cdp as _cdp3
+                await self._page.send(_cdp3.page.navigate("https://www.walmart.com"))
+                await asyncio.sleep(2.0)
+                if self._checkout_page:
+                    await self._checkout_page.activate()
+            except Exception:
+                pass
+
+        try:
+            # Initial warmup on startup (low-risk pages only)
+            await _do_warmup()
+            logger.info("[HARVESTER] Startup warmup complete — Tab 1 ready for fetch() stock checks")
+
+            # Cookie keep-alive loop — curl_cffi workers handle stock checking.
+            # Re-warm _px3 every 20s via low-risk pages. Workers use these
+            # cookies + direct IP (no proxy) to hit PDP pages at 3/sec/product.
+            COOKIE_REFRESH_INTERVAL = 20.0
+
+            while True:
+                if not self._page:
+                    await asyncio.sleep(2.0)
                     continue
 
-                # Navigate a low-traffic Walmart page to trigger fresh _px3
-                if self._page:
-                    try:
-                        from zendriver import cdp as _cdp
-                        await self._page.send(_cdp.page.navigate(HARVEST_URL))
-                        await asyncio.sleep(3.0)
-                        await self._handle_blocked_page()
-                    except Exception as e:
-                        logger.debug("[HARVESTER] Navigation error: %s", e)
+                if self.needs_rewarm():
+                    logger.debug("[HARVESTER] _px3 stale — re-warming")
+                    await _do_warmup()
 
-                # Extract all cookies via CDP (cookies.get_all() hangs on busy pages)
-                from zendriver import cdp
-                raw = await self._page.send(cdp.network.get_cookies())
-                cookie_dict = {c.name: c.value for c in raw}
+                # Snapshot cookies for curl_cffi workers
+                try:
+                    from zendriver import cdp as _cdp_ck
+                    raw = await self._page.send(_cdp_ck.network.get_all_cookies())
+                    cookie_dict = {c.name: c.value for c in raw}
+                    with self._live_cookies_lock:
+                        self._live_cookies = cookie_dict
+                        self._live_cookies_timestamp = time.monotonic()
+                    if "_px3" in cookie_dict:
+                        self._px3_timestamp = time.monotonic()
+                        logger.info("[HARVESTER] Cookies refreshed — %d cookies, _px3 present", len(cookie_dict))
+                    else:
+                        logger.warning("[HARVESTER] Cookie snapshot has NO _px3 — workers may get blocked")
+                except Exception as e:
+                    logger.warning("[HARVESTER] Cookie snapshot error: %s", e)
 
-                with self._live_cookies_lock:
-                    self._live_cookies = cookie_dict
-                    self._live_cookies_timestamp = time.monotonic()
+                await asyncio.sleep(COOKIE_REFRESH_INTERVAL)
 
-                # Track _px3 freshness
-                if "_px3" in cookie_dict:
-                    self._px3_timestamp = time.monotonic()
-                    logger.debug("[HARVESTER] Fresh cookies harvested (%d total)", len(cookie_dict))
-                else:
-                    logger.warning("[HARVESTER] _px3 not found in harvested cookies")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning("[HARVESTER] Unexpected error: %s", e)
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning("[HARVESTER] Unexpected error: %s", e)
+    async def _check_product_on_tab(self, tab, product: dict):
+        """Navigate a tab to a product page and read stock data from __NEXT_DATA__."""
+        item_id = product["item_id"]
+        name = product.get("name", item_id)
+        pdp_url = f"https://www.walmart.com/ip/{item_id}"
+
+        try:
+            from zendriver import cdp as _cdp_nav
+            await tab.send(_cdp_nav.page.navigate(pdp_url))
+            await asyncio.sleep(1.5)
+
+            # Check for /blocked
+            tab_url = tab.url or ""
+            if "/blocked" in tab_url:
+                logger.warning("[HARVESTER] /blocked on PDP for %s — solving", item_id)
+                await self._handle_blocked_page_on(tab)
+                await asyncio.sleep(1.0)
+                # Re-navigate after solving
+                await tab.send(_cdp_nav.page.navigate(pdp_url))
+                await asyncio.sleep(2.0)
+
+            # Read __NEXT_DATA__ from the DOM
+            js = """
+            (() => {
+                const el = document.getElementById('__NEXT_DATA__');
+                if (!el) return null;
+                try { return JSON.parse(el.textContent); }
+                catch(e) { return null; }
+            })()
+            """
+            data = await tab.evaluate(js, await_promise=False)
+            if not data:
+                logger.debug("[HARVESTER] No __NEXT_DATA__ for %s", item_id)
+                return
+
+            # Extract product info and dispatch to stock monitor
+            product_data = (
+                data.get("props", {})
+                    .get("pageProps", {})
+                    .get("initialData", {})
+                    .get("data", {})
+                    .get("product")
+            )
+            if product_data and self._stock_intercept_cb:
+                # Ensure usItemId is present (stock monitor needs it for matching)
+                if "usItemId" not in product_data:
+                    product_data["usItemId"] = item_id
+                # Wrap in the format on_browser_graphql expects:
+                # {item_id, data} where data has data.product
+                self._stock_intercept_cb({
+                    "item_id": item_id,
+                    "data": {"data": {"product": product_data}},
+                })
+                name_str = product_data.get("name", item_id)[:45]
+                avail = product_data.get("availabilityStatus", "?")
+                price_info = product_data.get("priceInfo", {}).get("currentPrice", {}).get("price")
+                price_str = f"${price_info:.2f}" if price_info else "no_price"
+                logger.info("[HARVESTER] %s | %s | %s | %s", item_id, name_str, avail, price_str)
+            else:
+                logger.info("[HARVESTER] No product data for %s", item_id)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[HARVESTER] Tab check error for %s: %s", item_id, e)
+
 
     def get_monitoring_cookies(self) -> dict:
         """
@@ -440,7 +665,7 @@ class WalmartSessionManager:
             if self._live_cookies:
                 return dict(self._live_cookies)
 
-        # Harvester hasn't run yet — load from disk as fallback
+        # Harvester hasn't run yet — load from disk as fallback, skipping expired cookies
         path = Path(COOKIES_FILE)
         if not path.exists():
             return {}
@@ -448,8 +673,15 @@ class WalmartSessionManager:
             with _cookie_file_lock:
                 with open(path, "r") as f:
                     cookie_list = json.load(f)
+            now = time.monotonic()
+            import time as _time
+            now_ts = _time.time()
             if isinstance(cookie_list, list):
-                return {c["name"]: c["value"] for c in cookie_list if "name" in c}
+                return {
+                    c["name"]: c["value"]
+                    for c in cookie_list
+                    if "name" in c and c.get("expires", -1) > now_ts
+                }
             if isinstance(cookie_list, dict):
                 return cookie_list
         except Exception as e:
@@ -525,7 +757,7 @@ class WalmartSessionManager:
                                 ]
                             )
                         )
-                        logger.info("[SESSION] Restored %d cookies from disk", len(valid_cookies))
+                        logger.debug("[SESSION] Restored %d cookies from disk", len(valid_cookies))
         except Exception as e:
             logger.warning("[SESSION] Failed to load cookies: %s", e)
 
@@ -534,8 +766,12 @@ class WalmartSessionManager:
     # ------------------------------------------------------------------
 
     def get_page(self):
-        """Return the active zendriver Tab object for use by purchase executor."""
+        """Return Tab 1 (harvester tab) — used by the cookie harvester."""
         return self._page
+
+    def get_checkout_page(self):
+        """Return Tab 2 (checkout tab) — dedicated clean tab for purchase executor."""
+        return self._checkout_page or self._page  # fall back to Tab 1 if Tab 2 not ready
 
     def get_context(self):
         """Return the active browser (zendriver Browser)."""
@@ -548,42 +784,34 @@ class WalmartSessionManager:
     # Blocked page / press-and-hold challenge handler
     # ------------------------------------------------------------------
 
-    async def _handle_blocked_page(self, max_attempts: int = 8) -> bool:
+    async def _handle_blocked_page(self, max_attempts: int = 10) -> bool:
+        """Solve /blocked challenge on the harvester tab (Tab 1)."""
+        return await self._handle_blocked_page_on(self._page, max_attempts)
+
+    async def _handle_blocked_page_on(self, page, max_attempts: int = 10) -> bool:
         """
-        Detect Walmart's /blocked PerimeterX press-and-hold challenge and solve it
-        via mouse simulation. Handles multiple rounds (Walmart often requires 2-3
-        completions and may reverse the bar if released early).
-        Returns True once cleared, False if all attempts exhausted.
+        Detect Walmart's /blocked PerimeterX press-and-hold challenge on the given
+        tab and solve it.
         """
-        if not self._page or "/blocked" not in (self._page.url or ""):
+        if not page or "/blocked" not in (page.url or ""):
             return True  # not on a blocked page
 
         logger.warning("[SESSION] /blocked page detected — attempting press-and-hold solve")
         self._status_cb("[SESSION] Bot challenge detected — solving press-and-hold...")
 
-        # PerimeterX press-and-hold selectors (most specific first)
-        _HOLD_SELECTORS = [
-            "#px-captcha",
-            "div[id*='px-captcha']",
-            "div[class*='px-captcha']",
-            "div[class*='hold']",
-            "div[class*='press']",
-            "div[class*='challenge']",
-        ]
-
         from zendriver import cdp
 
         for attempt in range(1, max_attempts + 1):
-            if "/blocked" not in (self._page.url or ""):
+            if "/blocked" not in (page.url or ""):
                 break
 
-            logger.info("[SESSION] Challenge attempt %d/%d", attempt, max_attempts)
+            logger.debug("[SESSION] Challenge attempt %d/%d", attempt, max_attempts)
 
-            # Fast element scan — 0.5s per selector instead of 3s
             target = None
-            for sel in _HOLD_SELECTORS:
+            for sel in ["#px-captcha", "div[id*='px-captcha']", "div[class*='px-captcha']",
+                        "div[class*='hold']", "div[class*='press']", "div[class*='challenge']"]:
                 try:
-                    el = await self._page.wait_for(selector=sel, timeout=0.5)
+                    el = await page.wait_for(selector=sel, timeout=5)
                     if el:
                         target = el
                         break
@@ -591,96 +819,147 @@ class WalmartSessionManager:
                     continue
 
             if target is None:
-                # Element not ready yet — short wait and retry
                 await asyncio.sleep(0.5)
                 continue
 
             try:
-                # Scroll element into view so coordinates are in the visible viewport
                 await target.scroll_into_view()
-                await asyncio.sleep(0.2)
 
                 box = await target.apply(
-                    "(e) => { const r = e.getBoundingClientRect(); return {x: r.left, y: r.top, width: r.width, height: r.height}; }"
+                    "(e) => { const r = e.getBoundingClientRect(); "
+                    "return {x: r.left, y: r.top, width: r.width, height: r.height}; }"
                 )
                 if not box:
                     await asyncio.sleep(0.5)
                     continue
 
-                # Aim slightly off-center — dead-center clicks can look robotic
                 cx = box["x"] + box["width"] * random.uniform(0.45, 0.55)
                 cy = box["y"] + box["height"] * random.uniform(0.45, 0.55)
 
-                # Approach from a nearby point to mimic human cursor travel
-                await self._page.mouse_move(
-                    cx + random.uniform(-40, 40),
-                    cy + random.uniform(-20, 20),
-                    steps=12,
+                await page.mouse_move(
+                    cx + random.uniform(-30, 30),
+                    cy + random.uniform(-15, 15),
+                    steps=8,
                 )
-                await asyncio.sleep(random.uniform(0.1, 0.25))
-                await self._page.mouse_move(cx, cy, steps=6)
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(random.uniform(0.05, 0.12))
+                await page.mouse_move(cx, cy, steps=4)
+                await asyncio.sleep(0.08)
 
-                # Mouse down via CDP
-                await self._page.send(cdp.input_.dispatch_mouse_event(
+                await page.send(cdp.input_.dispatch_mouse_event(
                     type_="mousePressed",
-                    x=cx,
-                    y=cy,
+                    x=cx, y=cy,
                     button=cdp.input_.MouseButton.LEFT,
-                    buttons=1,
-                    click_count=1,
+                    buttons=1, click_count=1,
                 ))
 
-                # Hold dynamically — make tiny micro-movements while holding
-                # so the mouse looks like a real human hand (slight tremor)
                 hold_start = time.monotonic()
-                while time.monotonic() - hold_start < 20.0:
-                    if "/blocked" not in (self._page.url or ""):
+                while time.monotonic() - hold_start < 25.0:
+                    if "/blocked" not in (page.url or ""):
                         break
-                    # Small jitter every ~400ms
-                    await asyncio.sleep(random.uniform(0.35, 0.45))
-                    if "/blocked" not in (self._page.url or ""):
+                    await asyncio.sleep(0.15)
+                    if "/blocked" not in (page.url or ""):
                         break
-                    jx = cx + random.uniform(-2, 2)
-                    jy = cy + random.uniform(-2, 2)
-                    await self._page.mouse_move(jx, jy, steps=2)
+                    jx = cx + random.uniform(-1.5, 1.5)
+                    jy = cy + random.uniform(-1.5, 1.5)
+                    await page.send(cdp.input_.dispatch_mouse_event(
+                        type_="mouseMoved",
+                        x=jx, y=jy,
+                        button=cdp.input_.MouseButton.LEFT,
+                        buttons=1,
+                    ))
 
-                # Mouse up via CDP
-                await self._page.send(cdp.input_.dispatch_mouse_event(
+                await page.send(cdp.input_.dispatch_mouse_event(
                     type_="mouseReleased",
-                    x=cx,
-                    y=cy,
+                    x=cx, y=cy,
                     button=cdp.input_.MouseButton.LEFT,
-                    buttons=0,
-                    click_count=1,
+                    buttons=0, click_count=1,
                 ))
 
-                # Short settle — then loop immediately to catch "Try again" rounds
-                await asyncio.sleep(0.8)
+                await asyncio.sleep(0.5)
 
             except Exception as e:
                 logger.warning("[SESSION] Mouse interaction error: %s", e)
                 try:
-                    await self._page.send(cdp.input_.dispatch_mouse_event(
-                        type_="mouseReleased",
-                        x=0,
-                        y=0,
+                    await page.send(cdp.input_.dispatch_mouse_event(
+                        type_="mouseReleased", x=0, y=0,
                         button=cdp.input_.MouseButton.LEFT,
-                        buttons=0,
-                        click_count=1,
+                        buttons=0, click_count=1,
                     ))
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
 
-        cleared = "/blocked" not in (self._page.url or "")
+        cleared = "/blocked" not in (page.url or "")
         if cleared:
-            logger.info("[SESSION] /blocked challenge cleared")
+            logger.debug("[SESSION] /blocked challenge cleared")
             self._status_cb("[SESSION] Challenge solved — continuing")
         else:
             logger.error("[SESSION] Could not clear /blocked challenge after %d attempts", max_attempts)
             self._status_cb("[SESSION] Challenge unsolved — may need manual intervention in browser")
         return cleared
+
+    def _on_network_request(self, event):
+        """
+        CDP RequestWillBeSent handler — sniffs ItemByIdAtf/Btf URLs to:
+        1. Auto-discover the ATF GraphQL hash
+        2. Track request IDs so we can capture response bodies for stock data
+        """
+        try:
+            url = event.request.url
+            if "ItemByIdAtf" in url:
+                m = _re.search(r"/ItemByIdAtf/([a-f0-9]{64})/", url)
+                if m:
+                    set_graphql_hash_atf(m.group(1))
+            if "ItemByIdBtf" in url or "ItemByIdAtf" in url:
+                m = _re.search(r"/ip/(\d+)", url)
+                if m and self._stock_intercept_cb:
+                    item_id = m.group(1)
+                    with self._pending_lock:
+                        self._pending_graphql[event.request_id] = item_id
+        except Exception:
+            pass
+
+    def _on_loading_finished(self, event):
+        """
+        CDP LoadingFinished handler — fires after response body is fully buffered.
+        At this point get_response_body is guaranteed to succeed (unlike ResponseReceived
+        which fires before the body is ready).
+        """
+        try:
+            with self._pending_lock:
+                item_id = self._pending_graphql.pop(event.request_id, None)
+            if item_id and self._stock_intercept_cb and self._page and self._event_loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._fetch_graphql_body(event.request_id, item_id),
+                    self._event_loop,
+                )
+        except Exception:
+            pass
+
+    async def _fetch_graphql_body(self, request_id, item_id: str):
+        """Fetch the response body for a captured GraphQL request and call the stock callback."""
+        try:
+            from zendriver import cdp
+            result = await self._page.send(
+                cdp.network.get_response_body(request_id=request_id)
+            )
+            if result and result.body:
+                import json as _json
+                try:
+                    data = _json.loads(result.body)
+                    if self._stock_intercept_cb:
+                        logger.info("[HARVESTER] CDP intercepted GraphQL for item %s", item_id)
+                        self._stock_intercept_cb({"item_id": item_id, "data": data})
+                except Exception as e:
+                    logger.warning("[HARVESTER] Failed to parse GraphQL body for %s: %s", item_id, e)
+            else:
+                logger.warning("[HARVESTER] Empty GraphQL body for item %s", item_id)
+        except Exception as e:
+            logger.warning("[HARVESTER] get_response_body failed for %s: %s", item_id, e)
+        finally:
+            # Signal harvester loop that it's safe to navigate to the next product
+            if self._graphql_captured:
+                self._graphql_captured.set()
 
     async def _find_input(self, selectors: list[str], timeout: int = 10000):
         """Try each selector individually and return the first matching input element."""

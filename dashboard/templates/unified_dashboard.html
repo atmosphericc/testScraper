@@ -1279,6 +1279,16 @@
             loadWalmartStatus();
           }
         }
+        if (msg.type === 'stock_update' && msg.data) {
+          const id = msg.data.item_id;
+          if (id && walmartProducts[id] !== undefined) {
+            walmartProducts[id].in_stock = msg.data.in_stock;
+            walmartProducts[id].last_checked = msg.data.time ? Date.now() / 1000 : walmartProducts[id].last_checked;
+            renderWalmartTable();
+            const lc = document.getElementById('walmart-stat-lastcycle');
+            if (lc) lc.textContent = msg.data.time || new Date().toLocaleTimeString();
+          }
+        }
       } catch(err) {
         console.warn('Walmart SSE parse error:', err);
       }

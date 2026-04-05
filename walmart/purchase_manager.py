@@ -57,7 +57,18 @@ class WalmartPurchaseManager:
         self,
         status_callback: Optional[Callable[[str], None]] = None,
     ):
-        self._status_cb = status_callback or (lambda msg: None)
+        # Activity log must exist before _status_cb is wired — callbacks may fire during init
+        self._activity_log: list[dict] = []
+        self._activity_lock = threading.Lock()
+
+        _raw_cb = status_callback or (lambda msg: None)
+
+        def _wrapped_status(msg: str):
+            """Log every status message into the activity log AND fire the external callback."""
+            self._log_activity(msg)
+            _raw_cb(msg)
+
+        self._status_cb = _wrapped_status
 
         self._proxy_manager = ProxyManager()
         self._session = WalmartSessionManager(status_callback=self._status_cb)
@@ -65,8 +76,15 @@ class WalmartPurchaseManager:
             proxy_manager=self._proxy_manager,
             session=self._session,
             on_in_stock=self._on_in_stock_signal,
+            on_stock_change=self._on_stock_change,
             status_callback=self._status_cb,
         )
+        # Feed browser-intercepted GraphQL responses into the monitor.
+        # This is the primary stock check path — real Chrome TLS, no proxy blocks.
+        self._session.set_stock_intercept_callback(self._monitor.on_browser_graphql)
+
+        # Optional callback for dashboard: cb(item_id, in_stock, price)
+        self._stock_update_callback: Optional[Callable] = None
 
         # State
         self._lock = threading.Lock()
@@ -77,13 +95,10 @@ class WalmartPurchaseManager:
         self._cooldown_until: dict[str, float] = {}
         self._running = False
         self._login_ok = False   # set True after successful login in start()
+        self._warmup_done = False  # set True after initial session warm + harvest
 
         # Running event loop — captured in start(), shared by browser + harvester + purchases
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-
-        # Recent activity log for dashboard
-        self._activity_log: list[dict] = []
-        self._activity_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Startup / shutdown
@@ -113,18 +128,14 @@ class WalmartPurchaseManager:
         session_ok = await self._session.validate_session()
         if not session_ok:
             self._status_cb(
-                "[MANAGER] Session invalid — run walmart_relogin.py to refresh cookies. "
-                "Running in monitor-only mode."
+                "[MANAGER] NOT LOGGED IN — run walmart_relogin.py to create a session, then restart."
             )
-            logger.warning("[MANAGER] Session invalid — monitor-only mode. Run walmart_relogin.py.")
-            self._login_ok = False
-            await self._session.harvest_now()
-            self._session.start_harvester(self._loop)
-            self._monitor.start()
+            logger.warning("[MANAGER] No valid session — bot stopped. Run walmart_relogin.py.")
+            self._running = False
             return
         self._login_ok = True
 
-        # Warm session on products
+        # Warm session on products (Tab 1 roams, builds clean _px3 cookies)
         products = get_enabled_products()
         if products:
             item_ids = [p["item_id"] for p in products]
@@ -133,13 +144,19 @@ class WalmartPurchaseManager:
         # Do an immediate cookie harvest so workers have valid cookies from the first check
         await self._session.harvest_now()
 
+        # Open Tab 2 now that Tab 1 has warm cookies — much less likely to hit /blocked
+        await self._session.open_checkout_tab()
+
         # Start cookie harvester — keeps _px3 fresh for proxy workers every 30s
         self._session.start_harvester(self._loop)
+
+        # Warmup is complete — purchases are now allowed
+        self._warmup_done = True
 
         # Start stock monitor
         self._monitor.start()
         self._status_cb("[MANAGER] Walmart bot running — monitoring stock")
-        logger.info("[MANAGER] Walmart bot started, monitoring %d product(s)", len(products))
+        logger.debug("[MANAGER] Walmart bot started, monitoring %d product(s)", len(products))
 
     async def stop(self):
         """Gracefully stop the bot."""
@@ -148,7 +165,15 @@ class WalmartPurchaseManager:
         self._session.stop_harvester()
         await self._session.stop()
         self._status_cb("[MANAGER] Walmart bot stopped")
-        logger.info("[MANAGER] Bot stopped")
+        logger.debug("[MANAGER] Bot stopped")
+
+    def set_stock_update_callback(self, cb: Callable):
+        """Register a callback fired on every stock state change: cb(item_id, in_stock, price)."""
+        self._stock_update_callback = cb
+
+    def _on_stock_change(self, item_id: str, in_stock: bool, price):
+        if self._stock_update_callback:
+            self._stock_update_callback(item_id, in_stock, price)
 
     # ------------------------------------------------------------------
     # In-stock callback (called from monitor's thread)
@@ -167,6 +192,10 @@ class WalmartPurchaseManager:
         """
         if not self._login_ok:
             logger.debug("[MANAGER] Skipping purchase — not logged in")
+            return
+
+        if not self._warmup_done:
+            logger.debug("[MANAGER] Skipping purchase — warmup not complete yet")
             return
 
         # Track which items are currently in-stock for priority selection
@@ -201,7 +230,7 @@ class WalmartPurchaseManager:
             self._state[item_id] = PurchaseState.PURCHASING
 
         self._log_activity(f"In-stock signal: {name} @ ${price}")
-        logger.info("[MANAGER] In-stock signal for %s — scheduling purchase", item_id)
+        logger.warning("[MANAGER] In-stock signal for %s — scheduling purchase", item_id)
 
         # Priority selection: if a higher-priority product is also in-stock and
         # not in a terminal/active state, buy that one instead.
@@ -220,7 +249,7 @@ class WalmartPurchaseManager:
         if eligible:
             best = min(eligible, key=lambda p: p.get("priority", 999))
             if best["item_id"] != item_id:
-                logger.info(
+                logger.warning(
                     "[MANAGER] Priority override: purchasing %s (priority %s) instead of %s",
                     best["item_id"], best.get("priority", "?"), item_id,
                 )
@@ -298,7 +327,7 @@ class WalmartPurchaseManager:
                     self._login_ok = False
                     raise RuntimeError("Browser restarted but re-login failed")
                 # Re-wire the new page into the monitor
-                self._monitor.set_page(self._session.get_page())
+                self._monitor.set_page(self._session.get_checkout_page())
 
             # Re-warm session if _px3 is stale
             if self._session.needs_rewarm():
@@ -310,12 +339,13 @@ class WalmartPurchaseManager:
                 try:
                     self._monitor.stop()  # now blocks until thread exits (up to 10s)
                     self._monitor.start()
-                    logger.info("[MANAGER] Stock monitor restarted successfully")
+                    logger.warning("[MANAGER] Stock monitor restarted successfully")
                 except Exception as _me:
                     logger.error("[MANAGER] Failed to restart stock monitor: %s", _me)
 
-            # Run purchase
-            page = self._session.get_page()
+            # Run purchase on the dedicated checkout tab (Tab 2) — cookies from the
+            # harvester tab (Tab 1) are shared automatically via the same browser context.
+            page = self._session.get_checkout_page()
             if not page:
                 raise RuntimeError("No browser page available")
 
@@ -323,12 +353,19 @@ class WalmartPurchaseManager:
             result = await executor.purchase(item_id=item_id, item_url=item_url)
 
             with self._lock:
-                if result.success:
+                if result.success and result.order_id not in ("TEST_MODE", "DRY_RUN"):
                     self._state[item_id] = PurchaseState.SUCCESS
                     self._consecutive_failures = 0
                     self._circuit_open_until = 0.0
                     self._log_activity(f"PURCHASE SUCCESS: {name} — Order #{result.order_id}")
-                    logger.info("[MANAGER] Purchase success: %s — %s", name, result.order_id)
+                    logger.warning("[MANAGER] Purchase success: %s — %s", name, result.order_id)
+                elif result.success:
+                    # Test/dry-run completed — reset to MONITORING immediately so
+                    # the next in-stock cycle triggers another test run
+                    self._state[item_id] = PurchaseState.MONITORING
+                    self._consecutive_failures = 0
+                    self._log_activity(f"TEST RUN complete: {name} — cart cleared, back to monitoring")
+                    logger.debug("[MANAGER] Test run complete for %s — resuming monitoring", item_id)
                 else:
                     self._state[item_id] = PurchaseState.FAILED
                     self._consecutive_failures += 1
@@ -353,10 +390,7 @@ class WalmartPurchaseManager:
                 current = self._state.get(item_id)
                 if current == PurchaseState.FAILED:
                     self._cooldown_until[item_id] = time.monotonic() + 30
-                elif current == PurchaseState.SUCCESS:
-                    self._cooldown_until[item_id] = time.monotonic() + 3600  # 1hr after success
-                if current not in (PurchaseState.SUCCESS,):
-                    self._state[item_id] = PurchaseState.MONITORING
+                self._state[item_id] = PurchaseState.MONITORING
 
     # ------------------------------------------------------------------
     # Stock monitor health check
@@ -408,14 +442,19 @@ class WalmartPurchaseManager:
         circuit_open = time.monotonic() < self._circuit_open_until
         products = get_enabled_products()
 
+        stock_states = self._monitor.get_stock_states()
+
         product_status = []
         for p in products:
             iid = p["item_id"]
+            ss = stock_states.get(iid, {})
             product_status.append({
                 "item_id": iid,
                 "name": p.get("name", "Unknown"),
                 "priority": p.get("priority", 999),
                 "state": states.get(iid, PurchaseState.MONITORING),
+                "in_stock": ss.get("in_stock", False),
+                "last_checked": ss.get("last_checked"),
             })
 
         return {

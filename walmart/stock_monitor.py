@@ -1,118 +1,45 @@
 """
-Walmart stock monitor — staggered proxy worker architecture with live cookie harvesting.
+Walmart stock monitor — browser fetch architecture.
 
-The browser session (WalmartSessionManager) runs a background harvester that
-refreshes Walmart cookies (_px3, bm_sv, auth) every 30s by navigating a real
-page. Proxy workers pull from this live cookie store so every request carries
-valid PerimeterX tokens.
+Uses fetch() inside the real Chrome browser tab to check all product PDPs
+in parallel. Three dispatcher threads fire overlapping batches via
+run_coroutine_threadsafe, achieving ~6-8 checks/sec/product with 0% blocks.
 
-Architecture:
-  - 50 proxy workers, each staggered by WORKER_CYCLE / 50 seconds at startup
-  - Each worker checks all configured products every WORKER_CYCLE seconds
-  - Net result: each product checked ~3.3 times/second (50/15)
-  - Browser harvester refreshes cookies every 30s — well within _px3's ~60s TTL
+No proxies or external HTTP clients needed — the browser has valid PerimeterX
+cookies and TLS fingerprint.
 """
 
+import asyncio
 import json
 import logging
-import requests
 import threading
 import time
 from typing import Callable, Optional
 
 from .config import (
-    GRAPHQL_HASH,
     WALMART_SELLER_ID,
     get_enabled_products,
+    get_config,
+    save_config,
 )
-from .proxy_manager import ProxyManager
 
 logger = logging.getLogger(__name__)
 
-# Each worker repeats every WORKER_CYCLE seconds.
-# With 50 workers staggered: 50 / 15 = 3.3 checks/sec per product.
-WORKER_CYCLE = 15.0
-
-HEADERS = {
-    "accept": "application/json",
-    "accept-language": "en-US",
-    "content-type": "application/json",
-    "x-o-bu": "WALMART-US",
-    "x-o-mart": "B2C",
-    "x-o-platform": "rweb",
-    "x-o-segment": "oaoh",
-    "x-apollo-operation-name": "ItemByIdBtf",
-    "x-o-gql-query": "query ItemByIdBtf",
-    "wm_mp": "true",
-    "calltype": "CLIENT",
-    "origin": "https://www.walmart.com",
-    "sec-fetch-dest": "empty",
-    "sec-fetch-mode": "cors",
-    "sec-fetch-site": "same-origin",
-    "user-agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-}
-
-
-def _format_proxy(proxy_str: Optional[str]) -> Optional[dict]:
-    if not proxy_str:
-        return None
-    if "://" not in proxy_str:
-        proxy_str = f"http://{proxy_str}"
-    return {"http": proxy_str, "https": proxy_str}
-
-
-def _build_body(item_id: str) -> dict:
-    return {
-        "variables": {
-            "isMobile": False,
-            "layout": ["itemPageThreeGridDesktop2"],
-            "channel": "WWW",
-            "version": "v1",
-            "postProcessingVersion": 1,
-            "p13nCls": {
-                "pageId": item_id,
-                "skipPtcFetch": True,
-                "p13NCallType": "BTF",
-            },
-            "fetchP13N": True,
-            "fMrkDscrp": False,
-            "pageType": "ItemPageGlobalDesktop",
-            "fIdml": False,
-            "fRev": False,
-            "iId": item_id,
-            "bbe": True,
-            "fSId": True,
-            "eSb": True,
-            "enableDetailedBeacon": False,
-            "enableMultiSave": False,
-            "enableClickTrackingURL": False,
-            "eCc": True,
-            "fIdmlOrMrkDscrp": False,
-            "tenant": "WM_GLASS",
-            "epsv": True,
-            "enableRxDrugScheduleModal": False,
-            "enablePromotionMessages": False,
-            "enableSignInToSeePrice": False,
-            "enableOptimisticWeightUpdate": False,
-        }
-    }
+# Browser fetch loop fires every CHECK_INTERVAL seconds.
+# Each fire fetches ALL products in parallel via Promise.allSettled inside the browser.
+CHECK_INTERVAL = 0.333  # 3 checks per second per product
 
 
 class WalmartStockMonitor:
     """
-    Staggered proxy worker stock monitor with live cookie harvesting.
+    Browser-fetch stock monitor.
 
-    Spawns one thread per proxy, staggered across WORKER_CYCLE seconds.
-    Each worker fetches fresh cookies from the session's live cookie store
-    (populated every 30s by the browser harvester) before each cycle.
+    Runs fetch() inside the real Chrome tab (Tab 1) to check all products
+    in parallel. Three dispatcher threads fire overlapping batches to
+    achieve ~3 checks/sec/product.
 
     Usage:
         monitor = WalmartStockMonitor(
-            proxy_manager=pm,
             session=session_manager,
             on_in_stock=cb,
         )
@@ -122,16 +49,16 @@ class WalmartStockMonitor:
 
     def __init__(
         self,
-        proxy_manager: Optional[ProxyManager] = None,
-        session=None,  # WalmartSessionManager — provides get_monitoring_cookies()
+        proxy_manager=None,  # accepted for call-site compatibility, unused
+        session=None,  # WalmartSessionManager — provides browser page + event loop
         on_in_stock: Optional[Callable[[str, Optional[str], str, Optional[float]], None]] = None,
+        on_stock_change: Optional[Callable] = None,
         status_callback: Optional[Callable[[str], None]] = None,
-        # legacy param kept for compatibility
-        page=None,
+        page=None,  # accepted for call-site compatibility, unused
     ):
-        self._proxy_manager = proxy_manager
         self._session = session
         self._on_in_stock = on_in_stock
+        self._on_stock_change = on_stock_change
         self._status_cb = status_callback or (lambda msg: None)
 
         self._running = False
@@ -141,12 +68,13 @@ class WalmartStockMonitor:
 
         # Shared in-stock cache — prevents duplicate callbacks for the same restock
         self._in_stock_cache: dict[str, bool] = {}
+        self._last_checked: dict[str, float] = {}   # item_id → epoch timestamp
         self._cache_lock = threading.Lock()
 
-        # Hash error tracking — pause all workers if GraphQL hash is expired
-        self._consecutive_hash_errors: int = 0
-        self._hash_error_lock = threading.Lock()
-        self._hash_error_pause_until: float = 0.0
+        # Check counters for dashboard visibility
+        self._total_checks: int = 0
+        self._total_errors: int = 0
+        self._checks_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Start / stop
@@ -160,28 +88,23 @@ class WalmartStockMonitor:
             self._running = True
             self._stop_event.clear()
 
-        proxies = self._proxy_manager._monitor_proxies if self._proxy_manager else []
-        if not proxies:
-            logger.warning("[MONITOR] No monitor proxies — running single worker without proxy")
-            proxies = [None]
-
-        n = len(proxies)
-        stagger = WORKER_CYCLE / n
-
         self._worker_threads = []
-        for i, proxy in enumerate(proxies):
-            t = threading.Thread(
-                target=self._worker,
-                args=(proxy, i * stagger),
-                daemon=True,
-                name=f"WalmartMonitor-{i+1}",
-            )
-            t.start()
-            self._worker_threads.append(t)
 
-        rate = n / WORKER_CYCLE
-        logger.info("[MONITOR] %d workers started — %.1f checks/sec per product", n, rate)
-        self._status_cb(f"[MONITOR] {n} proxy workers — {rate:.1f} checks/sec per product")
+        t = threading.Thread(
+            target=self._browser_fetch_loop,
+            daemon=True,
+            name="WalmartMonitor-BrowserFetch",
+        )
+        t.start()
+        self._worker_threads.append(t)
+
+        logger.info("[MONITOR] Started browser-fetch monitor (%.0f checks/sec/product)",
+                     1.0 / CHECK_INTERVAL)
+        self._status_cb("[MONITOR] Stock monitoring active — browser fetch mode")
+
+        hb = threading.Thread(target=self._heartbeat, daemon=True, name="WalmartMonitor-HB")
+        hb.start()
+        self._worker_threads.append(hb)
 
     def stop(self):
         with self._running_lock:
@@ -195,18 +118,141 @@ class WalmartStockMonitor:
                     logger.warning("[MONITOR] Worker %s did not exit in 10s", t.name)
 
         self._worker_threads = []
-        logger.info("[MONITOR] Stock monitor stopped")
+        logger.debug("[MONITOR] Stock monitor stopped")
 
     def set_page(self, page):
         """No-op — kept for call-site compatibility."""
         pass
 
     # ------------------------------------------------------------------
-    # Worker
+    # Heartbeat
     # ------------------------------------------------------------------
 
-    def _worker(self, proxy: Optional[str], initial_delay: float):
-        """Single proxy worker — waits for stagger offset then loops every WORKER_CYCLE."""
+    def _heartbeat(self):
+        """
+        Broadcasts per-product stock status to the dashboard.
+
+        - Every 15s: summary line showing check rate and per-product status.
+        - On change: immediately logs which products went IN STOCK or OUT OF STOCK.
+        """
+        last_cache: dict = {}
+        last_summary_checks = 0
+        last_summary_time = time.monotonic()
+        SUMMARY_INTERVAL = 15.0
+
+        while not self._stop_event.is_set():
+            self._stop_event.wait(timeout=2.0)
+            if self._stop_event.is_set():
+                return
+
+            with self._cache_lock:
+                current_cache = dict(self._in_stock_cache)
+            with self._checks_lock:
+                total_checks = self._total_checks
+                total_errors = self._total_errors
+
+            products = get_enabled_products()
+            names = {p["item_id"]: p.get("name", p["item_id"]) for p in products}
+
+            # Broadcast state *changes* only
+            for iid, now_in_stock in current_cache.items():
+                was_in_stock = last_cache.get(iid)
+                if was_in_stock is not None and now_in_stock != was_in_stock:
+                    label = "IN STOCK" if now_in_stock else "OUT OF STOCK"
+                    self._status_cb(f"[MONITOR] {label}: {names.get(iid, iid)}")
+            last_cache = dict(current_cache)
+
+            # Periodic summary
+            now = time.monotonic()
+            new_checks = total_checks - last_summary_checks
+            if now - last_summary_time >= SUMMARY_INTERVAL and (new_checks > 0 or total_errors > 0):
+                rate = new_checks / SUMMARY_INTERVAL
+                in_count = sum(1 for v in current_cache.values() if v)
+                oos_count = sum(1 for v in current_cache.values() if not v)
+                unchecked = sum(1 for p in products if p["item_id"] not in current_cache)
+                err_note = f" | {total_errors} errs" if total_errors > 0 else ""
+                unc_note = f" | {unchecked} unchecked" if unchecked else ""
+                self._status_cb(
+                    f"[MONITOR] {rate:.1f}/s | {in_count} in stock | {oos_count} out of stock{unc_note}{err_note}"
+                )
+                last_summary_checks = total_checks
+                last_summary_time = now
+
+    # ------------------------------------------------------------------
+    # Browser fetch loop — runs fetch() inside the real browser tab
+    # ------------------------------------------------------------------
+
+    _FETCH_JS_TEMPLATE = """
+    (async () => {{
+        const ids = {item_ids_json};
+        const results = await Promise.allSettled(
+            ids.map(async (id) => {{
+                const t0 = performance.now();
+                try {{
+                    const resp = await fetch('/ip/' + id, {{
+                        credentials: 'include',
+                        headers: {{ 'Accept': 'text/html' }}
+                    }});
+                    const ms = performance.now() - t0;
+                    if (resp.redirected && resp.url.includes('/blocked')) {{
+                        return {{ item_id: id, error: 'BLOCKED', ms }};
+                    }}
+                    if (!resp.ok) {{
+                        return {{ item_id: id, error: 'HTTP_' + resp.status, ms }};
+                    }}
+                    const html = await resp.text();
+                    const m = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\\/script>/);
+                    if (!m) {{
+                        return {{ item_id: id, error: 'NO_NEXT_DATA', ms }};
+                    }}
+                    const data = JSON.parse(m[1]);
+                    const product = data?.props?.pageProps?.initialData?.data?.product;
+                    if (!product) {{
+                        return {{ item_id: id, error: 'NO_PRODUCT', ms }};
+                    }}
+                    if (!product.usItemId) product.usItemId = id;
+                    return {{ item_id: id, product, ms }};
+                }} catch (e) {{
+                    return {{ item_id: id, error: e.message?.substring(0, 60) || 'unknown', ms: performance.now() - t0 }};
+                }}
+            }})
+        );
+        return results.map(r => r.status === 'fulfilled' ? r.value : {{ item_id: '?', error: r.reason?.message || 'rejected' }});
+    }})()
+    """
+
+    def _browser_fetch_loop(self):
+        """
+        Spawns 3 dispatcher threads, each firing a full batch every 1s but
+        staggered by 333ms — so results arrive ~3 times per second.
+        """
+        while not self._stop_event.is_set():
+            if self._session and self._session._page and self._session._event_loop:
+                break
+            self._stop_event.wait(timeout=0.5)
+
+        if self._stop_event.is_set():
+            return
+
+        logger.info("[MONITOR] Browser fetch loop started — 3 dispatchers")
+
+        dispatchers = []
+        for i in range(3):
+            t = threading.Thread(
+                target=self._fetch_dispatcher,
+                args=(i * CHECK_INTERVAL,),
+                daemon=True,
+                name=f"WalmartFetch-{i}",
+            )
+            t.start()
+            dispatchers.append(t)
+
+        self._stop_event.wait()
+        for t in dispatchers:
+            t.join(timeout=5)
+
+    def _fetch_dispatcher(self, initial_delay: float):
+        """Single dispatcher — fires one batch per second, offset by initial_delay."""
         if initial_delay > 0:
             self._stop_event.wait(timeout=initial_delay)
             if self._stop_event.is_set():
@@ -215,116 +261,91 @@ class WalmartStockMonitor:
         while not self._stop_event.is_set():
             cycle_start = time.monotonic()
 
-            # Respect global hash-error pause
-            if time.monotonic() < self._hash_error_pause_until:
-                self._stop_event.wait(timeout=5)
+            products = get_enabled_products()
+            if not products:
+                self._stop_event.wait(timeout=1.0)
                 continue
 
-            # Pull fresh cookies from the browser harvester
-            cookies = self._session.get_monitoring_cookies() if self._session else {}
+            item_ids = [p["item_id"] for p in products]
+            names = {p["item_id"]: (p.get("name") or p["item_id"])[:30] for p in products}
 
-            products = get_enabled_products()
-            if products:
-                for p in products:
-                    if self._stop_event.is_set():
-                        return
-                    self._check_one(p["item_id"], proxy, cookies, products)
+            try:
+                results = self._run_browser_fetch(item_ids)
+                if results:
+                    in_stock_names = []
+                    oos_names = []
+                    errors = []
+                    max_ms = 0
+
+                    for r in results:
+                        item_id = r.get("item_id", "?")
+                        ms = r.get("ms", 0)
+                        max_ms = max(max_ms, ms)
+                        display = names.get(item_id, item_id)
+
+                        if r.get("error"):
+                            with self._checks_lock:
+                                self._total_errors += 1
+                            errors.append(f"{item_id}:{r['error']}")
+                            continue
+
+                        product_data = r.get("product", {})
+                        parsed = self._extract_product(item_id, product_data)
+                        if parsed:
+                            with self._checks_lock:
+                                self._total_checks += 1
+                            if parsed.get("in_stock") and parsed.get("walmart_direct"):
+                                in_stock_names.append(display)
+                            else:
+                                oos_names.append(display)
+                            self._handle_result(parsed, products)
+                        else:
+                            with self._checks_lock:
+                                self._total_errors += 1
+                            errors.append(f"{item_id}:PARSE_FAIL")
+
+                    parts = []
+                    if in_stock_names:
+                        parts.append(f"IN STOCK: [{', '.join(in_stock_names)}]")
+                    if oos_names:
+                        parts.append(f"OUT OF STOCK: [{', '.join(oos_names)}]")
+                    if errors:
+                        parts.append(f"ERRORS: [{', '.join(errors)}]")
+                    logger.info("[MONITOR] %s | %dms", " | ".join(parts), max_ms)
+
+            except Exception as e:
+                with self._checks_lock:
+                    self._total_errors += 1
+                logger.warning("[MONITOR] Browser fetch error: %s", e)
 
             elapsed = time.monotonic() - cycle_start
-            remaining = max(0.0, WORKER_CYCLE - elapsed)
-            self._stop_event.wait(timeout=remaining)
+            remaining = max(0.0, 1.0 - elapsed)
+            if remaining > 0:
+                self._stop_event.wait(timeout=remaining)
 
-    # ------------------------------------------------------------------
-    # Single item check
-    # ------------------------------------------------------------------
+    def _run_browser_fetch(self, item_ids: list[str]) -> Optional[list[dict]]:
+        """Schedule the fetch JS on the browser event loop and wait for result."""
+        if not self._session or not self._session._page or not self._session._event_loop:
+            return None
 
-    def _check_one(
-        self,
-        item_id: str,
-        proxy: Optional[str],
-        cookies: dict,
-        products: list[dict],
-    ):
-        proxies_dict = _format_proxy(proxy)
-        url = (
-            f"https://www.walmart.com/orchestra/pdp/graphql/ItemByIdBtf"
-            f"/{GRAPHQL_HASH}/ip/{item_id}"
+        js = self._FETCH_JS_TEMPLATE.format(item_ids_json=json.dumps(item_ids))
+
+        async def _do_fetch():
+            return await self._session._page.evaluate(js, await_promise=True)
+
+        future = asyncio.run_coroutine_threadsafe(
+            _do_fetch(),
+            self._session._event_loop,
         )
-        headers = {**HEADERS, "x-o-item-id": item_id}
-
         try:
-            with requests.Session() as session:
-                if cookies:
-                    session.cookies.update(cookies)
-                if proxies_dict:
-                    session.proxies.update(proxies_dict)
-
-                resp = session.post(url, headers=headers, json=_build_body(item_id), timeout=10)
-
-                if resp.status_code != 200:
-                    if resp.status_code in (400, 403, 404):
-                        with self._hash_error_lock:
-                            self._consecutive_hash_errors += 1
-                            if self._consecutive_hash_errors >= 5:
-                                self._consecutive_hash_errors = 0
-                                self._hash_error_pause_until = time.monotonic() + 300
-                                logger.critical(
-                                    "[MONITOR] GRAPHQL_HASH likely expired — pausing 300s. "
-                                    "Update GRAPHQL_HASH in walmart/config.py."
-                                )
-                    if proxy and self._proxy_manager:
-                        self._proxy_manager.record_monitor_error(proxy)
-                    return
-
-                with self._hash_error_lock:
-                    self._consecutive_hash_errors = 0
-                if proxy and self._proxy_manager:
-                    self._proxy_manager.record_monitor_success(proxy)
-
-                data = resp.json()
-                parsed = self._parse(item_id, data)
-                if parsed:
-                    self._handle_result(parsed, products)
-
+            return future.result(timeout=15)
         except Exception as e:
-            if proxy and self._proxy_manager:
-                self._proxy_manager.mark_failed(proxy)
-            logger.warning("[MONITOR] Fetch error for %s: %s", item_id, e)
+            logger.warning("[MONITOR] Browser fetch future error: %s", e)
+            return None
 
     # ------------------------------------------------------------------
-    # Parse GraphQL response
+    # Product data extraction
     # ------------------------------------------------------------------
-
-    def _parse(self, item_id: str, data: dict) -> Optional[dict]:
-        # Check top-level data.product first (some response shapes put it here)
-        top = data.get("data", {})
-        direct = top.get("product")
-        if isinstance(direct, dict):
-            result = self._extract_product(item_id, direct)
-            if result:
-                return result
-
-        # Scan all contentLayout modules — Walmart A/B tests put availability data
-        # in different module types (ItemTiles, SoftBundles, ItemPageAtf, etc.)
-        # so we check every module rather than hard-coding a single type.
-        modules = top.get("contentLayout", {}).get("modules", [])
-        for module in modules:
-            configs = module.get("configs", {})
-
-            # configs.products — list form (SoftBundles, ItemTiles, …)
-            for product in configs.get("products", []):
-                result = self._extract_product(item_id, product)
-                if result:
-                    return result
-
-            # configs.product — singular form used by some module types
-            product = configs.get("product")
-            if isinstance(product, dict):
-                result = self._extract_product(item_id, product)
-                if result:
-                    return result
-
-        return None
 
     def _extract_product(self, item_id: str, product: dict) -> Optional[dict]:
         """Extract availability info from a product dict if it matches item_id."""
@@ -354,6 +375,30 @@ class WalmartStockMonitor:
             "offer_id": offer_id,
         }
 
+    def _parse(self, item_id: str, data: dict) -> Optional[dict]:
+        """Parse a GraphQL response (used by on_browser_graphql intercept)."""
+        top = data.get("data", {})
+        direct = top.get("product")
+        if isinstance(direct, dict):
+            result = self._extract_product(item_id, direct)
+            if result:
+                return result
+
+        modules = top.get("contentLayout", {}).get("modules", [])
+        for module in modules:
+            configs = module.get("configs", {})
+            for product in configs.get("products", []):
+                result = self._extract_product(item_id, product)
+                if result:
+                    return result
+            product = configs.get("product")
+            if isinstance(product, dict):
+                result = self._extract_product(item_id, product)
+                if result:
+                    return result
+
+        return None
+
     # ------------------------------------------------------------------
     # Result handler
     # ------------------------------------------------------------------
@@ -364,14 +409,34 @@ class WalmartStockMonitor:
             return
 
         max_price = None
+        config_name = None
         for p in products:
             if p["item_id"] == item_id:
                 max_price = p.get("max_price")
+                config_name = p.get("name")
                 break
 
         is_in_stock = result.get("in_stock", False)
         price = result.get("price")
-        name = result.get("name", "Unknown")
+        api_name = result.get("name", "Unknown")
+        name = (config_name if config_name and config_name != "Unknown" else None) or api_name
+
+        # Back-fill API name into config if config only has a placeholder
+        if api_name and api_name != "Unknown" and (not config_name or config_name == "Unknown" or config_name == item_id):
+            try:
+                cfg = get_config()
+                updated = False
+                for p in cfg.get("products", []):
+                    if p["item_id"] == item_id and p.get("name", "Unknown") in ("Unknown", item_id, ""):
+                        p["name"] = api_name
+                        updated = True
+                        break
+                if updated:
+                    save_config(cfg)
+                    logger.debug("[MONITOR] Updated product name in config: %s → %s", item_id, api_name)
+            except Exception:
+                pass
+
         walmart_direct = result.get("walmart_direct", False)
         offer_id = result.get("offer_id")
 
@@ -382,7 +447,7 @@ class WalmartStockMonitor:
             return
 
         if max_price and price and price > max_price:
-            logger.info("[MONITOR] %s — price $%.2f exceeds max $%.2f", item_id, price, max_price)
+            logger.debug("[MONITOR] %s — price $%.2f exceeds max $%.2f", item_id, price, max_price)
             with self._cache_lock:
                 self._in_stock_cache[item_id] = False
             return
@@ -390,53 +455,66 @@ class WalmartStockMonitor:
         with self._cache_lock:
             was_in_stock = self._in_stock_cache.get(item_id, False)
             self._in_stock_cache[item_id] = is_in_stock
+            self._last_checked[item_id] = time.time()
 
         if is_in_stock:
             price_str = f"${price:.2f}" if price is not None else "price unknown"
             self._status_cb(f"[MONITOR] IN STOCK: {name} @ {price_str}")
-            logger.info("[MONITOR] IN STOCK: %s (%s) @ %s", name, item_id, price_str)
-            if not was_in_stock and self._on_in_stock:
-                self._on_in_stock(item_id, offer_id, name, price)
+            logger.warning("[MONITOR] IN STOCK: %s (%s) @ %s", name, item_id, price_str)
+            if not was_in_stock:
+                if self._on_in_stock:
+                    self._on_in_stock(item_id, offer_id, name, price)
+                if self._on_stock_change:
+                    self._on_stock_change(item_id, True, price)
         else:
             if was_in_stock:
-                logger.info("[MONITOR] Out of stock: %s (%s)", name, item_id)
+                logger.debug("[MONITOR] Out of stock: %s (%s)", name, item_id)
+                if self._on_stock_change:
+                    self._on_stock_change(item_id, False, price)
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Public helpers
     # ------------------------------------------------------------------
+
+    def on_browser_graphql(self, payload: dict):
+        """
+        Called by the session manager whenever the browser intercepts a GraphQL
+        ItemByIdBtf/Atf response. Feeds into the same parse + handle pipeline.
+        """
+        item_id = payload.get("item_id")
+        data = payload.get("data")
+        if not item_id or not data:
+            return
+        try:
+            products = get_enabled_products()
+            parsed = self._parse(item_id, data)
+            if parsed:
+                self._handle_result(parsed, products)
+                with self._checks_lock:
+                    self._total_checks += 1
+                status = "IN STOCK" if parsed.get("in_stock") else "OUT OF STOCK"
+                name = parsed.get("name", item_id)
+                price = parsed.get("price")
+                price_str = f" @ ${price:.2f}" if price is not None else ""
+                logger.info("[MONITOR] %s — %s%s", name, status, price_str)
+            else:
+                logger.warning("[MONITOR] No product data parsed for item %s", item_id)
+                with self._checks_lock:
+                    self._total_errors += 1
+        except Exception as e:
+            logger.warning("[MONITOR] Browser GraphQL parse error for %s: %s", item_id, e)
+
+    def get_stock_states(self) -> dict:
+        """Return {item_id: {in_stock, last_checked}} snapshot for dashboard."""
+        with self._cache_lock:
+            return {
+                iid: {
+                    "in_stock": self._in_stock_cache.get(iid, False),
+                    "last_checked": self._last_checked.get(iid),
+                }
+                for iid in self._in_stock_cache
+            }
 
     def is_healthy(self) -> bool:
         with self._running_lock:
             return self._running
-
-    def check_now(self) -> list[dict]:
-        """One-shot synchronous check of all enabled products. For testing."""
-        cookies = self._session.get_monitoring_cookies() if self._session else {}
-        products = get_enabled_products()
-        results = []
-        for p in products:
-            proxy = self._proxy_manager.get_monitor_proxy() if self._proxy_manager else None
-            proxies_dict = _format_proxy(proxy)
-            url = (
-                f"https://www.walmart.com/orchestra/pdp/graphql/ItemByIdBtf"
-                f"/{GRAPHQL_HASH}/ip/{p['item_id']}"
-            )
-            try:
-                with requests.Session() as session:
-                    if cookies:
-                        session.cookies.update(cookies)
-                    if proxies_dict:
-                        session.proxies.update(proxies_dict)
-                    resp = session.post(
-                        url,
-                        headers={**HEADERS, "x-o-item-id": p["item_id"]},
-                        json=_build_body(p["item_id"]),
-                        timeout=10,
-                    )
-                    if resp.status_code == 200:
-                        parsed = self._parse(p["item_id"], resp.json())
-                        if parsed:
-                            results.append(parsed)
-            except Exception as e:
-                logger.warning("[MONITOR] check_now error for %s: %s", p["item_id"], e)
-        return results

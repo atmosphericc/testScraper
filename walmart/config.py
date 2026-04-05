@@ -21,6 +21,11 @@ WALMART_SELLER_ID = "F55CDC31AB754BB68FE0851F0F1F2C96"
 # stock_check.py imports this value from config — only one place to update.
 GRAPHQL_HASH = "20d116c298a901b29763c37a4aaf8b37aeb1654e4f971cd11a7fe9de2ceab027"
 
+# ATF (Above The Fold) hash — auto-discovered at runtime by the session harvester.
+# Starts as None; stock_monitor uses it as a fallback when BTF returns no product data
+# (common for preorder items). No manual update needed.
+GRAPHQL_HASH_ATF: "str | None" = None
+
 # ---------------------------------------------------------------------------
 # URLs
 # ---------------------------------------------------------------------------
@@ -49,8 +54,8 @@ PROXY_ERROR_RATE_THRESHOLD = 0.10  # bench if error rate > 10% over last 100 req
 
 HEADLESS = False          # Patchright recommendation: False reduces detection risk
 BROWSER_CHANNEL = "chrome"  # Use real Chrome, not bundled Chromium
-PROFILE_DIR = "./walmart-profile-login"
-COOKIES_FILE = "./walmart-profile-login/cookies.json"
+PROFILE_DIR = "./walmart-profile"
+COOKIES_FILE = "./walmart-profile/cookies.json"
 LOGS_DIR = "./walmart/logs"
 
 # ---------------------------------------------------------------------------
@@ -88,6 +93,18 @@ CARD_CVV = "229"
 # ---------------------------------------------------------------------------
 # Environment variable accessor functions (read at call time, not import time)
 # ---------------------------------------------------------------------------
+
+def set_graphql_hash_atf(hash_value: str) -> None:
+    """Called by the session harvester when it intercepts an ItemByIdAtf request."""
+    global GRAPHQL_HASH_ATF
+    if hash_value and GRAPHQL_HASH_ATF != hash_value:
+        GRAPHQL_HASH_ATF = hash_value
+        logger.info("[CONFIG] ATF GraphQL hash auto-updated: %s", hash_value)
+
+
+def get_graphql_hash_atf() -> "str | None":
+    return GRAPHQL_HASH_ATF
+
 
 def get_checkout_mode() -> str:
     return os.environ.get("CHECKOUT_MODE", "TEST")

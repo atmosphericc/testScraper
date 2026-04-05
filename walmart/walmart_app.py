@@ -33,6 +33,9 @@ from .purchase_manager import WalmartPurchaseManager
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE)
+os.environ.setdefault("CHECKOUT_MODE", "LIVE")
+
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
@@ -41,7 +44,7 @@ app = Flask(__name__)
 
 _manager: WalmartPurchaseManager = None
 _manager_loop: asyncio.AbstractEventLoop = None
-_test_mode = False
+_test_mode = False  # default to LIVE
 
 # Per-client SSE queues
 _sse_clients: list[queue.Queue] = []
@@ -72,6 +75,16 @@ def _status_callback(message: str):
     _broadcast("activity", {"message": message, "time": time.strftime("%H:%M:%S")})
 
 
+def _stock_update_callback(item_id: str, in_stock: bool, price):
+    """Called by stock monitor on every stock state change — broadcasts structured SSE event."""
+    _broadcast("stock_update", {
+        "item_id": item_id,
+        "in_stock": in_stock,
+        "price": price,
+        "time": time.strftime("%H:%M:%S"),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Manager startup
 # ---------------------------------------------------------------------------
@@ -90,6 +103,7 @@ def _start_manager():
         )
 
     _manager = WalmartPurchaseManager(status_callback=_status_callback)
+    _manager.set_stock_update_callback(_stock_update_callback)
     _manager_loop = asyncio.new_event_loop()
 
     def _run():
@@ -112,29 +126,46 @@ def _start_manager():
 # Routes
 # ---------------------------------------------------------------------------
 
+def _stock_badge(in_stock: bool) -> str:
+    if in_stock:
+        return '<span class="badge badge-green">&#9679; IN STOCK</span>'
+    return '<span class="badge badge-gray">&#9675; OUT OF STOCK</span>'
+
+
+def _state_badge(state: str) -> str:
+    s = state.upper()
+    if s == "SUCCESS":
+        return f'<span class="badge badge-green">{s}</span>'
+    if s in ("PURCHASING", "IN_QUEUE"):
+        return f'<span class="badge badge-yellow">{s}</span>'
+    if s in ("FAILED", "CIRCUIT_OPEN"):
+        return f'<span class="badge badge-red">{s}</span>'
+    return f'<span class="badge badge-gray">{_he(state) or "MONITORING"}</span>'
+
+
 def _product_row(p: dict, state_by_id: dict) -> str:
     """Build a single product table row for the dashboard."""
+    import json as _json
     item_id = p["item_id"]
     name = p.get("name", "Unknown")
-    state = state_by_id.get(item_id, {}).get("state", "MONITORING")
-    if state == "SUCCESS":
-        badge = "badge-green"
-    elif state in ("PURCHASING", "IN_QUEUE"):
-        badge = "badge-yellow"
-    else:
-        badge = "badge-blue"
-    # Escape all user-controlled strings before embedding in HTML/JS
+    ps = state_by_id.get(item_id, {})
+    state = ps.get("state", "MONITORING")
+    in_stock = ps.get("in_stock", False)
+    last_checked = ps.get("last_checked")
+    last_check_str = ""
+    if last_checked:
+        import datetime
+        last_check_str = datetime.datetime.fromtimestamp(last_checked).strftime("%H:%M:%S")
     safe_id = _he(item_id)
     safe_name = _he(name)
-    safe_state = _he(state)
-    # JSON-encode item_id for the onclick JS string to handle any special chars
-    import json as _json
     js_id = _json.dumps(item_id)
     return (
-        f'<tr>'
-        f'<td>{safe_id}</td>'
-        f'<td>{safe_name}</td>'
-        f'<td><span class="badge {badge}">{safe_state}</span></td>'
+        f'<tr data-id="{safe_id}">'
+        f'<td><div class="product-name">{safe_name}</div>'
+        f'<div class="product-id">{safe_id}</div></td>'
+        f'<td class="cell-lastcheck" style="color:#666;font-size:12px">{_he(last_check_str)}</td>'
+        f'<td class="cell-stock">{_stock_badge(in_stock)}</td>'
+        f'<td class="cell-state">{_state_badge(state)}</td>'
         f'<td><button onclick="removeProduct({js_id})">Remove</button></td>'
         f'</tr>\n'
     )
@@ -148,6 +179,11 @@ def index():
     # Build a state lookup by item_id so dashboard rows always match the right product
     state_by_id = {ps["item_id"]: ps for ps in status.get("products", [])}
 
+    running = status.get("running", False)
+    circuit_open = status.get("circuit_open", False)
+    circuit_secs = status.get("circuit_open_until", 0)
+    instock_count = sum(1 for p in products if state_by_id.get(p["item_id"], {}).get("in_stock", False))
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -155,82 +191,187 @@ def index():
   <title>Walmart Bot Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
-    body {{ font-family: monospace; background: #0a0a0a; color: #e0e0e0; margin: 0; padding: 20px; }}
-    h1 {{ color: #0071ce; border-bottom: 1px solid #333; padding-bottom: 10px; }}
-    .card {{ background: #1a1a1a; border: 1px solid #333; border-radius: 6px; padding: 16px; margin-bottom: 16px; }}
-    .badge {{ display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; }}
-    .badge-green {{ background: #0a3d0a; color: #4caf50; border: 1px solid #4caf50; }}
-    .badge-red {{ background: #3d0a0a; color: #f44336; border: 1px solid #f44336; }}
-    .badge-yellow {{ background: #3d2e00; color: #ffc107; border: 1px solid #ffc107; }}
-    .badge-blue {{ background: #003d52; color: #29b6f6; border: 1px solid #29b6f6; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid #2a2a2a; }}
-    th {{ color: #888; font-size: 12px; text-transform: uppercase; }}
-    input[type=text] {{ background: #111; border: 1px solid #444; color: #eee; padding: 6px 10px; border-radius: 4px; width: 250px; }}
-    button {{ background: #0071ce; color: white; border: none; padding: 7px 16px; border-radius: 4px; cursor: pointer; margin-left: 6px; }}
-    button:hover {{ background: #0056a3; }}
-    #log {{ height: 300px; overflow-y: auto; background: #111; padding: 10px; border-radius: 4px; font-size: 12px; line-height: 1.6; }}
-    .log-line {{ color: #aaa; }}
-    .log-line.success {{ color: #4caf50; }}
-    .log-line.error {{ color: #f44336; }}
-    .status-dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }}
-    .dot-green {{ background: #4caf50; }}
-    .dot-red {{ background: #f44336; }}
-    .dot-yellow {{ background: #ffc107; animation: pulse 1s infinite; }}
-    @keyframes pulse {{ 0%,100% {{ opacity:1 }} 50% {{ opacity:0.4 }} }}
+    *,*::before,*::after{{box-sizing:border-box}}
+    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:#0d0d0d;color:#e0e0e0;margin:0;padding:20px;}}
+    h1{{color:#0071ce;border-bottom:1px solid #2a2a2a;padding-bottom:12px;margin-bottom:20px;font-size:20px;}}
+    .card{{background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:16px;margin-bottom:16px;}}
+    .card-header{{font-size:12px;text-transform:uppercase;color:#666;font-weight:600;letter-spacing:.05em;margin-bottom:12px;display:flex;align-items:center;gap:8px;}}
+    .badge{{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700;letter-spacing:.03em;}}
+    .badge-green{{background:#0a2a0a;color:#4caf50;border:1px solid #4caf50;}}
+    .badge-red{{background:#2a0a0a;color:#f44336;border:1px solid #f44336;}}
+    .badge-yellow{{background:#2a1e00;color:#ffc107;border:1px solid #ffc107;}}
+    .badge-gray{{background:#1a1a1a;color:#666;border:1px solid #333;}}
+    .status-bar{{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;}}
+    .status-bar-left{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}}
+    .dot{{display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;}}
+    .dot-green{{background:#4caf50;}}
+    .dot-red{{background:#f44336;}}
+    .dot-yellow{{background:#ffc107;animation:pulse 1s infinite;}}
+    @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}
+    table{{width:100%;border-collapse:collapse;}}
+    th,td{{text-align:left;padding:8px 12px;border-bottom:1px solid #1e1e1e;vertical-align:middle;}}
+    th{{color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em;}}
+    .product-name{{font-size:13px;font-weight:500;}}
+    .product-id{{font-size:11px;color:#555;margin-top:2px;}}
+    input{{background:#111;border:1px solid #333;color:#eee;padding:6px 10px;border-radius:4px;font-size:13px;}}
+    input::placeholder{{color:#444;}}
+    .add-form{{display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #1e1e1e;margin-top:12px;}}
+    button{{background:#0071ce;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:13px;}}
+    button:hover{{background:#0056a3;}}
+    .btn-danger{{background:#c62828;}}
+    .btn-danger:hover{{background:#b71c1c;}}
+    .btn-sm{{padding:4px 10px;font-size:12px;}}
+    #log{{height:300px;overflow-y:auto;background:#0a0a0a;padding:10px;border-radius:4px;font-size:12px;line-height:1.7;}}
+    .log-line{{color:#555;}}
+    .log-line .log-time{{color:#333;margin-right:6px;}}
+    .log-success{{color:#4caf50;}}
+    .log-error{{color:#f44336;}}
+    .log-warning{{color:#ffc107;}}
+    .stats-row{{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;}}
+    .stat-card{{background:#141414;border:1px solid #2a2a2a;border-radius:6px;padding:10px 16px;flex:1;min-width:100px;}}
+    .stat-label{{font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.05em;}}
+    .stat-value{{font-size:22px;font-weight:700;margin-top:4px;}}
+    .stat-value.green{{color:#4caf50;}}
   </style>
 </head>
 <body>
   <h1>&#x1F6D2; Walmart Bot Dashboard</h1>
 
-  <div class="card">
-    <b>Status:</b>
-    <span class="status-dot {'dot-green' if status.get('running') else 'dot-red'}"></span>
-    {'Running' if status.get('running') else 'Stopped'}
-    &nbsp;&nbsp;
-    {'<span class="badge badge-red">CIRCUIT OPEN (' + str(status.get("circuit_open_until", 0)) + 's)</span>' if status.get('circuit_open') else ''}
-    &nbsp;
-    <span class="badge {'badge-yellow' if _test_mode else 'badge-green'}">{'TEST MODE' if _test_mode else 'LIVE'}</span>
-    <br><br>
-    <button onclick="fetch('/api/test/enable',{{method:'POST'}}).then(()=>location.reload())">Enable Test Mode</button>
-    <button onclick="fetch('/api/test/disable',{{method:'POST'}}).then(()=>location.reload())">Disable Test Mode</button>
+  <div class="status-bar">
+    <div class="status-bar-left">
+      <span class="dot {'dot-green' if running else 'dot-red'}"></span>
+      <strong>{'Running' if running else 'Stopped'}</strong>
+      <span class="badge {'badge-yellow' if _test_mode else 'badge-green'}">{'TEST MODE' if _test_mode else 'LIVE'}</span>
+      {'<span class="badge badge-red">CIRCUIT OPEN (' + str(circuit_secs) + 's)</span>' if circuit_open else ''}
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-sm" onclick="fetch('/api/test/enable',{{method:'POST'}}).then(()=>location.reload())">Test Mode</button>
+      <button class="btn-sm btn-danger" onclick="fetch('/api/test/disable',{{method:'POST'}}).then(()=>location.reload())">Live Mode</button>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Products</div>
+      <div class="stat-value" id="stat-total">{len(products)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">In Stock</div>
+      <div class="stat-value green" id="stat-instock">{instock_count}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last Update</div>
+      <div class="stat-value" id="stat-lastupdate" style="font-size:14px;margin-top:6px">—</div>
+    </div>
   </div>
 
   <div class="card">
-    <b>Products</b>
+    <div class="card-header">Products</div>
     <table>
-      <tr><th>Item ID</th><th>Name</th><th>State</th><th>Action</th></tr>
-      {''.join(_product_row(p, state_by_id) for p in products)}
+      <thead><tr><th>Product</th><th>Last Check</th><th>Stock</th><th>State</th><th></th></tr></thead>
+      <tbody id="product-tbody">
+        {''.join(_product_row(p, state_by_id) for p in products)}
+      </tbody>
     </table>
-    <br>
-    <input type="text" id="new-item-id" placeholder="Walmart Item ID">
-    <input type="text" id="new-item-name" placeholder="Product name">
-    <input type="number" id="new-max-price" placeholder="Max price" step="0.01" style="width:100px">
-    <button onclick="addProduct()">Add Product</button>
+    <div class="add-form">
+      <input id="new-item-id" placeholder="Walmart Item ID" style="width:180px">
+      <input id="new-item-name" placeholder="Product name" style="width:200px">
+      <input type="number" id="new-max-price" placeholder="Max price" step="0.01" style="width:110px">
+      <button onclick="addProduct()">Add Product</button>
+    </div>
   </div>
 
   <div class="card">
-    <b>Live Activity</b>
+    <div class="card-header">Live Activity</div>
     <div id="log">
-      {''.join(f'<div class="log-line">[{_he(e["time"])}] {_he(e["message"])}</div>' for e in reversed(activity))}
+      {''.join(f'<div class="log-line"><span class="log-time">[{_he(e["time"])}]</span>{_he(e["message"])}</div>' for e in reversed(activity))}
     </div>
   </div>
 
   <script>
-    const log = document.getElementById('log');
-
-    // SSE live updates
     const evtSource = new EventSource('/api/stream');
+
     evtSource.onmessage = (e) => {{
       const msg = JSON.parse(e.data);
-      if (msg.type === 'activity') {{
-        const line = document.createElement('div');
-        line.className = 'log-line' + (msg.data.message.includes('SUCCESS') ? ' success' : msg.data.message.includes('error') || msg.data.message.includes('failed') ? ' error' : '');
-        line.textContent = `[${{msg.data.time}}] ${{msg.data.message}}`;
-        log.insertBefore(line, log.firstChild);
-        if (log.children.length > 200) log.removeChild(log.lastChild);
+      if (msg.type === 'activity' && msg.data) {{
+        prependLog(msg.data.time, msg.data.message);
+        // Refresh table state on purchase transitions
+        if (/PURCHASING|SUCCESS|FAILED|MONITORING|order/i.test(msg.data.message)) {{
+          loadStatus();
+        }}
+      }}
+      if (msg.type === 'stock_update' && msg.data) {{
+        updateRowStock(msg.data.item_id, msg.data.in_stock);
+        document.getElementById('stat-lastupdate').textContent = msg.data.time;
+        refreshInStockCount();
       }}
     }};
+
+    function prependLog(time, message) {{
+      const log = document.getElementById('log');
+      const isSuccess = /SUCCESS|ORDER PLACED/i.test(message);
+      const isError   = /error|fail/i.test(message);
+      const isWarning = /warn|circuit/i.test(message);
+      const cls = isSuccess ? 'log-success' : isError ? 'log-error' : isWarning ? 'log-warning' : '';
+      const line = document.createElement('div');
+      line.className = 'log-line ' + cls;
+      line.innerHTML = '<span class="log-time">[' + esc(time) + ']</span>' + esc(message);
+      log.insertBefore(line, log.firstChild);
+      while (log.children.length > 200) log.removeChild(log.lastChild);
+    }}
+
+    function esc(s) {{
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }}
+
+    function stockBadge(inStock) {{
+      return inStock
+        ? '<span class="badge badge-green">&#9679; IN STOCK</span>'
+        : '<span class="badge badge-gray">&#9675; OUT OF STOCK</span>';
+    }}
+
+    function stateBadge(state) {{
+      const s = (state || '').toUpperCase();
+      if (s === 'SUCCESS') return '<span class="badge badge-green">' + s + '</span>';
+      if (s === 'PURCHASING' || s === 'IN_QUEUE') return '<span class="badge badge-yellow">' + s + '</span>';
+      if (s === 'FAILED' || s === 'CIRCUIT_OPEN') return '<span class="badge badge-red">' + s + '</span>';
+      return '<span class="badge badge-gray">' + (s || 'MONITORING') + '</span>';
+    }}
+
+    function updateRowStock(item_id, in_stock) {{
+      const row = document.querySelector(`tr[data-id="${{CSS.escape(item_id)}}"]`);
+      if (!row) return;
+      const cell = row.querySelector('.cell-stock');
+      if (cell) cell.innerHTML = stockBadge(in_stock);
+      row.dataset.instock = in_stock ? '1' : '0';
+    }}
+
+    function refreshInStockCount() {{
+      const rows = document.querySelectorAll('#product-tbody tr[data-id]');
+      let count = 0;
+      rows.forEach(r => {{ if (r.dataset.instock === '1') count++; }});
+      document.getElementById('stat-instock').textContent = count;
+    }}
+
+    async function loadStatus() {{
+      try {{
+        const d = await fetch('/api/status').then(r => r.json());
+        const products = d.products || [];
+        products.forEach(p => {{
+          const row = document.querySelector(`tr[data-id="${{CSS.escape(p.item_id)}}"]`);
+          if (!row) return;
+          const stateCell = row.querySelector('.cell-state');
+          const stockCell = row.querySelector('.cell-stock');
+          const lastCell  = row.querySelector('.cell-lastcheck');
+          if (stateCell) stateCell.innerHTML = stateBadge(p.state);
+          if (stockCell) {{ stockCell.innerHTML = stockBadge(p.in_stock || false); row.dataset.instock = p.in_stock ? '1' : '0'; }}
+          if (lastCell && p.last_checked) {{
+            lastCell.textContent = new Date(p.last_checked * 1000).toLocaleTimeString();
+          }}
+        }});
+        refreshInStockCount();
+      }} catch(e) {{ console.warn('Status load failed', e); }}
+    }}
 
     function addProduct() {{
       const item_id = document.getElementById('new-item-id').value.trim();
@@ -248,6 +389,9 @@ def index():
       if (!confirm('Remove ' + item_id + '?')) return;
       fetch('/remove-product/' + item_id, {{method: 'POST'}}).then(() => location.reload());
     }}
+
+    // Poll state every 15s as a fallback
+    setInterval(loadStatus, 15000);
   </script>
 </body>
 </html>"""
