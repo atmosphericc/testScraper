@@ -1297,7 +1297,9 @@ class PurchaseManagerThread:
                     is_in_stock = stock_lookup.get(tcin, False)
 
                     if is_in_stock:
-                        if actual_status != 'ready':
+                        # Skip verification if TCIN transitioned to 'attempting' (purchase thread beat verification read)
+                        # This is not a reset failure; it's the purchase thread claiming the item
+                        if actual_status != 'ready' and actual_status != 'attempting':
                             reset_verification_errors.append(f"{tcin}: IN STOCK should be 'ready' but got '{actual_status}'")
                     else:
                         if actual_status != 'ready':

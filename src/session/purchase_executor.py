@@ -437,10 +437,16 @@ class PurchaseExecutor:
 
         # Clear any stale handlers from previous cycles before adding new one
         handlers = getattr(tab, 'handlers', {})
-        stale = len(handlers.get(cdp.fetch.RequestPaused, []))
-        if stale > 0:
+        stale_handlers = handlers.get(cdp.fetch.RequestPaused, [])
+        if stale_handlers:
+            # Remove handler references and clear the list
+            for handler in stale_handlers:
+                try:
+                    tab.remove_handler(handler, cdp.fetch.RequestPaused)
+                except Exception:
+                    pass
             handlers[cdp.fetch.RequestPaused] = []
-            print(f"[INTERCEPTOR:{label}] Cleared {stale} stale RequestPaused handler(s)")
+            print(f"[INTERCEPTOR:{label}] Cleared {len(stale_handlers)} stale RequestPaused handler(s)")
 
         tab.add_handler(cdp.fetch.RequestPaused, _on_request_paused)
         handler_count = len(handlers.get(cdp.fetch.RequestPaused, []))
@@ -1141,11 +1147,20 @@ class PurchaseExecutor:
             if tab and self._main_tab_interceptor_active:
                 try:
                     from zendriver import cdp
+                    # Explicitly remove all RequestPaused handlers before disabling CDP
+                    handlers = getattr(tab, 'handlers', {})
+                    for handler in handlers.get(cdp.fetch.RequestPaused, []):
+                        try:
+                            tab.remove_handler(handler, cdp.fetch.RequestPaused)
+                        except Exception:
+                            pass
+                    handlers[cdp.fetch.RequestPaused] = []
+                    # Now disable the CDP domain itself
                     await tab.send(cdp.fetch.disable())
                     self._main_tab_interceptor_active = False
                     if cdp.fetch in tab.enabled_domains:
                         tab.enabled_domains.remove(cdp.fetch)
-                    print(f"[PURCHASE] CDP fetch interceptor disabled (cleanup)")
+                    print(f"[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed")
                 except Exception as cleanup_err:
                     print(f"[PURCHASE] CDP interceptor cleanup warning: {cleanup_err}")
 
