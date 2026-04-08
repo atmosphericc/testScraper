@@ -64,6 +64,7 @@ class WalmartStockMonitor:
         self._running = False
         self._running_lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()  # when set, dispatchers pause
         self._worker_threads: list[threading.Thread] = []
 
         # Shared in-stock cache — prevents duplicate callbacks for the same restock
@@ -106,9 +107,24 @@ class WalmartStockMonitor:
         hb.start()
         self._worker_threads.append(hb)
 
+    def pause(self):
+        """Pause stock monitoring — dispatchers will idle until resume() is called."""
+        self._pause_event.set()
+        logger.info("[MONITOR] Stock monitoring paused")
+
+    def resume(self):
+        """Resume stock monitoring after a pause."""
+        self._pause_event.clear()
+        logger.info("[MONITOR] Stock monitoring resumed")
+
+    @property
+    def is_paused(self) -> bool:
+        return self._pause_event.is_set()
+
     def stop(self):
         with self._running_lock:
             self._running = False
+        self._pause_event.clear()  # unblock any paused dispatchers
         self._stop_event.set()
 
         for t in self._worker_threads:
@@ -259,6 +275,12 @@ class WalmartStockMonitor:
                 return
 
         while not self._stop_event.is_set():
+            # Respect pause — idle until resumed or stopped
+            while self._pause_event.is_set() and not self._stop_event.is_set():
+                self._stop_event.wait(timeout=0.5)
+            if self._stop_event.is_set():
+                return
+
             cycle_start = time.monotonic()
 
             products = get_enabled_products()

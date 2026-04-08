@@ -84,7 +84,7 @@ class SessionKeepAlive:
                 for _ in range(30):  # Check stop event every 1 second for 30 seconds
                     if self._stop_event.is_set():
                         break
-                    time.sleep(1)
+                    time.sleep(random.uniform(0.8, 1.4))
 
             except Exception as e:
                 err_str = str(e).lower()
@@ -106,7 +106,7 @@ class SessionKeepAlive:
                         self.logger.error(f"[KEEPALIVE] Refresh after disconnect failed: {refresh_err}")
                 else:
                     self.logger.error(f" Keep-alive service error: {e}")
-                time.sleep(10)  # Wait before retry
+                time.sleep(random.uniform(8, 13))
 
         self.logger.info("Keep-alive service loop ended")
 

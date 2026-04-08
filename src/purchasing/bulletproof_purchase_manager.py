@@ -11,8 +11,8 @@ import os
 import threading
 import asyncio
 import concurrent.futures
-import subprocess
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Callable
@@ -774,7 +774,7 @@ class BulletproofPurchaseManager:
                 if lock_fd:
                     msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
                     os.close(lock_fd)
-            except:
+            except (OSError, IOError):
                 pass
         elif HAS_FCNTL:
             # Unix/Linux file unlocking using fcntl
@@ -782,7 +782,7 @@ class BulletproofPurchaseManager:
                 if lock_fd:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
                     os.close(lock_fd)
-            except:
+            except (OSError, IOError):
                 pass
 
     def _load_states_unsafe(self) -> Dict:
@@ -823,7 +823,7 @@ class BulletproofPurchaseManager:
             try:
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
-            except:
+            except OSError:
                 pass
             return False
 
@@ -950,7 +950,7 @@ class BulletproofPurchaseManager:
                         # Show progress every 50 polls (10 seconds)
                         if polls > 0 and polls % 50 == 0:
                             print(f"[REAL_PURCHASE_THREAD] Still waiting for session... ({polls * 0.2:.1f}s elapsed)")
-                        time.sleep(0.2)
+                        time.sleep(random.uniform(0.15, 0.35))
                         polls += 1
 
                     if not self.session_initialized:
@@ -1030,13 +1030,12 @@ class BulletproofPurchaseManager:
 
             except Exception as e:
                 print(f"[PURCHASE] [ERROR] Real purchase failed for {tcin}: {e}")
-                import traceback, os as _os, datetime as _dt
                 _tb_str = traceback.format_exc()
                 traceback.print_exc()
                 try:
-                    _os.makedirs('logs', exist_ok=True)
+                    os.makedirs('logs', exist_ok=True)
                     with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
-                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [PURCHASE_THREAD] Real purchase failed for {tcin}: {type(e).__name__}: {e}\n{_tb_str}\n")
+                        _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [PURCHASE_THREAD] Real purchase failed for {tcin}: {type(e).__name__}: {e}\n{_tb_str}\n")
                 except Exception:
                     pass
                 # Mark as failed
@@ -1071,7 +1070,6 @@ class BulletproofPurchaseManager:
                     _tee.close()
 
         # Start purchase thread
-        import threading
         purchase_thread = threading.Thread(target=execute_real_purchase, daemon=True)
         purchase_thread.start()
 
@@ -1144,17 +1142,30 @@ class BulletproofPurchaseManager:
 
             if result['success']:
                 # Purchase successful
+                # order_id is parsed from the confirmation URL query param (?orderId=...) inside
+                # purchase_executor.py _complete_checkout — it must be added to the return dict there.
+                # Until that is done, extract it from result['confirmation_url'] if present, otherwise
+                # fall back to result['order_id'] / result['order_number']. Never generate a fake ID.
+                raw_order_id = result.get('order_id') or result.get('order_number')
+                if not raw_order_id:
+                    conf_url = result.get('confirmation_url', '')
+                    if 'orderId=' in conf_url:
+                        raw_order_id = conf_url.split('orderId=')[1].split('&')[0]
+                if not raw_order_id:
+                    print(f"[PURCHASE] WARNING: no order_id in executor result for {tcin} — executor must return order_id from confirmation URL (?orderId= param). Storing None.")
+                    raw_order_id = None
+
                 final_state = {
                     **current_state,
                     'status': 'purchased',
                     'completed_at': now,
                     'final_outcome': 'purchased',
                     'execution_time': result.get('execution_time', 0),
-                    'order_number': f"REAL-{random.randint(100000, 999999)}",  # Placeholder
-                    'price': round(random.uniform(15.99, 89.99), 2)  # Placeholder
+                    'order_number': raw_order_id,
+                    'price': result.get('price')
                 }
 
-                print(f"[PURCHASE]  REAL purchase completed: {tcin}")
+                print(f"[PURCHASE]  REAL purchase completed: {tcin} — order_id={raw_order_id}")
 
                 if self.status_callback:
                     self.status_callback(tcin, 'purchased', final_state)
@@ -1475,8 +1486,6 @@ def main():
     print("Testing Bulletproof Purchase Manager...")
 
     # Test concurrent purchases
-    import threading
-
     def test_purchase(tcin, name):
         result = manager.start_purchase(tcin, name)
         print(f"Thread {tcin}: {result}")

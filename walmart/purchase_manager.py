@@ -19,7 +19,6 @@ from typing import Callable, Optional
 from .config import (
     CIRCUIT_BREAKER_FAILURES,
     CIRCUIT_BREAKER_PAUSE,
-    CARD_CVV,
     get_enabled_products,
 )
 from .proxy_manager import ProxyManager
@@ -343,13 +342,28 @@ class WalmartPurchaseManager:
                 except Exception as _me:
                     logger.error("[MANAGER] Failed to restart stock monitor: %s", _me)
 
+            # Pause stock monitor during purchase — its rapid fetch() calls on Tab 1
+            # contaminate the shared _px3 cookie with bot-like behavioral signals,
+            # causing the checkout tab (Tab 2) to get /blocked on cart navigation.
+            self._monitor.pause()
+            self._status_cb("[MANAGER] Stock monitor paused for purchase")
+            logger.info("[MANAGER] Stock monitor paused — protecting _px3 for checkout")
+
+            # Let the browser settle for a moment after pausing fetch() spam,
+            # then refresh cookies so Tab 2 starts with a clean _px3
+            await asyncio.sleep(1.5)
+            try:
+                await self._session.harvest_now()
+            except Exception as e:
+                logger.warning("[MANAGER] Pre-purchase cookie refresh failed: %s", e)
+
             # Run purchase on the dedicated checkout tab (Tab 2) — cookies from the
             # harvester tab (Tab 1) are shared automatically via the same browser context.
             page = self._session.get_checkout_page()
             if not page:
                 raise RuntimeError("No browser page available")
 
-            executor = WalmartPurchaseExecutor(page, self._status_cb)
+            executor = WalmartPurchaseExecutor(page, self._status_cb, session=self._session)
             result = await executor.purchase(item_id=item_id, item_url=item_url)
 
             with self._lock:
@@ -382,6 +396,12 @@ class WalmartPurchaseManager:
             logger.exception("[MANAGER] Purchase error for %s", item_id)
 
         finally:
+            # Resume stock monitor regardless of purchase outcome
+            if self._monitor.is_paused:
+                self._monitor.resume()
+                self._status_cb("[MANAGER] Stock monitor resumed")
+                logger.info("[MANAGER] Stock monitor resumed after purchase attempt")
+
             if checkout_proxy:
                 self._proxy_manager.release_checkout_proxy(checkout_proxy)
             # Reset state to MONITORING after a delay so we can try again on next restock
@@ -471,7 +491,6 @@ class WalmartPurchaseManager:
 # ---------------------------------------------------------------------------
 
 async def _main():
-    import os
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     email = os.environ.get("WALMART_EMAIL", "")
@@ -486,7 +505,7 @@ async def _main():
 
     manager = WalmartPurchaseManager(status_callback=on_status)
     try:
-        await manager.start(email=email, password=password)
+        await manager.start()
         # Run indefinitely
         while True:
             await asyncio.sleep(60)

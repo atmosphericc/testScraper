@@ -287,6 +287,7 @@ def stream():
 def api_status():
     if _manager:
         status = _manager.get_status()
+        status["activity_log"] = _manager.get_activity_log()[-50:]
     else:
         status = {
             "running": False,
@@ -294,7 +295,8 @@ def api_status():
                 {"item_id": p["item_id"], "name": p.get("name", "Unknown"),
                  "priority": p.get("priority", 999), "state": "MONITORING"}
                 for p in get_enabled_products()
-            ]
+            ],
+            "activity_log": [],
         }
     status["test_mode"] = _test_mode
     return jsonify(status)

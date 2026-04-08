@@ -63,6 +63,13 @@
       "max_price": null,
       "priority": 8,
       "url": "https://www.walmart.com/ip/x/17823811037"
+    },
+    {
+      "item_id": "15535955144",
+      "name": "onn Wired Game Controller for Nintendo Switch 2, OLED, Lite, Black",
+      "enabled": true,
+      "max_price": null,
+      "url": "https://www.walmart.com/ip/x/15535955144"
     }
   ]
 }

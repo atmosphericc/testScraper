@@ -162,7 +162,7 @@ class StockMonitor:
         for i, proxy in enumerate(self.proxies):
             t = threading.Thread(
                 target=self._proxy_worker,
-                args=(proxy, i * stagger, on_stock_detected),
+                args=(proxy, i * stagger + random.uniform(0, 3), on_stock_detected),
                 daemon=True,
                 name=f"ProxyWorker-{i+1}",
             )
@@ -182,7 +182,7 @@ class StockMonitor:
                     callback(stock_data)
             except Exception as e:
                 print(f"[PROXY] Worker error: {e}")
-            time.sleep(15)
+            time.sleep(random.uniform(12, 18))
 
     def _process_response(self, data, response_time):
         """Process API response into clean format"""

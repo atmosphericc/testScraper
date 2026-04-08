@@ -122,8 +122,6 @@
       background: var(--text-muted);
     }
     .tab-btn.active .tab-status-dot { background: var(--success); animation: pulse 2s infinite; }
-    .tab-btn.stub { opacity: 0.45; cursor: default; }
-    .tab-btn.stub:hover { color: var(--text-muted); }
     .tab-pill {
       background: var(--bg-elevated);
       border-radius: 10px;
@@ -310,16 +308,6 @@
     .stat-value.green { color: var(--success); }
     .stat-value.yellow { color: var(--warning); }
 
-    /* ── Coming Soon ─────────────────────────────────────────── */
-    .coming-soon {
-      text-align: center;
-      padding: 80px 20px;
-      color: var(--text-muted);
-    }
-    .coming-soon .cs-icon { font-size: 48px; margin-bottom: 16px; }
-    .coming-soon h2 { font-size: 20px; color: var(--text-secondary); margin-bottom: 8px; }
-    .coming-soon p  { font-size: 14px; }
-
     /* ── Scrollbar ───────────────────────────────────────────── */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -359,15 +347,6 @@
   <button class="tab-btn" onclick="switchTab('walmart')" id="tabBtn-walmart">
     <span class="tab-status-dot" id="tabDot-walmart"></span>
     &#x1F6D2; Walmart
-  </button>
-  <button class="tab-btn stub" id="tabBtn-best_buy" onclick="switchTab('best_buy')">
-    Best Buy <span class="tab-pill">soon</span>
-  </button>
-  <button class="tab-btn stub" id="tabBtn-costco" onclick="switchTab('costco')">
-    Costco <span class="tab-pill">soon</span>
-  </button>
-  <button class="tab-btn stub" id="tabBtn-pokemon_center" onclick="switchTab('pokemon_center')">
-    Pokemon Center <span class="tab-pill">soon</span>
   </button>
 </div>
 
@@ -515,13 +494,33 @@
       </table>
     </div>
 
-    <!-- ─── WALMART ADD CARD ─── -->
+    <!-- ─── WALMART PRODUCT CATALOG CARD ─── -->
     <div class="card">
-      <div class="card-header">Add Product</div>
-      <div class="add-form" style="padding:12px 0 8px">
-        <input class="input-id"   id="w-add-id"   placeholder="Item ID (e.g. 15042474261)">
-        <input class="input-name" id="w-add-name" placeholder="Product name">
-        <button class="btn btn-primary" onclick="walmartAddProduct()">Add Product</button>
+      <div class="card-header">
+        Product Catalog
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <button id="w-catalog-tab-btn" class="btn btn-sm active-tab-btn" onclick="switchWalmartCatalogTab('catalog')" style="font-size:11px">📚 Catalog (<span id="w-catalog-count">0</span>)</button>
+          <button id="w-active-tab-btn"  class="btn btn-sm" onclick="switchWalmartCatalogTab('active')"  style="font-size:11px">📊 Active (<span id="w-active-count">0</span>)</button>
+        </div>
+      </div>
+
+      <!-- Catalog tab -->
+      <div id="w-catalog-tab-panel">
+        <div class="add-form" style="padding:12px 0 8px">
+          <input class="input-id"   id="w-add-id"   placeholder="Item ID (e.g. 15042474261)">
+          <input class="input-name" id="w-add-name" placeholder="Product name">
+          <button class="btn btn-primary" onclick="walmartAddProduct()">Add Product</button>
+        </div>
+        <div id="w-catalog-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+          <div style="text-align:center;padding:24px;color:var(--text-muted)">Loading catalog…</div>
+        </div>
+      </div>
+
+      <!-- Active tab -->
+      <div id="w-active-tab-panel" style="display:none">
+        <div id="w-active-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-top:8px">
+          <div style="text-align:center;padding:24px;color:var(--text-muted)">Loading…</div>
+        </div>
       </div>
     </div>
 
@@ -533,32 +532,6 @@
     </div>
   </div><!-- /walmart -->
 
-  <!-- ─── BEST BUY STUB ─── -->
-  <div class="section" id="section-best_buy">
-    <div class="coming-soon">
-      <div class="cs-icon">&#x1F6CD;</div>
-      <h2>Best Buy</h2>
-      <p>Not yet implemented &mdash; coming soon.</p>
-    </div>
-  </div>
-
-  <!-- ─── COSTCO STUB ─── -->
-  <div class="section" id="section-costco">
-    <div class="coming-soon">
-      <div class="cs-icon">&#x1F6D2;</div>
-      <h2>Costco</h2>
-      <p>Not yet implemented &mdash; coming soon.</p>
-    </div>
-  </div>
-
-  <!-- ─── POKEMON CENTER STUB ─── -->
-  <div class="section" id="section-pokemon_center">
-    <div class="coming-soon">
-      <div class="cs-icon">&#x26BE;</div>
-      <h2>Pokemon Center</h2>
-      <p>Not yet implemented &mdash; coming soon.</p>
-    </div>
-  </div>
 
 </div><!-- /content -->
 
@@ -707,6 +680,7 @@
 
     document.getElementById('target-stat-total').textContent = tcins.length;
     document.getElementById('target-stat-instock').textContent = tcins.filter(t => targetProducts[t].in_stock).length;
+    renderActiveList();
   }
 
   function targetMovePriority(btn, direction) {
@@ -764,7 +738,7 @@
       });
       // Load priority from config order (no direct API for it, so use table order if known)
       targetTestModeOn = d.test_mode || false;
-      updateTargetStatusBar(d.monitoring, targetTestModeOn);
+      updateTargetStatusBar(d.monitoring, targetTestModeOn, d.circuit_open || false);
 
       // Load priority/names from config — await so we render once with everything
       await loadTargetProductConfig();
@@ -799,15 +773,17 @@
     }
   }
 
-  function updateTargetStatusBar(running, testMode) {
-    const dot  = document.getElementById('target-running-dot');
-    const text = document.getElementById('target-running-text');
-    const badge= document.getElementById('target-mode-badge');
+  function updateTargetStatusBar(running, testMode, circuitOpen) {
+    const dot    = document.getElementById('target-running-dot');
+    const text   = document.getElementById('target-running-text');
+    const badge  = document.getElementById('target-mode-badge');
+    const cbadge = document.getElementById('target-circuit-badge');
     const monBadge = document.getElementById('target-monitoring-badge');
     dot.className  = 'dot ' + (running ? 'dot-green' : 'dot-red');
     text.textContent = running ? 'Running' : 'Stopped';
     badge.textContent = testMode ? 'TEST MODE' : 'LIVE';
     badge.className   = 'badge ' + (testMode ? 'badge-yellow' : 'badge-green');
+    if (cbadge) cbadge.style.display = circuitOpen ? 'inline-flex' : 'none';
     if (monBadge) {
       monBadge.textContent = running ? 'MONITORING' : 'STOPPED';
       monBadge.className   = 'badge ' + (running ? 'badge-blue' : 'badge-gray');
@@ -881,7 +857,7 @@
   async function targetTestMode(enable) {
     await fetch(enable ? '/api/test/enable' : '/api/test/disable', {method:'POST'});
     targetTestModeOn = enable;
-    updateTargetStatusBar(true, enable);
+    updateTargetStatusBar(true, enable, false);
   }
 
   // ══════════════════════════════════════════════
@@ -905,9 +881,9 @@
         <div class="product-name">${escapeHtml(p.name || id)}</div>
         <div class="product-id">${escapeHtml(id)}</div>
       </td>
-      <td class="cell-wlastcheck" style="color:var(--text-muted);font-size:12px">${escapeHtml(lastCheck)}</td>
-      <td class="cell-wstock">${stockBadge(p.in_stock)}</td>
-      <td class="cell-wstate">${stateBadge(p.state)}</td>
+      <td class="cell-lastcheck" style="color:var(--text-muted);font-size:12px">${escapeHtml(lastCheck)}</td>
+      <td class="cell-stock">${stockBadge(p.in_stock)}</td>
+      <td class="cell-state">${stateBadge(p.state)}</td>
       <td><button class="btn btn-sm btn-danger" onclick="walmartRemove('${escapeHtml(id)}')">Remove</button></td>`;
     return tr;
   }
@@ -937,9 +913,9 @@
       const row = existingRows[id];
       const p   = walmartProducts[id];
       const lastCheck = p.last_checked ? new Date(p.last_checked).toLocaleTimeString() : '—';
-      row.querySelector('.cell-wlastcheck').textContent = lastCheck;
-      row.querySelector('.cell-wstock').innerHTML = stockBadge(p.in_stock);
-      row.querySelector('.cell-wstate').innerHTML = stateBadge(p.state);
+      row.querySelector('.cell-lastcheck').textContent = lastCheck;
+      row.querySelector('.cell-stock').innerHTML = stockBadge(p.in_stock);
+      row.querySelector('.cell-state').innerHTML = stateBadge(p.state);
       const nameEl = row.querySelector('.product-name');
       if (nameEl.textContent.trim() === id && p.name && p.name !== id) nameEl.textContent = p.name;
     });
@@ -948,6 +924,7 @@
 
     document.getElementById('walmart-stat-total').textContent = ids.length;
     document.getElementById('walmart-stat-instock').textContent = ids.filter(id => walmartProducts[id].in_stock).length;
+    renderWalmartCatalogList();
   }
 
   async function loadWalmartStatus() {
@@ -975,6 +952,16 @@
       renderWalmartTable();
       const lc = document.getElementById('walmart-stat-lastcycle');
       if (lc && running) lc.textContent = new Date().toLocaleTimeString();
+
+      // Populate activity log from initial status load (mirrors Target behavior)
+      const activityLog = d.activity_log || [];
+      if (activityLog.length) {
+        const box = document.getElementById('walmart-log');
+        box.innerHTML = '';
+        [...activityLog].reverse().slice(0, 80).forEach(e => {
+          prependLog('walmart-log', e.time_str || e.time || '', e.message || '');
+        });
+      }
     } catch(err) {
       console.warn('Walmart status load failed:', err);
       const tbody = document.getElementById('walmart-tbody');
@@ -1053,6 +1040,7 @@
       await fetch('/walmart/remove-product/' + item_id, {method:'POST'});
       delete walmartProducts[item_id];
       renderWalmartTable();
+      renderWalmartActiveList();
     } catch(e) { alert('Error removing product: ' + e); }
   }
 
@@ -1060,6 +1048,61 @@
     await fetch(enable ? '/walmart/api/test/enable' : '/walmart/api/test/disable', {method:'POST'});
     walmartTestModeOn = enable;
     updateWalmartStatusBar(true, enable, false);
+  }
+
+  // ══════════════════════════════════════════════
+  //  PRODUCT CATALOG (Walmart)
+  // ══════════════════════════════════════════════
+
+  function switchWalmartCatalogTab(tab) {
+    const isCatalog = tab === 'catalog';
+    document.getElementById('w-catalog-tab-panel').style.display = isCatalog ? '' : 'none';
+    document.getElementById('w-active-tab-panel').style.display  = isCatalog ? 'none' : '';
+    document.getElementById('w-catalog-tab-btn').className = 'btn btn-sm' + (isCatalog ? ' active-tab-btn' : '');
+    document.getElementById('w-active-tab-btn').className  = 'btn btn-sm' + (isCatalog ? '' : ' active-tab-btn');
+    if (!isCatalog) renderWalmartActiveList();
+  }
+
+  function renderWalmartCatalogList() {
+    const el = document.getElementById('w-catalog-list');
+    const ids = Object.keys(walmartProducts);
+    document.getElementById('w-catalog-count').textContent = ids.length;
+    if (!ids.length) {
+      el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)">No products. Add one above.</div>';
+      return;
+    }
+    const sorted = ids.sort((a,b) => (walmartProducts[a].priority||999) - (walmartProducts[b].priority||999));
+    el.innerHTML = sorted.map(id => {
+      const p = walmartProducts[id];
+      return `<div class="catalog-row" data-wcatalog-id="${escapeHtml(id)}">
+        <div class="catalog-row-info">
+          <div class="catalog-row-name">${escapeHtml(p.name || id)}</div>
+          <div class="catalog-row-meta">ID: ${escapeHtml(id)} • ${p.in_stock ? '🟢 In Stock' : '⚪ Out of Stock'}</div>
+        </div>
+        <button class="btn btn-sm btn-danger" onclick="walmartRemove('${escapeHtml(id)}')" style="white-space:nowrap;flex-shrink:0">Remove</button>
+      </div>`;
+    }).join('');
+  }
+
+  function renderWalmartActiveList() {
+    const el = document.getElementById('w-active-list');
+    const ids = Object.keys(walmartProducts);
+    document.getElementById('w-active-count').textContent = ids.length;
+    if (!ids.length) {
+      el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted)">No active products.</div>';
+      return;
+    }
+    const sorted = ids.sort((a,b) => (walmartProducts[a].priority||999) - (walmartProducts[b].priority||999));
+    el.innerHTML = sorted.map(id => {
+      const p = walmartProducts[id];
+      return `<div class="catalog-row" data-wactive-id="${escapeHtml(id)}">
+        <div class="catalog-row-info">
+          <div class="catalog-row-name">${escapeHtml(p.name || id)}</div>
+          <div class="catalog-row-meta">ID: ${escapeHtml(id)} • Pri: ${p.priority||'—'} • ${stateBadge(p.state)}</div>
+        </div>
+        <button class="btn btn-sm btn-danger" onclick="walmartRemove('${escapeHtml(id)}')" style="white-space:nowrap;flex-shrink:0">Remove</button>
+      </div>`;
+    }).join('');
   }
 
   // ══════════════════════════════════════════════
@@ -1272,22 +1315,33 @@
     walmartSSE.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'activity' && msg.data) {
-          prependLog('walmart-log', msg.data.time || '', msg.data.message || '');
-          // Refresh Walmart table on purchase-related activity
-          if (/purchased|success|order|state|PURCHASING|MONITORING/i.test(msg.data.message || '')) {
-            loadWalmartStatus();
-          }
-        }
-        if (msg.type === 'stock_update' && msg.data) {
-          const id = msg.data.item_id;
-          if (id && walmartProducts[id] !== undefined) {
-            walmartProducts[id].in_stock = msg.data.in_stock;
-            walmartProducts[id].last_checked = msg.data.time ? Date.now() / 1000 : walmartProducts[id].last_checked;
-            renderWalmartTable();
-            const lc = document.getElementById('walmart-stat-lastcycle');
-            if (lc) lc.textContent = msg.data.time || new Date().toLocaleTimeString();
-          }
+        switch (msg.type) {
+          case 'activity':
+            if (msg.data) {
+              prependLog('walmart-log', msg.data.time || '', msg.data.message || '');
+              // Refresh Walmart table on purchase-related activity
+              if (/purchased|success|order|state|PURCHASING|MONITORING/i.test(msg.data.message || '')) {
+                loadWalmartStatus();
+              }
+            }
+            break;
+          case 'stock_update':
+            if (msg.data) {
+              const id = msg.data.item_id;
+              if (id && walmartProducts[id] !== undefined) {
+                walmartProducts[id].in_stock = msg.data.in_stock;
+                walmartProducts[id].last_checked = msg.data.time ? Date.now() / 1000 : walmartProducts[id].last_checked;
+                renderWalmartTable();
+                const lc = document.getElementById('walmart-stat-lastcycle');
+                if (lc) lc.textContent = msg.data.time || new Date().toLocaleTimeString();
+              }
+            }
+            break;
+          case 'heartbeat':
+          case 'connected':
+            break;
+          default:
+            break;
         }
       } catch(err) {
         console.warn('Walmart SSE parse error:', err);

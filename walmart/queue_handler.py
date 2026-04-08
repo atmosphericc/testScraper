@@ -81,7 +81,6 @@ PASSTHROUGH_CLICK_TEXTS = [
 ATC_SELECTORS = [
     'button[data-automation-id="add-to-cart-btn"]',
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
-    'button[data-automation-id="add-to-cart-btn"]',
 ]
 
 # ATC button text patterns (used with XPath)
@@ -338,8 +337,8 @@ class QueueHandler:
             except Exception:
                 continue
 
-        # Try CSS class-based selectors with JS visibility check
-        for css_pattern in ['[class*="queue"]', '[class*="widget"]', '[class*="notification"]', '[class*="floating"]']:
+        # Try stable attribute selectors — class names are hashed on every Walmart deploy
+        for css_pattern in ['[data-automation-id*="queue"]', '[data-testid*="queue"]', 'button:has-text("Join queue")', 'button:has-text("Hold my spot")']:
             try:
                 els = await self._page.query_selector_all(css_pattern)
                 for el in els:

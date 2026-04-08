@@ -126,47 +126,30 @@ def _start_manager():
 # Routes
 # ---------------------------------------------------------------------------
 
-def _stock_badge(in_stock: bool) -> str:
-    if in_stock:
-        return '<span class="badge badge-green">&#9679; IN STOCK</span>'
-    return '<span class="badge badge-gray">&#9675; OUT OF STOCK</span>'
-
-
-def _state_badge(state: str) -> str:
-    s = state.upper()
-    if s == "SUCCESS":
-        return f'<span class="badge badge-green">{s}</span>'
-    if s in ("PURCHASING", "IN_QUEUE"):
-        return f'<span class="badge badge-yellow">{s}</span>'
-    if s in ("FAILED", "CIRCUIT_OPEN"):
-        return f'<span class="badge badge-red">{s}</span>'
-    return f'<span class="badge badge-gray">{_he(state) or "MONITORING"}</span>'
-
-
 def _product_row(p: dict, state_by_id: dict) -> str:
-    """Build a single product table row for the dashboard."""
+    """Build a single product table row for the dashboard (server-rendered initial state)."""
     import json as _json
     item_id = p["item_id"]
     name = p.get("name", "Unknown")
+    priority = p.get("priority", "—")
     ps = state_by_id.get(item_id, {})
     state = ps.get("state", "MONITORING")
     in_stock = ps.get("in_stock", False)
-    last_checked = ps.get("last_checked")
-    last_check_str = ""
-    if last_checked:
-        import datetime
-        last_check_str = datetime.datetime.fromtimestamp(last_checked).strftime("%H:%M:%S")
     safe_id = _he(item_id)
     safe_name = _he(name)
     js_id = _json.dumps(item_id)
     return (
         f'<tr data-id="{safe_id}">'
+        f'<td style="white-space:nowrap">'
+        f'<button onclick="movePriority(this,-1)" title="Move Up" class="prio-btn">&#x25B2;</button>'
+        f'<button onclick="movePriority(this,1)" title="Move Down" class="prio-btn">&#x25BC;</button>'
+        f'</td>'
         f'<td><div class="product-name">{safe_name}</div>'
         f'<div class="product-id">{safe_id}</div></td>'
-        f'<td class="cell-lastcheck" style="color:#666;font-size:12px">{_he(last_check_str)}</td>'
-        f'<td class="cell-stock">{_stock_badge(in_stock)}</td>'
-        f'<td class="cell-state">{_state_badge(state)}</td>'
-        f'<td><button onclick="removeProduct({js_id})">Remove</button></td>'
+        f'<td class="cell-lastcheck" style="color:var(--text-muted);font-size:12px">—</td>'
+        f'<td class="cell-stock"><span class="badge badge-gray">&#9675; OUT</span></td>'
+        f'<td class="cell-state"><span class="badge badge-gray">{_he(state)}</span></td>'
+        f'<td><button class="btn btn-sm btn-danger" onclick="removeProduct({js_id})">Remove</button></td>'
         f'</tr>\n'
     )
 
@@ -190,209 +173,401 @@ def index():
   <meta charset="UTF-8">
   <title>Walmart Bot Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    *,*::before,*::after{{box-sizing:border-box}}
-    body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;background:#0d0d0d;color:#e0e0e0;margin:0;padding:20px;}}
-    h1{{color:#0071ce;border-bottom:1px solid #2a2a2a;padding-bottom:12px;margin-bottom:20px;font-size:20px;}}
-    .card{{background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:16px;margin-bottom:16px;}}
-    .card-header{{font-size:12px;text-transform:uppercase;color:#666;font-weight:600;letter-spacing:.05em;margin-bottom:12px;display:flex;align-items:center;gap:8px;}}
-    .badge{{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700;letter-spacing:.03em;}}
-    .badge-green{{background:#0a2a0a;color:#4caf50;border:1px solid #4caf50;}}
-    .badge-red{{background:#2a0a0a;color:#f44336;border:1px solid #f44336;}}
-    .badge-yellow{{background:#2a1e00;color:#ffc107;border:1px solid #ffc107;}}
-    .badge-gray{{background:#1a1a1a;color:#666;border:1px solid #333;}}
-    .status-bar{{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;}}
-    .status-bar-left{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}}
-    .dot{{display:inline-block;width:8px;height:8px;border-radius:50%;flex-shrink:0;}}
-    .dot-green{{background:#4caf50;}}
-    .dot-red{{background:#f44336;}}
-    .dot-yellow{{background:#ffc107;animation:pulse 1s infinite;}}
-    @keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.4}}}}
-    table{{width:100%;border-collapse:collapse;}}
-    th,td{{text-align:left;padding:8px 12px;border-bottom:1px solid #1e1e1e;vertical-align:middle;}}
-    th{{color:#555;font-size:11px;text-transform:uppercase;letter-spacing:.05em;}}
-    .product-name{{font-size:13px;font-weight:500;}}
-    .product-id{{font-size:11px;color:#555;margin-top:2px;}}
-    input{{background:#111;border:1px solid #333;color:#eee;padding:6px 10px;border-radius:4px;font-size:13px;}}
-    input::placeholder{{color:#444;}}
-    .add-form{{display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid #1e1e1e;margin-top:12px;}}
-    button{{background:#0071ce;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:13px;}}
-    button:hover{{background:#0056a3;}}
-    .btn-danger{{background:#c62828;}}
-    .btn-danger:hover{{background:#b71c1c;}}
-    .btn-sm{{padding:4px 10px;font-size:12px;}}
-    #log{{height:300px;overflow-y:auto;background:#0a0a0a;padding:10px;border-radius:4px;font-size:12px;line-height:1.7;}}
-    .log-line{{color:#555;}}
-    .log-line .log-time{{color:#333;margin-right:6px;}}
-    .log-success{{color:#4caf50;}}
-    .log-error{{color:#f44336;}}
-    .log-warning{{color:#ffc107;}}
-    .stats-row{{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;}}
-    .stat-card{{background:#141414;border:1px solid #2a2a2a;border-radius:6px;padding:10px 16px;flex:1;min-width:100px;}}
-    .stat-label{{font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.05em;}}
-    .stat-value{{font-size:22px;font-weight:700;margin-top:4px;}}
-    .stat-value.green{{color:#4caf50;}}
+    :root {{
+      --bg-primary:   #0a0e14;
+      --bg-secondary: #151a21;
+      --bg-elevated:  #1c2128;
+      --bg-card:      #1f2937;
+      --bg-hover:     #252d3a;
+      --border:       #2d3748;
+      --border-active:#4b5563;
+      --accent:       #60a5fa;
+      --accent-hover: #3b82f6;
+      --success:      #10b981;
+      --success-bg:   rgba(16,185,129,0.12);
+      --success-bdr:  rgba(16,185,129,0.35);
+      --warning:      #f59e0b;
+      --warning-bg:   rgba(245,158,11,0.12);
+      --warning-bdr:  rgba(245,158,11,0.35);
+      --danger:       #ef4444;
+      --danger-bg:    rgba(239,68,68,0.12);
+      --danger-bdr:   rgba(239,68,68,0.35);
+      --info:         #06b6d4;
+      --info-bg:      rgba(6,182,212,0.12);
+      --text-primary: #f9fafb;
+      --text-secondary:#d1d5db;
+      --text-muted:   #6b7280;
+      --font:         'Inter', -apple-system, sans-serif;
+      --mono:         'JetBrains Mono', Consolas, monospace;
+    }}
+    * {{ margin:0; padding:0; box-sizing:border-box; }}
+    body {{ font-family: var(--font); background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; font-size: 14px; }}
+    .header {{ background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; position: sticky; top: 0; z-index: 100; }}
+    .header-brand {{ display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; color: var(--text-primary); }}
+    .header-brand span {{ color: var(--accent); }}
+    .header-meta {{ display: flex; align-items: center; gap: 16px; font-size: 12px; color: var(--text-muted); }}
+    .content {{ padding: 24px; max-width: 1400px; margin: 0 auto; }}
+    .dot {{ display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }}
+    .dot-green {{ background: var(--success); animation: pulse 2s infinite; }}
+    .dot-red {{ background: var(--danger); }}
+    .dot-yellow {{ background: var(--warning); animation: pulse 1s infinite; }}
+    @keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.4}} }}
+    .status-bar {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }}
+    .status-bar-left {{ display: flex; align-items: center; gap: 12px; flex: 1; }}
+    .status-bar-right {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+    .badge {{ display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }}
+    .badge-green {{ background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bdr); }}
+    .badge-yellow {{ background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bdr); }}
+    .badge-red {{ background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bdr); }}
+    .badge-blue {{ background: var(--info-bg); color: var(--info); border: 1px solid rgba(6,182,212,0.35); }}
+    .badge-gray {{ background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border); }}
+    .btn {{ background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-secondary); padding: 6px 14px; border-radius: 5px; cursor: pointer; font-family: var(--font); font-size: 12px; font-weight: 500; transition: background 0.15s, border-color 0.15s; }}
+    .btn:hover {{ background: var(--bg-hover); border-color: var(--border-active); color: var(--text-primary); }}
+    .btn-primary {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+    .btn-primary:hover {{ background: var(--accent-hover); border-color: var(--accent-hover); color: #fff; }}
+    .btn-danger {{ background: var(--danger-bg); border-color: var(--danger-bdr); color: var(--danger); }}
+    .btn-danger:hover {{ background: rgba(239,68,68,0.2); }}
+    .btn-sm {{ padding: 4px 10px; font-size: 11px; }}
+    .card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; }}
+    .card-header {{ padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; justify-content: space-between; }}
+    .product-table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    .product-table th {{ padding: 9px 14px; text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); border-bottom: 1px solid var(--border); background: var(--bg-elevated); }}
+    .product-table td {{ padding: 10px 14px; border-bottom: 1px solid rgba(45,55,72,0.5); vertical-align: middle; }}
+    .product-table tr:last-child td {{ border-bottom: none; }}
+    .product-table tr:hover td {{ background: var(--bg-hover); }}
+    .product-name {{ font-weight: 500; color: var(--text-primary); }}
+    .product-id {{ font-family: var(--mono); font-size: 11px; color: var(--text-muted); }}
+    .prio-btn {{ background: none; border: 1px solid var(--border); color: var(--text-secondary); border-radius: 4px; padding: 2px 7px; cursor: pointer; margin-right: 2px; font-size: 10px; }}
+    .prio-btn:hover {{ border-color: var(--border-active); color: var(--text-primary); }}
+    .add-form {{ padding: 14px 16px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }}
+    .add-form input {{ background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text-primary); padding: 7px 11px; border-radius: 5px; font-family: var(--font); font-size: 13px; outline: none; transition: border-color 0.15s; }}
+    .add-form input:focus {{ border-color: var(--accent); }}
+    .add-form input::placeholder {{ color: var(--text-muted); }}
+    .log-box {{ height: 280px; overflow-y: auto; padding: 10px 14px; font-family: var(--mono); font-size: 12px; line-height: 1.7; }}
+    .log-line {{ color: var(--text-muted); }}
+    .log-line.log-success {{ color: var(--success); }}
+    .log-line.log-error {{ color: var(--danger); }}
+    .log-line.log-warning {{ color: var(--warning); }}
+    .log-time {{ color: var(--text-muted); margin-right: 6px; }}
+    .stats-row {{ display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }}
+    .stat-card {{ background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; flex: 1; min-width: 130px; }}
+    .stat-label {{ font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }}
+    .stat-value {{ font-size: 22px; font-weight: 700; color: var(--text-primary); }}
+    .stat-value.green {{ color: var(--success); }}
+    ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+    ::-webkit-scrollbar-track {{ background: transparent; }}
+    ::-webkit-scrollbar-thumb {{ background: var(--border); border-radius: 3px; }}
+    ::-webkit-scrollbar-thumb:hover {{ background: var(--border-active); }}
+    .conn-indicator {{ display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }}
   </style>
 </head>
 <body>
-  <h1>&#x1F6D2; Walmart Bot Dashboard</h1>
 
+<div class="header">
+  <div class="header-brand">
+    <span>&#x1F6D2;</span> Walmart Bot
+  </div>
+  <div class="header-meta">
+    <div class="conn-indicator" id="conn-status">
+      <span class="dot dot-yellow"></span> Connecting&hellip;
+    </div>
+  </div>
+</div>
+
+<div class="content">
   <div class="status-bar">
     <div class="status-bar-left">
-      <span class="dot {'dot-green' if running else 'dot-red'}"></span>
-      <strong>{'Running' if running else 'Stopped'}</strong>
-      <span class="badge {'badge-yellow' if _test_mode else 'badge-green'}">{'TEST MODE' if _test_mode else 'LIVE'}</span>
-      {'<span class="badge badge-red">CIRCUIT OPEN (' + str(circuit_secs) + 's)</span>' if circuit_open else ''}
+      <span id="running-dot" class="dot dot-yellow"></span>
+      <strong id="running-text">Connecting&hellip;</strong>
+      <span id="mode-badge" class="badge badge-gray">TEST</span>
+      <span id="circuit-badge" style="display:none" class="badge badge-red">CIRCUIT OPEN</span>
     </div>
-    <div style="display:flex;gap:8px;">
-      <button class="btn-sm" onclick="fetch('/api/test/enable',{{method:'POST'}}).then(()=>location.reload())">Test Mode</button>
-      <button class="btn-sm btn-danger" onclick="fetch('/api/test/disable',{{method:'POST'}}).then(()=>location.reload())">Live Mode</button>
+    <div class="status-bar-right">
+      <button class="btn btn-sm" onclick="setTestMode(true)">Enable Test Mode</button>
+      <button class="btn btn-sm btn-danger" onclick="setTestMode(false)">Live Mode</button>
     </div>
   </div>
 
   <div class="stats-row">
     <div class="stat-card">
       <div class="stat-label">Products</div>
-      <div class="stat-value" id="stat-total">{len(products)}</div>
+      <div class="stat-value" id="stat-total">—</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">In Stock</div>
-      <div class="stat-value green" id="stat-instock">{instock_count}</div>
+      <div class="stat-value green" id="stat-instock">0</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Last Update</div>
-      <div class="stat-value" id="stat-lastupdate" style="font-size:14px;margin-top:6px">—</div>
+      <div class="stat-label">Last Cycle</div>
+      <div class="stat-value" id="stat-lastcycle" style="font-size:14px;margin-top:4px">—</div>
     </div>
   </div>
 
   <div class="card">
-    <div class="card-header">Products</div>
-    <table>
-      <thead><tr><th>Product</th><th>Last Check</th><th>Stock</th><th>State</th><th></th></tr></thead>
+    <div class="card-header">
+      Products
+      <span id="monitoring-badge" class="badge badge-gray" style="font-size:11px">STOPPED</span>
+    </div>
+    <table class="product-table">
+      <thead>
+        <tr><th>Priority</th><th>Product</th><th>Last Check</th><th>Stock</th><th>State</th><th></th></tr>
+      </thead>
       <tbody id="product-tbody">
         {''.join(_product_row(p, state_by_id) for p in products)}
       </tbody>
     </table>
     <div class="add-form">
-      <input id="new-item-id" placeholder="Walmart Item ID" style="width:180px">
+      <input id="new-item-id" placeholder="Item ID (e.g. 15042474261)" style="width:180px">
       <input id="new-item-name" placeholder="Product name" style="width:200px">
       <input type="number" id="new-max-price" placeholder="Max price" step="0.01" style="width:110px">
-      <button onclick="addProduct()">Add Product</button>
+      <button class="btn btn-primary" onclick="addProduct()">Add Product</button>
     </div>
   </div>
 
   <div class="card">
     <div class="card-header">Live Activity</div>
-    <div id="log">
+    <div class="log-box" id="log">
       {''.join(f'<div class="log-line"><span class="log-time">[{_he(e["time"])}]</span>{_he(e["message"])}</div>' for e in reversed(activity))}
     </div>
   </div>
+</div>
 
-  <script>
-    const evtSource = new EventSource('/api/stream');
+<script>
+  // ── Helpers ──
+  function esc(s) {{
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }}
+  function stockBadge(inStock) {{
+    return inStock
+      ? '<span class="badge badge-green">&#9679; IN STOCK</span>'
+      : '<span class="badge badge-gray">&#9675; OUT</span>';
+  }}
+  function stateBadge(state) {{
+    const s = (state || '').toUpperCase();
+    if (s === 'SUCCESS' || s === 'PURCHASED') return '<span class="badge badge-green">' + s + '</span>';
+    if (s === 'PURCHASING' || s === 'IN_QUEUE' || s === 'ATTEMPTING') return '<span class="badge badge-yellow">' + s + '</span>';
+    if (s === 'FAILED' || s === 'CIRCUIT_OPEN') return '<span class="badge badge-red">' + s + '</span>';
+    return '<span class="badge badge-gray">' + (s || 'MONITORING') + '</span>';
+  }}
 
-    evtSource.onmessage = (e) => {{
-      const msg = JSON.parse(e.data);
-      if (msg.type === 'activity' && msg.data) {{
-        prependLog(msg.data.time, msg.data.message);
-        // Refresh table state on purchase transitions
-        if (/PURCHASING|SUCCESS|FAILED|MONITORING|order/i.test(msg.data.message)) {{
-          loadStatus();
+  // ── Products state ──
+  let products = {{}};
+  let testModeOn = false;
+
+  function buildRow(id) {{
+    const p = products[id];
+    const lastCheck = p.last_checked ? new Date(p.last_checked * 1000).toLocaleTimeString() : '—';
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-id', id);
+    tr.innerHTML = `
+      <td style="white-space:nowrap">
+        <button onclick="movePriority(this,-1)" title="Move Up" class="prio-btn">&#x25B2;</button>
+        <button onclick="movePriority(this,1)" title="Move Down" class="prio-btn">&#x25BC;</button>
+      </td>
+      <td>
+        <div class="product-name">${{esc(p.name || id)}}</div>
+        <div class="product-id">${{esc(id)}}</div>
+      </td>
+      <td class="cell-lastcheck" style="color:var(--text-muted);font-size:12px">${{esc(lastCheck)}}</td>
+      <td class="cell-stock">${{stockBadge(p.in_stock)}}</td>
+      <td class="cell-state">${{stateBadge(p.state)}}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="removeProduct('${{esc(id)}}')">Remove</button></td>`;
+    return tr;
+  }}
+
+  function renderTable() {{
+    const tbody = document.getElementById('product-tbody');
+    const ids = Object.keys(products).sort((a,b) =>
+      (products[a].priority || 999) - (products[b].priority || 999)
+    );
+    if (!ids.length) {{
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px">No products configured</td></tr>';
+      document.getElementById('stat-total').textContent = '0';
+      document.getElementById('stat-instock').textContent = '0';
+      return;
+    }}
+    tbody.querySelectorAll('tr:not([data-id])').forEach(r => r.remove());
+    const existing = {{}};
+    tbody.querySelectorAll('tr[data-id]').forEach(r => {{ existing[r.getAttribute('data-id')] = r; }});
+    Object.keys(existing).filter(id => !products[id]).forEach(id => existing[id].remove());
+    ids.filter(id => !existing[id]).forEach(id => tbody.appendChild(buildRow(id)));
+    ids.filter(id => existing[id]).forEach(id => {{
+      const row = existing[id];
+      const p = products[id];
+      const lastCheck = p.last_checked ? new Date(p.last_checked * 1000).toLocaleTimeString() : '—';
+      row.querySelector('.cell-lastcheck').textContent = lastCheck;
+      row.querySelector('.cell-stock').innerHTML = stockBadge(p.in_stock);
+      row.querySelector('.cell-state').innerHTML = stateBadge(p.state);
+      const nameEl = row.querySelector('.product-name');
+      if (nameEl.textContent.trim() === id && p.name && p.name !== id) nameEl.textContent = p.name;
+    }});
+    ids.forEach(id => {{ const r = tbody.querySelector(`tr[data-id="${{id}}"]`); if (r) tbody.appendChild(r); }});
+    document.getElementById('stat-total').textContent = ids.length;
+    document.getElementById('stat-instock').textContent = ids.filter(id => products[id].in_stock).length;
+  }}
+
+  function updateStatusBar(running, testMode, circuitOpen) {{
+    const dot = document.getElementById('running-dot');
+    const text = document.getElementById('running-text');
+    const badge = document.getElementById('mode-badge');
+    const cbadge = document.getElementById('circuit-badge');
+    const monBadge = document.getElementById('monitoring-badge');
+    dot.className = 'dot ' + (running ? 'dot-green' : 'dot-red');
+    text.textContent = running ? 'Running' : 'Stopped';
+    badge.textContent = testMode ? 'TEST MODE' : 'LIVE';
+    badge.className = 'badge ' + (testMode ? 'badge-yellow' : 'badge-green');
+    if (cbadge) cbadge.style.display = circuitOpen ? 'inline-flex' : 'none';
+    if (monBadge) {{
+      monBadge.textContent = running ? 'MONITORING' : 'STOPPED';
+      monBadge.className = 'badge ' + (running ? 'badge-blue' : 'badge-gray');
+    }}
+    const conn = document.getElementById('conn-status');
+    if (conn) conn.innerHTML = '<span class="dot ' + (running ? 'dot-green' : 'dot-red') + '"></span> ' + (running ? 'Live' : 'Stopped');
+  }}
+
+  function prependLog(time, message) {{
+    const box = document.getElementById('log');
+    if (!box) return;
+    const isSuccess = message.includes('SUCCESS') || message.includes('ORDER PLACED') || message.includes('confirmed');
+    const isError = /error|fail|failed/i.test(message);
+    const isWarning = /warn|circuit/i.test(message);
+    const cls = isSuccess ? 'log-success' : isError ? 'log-error' : isWarning ? 'log-warning' : '';
+    const line = document.createElement('div');
+    line.className = 'log-line ' + cls;
+    line.innerHTML = '<span class="log-time">[' + esc(time) + ']</span>' + esc(message);
+    box.insertBefore(line, box.firstChild);
+    while (box.children.length > 300) box.removeChild(box.lastChild);
+  }}
+
+  // ── API ──
+  async function loadStatus() {{
+    try {{
+      const d = await fetch('/api/status').then(r => r.json());
+      const prods = d.products || [];
+      const incoming = new Set(prods.map(p => p.item_id));
+      Object.keys(products).forEach(id => {{ if (!incoming.has(id)) delete products[id]; }});
+      prods.forEach(p => {{
+        const id = p.item_id;
+        if (!products[id]) products[id] = {{}};
+        if (p.name && p.name !== id && !/^\\d+$/.test(p.name.trim())) {{
+          products[id].name = p.name;
+        }} else if (!products[id].name) {{
+          products[id].name = p.name || id;
         }}
-      }}
-      if (msg.type === 'stock_update' && msg.data) {{
-        updateRowStock(msg.data.item_id, msg.data.in_stock);
-        document.getElementById('stat-lastupdate').textContent = msg.data.time;
-        refreshInStockCount();
-      }}
-    }};
+        products[id].state = p.state || 'MONITORING';
+        products[id].priority = p.priority || products[id].priority || 999;
+        products[id].in_stock = p.in_stock || false;
+        products[id].last_checked = p.last_checked || null;
+      }});
+      testModeOn = d.test_mode || false;
+      const running = d.running || false;
+      updateStatusBar(running, testModeOn, d.circuit_open || false);
+      renderTable();
+      const lc = document.getElementById('stat-lastcycle');
+      if (lc && running) lc.textContent = new Date().toLocaleTimeString();
+    }} catch(e) {{ console.warn('Status load failed', e); }}
+  }}
 
-    function prependLog(time, message) {{
-      const log = document.getElementById('log');
-      const isSuccess = /SUCCESS|ORDER PLACED/i.test(message);
-      const isError   = /error|fail/i.test(message);
-      const isWarning = /warn|circuit/i.test(message);
-      const cls = isSuccess ? 'log-success' : isError ? 'log-error' : isWarning ? 'log-warning' : '';
-      const line = document.createElement('div');
-      line.className = 'log-line ' + cls;
-      line.innerHTML = '<span class="log-time">[' + esc(time) + ']</span>' + esc(message);
-      log.insertBefore(line, log.firstChild);
-      while (log.children.length > 200) log.removeChild(log.lastChild);
-    }}
+  function movePriority(btn, direction) {{
+    const row = btn.closest('tr');
+    const tbody = row.closest('tbody');
+    const rows = Array.from(tbody.querySelectorAll('tr[data-id]'));
+    const idx = rows.indexOf(row);
+    const tgt = idx + direction;
+    if (tgt < 0 || tgt >= rows.length) return;
+    if (direction === -1) tbody.insertBefore(row, rows[tgt]);
+    else tbody.insertBefore(rows[tgt], row);
+    savePriorityOrder();
+  }}
 
-    function esc(s) {{
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }}
-
-    function stockBadge(inStock) {{
-      return inStock
-        ? '<span class="badge badge-green">&#9679; IN STOCK</span>'
-        : '<span class="badge badge-gray">&#9675; OUT OF STOCK</span>';
-    }}
-
-    function stateBadge(state) {{
-      const s = (state || '').toUpperCase();
-      if (s === 'SUCCESS') return '<span class="badge badge-green">' + s + '</span>';
-      if (s === 'PURCHASING' || s === 'IN_QUEUE') return '<span class="badge badge-yellow">' + s + '</span>';
-      if (s === 'FAILED' || s === 'CIRCUIT_OPEN') return '<span class="badge badge-red">' + s + '</span>';
-      return '<span class="badge badge-gray">' + (s || 'MONITORING') + '</span>';
-    }}
-
-    function updateRowStock(item_id, in_stock) {{
-      const row = document.querySelector(`tr[data-id="${{CSS.escape(item_id)}}"]`);
-      if (!row) return;
-      const cell = row.querySelector('.cell-stock');
-      if (cell) cell.innerHTML = stockBadge(in_stock);
-      row.dataset.instock = in_stock ? '1' : '0';
-    }}
-
-    function refreshInStockCount() {{
-      const rows = document.querySelectorAll('#product-tbody tr[data-id]');
-      let count = 0;
-      rows.forEach(r => {{ if (r.dataset.instock === '1') count++; }});
-      document.getElementById('stat-instock').textContent = count;
-    }}
-
-    async function loadStatus() {{
-      try {{
-        const d = await fetch('/api/status').then(r => r.json());
-        const products = d.products || [];
-        products.forEach(p => {{
-          const row = document.querySelector(`tr[data-id="${{CSS.escape(p.item_id)}}"]`);
-          if (!row) return;
-          const stateCell = row.querySelector('.cell-state');
-          const stockCell = row.querySelector('.cell-stock');
-          const lastCell  = row.querySelector('.cell-lastcheck');
-          if (stateCell) stateCell.innerHTML = stateBadge(p.state);
-          if (stockCell) {{ stockCell.innerHTML = stockBadge(p.in_stock || false); row.dataset.instock = p.in_stock ? '1' : '0'; }}
-          if (lastCell && p.last_checked) {{
-            lastCell.textContent = new Date(p.last_checked * 1000).toLocaleTimeString();
-          }}
-        }});
-        refreshInStockCount();
-      }} catch(e) {{ console.warn('Status load failed', e); }}
-    }}
-
-    function addProduct() {{
-      const item_id = document.getElementById('new-item-id').value.trim();
-      const name = document.getElementById('new-item-name').value.trim() || 'Unknown';
-      const max_price = parseFloat(document.getElementById('new-max-price').value) || null;
-      if (!item_id) return;
-      fetch('/add-product', {{
+  async function savePriorityOrder() {{
+    const tbody = document.getElementById('product-tbody');
+    if (!tbody) return;
+    const order = Array.from(tbody.querySelectorAll('tr[data-id]')).map(r => r.getAttribute('data-id'));
+    order.forEach((id, i) => {{ if (products[id]) products[id].priority = i + 1; }});
+    try {{
+      await fetch('/reorder-products', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{item_id, name, max_price}})
-      }}).then(() => location.reload());
-    }}
+        body: JSON.stringify({{order}})
+      }});
+    }} catch(e) {{ console.error('Reorder error:', e); }}
+  }}
 
-    function removeProduct(item_id) {{
-      if (!confirm('Remove ' + item_id + '?')) return;
-      fetch('/remove-product/' + item_id, {{method: 'POST'}}).then(() => location.reload());
-    }}
+  function addProduct() {{
+    const item_id = document.getElementById('new-item-id').value.trim();
+    const name = document.getElementById('new-item-name').value.trim() || 'Unknown';
+    const max_price = parseFloat(document.getElementById('new-max-price').value) || null;
+    if (!item_id) return;
+    fetch('/add-product', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{item_id, name, max_price}})
+    }}).then(() => loadStatus());
+  }}
 
-    // Poll state every 15s as a fallback
+  function removeProduct(item_id) {{
+    if (!confirm('Remove ' + item_id + '?')) return;
+    fetch('/remove-product/' + item_id, {{method: 'POST'}}).then(() => {{
+      delete products[item_id];
+      renderTable();
+    }});
+  }}
+
+  async function setTestMode(enable) {{
+    await fetch(enable ? '/api/test/enable' : '/api/test/disable', {{method:'POST'}});
+    testModeOn = enable;
+    updateStatusBar(true, enable, false);
+  }}
+
+  // ── SSE ──
+  let sse = null;
+  function connectSSE() {{
+    if (sse) sse.close();
+    sse = new EventSource('/api/stream');
+    sse.onopen = () => {{
+      const conn = document.getElementById('conn-status');
+      if (conn) conn.innerHTML = '<span class="dot dot-green"></span> Live';
+    }};
+    sse.onmessage = (e) => {{
+      try {{
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'activity' && msg.data) {{
+          prependLog(msg.data.time || '', msg.data.message || '');
+          if (/purchased|success|order|state|PURCHASING|MONITORING|FAILED/i.test(msg.data.message || '')) {{
+            loadStatus();
+          }}
+        }}
+        if (msg.type === 'stock_update' && msg.data) {{
+          const id = msg.data.item_id;
+          if (id && products[id] !== undefined) {{
+            products[id].in_stock = msg.data.in_stock;
+            products[id].last_checked = Date.now() / 1000;
+            renderTable();
+            const lc = document.getElementById('stat-lastcycle');
+            if (lc) lc.textContent = msg.data.time || new Date().toLocaleTimeString();
+          }}
+        }}
+      }} catch(err) {{ console.warn('SSE parse error:', err); }}
+    }};
+    sse.onerror = () => {{
+      const conn = document.getElementById('conn-status');
+      if (conn) conn.innerHTML = '<span class="dot dot-yellow"></span> Reconnecting&hellip;';
+      setTimeout(connectSSE, 5000);
+    }};
+  }}
+
+  // ── Init ──
+  (async function init() {{
+    await loadStatus();
+    connectSSE();
     setInterval(loadStatus, 15000);
-  </script>
+  }})();
+</script>
 </body>
 </html>"""
     return html

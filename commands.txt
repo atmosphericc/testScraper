@@ -1,6 +1,6 @@
 ================================================================
   AIO BOT — COMMANDS REFERENCE
-  Last updated: 2026-04-03
+  Last updated: 2026-04-06
 ================================================================
 
 ----------------------------------------------------------------
@@ -150,11 +150,25 @@
 ----------------------------------------------------------------
 
   Entry point:         unified_app.py
+  Target app:          app.py (Flask app + Target routes)
+  Target test mode:    test_app.py
   Target logic:        src/
+    src/monitoring/      stock_monitor.py
+    src/purchasing/      bulletproof_purchase_manager.py
+    src/session/         session_manager.py, purchase_executor.py, session_keepalive.py
+    src/utils/           save_login.py, target_login.py
   Walmart logic:       walmart/
-  Best Buy (stub):     best_buy/
-  Costco (stub):       costco/
-  Pokemon Ctr (stub):  pokemon_center/
+    walmart/blueprint.py       Flask blueprint (routes at /walmart/)
+    walmart/purchase_manager.py
+    walmart/purchase_executor.py
+    walmart/session_manager.py
+    walmart/stock_monitor.py
+    walmart/stock_check.py
+    walmart/proxy_manager.py
+    walmart/queue_handler.py
+    walmart/self_healing_agent.py
+    walmart/config.py
+    walmart/walmart_app.py     standalone Walmart server
 
   Key scripts:
     relogin.py              Target manual login / session save
@@ -163,33 +177,37 @@
     configureProducts.py    Standalone product config editor (port 5002)
     compareInventory.py     TCGPlayer price comparison (port 5003)
 
-  Dashboards:          dashboard/templates/
-    unified_dashboard.html   ← current main dashboard
+  Dashboard:           dashboard/templates/
+    unified_dashboard.html   ← main dashboard (used by /dashboard route)
+    simple_dashboard.html    ← Target-only dashboard (used by / route)
+    simple_dashboard_v2.html ← Target v2 dashboard (used by /v2 route)
 
   Config / products:
     config/product_config.json     Target TCINs + priority
-    walmart/walmart_config.json    Walmart item IDs + priority
     config/product_catalog.json    Extended Target product catalog
-    config/proxyIps.json           50 proxies (used by Walmart)
+    config/proxyIps.json           proxy list (used by Walmart)
+    config/pokemon_price_cache.json  TCGPlayer price cache (used by compareInventory.py)
+    walmart/walmart_config.json    Walmart item IDs + priority
 
-  Sessions:
-    nodriver-profile/    Target browser profile
-    target.json          Target saved cookies
-    walmart-profile-login/  Walmart browser profile + cookies.json
+  Sessions (gitignored — user-specific, not committed):
+    nodriver-profile/       Target browser profile
+    target.json             Target saved cookies
+    walmart-profile/        Walmart cookies (cookies.json)
+    walmart-profile-login/  Walmart browser profile for relogin
 
-  Logs:
+  Logs (gitignored):
     logs/                Target logs + purchase states
     walmart/logs/        Walmart screenshots
+
+  Pokemon data:
+    Pokemon Inventory/   CSV inventory for compareInventory.py
 
 ----------------------------------------------------------------
   RETAILER STATUS
 ----------------------------------------------------------------
 
-  Target        → ACTIVE  — stock monitoring + checkout implemented
-  Walmart       → ACTIVE  — staggered proxy monitoring + checkout implemented
-  Best Buy      → STUB    (architecture ready, not implemented)
-  Costco        → STUB    (architecture ready, not implemented)
-  Pokemon Ctr   → STUB    (lowest priority, most anti-bot)
+  Target        → ACTIVE  — stock monitoring + checkout
+  Walmart       → ACTIVE  — staggered proxy monitoring + checkout
 
 ----------------------------------------------------------------
   GIT

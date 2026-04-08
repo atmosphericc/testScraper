@@ -12,7 +12,7 @@ import queue
 import hashlib
 import asyncio
 import concurrent.futures
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response
 import logging
 import os
@@ -712,9 +712,10 @@ def purchase_status_callback(tcin, status, state):
     if status == 'attempting':
         add_activity_log(f"Starting purchase attempt: {state.get('product_title', tcin)}", "info", "purchase", console=False)
     elif status == 'purchased':
-        add_activity_log(f"MOCK: Purchase successful: {state.get('product_title', tcin)} - Order: {state.get('order_number')}", "success", "purchase")
+        order_num = state.get('order_number') or 'unknown'
+        add_activity_log(f"Purchase successful: {state.get('product_title', tcin)} - Order: {order_num}", "success", "purchase")
     elif status == 'failed':
-        add_activity_log(f"MOCK: Purchase failed: {state.get('product_title', tcin)} - {state.get('failure_reason')}", "error", "purchase")
+        add_activity_log(f"Purchase failed: {state.get('product_title', tcin)} - {state.get('failure_reason')}", "error", "purchase")
 
 def broadcast_sse_event(event_type, data):
     """Broadcast SSE event to all connected clients"""
@@ -1296,8 +1297,8 @@ class PurchaseManagerThread:
                     is_in_stock = stock_lookup.get(tcin, False)
 
                     if is_in_stock:
-                        if actual_status != before_status:
-                            reset_verification_errors.append(f"{tcin}: IN STOCK should remain '{before_status}' but got '{actual_status}'")
+                        if actual_status != 'ready':
+                            reset_verification_errors.append(f"{tcin}: IN STOCK should be 'ready' but got '{actual_status}'")
                     else:
                         if actual_status != 'ready':
                             reset_verification_errors.append(f"{tcin}: OUT OF STOCK should be 'ready' but got '{actual_status}'")
@@ -3497,6 +3498,28 @@ if __name__ == '__main__':
 
         sm   = global_purchase_manager.session_manager if global_purchase_manager else None
         loop = global_event_loop
+
+        # Mark any in-progress purchases as interrupted before killing the browser.
+        # This prevents "attempting" states from persisting until the 60s auto-reset
+        # on next restart, and avoids the risk of double-purchase.
+        if global_purchase_manager:
+            try:
+                all_states = global_purchase_manager.get_all_states()
+                attempting_tcins = [
+                    tcin for tcin, state in all_states.items()
+                    if state.get('status') == 'attempting'
+                ]
+                if attempting_tcins:
+                    raw_states = global_purchase_manager.load_states()
+                    for tcin in attempting_tcins:
+                        if tcin in raw_states:
+                            raw_states[tcin]['status'] = 'interrupted'
+                            raw_states[tcin]['final_outcome'] = 'interrupted'
+                            raw_states[tcin]['completed_at'] = time.time()
+                    global_purchase_manager.save_states(raw_states)
+                    print(f"[SYSTEM] Marked {len(attempting_tcins)} in-progress purchase(s) as interrupted: {attempting_tcins}")
+            except Exception as e:
+                print(f"[SYSTEM] Failed to write interrupted states: {e}")
 
         # Save session via async (best effort)
         if sm and loop and loop.is_running():

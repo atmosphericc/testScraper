@@ -12,8 +12,8 @@ import zendriver as uc
 
 
 # Credentials
-EMAIL = "elricomon@msn.com"
-PASSWORD = "Cars123!"
+EMAIL = os.environ.get("TARGET_EMAIL", "")
+PASSWORD = os.environ.get("TARGET_PASSWORD", "")
 STORAGE_PATH = "target.json"
 
 
@@ -83,7 +83,7 @@ async def perform_target_login(tab) -> bool:
         print("=" * 60)
         print("TARGET.COM LOGIN")
         print("=" * 60)
-        print(f"Email: {EMAIL}")
+        print(f"Email: {EMAIL[:3]}***@{EMAIL.split('@')[-1] if '@' in EMAIL else '***'}")
         print("=" * 60)
         print()
 
@@ -152,7 +152,8 @@ async def perform_target_login(tab) -> bool:
             await email_field.send_keys(char)
             await asyncio.sleep(random.uniform(0.05, 0.15))
 
-        print(f"   [OK] Email entered: {EMAIL}")
+        _masked = f"{EMAIL[:3]}***@{EMAIL.split('@')[-1]}" if '@' in EMAIL else "***"
+        print(f"   [OK] Email entered: {_masked}")
 
         # Click Continue
         print("5. Clicking Continue...")

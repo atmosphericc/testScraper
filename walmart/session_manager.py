@@ -30,6 +30,7 @@ from .config import (
     SESSION_VALIDATE_INTERVAL,
     SESSION_MAX_IDLE,
     set_graphql_hash_atf,
+    set_graphql_hash_btf,
 )
 
 logger = logging.getLogger(__name__)
@@ -398,11 +399,17 @@ class WalmartSessionManager:
             try:
                 self._status_cb(f"[SESSION] Warming {i}/{len(warm_pages)}...")
                 await self._page.send(cdp.page.navigate(url))
-                await asyncio.sleep(random.uniform(3.5, 5.5))
+                await asyncio.sleep(random.uniform(5.0, 8.0))
                 await self._handle_blocked_page()
                 # After each page, check if _px3 appeared — stop early if we have it
                 raw = await self._page.send(cdp.network.get_all_cookies())
                 cookie_dict = {c.name: c.value for c in raw}
+                if "_abck" not in cookie_dict:
+                    logger.warning("[SESSION] No _abck cookie — Akamai challenge may have failed")
+                if "bm_sz" not in cookie_dict:
+                    logger.warning("[SESSION] No bm_sz — sensor.js may use default seed 8888888")
+                if "ak_bmsc" not in cookie_dict:
+                    logger.warning("[SESSION] No ak_bmsc — Akamai device cache not populated")
                 if "_px3" in cookie_dict:
                     with self._live_cookies_lock:
                         self._live_cookies = cookie_dict
@@ -796,6 +803,11 @@ class WalmartSessionManager:
         if not page or "/blocked" not in (page.url or ""):
             return True  # not on a blocked page
 
+        # 6d: detect checkbox variant — press-and-hold sequence will not work for it
+        if "g=a" in (page.url or ""):
+            logger.warning("[SESSION] PerimeterX checkbox variant detected (/blocked?g=a) — press-and-hold will not work")
+            return False
+
         logger.warning("[SESSION] /blocked page detected — attempting press-and-hold solve")
         self._status_cb("[SESSION] Bot challenge detected — solving press-and-hold...")
 
@@ -808,8 +820,10 @@ class WalmartSessionManager:
             logger.debug("[SESSION] Challenge attempt %d/%d", attempt, max_attempts)
 
             target = None
-            for sel in ["#px-captcha", "div[id*='px-captcha']", "div[class*='px-captcha']",
-                        "div[class*='hold']", "div[class*='press']", "div[class*='challenge']"]:
+            # Selectors ordered by stability. #px-captcha and div[id*='px-captcha'] are
+            # stable PerimeterX anchors (last verified: 2026-04-08).
+            # Class-based fallbacks removed — PX hashes class names on every challenge render.
+            for sel in ["#px-captcha", "div[id*='px-captcha']"]:
                 try:
                     el = await page.wait_for(selector=sel, timeout=5)
                     if el:
@@ -845,6 +859,14 @@ class WalmartSessionManager:
                 await page.mouse_move(cx, cy, steps=4)
                 await asyncio.sleep(0.08)
 
+                # 6c: pointerDown before mousePressed
+                await page.send(cdp.input_.dispatch_mouse_event(
+                    type_="pointerDown",
+                    x=cx, y=cy,
+                    button=cdp.input_.MouseButton.LEFT,
+                    buttons=1, click_count=1,
+                ))
+
                 await page.send(cdp.input_.dispatch_mouse_event(
                     type_="mousePressed",
                     x=cx, y=cy,
@@ -852,15 +874,27 @@ class WalmartSessionManager:
                     buttons=1, click_count=1,
                 ))
 
+                # 6b: cumulative random walk jitter
+                drift_x = 0.0
+                drift_y = 0.0
+
                 hold_start = time.monotonic()
                 while time.monotonic() - hold_start < 25.0:
-                    if "/blocked" not in (page.url or ""):
+                    elapsed = time.monotonic() - hold_start
+                    if elapsed >= 6.0 and "/blocked" not in (page.url or ""):
                         break
-                    await asyncio.sleep(0.15)
-                    if "/blocked" not in (page.url or ""):
+                    # 6a: randomized hold loop sleep
+                    await asyncio.sleep(random.uniform(0.08, 0.25))
+                    elapsed = time.monotonic() - hold_start
+                    if elapsed >= 6.0 and "/blocked" not in (page.url or ""):
                         break
-                    jx = cx + random.uniform(-1.5, 1.5)
-                    jy = cy + random.uniform(-1.5, 1.5)
+                    # 6b: non-uniform random walk
+                    drift_x += random.uniform(-3, 5)
+                    drift_y += random.uniform(-3, 5)
+                    drift_x = max(-20, min(20, drift_x))
+                    drift_y = max(-20, min(20, drift_y))
+                    jx = cx + drift_x
+                    jy = cy + drift_y
                     await page.send(cdp.input_.dispatch_mouse_event(
                         type_="mouseMoved",
                         x=jx, y=jy,
@@ -870,6 +904,14 @@ class WalmartSessionManager:
 
                 await page.send(cdp.input_.dispatch_mouse_event(
                     type_="mouseReleased",
+                    x=cx, y=cy,
+                    button=cdp.input_.MouseButton.LEFT,
+                    buttons=0, click_count=1,
+                ))
+
+                # 6c: pointerUp after mouseReleased
+                await page.send(cdp.input_.dispatch_mouse_event(
+                    type_="pointerUp",
                     x=cx, y=cy,
                     button=cdp.input_.MouseButton.LEFT,
                     buttons=0, click_count=1,
@@ -889,7 +931,16 @@ class WalmartSessionManager:
                     pass
                 await asyncio.sleep(0.5)
 
-        cleared = "/blocked" not in (page.url or "")
+        # 6e: secondary success signal — check _px3 cookie in addition to URL
+        url_cleared = "/blocked" not in (page.url or "")
+        px3_present = False
+        try:
+            raw = await page.send(cdp.network.get_all_cookies())
+            px3_present = any(c.name == "_px3" for c in raw)
+        except Exception:
+            pass
+
+        cleared = url_cleared or px3_present
         if cleared:
             logger.debug("[SESSION] /blocked challenge cleared")
             self._status_cb("[SESSION] Challenge solved — continuing")
@@ -901,7 +952,7 @@ class WalmartSessionManager:
     def _on_network_request(self, event):
         """
         CDP RequestWillBeSent handler — sniffs ItemByIdAtf/Btf URLs to:
-        1. Auto-discover the ATF GraphQL hash
+        1. Auto-discover ATF and BTF GraphQL hashes
         2. Track request IDs so we can capture response bodies for stock data
         """
         try:
@@ -910,6 +961,10 @@ class WalmartSessionManager:
                 m = _re.search(r"/ItemByIdAtf/([a-f0-9]{64})/", url)
                 if m:
                     set_graphql_hash_atf(m.group(1))
+            if "ItemByIdBtf" in url:
+                m = _re.search(r"/ItemByIdBtf/([a-f0-9]{64})/", url)
+                if m:
+                    set_graphql_hash_btf(m.group(1))
             if "ItemByIdBtf" in url or "ItemByIdAtf" in url:
                 m = _re.search(r"/ip/(\d+)", url)
                 if m and self._stock_intercept_cb:

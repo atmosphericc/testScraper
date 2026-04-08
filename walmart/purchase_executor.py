@@ -109,9 +109,11 @@ class WalmartPurchaseExecutor:
         self,
         page,
         status_callback: Optional[Callable[[str], None]] = None,
+        session=None,
     ):
         self._page = page
         self._status_cb = status_callback or (lambda msg: None)
+        self._session = session  # WalmartSessionManager — for blocked page solving
         Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -209,7 +211,6 @@ class WalmartPurchaseExecutor:
             # TEST MODE — stop here (re-read env vars at purchase time so test/live toggle works)
             checkout_mode = os.environ.get("CHECKOUT_MODE", "TEST")
             final_purchase = os.environ.get("FINAL_PURCHASE", "NO")
-            card_cvv = get_card_cvv()
 
             if checkout_mode != "PRODUCTION":
                 await self._screenshot(f"test_mode_stop_{item_id}")
@@ -248,7 +249,14 @@ class WalmartPurchaseExecutor:
     async def _navigate(self, url: str):
         self._status_cb(f"[PURCHASE] Navigating to {url}")
         await self._page.get(url)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(random.uniform(1.2, 2.0))
+        # Solve /blocked challenge if redirected
+        blocked = await self._handle_blocked()
+        if blocked:
+            # Re-navigate after solving challenge
+            self._status_cb(f"[PURCHASE] Re-navigating to {url} after challenge solve")
+            await self._page.get(url)
+            await asyncio.sleep(random.uniform(1.8, 2.8))
 
     async def _add_to_cart(self, item_id: str) -> bool:
         self._status_cb("[PURCHASE] Looking for Add to Cart button...")
@@ -262,39 +270,106 @@ class WalmartPurchaseExecutor:
         await self._human_delay(200, 400)
         await btn.click()
         self._status_cb("[PURCHASE] Clicked Add to Cart")
+        logger.info("[PURCHASE] ATC button clicked — waiting for confirmation signal")
 
-        # Wait for cart confirmation (drawer/modal or URL change)
-        await asyncio.sleep(2)
-        # Some Walmart pages show a "View Cart" modal after ATC
-        try:
-            view_cart = await self._find_element([
-                'button:has-text("View cart")',
-                'a:has-text("View cart")',
-                'button:has-text("Go to cart")',
-                'a:has-text("Go to cart")',
-            ], timeout=3000)
-            if view_cart:
-                await view_cart.click()
-                await asyncio.sleep(1)
-        except Exception:
-            pass  # no modal — that's fine
+        # Wait for ATC confirmation — look for the flyout/modal/drawer or cart count change.
+        # Walmart shows either a "View cart" modal, an "Added to cart" flyout, or
+        # the ATC button text changes to "Added" / a checkmark.
+        atc_confirmed = False
+        deadline = time.monotonic() + 6.0
+        while time.monotonic() < deadline:
+            try:
+                # Check for success indicators
+                for sel in [
+                    'button:has-text("View cart")',
+                    'a:has-text("View cart")',
+                    'button:has-text("Go to cart")',
+                    'a:has-text("Go to cart")',
+                    'button:has-text("Added to cart")',
+                    'button:has-text("Added")',
+                    '[data-automation-id="cart-flyout"]',
+                    '[data-automation-id="atc-flyout"]',
+                ]:
+                    if ':has-text(' in sel:
+                        m = re.match(r'(\w+):has-text\("([^"]+)"\)', sel)
+                        if m:
+                            tag, text = m.group(1), m.group(2)
+                            xpath = f'//{tag}[contains(., "{text}")]'
+                            els = await self._page.xpath(xpath)
+                            if els:
+                                self._status_cb(f"[PURCHASE] ATC confirmed — '{text}' visible")
+                                logger.info("[PURCHASE] ATC flyout/modal detected: %s", text)
+                                atc_confirmed = True
+                                # Click "View cart" / "Go to cart" if it's a navigation link
+                                if "cart" in text.lower():
+                                    try:
+                                        await els[0].click()
+                                        self._status_cb("[PURCHASE] Clicked cart link from ATC flyout")
+                                        await asyncio.sleep(1.5)
+                                    except Exception:
+                                        pass
+                                break
+                    else:
+                        el = await self._page.query_selector(sel)
+                        if el:
+                            atc_confirmed = True
+                            self._status_cb("[PURCHASE] ATC confirmed via flyout element")
+                            break
+                if atc_confirmed:
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.4)
+
+        if not atc_confirmed:
+            # No flyout seen — not necessarily a failure, ATC may have worked silently
+            self._status_cb("[PURCHASE] No ATC flyout detected — will verify cart directly")
+            logger.info("[PURCHASE] No ATC confirmation flyout — proceeding to cart verification")
+            await asyncio.sleep(1.0)
 
         return True
 
     async def _verify_cart(self, item_id: str) -> bool:
         self._status_cb("[PURCHASE] Verifying cart...")
-        await self._page.get(WALMART_CART_URL)
-        await asyncio.sleep(1.5)
+
+        # If we're already on the cart page (e.g. from clicking "View cart" in ATC flyout),
+        # skip the direct navigation which is more likely to trigger /blocked.
+        current_url = self._page.url or ""
+        if "/cart" in current_url and "/blocked" not in current_url:
+            logger.info("[PURCHASE] Already on cart page — skipping navigation")
+        else:
+            # Add a human-like delay before navigating to cart
+            await self._human_delay(500, 1200)
+            logger.info("[PURCHASE] Navigating to cart: %s", WALMART_CART_URL)
+            await self._page.get(WALMART_CART_URL)
+            await asyncio.sleep(2.0)
+
+        # Handle /blocked on cart page
+        current_url = self._page.url or ""
+        if "/blocked" in current_url:
+            logger.warning("[PURCHASE] Cart navigation hit /blocked — solving challenge")
+            self._status_cb("[PURCHASE] Blocked on cart page — solving challenge...")
+            solved = await self._handle_blocked()
+            if solved:
+                # Re-navigate to cart after solving
+                self._status_cb("[PURCHASE] Challenge solved — re-navigating to cart")
+                await self._page.get(WALMART_CART_URL)
+                await asyncio.sleep(2.0)
+            else:
+                logger.error("[PURCHASE] Could not solve /blocked on cart — aborting")
+                await self._screenshot(f"blocked_cart_{item_id}")
+                return False
 
         # Check for at least one cart item
         try:
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',
                 '[data-testid="cart-item"]',
-                '.cart-item',
+                # NOTE: .cart-item removed — Walmart hashes class names on every deploy
             ])
             if cart_items:
-                logger.debug("[PURCHASE] Cart verified — %d item(s)", len(cart_items))
+                self._status_cb(f"[PURCHASE] Cart verified — {len(cart_items)} item(s)")
+                logger.info("[PURCHASE] Cart verified — %d item(s)", len(cart_items))
                 return True
             else:
                 logger.warning("[PURCHASE] Cart selector check failed — no cart-item elements found")
@@ -302,20 +377,22 @@ class WalmartPurchaseExecutor:
             logger.warning("[PURCHASE] Cart selector check failed — query raised exception")
 
         # Fallback: check URL still on cart and no "empty cart" text
-        if "cart" not in (self._page.url or ""):
-            logger.warning("[PURCHASE] Cart URL check failed — current URL: %s", self._page.url)
+        current_url = self._page.url or ""
+        if "cart" not in current_url:
+            logger.warning("[PURCHASE] Cart URL check failed — current URL: %s", current_url)
             await self._screenshot(f"empty_cart_{item_id}")
-            logger.warning("[PURCHASE] Cart appears empty after ATC")
+            self._status_cb("[PURCHASE] Cart appears empty after ATC")
             return False
         try:
             body = await self._page.evaluate("document.body.innerText")
             if body and "your cart is empty" not in body.lower():
+                self._status_cb("[PURCHASE] Cart fallback check passed — items likely present")
                 return True
         except Exception:
             pass
 
         await self._screenshot(f"empty_cart_{item_id}")
-        logger.warning("[PURCHASE] Cart appears empty after ATC")
+        self._status_cb("[PURCHASE] Cart appears empty after ATC")
         return False
 
     async def _go_to_checkout(self) -> bool:
@@ -327,15 +404,22 @@ class WalmartPurchaseExecutor:
             return False
 
         await btn.click()
+        logger.info("[PURCHASE] Checkout button clicked — waiting for checkout page")
 
         # Wait for checkout URL — polling loop (zendriver has no wait_for_url)
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
-            if "checkout" in (self._page.url or ""):
+            current_url = self._page.url or ""
+            if "checkout" in current_url:
+                break
+            if "/blocked" in current_url:
+                self._status_cb("[PURCHASE] Blocked on checkout navigation — solving...")
+                await self._handle_blocked()
                 break
             await asyncio.sleep(0.3)
         else:
-            await asyncio.sleep(3)
+            # URL did not reach checkout within 15s — give page extra time before returning failure
+            await asyncio.sleep(random.uniform(2.5, 4.0))
 
         # Verify checkout page actually loaded — look for checkout-specific content
         checkout_loaded = False
@@ -387,8 +471,9 @@ class WalmartPurchaseExecutor:
 
     async def _confirm_shipping(self):
         """
-        Walmart checkout has 3 steps: address → payment → review.
+        Walmart checkout has 2–3 steps depending on A/B variant: address → (payment) → review.
         Loop through all intermediate steps until Place Order is visible.
+        Handles both 2-step and 3-step checkout flows (MAX_STEPS=6 covers both).
         """
         # First ensure delivery (not pickup) is selected
         await self._select_delivery_option()
@@ -404,7 +489,27 @@ class WalmartPurchaseExecutor:
 
         MAX_STEPS = 6
         for step_num in range(MAX_STEPS):
-            await asyncio.sleep(1.5)
+            # Randomized step delay — human-range (1.0–2.5s); avoids bot-like cart-to-checkout speed
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+
+            # Guard: check for PerimeterX /blocked challenge mid-checkout
+            current_url = self._page.url or ""
+            if "/blocked" in current_url:
+                self._status_cb(f"[PURCHASE] /blocked challenge hit during checkout step {step_num + 1} — solving")
+                logger.warning("[PURCHASE] /blocked detected during checkout step loop (step %d)", step_num + 1)
+                solved = await self._handle_blocked()
+                if not solved:
+                    self._status_cb("[PURCHASE] Could not solve /blocked mid-checkout — aborting shipping confirmation")
+                    await self._screenshot("blocked_mid_checkout")
+                    return
+
+            # Guard: check for sign-in wall (Walmart sometimes ejects to /checkout/#/sign-in)
+            current_url = self._page.url or ""
+            if "sign-in" in current_url or "login" in current_url:
+                self._status_cb("[PURCHASE] Login wall detected mid-checkout — session cookie likely expired")
+                logger.error("[PURCHASE] Login wall at checkout step %d — bailing out of shipping loop", step_num + 1)
+                await self._screenshot("login_wall_mid_checkout")
+                return
 
             # If Place Order button is now visible, we're on the review step — done
             place_order_visible = await self._find_element(PLACE_ORDER_SELECTORS, timeout=2000)
@@ -527,7 +632,7 @@ class WalmartPurchaseExecutor:
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',
                 '[data-testid="cart-item"]',
-                '.cart-item',
+                # NOTE: .cart-item removed — Walmart hashes class names on every deploy
             ])
             found = bool(cart_items)
             if found:
@@ -557,7 +662,7 @@ class WalmartPurchaseExecutor:
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',
                 '[data-testid="cart-item"]',
-                '.cart-item',
+                # NOTE: .cart-item removed — Walmart hashes class names on every deploy
             ])
             if not cart_items:
                 return  # cart already empty — nothing to do
@@ -624,13 +729,12 @@ class WalmartPurchaseExecutor:
         fbt_css_selectors = [
             f'[data-item-id="{item_id}"] button[data-automation-id="add-to-cart-btn"]',
             '[data-testid="frequently-bought-together"] button[data-automation-id="add-to-cart-btn"]',
-            '.frequently-bought-together button[data-automation-id="add-to-cart-btn"]',
+            # NOTE: .frequently-bought-together removed — Walmart hashes class names on every deploy
         ]
         fbt_xpath_selectors = [
             f'//*[@data-item-id="{item_id}"]//button[contains(., "Add to cart")]',
             '//*[@data-testid="frequently-bought-together"]//button[contains(., "Add to cart")]',
-            '//*[contains(@class, "frequently-bought")]//button[contains(., "Add to cart")]',
-            '//*[contains(@class, "FBT")]//button[contains(., "Add to cart")]',
+            # NOTE: class-based XPaths removed — Walmart hashes class names on every deploy
         ]
 
         # Try CSS selectors first
@@ -671,6 +775,48 @@ class WalmartPurchaseExecutor:
         logger.debug("[PURCHASE] No FBT ATC button found for %s", item_id)
         return False
 
+    async def _handle_blocked(self) -> bool:
+        """
+        Detect and solve Walmart's /blocked PerimeterX challenge on the checkout tab.
+        Delegates to the session manager's challenge solver if available, otherwise
+        does a basic wait-and-check.
+        Returns True if a /blocked page was detected and solved, False if not blocked.
+        """
+        current_url = self._page.url or ""
+        if "/blocked" not in current_url:
+            return False  # not blocked
+
+        logger.warning("[PURCHASE] /blocked detected — URL: %s", current_url)
+        self._status_cb("[PURCHASE] Bot challenge detected — attempting solve...")
+
+        # Use session manager's challenge solver if available (it has press-and-hold logic)
+        if self._session and hasattr(self._session, '_handle_blocked_page_on'):
+            try:
+                solved = await self._session._handle_blocked_page_on(self._page)
+                if solved:
+                    self._status_cb("[PURCHASE] Challenge solved via session manager")
+                    logger.info("[PURCHASE] /blocked challenge solved")
+                    return True
+                else:
+                    self._status_cb("[PURCHASE] Challenge solve FAILED")
+                    logger.error("[PURCHASE] /blocked challenge could not be solved")
+                    await self._screenshot("blocked_unsolved")
+                    return True  # was blocked, but couldn't solve
+            except Exception as e:
+                logger.error("[PURCHASE] Challenge solver error: %s", e)
+
+        # Fallback: wait and check if it auto-resolves (some challenges are time-based)
+        logger.info("[PURCHASE] No session manager — waiting for auto-resolve")
+        for attempt in range(3):
+            await asyncio.sleep(5)
+            if "/blocked" not in (self._page.url or ""):
+                self._status_cb("[PURCHASE] Challenge auto-resolved")
+                return True
+
+        self._status_cb("[PURCHASE] Challenge could not be resolved")
+        await self._screenshot("blocked_no_session")
+        return True  # was blocked
+
     async def _human_delay(self, min_ms: int = 80, max_ms: int = 300):
         """Add a small randomized delay to simulate human interaction timing."""
         delay = random.randint(min_ms, max_ms) / 1000.0
@@ -689,8 +835,7 @@ class WalmartPurchaseExecutor:
             try:
                 if ':has-text(' in selector:
                     # Convert to XPath
-                    import re as _re
-                    m = _re.match(r'(\w+):has-text\("([^"]+)"\)', selector)
+                    m = re.match(r'(\w+):has-text\("([^"]+)"\)', selector)
                     if m:
                         tag, text = m.group(1), m.group(2)
                         xpath = f'//{tag}[contains(., "{text}")]'

@@ -1,9 +1,11 @@
+# Python environments
 venv/
 env/
 ENV/
 .venv/
 .env/
 
+# Python artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,23 +26,30 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-target_products.json
+
+# Session / profile data (user-specific, not committed)
+target.json
 target_storage.json
+target_products.json
 target_profile/
+nodriver-profile/
 playwright-profile/
 chrome_user_data/
-nodriver-profile/
 walmart-profile*/
+
+# Config with credentials
 .env
+config/proxyIps.json
+
+# Logs
 logs/
 walmart/logs/
-target.json
-walmart-profile/cookies.json
-config/proxyIps.json
-.claude/
 
+# IDE / OS
 .vscode/
 .idea/
-
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/

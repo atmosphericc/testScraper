@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 WALMART_SELLER_ID = "F55CDC31AB754BB68FE0851F0F1F2C96"
 
-# GraphQL operation hash — may change when Walmart deploys a new frontend build.
-# If stock_monitor.py starts getting 400/404 responses, update GRAPHQL_HASH here.
-# stock_check.py imports this value from config — only one place to update.
+# GraphQL operation hash — auto-updated at runtime by the session harvester via CDP.
+# This value is the static fallback used until the first ItemByIdBtf request is intercepted.
+# If stock_monitor.py starts getting 400/404 responses before a session warms up, update this.
 GRAPHQL_HASH = "20d116c298a901b29763c37a4aaf8b37aeb1654e4f971cd11a7fe9de2ceab027"
 
 # ATF (Above The Fold) hash — auto-discovered at runtime by the session harvester.
@@ -86,8 +86,8 @@ QUEUE_TIMEOUT = 1800        # 30 minutes — abandon if not passed through
 CHECKOUT_MODE = os.environ.get("CHECKOUT_MODE", "TEST")
 FINAL_PURCHASE = os.environ.get("FINAL_PURCHASE", "NO")
 
-# CVV for saved card — set this directly (same pattern as Target's purchase_executor.py)
-CARD_CVV = "229"
+# CVV for saved card — loaded from environment
+CARD_CVV = os.environ.get("WALMART_CVV", "")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +106,18 @@ def get_graphql_hash_atf() -> "str | None":
     return GRAPHQL_HASH_ATF
 
 
+def set_graphql_hash_btf(hash_value: str) -> None:
+    """Called by the session harvester when it intercepts an ItemByIdBtf request."""
+    global GRAPHQL_HASH
+    if hash_value and GRAPHQL_HASH != hash_value:
+        GRAPHQL_HASH = hash_value
+        logger.info("[CONFIG] BTF GraphQL hash auto-updated: %s", hash_value)
+
+
+def get_graphql_hash_btf() -> str:
+    return GRAPHQL_HASH
+
+
 def get_checkout_mode() -> str:
     return os.environ.get("CHECKOUT_MODE", "TEST")
 
@@ -115,7 +127,8 @@ def get_final_purchase() -> str:
 
 
 def get_card_cvv() -> str:
-    return CARD_CVV
+    """Return CVV at call time so a late-set WALMART_CVV env var is picked up."""
+    return os.environ.get("WALMART_CVV", "") or CARD_CVV
 
 # Circuit breaker: pause purchase attempts for this many seconds after N failures
 CIRCUIT_BREAKER_FAILURES = 3
