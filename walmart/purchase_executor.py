@@ -283,6 +283,20 @@ class WalmartPurchaseExecutor:
     async def _add_to_cart(self, item_id: str) -> bool:
         self._status_cb("[PURCHASE] Looking for Add to Cart button...")
 
+        # First, try to scroll the button into view in case it's off-screen
+        try:
+            await self._page.evaluate("""
+                const atcBtn = document.querySelector('button[data-automation-id="add-to-cart-btn"]') ||
+                               document.querySelector('button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]') ||
+                               document.querySelector('button[data-dca-name="ItemBuyBoxAddToCartButton"]');
+                if (atcBtn) {
+                    atcBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            """)
+            await asyncio.sleep(0.5)
+        except Exception:
+            pass
+
         # Try JavaScript click up to 10 times over 5 seconds
         # This gives the page time to hydrate while aggressively trying to click
         last_result = None
@@ -1110,12 +1124,15 @@ class WalmartPurchaseExecutor:
         Checks for:
         1. window.__NEXT_DATA__ to exist (React page state initialized)
         2. At least one ATC selector to be visible in DOM
+        3. Falls back to simple timeout if button never becomes visible
 
         Timeout in milliseconds.
         """
         deadline = time.monotonic() + (timeout / 1000.0)
         last_error = None
         started = time.monotonic()
+        button_found_at = None
+        next_data_found_at = None
 
         while time.monotonic() < deadline:
             try:
@@ -1124,6 +1141,10 @@ class WalmartPurchaseExecutor:
                 if not has_next_data:
                     await asyncio.sleep(0.2)
                     continue
+
+                if not next_data_found_at:
+                    next_data_found_at = time.monotonic() - started
+                    logger.debug("[PURCHASE] __NEXT_DATA__ found at %.1fs", next_data_found_at)
 
                 # Check if any ATC selector is visible
                 for sel in ATC_SELECTORS:
@@ -1154,8 +1175,9 @@ class WalmartPurchaseExecutor:
                                     logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via: %s", elapsed, sel)
                                     self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
                                     return
-                                elif vis.get('found'):
-                                    logger.debug("[PURCHASE] ATC button exists but not visible yet: %s", vis)
+                                elif vis.get('found') and not button_found_at:
+                                    button_found_at = time.monotonic() - started
+                                    logger.debug("[PURCHASE] ATC button exists at %.1fs but not visible: %s", button_found_at, vis)
                     except Exception as e:
                         logger.debug("[PURCHASE] Error checking visibility for %s: %s", sel, str(e))
                         continue
@@ -1163,11 +1185,13 @@ class WalmartPurchaseExecutor:
                 await asyncio.sleep(0.3)
             except Exception as e:
                 last_error = e
+                logger.debug("[PURCHASE] Exception in page ready check: %s", str(e))
                 await asyncio.sleep(0.3)
 
         elapsed = time.monotonic() - started
-        logger.warning("[PURCHASE] Page ready timeout (%.1fs / %dms) — ATC button not visible yet", elapsed, timeout)
-        self._status_cb(f"[PURCHASE] Page ready timeout — ATC button not visible after {elapsed:.1f}s")
+        logger.warning("[PURCHASE] Page ready timeout: elapsed=%.1fs, next_data_at=%.1fs, button_at=%s",
+                      elapsed, next_data_found_at or -1, button_found_at or 'never')
+        self._status_cb(f"[PURCHASE] Page ready timeout after {elapsed:.1f}s — proceeding anyway")
 
     async def _find_element(self, selectors: list[str], timeout: int = 5000):
         """Try each selector in order, return the first matching visible element.
