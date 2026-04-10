@@ -43,7 +43,9 @@ NAVIGATE_TIMEOUT = 30000
 
 # Multiple selector candidates for each step — Walmart's DOM varies by A/B test
 ATC_SELECTORS = [
+    'button[data-automation-id="atc"]',  # Most common: simple "atc" identifier
     'button[data-automation-id="add-to-cart-btn"]',
+    'button[data-dca-event="addToCart"]',  # Fallback: DCA event marker
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
     'button[data-dca-name="ItemBuyBoxAddToCartButton"]',
     'button:has-text("Add to cart")',
@@ -304,10 +306,18 @@ class WalmartPurchaseExecutor:
             try:
                 result = await self._page.evaluate(f"""
                     (() => {{
-                        // Find ATC button by data-automation-id (primary) or text content
-                        let atcBtn = document.querySelector('button[data-automation-id="add-to-cart-btn"]');
-                        let foundVia = 'data-automation-id';
+                        // Find ATC button — try multiple selectors in priority order
+                        let atcBtn = document.querySelector('button[data-automation-id="atc"]');
+                        let foundVia = 'data-automation-id="atc"';
 
+                        if (!atcBtn) {{
+                            atcBtn = document.querySelector('button[data-automation-id="add-to-cart-btn"]');
+                            foundVia = 'data-automation-id="add-to-cart-btn"';
+                        }}
+                        if (!atcBtn) {{
+                            atcBtn = document.querySelector('button[data-dca-event="addToCart"]');
+                            foundVia = 'data-dca-event="addToCart"';
+                        }}
                         if (!atcBtn) {{
                             atcBtn = document.querySelector('button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]');
                             foundVia = 'data-tl-id';
