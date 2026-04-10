@@ -613,8 +613,13 @@ class WalmartPurchaseExecutor:
             numbers = re.findall(r'\d{7,}', url)
             if numbers:
                 return numbers[0]
-            return "CONFIRMED_NO_ID"  # URL looks like confirmation but no digits found
+            # URL is confirmation page but no numeric ID found
+            logger.warning("[PURCHASE] Order confirmation page detected but could not extract order ID from selectors or URL. "
+                          f"URL: {url} — order tracking may be incomplete")
+            return None
 
+        logger.warning("[PURCHASE] Could not detect order confirmation page. "
+                      f"Current URL: {url} — order ID extraction failed")
         return None
 
     # ------------------------------------------------------------------
@@ -834,11 +839,13 @@ class WalmartPurchaseExecutor:
         for selector in selectors:
             try:
                 if ':has-text(' in selector:
-                    # Convert to XPath
+                    # Convert to XPath with case-insensitive text matching
                     m = re.match(r'(\w+):has-text\("([^"]+)"\)', selector)
                     if m:
                         tag, text = m.group(1), m.group(2)
-                        xpath = f'//{tag}[contains(., "{text}")]'
+                        # Use case-insensitive XPath: translate() normalizes to lowercase for comparison
+                        text_lower = text.lower()
+                        xpath = f'//{tag}[contains(translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "{text_lower}")]'
                         deadline = time.monotonic() + per_selector_timeout
                         while time.monotonic() < deadline:
                             els = await self._page.xpath(xpath)
