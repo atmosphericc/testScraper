@@ -591,6 +591,18 @@ class PurchaseExecutor:
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
             headers_age = time.time() - self._cached_cart_headers_ts
+
+            # PROACTIVE REFRESH: if cached headers approaching TTL (60s+), refresh warmup tab
+            # before ATC to avoid 403 Shape block. Target's Shape tokens rotate ~every 90-120s.
+            if self._cached_cart_headers and headers_age > 60:
+                print(f"[PURCHASE] Shape headers approaching TTL (age={headers_age:.0f}s) — refreshing warmup tab")
+                warmup_ok = await self.warm_shape_headers()
+                if warmup_ok:
+                    headers_age = time.time() - self._cached_cart_headers_ts
+                    print(f"[PURCHASE] Warmup refresh complete, new headers age={headers_age:.0f}s")
+                else:
+                    print(f"[PURCHASE] Warmup refresh failed, continuing with stale headers")
+
             use_cached = bool(self._cached_cart_headers) and headers_age < 90  # 90s TTL (Shape tokens rotate ~every 2min)
             # Strip Cookie and Referer from cached headers.
             # Cookie: credentials:'include' sends live cookies automatically; a stale cached
@@ -1086,6 +1098,15 @@ class PurchaseExecutor:
             # Save session after successful purchase
             await self.session_manager.save_session_state()
 
+            # Extract order_id from confirmation URL
+            confirmation_url = tab.url or ""
+            order_id = None
+            if 'orderId=' in confirmation_url:
+                try:
+                    order_id = confirmation_url.split('orderId=')[1].split('&')[0]
+                except Exception as e:
+                    print(f"[PURCHASE] Failed to parse order_id from URL: {e}")
+
             self._notify_status(tcin, 'purchased', {
                 'execution_time': execution_time,
                 'timestamp': datetime.now().isoformat(),
@@ -1096,7 +1117,9 @@ class PurchaseExecutor:
                 'success': True,
                 'tcin': tcin,
                 'reason': 'order_confirmed',
-                'execution_time': execution_time
+                'execution_time': execution_time,
+                'order_id': order_id,
+                'confirmation_url': confirmation_url
             }
 
         except Exception as e:
