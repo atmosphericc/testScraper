@@ -274,7 +274,7 @@ class WalmartPurchaseExecutor:
         # This is especially important on Tab 2 (checkout tab) which starts cold
         # on each purchase and has not been pre-warmed on product pages.
         try:
-            await self._wait_for_page_ready(timeout=8000)
+            await self._wait_for_page_ready(timeout=13000)
         except Exception as e:
             logger.error("[PURCHASE] Page ready check failed: %s", e)
             # Still proceed — button might be visible even if check failed
@@ -1146,41 +1146,94 @@ class WalmartPurchaseExecutor:
                     next_data_found_at = time.monotonic() - started
                     logger.debug("[PURCHASE] __NEXT_DATA__ found at %.1fs", next_data_found_at)
 
-                # Check if any ATC selector is visible
+                # Check if any ATC selector is visible.
+                # CSS-attribute selectors use query_selector; :has-text() selectors
+                # are converted to XPath (patchright does not support :has-text() in
+                # query_selector).  Both paths share the same visibility check so that
+                # text-content selectors also contribute to the early-exit signal.
+                # This matters because Walmart lazy-loads the buybox component island;
+                # data-automation-id attributes are attached by React during the final
+                # hydration commit, so text content may appear before the attributes do.
+
+                # First, try all explicit selectors
                 for sel in ATC_SELECTORS:
                     try:
-                        if ':has-text(' not in sel:
+                        el = None
+                        if ':has-text(' in sel:
+                            m = re.match(r'(\w+):has-text\("([^"]+)"\)', sel)
+                            if m:
+                                tag, text = m.group(1), m.group(2)
+                                text_lower = text.lower()
+                                xpath = (
+                                    f'//{tag}[contains('
+                                    f'translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ",'
+                                    f' "abcdefghijklmnopqrstuvwxyz"), "{text_lower}")]'
+                                )
+                                els = await self._page.xpath(xpath)
+                                if els:
+                                    el = els[0]
+                        else:
                             el = await self._page.query_selector(sel)
-                            if el:
-                                # Check both client rect (size) and CSS display (to catch hidden buttons)
-                                vis = await el.apply("""(e) => {
-                                    const rect = e.getBoundingClientRect();
-                                    const style = window.getComputedStyle(e);
-                                    const isVisible = !!(e.offsetWidth || e.offsetHeight || rect.width || rect.height);
-                                    const display = style.display !== 'none';
-                                    const visibility = style.visibility !== 'hidden';
-                                    return {
-                                        found: true,
-                                        visible: isVisible && display && visibility,
-                                        offsetWidth: e.offsetWidth,
-                                        offsetHeight: e.offsetHeight,
-                                        rectWidth: rect.width,
-                                        rectHeight: rect.height,
-                                        display: style.display,
-                                        visibility: style.visibility
-                                    };
-                                }""")
-                                if vis.get('visible'):
-                                    elapsed = time.monotonic() - started
-                                    logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via: %s", elapsed, sel)
-                                    self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
-                                    return
-                                elif vis.get('found') and not button_found_at:
-                                    button_found_at = time.monotonic() - started
-                                    logger.debug("[PURCHASE] ATC button exists at %.1fs but not visible: %s", button_found_at, vis)
+
+                        if el:
+                            # Check visibility with a loose threshold:
+                            # - Must not have display:none or visibility:hidden
+                            # - Size check is secondary (button may be loading or have 0 dimensions)
+                            vis = await el.apply("""(e) => {
+                                const rect = e.getBoundingClientRect();
+                                const style = window.getComputedStyle(e);
+                                const display = style.display !== 'none';
+                                const visibility = style.visibility !== 'hidden';
+                                const opacity = parseFloat(style.opacity) > 0;
+                                const hasSize = !!(e.offsetWidth || e.offsetHeight || rect.width || rect.height);
+                                return {
+                                    found: true,
+                                    visible: display && visibility && opacity,
+                                    hasSize: hasSize,
+                                    offsetWidth: e.offsetWidth,
+                                    offsetHeight: e.offsetHeight,
+                                    rectWidth: rect.width,
+                                    rectHeight: rect.height,
+                                    display: style.display,
+                                    visibility: style.visibility,
+                                    opacity: style.opacity
+                                };
+                            }""")
+                            # Button is ready if it's not hidden by CSS even if size is 0
+                            if vis.get('visible'):
+                                elapsed = time.monotonic() - started
+                                logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via: %s (hasSize=%s)", elapsed, sel, vis.get('hasSize'))
+                                self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
+                                return
+                            elif vis.get('found') and not button_found_at:
+                                button_found_at = time.monotonic() - started
+                                logger.debug("[PURCHASE] ATC button exists at %.1fs but display=hidden or opacity=0: %s", button_found_at, vis)
                     except Exception as e:
                         logger.debug("[PURCHASE] Error checking visibility for %s: %s", sel, str(e))
                         continue
+
+                # Fallback: if explicit selectors didn't work, look for any button
+                # with "add" and "cart" in text (catches variations like "Add to Cart", "Add to cart", etc)
+                try:
+                    fallback_buttons = await self._page.evaluate("""
+                        Array.from(document.querySelectorAll('button')).filter(b => {
+                            const text = b.textContent.toLowerCase();
+                            const style = window.getComputedStyle(b);
+                            return text.includes('add') && text.includes('cart') &&
+                                   style.display !== 'none' && style.visibility !== 'hidden';
+                        }).slice(0, 1).map(b => ({
+                            text: b.textContent.slice(0, 30),
+                            visible: !!(b.offsetWidth || b.offsetHeight)
+                        }));
+                    """)
+                    if fallback_buttons:
+                        btn = fallback_buttons[0]
+                        elapsed = time.monotonic() - started
+                        logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via fallback search (text='%s')", elapsed, btn.get('text'))
+                        self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
+                        return
+                except Exception as e:
+                    logger.debug("[PURCHASE] Fallback button search failed: %s", str(e))
 
                 await asyncio.sleep(0.3)
             except Exception as e:
