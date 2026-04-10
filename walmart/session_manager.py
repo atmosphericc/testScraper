@@ -126,6 +126,10 @@ class WalmartSessionManager:
         # harvester loop knows it can safely navigate to the next product.
         self._graphql_captured: Optional[asyncio.Event] = None
 
+        # GraphQL hash refresh flag — set by stock_monitor when HTTP 400 detected
+        # Signals harvester to visit a product page and re-discover GRAPHQL_HASH via CDP
+        self._graphql_refresh_needed: bool = False
+
     def set_stock_intercept_callback(self, cb: Callable[[dict], None]):
         """
         Register a callback invoked with raw GraphQL JSON whenever the browser
@@ -571,6 +575,32 @@ class WalmartSessionManager:
                     await asyncio.sleep(2.0)
                     continue
 
+                # Check if stock monitor signaled GraphQL hash refresh needed (HTTP 400 detected)
+                if self._graphql_refresh_needed:
+                    logger.warning("[HARVESTER] GraphQL hash refresh triggered — visiting product page to re-discover hash")
+                    self._status_cb("[HARVESTER] Refreshing GraphQL hash due to 400 errors...")
+                    try:
+                        # Navigate to a product page — CDP will auto-discover current GRAPHQL_HASH
+                        from zendriver import cdp as _cdp_ghq
+                        await self._page.send(_cdp_ghq.page.navigate("https://www.walmart.com/ip/15042474261"))
+                        await asyncio.sleep(3.0)
+                        # Handle /blocked if it appears
+                        if "/blocked" in (self._page.url or ""):
+                            await self._handle_blocked_page()
+                        logger.info("[HARVESTER] GraphQL hash refresh complete — hash auto-discovered via CDP")
+                        self._status_cb("[HARVESTER] GraphQL hash refreshed")
+                    except Exception as e:
+                        logger.warning("[HARVESTER] Failed to refresh GraphQL hash: %s", e)
+                    finally:
+                        self._graphql_refresh_needed = False
+                    # Return to homepage and continue
+                    try:
+                        from zendriver import cdp as _cdp_ret
+                        await self._page.send(_cdp_ret.page.navigate("https://www.walmart.com"))
+                        await asyncio.sleep(2.0)
+                    except Exception:
+                        pass
+
                 if self.needs_rewarm():
                     logger.debug("[HARVESTER] _px3 stale — re-warming")
                     await _do_warmup()
@@ -954,23 +984,28 @@ class WalmartSessionManager:
     async def _solve_checkbox_challenge(self, page) -> bool:
         """
         Solve PerimeterX checkbox variant challenge (/blocked?g=a).
-        Finds the checkbox, clicks it, and waits for redirect back to /checkout.
+        Finds the checkbox, clicks it, and waits for redirect back to /checkout or success signal.
+
+        Returns True if challenge solved, False if unsolvable (purchase should abort gracefully).
         """
         logger.info("[SESSION] Starting checkbox challenge solver")
         self._status_cb("[SESSION] Solving checkbox challenge...")
 
-        deadline = time.monotonic() + 15.0
-        for attempt in range(1, 6):
+        deadline = time.monotonic() + 20.0  # Increased from 15s to allow for slower redirects
+        for attempt in range(1, 8):  # Increased from 5 to 8 attempts
             if time.monotonic() > deadline:
                 logger.error("[SESSION] Checkbox solve timeout after %d attempts", attempt - 1)
+                self._status_cb("[SESSION] Checkbox challenge timed out — may need manual intervention")
                 return False
 
-            # Look for checkbox input or button
+            # Look for checkbox input or button (multiple selectors for variant rendering)
             checkbox_selectors = [
                 'input[type="checkbox"]',
                 'input[role="checkbox"]',
                 'button[data-testid*="checkbox"]',
+                'button[aria-label*="checkbox" i]',
                 '[role="checkbox"]',
+                'label:has(input[type="checkbox"])',
             ]
 
             checkbox = None
@@ -990,31 +1025,62 @@ class WalmartSessionManager:
                 continue
 
             try:
-                # Scroll into view
+                # Scroll into view and ensure visibility
                 await checkbox.scroll_into_view()
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
+
+                # Check if element is visible/enabled before clicking
+                is_visible = await checkbox.is_visible()
+                if not is_visible:
+                    logger.warning("[SESSION] Checkbox found but not visible on attempt %d", attempt)
+                    await asyncio.sleep(0.5)
+                    continue
 
                 # Click the checkbox
                 await checkbox.click()
                 logger.debug("[SESSION] Checkbox clicked on attempt %d", attempt)
                 self._status_cb("[SESSION] Checkbox clicked — waiting for redirect...")
 
-                # Wait for redirect back to /checkout
-                redirect_deadline = time.monotonic() + 8.0
+                # Wait for redirect away from /blocked OR for _px3 cookie (success signal)
+                # PerimeterX may redirect immediately or after a short delay
+                redirect_deadline = time.monotonic() + 10.0  # Increased from 8s
+                redirect_detected = False
+                px3_obtained = False
+
                 while time.monotonic() < redirect_deadline:
+                    # Check URL redirect
                     current_url = page.url or ""
                     if "/blocked" not in current_url:
-                        logger.info("[SESSION] Checkbox challenge cleared — redirected away from /blocked")
-                        self._status_cb("[SESSION] Checkbox challenge solved")
-                        return True
+                        redirect_detected = True
+                        logger.info("[SESSION] Checkbox challenge cleared — redirected away from /blocked to: %s", current_url)
+                        break
+
+                    # Also check for _px3 cookie (alternative success signal)
+                    try:
+                        from zendriver import cdp
+                        cookies = await page.send(cdp.network.get_all_cookies())
+                        if any(c.name == "_px3" for c in cookies):
+                            px3_obtained = True
+                            logger.info("[SESSION] Checkbox challenge cleared — _px3 cookie obtained")
+                            break
+                    except Exception:
+                        pass
+
                     await asyncio.sleep(0.3)
 
-                logger.warning("[SESSION] No redirect after checkbox click on attempt %d", attempt)
+                if redirect_detected or px3_obtained:
+                    self._status_cb("[SESSION] Checkbox challenge solved")
+                    return True
+
+                logger.warning("[SESSION] No redirect or _px3 after checkbox click on attempt %d", attempt)
+                # Continue to next attempt instead of immediate fail
+
             except Exception as e:
                 logger.warning("[SESSION] Checkbox click error on attempt %d: %s", attempt, e)
                 await asyncio.sleep(0.5)
 
         logger.error("[SESSION] Could not solve checkbox challenge after max attempts")
+        self._status_cb("[SESSION] Checkbox challenge unsolved — purchase will abort")
         return False
 
     def _on_network_request(self, event):
