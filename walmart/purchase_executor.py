@@ -396,6 +396,17 @@ class WalmartPurchaseExecutor:
         return False
 
     async def _go_to_checkout(self) -> bool:
+        # Check _px3 cookie age and refresh if approaching expiry (40s threshold, 20s safety before 60s TTL)
+        if self._session and hasattr(self._session, 'needs_rewarm'):
+            if self._session.needs_rewarm():
+                self._status_cb("[PURCHASE] _px3 cookie approaching expiry — refreshing session...")
+                logger.info("[PURCHASE] _px3 age >%ds, refreshing before checkout", 40)
+                try:
+                    await self._session.warm_session([])  # Refresh cookies without item browsing
+                    logger.debug("[PURCHASE] _px3 refreshed before checkout")
+                except Exception as e:
+                    logger.warning("[PURCHASE] _px3 refresh failed: %s (continuing anyway)", e)
+
         self._status_cb("[PURCHASE] Clicking Checkout...")
         btn = await self._find_element(CHECKOUT_SELECTORS, timeout=8000)
         if not btn:
@@ -532,6 +543,15 @@ class WalmartPurchaseExecutor:
 
     async def _enter_cvv_if_needed(self):
         """Enter CVV if the payment page requires it."""
+        # Check for /blocked challenge before attempting CVV entry
+        current_url = self._page.url or ""
+        if "/blocked" in current_url:
+            self._status_cb("[PURCHASE] Challenge detected during CVV entry — solving...")
+            solved = await self._handle_blocked()
+            if not solved:
+                logger.error("[PURCHASE] Cannot solve /blocked during CVV entry — checkout failed")
+                return False
+
         card_cvv = get_card_cvv()
         if not card_cvv:
             return
@@ -578,7 +598,15 @@ class WalmartPurchaseExecutor:
         deadline = time.monotonic() + 20.0
         while time.monotonic() < deadline:
             current_url = self._page.url or ""
-            if _confirm_pattern.match(current_url):
+            # Check for /blocked challenge immediately after Place Order click
+            if "/blocked" in current_url:
+                self._status_cb("[PURCHASE] Challenge detected after Place Order click — solving...")
+                solved = await self._handle_blocked()
+                if not solved:
+                    logger.error("[PURCHASE] Cannot solve /blocked after Place Order click")
+                    return None
+                # After solving, continue waiting for confirmation
+            elif _confirm_pattern.match(current_url):
                 break
             await asyncio.sleep(0.3)
         else:
