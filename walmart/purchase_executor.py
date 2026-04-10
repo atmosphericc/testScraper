@@ -271,10 +271,10 @@ class WalmartPurchaseExecutor:
 
         # Wait for React hydration before returning — ensures ATC button is in DOM
         # and interactive before _add_to_cart() runs its 10-attempt JS loop.
-        # This is especially important on Tab 2 (checkout tab) which starts cold
-        # on each purchase and has not been pre-warmed on product pages.
+        # Tab 2 is pre-warmed on a product page, so navigation to a different product
+        # should complete quickly (2-4s) since React/CSS/JS are already loaded.
         try:
-            await self._wait_for_page_ready(timeout=13000)
+            await self._wait_for_page_ready(timeout=8000)
         except Exception as e:
             logger.error("[PURCHASE] Page ready check failed: %s", e)
             # Still proceed — button might be visible even if check failed

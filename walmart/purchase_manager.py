@@ -25,8 +25,10 @@ from .proxy_manager import ProxyManager
 from .session_manager import WalmartSessionManager
 from .stock_monitor import WalmartStockMonitor
 from .purchase_executor import WalmartPurchaseExecutor
+from .logging_manager import get_walmart_logger, log_activity, log_error
 
 logger = logging.getLogger(__name__)
+walmart_logger = get_walmart_logger()
 
 
 class PurchaseState:
@@ -143,8 +145,15 @@ class WalmartPurchaseManager:
         # Do an immediate cookie harvest so workers have valid cookies from the first check
         await self._session.harvest_now()
 
-        # Open Tab 2 now that Tab 1 has warm cookies — much less likely to hit /blocked
-        await self._session.open_checkout_tab()
+        # Open Tab 2 on the first product page (not homepage) — keeps React/CSS/JS warm
+        # This saves 8-13s on each purchase attempt (avoids cold-start page load delays)
+        warmup_url = "https://www.walmart.com"
+        if products:
+            first_product_id = products[0]["item_id"]
+            warmup_url = f"https://www.walmart.com/ip/{first_product_id}"
+            self._status_cb(f"[MANAGER] Tab 2 will pre-warm on first product: {first_product_id}")
+
+        await self._session.open_checkout_tab(warmup_url=warmup_url)
 
         # Start cookie harvester — keeps _px3 fresh for proxy workers every 30s
         self._session.start_harvester(self._loop)
@@ -446,6 +455,8 @@ class WalmartPurchaseManager:
             self._activity_log.append(entry)
             if len(self._activity_log) > 200:
                 self._activity_log = self._activity_log[-200:]
+        # Also log to Walmart's centralized logger
+        walmart_logger.log_activity(message, category="MANAGER")
 
     def get_activity_log(self) -> list[dict]:
         with self._activity_lock:

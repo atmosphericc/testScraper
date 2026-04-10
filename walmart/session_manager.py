@@ -209,28 +209,34 @@ class WalmartSessionManager:
         self._status_cb("[SESSION] Browser ready")
         logger.debug("[SESSION] Browser started")
 
-    async def open_checkout_tab(self):
+    async def open_checkout_tab(self, warmup_url: str = "https://www.walmart.com"):
         """
         Open Tab 2 (checkout tab) after Tab 1 has warmed the session.
         Called by the manager after warm_session() so Tab 2 inherits clean cookies
         and is far less likely to hit the /blocked challenge.
+
+        Args:
+            warmup_url: Product page URL to pre-load on Tab 2. If provided, Tab 2 stays on
+                       that product page to keep React/CSS/JS warm. Saves 8-13s cold start
+                       on next navigation. Default: homepage (backward compatible).
         """
         if not self._browser:
             return
         from zendriver import cdp
         self._status_cb("[SESSION] Opening checkout tab...")
-        self._checkout_page = await self._browser.get(
-            "https://www.walmart.com", new_tab=True
-        )
+
+        # Open Tab 2 on the warmup URL (product page, not homepage)
+        self._checkout_page = await self._browser.get(warmup_url, new_tab=True)
         await self._checkout_page.send(
             cdp.page.add_script_to_evaluate_on_new_document(source=_STEALTH_SCRIPT)
         )
         await asyncio.sleep(2.0)
         await self._handle_blocked_page_on(self._checkout_page)
+
         # Return focus to the harvester tab
         await self._page.activate()
-        self._status_cb("[SESSION] Checkout tab ready")
-        logger.debug("[SESSION] Checkout tab opened")
+        self._status_cb("[SESSION] Checkout tab ready — pre-loaded on product page")
+        logger.debug("[SESSION] Checkout tab opened on: %s", warmup_url)
 
     async def stop(self):
         """Save cookies and close the browser."""
