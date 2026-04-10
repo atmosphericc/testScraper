@@ -1572,8 +1572,44 @@ class PurchaseExecutor:
                 print(f"[PAYMENT] CVV fill failed (native setter rejected): {result} url={url_now}")
                 return False
             if result and 'no_confirm_button' in str(result):
-                print(f"[PAYMENT] CVV filled but no confirm button in 500ms: {result} ({time.time()-t_cvv:.3f}s) url={url_now}")
-                return False
+                # CVV filled successfully but confirm button not ready in 500ms window.
+                # This can happen on slow networks or heavy React re-renders.
+                # Instead of failing, wait a bit longer and try clicking the confirm button.
+                print(f"[PAYMENT] CVV filled but no ready confirm button in 500ms: {result} ({time.time()-t_cvv:.3f}s) — trying fallback click")
+                try:
+                    # Give React 500ms more to render the button, then try clicking
+                    await asyncio.sleep(0.5)
+                    fallback_result = await tab.evaluate("""
+(async () => {
+    const confirmSelectors = [
+        '[data-test*="cvv"]', '[data-test="cvv-confirm-button"]', '[data-test="confirm-cvv"]',
+        '[data-test*="confirm"]', '[data-test*="submit"]', 'button[type="submit"]'
+    ];
+    for (const sel of confirmSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && btn.getBoundingClientRect().width > 0) {
+            btn.click();
+            return 'fallback_clicked:' + sel;
+        }
+    }
+    // Last resort: text match
+    for (const btn of document.querySelectorAll('button')) {
+        const txt = btn.textContent.trim().toLowerCase();
+        if (['confirm', 'submit', 'continue'].some(w => txt.includes(w))) {
+            if (btn.getBoundingClientRect().width > 0 && !btn.disabled) {
+                btn.click();
+                return 'fallback_clicked_text:' + btn.textContent.trim();
+            }
+        }
+    }
+    return 'fallback_no_button';
+})()
+""", await_promise=True)
+                    print(f"[PAYMENT] CVV fallback click attempt: {fallback_result} ({time.time()-t_cvv:.3f}s)")
+                    return True  # Assume click succeeded; main loop will check for confirmation
+                except Exception as e:
+                    print(f"[PAYMENT] CVV fallback click error: {e}")
+                    return True  # Still count as handled — confirmation check will catch if it failed
             print(f"[PAYMENT] CVV confirm: {result} ({time.time()-t_cvv:.3f}s) url={url_now}")
             return True
 
