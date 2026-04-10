@@ -22,8 +22,10 @@ from .config import (
     get_config,
     save_config,
 )
+from .logging_manager import get_walmart_logger, log_error, log_activity
 
 logger = logging.getLogger(__name__)
+walmart_logger = get_walmart_logger()
 
 # Browser fetch loop fires every CHECK_INTERVAL seconds.
 # Each fire fetches ALL products in parallel via Promise.allSettled inside the browser.
@@ -308,7 +310,13 @@ class WalmartStockMonitor:
                         if r.get("error"):
                             with self._checks_lock:
                                 self._total_errors += 1
-                            errors.append(f"{item_id}:{r['error']}")
+                            error_msg = r['error']
+                            errors.append(f"{item_id}:{error_msg}")
+
+                            # Detect GraphQL hash staleness (400 error pattern)
+                            if error_msg == "HTTP_400":
+                                logger.error("[MONITOR] HTTP 400 detected — possible GraphQL hash staleness, triggering refresh")
+                                self._trigger_graphql_hash_refresh()
                             continue
 
                         product_data = r.get("product", {})
@@ -493,6 +501,32 @@ class WalmartStockMonitor:
                 logger.debug("[MONITOR] Out of stock: %s (%s)", name, item_id)
                 if self._on_stock_change:
                     self._on_stock_change(item_id, False, price)
+
+    # ------------------------------------------------------------------
+    # GraphQL hash refresh on staleness detection
+    # ------------------------------------------------------------------
+
+    def _trigger_graphql_hash_refresh(self):
+        """
+        Called when HTTP 400 is detected during stock checks.
+        Signals the session manager to refresh the GraphQL hash by visiting
+        a fresh product page, which will auto-discover the current hash via CDP.
+        """
+        if not self._session:
+            logger.warning("[MONITOR] Cannot refresh GraphQL hash — no session manager")
+            return
+
+        try:
+            # Signal session harvester to refresh GraphQL hash on next page visit
+            # by setting a flag. The harvester checks this flag during regular product browsing.
+            if hasattr(self._session, '_graphql_refresh_needed'):
+                self._session._graphql_refresh_needed = True
+                logger.info("[MONITOR] Signaled session manager to refresh GraphQL hash")
+            else:
+                # Fallback: log the issue for operator attention
+                logger.error("[MONITOR] Session manager does not support hash refresh — operator should restart app")
+        except Exception as e:
+            logger.warning("[MONITOR] Failed to signal hash refresh: %s", e)
 
     # ------------------------------------------------------------------
     # Public helpers

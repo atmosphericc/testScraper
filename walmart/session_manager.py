@@ -32,8 +32,10 @@ from .config import (
     set_graphql_hash_atf,
     set_graphql_hash_btf,
 )
+from .logging_manager import get_walmart_logger, log_error, log_activity
 
 logger = logging.getLogger(__name__)
+walmart_logger = get_walmart_logger()
 
 # Injected before every page load to hide automation signals from PerimeterX / HUMAN Security
 _STEALTH_SCRIPT = """
@@ -803,10 +805,10 @@ class WalmartSessionManager:
         if not page or "/blocked" not in (page.url or ""):
             return True  # not on a blocked page
 
-        # 6d: detect checkbox variant — press-and-hold sequence will not work for it
+        # 6d: detect checkbox variant — solve differently than press-and-hold
         if "g=a" in (page.url or ""):
-            logger.warning("[SESSION] PerimeterX checkbox variant detected (/blocked?g=a) — press-and-hold will not work")
-            return False
+            logger.warning("[SESSION] PerimeterX checkbox variant detected (/blocked?g=a) — attempting checkbox solve")
+            return await self._solve_checkbox_challenge(page)
 
         logger.warning("[SESSION] /blocked page detected — attempting press-and-hold solve")
         self._status_cb("[SESSION] Bot challenge detected — solving press-and-hold...")
@@ -948,6 +950,72 @@ class WalmartSessionManager:
             logger.error("[SESSION] Could not clear /blocked challenge after %d attempts", max_attempts)
             self._status_cb("[SESSION] Challenge unsolved — may need manual intervention in browser")
         return cleared
+
+    async def _solve_checkbox_challenge(self, page) -> bool:
+        """
+        Solve PerimeterX checkbox variant challenge (/blocked?g=a).
+        Finds the checkbox, clicks it, and waits for redirect back to /checkout.
+        """
+        logger.info("[SESSION] Starting checkbox challenge solver")
+        self._status_cb("[SESSION] Solving checkbox challenge...")
+
+        deadline = time.monotonic() + 15.0
+        for attempt in range(1, 6):
+            if time.monotonic() > deadline:
+                logger.error("[SESSION] Checkbox solve timeout after %d attempts", attempt - 1)
+                return False
+
+            # Look for checkbox input or button
+            checkbox_selectors = [
+                'input[type="checkbox"]',
+                'input[role="checkbox"]',
+                'button[data-testid*="checkbox"]',
+                '[role="checkbox"]',
+            ]
+
+            checkbox = None
+            for selector in checkbox_selectors:
+                try:
+                    el = await page.query_selector(selector)
+                    if el:
+                        checkbox = el
+                        logger.debug("[SESSION] Found checkbox with selector: %s", selector)
+                        break
+                except Exception:
+                    continue
+
+            if not checkbox:
+                logger.debug("[SESSION] Checkbox not found on attempt %d, waiting...", attempt)
+                await asyncio.sleep(1.0)
+                continue
+
+            try:
+                # Scroll into view
+                await checkbox.scroll_into_view()
+                await asyncio.sleep(0.3)
+
+                # Click the checkbox
+                await checkbox.click()
+                logger.debug("[SESSION] Checkbox clicked on attempt %d", attempt)
+                self._status_cb("[SESSION] Checkbox clicked — waiting for redirect...")
+
+                # Wait for redirect back to /checkout
+                redirect_deadline = time.monotonic() + 8.0
+                while time.monotonic() < redirect_deadline:
+                    current_url = page.url or ""
+                    if "/blocked" not in current_url:
+                        logger.info("[SESSION] Checkbox challenge cleared — redirected away from /blocked")
+                        self._status_cb("[SESSION] Checkbox challenge solved")
+                        return True
+                    await asyncio.sleep(0.3)
+
+                logger.warning("[SESSION] No redirect after checkbox click on attempt %d", attempt)
+            except Exception as e:
+                logger.warning("[SESSION] Checkbox click error on attempt %d: %s", attempt, e)
+                await asyncio.sleep(0.5)
+
+        logger.error("[SESSION] Could not solve checkbox challenge after max attempts")
+        return False
 
     def _on_network_request(self, event):
         """
