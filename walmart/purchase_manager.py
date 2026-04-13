@@ -145,13 +145,12 @@ class WalmartPurchaseManager:
         # Do an immediate cookie harvest so workers have valid cookies from the first check
         await self._session.harvest_now()
 
-        # Open Tab 2 on the first product page (not homepage) — keeps React/CSS/JS warm
-        # This saves 8-13s on each purchase attempt (avoids cold-start page load delays)
-        warmup_url = "https://www.walmart.com"
-        if products:
-            first_product_id = products[0]["item_id"]
-            warmup_url = f"https://www.walmart.com/ip/{first_product_id}"
-            self._status_cb(f"[MANAGER] Tab 2 will pre-warm on first product: {first_product_id}")
+        # Open Tab 2 on a low-risk search page (not a product page).
+        # Product pages are PerimeterX "sensitive routes" that trigger live risk
+        # evaluation. Pre-warming on products[0] was almost always wrong anyway
+        # (different product triggers first), so the fast-path never fired.
+        warmup_url = "https://www.walmart.com/search?q=pokemon+trading+cards"
+        self._status_cb("[MANAGER] Tab 2 will pre-warm on search page (non-PDP)")
 
         await self._session.open_checkout_tab(warmup_url=warmup_url)
 
@@ -414,15 +413,8 @@ class WalmartPurchaseManager:
             if checkout_proxy:
                 self._proxy_manager.release_checkout_proxy(checkout_proxy)
 
-            # Navigate Tab 2 back to the product page so it stays warm for
-            # the next purchase attempt. After _clear_cart the tab is on /cart.
-            try:
-                page = self._session.get_checkout_page()
-                if page:
-                    await page.get(item_url)
-                    logger.debug("[MANAGER] Tab 2 re-warmed on %s", item_url)
-            except Exception as e:
-                logger.debug("[MANAGER] Tab 2 re-warm failed: %s", e)
+            # Tab 2 stays on /cart after _clear_cart — no re-warm needed.
+            # _navigate() will handle navigation to the correct product on next trigger.
 
             # Reset state to MONITORING after a delay so we can try again on next restock
             await asyncio.sleep(5)

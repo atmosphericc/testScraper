@@ -54,8 +54,10 @@ from typing import Callable, Optional
 
 from .config import LOGS_DIR
 from .purchase_manager import WalmartPurchaseManager, PurchaseState
+from .logging_manager import get_walmart_logger, log_error, log_activity
 
 logger = logging.getLogger(__name__)
+walmart_logger = get_walmart_logger()
 
 # ---------------------------------------------------------------------------
 # Tuning constants

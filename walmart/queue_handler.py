@@ -26,8 +26,10 @@ import time
 from typing import Optional, Callable
 
 from .config import QUEUE_POLL_INTERVAL, QUEUE_TIMEOUT
+from .logging_manager import get_walmart_logger, log_activity
 
 logger = logging.getLogger(__name__)
+walmart_logger = get_walmart_logger()
 
 # Button text patterns to click in order to JOIN the queue
 # Note: :has-text() is patchright-specific; we use XPath in _find_entry_button instead

@@ -375,7 +375,7 @@ class WalmartPurchaseExecutor:
                         self._status_cb(f"[PURCHASE] Clicked Add to Cart (attempt {attempt + 1})")
                         logger.info("[PURCHASE] ATC clicked via CDP mouse on attempt %d via %s at (%.0f, %.0f)",
                                     attempt + 1, result.get('foundVia'), x, y)
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.15)
                         break
                     else:
                         # CDP mouse failed — fall back to JS click
@@ -387,7 +387,7 @@ class WalmartPurchaseExecutor:
                         """)
                         self._status_cb(f"[PURCHASE] Clicked Add to Cart via JS fallback (attempt {attempt + 1})")
                         logger.info("[PURCHASE] ATC clicked via JS fallback on attempt %d", attempt + 1)
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.15)
                         break
 
                 # Button not found or disabled — log and retry
@@ -413,61 +413,44 @@ class WalmartPurchaseExecutor:
             self._status_cb("[PURCHASE] ATC button not found — unable to add to cart")
             return False
 
-        # Wait for ATC confirmation — look for the flyout/modal/drawer or cart count change.
-        # Walmart shows either a "View cart" modal, an "Added to cart" flyout, or
-        # the ATC button text changes to "Added" / a checkmark.
-        # JS click is instant, so 6s should be plenty for Walmart to respond.
+        # Quick ATC confirmation — check for flyout/button state change.
+        # Don't burn time waiting for the flyout animation; 2s max then move on.
         atc_confirmed = False
-        deadline = time.monotonic() + 6.0
+        deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             try:
-                # Check for success indicators
-                for sel in [
-                    'button:has-text("View cart")',
-                    'a:has-text("View cart")',
-                    'button:has-text("Go to cart")',
-                    'a:has-text("Go to cart")',
-                    'button:has-text("Added to cart")',
-                    'button:has-text("Added")',
-                    '[data-automation-id="cart-flyout"]',
-                    '[data-automation-id="atc-flyout"]',
-                ]:
-                    if ':has-text(' in sel:
-                        m = re.match(r'(\w+):has-text\("([^"]+)"\)', sel)
-                        if m:
-                            tag, text = m.group(1), m.group(2)
-                            xpath = f'//{tag}[contains(., "{text}")]'
-                            els = await self._page.xpath(xpath)
-                            if els:
-                                self._status_cb(f"[PURCHASE] ATC confirmed — '{text}' visible")
-                                logger.info("[PURCHASE] ATC flyout/modal detected: %s", text)
-                                atc_confirmed = True
-                                # Click "View cart" / "Go to cart" if it's a navigation link
-                                if "cart" in text.lower():
-                                    try:
-                                        await els[0].click()
-                                        self._status_cb("[PURCHASE] Clicked cart link from ATC flyout")
-                                        await asyncio.sleep(1.5)
-                                    except Exception:
-                                        pass
-                                break
-                    else:
-                        el = await self._page.query_selector(sel)
-                        if el:
-                            atc_confirmed = True
-                            self._status_cb("[PURCHASE] ATC confirmed via flyout element")
-                            break
-                if atc_confirmed:
+                # Fast check: button text changed to "Added" or flyout appeared
+                confirmed = await self._page.evaluate("""
+                    (() => {
+                        const btn = document.querySelector('button[data-automation-id="atc"]')
+                                 || document.querySelector('button[data-dca-event="addToCart"]');
+                        if (btn) {
+                            const t = btn.textContent.toLowerCase();
+                            if (t.includes('added') || btn.disabled) return 'btn_changed';
+                        }
+                        if (document.querySelector('[data-automation-id="cart-flyout"]') ||
+                            document.querySelector('[data-automation-id="atc-flyout"]'))
+                            return 'flyout';
+                        const links = document.querySelectorAll('a, button');
+                        for (const el of links) {
+                            const t = el.textContent.toLowerCase().trim();
+                            if (t === 'view cart' || t === 'go to cart') return 'cart_link';
+                        }
+                        return null;
+                    })()
+                """)
+                if confirmed:
+                    self._status_cb(f"[PURCHASE] ATC confirmed — {confirmed}")
+                    logger.info("[PURCHASE] ATC confirmed via: %s", confirmed)
+                    atc_confirmed = True
                     break
             except Exception:
                 pass
-            await asyncio.sleep(0.4)
+            await asyncio.sleep(0.3)
 
         if not atc_confirmed:
-            # No flyout seen — not necessarily a failure, ATC may have worked silently
-            self._status_cb("[PURCHASE] No ATC flyout detected — will verify cart directly")
-            logger.info("[PURCHASE] No ATC confirmation flyout — proceeding to cart verification")
-            await asyncio.sleep(1.0)
+            self._status_cb("[PURCHASE] No ATC confirmation in 2s — proceeding (may have worked silently)")
+            logger.info("[PURCHASE] No ATC confirmation — proceeding to cart verification")
 
         return True
 
@@ -480,11 +463,9 @@ class WalmartPurchaseExecutor:
         if "/cart" in current_url and "/blocked" not in current_url:
             logger.info("[PURCHASE] Already on cart page (URL: %s) — skipping navigation", current_url)
         else:
-            # Add a human-like delay before navigating to cart
-            await self._human_delay(500, 1200)
             logger.info("[PURCHASE] Navigating to cart from: %s → %s", current_url, WALMART_CART_URL)
             await self._page.get(WALMART_CART_URL)
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.8)
             current_url = self._page.url or ""
             logger.info("[PURCHASE] Arrived at: %s", current_url)
 
@@ -521,7 +502,7 @@ class WalmartPurchaseExecutor:
             'button[aria-label*="Remove"]',              # aria-label stable across deploys
             # NOTE: .cart-item removed — Walmart hashes class names on every deploy
         ]
-        poll_deadline = time.monotonic() + 8.0
+        poll_deadline = time.monotonic() + 4.0
         while time.monotonic() < poll_deadline:
             try:
                 cart_items = await self._query_selector_all(cart_selectors)

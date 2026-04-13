@@ -50,28 +50,32 @@ async def walmart_relogin():
     tab = await browser.get("https://www.walmart.com")
 
     print("Navigated to walmart.com")
-    await asyncio.sleep(3)
 
-    # Check if already logged in
-    logged_in = False
+    # First, try to log out if already logged in
+    print("Checking for existing session...")
     try:
         content = await tab.get_content()
         if any(x in content for x in ['"isLoggedIn":true', 'account/logout', '"type":"REGISTERED"']):
-            print("Already logged in!")
-            logged_in = True
+            print("Existing session detected — logging out first...")
+            # Navigate to logout
+            await tab.get("https://www.walmart.com/account/logout")
+            await asyncio.sleep(3)
+            # Go back to home
+            await tab.get("https://www.walmart.com")
+            await asyncio.sleep(2)
     except Exception:
         pass
 
-    if not logged_in:
-        print()
-        print("Not logged in. Please log in manually in the browser window.")
-        print("  1. Click 'Sign In' on walmart.com")
-        print("  2. Enter your email and password")
-        print("  3. Complete any CAPTCHA or 2FA if prompted")
-        print("  4. Wait until your name appears in the top right")
-        print()
-        input("Once fully logged in, press ENTER here to save cookies...")
-        await asyncio.sleep(2)
+    # Now prompt for login
+    print()
+    print("Please log in manually in the browser window.")
+    print("  1. Click 'Sign In' on walmart.com")
+    print("  2. Enter your email and password")
+    print("  3. Complete any CAPTCHA or 2FA if prompted")
+    print("  4. Wait until your name appears in the top right")
+    print()
+    input("Once fully logged in, press ENTER here to save cookies...")
+    await asyncio.sleep(2)
 
     # Extract cookies via CDP
     print("Saving cookies...")

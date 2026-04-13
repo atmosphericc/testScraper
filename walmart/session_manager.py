@@ -191,6 +191,9 @@ class WalmartSessionManager:
                 self._on_loading_finished,
             )
 
+            # Solve /blocked if the initial load triggered PerimeterX
+            await self._handle_blocked_page()
+
             # Tab 2 is opened later via open_checkout_tab(), after warm_session() has
             # run on Tab 1 and established clean cookies. Opening it now would mean
             # Tab 2 starts with cold cookies and is likely to hit /blocked.
@@ -234,7 +237,7 @@ class WalmartSessionManager:
         await self._checkout_page.send(
             cdp.page.add_script_to_evaluate_on_new_document(source=_STEALTH_SCRIPT)
         )
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(0.5)
         await self._handle_blocked_page_on(self._checkout_page)
 
         # Wire CDP network handlers on Tab 2 so GraphQL hashes are
@@ -867,21 +870,24 @@ class WalmartSessionManager:
 
             logger.debug("[SESSION] Challenge attempt %d/%d", attempt, max_attempts)
 
+            # Fast-poll for the captcha element — check both selectors every 300ms
+            # instead of waiting 5s per selector sequentially (was 10s worst case).
             target = None
-            # Selectors ordered by stability. #px-captcha and div[id*='px-captcha'] are
-            # stable PerimeterX anchors (last verified: 2026-04-08).
-            # Class-based fallbacks removed — PX hashes class names on every challenge render.
-            for sel in ["#px-captcha", "div[id*='px-captcha']"]:
+            find_deadline = time.monotonic() + 8.0
+            while time.monotonic() < find_deadline:
                 try:
-                    el = await page.wait_for(selector=sel, timeout=5)
-                    if el:
-                        target = el
+                    target = await page.query_selector("#px-captcha") \
+                          or await page.query_selector("div[id*='px-captcha']")
+                    if target:
                         break
                 except Exception:
-                    continue
+                    pass
+                # Check if we left /blocked while waiting for element
+                if "/blocked" not in (page.url or ""):
+                    break
+                await asyncio.sleep(0.3)
 
             if target is None:
-                await asyncio.sleep(0.5)
                 continue
 
             try:

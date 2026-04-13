@@ -1,5 +1,6 @@
 # Walmart Profile
 ## Last Researched: 2026-04-07
+## Last Updated: 2026-04-10 (consolidated anti-bot content from ANTIBOT.md)
 
 ---
 
@@ -20,14 +21,14 @@
                          OR /order-confirmation (URL varies by A/B test cohort)
 ```
 
-Walmart's checkout is a **React SPA**. The URL stays at `/checkout` throughout steps 3a–3d; only the in-page "step" component changes. The URL does not reflect which sub-step you are on until you reach the confirmation page. Rely on DOM presence of step-specific elements, not URL, to know where you are.
+Walmart's checkout is a **React SPA**. The URL stays at `/checkout` throughout steps 3a–3d; only the in-page "step" component changes. Rely on DOM presence of step-specific elements, not URL, to know where you are.
 
 ### Add to Cart
 
 - Primary CTA: `button[data-automation-id="add-to-cart-btn"]`
 - Legacy/variant: `button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]`
 - Text-based fallback: `button:has-text("Add to cart")`, `button:has-text("Add to Cart")`
-- Pre-order variant: `button:has-text("Pre-order")`, `button:has-text("Preorder")`
+- Pre-order variant: `button:has-text("Pre-order")`, `button:has-text("Pre-Order")`, `button:has-text("Preorder")`
 - Add-to-cart confirmation flyout: `[data-automation-id="cart-flyout"]`, `[data-automation-id="atc-flyout"]`
 - Stock availability signal (buy box present): `button[data-dca-name="ItemBuyBoxAddToCartButton"]`
 
@@ -39,10 +40,9 @@ After a successful ATC click, Walmart shows one of:
 ### Cart Page
 
 - Cart URL: `https://www.walmart.com/cart`
-- Cart item container: `[data-automation-id="cart-item"]`, `[data-testid="cart-item"]`, `.cart-item`
+- Cart item container: `[data-automation-id="cart-item"]`, `[data-testid="cart-item"]`
 - Checkout button (on cart page): `button[data-automation-id="checkout-btn"]`, `a[data-automation-id="checkout-btn"]`
 - Empty cart detection: check `document.body.innerText` for "your cart is empty"
-- Product tiles (category/search pages): `[data-dca-name='ui_product_tile:vertical_index']`
 
 ### Checkout Sub-Steps (Step 3)
 
@@ -63,7 +63,7 @@ Checkout page load signal (use any as confirmation):
 - `form[id*="checkout"]`
 - Body text contains "payment", "shipping", or "order summary"
 
-Address fields (when address entry is required — rare for saved accounts):
+Address fields (when address entry required — rare for saved accounts):
 - Street: `input[name="addressLineOne"]`, `input[autocomplete="address-line1"]`
 - City: `input[name="city"]`, `input[autocomplete="address-level2"]`
 - State: `select[name="state"]`, `select[autocomplete="address-level1"]`
@@ -106,43 +106,41 @@ Guest checkout is **available** but less reliable for automation:
 - Requires entering email, address, and full payment info fresh each transaction
 - No CVV prefill; full card number required
 - Higher bot-score due to no account session history
-- Walmart's checkout page asks for email + address together in one step (no separate email-first gate)
-- **Recommendation: use account login flow.** Saved address + saved card with CVV-only entry is faster and scores lower on behavioral analysis.
+- **Recommendation: use account login flow.** Saved address + saved card with CVV-only entry is faster and scores lower.
 
 ### Walmart+ Account Differences
 
-- Walmart+ members may get early access to limited-release product drops (items listed as "Walmart+ members only" before the general drop)
-- Walmart+ early access drops: product page shows an "Early Access" banner; ATC button is locked until the early access window opens (typically 1 hour before public)
-- The bot must be logged into a Walmart+ account to access these; a non-member session will see a prompt to join Walmart+
-- `config.py` notes that Walmart+ exclusive items can trigger automatic membership purchase if the "auto-buy Walmart+" flag is enabled — treat this as a risk in production
+- Walmart+ members get early access to limited-release product drops (items listed as "Walmart+ members only" before general drop)
+- Walmart+ early access drops: product page shows "Early Access" banner; ATC button locked until early access window opens (typically 1 hour before public)
+- Must be logged into Walmart+ account to access these
 
 ### Interstitial Pages / Prompts
 
-1. **Virtual Queue** (`/blocked` or queue iframe): Appears on high-demand drops. The page URL changes to something like `/checkout?type=queue` or a separate queue domain. See `queue_handler.py` for detection/handling.
-2. **Fulfillment Selector**: When an item supports both Ship and Pickup, a modal or step asks you to choose. Selectors: `label:has-text("Delivery")`, `button:has-text("Delivery")`. Always click Delivery/Ship first.
-3. **Substitution Prompt**: Appears during grocery/pickup checkout when an item is OOS. Asks if you want a substitution. Not typically relevant for electronics/limited drops, but present for grocery.
-4. **Age Verification**: Appears for alcohol, certain medications. Modal with date-of-birth fields or a confirmation checkbox. Rare for the product types typically targeted.
-5. **"Robot or Human?" CAPTCHA**: Appears at `/blocked` — "Activate and hold the button to confirm you're human." This is Walmart's PerimeterX (HUMAN Security) challenge, not a CAPTCHA in the traditional sense. See Anti-Bot section.
-6. **Store Pickup Prompt**: If the detected user location has a Walmart store, a modal may prompt "Pick up at [store]?" for eligible items. Must dismiss or select Ship to continue.
+1. **Virtual Queue** (`/blocked` or queue iframe): Appears on high-demand drops. See `queue_handler.py` for detection/handling.
+2. **Fulfillment Selector**: When item supports both Ship and Pickup, a modal asks you to choose. Always click Delivery/Ship first.
+3. **Substitution Prompt**: Appears during grocery/pickup checkout when item is OOS. Asks if you want substitution.
+4. **Age Verification**: Appears for alcohol, certain medications. Rare for typical product types.
+5. **"Robot or Human?" CAPTCHA** (`/blocked`): "Activate and hold the button to confirm you're human." This is PerimeterX (HUMAN Security) challenge, not traditional CAPTCHA. See Anti-Bot section.
+6. **Store Pickup Prompt**: If detected user location has Walmart store, a modal may prompt "Pick up at [store]?" for eligible items. Must dismiss or select Ship.
 
 ### Fulfillment: Store Pickup vs. Ship-to-Home
 
 - Ship-to-home flow: standard sequence above
-- Store pickup flow: after ATC, checkout adds a fulfillment step; address step is replaced by store selection. Payment and review steps remain.
-- Automation should always select ship-to-home (Delivery) to avoid store-specific inventory gaps and to skip the store selection step.
+- Store pickup flow: checkout adds fulfillment step; address step replaced by store selection. Payment and review steps remain.
+- Automation should always select ship-to-home (Delivery) to avoid store-specific inventory gaps and skip store selection step.
 
 ### Express Checkout / Walmart Pay
 
 - Walmart Pay (in-store QR code only) does not apply to web checkout
-- No "Express Checkout" button for third-party wallets on the main checkout flow as of early 2026
-- Apple Pay / Google Pay are listed as supported payment methods but appear as options within the standard checkout payment step, not as an ATC-to-confirm shortcut
-- "Buy Now" / direct-to-checkout buttons exist on some product pages (especially mobile); these navigate directly to `/checkout` skipping the cart entirely. Selector: `button:has-text("Buy now")`, `button[data-automation-id="buy-now-btn"]`
+- No "Express Checkout" button for third-party wallets on main checkout flow
+- Apple Pay / Google Pay listed as supported but appear as options within standard checkout payment step
+- "Buy Now" / direct-to-checkout buttons exist on some product pages (especially mobile); navigate directly to `/checkout` skipping cart. Selector: `button:has-text("Buy now")`, `button[data-automation-id="buy-now-btn"]`
 
 ---
 
-## Anti-Bot Stack
+## Anti-Bot (Akamai + PerimeterX + Cloudflare)
 
-### Confirmed Vendors (confidence: high)
+### Overview
 
 Walmart runs a **layered, three-vendor anti-bot stack** — one of the most aggressive in US retail:
 
@@ -152,25 +150,25 @@ Walmart runs a **layered, three-vendor anti-bot stack** — one of the most aggr
 | 2 | **PerimeterX / HUMAN Security** | Behavioral analysis, `_px3` cookie, interactive "hold button" challenge |
 | 3 | **Cloudflare** | CDN, DDoS mitigation, additional IP reputation layer |
 
-Difficulty rating: **9/10**. This combination is rare; both Akamai and PerimeterX independently challenge the session, so a bypass of one does not guarantee passing the other.
+**Difficulty rating: 9/10.** Both Akamai and PerimeterX independently challenge, so bypass of one doesn't guarantee passing the other.
 
 ### Akamai Bot Manager — Detection Vectors
 
 #### 1. TLS Fingerprinting (JA3/JA4) — Highest Signal
-- Each TLS client handshake produces a JA3 hash (cipher suites, TLS version, extensions, ALPN).
-- Python `requests`, `httpx`, `scrapy` have well-known bot JA3 hashes and are blocked immediately.
-- Chromium-based browsers (real Chrome, zendriver) produce legitimate JA3 hashes.
-- **Critical:** The TLS fingerprint must match a known good browser signature. `curl_cffi` with `impersonate="chrome120"` (or similar) is needed for raw HTTP approaches.
+- Each TLS client handshake produces a JA3 hash (cipher suites, TLS version, extensions, ALPN)
+- Python `requests`, `httpx`, `scrapy` have well-known bot JA3 hashes and are blocked immediately
+- Chromium-based browsers (real Chrome, patchright) produce legitimate JA3 hashes
+- **Critical**: TLS fingerprint must match known good browser signature. `curl_cffi` with `impersonate="chrome120"` needed for raw HTTP approaches.
 
 #### 2. IP Reputation
-- Datacenter IPs (AWS, GCP, Azure, DigitalOcean, etc.) are classified negatively and typically blocked at the edge.
-- Residential and mobile IPs score positively.
-- Walmart specifically enforces US-only proxies; non-US IPs (including Canada, Mexico) trigger 456 blocks or instant challenges.
+- Datacenter IPs (AWS, GCP, Azure, DigitalOcean, etc.) classified negatively and typically blocked at edge
+- Residential and mobile IPs score positively
+- **Walmart specifically enforces US-only proxies**; non-US IPs (including Canada, Mexico) trigger 456 blocks or instant challenges
 
 #### 3. JavaScript / Browser Fingerprinting
 Akamai's client-side script collects:
 - `navigator.webdriver` — must be `undefined` (not `false`)
-- `navigator.plugins` — must have 3+ real plugin objects (automation contexts often return 0)
+- `navigator.plugins` — must have 3+ real plugin objects (automation contexts return 0)
 - `navigator.mimeTypes` — must be populated
 - `navigator.languages` — must be `["en-US", "en"]` or similar
 - `window.chrome` — must exist with `runtime`, `loadTimes`, `csi`, `app` properties
@@ -183,12 +181,12 @@ Akamai's client-side script collects:
 #### 4. `_abck` Cookie and `sensor_data` Payload
 
 The `_abck` cookie is the primary Akamai session token:
-- Set on first page load via a JavaScript challenge (`/akam/11/pixel_xxxxx` or similar endpoint)
+- Set on first page load via JavaScript challenge (`/akam/11/pixel_xxxxx` or similar endpoint)
 - Contains an **encrypted, base64-encoded telemetry blob** validated on every subsequent request
-- Structure: two-phase encryption — (1) colon-delimited JSON payload shuffled by a PRNG seeded with a JS file hash, then (2) character substitution using a `bm_sz` cookie-derived hash
+- Structure: two-phase encryption — (1) colon-delimited JSON payload shuffled by a PRNG seeded with JS file hash, then (2) character substitution using `bm_sz` cookie-derived hash
 - Each `sensor_data` POST is unique per session (replay attack prevention via session-specific seeds)
-- Initial sensor requests use a default cookie hash of `"8888888"`; subsequent requests derive the hash from the returned `bm_sz` cookie value
-- `_abck` is validated server-side on every request; an invalid or missing cookie results in a 403 with "Pardon Our Interruption" page
+- Initial sensor requests use default cookie hash of `"8888888"`; subsequent requests derive hash from returned `bm_sz` cookie value
+- `_abck` validated server-side on every request; invalid or missing cookie results in 403 "Pardon Our Interruption" page
 
 **Full Akamai cookie set on Walmart:**
 
@@ -201,13 +199,13 @@ The `_abck` cookie is the primary Akamai session token:
 
 #### 5. HTTP Protocol / Header Analysis
 - Akamai checks for HTTP/2 (modern browsers use HTTP/2; many scraping libraries default to HTTP/1.1)
-- Header order matters — Chrome sends headers in a specific order; reordered headers are a bot signal
+- Header order matters — Chrome sends headers in specific order; reordered headers are a bot signal
 - `Origin`, `Referer`, `User-Agent`, and `Accept-Language` must be present and consistent
 - Missing or incorrect `Sec-Fetch-*` headers (e.g., `Sec-Fetch-Site`, `Sec-Fetch-Mode`) are a signal
 
 #### 6. Behavioral Analysis
 - Mouse movement patterns (natural curves vs. straight lines)
-- Click coordinates (real users click slightly off-center; bots often click exact center)
+- Click coordinates (real users click slightly off-center; bots click exact center)
 - Scroll behavior and timing
 - Time-on-page before interaction
 - Navigation sequence (Akamai expects product page → cart → checkout, not direct checkout URL)
@@ -218,36 +216,82 @@ The `_abck` cookie is the primary Akamai session token:
 - Deployed on checkout-critical pages (cart, `/checkout`, payment step)
 - Primary token: `_px3` cookie — clearance token with a ~60 second TTL on high-security pages
 - Also uses `_pxvid`, `pxcts` cookies
-- **"Hold the button" challenge**: Interactive challenge requiring a click-and-hold. Cannot be solved programmatically without a real mouse event (CDP `dispatchMouseEvent` with proper timing may work, but HUMAN's behavioral analysis checks for non-human hold patterns)
-- Behavioral signals monitored: mouse acceleration, click pressure (if available), inter-event timing, whether the hold duration is within human norms
+- **"Hold the button" challenge**: Interactive challenge requiring click-and-hold. Cannot be solved programmatically without real mouse event (CDP `dispatchMouseEvent` with proper timing may work, but HUMAN's behavioral analysis checks for non-human hold patterns)
+- Behavioral signals monitored: mouse acceleration, click pressure (if available), inter-event timing, whether hold duration is within human norms
 
 ### Known Detection Triggers (Walmart-Specific)
 
-1. Direct navigation to `/checkout` without a prior cart session — immediate block
+1. Direct navigation to `/checkout` without prior cart session — immediate block
 2. Cart → checkout transition faster than ~1.5 seconds — high bot score
 3. Clicking ATC button at exact center coordinates without scroll
 4. Missing `Referer` header on cart page load (should be product page URL)
 5. Pagination without incrementing Referer (page 2 should reference page 1)
 6. Reusing `_abck` cookies across different IP addresses
-7. Non-US proxy IP at any point in the session (456 block)
+7. Non-US proxy IP at any point in session (456 block)
 8. `navigator.webdriver === true` (not patched)
 9. Zero browser plugins
 10. Rapid-fire product page loads without human-like pauses
 11. Session with no prior browsing history (cold sessions score lower)
 
-### Bypass Approaches for zendriver / CDP
+### PerimeterX Cookie Family
 
-**patchright** (Playwright fork with 22 AST-level patches) is the current Walmart automation library — not zendriver. Patchright removes CDP leaks, patches `navigator.webdriver`, and disables `Runtime.enable`. It has a meaningfully better baseline against Akamai and PerimeterX than standard Selenium or Playwright:
-- Avoids the `navigator.webdriver` leak inherent in WebDriver protocol
-- ~67% lower detection rate than standard headless Chrome
+| Cookie | TTL | Role |
+|--------|-----|------|
+| `_px3` | ~60s on checkout, session on browse | Primary clearance token — HMAC-SHA256 signed verdict |
+| `_pxvid` | Session | Persistent visitor identity — cold visitor = higher initial score |
+| `_pxhd` | Session | Encrypted device fingerprint |
+| `pxcts` | Short-lived | Client timestamp |
+
+### Akamai Cookie Pipeline
+
+These three cookies form a dependency chain — each must exist before next is valid:
+
+| Cookie | TTL | Role |
+|--------|-----|------|
+| `bm_sz` | 4 hours | Seeds PRNG for sensor_data encryption. Must exist before first sensor POST. |
+| `ak_bmsc` | 2 hours (HTTP-only) | Device-level clearance after successful sensor POST. Skips full re-evaluation within TTL. |
+| `_abck` | Session-scoped | Primary bot verdict cookie. IP-bound. Contains `~0~` when Akamai signals "stop sending sensors". |
+
+**Correct warm sequence:** Load `walmart.com` → `bm_sz` set → `sensor.js` runs → sensor_data POSTed → `ak_bmsc` + `_abck` issued → behavioral signals accumulate → `_abck` updated until `~0~` stop signal.
+
+### Akamai ↔ PerimeterX Interaction
+
+| Layer | System | Enforces At | Block Response |
+|-------|--------|------------|----------------|
+| Edge | Akamai Bot Manager | TLS + HTTP headers | HTTP 403 "Pardon Our Interruption" |
+| Application | PerimeterX (HUMAN) | In-browser JS sensor | Redirect to `walmart.com/blocked` |
+
+- **Independent systems** — passing Akamai does not inform PerimeterX, and vice versa. Both must be satisfied.
+- **Sequential**: Akamai evaluates first at edge. A 403 means PerimeterX never ran. A `/blocked` redirect means Akamai passed but PX challenged.
+- **Debugging rule**: 403 "Pardon Our Interruption" = Akamai problem (`_abck`/TLS). `/blocked` = PerimeterX problem (`_px3`). Never conflate these.
+
+### Press-and-Hold CDP Sequence
+
+Current implementation in `walmart/session_manager.py:849–877` is structurally correct. Required sequence:
+```
+mousePressed (buttons=1) → [hold loop: mouseMoved with jitter] → mouseReleased (buttons=0)
+```
+
+**Known gaps — current status (as of 2026-04-08):**
+1. ~~**Hold loop sleep is fixed at 150ms**~~ — FIXED: randomized `random.uniform(0.08, 0.25)`
+2. ~~**Jitter is ±1.5px uniform**~~ — FIXED: cumulative random walk ±3–5px non-uniform drift
+3. ~~**Missing `pointerdown`/`pointerup`**~~ — FIXED: `pointerDown`/`pointerUp` events added
+4. ~~**No minimum hold duration floor**~~ — FIXED: 6.0s minimum enforced before early-exit URL check
+5. **No `g=a` checkbox variant detection** — `/blocked?g=a` shows checkbox instead of hold button; not yet handled
+6. **Success check only inspects URL** — add `_px3` cookie presence as secondary success signal (not yet done)
+
+### Bypass Approaches
+
+**patchright** (Playwright fork with 22 AST-level patches) is the current Walmart automation library. Patchright removes CDP leaks, patches `navigator.webdriver`, and disables `Runtime.enable`. ~67% lower detection rate than standard headless Chrome:
+- Avoids `navigator.webdriver` leak inherent in WebDriver protocol
 - Still requires stealth patching and behavioral warmup for PerimeterX
 
 **Recommended stealth stack for patchright:**
 1. Run real Chrome (not bundled Chromium) with `HEADLESS=False` — non-headless reduces fingerprint distance significantly
 2. Inject stealth JS via `cdp.page.add_script_to_evaluate_on_new_document()` to patch `navigator.webdriver`, `navigator.plugins`, `navigator.mimeTypes`, `window.chrome`
-3. Use a persistent Chrome profile (`user_data_dir`) so the browser has real cookie history, localStorage, and cached assets
+3. Use persistent Chrome profile (`user_data_dir`) so browser has real cookie history, localStorage, and cached assets
 4. Residential US proxies only — no datacenter, no non-US
-5. Warm the Akamai session before the drop: browse product pages, add to wishlist, navigate organically. Akamai's behavioral model updates in real time.
+5. Warm Akamai session before drop: browse product pages, add to wishlist, navigate organically. Akamai's behavioral model updates in real time.
 6. Keep `_px3` cookie fresh (< 50 seconds old) when entering checkout — re-warm if stale
 7. Human-like delays between all actions (200–1200ms random)
 8. Avoid direct URL navigation to `/cart` or `/checkout` when possible; prefer clicking UI elements
@@ -256,7 +300,36 @@ The `_abck` cookie is the primary Akamai session token:
 - Selenium with `undetected_chromedriver` — still leaks WebDriver signals that Akamai catches
 - Headless Chrome without stealth patches
 - Datacenter or shared residential proxies
-- Raw HTTP with `sensor_data` generation (Akamai v3 uses deployment-specific JS file hashes that change with each Walmart frontend deploy; maintaining a working generator requires constant reverse engineering)
+- Raw HTTP with `sensor_data` generation (Akamai v3 uses deployment-specific JS file hashes that change with each Walmart frontend deploy; maintaining working generator requires constant reverse engineering)
+
+### Working Mitigations
+- **patchright (Playwright fork)** — 22 AST-level patches. Current implementation.
+- **Dual-tab warmup strategy** — warmup tab establishes Akamai behavioral profile (homepage → category → search only, NOT product pages) before main tab attempts purchase
+- **Challenge solver** — `walmart/purchase_executor.py` handles press-and-hold PerimeterX challenge via CDP `dispatchMouseEvent`
+- **Proxy manager** — `walmart/proxy_manager.py` rotates US residential/ISP proxies with cooldown and health tracking
+- **Self-healing agent** — `walmart/self_healing_agent.py` auto-diagnoses and patches selector failures
+- **Persistent Walmart profile** — `walmart-profile/` maintains session cookies and behavioral history
+- **Session keep-alive** — navigate product pages during idle periods to keep behavioral score warm
+- **Stealth script** (`_STEALTH_SCRIPT` in `session_manager.py`) — patches `navigator.webdriver`, `navigator.plugins`, `navigator.mimeTypes`, `navigator.languages`, `window.chrome`
+
+### Known Code Gaps (Akamai)
+- `_abck` and `ak_bmsc` never explicitly checked in warm loop — only `_px3` is checked. Failed Akamai challenge appears as "no _px3" with no diagnosis.
+- `bm_sz` never logged or validated — if absent after first page load, sensor.js falls back to detectable default seed `8888888`
+- After proxy rotation in stock monitor workers, cookies come from browser session but `_abck` is IP-bound — workers using different IPs than browser that generated cookies will fail silently.
+
+### Risky Code Patterns
+- CSS class selectors anywhere in walmart/ — Walmart hashes class names on every deploy; they break constantly. Use `data-automation-id`, `data-testid`, `aria-label`, `:has-text()` only. (**FIXED 2026-04-08**)
+- Any fixed `time.sleep()` values — replace with randomized human-range delays (200–1200ms). (**FIXED 2026-04-08**)
+- No `/blocked` or login-wall guards inside checkout step loop — PerimeterX can challenge between steps. (**FIXED 2026-04-08**)
+- Reusing `_abck` after proxy rotation — must re-warm session with new proxy
+- `GRAPHQL_HASH` left stale after Walmart frontend deploy — monitor for 400 responses on stock check requests
+- Raw HTTP GraphQL calls without routing through browser `fetch()` — TLS fingerprint is wrong, all required cookies must be manually maintained
+
+### 456 Block Recovery
+1. Swap to a new US proxy
+2. Re-warm Akamai session from homepage (don't jump directly to product page)
+3. Re-establish `_px3` clearance (navigate checkout-adjacent pages)
+4. Retry after full warm sequence
 
 ---
 
@@ -274,18 +347,18 @@ Minimum required cookies for a valid checkout session:
 | `_px3` | Cart + checkout pages | PerimeterX clearance; ~60s TTL on high-security pages |
 | `_pxvid` | PerimeterX tracking | Persistent visitor ID |
 | `auth` / `CID` | Account pages | Walmart account session token |
-| `ACID` | Store selection/inventory | Locks session to a specific store/location |
+| `ACID` | Store selection/inventory | Locks session to specific store/location |
 | `locDataV3` | Store/pricing localization | |
 | `locGuestData` | Guest location | |
 
-The `ACID`, `locDataV3`, and `locGuestData` cookies control which store's inventory and pricing you see. These must be set correctly or items may appear OOS/wrong price.
+The `ACID`, `locDataV3`, and `locGuestData` cookies control which store's inventory and pricing you see. Must be set correctly or items may appear OOS/wrong price.
 
 ### Session Expiry
 
 - `_px3` clearance cookie: ~60 seconds TTL on high-security pages (cart, checkout). **Must re-warm session if idle > 50 seconds before checkout attempt.**
 - Walmart account session (`auth` cookie): typically 30 days for "stay signed in" sessions
-- `_abck`: session-scoped but Akamai validates the behavioral score continuously; a session that goes idle may need to rebuild its behavioral profile
-- Idle session threshold: if the browser has been idle > 30 minutes, re-validate by navigating to the homepage before attempting a purchase
+- `_abck`: session-scoped but Akamai validates behavioral score continuously; session that goes idle may need to rebuild behavioral profile
+- Idle session threshold: if browser has been idle > 30 minutes, re-validate by navigating to homepage before attempting purchase
 
 ### Login Flow
 
@@ -297,7 +370,7 @@ The `ACID`, `locDataV3`, and `locGuestData` cookies control which store's invent
 5. Confirm redirect to /account or /
 ```
 
-Two-factor authentication (SMS/email OTP) may be required on first login from a new device/profile. With a persistent Chrome profile, this is only triggered once.
+Two-factor authentication (SMS/email OTP) may be required on first login from new device/profile. With persistent Chrome profile, triggered only once.
 
 ### Account vs. Guest for Automation
 
@@ -309,60 +382,60 @@ Two-factor authentication (SMS/email OTP) may be required on first login from a 
 
 ### Payment Info Storage
 
-- Walmart stores card details server-side; the browser never sees the full PAN after saving
+- Walmart stores card details server-side; browser never sees full PAN after saving
 - CVV is **never** stored — always required fresh at checkout
 - "Walmart Pay" is in-store only (QR code scan); not applicable to web checkout
-- Express payment buttons (Apple Pay / Google Pay) are available in the payment step but require a different interaction flow — their "confirm" dialog is browser-native, not a Walmart DOM element
+- Express payment buttons (Apple Pay / Google Pay) available in payment step but require different interaction flow
 
 ---
 
-## Quirks
+## Quirks & Known Issues
 
 ### React SPA Behavior
 
-- Walmart's entire checkout flow is a client-side React SPA. Page transitions do not trigger full navigation events — `page.url` may not update when sub-steps change.
+- Walmart's entire checkout flow is a client-side React SPA. Page transitions don't trigger full navigation events — `page.url` may not update when sub-steps change.
 - Always poll for DOM elements rather than waiting for URL changes within `/checkout`
-- DOM mutation can be slow after clicking a checkout button — allow 1.5–2 seconds before querying for the next step's elements
-- GraphQL is used extensively for stock checks and checkout state. Walmart uses a persisted query hash (`data-hash` parameter) in GraphQL requests. This hash changes with each frontend deploy and must be updated periodically (see `GRAPHQL_HASH` in `config.py`).
+- DOM mutation can be slow after clicking checkout button — allow 1.5–2 seconds before querying for next step's elements
+- GraphQL used extensively for stock checks and checkout state. Walmart uses persisted query hash (`data-hash` parameter) in GraphQL requests. This hash changes with each frontend deploy and must be updated periodically (see `GRAPHQL_HASH` in `config.py`).
 
 ### Dynamic CSS Classes
 
 - Walmart's build pipeline uses CSS Modules with hashed class names (e.g., `.f7-dn4`). These change on every frontend deploy.
 - **Never target elements by class name alone.** Use `data-automation-id`, `data-testid`, `data-dca-name`, `aria-label`, `name`, `type`, or `:has-text()` selectors exclusively.
-- `data-automation-id` attributes are the most stable — they are explicitly maintained by Walmart's QA team and rarely change without a deliberate DOM refactor.
+- `data-automation-id` attributes are the most stable — explicitly maintained by Walmart's QA team and rarely change without deliberate DOM refactor.
 
 ### A/B Testing
 
-- Walmart runs heavy A/B testing on the checkout flow. At any time, ~10–20% of sessions may see a different:
+- Walmart runs heavy A/B testing on checkout flow. At any time, ~10–20% of sessions may see a different:
   - ATC button text ("Add to cart" vs. "Add to Cart" vs. "Shop now")
   - Checkout page layout (single-page vs. multi-step)
   - CVV input position
-- Always implement selector arrays with 3+ fallbacks. The `purchase_executor.py` pattern of iterating a list of selectors until one matches is the correct approach.
+- Always implement selector arrays with 3+ fallbacks. The `purchase_executor.py` pattern of iterating a list of selectors until one matches is correct.
 
 ### The `/blocked` Challenge Page
 
 - URL: `https://www.walmart.com/blocked` (or redirect to it)
 - This is Walmart's PerimeterX "hold the button" challenge page
-- Appears when the `_px3` cookie is missing, expired, or the bot score exceeds a threshold
-- Solving requires: a mouse-down event held for a minimum ~6 seconds on a specific button, followed by a mouse-up (0.5–2s is insufficient — PerimeterX behavioral analysis rejects short holds)
+- Appears when `_px3` cookie is missing, expired, or bot score exceeds threshold
+- Solving requires: mouse-down event held for minimum ~6 seconds on specific button, followed by mouse-up (0.5–2s insufficient — PerimeterX behavioral analysis rejects short holds)
 - CDP `dispatchMouseEvent` with realistic timing and coordinates can solve this, but HUMAN Security's behavioral analysis checks for inhuman patterns (instant response, perfect coordinates, exact duration)
-- After solving, the browser is redirected to the originally requested URL with a new `_px3` cookie
+- After solving, browser redirected to originally requested URL with new `_px3` cookie
 
 ### The Virtual Queue
 
 - Appears on high-demand product drops (limited-release electronics, etc.)
-- Walmart uses a virtual queue that holds users before allowing them to add to cart
-- Detected by: presence of an iframe or full-page component with text like "You're in line", "virtual queue", or a Walmart queue service domain
-- The queue typically clears in seconds to minutes; the page auto-navigates when the user's position is reached
-- **FBT (Frequently Bought Together) ATC bypass**: Adding the target item via the "Frequently Bought Together" module sometimes bypasses the virtual queue because the FBT module loads independently of the queue check. This is implemented in `purchase_executor.py` as `_try_fbt_add_to_cart()`.
+- Walmart uses virtual queue that holds users before allowing add to cart
+- Detected by: presence of iframe or full-page component with text like "You're in line", "virtual queue", or Walmart queue service domain
+- Queue typically clears in seconds to minutes; page auto-navigates when user's position reached
+- **FBT (Frequently Bought Together) ATC bypass**: Adding target item via FBT module sometimes bypasses virtual queue because FBT module loads independently of queue check. Implemented in `purchase_executor.py` as `_try_fbt_add_to_cart()`.
 
 ### Rate Limiting and IP Blocking
 
-- Walmart rate-limits at the IP level. Aggressive scraping (> ~20–30 requests/minute from one IP) triggers a soft block (429 or 403).
-- Checkout-specific pages have a stricter rate limit. Multiple rapid checkout attempts from the same IP will trigger the PerimeterX challenge.
-- After a 456 block (session-level block, not IP block), rotating to a new proxy is insufficient on its own — the account session must also be re-warmed.
-- Proxy cooldown of 5 minutes after any 403/429 is a reasonable minimum. The `config.py` `PROXY_COOLDOWN_SECONDS = 300` value reflects this.
-- Error rate threshold: bench a proxy if error rate exceeds 10% over the last 100 requests.
+- Walmart rate-limits at IP level. Aggressive scraping (> ~20–30 requests/minute from one IP) triggers soft block (429 or 403).
+- Checkout-specific pages have stricter rate limit. Multiple rapid checkout attempts from same IP trigger PerimeterX challenge.
+- After 456 block (session-level block, not IP block), rotating to new proxy insufficient on its own — account session must also be re-warmed.
+- Proxy cooldown of 5 minutes after any 403/429 is reasonable minimum. `config.py` `PROXY_COOLDOWN_SECONDS = 300` reflects this.
+- Error rate threshold: bench proxy if error rate exceeds 10% over last 100 requests.
 
 ### Store Pickup vs. Ship-to-Home Differences
 
@@ -377,23 +450,23 @@ Two-factor authentication (SMS/email OTP) may be required on first login from a 
 
 ### OOS / Substitution Prompts During Checkout
 
-- If an item goes OOS between ATC and Place Order, Walmart shows a modal or inline error at the cart or review step
-- The item is either removed from cart or marked unavailable with a "Remove" prompt
+- If item goes OOS between ATC and Place Order, Walmart shows modal or inline error at cart or review step
+- Item either removed from cart or marked unavailable with "Remove" prompt
 - For grocery orders: "Allow substitution" toggle per item; automation should dismiss or pre-set these
 - Detection: check for `[data-automation-id="item-unavailable"]`, `[data-testid="oos-item"]`, or text containing "no longer available" or "out of stock" during cart verification
 
 ### SKU / Item ID
 
 - Walmart item IDs (PIDs) are numeric strings, e.g., `15042474261`
-- They appear in the product page URL: `walmart.com/ip/<slug>/<item_id>`
-- Offer IDs (OIDs) identify a specific seller's listing for an item; different from PID. OIDs are needed for "cart spamming" and forced queue bypass techniques.
+- Appear in product page URL: `walmart.com/ip/<slug>/<item_id>`
+- Offer IDs (OIDs) identify specific seller's listing for item; different from PID. OIDs needed for "cart spamming" and forced queue bypass techniques.
 - For standard automation: PID is sufficient for ATC.
 
 ### Authorization Charges
 
-- When adding a new payment method to an account, Walmart sends a small authorization charge (~$1) to verify the card
-- Rapid addition of the same card across multiple accounts triggers bank-level fraud detection
-- Reuse the same saved payment method across purchases rather than re-entering card details
+- When adding new payment method to account, Walmart sends small authorization charge (~$1) to verify card
+- Rapid addition of same card across multiple accounts triggers bank-level fraud detection
+- Reuse same saved payment method across purchases rather than re-entering card details
 
 ### GraphQL API (for stock monitoring)
 
@@ -401,21 +474,56 @@ Two-factor authentication (SMS/email OTP) may be required on first login from a 
 - Endpoints: `https://www.walmart.com/orchestra/home/graphql/<operation_name>/<hash>`
 - Primary hash (`ItemByIdBtf`): defined in `config.py` as `GRAPHQL_HASH`; may change on frontend deploy
 - ATF hash (`ItemByIdAtf`): auto-discovered at runtime by intercepting browser network traffic
-- If the GraphQL hash returns 400/404, it must be manually re-extracted by inspecting a product page network request
+- If GraphQL hash returns 400/404, must be manually re-extracted by inspecting product page network request
+
+### GraphQL Stock Check Details
+
+**Endpoint pattern:**
+```
+POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash}/ip/{item_id}
+```
+
+**Two operations:**
+| Operation | Use | Hash Source |
+|-----------|-----|------------|
+| `ItemByIdBtf` | Primary stock check (full product data) | Auto-discovered at runtime via CDP in `session_manager.py`; `GRAPHQL_HASH` in `walmart/config.py` is static fallback only |
+| `ItemByIdAtf` | Fallback / preorder | Auto-discovered at runtime via CDP in `session_manager.py` |
+
+**Hash change cadence:** Every Walmart frontend deploy (~2–6 weeks normally, can be daily during heavy dev cycles). No pattern — must re-extract if static fallback needed.
+
+**How to detect a stale hash:**
+- `400 Bad Request` on `/orchestra/pdp/graphql/ItemByIdBtf/` = hash changed — static fallback in `config.py` is stale; will self-correct once session browser loads any product page
+- `403` on same path = Akamai/PerimeterX session invalid (different problem)
+- Stock monitor silently returns no results across all known-in-stock items = silent schema drift
+
+**Hash re-discovery (manual fallback):** Open DevTools → Network → filter `ItemByIdBtf` on any Walmart product page → grab the 64-char hex segment → update `GRAPHQL_HASH` in `walmart/config.py`.
+
+**More durable alternative:** Use `__NEXT_DATA__` scrape from product page HTML instead of raw GraphQL. No hash dependency; returns identical availability fields. Codebase already uses this approach — prefer it over raw GraphQL calls.
+
+---
+
+## Open Gaps
+
+1. **GRAPHQL_HASH staleness** — no auto-detection of stale hash (triggers silent 400 errors on stock checks when Walmart deploys). Add monitoring for 400 response rate + auto-update mechanism.
+2. **`/blocked?g=a` checkbox variant** — only press-and-hold variant handled. Add detection for checkbox variant (`/blocked?g=a` URL param).
+3. **`_px3` cookie refresh before checkout** — no explicit refresh trigger. Add `_px3` age check (> 50s) before entering checkout with re-warm on stale.
+4. **Akamai cookie diagnostics** — `_abck` and `ak_bmsc` never explicitly checked in warm loop. Add validation checks for debugging failed Akamai challenges.
+5. **Circuit breaker** — no automatic pause after repeated failures. Risk of accelerated blocks during periods of degraded behavioral score.
+6. **End-to-end testing** — untested full flow from product page → confirmation on live environment.
 
 ---
 
 ## Recommended Implementation Notes
 
-### For zendriver Automation
+### For Patchright Automation
 
 **Browser Configuration**
 - Use real Chrome (not bundled Chromium): `BROWSER_CHANNEL = "chrome"`
 - Run non-headless: `HEADLESS = False` — headless Chrome has measurably different fingerprints
-- Use a persistent profile directory: `user_data_dir=<path>` — maintains cookies, localStorage, and behavioral history across runs
-- Set a realistic window size: `--window-size=1920,1080`
+- Use persistent profile directory: `user_data_dir=<path>` — maintains cookies, localStorage, behavioral history
+- Set realistic window size: `--window-size=1920,1080`
 
-**Stealth Injection (inject via `cdp.page.add_script_to_evaluate_on_new_document`)**
+**Stealth Injection**
 - Patch `navigator.webdriver` to `undefined` (not `false`)
 - Populate `navigator.plugins` with 3 realistic plugin objects
 - Populate `navigator.mimeTypes`
@@ -423,9 +531,9 @@ Two-factor authentication (SMS/email OTP) may be required on first login from a 
 - Ensure `window.chrome` exists with `runtime`, `loadTimes`, `csi`, `app`
 
 **Session Warming (before drop)**
-- Warm the Akamai behavioral profile 10–15 minutes before a drop by browsing product pages
+- Warm Akamai behavioral profile 10–15 minutes before drop by browsing product pages
 - Ensure `_px3` cookie is fresh (< 50 seconds old) when entering checkout
-- Use `SESSION_VALIDATE_INTERVAL = 600` to periodically keep the session alive during idle periods
+- Use `SESSION_VALIDATE_INTERVAL = 600` to periodically keep session alive during idle
 - Force re-login after 30 minutes idle (`SESSION_MAX_IDLE = 1800`)
 
 **Selector Strategy**
@@ -444,22 +552,22 @@ Two-factor authentication (SMS/email OTP) may be required on first login from a 
 **Proxy Requirements**
 - Residential US proxies only (no datacenter, no non-US)
 - Sticky proxy per checkout session — do not rotate mid-checkout
-- Rotate after any 403/429 with a 5-minute cooldown
+- Rotate after any 403/429 with 5-minute cooldown
 - Bench proxies with > 10% error rate over last 100 requests
 - Avoid Mexico, Canada proxies — known to trigger 456 blocks
 
 **Handling `/blocked`**
 - Detect by URL containing "/blocked" after any navigation
-- Attempt CDP-level mouse-down-hold-mouse-up on the challenge button
-- If CDP solve fails, the session is likely too hot — rest the proxy and account, re-warm from homepage before retrying
+- Attempt CDP-level mouse-down-hold-mouse-up on challenge button
+- If CDP solve fails, session is likely too hot — rest proxy and account, re-warm from homepage before retrying
 
-**Handling the Virtual Queue**
+**Handling Virtual Queue**
 - Monitor for queue iframe/overlay before attempting ATC
-- Try FBT (Frequently Bought Together) ATC path first as it sometimes bypasses queue
+- Try FBT ATC path first as it sometimes bypasses queue
 - If in queue, wait for pass-through signal and re-navigate to product URL afterward
 
 **Key Configuration Values (from `config.py`)**
-- `PX3_MAX_AGE_SECONDS = 50` — re-warm session if `_px3` is older than this
+- `PX3_MAX_AGE_SECONDS = 50` — re-warm session if `_px3` older than this
 - `QUEUE_POLL_INTERVAL = 5` seconds
 - `QUEUE_TIMEOUT = 1800` seconds (30 min max queue wait)
 - `CIRCUIT_BREAKER_FAILURES = 3` — pause after 3 consecutive failures
@@ -469,13 +577,5 @@ Two-factor authentication (SMS/email OTP) may be required on first login from a 
 
 **GraphQL Hash Maintenance**
 - The `ItemByIdBtf` hash changes on each Walmart frontend deploy (roughly every 2–6 weeks)
-- Monitor for 400/404 on stock check requests; update `GRAPHQL_HASH` in `config.py` by inspecting a live product page's network traffic
+- Monitor for 400/404 on stock check requests; update `GRAPHQL_HASH` in `config.py` by inspecting live product page's network traffic
 - The `ItemByIdAtf` hash is auto-discovered by intercepting real browser network events — no manual update needed
-
-**Confidence Notes**
-- Selector patterns confirmed via live codebase (`purchase_executor.py`) and public scraping references
-- Anti-bot vendor stack (Akamai + PerimeterX/HUMAN + Cloudflare) confirmed by multiple independent sources
-- `_px3` 60-second TTL is from operational observation in `config.py` comments
-- Akamai v3 sensor data encryption details sourced from public security research (medium.com/@glizzykingdreko)
-- Zendriver bypass success rates from published benchmark (Dima Kynal, Medium)
-- Specific PerimeterX behavioral triggers are inferred from operational behavior and public bot-operator documentation (Refract bot guide); exact thresholds are proprietary

@@ -19,8 +19,10 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from .config import get_config, save_config, get_enabled_products
 from .purchase_manager import WalmartPurchaseManager
+from .logging_manager import get_walmart_logger, log_activity
 
 logger = logging.getLogger(__name__)
+walmart_logger = get_walmart_logger()
 
 # ---------------------------------------------------------------------------
 # Blueprint definition
