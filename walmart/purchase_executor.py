@@ -253,13 +253,47 @@ class WalmartPurchaseExecutor:
     # ------------------------------------------------------------------
 
     async def _navigate(self, url: str):
-        self._status_cb(f"[PURCHASE] Navigating to {url}")
+        # Activate the tab first — if it's backgrounded, Chrome throttles JS
+        # and React hydration slows to a crawl. This is critical for Tab 2
+        # (the checkout tab) which must remain the foreground visible tab.
         try:
-            await self._page.get(url)
+            await self._page.activate()
         except Exception as e:
-            logger.warning("[PURCHASE] Navigate encountered error: %s", e)
+            logger.debug("[PURCHASE] Tab activate failed: %s", e)
 
-        await asyncio.sleep(random.uniform(1.2, 2.0))
+        # Extract the item ID from the target URL so we can compare against
+        # the tab's current location. Walmart uses /ip/{id} and /ip/x/{id}
+        # interchangeably (the x is a placeholder slug).
+        target_item_id = None
+        try:
+            m = re.search(r'/ip/(?:x/)?(\d+)', url)
+            if m:
+                target_item_id = m.group(1)
+        except Exception:
+            pass
+
+        current_url = ""
+        try:
+            current_url = self._page.url or ""
+        except Exception:
+            pass
+
+        already_on_page = False
+        if target_item_id and f"/ip/" in current_url and target_item_id in current_url:
+            # Tab 2 is already on this product page (pre-warmed or previous purchase).
+            # Skip the navigation entirely — React is already hydrated and the ATC
+            # button should be immediately clickable. This is the fast path.
+            already_on_page = True
+            self._status_cb(f"[PURCHASE] Already on product page — skipping navigation")
+            logger.info("[PURCHASE] Tab already on %s — skipping navigation", target_item_id)
+        else:
+            self._status_cb(f"[PURCHASE] Navigating to {url}")
+            try:
+                await self._page.get(url)
+            except Exception as e:
+                logger.warning("[PURCHASE] Navigate encountered error: %s", e)
+            await asyncio.sleep(random.uniform(1.2, 2.0))
+
         # Solve /blocked challenge if redirected
         blocked = await self._handle_blocked()
         if blocked:
@@ -270,13 +304,14 @@ class WalmartPurchaseExecutor:
             except Exception as e:
                 logger.warning("[PURCHASE] Re-navigate encountered error: %s", e)
             await asyncio.sleep(random.uniform(1.8, 2.8))
+            already_on_page = False  # we just reloaded — need to re-hydrate
 
-        # Wait for React hydration before returning — ensures ATC button is in DOM
-        # and interactive before _add_to_cart() runs its 10-attempt JS loop.
-        # Tab 2 is pre-warmed on a product page, so navigation to a different product
-        # should complete quickly (2-4s) since React/CSS/JS are already loaded.
+        # Wait for React hydration. If we skipped navigation (Tab 2 was already
+        # on the page), the button should be immediately available — use a
+        # short timeout. Otherwise, give cold navigation up to 8s.
+        ready_timeout = 2000 if already_on_page else 8000
         try:
-            await self._wait_for_page_ready(timeout=8000)
+            await self._wait_for_page_ready(timeout=ready_timeout)
         except Exception as e:
             logger.error("[PURCHASE] Page ready check failed: %s", e)
             # Still proceed — button might be visible even if check failed
@@ -288,9 +323,10 @@ class WalmartPurchaseExecutor:
         # First, try to scroll the button into view in case it's off-screen
         try:
             await self._page.evaluate("""
-                const atcBtn = document.querySelector('button[data-automation-id="add-to-cart-btn"]') ||
-                               document.querySelector('button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]') ||
-                               document.querySelector('button[data-dca-name="ItemBuyBoxAddToCartButton"]');
+                const atcBtn = document.querySelector('button[data-automation-id="atc"]') ||
+                               document.querySelector('button[data-automation-id="add-to-cart-btn"]') ||
+                               document.querySelector('button[data-dca-event="addToCart"]') ||
+                               document.querySelector('button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]');
                 if (atcBtn) {
                     atcBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }
@@ -1033,9 +1069,10 @@ class WalmartPurchaseExecutor:
         """
         self._status_cb("[PURCHASE] Trying Frequently Bought Together ATC bypass...")
         fbt_css_selectors = [
+            f'[data-item-id="{item_id}"] button[data-automation-id="atc"]',
             f'[data-item-id="{item_id}"] button[data-automation-id="add-to-cart-btn"]',
+            '[data-testid="frequently-bought-together"] button[data-automation-id="atc"]',
             '[data-testid="frequently-bought-together"] button[data-automation-id="add-to-cart-btn"]',
-            # NOTE: .frequently-bought-together removed — Walmart hashes class names on every deploy
         ]
         fbt_xpath_selectors = [
             f'//*[@data-item-id="{item_id}"]//button[contains(., "Add to cart")]',

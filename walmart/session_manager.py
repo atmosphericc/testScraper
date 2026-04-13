@@ -215,10 +215,14 @@ class WalmartSessionManager:
         Called by the manager after warm_session() so Tab 2 inherits clean cookies
         and is far less likely to hit the /blocked challenge.
 
+        Tab 2 becomes and stays the foreground/visible tab — this prevents Chrome
+        from throttling its JavaScript execution (background tabs get heavily
+        throttled, which slows React hydration and makes ATC clicks flaky).
+
         Args:
-            warmup_url: Product page URL to pre-load on Tab 2. If provided, Tab 2 stays on
-                       that product page to keep React/CSS/JS warm. Saves 8-13s cold start
-                       on next navigation. Default: homepage (backward compatible).
+            warmup_url: Product page URL to pre-load on Tab 2. Tab 2 stays on
+                       that product page to keep React/CSS/JS warm. Saves 8-13s
+                       cold start on the next navigation.
         """
         if not self._browser:
             return
@@ -233,9 +237,15 @@ class WalmartSessionManager:
         await asyncio.sleep(2.0)
         await self._handle_blocked_page_on(self._checkout_page)
 
-        # Return focus to the harvester tab
-        await self._page.activate()
-        self._status_cb("[SESSION] Checkout tab ready — pre-loaded on product page")
+        # Bring Tab 2 to the foreground and keep it there. This is the tab the
+        # user sees and the tab that will handle the purchase, so it must not
+        # be backgrounded (Chrome throttles JS in background tabs).
+        try:
+            await self._checkout_page.activate()
+        except Exception as e:
+            logger.debug("[SESSION] Tab 2 activate failed: %s", e)
+
+        self._status_cb("[SESSION] Checkout tab ready — pre-loaded on product page (foreground)")
         logger.debug("[SESSION] Checkout tab opened on: %s", warmup_url)
 
     async def stop(self):
@@ -523,11 +533,9 @@ class WalmartSessionManager:
         ]
 
         async def _do_warmup():
-            # Ensure Tab 1 has focus before navigating
-            try:
-                await self._page.activate()
-            except Exception:
-                pass
+            # Do NOT call self._page.activate() here — CDP page.navigate() works
+            # in background tabs and we must keep Tab 2 (checkout) as the
+            # foreground tab so Chrome doesn't throttle its JavaScript execution.
 
             for url in REWARM_PAGES:
                 if not self._browser:
@@ -556,13 +564,18 @@ class WalmartSessionManager:
 
                 await asyncio.sleep(INTER_PRODUCT_DELAY)
 
-            # Park Tab 1 on the homepage when done — return focus to Tab 2
+            # Park Tab 1 on the homepage when done, but do NOT re-activate Tab 2
+            # here — Tab 2 should already be the foreground tab (we never stole
+            # focus from it). If something did steal focus, re-activate explicitly.
             try:
                 from zendriver import cdp as _cdp3
                 await self._page.send(_cdp3.page.navigate("https://www.walmart.com"))
                 await asyncio.sleep(2.0)
                 if self._checkout_page:
-                    await self._checkout_page.activate()
+                    try:
+                        await self._checkout_page.activate()
+                    except Exception:
+                        pass
             except Exception:
                 pass
 

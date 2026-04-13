@@ -413,6 +413,17 @@ class WalmartPurchaseManager:
 
             if checkout_proxy:
                 self._proxy_manager.release_checkout_proxy(checkout_proxy)
+
+            # Navigate Tab 2 back to the product page so it stays warm for
+            # the next purchase attempt. After _clear_cart the tab is on /cart.
+            try:
+                page = self._session.get_checkout_page()
+                if page:
+                    await page.get(item_url)
+                    logger.debug("[MANAGER] Tab 2 re-warmed on %s", item_url)
+            except Exception as e:
+                logger.debug("[MANAGER] Tab 2 re-warm failed: %s", e)
+
             # Reset state to MONITORING after a delay so we can try again on next restock
             await asyncio.sleep(5)
             with self._lock:
