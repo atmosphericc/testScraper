@@ -237,6 +237,19 @@ class WalmartSessionManager:
         await asyncio.sleep(2.0)
         await self._handle_blocked_page_on(self._checkout_page)
 
+        # Wire CDP network handlers on Tab 2 so GraphQL hashes are
+        # auto-discovered when Tab 2 navigates to product pages during purchase.
+        # This eliminates the need for Tab 1 to visit PDPs (sensitive routes).
+        try:
+            await self._checkout_page.send(cdp.network.enable())
+            self._checkout_page.add_handler(
+                cdp.network.RequestWillBeSent,
+                self._on_network_request,
+            )
+            logger.debug("[SESSION] CDP network handlers wired on Tab 2")
+        except Exception as e:
+            logger.warning("[SESSION] Failed to wire network handlers on Tab 2: %s", e)
+
         # Bring Tab 2 to the foreground and keep it there. This is the tab the
         # user sees and the tab that will handle the purchase, so it must not
         # be backgrounded (Chrome throttles JS in background tabs).
@@ -587,7 +600,7 @@ class WalmartSessionManager:
             # Cookie keep-alive loop — curl_cffi workers handle stock checking.
             # Re-warm _px3 every 20s via low-risk pages. Workers use these
             # cookies + direct IP (no proxy) to hit PDP pages at 3/sec/product.
-            COOKIE_REFRESH_INTERVAL = 20.0
+            COOKIE_REFRESH_INTERVAL = 45.0
 
             while True:
                 if not self._page:
@@ -595,30 +608,14 @@ class WalmartSessionManager:
                     continue
 
                 # Check if stock monitor signaled GraphQL hash refresh needed (HTTP 400 detected)
+                # Tab 2 now has CDP network handlers — the hash will be auto-discovered
+                # on Tab 2's next product page navigation (during purchase). We do NOT
+                # navigate Tab 1 to a PDP here — PDPs are PerimeterX sensitive routes
+                # that trigger /blocked challenges and pollute Tab 1's behavioral profile.
                 if self._graphql_refresh_needed:
-                    logger.warning("[HARVESTER] GraphQL hash refresh triggered — visiting product page to re-discover hash")
-                    self._status_cb("[HARVESTER] Refreshing GraphQL hash due to 400 errors...")
-                    try:
-                        # Navigate to a product page — CDP will auto-discover current GRAPHQL_HASH
-                        from zendriver import cdp as _cdp_ghq
-                        await self._page.send(_cdp_ghq.page.navigate("https://www.walmart.com/ip/15042474261"))
-                        await asyncio.sleep(3.0)
-                        # Handle /blocked if it appears
-                        if "/blocked" in (self._page.url or ""):
-                            await self._handle_blocked_page()
-                        logger.info("[HARVESTER] GraphQL hash refresh complete — hash auto-discovered via CDP")
-                        self._status_cb("[HARVESTER] GraphQL hash refreshed")
-                    except Exception as e:
-                        logger.warning("[HARVESTER] Failed to refresh GraphQL hash: %s", e)
-                    finally:
-                        self._graphql_refresh_needed = False
-                    # Return to homepage and continue
-                    try:
-                        from zendriver import cdp as _cdp_ret
-                        await self._page.send(_cdp_ret.page.navigate("https://www.walmart.com"))
-                        await asyncio.sleep(2.0)
-                    except Exception:
-                        pass
+                    logger.warning("[HARVESTER] GraphQL hash refresh needed — Tab 2 will re-discover on next purchase navigation")
+                    self._status_cb("[HARVESTER] GraphQL hash stale — will refresh on next product page visit")
+                    self._graphql_refresh_needed = False
 
                 if self.needs_rewarm():
                     logger.debug("[HARVESTER] _px3 stale — re-warming")

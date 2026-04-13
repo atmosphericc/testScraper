@@ -182,24 +182,18 @@ class WalmartPurchaseExecutor:
                         await self._clear_cart()
                         return PurchaseResult(False, error="FBT path: No order ID after place order")
 
-            # Step 3: Pre-check cart — skip ATC if item is already there
-            already_in_cart = await self._is_item_already_in_cart(item_url)
-            if already_in_cart:
-                self._status_cb("[PURCHASE] Item already in cart — skipping ATC")
-                logger.debug("[PURCHASE] Skipping ATC: item already in cart for %s", item_id)
-                # Run _verify_cart to navigate to cart page — _is_item_already_in_cart
-                # returns us to the product page, so we need to get back to the cart
-                # before _go_to_checkout can find the checkout button.
-                cart_ok = await self._verify_cart(item_id)
-            else:
-                await self._clear_cart_if_needed()
-                await self._navigate(item_url)  # cart clear navigates away — return to product page
-                atc_ok = await self._add_to_cart(item_id)
-                if not atc_ok:
-                    return PurchaseResult(False, error="Add to cart failed")
+            # Step 3: Click Add to Cart directly — no pre-checking the cart.
+            # Previous flow navigated to /cart twice before ATC (to check if
+            # item was already there, and to clear stale items). This added
+            # 4 extra navigations and 10-16s of latency before ATC even ran.
+            # Now we just click ATC immediately. If the cart has stale items,
+            # _verify_cart will catch it after the click.
+            atc_ok = await self._add_to_cart(item_id)
+            if not atc_ok:
+                return PurchaseResult(False, error="Add to cart failed")
 
-                # Step 4: Verify cart
-                cart_ok = await self._verify_cart(item_id)
+            # Step 4: Verify cart
+            cart_ok = await self._verify_cart(item_id)
             if not cart_ok:
                 return PurchaseResult(False, error="Item not found in cart after ATC")
 
@@ -320,130 +314,102 @@ class WalmartPurchaseExecutor:
     async def _add_to_cart(self, item_id: str) -> bool:
         self._status_cb("[PURCHASE] Looking for Add to Cart button...")
 
-        # First, try to scroll the button into view in case it's off-screen
-        try:
-            await self._page.evaluate("""
-                const atcBtn = document.querySelector('button[data-automation-id="atc"]') ||
-                               document.querySelector('button[data-automation-id="add-to-cart-btn"]') ||
-                               document.querySelector('button[data-dca-event="addToCart"]') ||
-                               document.querySelector('button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]');
-                if (atcBtn) {
-                    atcBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        # --- Locate the ATC button and get its bounding rect ---
+        # We do NOT click here — we locate the button, scroll it into view,
+        # then use CDP mouse events to click it (indistinguishable from a
+        # real user click, unlike element.click() which PerimeterX detects).
+        _FIND_ATC_JS = """
+            (() => {
+                const selectors = [
+                    ['button[data-automation-id="atc"]', 'data-automation-id="atc"'],
+                    ['button[data-automation-id="add-to-cart-btn"]', 'data-automation-id="add-to-cart-btn"'],
+                    ['button[data-dca-event="addToCart"]', 'data-dca-event="addToCart"'],
+                    ['button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]', 'data-tl-id'],
+                    ['button[data-dca-name="ItemBuyBoxAddToCartButton"]', 'data-dca-name'],
+                ];
+                for (const [sel, via] of selectors) {
+                    const btn = document.querySelector(sel);
+                    if (btn && !btn.disabled) {
+                        btn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        const rect = btn.getBoundingClientRect();
+                        return { found: true, foundVia: via, x: rect.x, y: rect.y,
+                                 w: rect.width, h: rect.height, disabled: false,
+                                 text: btn.textContent.slice(0, 50) };
+                    }
+                    if (btn && btn.disabled) {
+                        return { found: true, foundVia: via, disabled: true,
+                                 text: btn.textContent.slice(0, 50) };
+                    }
                 }
-            """)
-            await asyncio.sleep(0.5)
-        except Exception:
-            pass
+                // Text-content fallback
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const atcBtn = buttons.find(b => {
+                    const t = b.textContent.toLowerCase().trim();
+                    return (t.includes('add to cart') || t.includes('pre-order') ||
+                            t.includes('preorder')) && !b.disabled;
+                });
+                if (atcBtn) {
+                    atcBtn.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    const rect = atcBtn.getBoundingClientRect();
+                    return { found: true, foundVia: 'text-content', x: rect.x, y: rect.y,
+                             w: rect.width, h: rect.height, disabled: false,
+                             text: atcBtn.textContent.slice(0, 50) };
+                }
+                return { found: false, buttonCount: buttons.length,
+                         buttonTexts: buttons.slice(0, 5).map(b => b.textContent.slice(0, 30)) };
+            })()
+        """
 
-        # Try JavaScript click up to 10 times over 5 seconds
-        # This gives the page time to hydrate while aggressively trying to click
         last_result = None
         for attempt in range(10):
             try:
-                result = await self._page.evaluate(f"""
-                    (() => {{
-                        // Find ATC button — try multiple selectors in priority order
-                        let atcBtn = document.querySelector('button[data-automation-id="atc"]');
-                        let foundVia = 'data-automation-id="atc"';
-
-                        if (!atcBtn) {{
-                            atcBtn = document.querySelector('button[data-automation-id="add-to-cart-btn"]');
-                            foundVia = 'data-automation-id="add-to-cart-btn"';
-                        }}
-                        if (!atcBtn) {{
-                            atcBtn = document.querySelector('button[data-dca-event="addToCart"]');
-                            foundVia = 'data-dca-event="addToCart"';
-                        }}
-                        if (!atcBtn) {{
-                            atcBtn = document.querySelector('button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]');
-                            foundVia = 'data-tl-id';
-                        }}
-                        if (!atcBtn) {{
-                            atcBtn = document.querySelector('button[data-dca-name="ItemBuyBoxAddToCartButton"]');
-                            foundVia = 'data-dca-name';
-                        }}
-                        if (!atcBtn) {{
-                            // Fallback: find by text content - look for any variation
-                            const buttons = Array.from(document.querySelectorAll('button'));
-                            atcBtn = buttons.find(b => {{
-                                const text = b.textContent.toLowerCase().trim();
-                                return text.includes('add to cart') || text === 'add to cart' ||
-                                       text.includes('add to Cart') || text === 'add to Cart' ||
-                                       text.includes('pre-order') || text === 'pre-order' ||
-                                       text.includes('preorder') || text === 'preorder';
-                            }});
-                            foundVia = 'text-content';
-                        }}
-
-                        if (!atcBtn) {{
-                            const allButtons = Array.from(document.querySelectorAll('button'));
-                            // Include button IDs and data attributes in debug info
-                            const buttonInfo = allButtons.slice(0, 5).map(b => ({{
-                                text: b.textContent.slice(0, 30),
-                                id: b.id,
-                                dataAutoId: b.getAttribute('data-automation-id'),
-                                disabled: b.disabled
-                            }}));
-                            return {{
-                                success: false,
-                                reason: 'not_found',
-                                buttonCount: allButtons.length,
-                                buttonTexts: allButtons.slice(0, 3).map(b => b.textContent.slice(0, 40)),
-                                buttonDebugInfo: buttonInfo
-                            }};
-                        }}
-
-                        if (atcBtn.disabled) {{
-                            return {{
-                                success: false,
-                                reason: 'disabled',
-                                foundVia: foundVia,
-                                buttonText: atcBtn.textContent.slice(0, 50)
-                            }};
-                        }}
-
-                        atcBtn.click();
-                        return {{
-                            success: true,
-                            foundVia: foundVia,
-                            buttonText: atcBtn.textContent.slice(0, 50),
-                            attempt: {attempt}
-                        }};
-                    }})()
-                """)
-
+                result = await self._page.evaluate(_FIND_ATC_JS)
                 last_result = result
 
-                if result.get('success'):
-                    self._status_cb(f"[PURCHASE] Clicked Add to Cart (attempt {attempt + 1})")
-                    logger.info("[PURCHASE] ATC clicked via JS on attempt %d via %s", attempt + 1, result.get('foundVia'))
-                    await asyncio.sleep(0.5)
-                    break
+                if result.get('found') and not result.get('disabled'):
+                    # Button located — click it via CDP mouse events
+                    x = result['x'] + result['w'] / 2 + random.uniform(-5, 5)
+                    y = result['y'] + result['h'] / 2 + random.uniform(-3, 3)
+                    clicked = await self._cdp_mouse_click(x, y)
+                    if clicked:
+                        self._status_cb(f"[PURCHASE] Clicked Add to Cart (attempt {attempt + 1})")
+                        logger.info("[PURCHASE] ATC clicked via CDP mouse on attempt %d via %s at (%.0f, %.0f)",
+                                    attempt + 1, result.get('foundVia'), x, y)
+                        await asyncio.sleep(0.5)
+                        break
+                    else:
+                        # CDP mouse failed — fall back to JS click
+                        logger.warning("[PURCHASE] CDP mouse click failed — falling back to JS click")
+                        await self._page.evaluate("""
+                            (document.querySelector('button[data-automation-id="atc"]') ||
+                             document.querySelector('button[data-dca-event="addToCart"]') ||
+                             document.querySelector('button[data-automation-id="add-to-cart-btn"]'))?.click()
+                        """)
+                        self._status_cb(f"[PURCHASE] Clicked Add to Cart via JS fallback (attempt {attempt + 1})")
+                        logger.info("[PURCHASE] ATC clicked via JS fallback on attempt %d", attempt + 1)
+                        await asyncio.sleep(0.5)
+                        break
 
-                # Button not found or disabled yet, log reason and retry
-                reason = result.get('reason', 'unknown')
-                if reason == 'not_found':
-                    buttonCount = result.get('buttonCount', 0)
-                    buttonTexts = result.get('buttonTexts', [])
-                    logger.debug("[PURCHASE] Attempt %d: button not found, %d buttons on page: %s",
-                                attempt + 1, buttonCount, buttonTexts)
-                elif reason == 'disabled':
-                    logger.debug("[PURCHASE] Attempt %d: button found but disabled: '%s'", attempt + 1, result.get('buttonText'))
+                # Button not found or disabled — log and retry
+                if not result.get('found'):
+                    logger.debug("[PURCHASE] Attempt %d: button not found, %d buttons on page",
+                                attempt + 1, result.get('buttonCount', 0))
+                elif result.get('disabled'):
+                    logger.debug("[PURCHASE] Attempt %d: button disabled: '%s'", attempt + 1, result.get('text'))
                 await asyncio.sleep(0.5)
 
             except Exception as e:
-                logger.debug("[PURCHASE] Attempt %d: exception during evaluation: %s", attempt + 1, str(e))
+                logger.debug("[PURCHASE] Attempt %d: exception: %s", attempt + 1, str(e))
                 await asyncio.sleep(0.5)
 
         else:
             # All 10 attempts failed
-            await self._screenshot(f"no_atc_js_{item_id}")
-            # Save detailed info about what we found (or didn't find)
-            if last_result and last_result.get('reason') == 'not_found':
-                logger.error("[PURCHASE] ATC button not found after 10 attempts: %d buttons on page, texts: %s",
+            await self._screenshot(f"no_atc_{item_id}")
+            if last_result and not last_result.get('found'):
+                logger.error("[PURCHASE] ATC button not found after 10 attempts: %d buttons, texts: %s",
                             last_result.get('buttonCount'), last_result.get('buttonTexts'))
             else:
-                logger.error("[PURCHASE] ATC button not found after 10 attempts — last result: %s", last_result)
+                logger.error("[PURCHASE] ATC button not clickable after 10 attempts: %s", last_result)
             self._status_cb("[PURCHASE] ATC button not found — unable to add to cart")
             return False
 
@@ -859,18 +825,43 @@ class WalmartPurchaseExecutor:
         try:
             cvv_input = await self._find_element(CVV_SELECTORS, timeout=4000)
             if cvv_input:
-                await cvv_input.set_value(card_cvv)
+                # Click the input to focus it, then type character-by-character.
+                # PerimeterX monitors keystroke timing on payment fields —
+                # set_value() is a single atomic write with no key events,
+                # which is trivially detectable as automation.
+                try:
+                    await cvv_input.click()
+                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                except Exception:
+                    pass
+                # Clear existing value if any
+                await cvv_input.apply("(e) => { e.value = ''; e.focus(); }")
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+                # Type each digit with human-like inter-key delays
+                from zendriver.cdp import input_ as cdp_input
+                for char in card_cvv:
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyDown", text=char, key=char,
+                    ))
+                    await asyncio.sleep(random.uniform(0.01, 0.03))
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyUp", key=char,
+                    ))
+                    await asyncio.sleep(random.uniform(0.08, 0.15))
                 self._status_cb("[PURCHASE] CVV entered")
-                await self._human_delay(300, 600)
+                await self._human_delay(200, 400)
                 # Verify CVV was accepted by reading it back
                 try:
                     filled_value = await cvv_input.apply("(e) => e.value")
                     if filled_value != card_cvv:
                         logger.warning(
-                            "[PURCHASE] CVV verification failed — filled '%s' but read back '%s'",
+                            "[PURCHASE] CVV verification failed — typed '%s' but read back '%s'",
                             card_cvv,
                             filled_value,
                         )
+                        # Fall back to set_value if char-by-char typing didn't work
+                        await cvv_input.set_value(card_cvv)
+                        logger.info("[PURCHASE] CVV set via fallback set_value")
                     else:
                         logger.debug("[PURCHASE] CVV verified successfully")
                 except Exception as e:
@@ -1164,6 +1155,39 @@ class WalmartPurchaseExecutor:
         """Add a small randomized delay to simulate human interaction timing."""
         delay = random.randint(min_ms, max_ms) / 1000.0
         await asyncio.sleep(delay)
+
+    async def _cdp_mouse_click(self, x: float, y: float) -> bool:
+        """Click at viewport coordinates using CDP Input.dispatchMouseEvent.
+
+        Produces a mouseMoved → mousePressed → mouseReleased sequence that is
+        indistinguishable from a real pointer click. PerimeterX behavioral
+        analysis can detect element.click() (no coordinates, no pointer trail)
+        but cannot distinguish a CDP-dispatched mouse event from a real one.
+        """
+        try:
+            from zendriver.cdp import input_ as cdp_input
+            # Move the mouse to the target — real users don't teleport
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseMoved", x=x, y=y, pointer_type="mouse"
+            ))
+            await asyncio.sleep(random.uniform(0.02, 0.08))
+            # Press
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y,
+                button=cdp_input.MouseButton.LEFT, buttons=1,
+                click_count=1, pointer_type="mouse"
+            ))
+            await asyncio.sleep(random.uniform(0.04, 0.12))
+            # Release
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y,
+                button=cdp_input.MouseButton.LEFT, buttons=0,
+                click_count=1, pointer_type="mouse"
+            ))
+            return True
+        except Exception as e:
+            logger.warning("[PURCHASE] CDP mouse click failed: %s", e)
+            return False
 
     async def _wait_for_page_ready(self, timeout: int = 5000):
         """Wait for Walmart product page React to hydrate and render ATC button.
