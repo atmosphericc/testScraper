@@ -404,6 +404,15 @@ class WalmartPurchaseManager:
             logger.exception("[MANAGER] Purchase error for %s", item_id)
 
         finally:
+            # Re-warm Tab 1 before resuming stock monitor — the purchase flow
+            # navigates Tab 2 through cart/checkout which can contaminate the
+            # shared PerimeterX session, causing Tab 1's fetch() stock checks
+            # to hit /blocked on resume.
+            try:
+                await self._session.rewarm_tab1()
+            except Exception as e:
+                logger.warning("[MANAGER] Tab 1 re-warm failed: %s", e)
+
             # Resume stock monitor regardless of purchase outcome
             if self._monitor.is_paused:
                 self._monitor.resume()

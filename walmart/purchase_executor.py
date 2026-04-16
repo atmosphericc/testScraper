@@ -58,6 +58,10 @@ ATC_SELECTORS = [
 CHECKOUT_SELECTORS = [
     'button[data-automation-id="checkout-btn"]',
     'a[data-automation-id="checkout-btn"]',
+    'button[data-automation-id="continue-to-checkout"]',
+    'a[data-automation-id="continue-to-checkout"]',
+    'button:has-text("Continue to checkout")',
+    'a:has-text("Continue to checkout")',
     'button:has-text("Checkout")',
     'a:has-text("Checkout")',
 ]
@@ -146,61 +150,17 @@ class WalmartPurchaseExecutor:
                 # After pass-through, re-navigate to ensure we're on the product page
                 await self._navigate(item_url)
 
-            # Step 2b: Try FBT queue bypass first (known to bypass Walmart's virtual queue)
-            fbt_ok = await self._try_fbt_add_to_cart(item_id)
-            if fbt_ok:
-                # FBT ATC succeeded — skip normal ATC, go straight to verify cart
-                cart_ok = await self._verify_cart(item_id)
-                if not cart_ok:
-                    # FBT click happened but cart empty — fall through to normal ATC
-                    self._status_cb("[PURCHASE] FBT ATC did not add to cart — trying normal ATC")
-                else:
-                    # FBT worked — skip to checkout
-                    self._status_cb("[PURCHASE] FBT ATC confirmed in cart — proceeding to checkout")
-                    # Jump to step 5 (checkout) — skip normal ATC
-                    checkout_ok = await self._go_to_checkout()
-                    if not checkout_ok:
-                        return PurchaseResult(False, error="FBT path: Could not reach checkout")
-                    await self._confirm_shipping()
-                    await self._enter_cvv_if_needed()
-                    checkout_mode = os.environ.get("CHECKOUT_MODE", "TEST")
-                    final_purchase = os.environ.get("FINAL_PURCHASE", "NO")
-                    if checkout_mode != "PRODUCTION":
-                        await self._screenshot(f"test_mode_stop_fbt_{item_id}")
-                        self._status_cb("[PURCHASE] TEST MODE — stopping before Place Order, clearing cart")
-                        await self._clear_cart()
-                        return PurchaseResult(True, order_id="TEST_MODE")
-                    if final_purchase != "YES":
-                        await self._screenshot(f"pre_place_order_fbt_{item_id}")
-                        return PurchaseResult(True, order_id="DRY_RUN")
-                    order_id = await self._place_order(item_id)
-                    if order_id:
-                        self._status_cb(f"[PURCHASE] ORDER PLACED via FBT! ID: {order_id}")
-                        await self._clear_cart()
-                        return PurchaseResult(True, order_id=order_id)
-                    else:
-                        await self._clear_cart()
-                        return PurchaseResult(False, error="FBT path: No order ID after place order")
-
-            # Step 3: Click Add to Cart directly — no pre-checking the cart.
-            # Previous flow navigated to /cart twice before ATC (to check if
-            # item was already there, and to clear stale items). This added
-            # 4 extra navigations and 10-16s of latency before ATC even ran.
-            # Now we just click ATC immediately. If the cart has stale items,
-            # _verify_cart will catch it after the click.
+            # Step 3: Click Add to Cart directly on the product page.
             atc_ok = await self._add_to_cart(item_id)
             if not atc_ok:
                 return PurchaseResult(False, error="Add to cart failed")
 
-            # Step 4: Verify cart
-            cart_ok = await self._verify_cart(item_id)
-            if not cart_ok:
-                return PurchaseResult(False, error="Item not found in cart after ATC")
-
-            # Step 5: Proceed to checkout
-            checkout_ok = await self._go_to_checkout()
+            # Step 4: Navigate to /cart, verify item present, click checkout — single visit.
+            # Direct navigation to /checkout triggers Walmart's anti-bot ("technical issues").
+            # Must click the checkout button from /cart like a real user.
+            checkout_ok = await self._cart_and_checkout(item_id)
             if not checkout_ok:
-                return PurchaseResult(False, error="Could not reach checkout page")
+                return PurchaseResult(False, error="Cart verification or checkout navigation failed")
 
             # Step 6: Confirm shipping (pre-saved address — just continue)
             await self._confirm_shipping()
@@ -208,9 +168,8 @@ class WalmartPurchaseExecutor:
             # Step 7: Enter CVV if required
             await self._enter_cvv_if_needed()
 
-            # TEST MODE — stop here (re-read env vars at purchase time so test/live toggle works)
-            checkout_mode = os.environ.get("CHECKOUT_MODE", "TEST")
-            final_purchase = os.environ.get("FINAL_PURCHASE", "NO")
+            # TEST MODE — stop here (re-read env var at purchase time so toggle works from dashboard)
+            checkout_mode = os.environ.get("CHECKOUT_MODE", "PRODUCTION")
 
             if checkout_mode != "PRODUCTION":
                 await self._screenshot(f"test_mode_stop_{item_id}")
@@ -220,10 +179,6 @@ class WalmartPurchaseExecutor:
                 return PurchaseResult(True, order_id="TEST_MODE")
 
             # Step 8: Place order
-            if final_purchase != "YES":
-                await self._screenshot(f"pre_place_order_{item_id}")
-                self._status_cb("[PURCHASE] FINAL_PURCHASE not set — stopping before Place Order")
-                return PurchaseResult(True, order_id="DRY_RUN")
 
             order_id = await self._place_order(item_id)
             if order_id:
@@ -286,7 +241,7 @@ class WalmartPurchaseExecutor:
                 await self._page.get(url)
             except Exception as e:
                 logger.warning("[PURCHASE] Navigate encountered error: %s", e)
-            await asyncio.sleep(random.uniform(1.2, 2.0))
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
         # Solve /blocked challenge if redirected
         blocked = await self._handle_blocked()
@@ -297,13 +252,13 @@ class WalmartPurchaseExecutor:
                 await self._page.get(url)
             except Exception as e:
                 logger.warning("[PURCHASE] Re-navigate encountered error: %s", e)
-            await asyncio.sleep(random.uniform(1.8, 2.8))
+            await asyncio.sleep(random.uniform(0.8, 1.5))
             already_on_page = False  # we just reloaded — need to re-hydrate
 
         # Wait for React hydration. If we skipped navigation (Tab 2 was already
         # on the page), the button should be immediately available — use a
         # short timeout. Otherwise, give cold navigation up to 8s.
-        ready_timeout = 2000 if already_on_page else 8000
+        ready_timeout = 2000 if already_on_page else 13000
         try:
             await self._wait_for_page_ready(timeout=ready_timeout)
         except Exception as e:
@@ -413,52 +368,51 @@ class WalmartPurchaseExecutor:
             self._status_cb("[PURCHASE] ATC button not found — unable to add to cart")
             return False
 
-        # Quick ATC confirmation — check for flyout/button state change.
-        # Don't burn time waiting for the flyout animation; 2s max then move on.
-        atc_confirmed = False
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                # Fast check: button text changed to "Added" or flyout appeared
-                confirmed = await self._page.evaluate("""
-                    (() => {
-                        const btn = document.querySelector('button[data-automation-id="atc"]')
-                                 || document.querySelector('button[data-dca-event="addToCart"]');
-                        if (btn) {
-                            const t = btn.textContent.toLowerCase();
-                            if (t.includes('added') || btn.disabled) return 'btn_changed';
-                        }
-                        if (document.querySelector('[data-automation-id="cart-flyout"]') ||
-                            document.querySelector('[data-automation-id="atc-flyout"]'))
-                            return 'flyout';
-                        const links = document.querySelectorAll('a, button');
-                        for (const el of links) {
-                            const t = el.textContent.toLowerCase().trim();
-                            if (t === 'view cart' || t === 'go to cart') return 'cart_link';
-                        }
-                        return null;
-                    })()
-                """)
-                if confirmed:
-                    self._status_cb(f"[PURCHASE] ATC confirmed — {confirmed}")
-                    logger.info("[PURCHASE] ATC confirmed via: %s", confirmed)
-                    atc_confirmed = True
-                    break
-            except Exception:
-                pass
-            await asyncio.sleep(0.3)
-
-        if not atc_confirmed:
-            self._status_cb("[PURCHASE] No ATC confirmation in 2s — proceeding (may have worked silently)")
+        # Quick ATC confirmation — one fast check, then move on.
+        # The checkout page will catch a failed ATC; don't burn time here.
+        await asyncio.sleep(0.3)
+        try:
+            confirmed = await self._page.evaluate("""
+                (() => {
+                    const btn = document.querySelector('button[data-automation-id="atc"]')
+                             || document.querySelector('button[data-dca-event="addToCart"]');
+                    if (btn) {
+                        const t = btn.textContent.toLowerCase();
+                        if (t.includes('added') || btn.disabled) return 'btn_changed';
+                    }
+                    if (document.querySelector('[data-automation-id="cart-flyout"]') ||
+                        document.querySelector('[data-automation-id="atc-flyout"]'))
+                        return 'flyout';
+                    return null;
+                })()
+            """)
+            if confirmed:
+                self._status_cb(f"[PURCHASE] ATC confirmed — {confirmed}")
+                logger.info("[PURCHASE] ATC confirmed via: %s", confirmed)
+            else:
+                logger.info("[PURCHASE] No immediate ATC confirmation — proceeding to checkout")
+        except Exception:
+            pass
             logger.info("[PURCHASE] No ATC confirmation — proceeding to cart verification")
 
         return True
 
-    async def _verify_cart(self, item_id: str) -> bool:
-        self._status_cb("[PURCHASE] Verifying cart...")
+    async def _cart_and_checkout(self, item_id: str) -> bool:
+        """Navigate to /cart, verify item is present, select Delivery, click Checkout — single visit."""
+        self._status_cb("[PURCHASE] Navigating to cart...")
 
-        # If we're already on the cart page (e.g. from clicking "View cart" in ATC flyout),
-        # skip the direct navigation which is more likely to trigger /blocked.
+        # Check _px3 cookie age and refresh if approaching expiry
+        if self._session and hasattr(self._session, 'needs_rewarm'):
+            if self._session.needs_rewarm():
+                self._status_cb("[PURCHASE] _px3 cookie approaching expiry — refreshing session...")
+                logger.info("[PURCHASE] _px3 age >%ds, refreshing before checkout", 40)
+                try:
+                    await self._session.warm_session([])
+                    logger.debug("[PURCHASE] _px3 refreshed before checkout")
+                except Exception as e:
+                    logger.warning("[PURCHASE] _px3 refresh failed: %s (continuing anyway)", e)
+
+        # Navigate to /cart (skip if ATC flyout already landed us there)
         current_url = self._page.url or ""
         if "/cart" in current_url and "/blocked" not in current_url:
             logger.info("[PURCHASE] Already on cart page (URL: %s) — skipping navigation", current_url)
@@ -476,7 +430,6 @@ class WalmartPurchaseExecutor:
             self._status_cb("[PURCHASE] Blocked on cart page — solving challenge...")
             solved = await self._handle_blocked()
             if solved:
-                # Re-navigate to cart after solving
                 self._status_cb("[PURCHASE] Challenge solved — re-navigating to cart")
                 await self._page.get(WALMART_CART_URL)
                 await asyncio.sleep(2.0)
@@ -485,35 +438,30 @@ class WalmartPurchaseExecutor:
                 await self._screenshot(f"blocked_cart_{item_id}")
                 return False
 
-        # Poll for cart items — React hydration can take 3-8s after navigation.
-        # Retry every 500ms for up to 8s before falling through to JS-state and body-text fallbacks.
-        # Selector list uses stable data-* attributes only — Walmart hashes class names on every deploy.
-        # last verified: 2026-04-10
+        # --- Verify cart has items (poll up to 4s) ---
         cart_items = []
         cart_selectors = [
-            '[data-automation-id="cart-item"]',          # primary (confirmed 2026-04-07)
-            '[data-testid="cart-item"]',                 # A/B variant
-            '[data-automation-id="cart-item-container"]',# wrapper variant seen in some cohorts
+            '[data-automation-id="cart-item"]',
+            '[data-testid="cart-item"]',
+            '[data-automation-id="cart-item-container"]',
             '[data-testid="cart-item-container"]',
-            # Proxy selectors: if a remove button or quantity input is visible, items are present.
-            # These key off stable aria/automation attributes that survive DOM restructuring.
-            'button[data-automation-id="remove-item"]',  # remove btn only exists when item present
-            'input[data-automation-id="item-qty"]',      # qty spinner only exists when item present
-            'button[aria-label*="Remove"]',              # aria-label stable across deploys
-            # NOTE: .cart-item removed — Walmart hashes class names on every deploy
+            'button[data-automation-id="remove-item"]',
+            'input[data-automation-id="item-qty"]',
+            'button[aria-label*="Remove"]',
         ]
+        cart_verified = False
         poll_deadline = time.monotonic() + 4.0
         while time.monotonic() < poll_deadline:
             try:
                 cart_items = await self._query_selector_all(cart_selectors)
                 if cart_items:
+                    self._status_cb(f"[PURCHASE] Cart verified — {len(cart_items)} item(s)")
+                    logger.info("[PURCHASE] Cart verified — %d item(s)", len(cart_items))
+                    cart_verified = True
                     break
             except Exception:
                 pass
 
-            # Also try a JS-state probe on each poll tick — reads Walmart's React store
-            # directly from window.__NEXT_DATA__ without relying on any CSS selectors.
-            # This fires every iteration so we exit as soon as either signal resolves.
             try:
                 js_count = await self._page.evaluate("""
                     (() => {
@@ -532,146 +480,210 @@ class WalmartPurchaseExecutor:
                 if isinstance(js_count, (int, float)) and js_count > 0:
                     self._status_cb(f"[PURCHASE] Cart verified via __NEXT_DATA__ — {int(js_count)} item(s)")
                     logger.info("[PURCHASE] Cart verified via __NEXT_DATA__ — %d item(s)", int(js_count))
-                    return True
+                    cart_verified = True
+                    break
             except Exception:
                 pass
 
             await asyncio.sleep(0.5)
 
-        if cart_items:
-            self._status_cb(f"[PURCHASE] Cart verified — {len(cart_items)} item(s)")
-            logger.info("[PURCHASE] Cart verified — %d item(s) — proceeding to checkout", len(cart_items))
-            return True
-
-        logger.warning("[PURCHASE] Cart selector check failed — no cart-item elements found after 8s poll — trying fallback")
-
-        # Fallback: check URL still on cart and no "empty cart" text.
-        # Screenshot first so we can see exactly what DOM Walmart rendered.
-        await self._screenshot(f"cart_verify_fallback_{item_id}")
-        current_url = self._page.url or ""
-        if "cart" not in current_url:
-            logger.warning("[PURCHASE] Cart URL check failed — current URL: %s", current_url)
-            await self._screenshot(f"empty_cart_{item_id}")
-            self._status_cb("[PURCHASE] Cart appears empty after ATC")
-            return False
-        try:
-            body = await self._page.evaluate("document.body.innerText")
-            body_lower = body.lower() if body else ""
-            if "your cart is empty" in body_lower:
-                logger.warning("[PURCHASE] Cart EMPTY (body text confirmed) — URL: %s", current_url)
-                await self._screenshot(f"empty_cart_{item_id}")
-                self._status_cb("[PURCHASE] Cart is confirmed empty after ATC — FAILED")
-                return False
-            if body:
-                # Log a body snippet to help diagnose what Walmart is actually showing
-                snippet = body[:400].replace("\n", " ")
-                logger.warning(
-                    "[PURCHASE] Cart fallback: selectors didn't match but body exists. URL=%s snippet=%r",
-                    current_url,
-                    snippet,
-                )
-                # Check for positive cart signals in body text as a secondary confidence boost
-                cart_signals = ["checkout", "place order", "subtotal", "qty", "quantity", "item"]
-                has_cart_signal = any(sig in body_lower for sig in cart_signals)
-                if has_cart_signal:
-                    self._status_cb("[PURCHASE] Cart verification: body signals present — proceeding to checkout")
-                    logger.info("[PURCHASE] Cart body signals found (%s) — proceeding to checkout",
-                                next(sig for sig in cart_signals if sig in body_lower))
-                else:
-                    self._status_cb("[PURCHASE] Cart verification inconclusive (no selectors, no signals, body present)")
-                    logger.info("[PURCHASE] Cart body has no cart signals — proceeding to checkout anyway (selector mismatch)")
-                # Better to proceed to checkout and hit a real failure than loop on unmatched selectors
-                return True
-        except Exception as e:
-            logger.warning("[PURCHASE] Cart body check exception: %s", e)
-
-        await self._screenshot(f"empty_cart_{item_id}")
-        self._status_cb("[PURCHASE] Cart appears empty after ATC")
-        return False
-
-    async def _go_to_checkout(self) -> bool:
-        # Check _px3 cookie age and refresh if approaching expiry (40s threshold, 20s safety before 60s TTL)
-        if self._session and hasattr(self._session, 'needs_rewarm'):
-            if self._session.needs_rewarm():
-                self._status_cb("[PURCHASE] _px3 cookie approaching expiry — refreshing session...")
-                logger.info("[PURCHASE] _px3 age >%ds, refreshing before checkout", 40)
-                try:
-                    await self._session.warm_session([])  # Refresh cookies without item browsing
-                    logger.debug("[PURCHASE] _px3 refreshed before checkout")
-                except Exception as e:
-                    logger.warning("[PURCHASE] _px3 refresh failed: %s (continuing anyway)", e)
-
-        self._status_cb("[PURCHASE] Clicking Checkout...")
-        btn = await self._find_element(CHECKOUT_SELECTORS, timeout=8000)
-        if not btn:
-            await self._screenshot("no_checkout_btn")
-            logger.warning("[PURCHASE] Checkout button not found")
-            return False
-
-        await btn.click()
-        logger.info("[PURCHASE] Checkout button clicked — waiting for checkout page")
-
-        # Wait for checkout URL — polling loop (zendriver has no wait_for_url).
-        # Match /checkout specifically — NOT /cart?checkout=... or similar cart-page params
-        # that contain the word "checkout" but are still on the cart page.
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
+        if not cart_verified:
+            logger.warning("[PURCHASE] Cart selector check failed after 4s poll — trying fallback")
+            await self._screenshot(f"cart_verify_fallback_{item_id}")
             current_url = self._page.url or ""
-            if "/checkout" in current_url and "/cart" not in current_url:
-                logger.info("[PURCHASE] URL reached checkout: %s", current_url)
+            if "cart" not in current_url:
+                logger.warning("[PURCHASE] Cart URL check failed — current URL: %s", current_url)
+                self._status_cb("[PURCHASE] Cart appears empty after ATC")
+                return False
+            try:
+                body = await self._page.evaluate("document.body.innerText")
+                body_lower = body.lower() if body else ""
+                if "your cart is empty" in body_lower:
+                    logger.warning("[PURCHASE] Cart EMPTY (body text confirmed) — URL: %s", current_url)
+                    await self._screenshot(f"empty_cart_{item_id}")
+                    self._status_cb("[PURCHASE] Cart is confirmed empty after ATC — FAILED")
+                    return False
+                if body:
+                    snippet = body[:400].replace("\n", " ")
+                    logger.warning("[PURCHASE] Cart fallback: selectors didn't match. URL=%s snippet=%r", current_url, snippet)
+                    cart_signals = ["checkout", "place order", "subtotal", "qty", "quantity", "item"]
+                    has_cart_signal = any(sig in body_lower for sig in cart_signals)
+                    if has_cart_signal:
+                        self._status_cb("[PURCHASE] Cart verification: body signals present — proceeding")
+                        logger.info("[PURCHASE] Cart body signals found (%s)", next(sig for sig in cart_signals if sig in body_lower))
+                    else:
+                        self._status_cb("[PURCHASE] Cart verification inconclusive — proceeding anyway")
+                        logger.info("[PURCHASE] Cart body has no cart signals — proceeding anyway (selector mismatch)")
+                else:
+                    await self._screenshot(f"empty_cart_{item_id}")
+                    self._status_cb("[PURCHASE] Cart appears empty after ATC")
+                    return False
+            except Exception as e:
+                logger.warning("[PURCHASE] Cart body check exception: %s", e)
+                await self._screenshot(f"empty_cart_{item_id}")
+                self._status_cb("[PURCHASE] Cart appears empty after ATC")
+                return False
+
+        # --- Select Delivery before clicking checkout ---
+        await self._select_delivery_on_cart()
+
+        # --- Click checkout button via CDP mouse ---
+        self._status_cb("[PURCHASE] Clicking Checkout...")
+        btn = await self._find_element(CHECKOUT_SELECTORS, timeout=5000)
+        if btn:
+            try:
+                rect = await btn.apply("""(e) => {
+                    e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    const r = e.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }""")
+                if rect and rect.get('w', 0) > 0:
+                    x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+                    y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+                    await self._cdp_mouse_click(x, y)
+                    logger.info("[PURCHASE] Checkout button clicked via CDP mouse at (%.0f, %.0f)", x, y)
+                else:
+                    await btn.click()
+                    logger.info("[PURCHASE] Checkout button clicked via element.click()")
+            except Exception:
+                await btn.click()
+                logger.info("[PURCHASE] Checkout button clicked via element.click() (fallback)")
+        else:
+            await self._screenshot("no_checkout_btn")
+            logger.warning("[PURCHASE] Checkout button not found on /cart")
+            self._status_cb("[PURCHASE] Checkout button not found")
+            return False
+
+        # --- Wait for /checkout URL ---
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            url = self._page.url or ""
+            if "/checkout" in url and "/cart" not in url:
+                logger.info("[PURCHASE] URL reached checkout: %s", url)
                 break
-            if "/blocked" in current_url:
+            if "/blocked" in url:
                 self._status_cb("[PURCHASE] Blocked on checkout navigation — solving...")
                 await self._handle_blocked()
-                break
-            await asyncio.sleep(0.3)
+                try:
+                    await self._page.get(WALMART_CHECKOUT_URL)
+                except Exception:
+                    pass
+            if "/account/login" in url or "/account/signin" in url or "sign-in" in url:
+                logger.error("[PURCHASE] Redirected to login — not authenticated: %s", url)
+                self._status_cb("[PURCHASE] Login required — set WALMART_EMAIL/WALMART_PASSWORD in .env")
+                await self._screenshot("checkout_login_redirect")
+                return False
+            await asyncio.sleep(0.2)
         else:
-            # URL did not reach /checkout within 15s — log current URL for diagnosis
             stuck_url = self._page.url or "unknown"
-            logger.warning("[PURCHASE] Checkout URL not reached in 15s — still at: %s", stuck_url)
+            logger.warning("[PURCHASE] Checkout URL not reached in 10s — still at: %s", stuck_url)
             await self._screenshot("checkout_url_timeout")
-            await asyncio.sleep(random.uniform(2.5, 4.0))
+            self._status_cb(f"[PURCHASE] Failed to reach /checkout — still at: {stuck_url}")
+            return False
 
-        # Confirm we are actually on the /checkout path before declaring success.
-        # This catches the case where the URL poll timed out or matched a false positive.
         final_url = self._page.url or ""
         if "/checkout" not in final_url or "/cart" in final_url:
-            logger.warning("[PURCHASE] _go_to_checkout: still not at /checkout — URL: %s", final_url)
+            logger.warning("[PURCHASE] Still not at /checkout — URL: %s", final_url)
             await self._screenshot("checkout_wrong_page")
             self._status_cb(f"[PURCHASE] Failed to reach /checkout — still at: {final_url}")
             return False
 
-        # Verify checkout page content loaded — look for checkout-specific content
-        checkout_loaded = False
-        try:
-            body = await self._page.evaluate("document.body.innerText")
-            body_lower = body.lower() if body else ""
-            checkout_keywords = ("payment", "shipping", "order summary")
-            if any(kw in body_lower for kw in checkout_keywords):
-                checkout_loaded = True
-        except Exception:
-            pass
-        if not checkout_loaded:
-            # Also try a checkout-specific selector as a second signal
-            for sel in (
-                '[data-automation-id="checkout-page"]',
-                '[data-page-type="checkout"]',
-                'form[id*="checkout"]',
-            ):
-                try:
-                    el = await self._page.query_selector(sel)
-                    if el:
-                        checkout_loaded = True
-                        break
-                except Exception:
-                    pass
-        if not checkout_loaded:
-            logger.warning("[PURCHASE] Checkout page did not load correctly — URL: %s", final_url)
+        # --- Wait for checkout content to load ---
+        content_deadline = time.monotonic() + 8.0
+        while time.monotonic() < content_deadline:
+            try:
+                status = await self._page.evaluate("""
+                    (() => {
+                        const body = (document.body.innerText || '').toLowerCase();
+                        if (body.includes('technical issues') || body.includes('technical difficulties'))
+                            return 'error_page';
+                        if (body.includes('sign in') && body.includes('password'))
+                            return 'sign_in';
+                        if (body.includes('payment') || body.includes('shipping') ||
+                            body.includes('delivery') || body.includes('order summary') ||
+                            body.includes('place order') || body.includes('credit') ||
+                            body.includes('fulfillment') || body.includes('checkout'))
+                            return 'loaded';
+                        if (document.querySelector('[data-automation-id="checkout-page"]') ||
+                            document.querySelector('[data-page-type="checkout"]') ||
+                            document.querySelector('form[id*="checkout"]'))
+                            return 'loaded';
+                        return null;
+                    })()
+                """)
+                if status == 'loaded':
+                    break
+                if status == 'error_page':
+                    logger.error("[PURCHASE] Checkout page shows 'technical issues'")
+                    await self._screenshot("checkout_technical_issues")
+                    self._status_cb("[PURCHASE] Checkout error — 'technical issues' (login may be required)")
+                    return False
+                if status == 'sign_in':
+                    logger.error("[PURCHASE] Checkout redirected to sign-in — session expired")
+                    await self._screenshot("checkout_sign_in_wall")
+                    self._status_cb("[PURCHASE] Checkout blocked — sign-in required")
+                    return False
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+        else:
+            logger.warning("[PURCHASE] Checkout page content not loaded in 8s — URL: %s", final_url)
             await self._screenshot("checkout_load_failed")
             return False
 
         self._status_cb(f"[PURCHASE] On checkout page — URL: {final_url}")
         return True
+
+    async def _select_delivery_on_cart(self):
+        """Select Delivery fulfillment on the /cart page before clicking checkout.
+
+        Walmart's cart page shows Pickup/Delivery tiles. Pickup is often the default.
+        We must click "Delivery" here — the checkout page inherits this choice.
+        """
+        try:
+            result = await self._page.evaluate("""
+                (() => {
+                    // Look for Delivery tile/button on cart page
+                    // The cart page uses fulfillment tiles with text "Delivery" and "Pickup"
+                    const candidates = document.querySelectorAll(
+                        'button, [role="tab"], [role="radio"], [role="option"], label, div[tabindex], a'
+                    );
+                    for (const el of candidates) {
+                        const text = (el.textContent || '').trim();
+                        // Match elements whose text is just "Delivery" or "Shipping"
+                        // (not "Make this order a free delivery" or other promo text)
+                        if (/^(Delivery|Ship(ping)?)$/i.test(text) ||
+                            (text.toLowerCase().includes('delivery') && text.length < 40 &&
+                             !text.toLowerCase().includes('free delivery'))) {
+                            const style = window.getComputedStyle(el);
+                            if (style.display === 'none' || style.visibility === 'hidden') continue;
+                            // Check if already selected
+                            const isSelected = el.getAttribute('aria-selected') === 'true' ||
+                                               el.getAttribute('aria-pressed') === 'true' ||
+                                               el.getAttribute('aria-checked') === 'true' ||
+                                               el.classList.contains('selected') ||
+                                               el.classList.contains('active');
+                            if (isSelected) return { action: 'already_selected', text: text.slice(0, 30) };
+                            el.click();
+                            return { action: 'clicked', text: text.slice(0, 30) };
+                        }
+                    }
+                    return { action: 'not_found' };
+                })()
+            """)
+            if result:
+                action = result.get('action')
+                if action == 'clicked':
+                    self._status_cb("[PURCHASE] Delivery selected on cart page")
+                    logger.info("[PURCHASE] Cart: clicked Delivery tile (text='%s')", result.get('text'))
+                    # Wait for cart to update with delivery options
+                    await asyncio.sleep(1.5)
+                elif action == 'already_selected':
+                    logger.info("[PURCHASE] Cart: Delivery already selected (text='%s')", result.get('text'))
+                else:
+                    logger.info("[PURCHASE] Cart: no Delivery tile found — may already be delivery-only")
+        except Exception as e:
+            logger.warning("[PURCHASE] _select_delivery_on_cart error: %s", e)
 
     async def _select_delivery_option(self):
         """
@@ -683,50 +695,73 @@ class WalmartPurchaseExecutor:
         Logs outcome in both the success and not-found cases so silence is never mistaken
         for success.
         """
-        # data-automation-id variants are more stable than text-based selectors.
-        # The fulfillment tile for Ship/Delivery uses automation IDs containing "SHIPPING"
-        # or "DELIVERY". Text-based selectors are kept as fallbacks for A/B variants.
-        delivery_selectors = [
-            '[data-automation-id="fulfillment-option-SHIPPING"]',
-            '[data-automation-id="fulfillment-option-DELIVERY"]',
-            '[data-automation-id*="shipping"][role="radio"]',
-            '[data-automation-id*="delivery"][role="radio"]',
-            'button:has-text("Delivery")',
-            'button:has-text("Ship")',
-            # Radio input variants (less common on current Walmart checkout SPA)
-            'label:has-text("Delivery") input[type="radio"]',
-            'label:has-text("Ship") input[type="radio"]',
-        ]
+        # Use a single JS evaluation to find and click the Delivery option.
+        # Walmart's checkout fulfillment step shows tiles/radio buttons for Delivery vs Pickup.
+        # We must select "Delivery" (not "Shipping" which is a sub-option of delivery,
+        # and not "Pickup" which is store collection).
         try:
-            delivery_el = await self._find_element(delivery_selectors, timeout=5000)
-            if delivery_el:
-                await delivery_el.click()
-                await self._human_delay(400, 800)
-                self._status_cb("[PURCHASE] Delivery fulfillment option selected")
-                logger.info("[PURCHASE] Delivery option clicked")
-                # Confirm selection was accepted — element should now be selected/active
-                try:
-                    is_selected = await delivery_el.apply(
-                        "(e) => e.getAttribute('aria-selected') === 'true' || "
-                        "e.getAttribute('aria-pressed') === 'true' || "
-                        "e.getAttribute('aria-checked') === 'true' || "
-                        "e.checked === true"
-                    )
-                    if is_selected:
-                        logger.info("[PURCHASE] Delivery option confirmed selected")
-                    else:
-                        logger.warning("[PURCHASE] Delivery option clicked but aria-selected not true — may not have registered")
-                        await self._screenshot("delivery_selection_unconfirmed")
-                except Exception as e:
-                    logger.warning("[PURCHASE] Could not verify delivery selection state: %s", e)
-            else:
-                # No fulfillment choice shown — either already on delivery, item is ship-only,
-                # or the step was already completed. Log so we know which case we're in.
-                logger.info("[PURCHASE] No fulfillment selector found in 5s — assuming delivery already active or step not shown")
-                self._status_cb("[PURCHASE] No fulfillment choice shown — continuing (delivery assumed active)")
+            result = await self._page.evaluate("""
+                (() => {
+                    // Strategy 1: data-automation-id selectors (most stable)
+                    const autoSelectors = [
+                        '[data-automation-id="fulfillment-option-DELIVERY"]',
+                        '[data-automation-id="fulfillment-option-SHIPPING"]',
+                        '[data-automation-id*="delivery"]',
+                        '[data-automation-id*="shipping"]',
+                    ];
+                    for (const sel of autoSelectors) {
+                        const els = document.querySelectorAll(sel);
+                        for (const el of els) {
+                            const text = (el.textContent || '').toLowerCase();
+                            // Skip if this is clearly a Pickup option
+                            if (text.includes('pickup') || text.includes('pick up')) continue;
+                            const isSelected = el.getAttribute('aria-selected') === 'true' ||
+                                               el.getAttribute('aria-pressed') === 'true' ||
+                                               el.getAttribute('aria-checked') === 'true' ||
+                                               el.classList.contains('selected');
+                            if (isSelected) return { action: 'already_selected', via: sel };
+                            el.click();
+                            return { action: 'clicked', via: sel };
+                        }
+                    }
+
+                    // Strategy 2: text-based — find any clickable element with "delivery" text
+                    const candidates = document.querySelectorAll('button, label, [role="radio"], [role="tab"], [role="option"], div[tabindex]');
+                    for (const el of candidates) {
+                        const text = (el.textContent || '').toLowerCase().trim();
+                        if ((text.includes('delivery') || text === 'ship' || text === 'shipping') &&
+                            !text.includes('pickup') && !text.includes('pick up')) {
+                            const style = window.getComputedStyle(el);
+                            if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                const isSelected = el.getAttribute('aria-selected') === 'true' ||
+                                                   el.getAttribute('aria-pressed') === 'true' ||
+                                                   el.getAttribute('aria-checked') === 'true';
+                                if (isSelected) return { action: 'already_selected', via: 'text:' + text.slice(0, 30) };
+                                el.click();
+                                return { action: 'clicked', via: 'text:' + text.slice(0, 30) };
+                            }
+                        }
+                    }
+
+                    return { action: 'not_found' };
+                })()
+            """)
+
+            if result:
+                action = result.get('action')
+                via = result.get('via', '?')
+                if action == 'clicked':
+                    await self._human_delay(300, 600)
+                    self._status_cb("[PURCHASE] Delivery option selected")
+                    logger.info("[PURCHASE] Delivery option clicked via: %s", via)
+                elif action == 'already_selected':
+                    logger.info("[PURCHASE] Delivery already selected via: %s", via)
+                else:
+                    logger.info("[PURCHASE] No fulfillment selector found — assuming delivery is default or step not shown")
+                    self._status_cb("[PURCHASE] No fulfillment choice shown — continuing")
         except Exception as e:
             logger.warning("[PURCHASE] _select_delivery_option raised: %s", e)
-            self._status_cb("[PURCHASE] Delivery selection failed — see logs")
+            self._status_cb("[PURCHASE] Delivery selection error — continuing")
 
     async def _confirm_shipping(self):
         """
@@ -748,8 +783,7 @@ class WalmartPurchaseExecutor:
 
         MAX_STEPS = 6
         for step_num in range(MAX_STEPS):
-            # Randomized step delay — human-range (1.0–2.5s); avoids bot-like cart-to-checkout speed
-            await asyncio.sleep(random.uniform(1.0, 2.5))
+            await asyncio.sleep(random.uniform(0.3, 0.7))
 
             # Guard: check for PerimeterX /blocked challenge mid-checkout
             current_url = self._page.url or ""
@@ -1032,64 +1066,6 @@ class WalmartPurchaseExecutor:
         except Exception as e:
             logger.warning("[PURCHASE] _clear_cart cleanup failed: %s", e)
 
-    async def _try_fbt_add_to_cart(self, item_id: str) -> bool:
-        """
-        Attempt to add item to cart via the 'Frequently Bought Together' section.
-        This is a known queue bypass — the FBT ATC endpoint uses a different
-        code path that bypasses Walmart's virtual queue validation.
-        Returns True if ATC succeeded via this method.
-        """
-        self._status_cb("[PURCHASE] Trying Frequently Bought Together ATC bypass...")
-        fbt_css_selectors = [
-            f'[data-item-id="{item_id}"] button[data-automation-id="atc"]',
-            f'[data-item-id="{item_id}"] button[data-automation-id="add-to-cart-btn"]',
-            '[data-testid="frequently-bought-together"] button[data-automation-id="atc"]',
-            '[data-testid="frequently-bought-together"] button[data-automation-id="add-to-cart-btn"]',
-        ]
-        fbt_xpath_selectors = [
-            f'//*[@data-item-id="{item_id}"]//button[contains(., "Add to cart")]',
-            '//*[@data-testid="frequently-bought-together"]//button[contains(., "Add to cart")]',
-            # NOTE: class-based XPaths removed — Walmart hashes class names on every deploy
-        ]
-
-        # Try CSS selectors first
-        for selector in fbt_css_selectors:
-            try:
-                btn = await self._page.query_selector(selector)
-                if btn:
-                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)")
-                    if is_vis:
-                        await btn.scroll_into_view()
-                        await asyncio.sleep(0.2)
-                        await btn.click()
-                        self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
-                        logger.debug("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
-                        await asyncio.sleep(2)
-                        return True
-            except Exception:
-                continue
-
-        # Try XPath selectors
-        for xpath in fbt_xpath_selectors:
-            try:
-                els = await self._page.xpath(xpath)
-                if els:
-                    btn = els[0]
-                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length)")
-                    if is_vis:
-                        await btn.scroll_into_view()
-                        await asyncio.sleep(0.2)
-                        await btn.click()
-                        self._status_cb("[PURCHASE] FBT ATC clicked — queue bypass attempted")
-                        logger.debug("[PURCHASE] FBT ATC bypass clicked for %s", item_id)
-                        await asyncio.sleep(2)
-                        return True
-            except Exception:
-                continue
-
-        logger.debug("[PURCHASE] No FBT ATC button found for %s", item_id)
-        return False
-
     async def _handle_blocked(self) -> bool:
         """
         Detect and solve Walmart's /blocked PerimeterX challenge on the checkout tab.
@@ -1170,132 +1146,67 @@ class WalmartPurchaseExecutor:
             logger.warning("[PURCHASE] CDP mouse click failed: %s", e)
             return False
 
+    # Single JS snippet that checks __NEXT_DATA__ + all ATC selectors + text fallback
+    # in one browser round-trip. Returns immediately when page is ready.
+    _PAGE_READY_JS = """
+        (() => {
+            if (!window.__NEXT_DATA__) return { ready: false, reason: 'no_next_data' };
+
+            const selectors = [
+                ['button[data-automation-id="atc"]', 'data-automation-id="atc"'],
+                ['button[data-automation-id="add-to-cart-btn"]', 'data-automation-id="add-to-cart-btn"'],
+                ['button[data-dca-event="addToCart"]', 'data-dca-event="addToCart"'],
+                ['button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]', 'data-tl-id'],
+                ['button[data-dca-name="ItemBuyBoxAddToCartButton"]', 'data-dca-name'],
+            ];
+            for (const [sel, via] of selectors) {
+                const el = document.querySelector(sel);
+                if (el) {
+                    const s = window.getComputedStyle(el);
+                    const visible = s.display !== 'none' && s.visibility !== 'hidden' && parseFloat(s.opacity) > 0;
+                    const hasSize = !!(el.offsetWidth || el.offsetHeight);
+                    if (visible) return { ready: true, via: sel, hasSize };
+                    return { ready: false, reason: 'hidden', via: sel };
+                }
+            }
+            // Text fallback — find button with "add" + "cart" text
+            for (const btn of document.querySelectorAll('button')) {
+                const t = btn.textContent.toLowerCase();
+                if (t.includes('add') && t.includes('cart')) {
+                    const s = window.getComputedStyle(btn);
+                    if (s.display !== 'none' && s.visibility !== 'hidden') {
+                        return { ready: true, via: 'text:' + btn.textContent.slice(0, 30), hasSize: !!(btn.offsetWidth || btn.offsetHeight) };
+                    }
+                }
+            }
+            return { ready: false, reason: 'no_button' };
+        })()
+    """
+
     async def _wait_for_page_ready(self, timeout: int = 5000):
         """Wait for Walmart product page React to hydrate and render ATC button.
 
-        Checks for:
-        1. window.__NEXT_DATA__ to exist (React page state initialized)
-        2. At least one ATC selector to be visible in DOM
-        3. Falls back to simple timeout if button never becomes visible
-
-        Timeout in milliseconds.
+        Uses a single JS evaluation per poll tick (one browser round-trip) instead
+        of separate calls per selector. Typical exit: 0.5-2s on warm pages.
         """
         deadline = time.monotonic() + (timeout / 1000.0)
-        last_error = None
         started = time.monotonic()
-        button_found_at = None
-        next_data_found_at = None
 
         while time.monotonic() < deadline:
             try:
-                # Check if React has initialized
-                has_next_data = await self._page.evaluate("!!window.__NEXT_DATA__")
-                if not has_next_data:
-                    await asyncio.sleep(0.2)
-                    continue
-
-                if not next_data_found_at:
-                    next_data_found_at = time.monotonic() - started
-                    logger.debug("[PURCHASE] __NEXT_DATA__ found at %.1fs", next_data_found_at)
-
-                # Check if any ATC selector is visible.
-                # CSS-attribute selectors use query_selector; :has-text() selectors
-                # are converted to XPath (patchright does not support :has-text() in
-                # query_selector).  Both paths share the same visibility check so that
-                # text-content selectors also contribute to the early-exit signal.
-                # This matters because Walmart lazy-loads the buybox component island;
-                # data-automation-id attributes are attached by React during the final
-                # hydration commit, so text content may appear before the attributes do.
-
-                # First, try all explicit selectors
-                for sel in ATC_SELECTORS:
-                    try:
-                        el = None
-                        if ':has-text(' in sel:
-                            m = re.match(r'(\w+):has-text\("([^"]+)"\)', sel)
-                            if m:
-                                tag, text = m.group(1), m.group(2)
-                                text_lower = text.lower()
-                                xpath = (
-                                    f'//{tag}[contains('
-                                    f'translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ",'
-                                    f' "abcdefghijklmnopqrstuvwxyz"), "{text_lower}")]'
-                                )
-                                els = await self._page.xpath(xpath)
-                                if els:
-                                    el = els[0]
-                        else:
-                            el = await self._page.query_selector(sel)
-
-                        if el:
-                            # Check visibility with a loose threshold:
-                            # - Must not have display:none or visibility:hidden
-                            # - Size check is secondary (button may be loading or have 0 dimensions)
-                            vis = await el.apply("""(e) => {
-                                const rect = e.getBoundingClientRect();
-                                const style = window.getComputedStyle(e);
-                                const display = style.display !== 'none';
-                                const visibility = style.visibility !== 'hidden';
-                                const opacity = parseFloat(style.opacity) > 0;
-                                const hasSize = !!(e.offsetWidth || e.offsetHeight || rect.width || rect.height);
-                                return {
-                                    found: true,
-                                    visible: display && visibility && opacity,
-                                    hasSize: hasSize,
-                                    offsetWidth: e.offsetWidth,
-                                    offsetHeight: e.offsetHeight,
-                                    rectWidth: rect.width,
-                                    rectHeight: rect.height,
-                                    display: style.display,
-                                    visibility: style.visibility,
-                                    opacity: style.opacity
-                                };
-                            }""")
-                            # Button is ready if it's not hidden by CSS even if size is 0
-                            if vis.get('visible'):
-                                elapsed = time.monotonic() - started
-                                logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via: %s (hasSize=%s)", elapsed, sel, vis.get('hasSize'))
-                                self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
-                                return
-                            elif vis.get('found') and not button_found_at:
-                                button_found_at = time.monotonic() - started
-                                logger.debug("[PURCHASE] ATC button exists at %.1fs but display=hidden or opacity=0: %s", button_found_at, vis)
-                    except Exception as e:
-                        logger.debug("[PURCHASE] Error checking visibility for %s: %s", sel, str(e))
-                        continue
-
-                # Fallback: if explicit selectors didn't work, look for any button
-                # with "add" and "cart" in text (catches variations like "Add to Cart", "Add to cart", etc)
-                try:
-                    fallback_buttons = await self._page.evaluate("""
-                        Array.from(document.querySelectorAll('button')).filter(b => {
-                            const text = b.textContent.toLowerCase();
-                            const style = window.getComputedStyle(b);
-                            return text.includes('add') && text.includes('cart') &&
-                                   style.display !== 'none' && style.visibility !== 'hidden';
-                        }).slice(0, 1).map(b => ({
-                            text: b.textContent.slice(0, 30),
-                            visible: !!(b.offsetWidth || b.offsetHeight)
-                        }));
-                    """)
-                    if fallback_buttons:
-                        btn = fallback_buttons[0]
-                        elapsed = time.monotonic() - started
-                        logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via fallback search (text='%s')", elapsed, btn.get('text'))
-                        self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
-                        return
-                except Exception as e:
-                    logger.debug("[PURCHASE] Fallback button search failed: %s", str(e))
-
-                await asyncio.sleep(0.3)
+                result = await self._page.evaluate(self._PAGE_READY_JS)
+                if result and result.get('ready'):
+                    elapsed = time.monotonic() - started
+                    logger.info("[PURCHASE] Page ready in %.1fs — ATC button found via: %s (hasSize=%s)",
+                                elapsed, result.get('via'), result.get('hasSize'))
+                    self._status_cb(f"[PURCHASE] Page ready — ATC button found ({elapsed:.1f}s)")
+                    return
             except Exception as e:
-                last_error = e
-                logger.debug("[PURCHASE] Exception in page ready check: %s", str(e))
-                await asyncio.sleep(0.3)
+                logger.debug("[PURCHASE] Page ready check error: %s", e)
+            await asyncio.sleep(0.15)
 
         elapsed = time.monotonic() - started
-        logger.warning("[PURCHASE] Page ready timeout: elapsed=%.1fs, next_data_at=%.1fs, button_at=%s",
-                      elapsed, next_data_found_at or -1, button_found_at or 'never')
+        logger.warning("[PURCHASE] Page ready timeout after %.1fs", elapsed)
         self._status_cb(f"[PURCHASE] Page ready timeout after {elapsed:.1f}s — proceeding anyway")
 
     async def _find_element(self, selectors: list[str], timeout: int = 5000):

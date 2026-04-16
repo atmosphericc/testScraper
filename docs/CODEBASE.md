@@ -38,7 +38,8 @@
 - Configurable intervals, automatic session re-establishment
 
 **src/monitoring/stock_monitor.py**
-- `StockMonitor` — Target RedSky bulk API polling every 15-25s
+- `StockMonitor` — Target RedSky bulk API polling via 50-proxy round-robin (~3 checks/sec)
+- Each proxy fires every 15s, staggered at 0.3s intervals = ~3 bulk checks per second across all TCINs
 - API: `redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1`
 - Multiple API keys for redundancy, proxy rotation, test mode scenario generators
 

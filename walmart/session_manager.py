@@ -488,6 +488,35 @@ class WalmartSessionManager:
         """True if the _px3 cookie is stale and we should warm before checkout."""
         return (time.monotonic() - self._px3_timestamp) > PX3_MAX_AGE_SECONDS
 
+    async def rewarm_tab1(self):
+        """Quick re-warm of Tab 1 after a purchase flow.
+
+        Navigates Tab 1 to walmart.com, solves any /blocked challenge,
+        and refreshes cookies so fetch()-based stock checks work again.
+        Much lighter than warm_session() — takes ~3-5s instead of 15-24s.
+        """
+        if not self._page:
+            return
+        try:
+            from zendriver import cdp
+            logger.info("[SESSION] Re-warming Tab 1 after purchase...")
+            await self._page.send(cdp.page.navigate("https://www.walmart.com"))
+            await asyncio.sleep(random.uniform(2.0, 3.0))
+            await self._handle_blocked_page()
+
+            raw = await self._page.send(cdp.network.get_all_cookies())
+            cookie_dict = {c.name: c.value for c in raw}
+            with self._live_cookies_lock:
+                self._live_cookies = cookie_dict
+                self._live_cookies_timestamp = time.monotonic()
+            if "_px3" in cookie_dict:
+                self._px3_timestamp = time.monotonic()
+                logger.info("[SESSION] Tab 1 re-warmed — _px3 present, %d cookies", len(cookie_dict))
+            else:
+                logger.warning("[SESSION] Tab 1 re-warmed but no _px3 — stock checks may still get blocked")
+        except Exception as e:
+            logger.warning("[SESSION] Tab 1 re-warm failed: %s", e)
+
     # ------------------------------------------------------------------
     # Cookie harvester — keeps live cookies fresh for proxy workers
     # ------------------------------------------------------------------

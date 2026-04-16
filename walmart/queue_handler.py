@@ -21,6 +21,7 @@ This module:
 """
 
 import asyncio
+import json
 import logging
 import time
 from typing import Optional, Callable
@@ -130,20 +131,51 @@ class QueueHandler:
 
         NOTE: URL-based detection is intentionally omitted — Walmart's queue keeps
         the user on the /ip/ product URL and uses a page overlay, not a redirect.
+
+        Uses a single JS evaluation to avoid multiple browser round-trips (was ~6s,
+        now <200ms). Falls back to multi-round-trip _find_entry_button only if the
+        fast JS check finds a text signal but no visible button.
         """
         try:
-            body_text = await self._page.evaluate("document.body.innerText")
-            body_lower = body_text.lower() if body_text else ""
+            js_signals = json.dumps(QUEUE_ACTIVE_SIGNALS)
+            js_entry_texts = json.dumps(QUEUE_ENTRY_SELECTORS)
+            js_entry_css = json.dumps(QUEUE_ENTRY_CSS_SELECTORS)
+            result = await self._page.evaluate(f"""() => {{
+                const body = document.body ? document.body.innerText.toLowerCase() : '';
+                const signals = {js_signals};
+                const matchedSignal = signals.find(s => body.includes(s));
+                if (!matchedSignal) return {{ queue: false }};
 
-            for signal in QUEUE_ACTIVE_SIGNALS:
-                if signal in body_lower:
-                    logger.info("[QUEUE] Queue detected via page text: '%s'", signal)
-                    return True
+                // Queue text found — check for entry buttons in same JS call
+                const entryTexts = {js_entry_texts};
+                const entryCss = {js_entry_css};
 
-            # Also check if the queue entry button is visible — queue is about to start
-            entry_btn = await self._find_entry_button()
-            if entry_btn:
-                logger.info("[QUEUE] Queue entry button detected on page")
+                // Check text-based buttons
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {{
+                    const t = btn.textContent || '';
+                    if (entryTexts.some(et => t.includes(et))) {{
+                        if (btn.offsetWidth || btn.offsetHeight) {{
+                            return {{ queue: true, via: 'text:' + matchedSignal, hasButton: true }};
+                        }}
+                    }}
+                }}
+
+                // Check CSS-only selectors
+                for (const sel of entryCss) {{
+                    const el = document.querySelector(sel);
+                    if (el && (el.offsetWidth || el.offsetHeight)) {{
+                        return {{ queue: true, via: 'css:' + matchedSignal, hasButton: true }};
+                    }}
+                }}
+
+                // Text signal present but no visible button
+                return {{ queue: true, via: 'text-only:' + matchedSignal, hasButton: false }};
+            }}""")
+
+            if result and result.get('queue'):
+                logger.info("[QUEUE] Queue detected via: %s (button=%s)",
+                            result.get('via'), result.get('hasButton'))
                 return True
 
         except Exception as e:
