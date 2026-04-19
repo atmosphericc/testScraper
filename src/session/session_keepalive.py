@@ -137,6 +137,9 @@ class SessionKeepAlive:
             # Check for idle timeout - but don't force refresh unless truly needed
             await self._check_idle_timeout(current_time)
 
+            # Ping main tab every cycle (~30s) to keep CDP WebSocket alive
+            await self._ping_main_tab()
+
         except Exception as e:
             self.logger.error(f"[ERROR] Service cycle error: {e}")
             self.keep_alive_failures += 1
@@ -239,6 +242,23 @@ class SessionKeepAlive:
                 if self.keep_alive_failures >= self.max_failures:
                     self.logger.error("[CRITICAL] CRITICAL: Keep-alive circuit breaker triggered - requesting session restart")
                     self._notify_status("keep_alive_circuit_open", {"consecutive_failures": self.keep_alive_failures})
+
+    async def _ping_main_tab(self):
+        """Lightweight CDP ping to keep main tab WebSocket alive.
+        Runs every keepalive cycle (~30s) to prevent the WebSocket from dying
+        during long idle periods (e.g. overnight). If the ping fails, triggers
+        a full browser restart so the next purchase attempt has a working session."""
+        try:
+            page = await self.session_manager.get_page()
+            if page:
+                await asyncio.wait_for(page.evaluate("1"), timeout=3.0)
+        except Exception as e:
+            self.logger.warning(f"[KEEPALIVE] Main tab ping failed: {e} — triggering session refresh")
+            try:
+                await self.session_manager.refresh_session()
+                self.logger.info("[KEEPALIVE] Session refreshed after main tab ping failure")
+            except Exception as refresh_err:
+                self.logger.error(f"[KEEPALIVE] Refresh after ping failure failed: {refresh_err}")
 
     async def _check_idle_timeout(self, current_time: datetime):
         """Check if session has been idle too long"""

@@ -1008,6 +1008,20 @@ class BulletproofPurchaseManager:
 
                         print(f"[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle")
 
+                    # Detect dead WebSocket and restart browser before retry loop kicks in
+                    if not result.get('success') and result.get('error', ''):
+                        err_lower = result['error'].lower()
+                        if any(sig in err_lower for sig in ('1011', 'keepalive ping timeout', 'connection closed', 'websocket')):
+                            print(f"[REAL_PURCHASE_THREAD] WebSocket dead — triggering browser restart before retry")
+                            try:
+                                refresh_future = self.session_manager.submit_async_task(
+                                    self.session_manager.refresh_session()
+                                )
+                                refresh_future.result(timeout=60)
+                                print(f"[REAL_PURCHASE_THREAD] Browser restarted successfully")
+                            except Exception as refresh_err:
+                                print(f"[REAL_PURCHASE_THREAD] Browser restart failed: {refresh_err}")
+
                 except TimeoutError:
                     print(f"[REAL_PURCHASE_THREAD] [ERROR] Purchase execution timed out after 150s — cancelling coroutine")
                     future.cancel()  # CRITICAL: cancels the asyncio Task, releasing _page_lock
