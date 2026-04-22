@@ -798,10 +798,12 @@ def broadcast_atomic_api_cycle_event(cycle_id, stock_data, purchase_changes, tim
 # Event-driven thread managers for bulletproof architecture
 class StockMonitorThread:
     """Dedicated thread for stock monitoring with timer persistence"""
-    def __init__(self, event_bus, shared_data):
+    def __init__(self, event_bus, shared_data, purchase_manager=None, event_loop=None):
         self.event_bus = event_bus
         self.shared_data = shared_data
         self.stock_monitor = StockMonitor()
+        self._purchase_manager = purchase_manager  # for lazy .session_manager access
+        self._event_loop = event_loop
         self._proxy_workers = self.stock_monitor.start_proxy_monitoring(
             self._on_proxy_stock_detected
         )
@@ -969,7 +971,21 @@ class StockMonitorThread:
                 print("[STOCK_MONITOR] Circuit breaker open - skipping API call")
                 return None
 
-            stock_data = monitor_to_use.check_stock()
+            # Try browser-native fetch first (avoids Shape TLS fingerprint detection)
+            stock_data = None
+            sm = getattr(self._purchase_manager, 'session_manager', None)
+            if sm and self._event_loop and self._event_loop.is_running():
+                try:
+                    future = asyncio.run_coroutine_threadsafe(sm.get_page(), self._event_loop)
+                    tab = future.result(timeout=3)
+                    if tab:
+                        stock_data = monitor_to_use.check_stock_via_tab(tab, self._event_loop)
+                except Exception as e:
+                    print(f"[STOCK] Browser fetch unavailable, falling back to requests: {e}")
+
+            if stock_data is None:
+                stock_data = monitor_to_use.check_stock()
+
             if stock_data:
                 # Update cache with fresh stock data
                 with self.shared_data.lock:
@@ -1431,7 +1447,11 @@ def monitoring_loop():
     # Initialize event-driven thread managers
     # Use global purchase manager and event loop to avoid duplicate browser instances
     print("[MONITORING_LOOP] Creating StockMonitorThread...")
-    stock_thread = StockMonitorThread(event_bus, shared_data)
+    stock_thread = StockMonitorThread(
+        event_bus, shared_data,
+        purchase_manager=global_purchase_manager,
+        event_loop=global_event_loop
+    )
     print("[MONITORING_LOOP] [OK] StockMonitorThread created")
 
     print("[MONITORING_LOOP] Creating PurchaseManagerThread...")
@@ -1479,7 +1499,11 @@ def monitoring_loop():
             if not stock_thread.thread.is_alive():
                 print("[MONITOR] Stock thread died, restarting...")
                 add_activity_log("Stock monitor thread crashed, restarting", "error", "system")
-                stock_thread = StockMonitorThread(event_bus, shared_data)
+                stock_thread = StockMonitorThread(
+                    event_bus, shared_data,
+                    purchase_manager=global_purchase_manager,
+                    event_loop=global_event_loop
+                )
                 stock_thread.start()
 
             if not purchase_thread.thread.is_alive():

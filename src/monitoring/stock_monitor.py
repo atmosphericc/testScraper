@@ -145,6 +145,64 @@ class StockMonitor:
             print(f"[STOCK] Exception: {e}")
             return self._get_error_result(tcins, str(e))
 
+    def check_stock_via_tab(self, tab, event_loop):
+        """
+        Check stock by running fetch() inside the real Chrome tab.
+        Inherits Chrome's TLS fingerprint and Target session cookies,
+        bypassing Shape Security's Python JA3 detection.
+        Returns same format as check_stock(), or None on any failure.
+        """
+        import asyncio
+
+        config = self.get_config()
+        enabled_products = [p for p in config.get('products', []) if p.get('enabled', True)]
+        if not enabled_products:
+            return {}
+
+        tcins = [p['tcin'] for p in enabled_products]
+        api_key = random.choice(self.api_keys)
+        tcins_str = ','.join(tcins)
+
+        js = f"""(async () => {{
+            try {{
+                const url = new URL('https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1');
+                url.searchParams.set('key', '{api_key}');
+                url.searchParams.set('tcins', '{tcins_str}');
+                url.searchParams.set('store_id', '865');
+                url.searchParams.set('pricing_store_id', '865');
+                url.searchParams.set('has_pricing_context', 'true');
+                url.searchParams.set('has_promotions', 'true');
+                url.searchParams.set('is_bot', 'false');
+                const resp = await fetch(url.toString(), {{
+                    credentials: 'include',
+                    headers: {{'accept': 'application/json', 'accept-language': 'en-US,en;q=0.9'}}
+                }});
+                if (!resp.ok) return {{error: resp.status}};
+                return await resp.json();
+            }} catch(e) {{ return {{error: String(e)}}; }}
+        }})()"""
+
+        try:
+            async def _do_fetch():
+                return await tab.evaluate(js)
+
+            future = asyncio.run_coroutine_threadsafe(_do_fetch(), event_loop)
+            start_time = time.time()
+            result = future.result(timeout=12)
+            response_time = (time.time() - start_time) * 1000
+
+            if not result or isinstance(result, dict) and 'error' in result:
+                err = result.get('error') if result else 'no result'
+                print(f"[STOCK] Browser fetch error: {err}")
+                return None
+
+            self.last_check_time = datetime.now()
+            return self._process_response(result, response_time)
+
+        except Exception as e:
+            print(f"[STOCK] Browser fetch exception: {e}")
+            return None
+
     def start_proxy_monitoring(self, on_stock_detected):
         """
         Round-robin proxy rotation: Proxy 1 at t=0, Proxy 2 at t=1, ...,
