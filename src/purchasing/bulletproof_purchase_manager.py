@@ -187,6 +187,12 @@ class BulletproofPurchaseManager:
                             cleaned_count += 1
                             print(f"[STARTUP_CLEANUP] Cleaned up stale ATTEMPTING state: {tcin} was attempting for {age_seconds:.1f}s")
 
+                    # Always reset "interrupted" states — app was killed during a purchase, safe to retry
+                    elif status == 'interrupted':
+                        states[tcin] = {'status': 'ready'}
+                        cleaned_count += 1
+                        print(f"[STARTUP_CLEANUP] Cleaned up INTERRUPTED state: {tcin} (killed mid-purchase, retrying)")
+
                 if cleaned_count > 0:
                     self._save_states_unsafe(states)
                     print(f"[STARTUP_CLEANUP] ✅ Cleaned up {cleaned_count} stale purchase state(s)")
@@ -1469,8 +1475,9 @@ class BulletproofPurchaseManager:
                             print(f"[PURCHASE] CRITICAL RULE: {tcin} IN STOCK + ready -> attempting ({result.get('duration', 'unknown')}s)")
                         else:
                             print(f"[PURCHASE_ERROR] Failed to start purchase for {tcin}: {result}")
-                    elif current_status in ['purchased', 'failed']:
-                        # This should NOT happen if reset worked properly - this is an error condition
+                    elif current_status in ['purchased', 'failed', 'interrupted']:
+                        # 'interrupted' means the app was killed mid-purchase — always safe to retry.
+                        # 'failed'/'purchased' here means the reset cycle hasn't run yet.
                         print(f"[PURCHASE_ERROR] {tcin} is IN STOCK but still has completed status '{current_status}' - reset failed!")
                         # Emergency force reset
                         states[tcin] = {'status': 'ready'}

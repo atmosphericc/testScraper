@@ -34,6 +34,21 @@ elif platform.system() == "Darwin":
     import subprocess as _subprocess
     _caffeinate_proc = _subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
 
+# Patch zendriver: Chrome 124+ dropped 'sameParty' from CDP cookie responses
+# but zendriver still expects it, causing background task crashes.
+try:
+    import zendriver.cdp.network as _zdnet
+    _orig_cookie_from_json = _zdnet.Cookie.from_json.__func__
+
+    @classmethod  # type: ignore
+    def _patched_cookie_from_json(cls, json):
+        json.setdefault("sameParty", False)
+        return _orig_cookie_from_json(cls, json)
+
+    _zdnet.Cookie.from_json = _patched_cookie_from_json
+except Exception:
+    pass
+
 # Import our bulletproof modules
 from src.monitoring import StockMonitor
 from src.purchasing import BulletproofPurchaseManager

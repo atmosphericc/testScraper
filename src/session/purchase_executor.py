@@ -519,6 +519,7 @@ class PurchaseExecutor:
             return bool(self._cached_cart_headers)
         except Exception as e:
             print(f"[WARMUP] Error: {e}")
+            self._warmup_tab = None  # dead connection — force recreation next cycle
             return False
         finally:
             self._warmup_in_progress = False

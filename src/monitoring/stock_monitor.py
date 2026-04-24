@@ -38,6 +38,7 @@ class StockMonitor:
             'sync_stress': self._test_sync_stress_test
         }
         self.test_data_override = {}
+        self._config_write_lock = threading.Lock()
 
     def _load_proxies(self):
         proxy_file = "config/proxyIps.json"
@@ -130,6 +131,7 @@ class StockMonitor:
             if response.status_code == 200:
                 data = response.json()
                 result = self._process_response(data, response_time)
+                self._backfill_config_names(result)
                 self.last_check_time = datetime.now()
                 return result
             else:
@@ -328,6 +330,48 @@ class StockMonitor:
                 continue
 
         return result
+
+    def _backfill_config_names(self, api_results):
+        """Write real product names from API back to config for placeholder entries only."""
+        import tempfile
+
+        config_paths = [
+            "config/product_config.json",
+            "dashboard/../config/product_config.json",
+            "../config/product_config.json"
+        ]
+        config_path = next((p for p in config_paths if Path(p).exists()), None)
+        if not config_path:
+            return
+
+        with self._config_write_lock:
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+
+                updated = []
+                for product in config.get('products', []):
+                    tcin = product.get('tcin')
+                    if not tcin or tcin not in api_results:
+                        continue
+                    if product.get('name') != f'Product {tcin}':
+                        continue  # not a placeholder — never overwrite
+                    real_title = api_results[tcin].get('title', '')
+                    if real_title and real_title != f'Product {tcin}':
+                        product['name'] = real_title
+                        updated.append((tcin, real_title))
+
+                if updated:
+                    dir_path = os.path.dirname(os.path.abspath(config_path))
+                    with tempfile.NamedTemporaryFile('w', dir=dir_path, delete=False,
+                                                     suffix='.tmp', encoding='utf-8') as tmp:
+                        json.dump(config, tmp, indent=2, ensure_ascii=False)
+                        tmp_path = tmp.name
+                    os.replace(tmp_path, config_path)
+                    for tcin, name in updated:
+                        print(f"[CONFIG_UPDATE] Auto-named {tcin}: \"{name}\"")
+            except Exception as e:
+                print(f"[CONFIG_UPDATE] Name backfill error (non-fatal): {e}")
 
     def _get_error_result(self, tcins, error_msg):
         """Return error result for all TCINs"""

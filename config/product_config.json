@@ -132,6 +132,21 @@
       "name": "Pok\u00e9mon Trading Card Game: Mega Evolution Perfect Order Booster Display",
       "enabled": true,
       "priority": 12
+    },
+    {
+      "tcin": "95298172",
+      "name": "Product 95298172",
+      "enabled": true
+    },
+    {
+      "tcin": "1010679865",
+      "name": "Product 1010679865",
+      "enabled": true
+    },
+    {
+      "tcin": "95267143",
+      "name": "Product 95267143",
+      "enabled": true
     }
   ]
 }
