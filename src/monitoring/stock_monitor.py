@@ -63,7 +63,7 @@ class StockMonitor:
 
         for path in config_paths:
             if Path(path).exists():
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     return json.load(f)
         return {"products": []}
 

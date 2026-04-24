@@ -1702,7 +1702,7 @@ def index_v2():
 
         # Load catalog
         try:
-            with open('config/product_catalog.json', 'r') as f:
+            with open('config/product_catalog.json', 'r', encoding='utf-8') as f:
                 catalog_config = json.load(f)
         except Exception as e:
             print(f"[V2] Catalog load error: {e}")
@@ -2361,7 +2361,7 @@ def activate_from_catalog(tcin):
             return jsonify({'success': False, 'error': 'Product not found in catalog'})
 
         # Check if already in active monitoring
-        config = json.load(open('config/product_config.json', 'r'))
+        config = json.load(open('config/product_config.json', 'r', encoding='utf-8'))
         existing_tcins = [p['tcin'] for p in config.get('products', [])]
         if tcin in existing_tcins:
             return jsonify({'success': False, 'error': 'Product already in active monitoring'})
@@ -2377,7 +2377,7 @@ def activate_from_catalog(tcin):
         config['products'].append(new_product)
 
         # Save active config
-        with open('config/product_config.json', 'w') as f:
+        with open('config/product_config.json', 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2)
 
         # Update shared_data immediately
@@ -2437,7 +2437,7 @@ def get_catalog():
         catalog_config = get_catalog_config()
 
         # Load active products to determine status
-        active_config = json.load(open('config/product_config.json', 'r'))
+        active_config = json.load(open('config/product_config.json', 'r', encoding='utf-8'))
         active_tcins = [p['tcin'] for p in active_config.get('products', [])]
 
         # Add status to catalog items

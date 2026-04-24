@@ -135,7 +135,7 @@
     },
     {
       "tcin": "95298172",
-      "name": "Product 95298172",
+      "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle",
       "enabled": true
     },
     {
@@ -146,6 +146,11 @@
     {
       "tcin": "95267143",
       "name": "Product 95267143",
+      "enabled": true
+    },
+    {
+      "tcin": "95120830",
+      "name": "Product 95120830",
       "enabled": true
     }
   ]
