@@ -2060,8 +2060,8 @@ def add_product():
             config_path = "config/product_config.json"
             temp_config_path = f"{config_path}.tmp.{os.getpid()}"
 
-            with open(temp_config_path, 'w') as f:
-                json.dump(config, f, indent=2)
+            with open(temp_config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
 
             if os.path.exists(config_path):
                 os.remove(config_path)
@@ -2152,8 +2152,8 @@ def remove_product(tcin):
                 config_path = "config/product_config.json"
                 temp_config_path = f"{config_path}.tmp.{os.getpid()}"
 
-                with open(temp_config_path, 'w') as f:
-                    json.dump(config, f, indent=2)
+                with open(temp_config_path, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
 
                 if os.path.exists(config_path):
                     os.remove(config_path)
@@ -2209,8 +2209,8 @@ def reorder_products():
 
         config_path = "config/product_config.json"
         temp_config_path = f"{config_path}.tmp.{os.getpid()}"
-        with open(temp_config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+        with open(temp_config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
         if os.path.exists(config_path):
             os.remove(config_path)
         os.rename(temp_config_path, config_path)
@@ -2229,7 +2229,7 @@ def get_catalog_config():
     catalog_file = "config/product_catalog.json"
     try:
         if os.path.exists(catalog_file):
-            with open(catalog_file, 'r') as f:
+            with open(catalog_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         else:
             return {"catalog": []}
@@ -2246,8 +2246,8 @@ def save_catalog_config(catalog_data):
 
         # Atomic write
         temp_file = f"{catalog_file}.tmp"
-        with open(temp_file, 'w') as f:
-            json.dump(catalog_data, f, indent=2)
+        with open(temp_file, 'w', encoding='utf-8') as f:
+            json.dump(catalog_data, f, indent=2, ensure_ascii=False)
 
         if os.path.exists(catalog_file):
             os.remove(catalog_file)
@@ -2498,7 +2498,7 @@ def refresh_product_names():
     try:
         catalog_config = get_catalog_config()
         product_config_path = 'config/product_config.json'
-        with open(product_config_path, 'r') as f:
+        with open(product_config_path, 'r', encoding='utf-8') as f:
             product_config = json.load(f)
 
         # Collect TCINs with placeholder names from catalog
@@ -2547,8 +2547,8 @@ def refresh_product_names():
 
         if updated:
             save_catalog_config(catalog_config)
-            with open(product_config_path, 'w') as f:
-                json.dump(product_config, f, indent=2)
+            with open(product_config_path, 'w', encoding='utf-8') as f:
+                json.dump(product_config, f, indent=2, ensure_ascii=False)
 
         return jsonify({'updated': updated, 'not_found': not_found})
 

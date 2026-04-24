@@ -18,7 +18,7 @@ async def save_login():
     if os.path.exists(STORAGE_PATH):
         print("Loading existing session cookies...")
         try:
-            with open(STORAGE_PATH, 'r') as f:
+            with open(STORAGE_PATH, 'r', encoding='utf-8') as f:
                 session_data = json.load(f)
             cookies = session_data.get('cookies', [])
             if cookies:
@@ -88,8 +88,8 @@ async def save_login():
         'saved_at': datetime.now().isoformat(),
     }
 
-    with open(STORAGE_PATH, 'w') as f:
-        json.dump(storage_state, f, indent=2)
+    with open(STORAGE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(storage_state, f, indent=2, ensure_ascii=False)
 
     print(f"Session saved to {STORAGE_PATH}")
     print(f"Saved {len(cookies_list)} cookies")

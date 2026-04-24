@@ -44,7 +44,7 @@ class StockMonitor:
         proxy_file = "config/proxyIps.json"
         try:
             if os.path.exists(proxy_file):
-                with open(proxy_file, 'r') as f:
+                with open(proxy_file, 'r', encoding='utf-8') as f:
                     proxies = json.load(f).get('proxies', [])
                     if proxies:
                         print(f"[PROXY] Loaded {len(proxies)} proxies — rate: {len(proxies)/15:.2f} checks/sec")

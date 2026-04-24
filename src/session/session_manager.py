@@ -83,7 +83,7 @@ class SessionManager:
         """Load consistent fingerprint data from session file"""
         try:
             if self.session_path.exists():
-                with open(self.session_path, 'r') as f:
+                with open(self.session_path, 'r', encoding='utf-8') as f:
                     session_data = json.load(f)
                     fingerprint = session_data.get('fingerprint', {})
                     if fingerprint:
@@ -143,7 +143,7 @@ class SessionManager:
                 self.logger.info(f"[INIT] Found session file: {self.session_path} ({file_size} bytes, modified: {file_mtime.strftime('%Y-%m-%d %H:%M:%S')})")
 
                 try:
-                    with open(self.session_path, 'r') as f:
+                    with open(self.session_path, 'r', encoding='utf-8') as f:
                         session_data = json.load(f)
                         saved_at = session_data.get('saved_at', 'unknown')
                         self.logger.info(f"[INIT] Session was saved at: {saved_at}")
@@ -207,7 +207,7 @@ class SessionManager:
             # Inject saved cookies BEFORE navigating so the first request is authenticated
             if self.session_path.exists():
                 try:
-                    with open(self.session_path, 'r') as f:
+                    with open(self.session_path, 'r', encoding='utf-8') as f:
                         session_data = json.load(f)
                     cookies = session_data.get('cookies', [])
                     if cookies:
@@ -711,7 +711,7 @@ class SessionManager:
             if not self.session_path.exists():
                 return
 
-            with open(self.session_path, 'r') as f:
+            with open(self.session_path, 'r', encoding='utf-8') as f:
                 session_data = json.load(f)
                 saved_cookies = session_data.get('cookies', [])
 
@@ -1185,8 +1185,8 @@ class SessionManager:
 
             # Write atomically
             temp_path = f"{self.session_path}.tmp"
-            with open(temp_path, 'w') as f:
-                json.dump(storage_state, f, indent=2)
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(storage_state, f, indent=2, ensure_ascii=False)
 
             os.replace(temp_path, self.session_path)
 

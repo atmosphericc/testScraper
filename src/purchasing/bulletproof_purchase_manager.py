@@ -357,7 +357,7 @@ class BulletproofPurchaseManager:
                 # Don't return False - let SessionManager initialize and auto-login
             else:
                 try:
-                    with open(session_path, 'r') as f:
+                    with open(session_path, 'r', encoding='utf-8') as f:
                         session_data = json.load(f)
 
                     # Check if cookies exist
@@ -1391,7 +1391,7 @@ class BulletproofPurchaseManager:
             try:
                 import json
                 config_path = 'config/product_config.json'
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 # Config format: {"products": [{"tcin": "...", "name": "..."}, ...]}
                 products_list = config.get('products', [])
