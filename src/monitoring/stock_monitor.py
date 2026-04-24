@@ -346,7 +346,7 @@ class StockMonitor:
 
         with self._config_write_lock:
             try:
-                with open(config_path, 'r') as f:
+                with open(config_path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
 
                 updated = []
