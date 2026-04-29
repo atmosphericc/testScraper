@@ -162,11 +162,23 @@ class WalmartPurchaseExecutor:
             if not checkout_ok:
                 return PurchaseResult(False, error="Cart verification or checkout navigation failed")
 
+            # Real user behavior: Review cart before continuing (2-5s think time)
+            self._status_cb("[PURCHASE] Reviewing cart (human think-time)...")
+            await asyncio.sleep(random.uniform(2.0, 5.0))
+
             # Step 6: Confirm shipping (pre-saved address — just continue)
             await self._confirm_shipping()
 
+            # Real user behavior: Review shipping before CVV (1-3s think time)
+            self._status_cb("[PURCHASE] Reviewing shipping address (human think-time)...")
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+
             # Step 7: Enter CVV if required
             await self._enter_cvv_if_needed()
+
+            # Real user behavior: Review order summary before placing (1-3s think time)
+            self._status_cb("[PURCHASE] Reviewing order summary (human think-time)...")
+            await asyncio.sleep(random.uniform(1.0, 3.0))
 
             # TEST MODE — stop here (re-read env var at purchase time so toggle works from dashboard)
             checkout_mode = os.environ.get("CHECKOUT_MODE", "PRODUCTION")
@@ -858,7 +870,10 @@ class WalmartPurchaseExecutor:
                     await self._page.send(cdp_input.dispatch_key_event(
                         type_="keyDown", text=char, key=char,
                     ))
-                    await asyncio.sleep(random.uniform(0.01, 0.03))
+                    # Patch 4 (2026-04-25): Hold duration raised to 50-150ms to match
+                    # human dexterity. The prior 10-30ms window is below the minimum
+                    # physically achievable keypress hold time and is a PerimeterX signal.
+                    await asyncio.sleep(random.uniform(0.05, 0.15))
                     await self._page.send(cdp_input.dispatch_key_event(
                         type_="keyUp", key=char,
                     ))

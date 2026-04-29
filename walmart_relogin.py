@@ -31,6 +31,7 @@ async def walmart_relogin():
         print("ERROR: zendriver is not installed. Run: pip install zendriver")
         return
 
+    import random
     Path(PROFILE_DIR).mkdir(parents=True, exist_ok=True)
     Path(COOKIES_FILE).parent.mkdir(parents=True, exist_ok=True)
 
@@ -47,6 +48,25 @@ async def walmart_relogin():
         browser_connection_max_tries=30,
     )
     browser = await uc.start(config)
+
+    # Pre-warmup: Build legitimacy profile before walmart.com (same as bot)
+    print("Building legitimacy profile (pre-warmup)...")
+    try:
+        await browser.get("https://www.google.com")
+        await asyncio.sleep(random.uniform(1.2, 2.0))
+        await browser.get("https://www.amazon.com")
+        await asyncio.sleep(random.uniform(1.5, 2.5))
+        await browser.get("https://www.reddit.com")
+        await asyncio.sleep(random.uniform(1.0, 1.8))
+        await browser.get("https://www.youtube.com")
+        await asyncio.sleep(random.uniform(1.5, 2.5))
+        await browser.get("https://www.ebay.com")
+        await asyncio.sleep(random.uniform(1.2, 2.0))
+        await asyncio.sleep(random.uniform(2.0, 3.0))
+    except Exception as e:
+        print(f"Pre-warmup warning (non-critical): {e}")
+
+    print("Navigating to Walmart with established legitimacy profile...")
     tab = await browser.get("https://www.walmart.com")
 
     print("Navigated to walmart.com")
