@@ -155,16 +155,24 @@ class WalmartPurchaseExecutor:
             if not atc_ok:
                 return PurchaseResult(False, error="Add to cart failed")
 
-            # Step 4: Navigate to /cart, verify item present, click checkout — single visit.
-            # Direct navigation to /checkout triggers Walmart's anti-bot ("technical issues").
-            # Must click the checkout button from /cart like a real user.
-            checkout_ok = await self._cart_and_checkout(item_id)
-            if not checkout_ok:
-                return PurchaseResult(False, error="Cart verification or checkout navigation failed")
+            # Step 4: Try direct checkout from ATC flyout (mini-cart) if available
+            # This is a valid user path and faster. Falls back to cart page if flyout has no checkout button.
+            direct_checkout_ok = await self._try_direct_checkout_from_flyout(item_id)
+            if direct_checkout_ok:
+                logger.info("[PURCHASE] Using fast path: direct checkout from flyout")
+                # Minimal think-time since user reviewed in the flyout
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+            else:
+                # Step 5 (fallback): Navigate to /cart, verify item present, click checkout — single visit.
+                # Direct navigation to /checkout triggers Walmart's anti-bot ("technical issues").
+                # Must click the checkout button from /cart like a real user.
+                checkout_ok = await self._cart_and_checkout(item_id)
+                if not checkout_ok:
+                    return PurchaseResult(False, error="Cart verification or checkout navigation failed")
 
-            # Real user behavior: Review cart before continuing (2-5s think time)
-            self._status_cb("[PURCHASE] Reviewing cart (human think-time)...")
-            await asyncio.sleep(random.uniform(2.0, 5.0))
+                # Real user behavior: Review cart before continuing (2-5s think time)
+                self._status_cb("[PURCHASE] Reviewing cart (human think-time)...")
+                await asyncio.sleep(random.uniform(2.0, 5.0))
 
             # Step 6: Confirm shipping (pre-saved address — just continue)
             await self._confirm_shipping()
@@ -414,6 +422,65 @@ class WalmartPurchaseExecutor:
             logger.info("[PURCHASE] No ATC confirmation — proceeding to cart verification")
 
         return True
+
+    async def _try_direct_checkout_from_flyout(self, item_id: str) -> bool:
+        """
+        Try to checkout directly from the ATC flyout (mini-cart popup).
+        If the flyout has a checkout button, click it and skip the /cart page entirely.
+        Returns True if checkout was reached, False to fall back to cart page.
+        """
+        try:
+            # Look for checkout button in the flyout
+            flyout_checkout_selectors = [
+                'button[data-automation-id="checkout-btn"]',  # In flyout context
+                'button[data-automation-id="atc-flyout-checkout"]',
+                'button:has-text("Proceed to checkout")',
+                'button:has-text("Proceed to Checkout")',
+                'button:has-text("Checkout")',
+                'a:has-text("Proceed to checkout")',
+                'a:has-text("Checkout")',
+                'button[aria-label*="checkout" i]',
+            ]
+
+            # Quick check: is the flyout visible?
+            flyout_visible = await self._page.evaluate("""
+                () => !!(document.querySelector('[data-automation-id="cart-flyout"]') ||
+                        document.querySelector('[data-automation-id="atc-flyout"]'))
+            """)
+
+            if not flyout_visible:
+                logger.debug("[PURCHASE] ATC flyout not visible — falling back to cart page")
+                return False
+
+            # Try to find and click checkout button in the flyout
+            checkout_btn = await self._find_element(flyout_checkout_selectors, timeout=2000)
+            if not checkout_btn:
+                logger.debug("[PURCHASE] No checkout button in flyout — falling back to cart page")
+                return False
+
+            logger.info("[PURCHASE] Found checkout button in ATC flyout — attempting direct checkout")
+            self._status_cb("[PURCHASE] Checking out directly from cart flyout...")
+            await checkout_btn.click()
+
+            # Wait for /checkout URL
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                url = self._page.url or ""
+                if "/checkout" in url and "/cart" not in url:
+                    logger.info("[PURCHASE] Direct checkout succeeded — reached: %s", url)
+                    self._status_cb("[PURCHASE] Direct checkout from flyout successful")
+                    return True
+                if "/blocked" in url:
+                    logger.warning("[PURCHASE] Blocked during direct checkout — falling back to cart")
+                    return False
+                await asyncio.sleep(0.2)
+
+            logger.warning("[PURCHASE] Direct checkout timeout — falling back to cart page")
+            return False
+
+        except Exception as e:
+            logger.debug("[PURCHASE] Direct checkout attempt failed: %s — falling back to cart", e)
+            return False
 
     async def _cart_and_checkout(self, item_id: str) -> bool:
         """Navigate to /cart, verify item is present, select Delivery, click Checkout — single visit."""
