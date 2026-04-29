@@ -22,6 +22,33 @@ recent fixes (< 30 days), and failures with "Root Fix Still Needed" notes.
 ---
 Entries added by @failure-forensics
 
+### [2026-04-29] - Blocked After Checkout: "What Day to Pick Up" Modal Not Dismissed - Walmart
+**Symptom**: Bot successfully reaches checkout, clicks Continue buttons through shipping/payment steps, but gets blocked by Akamai/PerimeterX while a "What day to pick up?" modal is still visible. Modal appears after "Deliver here" button is clicked on address step, blocking further button clicks or form interactions.
+**Root Cause**: Three compounding issues:
+1. **Modal appears mid-step**: Walmart's React checkout shows a delivery day selection modal *after* the address confirmation button is clicked, not before. The old `_handle_delivery_day_modal()` was only called at the very end of purchase flow (line 184 in main execute path), missing the modal that appears 20+ steps earlier during `_confirm_shipping()`.
+2. **Modal blocks selector discovery**: While the modal is visible and in focus, Walmart's PerimeterX rules treat DOM queries and clicks as suspicious. The modal's overlay prevents the Continue button from being found via standard selectors, triggering retries and rate-limit escalation.
+3. **Weak selector coverage**: The original modal selectors were too narrow — only looked for `data-automation-id*="delivery-day"` and text like "Today"/"Tomorrow", missing Walmart's variant button labels and radio/checkbox structures across A/B tests.
+**Fix Applied**:
+1. **Expanded `_handle_delivery_day_modal()` selectors**:
+   - Added dedicated patterns: `data-automation-id*="delivery-day"`, `data-automation-id*="delivery-window"`, `data-automation-id*="select-delivery"`
+   - Added text variants: "Today", "Tomorrow", "Next Day", "Standard"
+   - Added role-based patterns: `button[role="radio"][aria-label*="deliver"]`, `input[type="radio"]` with aria-label
+   - Added generic fallback: `[role="dialog"] button:not([aria-label*="close"])`
+   - Now returns `True`/`False` to signal if modal was actually dismissed
+2. **Integrated modal check into `_confirm_shipping()` loop**:
+   - Modal is now checked on *every* step iteration (line 832), not just at the end
+   - Prevents modal from blocking selector polling for Continue buttons
+   - Adds 500-1000ms pause after dismiss to let DOM settle
+3. **Proactive modal dismissal after delivery selection**:
+   - `_select_delivery_option()` now waits 500-1000ms, then tries `_handle_delivery_day_modal()` (line 778)
+   - Catches modals that appear immediately after clicking Delivery option
+4. **Added fallback `_dismiss_any_modal()` method**:
+   - Scans for any visible modal/dialog: `[role="dialog"]`, `[role="alertdialog"]`, class patterns
+   - Tries close buttons first, then Escape key
+   - Can be invoked if targeted selectors fail
+**Confidence**: high
+**Outcome**: Modal will be detected and dismissed *during* the checkout step loop rather than after. Expanded selectors handle Walmart's A/B variants. Modal is now a non-blocking issue that pauses briefly and resumes, instead of a hard block that escalates to PerimeterX rules.
+
 ### [2026-04-10] - ATC Button Never Found in _wait_for_page_ready — Buybox Lazy-Load + :has-text() Skipped - Walmart
 **Symptom**: `_wait_for_page_ready()` logs `next_data_at=0.3s, button_at=never` and hits the full timeout every time. ATC button is then not clicked on attempts 1 or 2 (all 10 JS-loop retries return `not_found`). Button eventually found via text-content fallback on attempt 1 of the third navigation.
 **Root Cause**: Two bugs compounding:
