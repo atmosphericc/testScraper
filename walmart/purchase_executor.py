@@ -429,6 +429,7 @@ class WalmartPurchaseExecutor:
         If the flyout has a checkout button, click it and skip the /cart page entirely.
         Returns True if checkout was reached, False to fall back to cart page.
         """
+        logger.info("[PURCHASE] Attempting fast path checkout from ATC flyout...")
         try:
             # Look for checkout button in the flyout
             flyout_checkout_selectors = [
@@ -877,6 +878,9 @@ class WalmartPurchaseExecutor:
         ]
 
         MAX_STEPS = 6
+        modal_handle_count = 0
+        MAX_MODAL_HANDLES = 3  # Prevent infinite modal loop
+
         for step_num in range(MAX_STEPS):
             await asyncio.sleep(random.uniform(0.3, 0.7))
 
@@ -900,12 +904,15 @@ class WalmartPurchaseExecutor:
                 return
 
             # Guard: Dismiss any delivery day modals that appeared mid-checkout
-            # This can happen after selecting delivery option or during page transitions
-            modal_dismissed = await self._handle_delivery_day_modal(f"{step_num}")
-            if modal_dismissed:
-                logger.info("[PURCHASE] Delivery day modal handled during step %d", step_num + 1)
-                await asyncio.sleep(random.uniform(0.5, 1.0))  # Brief pause after modal dismiss
-                # Continue to look for Continue button since modal is gone
+            # Limit to MAX_MODAL_HANDLES attempts to prevent infinite loop if modal
+            # keeps appearing or button doesn't actually close it
+            if modal_handle_count < MAX_MODAL_HANDLES:
+                modal_dismissed = await self._handle_delivery_day_modal(f"{step_num}")
+                if modal_dismissed:
+                    modal_handle_count += 1
+                    logger.info("[PURCHASE] Delivery day modal handled (%d/%d)", modal_handle_count, MAX_MODAL_HANDLES)
+                    await asyncio.sleep(random.uniform(0.5, 1.0))  # Brief pause after modal dismiss
+                    # Continue to look for Continue button since modal is gone
 
             # If Place Order button is now visible, we're on the review step — done
             place_order_visible = await self._find_element(PLACE_ORDER_SELECTORS, timeout=2000)
@@ -1145,39 +1152,61 @@ class WalmartPurchaseExecutor:
         """
         Select a delivery day if modal appears during checkout.
         Walmart may show a modal asking for delivery date/window after clicking Continue.
-        Try multiple strategies: dedicated selectors first, then search DOM for available options.
+        Waits for modal to be visible first, selects a date option, then verifies modal closes.
         """
-        day_selectors = [
-            # Dedicated delivery day modal selectors
-            'button[data-automation-id*="delivery-day"]',
-            'button[data-automation-id*="delivery-window"]',
-            'button[data-automation-id*="select-delivery"]',
-            'div[data-automation-id*="delivery"] button',
-            # Text-based fallbacks for "Today", "Tomorrow", etc.
-            'button:has-text("Today")',
-            'button:has-text("Tomorrow")',
-            'button:has-text("Next Day")',
-            'button:has-text("Standard")',
-            # Radio/checkbox options in modal
-            'button[role="radio"][aria-label*="deliver"]',
-            'button[role="radio"][aria-label*="Today"]',
-            'button[role="radio"][aria-label*="tomorrow"]',
-            'input[type="radio"][aria-label*="deliver"]',
-            'label:has(input[type="radio"]) button',
-            # Generic modal action buttons
-            '[role="dialog"] button:not([aria-label*="close"])',
-        ]
         try:
-            day_btn = await self._find_element(day_selectors, timeout=3000)
-            if day_btn:
-                await day_btn.click()
-                await asyncio.sleep(random.uniform(0.5, 1.0))
-                logger.info("[PURCHASE] Selected delivery day option")
+            # First check if modal is even visible
+            modal_visible = await self._page.evaluate("""
+                () => !!(document.querySelector('[role="dialog"]') &&
+                         document.querySelector('[role="dialog"]').offsetParent !== null)
+            """)
+
+            if not modal_visible:
+                logger.debug("[PURCHASE] No delivery modal visible — proceeding")
+                return False
+
+            logger.info("[PURCHASE] Delivery day modal detected — finding option button")
+
+            # Priority: text-based delivery day options (Today, Tomorrow, etc.)
+            day_selectors = [
+                'button:has-text("Today")',
+                'button:has-text("Tomorrow")',
+                'button:has-text("Next Day")',
+                'button:has-text("Standard")',
+                'button[role="radio"][aria-label*="Today"]',
+                'button[role="radio"][aria-label*="tomorrow"]',
+                'button[data-automation-id*="delivery-day"]',
+                'button[data-automation-id*="delivery-window"]',
+                # Fallback: any clickable in dialog that's not a close button
+                '[role="dialog"] button:not([aria-label*="close"])',
+            ]
+
+            day_btn = await self._find_element(day_selectors, timeout=2000)
+            if not day_btn:
+                logger.debug("[PURCHASE] No delivery option button found — modal may not be active")
+                return False
+
+            logger.info("[PURCHASE] Found delivery day button — clicking")
+            await day_btn.click()
+            await asyncio.sleep(random.uniform(0.3, 0.7))
+
+            # Verify modal has closed
+            modal_still_visible = await self._page.evaluate("""
+                () => !!(document.querySelector('[role="dialog"]') &&
+                         document.querySelector('[role="dialog"]').offsetParent !== null)
+            """)
+
+            if not modal_still_visible:
+                logger.info("[PURCHASE] Delivery day modal closed successfully")
                 self._status_cb("[PURCHASE] Selected delivery day")
                 return True
             else:
-                logger.debug("[PURCHASE] No delivery day modal detected — proceeding")
-                return False
+                # Modal is still visible — the button we clicked didn't close it
+                # This can happen if we clicked a button that isn't a valid selection
+                logger.warning("[PURCHASE] Clicked button but modal still visible — may have clicked wrong button")
+                self._status_cb("[PURCHASE] Selected delivery day")
+                return False  # Return False to avoid infinite loop
+
         except Exception as e:
             logger.debug("[PURCHASE] Delivery day selection failed: %s (continuing)", e)
             return False
