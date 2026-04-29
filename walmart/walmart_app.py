@@ -30,8 +30,24 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from .config import get_config, save_config, get_enabled_products
 from .purchase_manager import WalmartPurchaseManager
 
+# Setup logging with both console and file output
+log_dir = Path(__file__).parent.parent / "logs"
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / f"walmart_app_{time.strftime('%Y%m%d_%H%M%S')}.log"
+
+formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+file_handler = logging.FileHandler(log_file)
+file_handler.setFormatter(formatter)
+
 logger = logging.getLogger(__name__)
+logger.addHandler(file_handler)
+
+# Also add file handler to all other loggers
+for name in ["MANAGER", "PURCHASE", "SESSION", "MONITOR", "PROXY"]:
+    log = logging.getLogger(name)
+    log.addHandler(file_handler)
 
 # Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE)
 os.environ.setdefault("CHECKOUT_MODE", "LIVE")

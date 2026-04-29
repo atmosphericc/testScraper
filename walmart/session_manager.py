@@ -535,21 +535,18 @@ class WalmartSessionManager:
         return (time.monotonic() - self._px3_timestamp) > PX3_MAX_AGE_SECONDS
 
     async def rewarm_tab1(self):
-        """Quick re-warm of Tab 1 after a purchase flow.
+        """Snapshot current Tab 1 cookies without navigation — avoids triggering /blocked.
 
-        Navigates Tab 1 to walmart.com, solves any /blocked challenge,
-        and refreshes cookies so fetch()-based stock checks work again.
-        Much lighter than warm_session() — takes ~3-5s instead of 15-24s.
+        After a purchase, the cookies may be slightly stale from Tab 2's checkout flow.
+        Instead of navigating and risking detection, we just refresh the cookie cache
+        from Tab 1's current state. A real user wouldn't actively re-browse after
+        completing a purchase — they'd just leave the tab idle or close it.
         """
         if not self._page:
             return
         try:
             from zendriver import cdp
-            logger.info("[SESSION] Re-warming Tab 1 after purchase...")
-            await self._page.send(cdp.page.navigate("https://www.walmart.com"))
-            await asyncio.sleep(random.uniform(2.0, 3.0))
-            await self._handle_blocked_page()
-
+            logger.debug("[SESSION] Snapshotting Tab 1 cookies (no navigation)...")
             raw = await self._page.send(cdp.network.get_all_cookies())
             cookie_dict = {c.name: c.value for c in raw}
             with self._live_cookies_lock:
@@ -557,11 +554,11 @@ class WalmartSessionManager:
                 self._live_cookies_timestamp = time.monotonic()
             if "_px3" in cookie_dict:
                 self._px3_timestamp = time.monotonic()
-                logger.info("[SESSION] Tab 1 re-warmed — _px3 present, %d cookies", len(cookie_dict))
+                logger.info("[SESSION] Tab 1 cookies snapshotted — _px3 present, %d cookies", len(cookie_dict))
             else:
-                logger.warning("[SESSION] Tab 1 re-warmed but no _px3 — stock checks may still get blocked")
+                logger.warning("[SESSION] Tab 1 snapshot found no _px3 — stock checks may be at risk")
         except Exception as e:
-            logger.warning("[SESSION] Tab 1 re-warm failed: %s", e)
+            logger.warning("[SESSION] Tab 1 snapshot failed: %s (continuing anyway)", e)
 
     # ------------------------------------------------------------------
     # Cookie harvester — keeps live cookies fresh for proxy workers
@@ -988,14 +985,6 @@ class WalmartSessionManager:
                 await page.mouse_move(cx, cy, steps=4)
                 await asyncio.sleep(0.08)
 
-                # 6c: pointerDown before mousePressed
-                await page.send(cdp.input_.dispatch_mouse_event(
-                    type_="pointerDown",
-                    x=cx, y=cy,
-                    button=cdp.input_.MouseButton.LEFT,
-                    buttons=1, click_count=1,
-                ))
-
                 await page.send(cdp.input_.dispatch_mouse_event(
                     type_="mousePressed",
                     x=cx, y=cy,
@@ -1003,7 +992,7 @@ class WalmartSessionManager:
                     buttons=1, click_count=1,
                 ))
 
-                # 6b: cumulative random walk jitter
+                # 6b: aggressive hold loop — continuous micro-movements to signal human interaction
                 drift_x = 0.0
                 drift_y = 0.0
 
@@ -1012,16 +1001,16 @@ class WalmartSessionManager:
                     elapsed = time.monotonic() - hold_start
                     if elapsed >= 6.0 and "/blocked" not in (page.url or ""):
                         break
-                    # 6a: randomized hold loop sleep
-                    await asyncio.sleep(random.uniform(0.08, 0.25))
+                    # Micro-movements every 20-80ms with continuous drift
+                    await asyncio.sleep(random.uniform(0.02, 0.08))
                     elapsed = time.monotonic() - hold_start
                     if elapsed >= 6.0 and "/blocked" not in (page.url or ""):
                         break
-                    # 6b: non-uniform random walk
-                    drift_x += random.uniform(-3, 5)
-                    drift_y += random.uniform(-3, 5)
-                    drift_x = max(-20, min(20, drift_x))
-                    drift_y = max(-20, min(20, drift_y))
+                    # Cumulative drift with bias toward edges (more natural motion)
+                    drift_x += random.uniform(-5, 8)
+                    drift_y += random.uniform(-5, 8)
+                    drift_x = max(-25, min(25, drift_x))
+                    drift_y = max(-25, min(25, drift_y))
                     jx = cx + drift_x
                     jy = cy + drift_y
                     await page.send(cdp.input_.dispatch_mouse_event(
@@ -1038,26 +1027,10 @@ class WalmartSessionManager:
                     buttons=0, click_count=1,
                 ))
 
-                # 6c: pointerUp after mouseReleased
-                await page.send(cdp.input_.dispatch_mouse_event(
-                    type_="pointerUp",
-                    x=cx, y=cy,
-                    button=cdp.input_.MouseButton.LEFT,
-                    buttons=0, click_count=1,
-                ))
-
                 await asyncio.sleep(0.5)
 
             except Exception as e:
                 logger.warning("[SESSION] Mouse interaction error: %s", e)
-                try:
-                    await page.send(cdp.input_.dispatch_mouse_event(
-                        type_="mouseReleased", x=0, y=0,
-                        button=cdp.input_.MouseButton.LEFT,
-                        buttons=0, click_count=1,
-                    ))
-                except Exception:
-                    pass
                 await asyncio.sleep(0.5)
 
         # 6e: secondary success signal — check _px3 cookie in addition to URL
@@ -1071,10 +1044,11 @@ class WalmartSessionManager:
 
         cleared = url_cleared or px3_present
         if cleared:
-            logger.debug("[SESSION] /blocked challenge cleared")
+            logger.info("[SESSION] /blocked challenge cleared — url_cleared=%s, px3_present=%s", url_cleared, px3_present)
             self._status_cb("[SESSION] Challenge solved — continuing")
         else:
-            logger.error("[SESSION] Could not clear /blocked challenge after %d attempts", max_attempts)
+            current_url = page.url or "unknown"
+            logger.error("[SESSION] Challenge unsolved after %d attempts — URL: %s, _px3: %s", max_attempts, current_url, px3_present)
             self._status_cb("[SESSION] Challenge unsolved — may need manual intervention in browser")
         return cleared
 

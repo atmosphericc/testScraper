@@ -449,13 +449,17 @@ class WalmartPurchaseExecutor:
             """)
 
             if not flyout_visible:
-                logger.debug("[PURCHASE] ATC flyout not visible — falling back to cart page")
+                logger.info("[PURCHASE] ATC flyout not visible — falling back to cart page")
+                await self._screenshot(f"no_flyout_{item_id}")
                 return False
+
+            logger.info("[PURCHASE] ATC flyout detected")
 
             # Try to find and click checkout button in the flyout
             checkout_btn = await self._find_element(flyout_checkout_selectors, timeout=2000)
             if not checkout_btn:
-                logger.debug("[PURCHASE] No checkout button in flyout — falling back to cart page")
+                logger.info("[PURCHASE] No checkout button found in flyout — falling back to cart page")
+                await self._screenshot(f"no_checkout_btn_in_flyout_{item_id}")
                 return False
 
             logger.info("[PURCHASE] Found checkout button in ATC flyout — attempting direct checkout")
@@ -479,7 +483,8 @@ class WalmartPurchaseExecutor:
             return False
 
         except Exception as e:
-            logger.debug("[PURCHASE] Direct checkout attempt failed: %s — falling back to cart", e)
+            logger.warning("[PURCHASE] Direct checkout attempt failed: %s — falling back to cart", e)
+            await self._screenshot(f"flyout_exception_{item_id}")
             return False
 
     async def _cart_and_checkout(self, item_id: str) -> bool:
@@ -1255,7 +1260,7 @@ class WalmartPurchaseExecutor:
         """
         Clear all items from the cart. Called after every purchase attempt
         (success or failure) to ensure a clean state for the next attempt.
-        Silently ignores errors — best-effort cleanup only.
+        After cleanup, re-warm Tab 1 to refresh cookies for the stock monitor.
         """
         try:
             await self._page.get(WALMART_CART_URL)
@@ -1271,16 +1276,25 @@ class WalmartPurchaseExecutor:
             except Exception:
                 pass
             if not remove_btns:
-                return
-            logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
-            for btn in remove_btns:
-                try:
-                    await btn.click()
-                    await asyncio.sleep(0.8)
-                except Exception:
-                    pass
+                logger.debug("[PURCHASE] Cart already empty — no cleanup needed")
+            else:
+                logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
+                for btn in remove_btns:
+                    try:
+                        await btn.click()
+                        await asyncio.sleep(0.8)
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning("[PURCHASE] _clear_cart cleanup failed: %s", e)
+
+        # Re-warm Tab 1 after purchase to refresh stock monitor cookies
+        if self._session and hasattr(self._session, 'rewarm_tab1'):
+            try:
+                logger.info("[PURCHASE] Re-warming Tab 1 after purchase...")
+                await self._session.rewarm_tab1()
+            except Exception as e:
+                logger.warning("[PURCHASE] Tab 1 rewarm failed: %s (stock monitor may be briefly blocked)", e)
 
     async def _handle_blocked(self) -> bool:
         """
