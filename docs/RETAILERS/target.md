@@ -1,6 +1,7 @@
 # Target Profile
 ## Last Researched: 2026-04-07
 ## Last Updated: 2026-04-10 (consolidated anti-bot content from ANTIBOT.md)
+## Last Audited: 2026-04-25 — confirmed current, no stale content found
 
 ---
 

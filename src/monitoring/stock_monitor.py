@@ -69,10 +69,11 @@ class StockMonitor:
 
     def get_headers(self):
         """Simple headers for API calls"""
+        # last verified: 2026-04-25 — updated from Chrome/120 to Chrome/131
         user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0'
         ]
 
         return {
@@ -111,7 +112,9 @@ class StockMonitor:
             'pricing_store_id': '865',
             'has_pricing_context': 'true',
             'has_promotions': 'true',
-            'is_bot': 'false'
+            # Patch 5 (2026-04-25): Removed 'is_bot': 'false' — Shape Security flags
+            # any request that explicitly self-declares non-bot status as a bot heuristic.
+            # Real browsers do not include this parameter.
         }
 
         headers = self.get_headers()
@@ -174,7 +177,7 @@ class StockMonitor:
                 url.searchParams.set('pricing_store_id', '865');
                 url.searchParams.set('has_pricing_context', 'true');
                 url.searchParams.set('has_promotions', 'true');
-                url.searchParams.set('is_bot', 'false');
+                // Patch 5 (2026-04-25): is_bot=false removed — Shape Security flags this param.
                 const resp = await fetch(url.toString(), {{
                     credentials: 'include',
                     headers: {{'accept': 'application/json', 'accept-language': 'en-US,en;q=0.9'}}

@@ -2459,7 +2459,8 @@ def fetch_names_for_tcins(tcins: list) -> dict:
     ]
     api_endpoint = 'https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1'
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        # last verified: 2026-04-25 — updated from Chrome/120 to Chrome/131
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'application/json',
         'Accept-Language': 'en-US,en;q=0.9',
         'Referer': 'https://www.target.com/',
@@ -2471,7 +2472,7 @@ def fetch_names_for_tcins(tcins: list) -> dict:
         'pricing_store_id': '865',
         'has_pricing_context': 'true',
         'has_promotions': 'true',
-        'is_bot': 'false'
+        # Patch 5 (2026-04-25): Removed 'is_bot': 'false' — Shape Security flags this.
     }
     try:
         response = _requests.get(api_endpoint, params=params, headers=headers, timeout=10)

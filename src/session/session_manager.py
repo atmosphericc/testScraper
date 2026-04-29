@@ -198,6 +198,22 @@ class SessionManager:
                 self._active_tab = await self.browser.get("about:blank")
                 print("[SESSION_INIT] Created initial tab")
 
+            # Patch 3 (2026-04-25): Read the live UA from the running Chrome instance
+            # instead of using the static pool in _load_fingerprint_data(). This ensures
+            # fingerprint_data['user_agent'] always matches the actual browser JA3/TLS
+            # fingerprint — a mismatch between the UA we log/send and the real browser UA
+            # is a Shape Security detection vector.
+            try:
+                live_ua = await self._active_tab.evaluate("navigator.userAgent")
+                if live_ua and isinstance(live_ua, str) and "Mozilla" in live_ua:
+                    self.fingerprint_data['user_agent'] = live_ua
+                    self.logger.info(f"[FINGERPRINT] Live UA read from browser: {live_ua[:80]}")
+                    print(f"[SESSION_INIT] UA synced from live Chrome: {live_ua[:80]}")
+                else:
+                    self.logger.warning("[FINGERPRINT] Could not read live UA — keeping generated value")
+            except Exception as _ua_err:
+                self.logger.warning(f"[FINGERPRINT] Live UA read failed (non-fatal): {_ua_err}")
+
             # Enable Network CDP domain
             try:
                 await self._active_tab.send("Network.enable")

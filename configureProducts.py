@@ -852,10 +852,11 @@ def refresh_product_names():
             'pricing_store_id': '865',
             'has_pricing_context': 'true',
             'has_promotions': 'true',
-            'is_bot': 'false'
+            # Patch 5 (2026-04-25): Removed 'is_bot': 'false' — Shape Security flags this.
         }
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            # last verified: 2026-04-25 — updated from Chrome/120 to Chrome/131
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             'Accept': 'application/json',
             'Referer': 'https://www.target.com/',
         }

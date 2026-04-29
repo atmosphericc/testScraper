@@ -1,6 +1,6 @@
 # Walmart Profile
 ## Last Researched: 2026-04-07
-## Last Updated: 2026-04-10 (consolidated anti-bot content from ANTIBOT.md)
+## Last Updated: 2026-04-25 (selector audit + flow fixes from 2026-04-10 FAILURES.md entries)
 
 ---
 
@@ -16,7 +16,7 @@
    3b. Address step      — confirm or select shipping address
    3c. Payment step      — confirm saved card + enter CVV
    3d. Review step       — order summary + Place Order button
-4. Order Confirmation    https://www.walmart.com/orders/<order-id>
+4. Order Confirmation    https://www.walmart.com/checkout/thankyou?version=v3/
                          OR /checkout/order-confirmation
                          OR /order-confirmation (URL varies by A/B test cohort)
 ```
@@ -25,24 +25,49 @@ Walmart's checkout is a **React SPA**. The URL stays at `/checkout` throughout s
 
 ### Add to Cart
 
-- Primary CTA: `button[data-automation-id="add-to-cart-btn"]`
-- Legacy/variant: `button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]`
-- Text-based fallback: `button:has-text("Add to cart")`, `button:has-text("Add to Cart")`
-- Pre-order variant: `button:has-text("Pre-order")`, `button:has-text("Pre-Order")`, `button:has-text("Preorder")`
-- Add-to-cart confirmation flyout: `[data-automation-id="cart-flyout"]`, `[data-automation-id="atc-flyout"]`
-- Stock availability signal (buy box present): `button[data-dca-name="ItemBuyBoxAddToCartButton"]`
+**Priority order in live `purchase_executor.py` `ATC_SELECTORS` (last verified: 2026-04-25):**
 
-After a successful ATC click, Walmart shows one of:
-- A drawer/flyout with "View cart" / "Go to cart" buttons
-- The ATC button text changes to "Added" or a checkmark
-- Silently succeeds with no visual indicator (common on high-traffic drops)
+1. `button[data-automation-id="atc"]` — **PRIMARY** (confirmed live selector; "add-to-cart-btn" is wrong/stale)
+2. `button[data-automation-id="add-to-cart-btn"]` — legacy fallback (was primary pre-2026-04-10; now secondary)
+3. `button[data-dca-event="addToCart"]` — DCA event marker fallback
+4. `button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]` — analytics ID fallback
+5. `button[data-dca-name="ItemBuyBoxAddToCartButton"]` — DCA name fallback
+6. `button:has-text("Add to cart")`, `button:has-text("Add to Cart")` — text fallbacks
+7. `button:has-text("Pre-order")`, `button:has-text("Pre-Order")`, `button:has-text("Preorder")` — preorder variants
+8. JS text-content fallback: `button.textContent.includes('add') && button.textContent.includes('cart')`
+
+> **CRITICAL NOTE**: The profile previously listed `add-to-cart-btn` as primary. This was identified as a root-cause ATC failure in 2026-04-10 (MEMORY.md ATC click fix). Walmart's live DOM uses `data-automation-id="atc"`. The `add-to-cart-btn` value may appear in some A/B cohorts but is no longer reliable as the primary selector.
+
+**Buybox lazy-load behavior**: The buybox React island (which contains the ATC button) is **not present in SSR HTML**. Walmart intentionally strips it. `window.__NEXT_DATA__` populates at ~0.3s but `data-automation-id` attributes are only attached when React's reconciler commits the buybox island — typically 3-7s post navigation on a cold tab. The `_wait_for_page_ready()` method handles this.
+
+**ATC confirmation signals (post-click — any one sufficient):**
+- Button text changes to "Added" or button becomes disabled — checked via `btn.textContent.includes('added') || btn.disabled`
+- `[data-automation-id="cart-flyout"]`
+- `[data-automation-id="atc-flyout"]`
+
+**ATC confirmation approach (current)**: After clicking, a single fast check runs at 0.3s post-click for flyout/button-state-change. The flow **proceeds to cart regardless** of whether confirmation is detected — cart verification is the authoritative check for ATC success. Do not wait more than ~1s for ATC confirmation; the 12s confirmation window from earlier implementations was reverted (2026-04-10) because it created unnecessary latency on silent-ATC sessions.
 
 ### Cart Page
 
 - Cart URL: `https://www.walmart.com/cart`
-- Cart item container: `[data-automation-id="cart-item"]`, `[data-testid="cart-item"]`
-- Checkout button (on cart page): `button[data-automation-id="checkout-btn"]`, `a[data-automation-id="checkout-btn"]`
-- Empty cart detection: check `document.body.innerText` for "your cart is empty"
+- Cart item containers (priority order):
+  - `[data-automation-id="cart-item"]` — primary
+  - `[data-testid="cart-item"]` — A/B variant
+  - `[data-automation-id="cart-item-container"]` — wrapper variant
+  - `[data-testid="cart-item-container"]` — wrapper variant (testid)
+  - `button[data-automation-id="remove-item"]` — proxy: only present when item exists
+  - `input[data-automation-id="item-qty"]` — proxy: quantity spinner only present when item in cart
+  - `button[aria-label*="Remove"]` — proxy: stable across deploys
+- Secondary verification: `window.__NEXT_DATA__.props.pageProps.initialData.data.cart.cartLines` (or `.lineItems`/`.items`) — JS-state probe used when CSS selectors fail; returns item count directly from React store
+- Empty cart signal: body text contains "your cart is empty"
+- Checkout button (on cart page):
+  - `button[data-automation-id="checkout-btn"]`
+  - `a[data-automation-id="checkout-btn"]`
+  - `button[data-automation-id="continue-to-checkout"]`
+  - `a[data-automation-id="continue-to-checkout"]`
+  - `button:has-text("Continue to checkout")`, `button:has-text("Checkout")`
+
+**Delivery selection on cart page**: Before clicking Checkout, the bot calls `_select_delivery_on_cart()` which scans for `button`, `[role="tab"]`, `[role="radio"]`, `[role="option"]`, `label` elements whose text matches `/^(Delivery|Ship(ping)?)$/i` or contains "delivery" (< 40 chars, not "free delivery"). This sets the fulfillment mode on the cart page; the choice persists into checkout. This is separate from `_select_delivery_option()` which runs inside the checkout step loop.
 
 ### Checkout Sub-Steps (Step 3)
 
@@ -61,7 +86,7 @@ Checkout page load signal (use any as confirmation):
 - `[data-automation-id="checkout-page"]`
 - `[data-page-type="checkout"]`
 - `form[id*="checkout"]`
-- Body text contains "payment", "shipping", or "order summary"
+- Body text contains "payment", "shipping", "delivery", "order summary", "place order", "credit", "fulfillment", or "checkout"
 
 Address fields (when address entry required — rare for saved accounts):
 - Street: `input[name="addressLineOne"]`, `input[autocomplete="address-line1"]`
@@ -70,8 +95,9 @@ Address fields (when address entry required — rare for saved accounts):
 - ZIP: `input[name="postalCode"]`, `input[autocomplete="postal-code"]`
 
 Payment / CVV:
-- CVV input: `input[name="cvv"]`, `input[autocomplete="cc-csc"]`, `input[placeholder*="CVV"]`, `input[aria-label*="security code"]`
+- CVV input: `input[name="cvv"]`, `input[autocomplete="cc-csc"]`, `input[placeholder*="CVV"]`, `input[placeholder*="CVC"]`, `input[aria-label*="CVV"]`, `input[aria-label*="security code"]`
 - CVV is nearly always required even with saved cards on Walmart
+- CVV is typed character-by-character with randomized inter-key delays (80-150ms per char) via CDP `dispatchKeyEvent` — `set_value()` atomic write is detectable by PerimeterX keystroke monitoring
 
 ### Place Order Button
 
@@ -84,11 +110,26 @@ button:has-text("Submit order")
 
 ### Confirmation Page
 
-- Confirmation URL patterns (regex): `order-confirmation|order/confirm|thank-you|order-placed`
+- Confirmed current URL pattern: `https://www.walmart.com/checkout/thankyou?version=v3/`
+- Regex fallback: `order-confirmation|order/confirm|thank-you|order-placed`
 - Order number selector: `[data-automation-id="order-confirmation-number"]`, `[data-automation-id="confirmation-order-id"]`
-- Text fallbacks: `h1:has-text("Your order is confirmed")`, `span:has-text("Order #")`
+- Text fallbacks: `h1:has-text("Your order is confirmed")`, `h1:has-text("Thank you")`, `span:has-text("Order #")`
 - Order ID is numeric, typically 13–16 digits. Extract with `\d{6,}` from element text or URL.
 - Order detail URL: `https://www.walmart.com/orders/<order_id>`
+
+### React Hydration and Page Readiness
+
+Walmart product pages use Next.js + React. The buybox (containing the ATC button) is loaded client-side only — not in SSR HTML. The `_wait_for_page_ready()` method polls until:
+1. `window.__NEXT_DATA__` is truthy (React initialization signal)
+2. At least one ATC selector is visible (`display !== 'none'` and `visibility !== 'hidden'` and `opacity > 0`)
+
+**Timeouts**:
+- Cold navigation (new URL): `timeout=13000` — covers the 7-10s buybox lazy-load window on cold Tab 2
+- Already on product page (Tab 2 pre-warmed): `timeout=2000` — button should be immediately available
+
+**Implementation**: `_PAGE_READY_JS` polls all CSS-attribute ATC selectors first, then falls back to `querySelectorAll('button')` text-content search for "add" + "cart". This single JS blob executes in one browser round-trip per 150ms poll interval. Logs `Page ready in X.Xs — ATC button found via: <selector>` on success.
+
+**Expected timing**: On a warmed Tab 2 (already on product page), button found in < 0.5s. On cold navigation, typically 2-4s when text-content renders before `data-automation-id` is attached, up to 7-10s for full React commit of buybox island.
 
 ### Product Page Key Selectors
 
@@ -117,7 +158,7 @@ Guest checkout is **available** but less reliable for automation:
 ### Interstitial Pages / Prompts
 
 1. **Virtual Queue** (`/blocked` or queue iframe): Appears on high-demand drops. See `queue_handler.py` for detection/handling.
-2. **Fulfillment Selector**: When item supports both Ship and Pickup, a modal asks you to choose. Always click Delivery/Ship first.
+2. **Fulfillment Selector**: When item supports both Ship and Pickup, a modal asks you to choose. Always click Delivery/Ship first — handled on cart page by `_select_delivery_on_cart()` and in checkout loop by `_select_delivery_option()`.
 3. **Substitution Prompt**: Appears during grocery/pickup checkout when item is OOS. Asks if you want substitution.
 4. **Age Verification**: Appears for alcohol, certain medications. Rare for typical product types.
 5. **"Robot or Human?" CAPTCHA** (`/blocked`): "Activate and hold the button to confirm you're human." This is PerimeterX (HUMAN Security) challenge, not traditional CAPTCHA. See Anti-Bot section.
@@ -304,7 +345,8 @@ mousePressed (buttons=1) → [hold loop: mouseMoved with jitter] → mouseReleas
 
 ### Working Mitigations
 - **patchright (Playwright fork)** — 22 AST-level patches. Current implementation.
-- **Dual-tab warmup strategy** — warmup tab establishes Akamai behavioral profile (homepage → category → search only, NOT product pages) before main tab attempts purchase
+- **Dual-tab warmup strategy** — Tab 1 (warmup tab) establishes Akamai behavioral profile (homepage → category → search only, NOT product pages to avoid PerimeterX sensitive-route triggers); Tab 2 (checkout tab) opened *after* Tab 1 warm, pre-loaded on the **product page URL** (not homepage) so React is already hydrated when purchase fires
+- **Tab 2 pre-warm on product page**: `open_checkout_tab(warmup_url=<product_url>)` in `session_manager.py` loads Tab 2 on the product page, not `walmart.com`. On the next purchase, `_navigate()` detects `already_on_page=True` and uses `timeout=2000` for `_wait_for_page_ready()` instead of 13000ms. This saves 8-13s per purchase.
 - **Challenge solver** — `walmart/purchase_executor.py` handles press-and-hold PerimeterX challenge via CDP `dispatchMouseEvent`
 - **Proxy manager** — `walmart/proxy_manager.py` rotates US residential/ISP proxies with cooldown and health tracking
 - **Self-healing agent** — `walmart/self_healing_agent.py` auto-diagnoses and patches selector failures
@@ -359,6 +401,13 @@ The `ACID`, `locDataV3`, and `locGuestData` cookies control which store's invent
 - Walmart account session (`auth` cookie): typically 30 days for "stay signed in" sessions
 - `_abck`: session-scoped but Akamai validates behavioral score continuously; session that goes idle may need to rebuild behavioral profile
 - Idle session threshold: if browser has been idle > 30 minutes, re-validate by navigating to homepage before attempting purchase
+- `_px3` age check: `session_manager.py` exposes `needs_rewarm()` which returns `True` if `_px3` is older than `PX3_MAX_AGE_SECONDS` (50s). `_cart_and_checkout()` calls this before navigating to cart and triggers `warm_session()` if needed.
+
+### Tab Strategy (Dual-Tab Architecture)
+
+- **Tab 1** (warmup tab): roams homepage, category pages, and search pages to build Akamai behavioral profile. Does NOT visit product pages (PDP) — PDPs are PerimeterX sensitive routes.
+- **Tab 2** (checkout tab): opened via `open_checkout_tab(warmup_url=<product_url>)` after Tab 1 has warmed. Pre-loaded on the **target product page** (not `walmart.com`) so React is already hydrated. Tab 2 stays foregrounded (Chrome throttles background tab JS, slowing React hydration).
+- On purchase: `_navigate()` detects Tab 2 is already on the product page, skips navigation, uses 2s page-ready timeout instead of 13s.
 
 ### Login Flow
 
@@ -395,6 +444,7 @@ Two-factor authentication (SMS/email OTP) may be required on first login from ne
 
 - Walmart's entire checkout flow is a client-side React SPA. Page transitions don't trigger full navigation events — `page.url` may not update when sub-steps change.
 - Always poll for DOM elements rather than waiting for URL changes within `/checkout`
+- The buybox React component island (containing ATC button) is deferred client-side and NOT in SSR HTML. `window.__NEXT_DATA__` appearing is NOT sufficient to guarantee ATC button is in DOM. Use `_wait_for_page_ready()` which polls for both.
 - DOM mutation can be slow after clicking checkout button — allow 1.5–2 seconds before querying for next step's elements
 - GraphQL used extensively for stock checks and checkout state. Walmart uses persisted query hash (`data-hash` parameter) in GraphQL requests. This hash changes with each frontend deploy and must be updated periodically (see `GRAPHQL_HASH` in `config.py`).
 
@@ -420,6 +470,7 @@ Two-factor authentication (SMS/email OTP) may be required on first login from ne
 - Solving requires: mouse-down event held for minimum ~6 seconds on specific button, followed by mouse-up (0.5–2s insufficient — PerimeterX behavioral analysis rejects short holds)
 - CDP `dispatchMouseEvent` with realistic timing and coordinates can solve this, but HUMAN Security's behavioral analysis checks for inhuman patterns (instant response, perfect coordinates, exact duration)
 - After solving, browser redirected to originally requested URL with new `_px3` cookie
+- `/blocked?g=a` variant (checkbox instead of hold button) — **NOT YET HANDLED**
 
 ### The Virtual Queue
 
@@ -473,7 +524,7 @@ Two-factor authentication (SMS/email OTP) may be required on first login from ne
 - Walmart uses persisted GraphQL queries for product data
 - Endpoints: `https://www.walmart.com/orchestra/home/graphql/<operation_name>/<hash>`
 - Primary hash (`ItemByIdBtf`): defined in `config.py` as `GRAPHQL_HASH`; may change on frontend deploy
-- ATF hash (`ItemByIdAtf`): auto-discovered at runtime by intercepting browser network traffic
+- ATF hash (`ItemByIdAtf`): auto-discovered at runtime by intercepting browser network traffic on Tab 2 (during purchase navigation to product page); no manual update needed
 - If GraphQL hash returns 400/404, must be manually re-extracted by inspecting product page network request
 
 ### GraphQL Stock Check Details
@@ -492,7 +543,7 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 **Hash change cadence:** Every Walmart frontend deploy (~2–6 weeks normally, can be daily during heavy dev cycles). No pattern — must re-extract if static fallback needed.
 
 **How to detect a stale hash:**
-- `400 Bad Request` on `/orchestra/pdp/graphql/ItemByIdBtf/` = hash changed — static fallback in `config.py` is stale; will self-correct once session browser loads any product page
+- `400 Bad Request` on `/orchestra/pdp/graphql/ItemByIdBtf/` = hash changed — static fallback in `config.py` is stale; will self-correct once Tab 2 loads any product page (CDP network handler auto-discovers new hash)
 - `403` on same path = Akamai/PerimeterX session invalid (different problem)
 - Stock monitor silently returns no results across all known-in-stock items = silent schema drift
 
@@ -506,7 +557,7 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 
 1. **GRAPHQL_HASH staleness** — no auto-detection of stale hash (triggers silent 400 errors on stock checks when Walmart deploys). Add monitoring for 400 response rate + auto-update mechanism.
 2. **`/blocked?g=a` checkbox variant** — only press-and-hold variant handled. Add detection for checkbox variant (`/blocked?g=a` URL param).
-3. **`_px3` cookie refresh before checkout** — no explicit refresh trigger. Add `_px3` age check (> 50s) before entering checkout with re-warm on stale.
+3. **`_px3` cookie refresh before checkout** — `needs_rewarm()` check added to `_cart_and_checkout()`, but `_px3` age is only checked at cart navigation. Add check before each checkout step in `_confirm_shipping()` loop.
 4. **Akamai cookie diagnostics** — `_abck` and `ak_bmsc` never explicitly checked in warm loop. Add validation checks for debugging failed Akamai challenges.
 5. **Circuit breaker** — no automatic pause after repeated failures. Risk of accelerated blocks during periods of degraded behavioral score.
 6. **End-to-end testing** — untested full flow from product page → confirmation on live environment.
@@ -531,22 +582,25 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 - Ensure `window.chrome` exists with `runtime`, `loadTimes`, `csi`, `app`
 
 **Session Warming (before drop)**
-- Warm Akamai behavioral profile 10–15 minutes before drop by browsing product pages
-- Ensure `_px3` cookie is fresh (< 50 seconds old) when entering checkout
+- Warm Akamai behavioral profile 10–15 minutes before drop by browsing product pages on Tab 1
+- Open Tab 2 via `open_checkout_tab(warmup_url=<product_url>)` after Tab 1 warm — pre-loads product page on Tab 2 to eliminate cold-start hydration delay at purchase time
+- Ensure `_px3` cookie is fresh (< 50 seconds old) when entering checkout — `needs_rewarm()` checks this
 - Use `SESSION_VALIDATE_INTERVAL = 600` to periodically keep session alive during idle
 - Force re-login after 30 minutes idle (`SESSION_MAX_IDLE = 1800`)
 
 **Selector Strategy**
 - Primary: `data-automation-id` attributes — most stable
+- ATC primary: `data-automation-id="atc"` (NOT `"add-to-cart-btn"` — that is a stale secondary)
 - Secondary: `data-testid`, `data-dca-name`, `name`, `type`, `aria-label`
-- Tertiary: `:has-text()` with exact known strings
+- Tertiary: `:has-text()` with exact known strings, converted to XPath for zendriver compatibility
 - Never: CSS class names (hashed, change on every deploy)
 - Always maintain arrays of 3+ fallback selectors per interactive element
 
 **Timing**
 - Add 200–1200ms human-like random delays between all interactions
-- After ATC click, wait 1.5–2s before checking for flyout confirmation
-- After checkout button click, wait up to 15s for checkout page to load (React SPA hydration can be slow)
+- After ATC click: single fast check at 0.3s for flyout/button-state-change, then proceed to cart regardless (cart verification is authoritative)
+- After checkout button click, wait up to 10s for `/checkout` URL (loop checking every 200ms)
+- After checkout content loads, wait up to 8s for page content signal before declaring failure
 - After Place Order click, wait up to 20s for confirmation URL
 
 **Proxy Requirements**
@@ -558,8 +612,9 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 
 **Handling `/blocked`**
 - Detect by URL containing "/blocked" after any navigation
-- Attempt CDP-level mouse-down-hold-mouse-up on challenge button
+- Attempt CDP-level mouse-down-hold-mouse-up on challenge button (minimum 6s hold)
 - If CDP solve fails, session is likely too hot — rest proxy and account, re-warm from homepage before retrying
+- `/blocked?g=a` checkbox variant not yet handled — treat as unresolvable for now
 
 **Handling Virtual Queue**
 - Monitor for queue iframe/overlay before attempting ATC
@@ -578,4 +633,4 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 **GraphQL Hash Maintenance**
 - The `ItemByIdBtf` hash changes on each Walmart frontend deploy (roughly every 2–6 weeks)
 - Monitor for 400/404 on stock check requests; update `GRAPHQL_HASH` in `config.py` by inspecting live product page's network traffic
-- The `ItemByIdAtf` hash is auto-discovered by intercepting real browser network events — no manual update needed
+- The `ItemByIdAtf` hash is auto-discovered by intercepting Tab 2 network events at purchase time — no manual update needed

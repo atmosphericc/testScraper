@@ -491,7 +491,7 @@ class PurchaseExecutor:
                         'Origin': 'https://www.target.com',
                     },
                     body: JSON.stringify({
-                        cart_item: {tcin: '00000000', quantity: 1, item_channel_id: '10'},
+                        cart_item: {tcin: '81926151', quantity: 1, item_channel_id: '10'},
                         cart_type: 'REGULAR',
                         channel_id: '10',
                         shopping_context: 'DIGITAL'
@@ -818,8 +818,6 @@ class PurchaseExecutor:
                                 if (!el) continue;
                                 const r = el.getBoundingClientRect();
                                 if (r.width === 0 || r.height === 0) continue;
-                                el.removeAttribute('disabled');
-                                el.removeAttribute('aria-disabled');
                                 el.click();
                                 return true;
                             }

@@ -28,7 +28,7 @@
 - Uses zendriver (undetected Chrome), persistent nodriver profile
 - CDP cookie interception, context recreation counter, validation failure tracking
 
-**src/session/purchase_executor.py** — DO NOT MODIFY
+**src/session/purchase_executor.py**
 - `PurchaseExecutor` — full Target.com cart/checkout/payment automation
 - CVV loaded from `CARD_CVV` constant (move to `.env` via `TARGET_CVV` if not already done)
 - CDP header interception for auth, cached auth headers, retry logic
