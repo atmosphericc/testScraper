@@ -868,6 +868,15 @@ class WalmartPurchaseExecutor:
         # First ensure delivery (not pickup) is selected
         await self._select_delivery_option()
 
+        # RIGHT AFTER delivery selection, a modal may appear asking for delivery day
+        # Check and dismiss it BEFORE entering the Continue button loop
+        logger.info("[PURCHASE] Checking for delivery day modal after fulfillment selection...")
+        await asyncio.sleep(random.uniform(0.5, 1.5))  # Wait for modal to appear if it will
+        modal_dismissed = await self._handle_delivery_day_modal("post_delivery_select")
+        if modal_dismissed:
+            logger.info("[PURCHASE] Modal appeared and was dismissed after delivery selection")
+            await asyncio.sleep(random.uniform(1.0, 2.0))  # Extra pause after modal dismissal
+
         CONTINUE_SELECTORS = [
             'button:has-text("Continue")',
             'button:has-text("Deliver here")',
@@ -911,7 +920,8 @@ class WalmartPurchaseExecutor:
                 if modal_dismissed:
                     modal_handle_count += 1
                     logger.info("[PURCHASE] Delivery day modal handled (%d/%d)", modal_handle_count, MAX_MODAL_HANDLES)
-                    await asyncio.sleep(random.uniform(0.5, 1.0))  # Brief pause after modal dismiss
+                    # Modal handler now includes 2-4s pause + DOM stability wait.
+                    # Do NOT add additional pause here — the handler covers it.
                     # Continue to look for Continue button since modal is gone
 
             # If Place Order button is now visible, we're on the review step — done
@@ -920,10 +930,15 @@ class WalmartPurchaseExecutor:
                 self._status_cb(f"[PURCHASE] Reached review step after {step_num} Continue click(s)")
                 return
 
+            # Human think time: pause before looking for Continue button (1-2s)
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
             # Click the next Continue/advance button
             continue_btn = await self._find_element(CONTINUE_SELECTORS, timeout=4000)
             if continue_btn:
+                # Post-click pause: let page transition settle before next step
                 await continue_btn.click()
+                await asyncio.sleep(random.uniform(1.5, 2.5))
                 self._status_cb(f"[PURCHASE] Continue clicked (step {step_num + 1})")
             else:
                 # No Continue and no Place Order — checkout stalled
@@ -1153,17 +1168,30 @@ class WalmartPurchaseExecutor:
         Select a delivery day if modal appears during checkout.
         Walmart may show a modal asking for delivery date/window after clicking Continue.
         Waits for modal to be visible first, selects a date option, then verifies modal closes.
+
+        Critical: After modal close, waits 2-4s + DOM stabilization before returning.
+        Akamai detects immediate continuation after modal as bot behavior. Humans read/pause.
         """
         try:
             # First check if modal is even visible
             modal_visible = await self._page.evaluate("""
-                () => !!(document.querySelector('[role="dialog"]') &&
-                         document.querySelector('[role="dialog"]').offsetParent !== null)
+                () => {
+                    const dialog = document.querySelector('[role="dialog"]');
+                    if (!dialog) return false;
+                    const visible = dialog.offsetParent !== null;
+                    if (visible) {
+                        // Log modal content for debugging
+                        console.log('[MODAL] Found dialog:', dialog.textContent.substring(0, 100));
+                    }
+                    return visible;
+                }
             """)
 
             if not modal_visible:
-                logger.debug("[PURCHASE] No delivery modal visible — proceeding")
+                logger.debug("[PURCHASE] Modal check: No visible dialog found")
                 return False
+
+            logger.warning("[PURCHASE] ⚠️  DELIVERY MODAL DETECTED — initiating stealthy dismiss")
 
             logger.info("[PURCHASE] Delivery day modal detected — finding option button")
 
@@ -1187,8 +1215,39 @@ class WalmartPurchaseExecutor:
                 return False
 
             logger.info("[PURCHASE] Found delivery day button — clicking")
-            await day_btn.click()
-            await asyncio.sleep(random.uniform(0.3, 0.7))
+            # Use CDP mouse click (like ATC) instead of element.click() to avoid detection
+            # element.click() has no pointer trail; CDP mouse mimics real user
+            from zendriver import cdp
+            location = await self._page.evaluate("""
+                (sel) => {
+                    const el = document.querySelector(sel) || document.evaluate(
+                        sel.replace(/button:has-text\\("([^"]+)"\\)/g, "//button[contains(text(), '$1')]"),
+                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+                    ).singleNodeValue;
+                    if (!el) return null;
+                    const rect = el.getBoundingClientRect();
+                    return { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
+                }
+            """, day_selectors[0])
+
+            if location:
+                # Click via CDP mouse events for authenticity
+                await self._page.send(cdp.input.dispatch_mouse_event(
+                    type_="mouseMoved", x=int(location['x']), y=int(location['y'])
+                ))
+                await asyncio.sleep(random.uniform(0.1, 0.2))
+                await self._page.send(cdp.input.dispatch_mouse_event(
+                    type_="mousePressed", x=int(location['x']), y=int(location['y']), button="left"
+                ))
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+                await self._page.send(cdp.input.dispatch_mouse_event(
+                    type_="mouseReleased", x=int(location['x']), y=int(location['y']), button="left"
+                ))
+            else:
+                # Fallback to element click if CDP click fails
+                await day_btn.click()
+
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
             # Verify modal has closed
             modal_still_visible = await self._page.evaluate("""
@@ -1197,8 +1256,26 @@ class WalmartPurchaseExecutor:
             """)
 
             if not modal_still_visible:
-                logger.info("[PURCHASE] Delivery day modal closed successfully")
+                logger.warning("[PURCHASE] ✓ Modal dismissed successfully — entering stealth pause")
                 self._status_cb("[PURCHASE] Selected delivery day")
+
+                # CRITICAL: Wait 2-4s + DOM stabilization after modal close
+                # Akamai's behavioral analysis flags immediate button clicks after modals close.
+                # Human users pause to read the updated form. This pause is essential for evasion.
+                pause_time = random.uniform(2.0, 3.5)
+                logger.info("[PURCHASE] Stealth pause: %.1fs (human-realistic)", pause_time)
+                await asyncio.sleep(pause_time)
+
+                # Poll for DOM stability: wait until no mutations for 800ms
+                # This ensures React has finished re-rendering the checkout form before
+                # we resume polling for Continue buttons. Polling during re-render = detectable.
+                logger.info("[PURCHASE] Waiting for React re-render to stabilize...")
+                stable = await self._wait_for_dom_stability(timeout=4000)
+                if stable:
+                    logger.info("[PURCHASE] ✓ DOM stable — resuming checkout flow")
+                else:
+                    logger.debug("[PURCHASE] DOM stability timeout (continuing anyway)")
+
                 return True
             else:
                 # Modal is still visible — the button we clicked didn't close it
@@ -1467,6 +1544,57 @@ class WalmartPurchaseExecutor:
         elapsed = time.monotonic() - started
         logger.warning("[PURCHASE] Page ready timeout after %.1fs", elapsed)
         self._status_cb(f"[PURCHASE] Page ready timeout after {elapsed:.1f}s — proceeding anyway")
+
+    async def _wait_for_dom_stability(self, timeout: int = 4000):
+        """
+        Wait for DOM to stabilize after a modal dismissal or form change.
+        Polls for absence of mutations for 800ms, indicating React has finished re-rendering.
+        Returns True if stabilized within timeout, False if timeout hit (continues anyway).
+        """
+        started = time.monotonic()
+        deadline = started + timeout / 1000.0
+        stable_until = started
+
+        while time.monotonic() < deadline:
+            # Check if any mutations occurred in the last 50ms
+            mutations_detected = await self._page.evaluate("""
+                (() => {
+                    let count = 0;
+                    const observer = new MutationObserver(() => {
+                        count++;
+                    });
+                    observer.observe(document.body, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        characterData: false
+                    });
+                    // Let it observe for 50ms
+                    return new Promise(resolve => {
+                        setTimeout(() => {
+                            observer.disconnect();
+                            resolve(count > 0);
+                        }, 50);
+                    });
+                })()
+            """)
+
+            if mutations_detected:
+                # Reset the stable timer
+                stable_until = time.monotonic()
+                await asyncio.sleep(0.1)
+            else:
+                # No mutations in the last 50ms
+                if time.monotonic() - stable_until >= 0.8:
+                    # DOM has been stable for 800ms
+                    elapsed = time.monotonic() - started
+                    logger.info("[PURCHASE] DOM stabilized after %.1fs", elapsed)
+                    return True
+                await asyncio.sleep(0.05)
+
+        elapsed = time.monotonic() - started
+        logger.debug("[PURCHASE] DOM stability timeout after %.1fs (continuing anyway)", elapsed)
+        return False
 
     async def _find_element(self, selectors: list[str], timeout: int = 5000):
         """Try each selector in order, return the first matching visible element.

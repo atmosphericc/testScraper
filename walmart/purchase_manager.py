@@ -433,6 +433,18 @@ class WalmartPurchaseManager:
                     self._cooldown_until[item_id] = time.monotonic() + 30
                 self._state[item_id] = PurchaseState.MONITORING
 
+            # If item is still in stock after purchase (test mode), immediately re-queue
+            # so the cycle repeats without waiting for a stock change event
+            stock_states = self._monitor.get_stock_states()
+            if stock_states.get(item_id, {}).get("in_stock", False):
+                logger.info("[MANAGER] Item %s still in stock after purchase — re-queuing", item_id)
+                self._on_in_stock_signal(
+                    item_id=item_id,
+                    offer_id=None,
+                    name=stock_states.get(item_id, {}).get("name", item_id),
+                    price=stock_states.get(item_id, {}).get("price"),
+                )
+
     # ------------------------------------------------------------------
     # Stock monitor health check
     # ------------------------------------------------------------------
