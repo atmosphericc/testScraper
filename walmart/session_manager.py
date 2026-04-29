@@ -168,7 +168,45 @@ class WalmartSessionManager:
             )
             self._browser = await uc.start(config)
 
-            # Navigate to Walmart — browser.get() is reliable and returns the tab
+            # Extended pre-legitimacy warmup: Build comprehensive browser history BEFORE walmart
+            # Akamai's behavioral analysis looks for: navigation history, idle patterns, referrer chains
+            self._status_cb("[SESSION] Building browser legitimacy profile (pre-warmup)...")
+            try:
+                # Tier 1: Search engine to establish baseline
+                self._status_cb("[SESSION] → Google search (establishing baseline)")
+                warmup = await self._browser.get("https://www.google.com")
+                await asyncio.sleep(random.uniform(1.2, 2.0))
+
+                # Tier 2: Major retailer to build retail shopping pattern
+                self._status_cb("[SESSION] → Amazon (retail shopping context)")
+                warmup = await warmup.get("https://www.amazon.com")
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+
+                # Tier 3: Reddit/social to diversify browsing pattern (not just shopping)
+                self._status_cb("[SESSION] → Reddit (browsing diversification)")
+                warmup = await warmup.get("https://www.reddit.com")
+                await asyncio.sleep(random.uniform(1.0, 1.8))
+
+                # Tier 4: YouTube to add video platform (comprehensive user profile)
+                self._status_cb("[SESSION] → YouTube (multimedia browsing)")
+                warmup = await warmup.get("https://www.youtube.com")
+                await asyncio.sleep(random.uniform(1.5, 2.5))
+
+                # Tier 5: Back to retail (shows legitimate shopping interest)
+                self._status_cb("[SESSION] → eBay (multi-retailer pattern)")
+                warmup = await warmup.get("https://www.ebay.com")
+                await asyncio.sleep(random.uniform(1.2, 2.0))
+
+                # Final idle: simulate real user behavior (thinking, reading)
+                self._status_cb("[SESSION] → Idle period (realistic user pause)")
+                await asyncio.sleep(random.uniform(2.0, 3.0))
+
+                logger.debug("[SESSION] Pre-legitimacy warmup complete: 5 sites, 10-15s elapsed")
+            except Exception as e:
+                logger.debug("[SESSION] Pre-warmup partial failure (non-critical): %s", e)
+
+            # NOW navigate to Walmart — browser has comprehensive history, not cold profile
+            self._status_cb("[SESSION] Navigating to Walmart (with legitimacy profile established)")
             self._page = await self._browser.get("https://www.walmart.com")
             await self._page.activate()
 
@@ -191,8 +229,16 @@ class WalmartSessionManager:
                 self._on_loading_finished,
             )
 
-            # Solve /blocked if the initial load triggered PerimeterX
-            await self._handle_blocked_page()
+            # CRITICAL: Do NOT check for /blocked immediately.
+            # When you manually browse, you don't get /blocked because:
+            # 1. Akamai sees persistent cookies from previous sessions
+            # 2. Browser has natural idle + scroll patterns
+            # 3. Device fingerprint is trusted after initial navigation
+            #
+            # Instead of solving /blocked here (which signals bot evasion),
+            # we let warm_session() happen naturally later, which refreshes
+            # the device trust score through normal browsing before sensitive operations.
+            # Do NOT call _handle_blocked_page() on first load — it signals automation.
 
             # Tab 2 is opened later via open_checkout_tab(), after warm_session() has
             # run on Tab 1 and established clean cookies. Opening it now would mean
