@@ -180,6 +180,12 @@ class WalmartPurchaseExecutor:
             self._status_cb("[PURCHASE] Reviewing order summary (human think-time)...")
             await asyncio.sleep(random.uniform(1.0, 3.0))
 
+            # Step 7b: Select delivery day if modal appears
+            await self._handle_delivery_day_modal(item_id)
+
+            # Step 7c: Dismiss Walmart+ popup if present
+            await self._dismiss_walmart_plus_popup(item_id)
+
             # TEST MODE — stop here (re-read env var at purchase time so toggle works from dashboard)
             checkout_mode = os.environ.get("CHECKOUT_MODE", "PRODUCTION")
 
@@ -766,6 +772,10 @@ class WalmartPurchaseExecutor:
                     await self._human_delay(300, 600)
                     self._status_cb("[PURCHASE] Delivery option selected")
                     logger.info("[PURCHASE] Delivery option clicked via: %s", via)
+                    # After selecting delivery, a modal may appear asking for delivery day
+                    await asyncio.sleep(random.uniform(0.5, 1.0))
+                    # Try to dismiss delivery day modal if it popped up
+                    await self._handle_delivery_day_modal("delivery_select")
                 elif action == 'already_selected':
                     logger.info("[PURCHASE] Delivery already selected via: %s", via)
                 else:
@@ -780,6 +790,7 @@ class WalmartPurchaseExecutor:
         Walmart checkout has 2–3 steps depending on A/B variant: address → (payment) → review.
         Loop through all intermediate steps until Place Order is visible.
         Handles both 2-step and 3-step checkout flows (MAX_STEPS=6 covers both).
+        Checks for and dismisses delivery day modals that appear between steps.
         """
         # First ensure delivery (not pickup) is selected
         await self._select_delivery_option()
@@ -815,6 +826,14 @@ class WalmartPurchaseExecutor:
                 logger.error("[PURCHASE] Login wall at checkout step %d — bailing out of shipping loop", step_num + 1)
                 await self._screenshot("login_wall_mid_checkout")
                 return
+
+            # Guard: Dismiss any delivery day modals that appeared mid-checkout
+            # This can happen after selecting delivery option or during page transitions
+            modal_dismissed = await self._handle_delivery_day_modal(f"{step_num}")
+            if modal_dismissed:
+                logger.info("[PURCHASE] Delivery day modal handled during step %d", step_num + 1)
+                await asyncio.sleep(random.uniform(0.5, 1.0))  # Brief pause after modal dismiss
+                # Continue to look for Continue button since modal is gone
 
             # If Place Order button is now visible, we're on the review step — done
             place_order_visible = await self._find_element(PLACE_ORDER_SELECTORS, timeout=2000)
@@ -1049,6 +1068,121 @@ class WalmartPurchaseExecutor:
                     pass
         except Exception as e:
             logger.warning("[PURCHASE] _clear_cart_if_needed failed: %s", e)
+
+    async def _handle_delivery_day_modal(self, item_id: str):
+        """
+        Select a delivery day if modal appears during checkout.
+        Walmart may show a modal asking for delivery date/window after clicking Continue.
+        Try multiple strategies: dedicated selectors first, then search DOM for available options.
+        """
+        day_selectors = [
+            # Dedicated delivery day modal selectors
+            'button[data-automation-id*="delivery-day"]',
+            'button[data-automation-id*="delivery-window"]',
+            'button[data-automation-id*="select-delivery"]',
+            'div[data-automation-id*="delivery"] button',
+            # Text-based fallbacks for "Today", "Tomorrow", etc.
+            'button:has-text("Today")',
+            'button:has-text("Tomorrow")',
+            'button:has-text("Next Day")',
+            'button:has-text("Standard")',
+            # Radio/checkbox options in modal
+            'button[role="radio"][aria-label*="deliver"]',
+            'button[role="radio"][aria-label*="Today"]',
+            'button[role="radio"][aria-label*="tomorrow"]',
+            'input[type="radio"][aria-label*="deliver"]',
+            'label:has(input[type="radio"]) button',
+            # Generic modal action buttons
+            '[role="dialog"] button:not([aria-label*="close"])',
+        ]
+        try:
+            day_btn = await self._find_element(day_selectors, timeout=3000)
+            if day_btn:
+                await day_btn.click()
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+                logger.info("[PURCHASE] Selected delivery day option")
+                self._status_cb("[PURCHASE] Selected delivery day")
+                return True
+            else:
+                logger.debug("[PURCHASE] No delivery day modal detected — proceeding")
+                return False
+        except Exception as e:
+            logger.debug("[PURCHASE] Delivery day selection failed: %s (continuing)", e)
+            return False
+
+    async def _dismiss_walmart_plus_popup(self, item_id: str):
+        """Dismiss Walmart+ upsell popup if present before Place Order."""
+        popup_selectors = [
+            'button[data-automation-id="walmart-plus-no-thanks"]',
+            'button:has-text("No thanks")',
+            'button:has-text("No, thanks")',
+            'button:has-text("Skip")',
+            'button[aria-label*="close" i]',
+            '[data-automation-id="modal-close"]',
+            'button[data-automation-id="offer-no-thanks"]',
+        ]
+        try:
+            popup_btn = await self._find_element(popup_selectors, timeout=2000)
+            if popup_btn:
+                await popup_btn.click()
+                await self._screenshot(f"walmart_plus_popup_dismissed_{item_id}")
+                logger.info("[PURCHASE] Dismissed Walmart+ popup")
+                self._status_cb("[PURCHASE] Dismissed Walmart+ popup")
+            else:
+                logger.debug("[PURCHASE] No Walmart+ popup detected — proceeding")
+        except Exception as e:
+            logger.debug("[PURCHASE] Walmart+ popup dismiss check failed: %s (continuing)", e)
+
+    async def _dismiss_any_modal(self):
+        """
+        Aggressively dismiss any visible modal/dialog by searching for common close patterns.
+        Used as a fallback when specific modal handling fails.
+        Returns True if a modal was found and dismissed.
+        """
+        try:
+            # Search for any visible modal with close/dismiss buttons
+            result = await self._page.evaluate("""
+                (() => {
+                    // Look for any visible modal/dialog overlay
+                    const modals = document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, [class*="modal"], [class*="Modal"], .overlay, [class*="overlay"], [data-testid*="modal"]');
+
+                    for (const modal of modals) {
+                        const style = window.getComputedStyle(modal);
+                        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+
+                        // Found a visible modal — try to close it
+                        const closeButtons = [
+                            ...modal.querySelectorAll('button[aria-label*="close" i]'),
+                            ...modal.querySelectorAll('button[aria-label*="dismiss" i]'),
+                            ...modal.querySelectorAll('[data-automation-id*="close"]'),
+                            ...modal.querySelectorAll('button:last-child'),  // Often the close/no button is rightmost
+                        ];
+
+                        for (const btn of closeButtons) {
+                            if (btn.offsetParent !== null) {  // Is visible
+                                btn.click();
+                                return { found: true, method: 'close_button' };
+                            }
+                        }
+
+                        // If no close button, try Escape key
+                        const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27 });
+                        document.dispatchEvent(event);
+                        return { found: true, method: 'escape_key' };
+                    }
+
+                    return { found: false };
+                })()
+            """)
+
+            if result and result.get('found'):
+                logger.debug("[PURCHASE] Dismissed modal via %s", result.get('method'))
+                await asyncio.sleep(random.uniform(0.3, 0.6))
+                return True
+        except Exception as e:
+            logger.debug("[PURCHASE] Generic modal dismiss failed: %s", e)
+
+        return False
 
     async def _clear_cart(self):
         """
