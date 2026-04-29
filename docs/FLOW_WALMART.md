@@ -1,7 +1,14 @@
 # Walmart Purchase Flow
 
+## Overview
+The purchase flow has two paths:
+1. **Fast path (async)**: ATC → flyout → direct checkout (skips /cart)
+2. **Standard path (sync)**: ATC → navigate to /cart → verify item → select delivery → checkout
+
+The flow attempts the fast path first (if flyout checkout button is available), falls back to standard path automatically. Both paths reach `/checkout` and continue identically from there.
+
 ## Selectors
-(last verified: 2026-04-25 via @retailer-researcher — cross-referenced against live purchase_executor.py ATC_SELECTORS array)
+(last verified: 2026-04-29 via @code-quality — cross-referenced against live purchase_executor.py ATC_SELECTORS and new flyout checkout selectors)
 
 **CRITICAL: NEVER use CSS class selectors — Walmart hashes class names on every deploy.
 Use only `data-automation-id`, `data-testid`, `aria-label`, `data-tl-id`, or `:has-text()` selectors.**
@@ -30,6 +37,17 @@ Use only `data-automation-id`, `data-testid`, `aria-label`, `data-tl-id`, or `:h
 - `button:has-text("Go to cart")`
 - `button:has-text("Added to cart")`
 - `button:has-text("Added")`
+
+**Checkout button in ATC flyout (fast path — skips /cart entirely if present):**
+- `button[data-automation-id="checkout-btn"]` ← primary (some A/B tests)
+- `button[data-automation-id="atc-flyout-checkout"]` ← Walmart variant
+- `button:has-text("Proceed to checkout")`
+- `button:has-text("Proceed to Checkout")`
+- `button:has-text("Checkout")`
+- `a:has-text("Proceed to checkout")` ← anchor variant
+- `a:has-text("Checkout")`
+- `button[aria-label*="checkout" i]`
+- **Note**: If flyout checkout button not found, code falls back to cart page (`_cart_and_checkout`). Fast path is optional/automatic.
 
 **Cart page — items present (last verified: 2026-04-10):**
 - `[data-automation-id="cart-item"]` ← primary
