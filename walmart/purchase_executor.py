@@ -755,8 +755,8 @@ class WalmartPurchaseExecutor:
                                                el.classList.contains('selected') ||
                                                el.classList.contains('active');
                             if (isSelected) return { action: 'already_selected', text: text.slice(0, 30) };
-                            el.click();
-                            return { action: 'clicked', text: text.slice(0, 30) };
+                            const rect = el.getBoundingClientRect();
+                            return { action: 'clicked', text: text.slice(0, 30), x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
                         }
                     }
                     return { action: 'not_found' };
@@ -765,10 +765,11 @@ class WalmartPurchaseExecutor:
             if result:
                 action = result.get('action')
                 if action == 'clicked':
+                    # Use CDP mouse click for authenticity
+                    await self._cdp_mouse_click(result['x'], result['y'])
+                    await asyncio.sleep(random.uniform(0.5, 1.0))
                     self._status_cb("[PURCHASE] Delivery selected on cart page")
                     logger.info("[PURCHASE] Cart: clicked Delivery tile (text='%s')", result.get('text'))
-                    # Wait for cart to update with delivery options
-                    await asyncio.sleep(1.5)
                 elif action == 'already_selected':
                     logger.info("[PURCHASE] Cart: Delivery already selected (text='%s')", result.get('text'))
                 else:
@@ -811,8 +812,8 @@ class WalmartPurchaseExecutor:
                                                el.getAttribute('aria-checked') === 'true' ||
                                                el.classList.contains('selected');
                             if (isSelected) return { action: 'already_selected', via: sel };
-                            el.click();
-                            return { action: 'clicked', via: sel };
+                            const rect = el.getBoundingClientRect();
+                            return { action: 'clicked', via: sel, x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
                         }
                     }
 
@@ -828,8 +829,8 @@ class WalmartPurchaseExecutor:
                                                    el.getAttribute('aria-pressed') === 'true' ||
                                                    el.getAttribute('aria-checked') === 'true';
                                 if (isSelected) return { action: 'already_selected', via: 'text:' + text.slice(0, 30) };
-                                el.click();
-                                return { action: 'clicked', via: 'text:' + text.slice(0, 30) };
+                                const rect = el.getBoundingClientRect();
+                                return { action: 'clicked', via: 'text:' + text.slice(0, 30), x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
                             }
                         }
                     }
@@ -842,7 +843,9 @@ class WalmartPurchaseExecutor:
                 action = result.get('action')
                 via = result.get('via', '?')
                 if action == 'clicked':
-                    await self._human_delay(300, 600)
+                    # Use CDP mouse click for authenticity
+                    await self._cdp_mouse_click(result['x'], result['y'])
+                    await asyncio.sleep(random.uniform(0.3, 0.6))
                     self._status_cb("[PURCHASE] Delivery option selected")
                     logger.info("[PURCHASE] Delivery option clicked via: %s", via)
                     # After selecting delivery, a modal may appear asking for delivery day
@@ -1178,11 +1181,9 @@ class WalmartPurchaseExecutor:
                 () => {
                     const dialog = document.querySelector('[role="dialog"]');
                     if (!dialog) return false;
-                    const visible = dialog.offsetParent !== null;
-                    if (visible) {
-                        // Log modal content for debugging
-                        console.log('[MODAL] Found dialog:', dialog.textContent.substring(0, 100));
-                    }
+                    const rect = dialog.getBoundingClientRect();
+                    const style = window.getComputedStyle(dialog);
+                    const visible = rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
                     return visible;
                 }
             """)
@@ -1215,66 +1216,53 @@ class WalmartPurchaseExecutor:
                 return False
 
             logger.info("[PURCHASE] Found delivery day button — clicking")
-            # Use CDP mouse click (like ATC) instead of element.click() to avoid detection
-            # element.click() has no pointer trail; CDP mouse mimics real user
-            from zendriver import cdp
-            location = await self._page.evaluate("""
-                (sel) => {
-                    const el = document.querySelector(sel) || document.evaluate(
-                        sel.replace(/button:has-text\\("([^"]+)"\\)/g, "//button[contains(text(), '$1')]"),
-                        document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
-                    ).singleNodeValue;
-                    if (!el) return null;
-                    const rect = el.getBoundingClientRect();
-                    return { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
-                }
-            """, day_selectors[0])
+            # Get coordinates from the matched element (the one _find_element returned)
+            location = await day_btn.apply("""(e) => {
+                const rect = e.getBoundingClientRect();
+                return { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
+            }""")
 
             if location:
                 # Click via CDP mouse events for authenticity
-                await self._page.send(cdp.input.dispatch_mouse_event(
-                    type_="mouseMoved", x=int(location['x']), y=int(location['y'])
-                ))
-                await asyncio.sleep(random.uniform(0.1, 0.2))
-                await self._page.send(cdp.input.dispatch_mouse_event(
-                    type_="mousePressed", x=int(location['x']), y=int(location['y']), button="left"
-                ))
-                await asyncio.sleep(random.uniform(0.05, 0.15))
-                await self._page.send(cdp.input.dispatch_mouse_event(
-                    type_="mouseReleased", x=int(location['x']), y=int(location['y']), button="left"
-                ))
+                clicked = await self._cdp_mouse_click(location['x'], location['y'])
+                if clicked:
+                    await asyncio.sleep(random.uniform(0.04, 0.12))
+                else:
+                    # Fallback to element click if CDP click fails
+                    await day_btn.click()
             else:
-                # Fallback to element click if CDP click fails
+                # Fallback to element click if coordinate extraction fails
                 await day_btn.click()
 
             await asyncio.sleep(random.uniform(0.5, 1.0))
 
             # Verify modal has closed
             modal_still_visible = await self._page.evaluate("""
-                () => !!(document.querySelector('[role="dialog"]') &&
-                         document.querySelector('[role="dialog"]').offsetParent !== null)
+                () => {
+                    const dialog = document.querySelector('[role="dialog"]');
+                    if (!dialog) return false;
+                    const rect = dialog.getBoundingClientRect();
+                    const style = window.getComputedStyle(dialog);
+                    return rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                }
             """)
 
             if not modal_still_visible:
                 logger.warning("[PURCHASE] ✓ Modal dismissed successfully — entering stealth pause")
                 self._status_cb("[PURCHASE] Selected delivery day")
 
-                # CRITICAL: Wait 2-4s + DOM stabilization after modal close
+                # CRITICAL: Wait 2-4s after modal close before resuming checkout
                 # Akamai's behavioral analysis flags immediate button clicks after modals close.
                 # Human users pause to read the updated form. This pause is essential for evasion.
                 pause_time = random.uniform(2.0, 3.5)
                 logger.info("[PURCHASE] Stealth pause: %.1fs (human-realistic)", pause_time)
                 await asyncio.sleep(pause_time)
 
-                # Poll for DOM stability: wait until no mutations for 800ms
-                # This ensures React has finished re-rendering the checkout form before
-                # we resume polling for Continue buttons. Polling during re-render = detectable.
-                logger.info("[PURCHASE] Waiting for React re-render to stabilize...")
-                stable = await self._wait_for_dom_stability(timeout=4000)
-                if stable:
-                    logger.info("[PURCHASE] ✓ DOM stable — resuming checkout flow")
-                else:
-                    logger.debug("[PURCHASE] DOM stability timeout (continuing anyway)")
+                # After the stealth pause, inject a mouse movement toward the form
+                # to simulate a user moving their cursor back to interact with the main checkout
+                await self._page.mouse_move(x=512, y=400)  # move toward center of form area
+                await asyncio.sleep(random.uniform(0.2, 0.5))
+                logger.info("[PURCHASE] ✓ Modal dismissed — resuming checkout flow")
 
                 return True
             else:
