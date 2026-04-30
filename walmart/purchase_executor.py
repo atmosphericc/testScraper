@@ -1260,7 +1260,10 @@ class WalmartPurchaseExecutor:
 
                 # After the stealth pause, inject a mouse movement toward the form
                 # to simulate a user moving their cursor back to interact with the main checkout
-                await self._page.mouse_move(x=512, y=400)  # move toward center of form area
+                # Randomize coordinates to avoid fixed-pattern detection
+                x = random.uniform(400, 700)
+                y = random.uniform(300, 500)
+                await self._page.mouse_move(x=x, y=y)
                 await asyncio.sleep(random.uniform(0.2, 0.5))
                 logger.info("[PURCHASE] ✓ Modal dismissed — resuming checkout flow")
 

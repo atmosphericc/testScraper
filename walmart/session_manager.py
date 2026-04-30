@@ -473,11 +473,24 @@ class WalmartSessionManager:
         self._status_cb("[SESSION] Warming session...")
         from zendriver import cdp
 
-        warm_pages = [
-            "https://www.walmart.com",
-            "https://www.walmart.com/browse/toys/trading-card-games/4171_4191_8134350",
-            "https://www.walmart.com/search?q=pokemon+trading+cards",
+        # Pool of external sites to visit for warmup
+        # Randomize selection and order to avoid machine-like patterns
+        all_warm_sites = [
+            "https://www.google.com",
+            "https://www.amazon.com",
+            "https://www.reddit.com",
+            "https://www.youtube.com",
+            "https://www.ebay.com",
+            "https://www.wikipedia.org",
+            "https://www.twitter.com",
+            "https://www.instagram.com",
         ]
+        # Select 3-5 random sites and shuffle order
+        num_sites = random.randint(3, 5)
+        selected_sites = random.sample(all_warm_sites, k=num_sites)
+        random.shuffle(selected_sites)
+        # Always include Walmart home at the start for _px3 generation
+        warm_pages = ["https://www.walmart.com"] + selected_sites
 
         for i, url in enumerate(warm_pages, 1):
             try:
