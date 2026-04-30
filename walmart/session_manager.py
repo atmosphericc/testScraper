@@ -771,14 +771,35 @@ class WalmartSessionManager:
                     continue
 
                 # Check if stock monitor signaled GraphQL hash refresh needed (HTTP 400 detected)
-                # Tab 2 now has CDP network handlers — the hash will be auto-discovered
-                # on Tab 2's next product page navigation (during purchase). We do NOT
-                # navigate Tab 1 to a PDP here — PDPs are PerimeterX sensitive routes
-                # that trigger /blocked challenges and pollute Tab 1's behavioral profile.
                 if self._graphql_refresh_needed:
-                    logger.warning("[HARVESTER] GraphQL hash refresh needed — Tab 2 will re-discover on next purchase navigation")
-                    self._status_cb("[HARVESTER] GraphQL hash stale — will refresh on next product page visit")
+                    logger.warning("[HARVESTER] GraphQL hash stale (HTTP 400 detected) — refreshing hash via product page visit")
+                    self._status_cb("[HARVESTER] Refreshing GraphQL hash...")
                     self._graphql_refresh_needed = False
+
+                    # Visit a product page to trigger GraphQL fetch and re-discover hash via CDP intercept
+                    try:
+                        products = get_enabled_products()
+                        if products:
+                            product = products[0]  # Use first product as test
+                            item_id = product.get("item_id")
+                            product_url = f"https://www.walmart.com/ip/{item_id}"
+                            logger.info("[HARVESTER] Navigating to product %s to refresh GraphQL hash", item_id)
+                            from zendriver import cdp as _cdp_hash
+                            await self._page.send(_cdp_hash.page.navigate(product_url))
+                            await asyncio.sleep(5.0)  # Wait for GraphQL response to be intercepted
+                            logger.info("[HARVESTER] GraphQL hash refresh attempt complete — new hash should be set")
+                        else:
+                            logger.warning("[HARVESTER] No products in config — cannot refresh hash")
+                    except Exception as e:
+                        logger.error("[HARVESTER] GraphQL hash refresh failed: %s", e)
+
+                    # Park back on homepage
+                    try:
+                        from zendriver import cdp as _cdp_home
+                        await self._page.send(_cdp_home.page.navigate("https://www.walmart.com"))
+                        await asyncio.sleep(2.0)
+                    except Exception:
+                        pass
 
                 if self.needs_rewarm():
                     logger.debug("[HARVESTER] _px3 stale — re-warming")

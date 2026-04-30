@@ -92,14 +92,15 @@ ORDER_CONFIRM_SELECTORS = [
 
 
 class PurchaseResult:
-    def __init__(self, success: bool, order_id: Optional[str] = None, error: Optional[str] = None):
+    def __init__(self, success: bool, order_id: Optional[str] = None, confirmation_url: Optional[str] = None, error: Optional[str] = None):
         self.success = success
         self.order_id = order_id
+        self.confirmation_url = confirmation_url
         self.error = error
 
     def __repr__(self):
         if self.success:
-            return f"PurchaseResult(SUCCESS, order_id={self.order_id})"
+            return f"PurchaseResult(SUCCESS, order_id={self.order_id}, url={self.confirmation_url})"
         return f"PurchaseResult(FAILED, error={self.error})"
 
 
@@ -209,12 +210,12 @@ class WalmartPurchaseExecutor:
 
             # Step 8: Place order
 
-            order_id = await self._place_order(item_id)
+            order_id, confirmation_url = await self._place_order(item_id)
             if order_id:
                 self._status_cb(f"[PURCHASE] ORDER PLACED! ID: {order_id}")
-                logger.warning("[PURCHASE] SUCCESS — order ID: %s", order_id)
+                logger.warning("[PURCHASE] SUCCESS — order ID: %s at %s", order_id, confirmation_url)
                 await self._clear_cart()
-                return PurchaseResult(True, order_id=order_id)
+                return PurchaseResult(True, order_id=order_id, confirmation_url=confirmation_url)
             else:
                 await self._clear_cart()
                 return PurchaseResult(False, error="Place order click succeeded but no order ID found")
@@ -1023,13 +1024,14 @@ class WalmartPurchaseExecutor:
         except Exception as e:
             logger.warning("[PURCHASE] CVV entry failed: %s", e)  # CVV not required or already filled
 
-    async def _place_order(self, item_id: str) -> Optional[str]:
+    async def _place_order(self, item_id: str) -> tuple[Optional[str], Optional[str]]:
+        """Click Place Order and return (order_id, confirmation_url) tuple."""
         self._status_cb("[PURCHASE] Clicking Place Order...")
         btn = await self._find_element(PLACE_ORDER_SELECTORS, timeout=10000)
         if not btn:
             await self._screenshot(f"no_place_order_{item_id}")
             logger.warning("[PURCHASE] Place Order button not found")
-            return None
+            return None, None
 
         await self._screenshot(f"before_place_order_{item_id}")
         await btn.click()
@@ -1042,15 +1044,25 @@ class WalmartPurchaseExecutor:
         # Regex matches Walmart's known confirmation URL patterns
         _confirm_pattern = re.compile(r".*(order-confirmation|order/confirm|thank-you|order-placed).*")
         deadline = time.monotonic() + 20.0
+        cvv_modal_check_count = 0
         while time.monotonic() < deadline:
             current_url = self._page.url or ""
+
+            # Check for CVV modal that might appear after Place Order click (race condition)
+            if cvv_modal_check_count < 3:  # Only check first 3 iterations to avoid spam
+                modal_dismissed = await self._handle_delivery_day_modal(f"place_order_cvv_{cvv_modal_check_count}")
+                if modal_dismissed:
+                    cvv_modal_check_count += 1
+                    logger.info("[PURCHASE] Modal dismissed after Place Order click")
+                    await asyncio.sleep(random.uniform(1.0, 2.0))  # Pause after modal dismissal
+
             # Check for /blocked challenge immediately after Place Order click
             if "/blocked" in current_url:
                 self._status_cb("[PURCHASE] Challenge detected after Place Order click — solving...")
                 solved = await self._handle_blocked()
                 if not solved:
                     logger.error("[PURCHASE] Cannot solve /blocked after Place Order click")
-                    return None
+                    return None, None
                 # After solving, continue waiting for confirmation
             elif _confirm_pattern.match(current_url):
                 break
@@ -1061,10 +1073,11 @@ class WalmartPurchaseExecutor:
             if self._page.url == pre_click_url:
                 logger.warning("[PURCHASE] Page did not navigate after Place Order click")
 
-        # Extract order ID
+        # Extract order ID and capture confirmation URL
         order_id = await self._extract_order_id()
+        confirmation_url = self._page.url or None
         await self._screenshot(f"order_confirmation_{item_id}")
-        return order_id
+        return order_id, confirmation_url
 
     async def _extract_order_id(self) -> Optional[str]:
         for selector in ORDER_CONFIRM_SELECTORS:
