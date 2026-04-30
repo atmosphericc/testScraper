@@ -70,10 +70,36 @@ _STEALTH_SCRIPT = """
         configurable: true
     });
 
-    // window.chrome must exist in real Chrome
-    if (!window.chrome) {
-        window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-    }
+    // window.chrome must exist in real Chrome with realistic properties
+    Object.defineProperty(window, 'chrome', {
+        get: () => ({
+            runtime: {
+                connect: function() { throw new Error('Invalid port'); },
+                sendMessage: function() { return Promise.reject(); },
+                getPlatformInfo: function() {
+                    return Promise.resolve({ os: 'win', arch: 'x86-64' });
+                }
+            },
+            app: {
+                isInstalled: false
+            },
+            loadTimes: function() {
+                return {
+                    requestStart: performance.now() - 2000,
+                    loadEventEnd: performance.now() - 500,
+                    domContentLoadedEventEnd: performance.now() - 800
+                };
+            },
+            csi: function() {
+                return {
+                    pageLoadTime: 1500,
+                    startE: performance.now() - 2000,
+                    onloadT: performance.now() - 500
+                };
+            }
+        }),
+        configurable: true
+    });
 })();
 """
 
@@ -472,6 +498,7 @@ class WalmartSessionManager:
 
         self._status_cb("[SESSION] Warming session...")
         from zendriver import cdp
+        from zendriver.cdp import input_ as cdp_input
 
         # Pool of external sites to visit for warmup
         # Randomize selection and order to avoid machine-like patterns
@@ -498,13 +525,61 @@ class WalmartSessionManager:
                 await self._page.send(cdp.page.navigate(url))
                 await asyncio.sleep(random.uniform(5.0, 8.0))
                 await self._handle_blocked_page()
+
+                # Simulate realistic user interaction during warmup
+                # (scroll 2-4 times, move mouse 3-6 times, idle for reading)
+                for _ in range(random.randint(2, 4)):
+                    # Scroll up or down
+                    await self._page.send(cdp_input.dispatch_wheel_event(
+                        x=random.randint(600, 1200),
+                        y=random.randint(300, 700),
+                        deltaX=0,
+                        deltaY=random.uniform(-300, 300)
+                    ))
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+
+                # Move mouse around page (simulate reading/browsing)
+                for _ in range(random.randint(3, 6)):
+                    x = random.uniform(100, 1200)
+                    y = random.uniform(100, 700)
+                    await self._page.send(cdp_input.dispatch_mouse_event(
+                        type_="mouseMoved", x=x, y=y, pointer_type="mouse"
+                    ))
+                    await asyncio.sleep(random.uniform(0.3, 1.0))
+
+                # Random idle (user reading content)
+                await asyncio.sleep(random.uniform(1.0, 3.0))
+
                 # After each page, check if _px3 appeared — stop early if we have it
                 raw = await self._page.send(cdp.network.get_all_cookies())
                 cookie_dict = {c.name: c.value for c in raw}
-                if "_abck" not in cookie_dict:
-                    logger.warning("[SESSION] No _abck cookie — Akamai challenge may have failed")
+
+                # Validate bm_sz cookie (Akamai sensor seed) — if missing, reload page
                 if "bm_sz" not in cookie_dict:
-                    logger.warning("[SESSION] No bm_sz — sensor.js may use default seed 8888888")
+                    logger.warning("[SESSION] No bm_sz cookie — sensor.js using default seed 8888888 (bot signal)")
+                    if i == 1:  # First page (Walmart home) — reload to force cookie generation
+                        logger.info("[SESSION] Reloading Walmart home page to generate bm_sz cookie")
+                        await self._page.send(cdp.page.reload())
+                        await asyncio.sleep(2.0)
+                        raw = await self._page.send(cdp.network.get_all_cookies())
+                        cookie_dict = {c.name: c.value for c in raw}
+                        if "bm_sz" in cookie_dict:
+                            logger.info("[SESSION] ✓ bm_sz generated after reload")
+                        else:
+                            logger.warning("[SESSION] bm_sz still missing after reload — Akamai may reject sensor data")
+
+                if "_abck" not in cookie_dict:
+                    logger.warning("[SESSION] No _abck cookie — Akamai device fingerprint not generated, challenge may have failed")
+                    if i == 1:  # First page — try reload to generate _abck
+                        logger.info("[SESSION] Reloading Walmart home page to generate _abck cookie")
+                        await self._page.send(cdp.page.reload())
+                        await asyncio.sleep(2.0)
+                        raw = await self._page.send(cdp.network.get_all_cookies())
+                        cookie_dict = {c.name: c.value for c in raw}
+                        if "_abck" in cookie_dict:
+                            logger.info("[SESSION] ✓ _abck generated after reload")
+                        else:
+                            logger.warning("[SESSION] _abck still missing — device fingerprint may be untrusted")
                 if "ak_bmsc" not in cookie_dict:
                     logger.warning("[SESSION] No ak_bmsc — Akamai device cache not populated")
                 if "_px3" in cookie_dict:

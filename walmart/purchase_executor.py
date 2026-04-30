@@ -122,6 +122,9 @@ class WalmartPurchaseExecutor:
         self._status_cb = status_callback or (lambda msg: None)
         self._session = session  # WalmartSessionManager — for blocked page solving
         Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
+        # Track last mouse position for realistic click trajectories
+        self._last_mouse_x: float = random.uniform(100, 1200)
+        self._last_mouse_y: float = random.uniform(100, 700)
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -348,10 +351,10 @@ class WalmartPurchaseExecutor:
                 last_result = result
 
                 if result.get('found') and not result.get('disabled'):
-                    # Button located — click it via CDP mouse events
+                    # Button located — click it via realistic mouse trajectory
                     x = result['x'] + result['w'] / 2 + random.uniform(-5, 5)
                     y = result['y'] + result['h'] / 2 + random.uniform(-3, 3)
-                    clicked = await self._cdp_mouse_click(x, y)
+                    clicked = await self._realistic_click(x, y, "Add to Cart")
                     if clicked:
                         self._status_cb(f"[PURCHASE] Clicked Add to Cart (attempt {attempt + 1})")
                         logger.info("[PURCHASE] ATC clicked via CDP mouse on attempt %d via %s at (%.0f, %.0f)",
@@ -371,17 +374,17 @@ class WalmartPurchaseExecutor:
                         await asyncio.sleep(0.15)
                         break
 
-                # Button not found or disabled — log and retry
+                # Button not found or disabled — log and retry with jitter
                 if not result.get('found'):
                     logger.debug("[PURCHASE] Attempt %d: button not found, %d buttons on page",
                                 attempt + 1, result.get('buttonCount', 0))
                 elif result.get('disabled'):
                     logger.debug("[PURCHASE] Attempt %d: button disabled: '%s'", attempt + 1, result.get('text'))
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(random.uniform(0.3, 0.8))
 
             except Exception as e:
                 logger.debug("[PURCHASE] Attempt %d: exception: %s", attempt + 1, str(e))
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(random.uniform(0.3, 0.8))
 
         else:
             # All 10 attempts failed
@@ -631,8 +634,8 @@ class WalmartPurchaseExecutor:
                 if rect and rect.get('w', 0) > 0:
                     x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
                     y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
-                    await self._cdp_mouse_click(x, y)
-                    logger.info("[PURCHASE] Checkout button clicked via CDP mouse at (%.0f, %.0f)", x, y)
+                    await self._realistic_click(x, y, "Checkout")
+                    logger.info("[PURCHASE] Checkout button clicked via realistic mouse trajectory at (%.0f, %.0f)", x, y)
                 else:
                     await btn.click()
                     logger.info("[PURCHASE] Checkout button clicked via element.click()")
@@ -766,7 +769,7 @@ class WalmartPurchaseExecutor:
                 action = result.get('action')
                 if action == 'clicked':
                     # Use CDP mouse click for authenticity
-                    await self._cdp_mouse_click(result['x'], result['y'])
+                    await self._realistic_click(result['x'], result['y'], "Delivery")
                     await asyncio.sleep(random.uniform(0.5, 1.0))
                     self._status_cb("[PURCHASE] Delivery selected on cart page")
                     logger.info("[PURCHASE] Cart: clicked Delivery tile (text='%s')", result.get('text'))
@@ -844,7 +847,7 @@ class WalmartPurchaseExecutor:
                 via = result.get('via', '?')
                 if action == 'clicked':
                     # Use CDP mouse click for authenticity
-                    await self._cdp_mouse_click(result['x'], result['y'])
+                    await self._realistic_click(result['x'], result['y'], "Delivery")
                     await asyncio.sleep(random.uniform(0.3, 0.6))
                     self._status_cb("[PURCHASE] Delivery option selected")
                     logger.info("[PURCHASE] Delivery option clicked via: %s", via)
@@ -868,6 +871,11 @@ class WalmartPurchaseExecutor:
         Handles both 2-step and 3-step checkout flows (MAX_STEPS=6 covers both).
         Checks for and dismisses delivery day modals that appear between steps.
         """
+        # Validate _px3 is fresh before entering checkout flow
+        px3_ok = await self._check_px3_fresh()
+        if not px3_ok:
+            logger.warning("[PURCHASE] _px3 missing at start of shipping confirmation — continuing but may encounter stale cookie issues")
+
         # First ensure delivery (not pickup) is selected
         await self._select_delivery_option()
 
@@ -1251,11 +1259,14 @@ class WalmartPurchaseExecutor:
                 logger.warning("[PURCHASE] ✓ Modal dismissed successfully — entering stealth pause")
                 self._status_cb("[PURCHASE] Selected delivery day")
 
-                # CRITICAL: Wait 2-4s after modal close before resuming checkout
+                # CRITICAL: Wait after modal close before resuming checkout
                 # Akamai's behavioral analysis flags immediate button clicks after modals close.
-                # Human users pause to read the updated form. This pause is essential for evasion.
-                pause_time = random.uniform(2.0, 3.5)
-                logger.info("[PURCHASE] Stealth pause: %.1fs (human-realistic)", pause_time)
+                # Human users pause to read the updated form. Vary pause based on modal complexity
+                # (more options = longer to read).
+                # Estimate complexity from modal state (typically 2-4 options)
+                complexity = 2  # default: simple modal with 2 options
+                pause_time = random.uniform(0.8 + complexity * 0.5, 2.0 + complexity * 1.0)
+                logger.info("[PURCHASE] Modal pause: %.1fs (complexity=%d)", pause_time, complexity)
                 await asyncio.sleep(pause_time)
 
                 # After the stealth pause, inject a mouse movement toward the form
@@ -1439,6 +1450,87 @@ class WalmartPurchaseExecutor:
         """Add a small randomized delay to simulate human interaction timing."""
         delay = random.randint(min_ms, max_ms) / 1000.0
         await asyncio.sleep(delay)
+
+    async def _check_px3_fresh(self) -> bool:
+        """
+        Check if _px3 cookie is present. If missing, session may need rewarm.
+        _px3 expires ~60s after generation; if checkout takes >50s, it may be stale.
+        Returns True if _px3 is present, False if missing/stale.
+        """
+        if not self._session or not self._session._page:
+            return True  # Can't check, assume ok
+        try:
+            from zendriver.cdp import network
+            raw = await self._session._page.send(network.get_all_cookies())
+            cookie_dict = {c.name: c.value for c in raw}
+            if "_px3" not in cookie_dict:
+                logger.warning("[PURCHASE] _px3 cookie missing — may need rewarm")
+                return False
+            return True
+        except Exception as e:
+            logger.warning("[PURCHASE] Failed to check _px3: %s", e)
+            return True  # Can't check, assume ok
+
+    async def _realistic_click(self, x: float, y: float, selector: str = None) -> bool:
+        """
+        Click with pre-movement trajectory to simulate human behavior.
+
+        Humans always move the mouse from its previous position before clicking.
+        Akamai detects instant teleport clicks as bot signals. This method emits
+        a Bezier-like trajectory (3-7 intermediate points) before the final click.
+        """
+        try:
+            from zendriver.cdp import input_ as cdp_input
+
+            # Starting position (track between clicks)
+            current_x = self._last_mouse_x
+            current_y = self._last_mouse_y
+
+            # Emit intermediate points along the path (Bezier-like)
+            steps = random.randint(3, 7)
+            for i in range(steps):
+                # Linear interpolation from current to target
+                t = i / steps
+                move_x = int(current_x + (x - current_x) * t)
+                move_y = int(current_y + (y - current_y) * t)
+
+                # Emit mouse movement event
+                await self._page.send(cdp_input.dispatch_mouse_event(
+                    type_="mouseMoved", x=move_x, y=move_y, pointer_type="mouse"
+                ))
+                # 10-50ms between moves (human-like)
+                await asyncio.sleep(random.uniform(0.01, 0.05))
+
+            # Final move to exact target
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseMoved", x=x, y=y, pointer_type="mouse"
+            ))
+            await asyncio.sleep(random.uniform(0.02, 0.08))
+
+            # Now click (press + release)
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y,
+                button=cdp_input.MouseButton.LEFT, buttons=1,
+                click_count=1, pointer_type="mouse"
+            ))
+            await asyncio.sleep(random.uniform(0.04, 0.12))
+
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y,
+                button=cdp_input.MouseButton.LEFT, buttons=0,
+                click_count=1, pointer_type="mouse"
+            ))
+
+            # Track position for next click
+            self._last_mouse_x = x
+            self._last_mouse_y = y
+
+            if selector:
+                logger.debug("[PURCHASE] Realistic click on %s at (%.0f, %.0f) with trajectory", selector, x, y)
+            return True
+        except Exception as e:
+            logger.warning("[PURCHASE] Realistic click failed: %s", e)
+            return False
 
     async def _cdp_mouse_click(self, x: float, y: float) -> bool:
         """Click at viewport coordinates using CDP Input.dispatchMouseEvent.

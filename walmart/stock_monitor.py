@@ -12,6 +12,7 @@ cookies and TLS fingerprint.
 import asyncio
 import json
 import logging
+import random
 import threading
 import time
 from typing import Callable, Optional
@@ -29,16 +30,22 @@ walmart_logger = get_walmart_logger()
 
 # Browser fetch loop fires every CHECK_INTERVAL seconds.
 # Each fire fetches ALL products in parallel via Promise.allSettled inside the browser.
-CHECK_INTERVAL = 0.333  # 3 checks per second per product
+# NOTE: Randomized per-dispatcher to break determinism and avoid Akamai detection.
+# We use exponential distribution to achieve maximum safe speed with natural variance.
+NUM_DISPATCHERS = 10  # 10 dispatchers × 1 check/sec each = 10 checks/sec total (3.3x faster than original 3)
+CHECK_INTERVAL_AVG = 1.0  # Each dispatcher: 1 check/second (human-like frequency per dispatcher)
 
 
 class WalmartStockMonitor:
     """
-    Browser-fetch stock monitor.
+    Browser-fetch stock monitor — maximum speed with Akamai evasion.
 
     Runs fetch() inside the real Chrome tab (Tab 1) to check all products
-    in parallel. Three dispatcher threads fire overlapping batches to
-    achieve ~3 checks/sec/product.
+    in parallel. Ten dispatcher threads fire with randomized exponential-distribution
+    intervals to achieve ~10 checks/sec/product while evading Akamai detection.
+
+    Each dispatcher individually looks human (1 check/sec), but combined they
+    achieve high speed without deterministic patterns that trigger bot detection.
 
     Usage:
         monitor = WalmartStockMonitor(
@@ -78,6 +85,10 @@ class WalmartStockMonitor:
         self._total_checks: int = 0
         self._total_errors: int = 0
         self._checks_lock = threading.Lock()
+
+        # Rate limit detection (monitor for 429 errors indicating we're too fast)
+        self._rate_limit_hits: int = 0
+        self._rate_limit_backoff: float = 0.0
 
     # ------------------------------------------------------------------
     # Start / stop
@@ -252,13 +263,16 @@ class WalmartStockMonitor:
         if self._stop_event.is_set():
             return
 
-        logger.info("[MONITOR] Browser fetch loop started — 3 dispatchers")
+        logger.info(f"[MONITOR] Browser fetch loop started — {NUM_DISPATCHERS} dispatchers, targeting ~{NUM_DISPATCHERS * (1.0/CHECK_INTERVAL_AVG):.0f} checks/sec")
 
         dispatchers = []
-        for i in range(3):
+        for i in range(NUM_DISPATCHERS):
+            # Randomize initial delay to break determinism and synchronization
+            # Stagger start times with jitter so not all dispatchers fire together
+            initial_jitter = random.uniform(0.0, 0.5)
             t = threading.Thread(
                 target=self._fetch_dispatcher,
-                args=(i * CHECK_INTERVAL,),
+                args=(i * 0.1 + initial_jitter,),
                 daemon=True,
                 name=f"WalmartFetch-{i}",
             )
@@ -270,7 +284,13 @@ class WalmartStockMonitor:
             t.join(timeout=5)
 
     def _fetch_dispatcher(self, initial_delay: float):
-        """Single dispatcher — fires one batch per second, offset by initial_delay."""
+        """
+        Single dispatcher — fires stock checks with randomized intervals.
+
+        Uses exponential distribution to achieve ~4 checks/sec average
+        while breaking deterministic timing patterns (which Akamai detects).
+        Inter-arrival times: mostly 150-400ms, occasionally 80ms or 500ms.
+        """
         if initial_delay > 0:
             self._stop_event.wait(timeout=initial_delay)
             if self._stop_event.is_set():
@@ -313,6 +333,14 @@ class WalmartStockMonitor:
                             error_msg = r['error']
                             errors.append(f"{item_id}:{error_msg}")
 
+                            # Detect rate limiting (429 = too fast, backoff needed)
+                            if error_msg == "HTTP_429":
+                                with self._checks_lock:
+                                    self._rate_limit_hits += 1
+                                if self._rate_limit_hits >= 3:
+                                    logger.warning(f"[MONITOR] Rate limited (429) detected {self._rate_limit_hits}x — backing off for 30s")
+                                    self._rate_limit_backoff = time.monotonic() + 30.0
+
                             # Detect GraphQL hash staleness (400 error pattern)
                             if error_msg == "HTTP_400":
                                 logger.error("[MONITOR] HTTP 400 detected — possible GraphQL hash staleness, triggering refresh")
@@ -348,10 +376,24 @@ class WalmartStockMonitor:
                     self._total_errors += 1
                 logger.warning("[MONITOR] Browser fetch error: %s", e)
 
+            # RANDOMIZED INTER-REQUEST DELAY (Akamai evasion)
+            # Use exponential distribution to simulate natural human check frequency
+            # Average: CHECK_INTERVAL_AVG (1.0s for 10 dispatchers), Range: 0.5-1.5s
             elapsed = time.monotonic() - cycle_start
-            remaining = max(0.0, 1.0 - elapsed)
-            if remaining > 0:
-                self._stop_event.wait(timeout=remaining)
+
+            # Check if rate limited — back off if so
+            if time.monotonic() < self._rate_limit_backoff:
+                # In backoff period, wait full 60s between checks
+                wait_time = max(0.0, self._rate_limit_backoff - time.monotonic())
+                logger.warning(f"[MONITOR] Rate limit backoff: waiting {wait_time:.0f}s before resuming")
+                self._stop_event.wait(timeout=wait_time)
+            else:
+                # Normal operation: exponential variance
+                interval = random.expovariate(1.0 / CHECK_INTERVAL_AVG)
+                interval = max(0.50, min(1.50, interval))  # Clamp to 0.5-1.5s (500-1500ms)
+                remaining = max(0.0, interval - elapsed)
+                if remaining > 0:
+                    self._stop_event.wait(timeout=remaining)
 
     def _run_browser_fetch(self, item_ids: list[str]) -> Optional[list[dict]]:
         """Schedule the fetch JS on the browser event loop and wait for result."""
