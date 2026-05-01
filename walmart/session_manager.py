@@ -100,6 +100,17 @@ _STEALTH_SCRIPT = """
         }),
         configurable: true
     });
+
+    // Hardware fingerprint properties — real Chrome reports these
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+        get: () => 4,  // Typical quad-core processor
+        configurable: true
+    });
+
+    Object.defineProperty(navigator, 'deviceMemory', {
+        get: () => 8,  // Typical 8GB RAM in modern machines
+        configurable: true
+    });
 })();
 """
 
@@ -365,6 +376,7 @@ class WalmartSessionManager:
             raise RuntimeError("Session not started — call start() first")
 
         self._status_cb("[SESSION] Logging in to Walmart...")
+        from zendriver.cdp import input_ as cdp_input
         try:
             await self._page.get(WALMART_LOGIN_URL)
             await self._handle_blocked_page()
@@ -377,8 +389,21 @@ class WalmartSessionManager:
             if not email_input:
                 self._status_cb("[SESSION] Could not find email field")
                 return False
-            await email_input.set_value(email)
-            await asyncio.sleep(0.5)
+            # Type email char-by-char via CDP to avoid detection
+            await email_input.click()
+            await asyncio.sleep(random.uniform(0.1, 0.3))
+            await email_input.apply("(e) => { e.value = ''; e.focus(); }")
+            await asyncio.sleep(random.uniform(0.05, 0.1))
+            for char in email:
+                await self._page.send(cdp_input.dispatch_key_event(
+                    type_="keyDown", text=char, key=char,
+                ))
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+                await self._page.send(cdp_input.dispatch_key_event(
+                    type_="keyUp", key=char,
+                ))
+                await asyncio.sleep(random.uniform(0.08, 0.15))
+            await asyncio.sleep(random.uniform(0.3, 0.7))
 
             # Walmart desktop login shows both email + password simultaneously.
             # Some mobile/variant pages show a "Continue" step — try it but don't fail.
@@ -398,8 +423,21 @@ class WalmartSessionManager:
             if not password_input:
                 self._status_cb("[SESSION] Could not find password field")
                 return False
-            await password_input.set_value(password)
-            await asyncio.sleep(0.5)
+            # Type password char-by-char via CDP to avoid detection
+            await password_input.click()
+            await asyncio.sleep(random.uniform(0.1, 0.3))
+            await password_input.apply("(e) => { e.value = ''; e.focus(); }")
+            await asyncio.sleep(random.uniform(0.05, 0.1))
+            for char in password:
+                await self._page.send(cdp_input.dispatch_key_event(
+                    type_="keyDown", text=char, key=char,
+                ))
+                await asyncio.sleep(random.uniform(0.05, 0.15))
+                await self._page.send(cdp_input.dispatch_key_event(
+                    type_="keyUp", key=char,
+                ))
+                await asyncio.sleep(random.uniform(0.08, 0.15))
+            await asyncio.sleep(random.uniform(0.3, 0.7))
 
             # Submit
             sign_in = None
@@ -702,13 +740,18 @@ class WalmartSessionManager:
         # Low-risk pages for re-warming — never product pages (/ip/...).
         # PDPs are PerimeterX "sensitive routes": they always trigger a live
         # server-side risk call regardless of _px3 state, causing /blocked loops.
-        REWARM_PAGES = [
+        ALL_REWARM_PAGES = [
             "https://www.walmart.com",
             "https://www.walmart.com/browse/toys/trading-card-games/4171_4191_8134350",
             "https://www.walmart.com/search?q=pokemon+trading+cards",
         ]
 
         async def _do_warmup():
+            # Randomize selection (2-3 pages) and order to break behavioral patterns
+            warmup_count = random.randint(2, 3)
+            REWARM_PAGES = random.sample(ALL_REWARM_PAGES, min(warmup_count, len(ALL_REWARM_PAGES)))
+            random.shuffle(REWARM_PAGES)
+
             # Do NOT call self._page.activate() here — CDP page.navigate() works
             # in background tabs and we must keep Tab 2 (checkout) as the
             # foreground tab so Chrome doesn't throttle its JavaScript execution.
@@ -1092,7 +1135,7 @@ class WalmartSessionManager:
                 )
                 await asyncio.sleep(random.uniform(0.05, 0.12))
                 await page.mouse_move(cx, cy, steps=4)
-                await asyncio.sleep(0.08)
+                await asyncio.sleep(random.uniform(0.06, 0.15))
 
                 await page.send(cdp.input_.dispatch_mouse_event(
                     type_="mousePressed",
@@ -1136,11 +1179,11 @@ class WalmartSessionManager:
                     buttons=0, click_count=1,
                 ))
 
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(random.uniform(0.3, 0.8))
 
             except Exception as e:
                 logger.warning("[SESSION] Mouse interaction error: %s", e)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(random.uniform(0.3, 0.8))
 
         # 6e: secondary success signal — check _px3 cookie in addition to URL
         url_cleared = "/blocked" not in (page.url or "")

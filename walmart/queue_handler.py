@@ -82,7 +82,8 @@ PASSTHROUGH_CLICK_TEXTS = [
 
 # ATC button selectors — becoming active is the primary pass-through signal
 ATC_SELECTORS = [
-    'button[data-automation-id="add-to-cart-btn"]',
+    'button[data-automation-id="atc"]',  # Modern Walmart selector (primary)
+    'button[data-automation-id="add-to-cart-btn"]',  # Legacy fallback
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
 ]
 

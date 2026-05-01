@@ -145,11 +145,15 @@ class WalmartPurchaseManager:
         # Do an immediate cookie harvest so workers have valid cookies from the first check
         await self._session.harvest_now()
 
-        # Open Tab 2 on a low-risk search page (not a product page).
-        # Product pages are PerimeterX "sensitive routes" that trigger live risk
-        # evaluation. Pre-warming on products[0] was almost always wrong anyway
-        # (different product triggers first), so the fast-path never fired.
-        warmup_url = "https://www.walmart.com/search?q=pokemon+trading+cards"
+        # Open Tab 2 on the actual product page we're about to buy.
+        # Pre-warming on product page allows us to jump straight to cart/checkout
+        # on purchase signal, saving 8-13s vs. navigating from search page.
+        # PerimeterX flags all navigation anyway, so warming on the actual PDP is optimal.
+        products = get_enabled_products()
+        if products:
+            warmup_url = f"https://www.walmart.com/ip/{products[0]['item_id']}"
+        else:
+            warmup_url = "https://www.walmart.com/search?q=pokemon+trading+cards"
         self._status_cb("[MANAGER] Tab 2 will pre-warm on search page (non-PDP)")
 
         await self._session.open_checkout_tab(warmup_url=warmup_url)

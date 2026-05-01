@@ -1034,7 +1034,22 @@ class WalmartPurchaseExecutor:
             return None, None
 
         await self._screenshot(f"before_place_order_{item_id}")
-        await btn.click()
+        # Click via CDP mouse trajectory for scrutinized checkout button
+        try:
+            rect = await btn.apply("""(e) => {
+                e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                const r = e.getBoundingClientRect();
+                return { x: r.left, y: r.top, w: r.width, h: r.height };
+            }""")
+            if rect:
+                x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+                y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+                await self._realistic_click(x, y, "Place Order")
+            else:
+                await btn.click()
+        except Exception as e:
+            logger.warning("[PURCHASE] Failed to get button bounds: %s — falling back to JS click", e)
+            await btn.click()
         self._status_cb("[PURCHASE] Place Order clicked — waiting for confirmation...")
 
         # Wait for order confirmation page — polling loop (zendriver has no wait_for_url)

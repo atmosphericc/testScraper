@@ -32,7 +32,7 @@ walmart_logger = get_walmart_logger()
 # Each fire fetches ALL products in parallel via Promise.allSettled inside the browser.
 # NOTE: Randomized per-dispatcher to break determinism and avoid Akamai detection.
 # We use exponential distribution to achieve maximum safe speed with natural variance.
-NUM_DISPATCHERS = 10  # 10 dispatchers × 1 check/sec each = 10 checks/sec total (3.3x faster than original 3)
+NUM_DISPATCHERS = 3  # 3 dispatchers × 1 check/sec each = 3 checks/sec total (breaks machine-pattern signal)
 CHECK_INTERVAL_AVG = 1.0  # Each dispatcher: 1 check/second (human-like frequency per dispatcher)
 
 
