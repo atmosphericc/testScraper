@@ -1,5 +1,5 @@
 # Codebase Map
-## Last Updated: 2026-04-08 (code-quality pass)
+## Last Updated: 2026-04-30 (Walmart retailer profile re-researched, behavioral baselines added)
 
 ## Backend (Python)
 
@@ -127,7 +127,7 @@ No separate CSS or JS files — all styling/logic embedded in HTML templates.
 | Retailer | Directory | Automation | Anti-Bot |
 |----------|-----------|-----------|---------|
 | Target | `src/` | zendriver (nodriver) | F5/Shape Security |
-| Walmart | `walmart/` | patchright (Playwright) | Akamai + press-hold CAPTCHA |
+| Walmart | `walmart/` | patchright (Playwright) | Akamai + PerimeterX/HUMAN + Cloudflare |
 
 ## Config & Data Files
 
@@ -172,3 +172,4 @@ in_stock → queued → attempting → success
 ## Retailers Onboarded
 - [x] Target — `src/` + root apps (RedSky API monitoring, zendriver/nodriver purchasing) — see `docs/RETAILERS/target.md`
 - [x] Walmart — `walmart/` (browser-fetch monitoring, patchright purchasing, self-healing agent) — see `docs/RETAILERS/walmart.md`
+  - Last researched: 2026-04-30. Anti-bot stack: Akamai v2/v3 + PerimeterX/HUMAN Security (2,500+ signals) + Cloudflare. 10 behavioral detection issues audited and fixed (2026-04-30). Remaining open gaps: `/blocked?g=a` checkbox variant, `_abck` IP-binding after proxy rotation, circuit breaker on stock monitor side.

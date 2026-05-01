@@ -1,6 +1,6 @@
 # Walmart Profile
-## Last Researched: 2026-04-07
-## Last Updated: 2026-04-25 (selector audit + flow fixes from 2026-04-10 FAILURES.md entries)
+## Last Researched: 2026-04-30
+## Last Updated: 2026-04-30 (full research pass — behavioral baselines, HUMAN Security update, detection audit consolidation)
 
 ---
 
@@ -25,7 +25,7 @@ Walmart's checkout is a **React SPA**. The URL stays at `/checkout` throughout s
 
 ### Add to Cart
 
-**Priority order in live `purchase_executor.py` `ATC_SELECTORS` (last verified: 2026-04-25):**
+**Priority order in live `purchase_executor.py` `ATC_SELECTORS` (last verified: 2026-04-30):**
 
 1. `button[data-automation-id="atc"]` — **PRIMARY** (confirmed live selector; "add-to-cart-btn" is wrong/stale)
 2. `button[data-automation-id="add-to-cart-btn"]` — legacy fallback (was primary pre-2026-04-10; now secondary)
@@ -46,6 +46,24 @@ Walmart's checkout is a **React SPA**. The URL stays at `/checkout` throughout s
 - `[data-automation-id="atc-flyout"]`
 
 **ATC confirmation approach (current)**: After clicking, a single fast check runs at 0.3s post-click for flyout/button-state-change. The flow **proceeds to cart regardless** of whether confirmation is detected — cart verification is the authoritative check for ATC success. Do not wait more than ~1s for ATC confirmation; the 12s confirmation window from earlier implementations was reverted (2026-04-10) because it created unnecessary latency on silent-ATC sessions.
+
+### Human Timing Baseline — Add to Cart
+
+Based on usability research and behavioral biometric baselines:
+
+| Action | Human Baseline | Bot Risk if Outside Range |
+|--------|---------------|--------------------------|
+| Page load → first scroll | 1.5–4s | < 0.5s = immediate bot flag |
+| First scroll → ATC click | 2–8s (reading product info) | < 1s = bot flag |
+| ATC click → cart navigation | 0.5–2s natural pause | < 200ms = PerimeterX flag |
+| Total product page dwell | 5–20s | < 3s = high bot score |
+| Cart page dwell before checkout | 3–10s | < 1.5s = Akamai bot flag |
+| CVV entry per digit | 80–200ms inter-key delay | < 50ms = PerimeterX keystroke flag |
+| CVV full entry (3 digits) | 400–800ms total | < 150ms total = flagged |
+| Place Order click timing | 2–5s after review page load | < 1s = bot signal |
+| Total checkout (cart → confirmation) | 45–120s | < 20s = high suspicion |
+
+> These are synthesized from usability study data (38 of 40 participants completed checkout in < 100s) and behavioral biometric research. The 45–120s checkout window represents the realistic human range. Bot sessions completing checkout in < 20s are detectable by both Akamai and PerimeterX session-level models.
 
 ### Cart Page
 
@@ -98,6 +116,7 @@ Payment / CVV:
 - CVV input: `input[name="cvv"]`, `input[autocomplete="cc-csc"]`, `input[placeholder*="CVV"]`, `input[placeholder*="CVC"]`, `input[aria-label*="CVV"]`, `input[aria-label*="security code"]`
 - CVV is nearly always required even with saved cards on Walmart
 - CVV is typed character-by-character with randomized inter-key delays (80-150ms per char) via CDP `dispatchKeyEvent` — `set_value()` atomic write is detectable by PerimeterX keystroke monitoring
+- **keyDown hold duration**: 50–150ms per key (raised from 10–30ms in Patch 4, 2026-04-25). Sub-50ms hold is below physical human minimum and is flagged by HUMAN Security's keystroke biometric model.
 
 ### Place Order Button
 
@@ -116,6 +135,21 @@ button:has-text("Submit order")
 - Text fallbacks: `h1:has-text("Your order is confirmed")`, `h1:has-text("Thank you")`, `span:has-text("Order #")`
 - Order ID is numeric, typically 13–16 digits. Extract with `\d{6,}` from element text or URL.
 - Order detail URL: `https://www.walmart.com/orders/<order_id>`
+
+### Delivery Day Modal (added 2026-04-29)
+
+A delivery day selection modal appears **mid-checkout after "Deliver here" is clicked** on the address step — NOT only at flow end. This is a known failure point.
+
+**Detection signals:**
+- `[data-automation-id*="delivery-day"]`
+- `[data-automation-id*="delivery-window"]`
+- `[data-automation-id*="select-delivery"]`
+- Text: "Today", "Tomorrow", "Next Day", "Standard"
+- `button[role="radio"][aria-label*="deliver"]`
+- `input[type="radio"]` with aria-label
+- `[role="dialog"] button:not([aria-label*="close"])` — generic fallback
+
+**Current handling**: `_handle_delivery_day_modal()` is called on every iteration of the `_confirm_shipping()` loop (fixed 2026-04-29). Returns `True`/`False`. After dismiss, wait 500–1000ms for DOM to settle. Also called proactively after `_select_delivery_option()`.
 
 ### React Hydration and Page Readiness
 
@@ -159,10 +193,11 @@ Guest checkout is **available** but less reliable for automation:
 
 1. **Virtual Queue** (`/blocked` or queue iframe): Appears on high-demand drops. See `queue_handler.py` for detection/handling.
 2. **Fulfillment Selector**: When item supports both Ship and Pickup, a modal asks you to choose. Always click Delivery/Ship first — handled on cart page by `_select_delivery_on_cart()` and in checkout loop by `_select_delivery_option()`.
-3. **Substitution Prompt**: Appears during grocery/pickup checkout when item is OOS. Asks if you want substitution.
-4. **Age Verification**: Appears for alcohol, certain medications. Rare for typical product types.
-5. **"Robot or Human?" CAPTCHA** (`/blocked`): "Activate and hold the button to confirm you're human." This is PerimeterX (HUMAN Security) challenge, not traditional CAPTCHA. See Anti-Bot section.
-6. **Store Pickup Prompt**: If detected user location has Walmart store, a modal may prompt "Pick up at [store]?" for eligible items. Must dismiss or select Ship.
+3. **Delivery Day Modal**: Appears after "Deliver here" click during address step. Handled by `_handle_delivery_day_modal()` in `_confirm_shipping()` loop (fixed 2026-04-29).
+4. **Substitution Prompt**: Appears during grocery/pickup checkout when item is OOS. Asks if you want substitution.
+5. **Age Verification**: Appears for alcohol, certain medications. Rare for typical product types.
+6. **"Robot or Human?" CAPTCHA** (`/blocked`): "Activate and hold the button to confirm you're human." This is PerimeterX (HUMAN Security) challenge, not traditional CAPTCHA. See Anti-Bot section.
+7. **Store Pickup Prompt**: If detected user location has Walmart store, a modal may prompt "Pick up at [store]?" for eligible items. Must dismiss or select Ship.
 
 ### Fulfillment: Store Pickup vs. Ship-to-Home
 
@@ -179,7 +214,7 @@ Guest checkout is **available** but less reliable for automation:
 
 ---
 
-## Anti-Bot (Akamai + PerimeterX + Cloudflare)
+## Anti-Bot Stack (Akamai + PerimeterX/HUMAN + Cloudflare)
 
 ### Overview
 
@@ -200,6 +235,7 @@ Walmart runs a **layered, three-vendor anti-bot stack** — one of the most aggr
 - Python `requests`, `httpx`, `scrapy` have well-known bot JA3 hashes and are blocked immediately
 - Chromium-based browsers (real Chrome, patchright) produce legitimate JA3 hashes
 - **Critical**: TLS fingerprint must match known good browser signature. `curl_cffi` with `impersonate="chrome120"` needed for raw HTTP approaches.
+- Akamai also reads **HTTP/2 settings frames, window updates, and frame ordering** — not just TLS. A client that does not behave like a real browser at the HTTP/2 layer is flagged before the first request completes.
 
 #### 2. IP Reputation
 - Datacenter IPs (AWS, GCP, Azure, DigitalOcean, etc.) classified negatively and typically blocked at edge
@@ -207,17 +243,18 @@ Walmart runs a **layered, three-vendor anti-bot stack** — one of the most aggr
 - **Walmart specifically enforces US-only proxies**; non-US IPs (including Canada, Mexico) trigger 456 blocks or instant challenges
 
 #### 3. JavaScript / Browser Fingerprinting
-Akamai's client-side script collects:
+Akamai's client-side script collects 100+ signals including:
 - `navigator.webdriver` — must be `undefined` (not `false`)
 - `navigator.plugins` — must have 3+ real plugin objects (automation contexts return 0)
 - `navigator.mimeTypes` — must be populated
 - `navigator.languages` — must be `["en-US", "en"]` or similar
-- `window.chrome` — must exist with `runtime`, `loadTimes`, `csi`, `app` properties
+- `window.chrome` — must exist with `runtime`, `loadTimes`, `csi`, `app` properties (including `webstore`, `cast`, `bluetooth` sub-properties — see Issue 10 in audit)
 - Canvas fingerprint (pixel rendering via WebGL/2D canvas)
 - Audio context fingerprint
 - Screen resolution and color depth
 - Hardware concurrency (`navigator.hardwareConcurrency`)
 - Device memory (`navigator.deviceMemory`)
+- **Timing traps**: Akamai measures execution time of specific JS code to detect debuggers or non-native execution environments
 
 #### 4. `_abck` Cookie and `sensor_data` Payload
 
@@ -228,6 +265,7 @@ The `_abck` cookie is the primary Akamai session token:
 - Each `sensor_data` POST is unique per session (replay attack prevention via session-specific seeds)
 - Initial sensor requests use default cookie hash of `"8888888"`; subsequent requests derive hash from returned `bm_sz` cookie value
 - `_abck` validated server-side on every request; invalid or missing cookie results in 403 "Pardon Our Interruption" page
+- The sensor payload includes **request timestamp sequences** — machine-regular timing patterns (e.g., exactly 1.0s intervals) are high-confidence bot indicators in the payload
 
 **Full Akamai cookie set on Walmart:**
 
@@ -244,35 +282,62 @@ The `_abck` cookie is the primary Akamai session token:
 - `Origin`, `Referer`, `User-Agent`, and `Accept-Language` must be present and consistent
 - Missing or incorrect `Sec-Fetch-*` headers (e.g., `Sec-Fetch-Site`, `Sec-Fetch-Mode`) are a signal
 
-#### 6. Behavioral Analysis
-- Mouse movement patterns (natural curves vs. straight lines)
-- Click coordinates (real users click slightly off-center; bots click exact center)
-- Scroll behavior and timing
-- Time-on-page before interaction
-- Navigation sequence (Akamai expects product page → cart → checkout, not direct checkout URL)
-- Request rate and inter-request timing
+#### 6. Behavioral / Request Pattern Analysis
+- Mouse movement patterns: natural Bezier curves vs. straight lines; PerimeterX/Akamai both flag zero intermediate mouse positions before clicks
+- Click coordinates: real users click slightly off-center; exact-center repeated clicks are a bot signal
+- Scroll behavior and timing: humans scroll with variable speed and momentum
+- Time-on-page before interaction (see Human Timing Baseline table above)
+- Navigation sequence: Akamai expects product page → cart → checkout, not direct checkout URL
+- **Request rate regularity**: machine-clock request intervals (e.g., exactly 1.0s every time, deterministic stagger) are among Akamai's highest-confidence bot indicators (see Detection Audit 2026-04-30, Issue 1)
+- **Navigation history sequence**: visiting the same warmup sites in the same order every session is captured in the `_abck` sensor payload (Issue 3 in audit, fixed 2026-04-30)
 
 ### PerimeterX / HUMAN Security — Detection Vectors
 
+As of 2026, HUMAN Security (formerly PerimeterX) analyzes **2,500+ signals per interaction** and uses 400+ ML algorithms per customer:
+
 - Deployed on checkout-critical pages (cart, `/checkout`, payment step)
 - Primary token: `_px3` cookie — clearance token with a ~60 second TTL on high-security pages
-- Also uses `_pxvid`, `pxcts` cookies
-- **"Hold the button" challenge**: Interactive challenge requiring click-and-hold. Cannot be solved programmatically without real mouse event (CDP `dispatchMouseEvent` with proper timing may work, but HUMAN's behavioral analysis checks for non-human hold patterns)
-- Behavioral signals monitored: mouse acceleration, click pressure (if available), inter-event timing, whether hold duration is within human norms
+- Also uses `_pxvid`, `pxcts`, `_pxhd` cookies
+- Per-customer ML models trained on that site's specific historical traffic — detection rates improve over time as the model learns the bot's behavioral fingerprint
+
+**Key behavioral signals monitored:**
+- Mouse acceleration curves (natural deceleration near targets vs. linear velocity)
+- Click coordinates and precision (humans click slightly off-center, bots hit exact center)
+- Inter-event timing distributions (humans show wide variance; bots show tight clusters)
+- Keystroke dynamics: keyDown hold duration (< 50ms is below human physical minimum), inter-key timing, key sequence patterns
+- Scroll momentum and patterns
+- Touch gestures (mobile): pressure, speed, angle
+- Device motion (hand tremors, movement patterns)
+- Cognitive load signals: pauses that suggest reading vs. instant action
+- Session duration and page dwell time
+- Time of day and location consistency
+
+**The press-and-hold challenge specifically**: It is not just about holding the button. The collector script emits a signed telemetry payload before, during, and after the interaction. HUMAN validates:
+- TLS fingerprint consistency with `_px3`/`_pxvid`/`_pxhd` cookie triple plus `X-PX-Authorization` header
+- Hold duration (minimum ~6 seconds; HUMAN rejects durations inconsistent with human reaction time distribution)
+- Mouse trajectory during hold (must show micro-jitter, not perfectly stationary)
+- The full signed behavioral payload — not just the button interaction in isolation
 
 ### Known Detection Triggers (Walmart-Specific)
 
 1. Direct navigation to `/checkout` without prior cart session — immediate block
 2. Cart → checkout transition faster than ~1.5 seconds — high bot score
-3. Clicking ATC button at exact center coordinates without scroll
+3. Clicking ATC button at exact center coordinates without prior scroll or mouse movement path
 4. Missing `Referer` header on cart page load (should be product page URL)
-5. Pagination without incrementing Referer (page 2 should reference page 1)
-6. Reusing `_abck` cookies across different IP addresses
-7. Non-US proxy IP at any point in session (456 block)
-8. `navigator.webdriver === true` (not patched)
-9. Zero browser plugins
-10. Rapid-fire product page loads without human-like pauses
-11. Session with no prior browsing history (cold sessions score lower)
+5. Reusing `_abck` cookies across different IP addresses
+6. Non-US proxy IP at any point in session (456 block)
+7. `navigator.webdriver === true` (not patched)
+8. Zero browser plugins
+9. Rapid-fire product page loads without human-like pauses
+10. Session with no prior browsing history (cold sessions score lower)
+11. **Machine-regular stock check intervals** — deterministic 1.0s/333ms/666ms stagger pattern in sensor payload (Issue 1, audit 2026-04-30) — FIXED
+12. **Fixed modal dismiss coordinates** — same `(512, 400)` mouse_move target every run (Issue 2, audit 2026-04-30) — FIXED
+13. **Identical warmup site visit sequence** — Google→Amazon→Reddit→YouTube→eBay fixed order every session (Issue 3, audit 2026-04-30) — FIXED
+14. **Zero mouse movement before clicks** — no intermediate positions before ATC, CVV, or Place Order clicks (Issue 8, audit 2026-04-30) — FIXED
+15. **Missing `bm_sz` cookie** — causes sensor.js to use default seed `8888888`, a known bot indicator (Issue 9, audit 2026-04-30) — FIXED
+16. **Uniform modal pause timing** — fixed pause durations after modal dismissal (Issue 4, audit 2026-04-30) — FIXED
+17. **Fixed ATC retry delays** — uniform 300ms between all retries (Issue 5, audit 2026-04-30) — FIXED
+18. **Warmup pages with zero interaction** — browsing without scrolling/mouse movement (Issue 7, audit 2026-04-30) — FIXED
 
 ### PerimeterX Cookie Family
 
@@ -289,11 +354,13 @@ These three cookies form a dependency chain — each must exist before next is v
 
 | Cookie | TTL | Role |
 |--------|-----|------|
-| `bm_sz` | 4 hours | Seeds PRNG for sensor_data encryption. Must exist before first sensor POST. |
+| `bm_sz` | 4 hours | Seeds PRNG for sensor_data encryption. Must exist before first sensor POST. If absent, sensor.js falls back to default seed `8888888` — a known bot signal. |
 | `ak_bmsc` | 2 hours (HTTP-only) | Device-level clearance after successful sensor POST. Skips full re-evaluation within TTL. |
 | `_abck` | Session-scoped | Primary bot verdict cookie. IP-bound. Contains `~0~` when Akamai signals "stop sending sensors". |
 
 **Correct warm sequence:** Load `walmart.com` → `bm_sz` set → `sensor.js` runs → sensor_data POSTed → `ak_bmsc` + `_abck` issued → behavioral signals accumulate → `_abck` updated until `~0~` stop signal.
+
+**`bm_sz` validation**: If `bm_sz` is absent after first page load, the session should reload the page (once) to force generation before proceeding. This is now implemented in `session_manager.py` (Issue 9 fix, 2026-04-30).
 
 ### Akamai ↔ PerimeterX Interaction
 
@@ -308,34 +375,36 @@ These three cookies form a dependency chain — each must exist before next is v
 
 ### Press-and-Hold CDP Sequence
 
-Current implementation in `walmart/session_manager.py:849–877` is structurally correct. Required sequence:
+Current implementation in `walmart/session_manager.py` is structurally correct. Required sequence:
 ```
 mousePressed (buttons=1) → [hold loop: mouseMoved with jitter] → mouseReleased (buttons=0)
 ```
 
-**Known gaps — current status (as of 2026-04-08):**
-1. ~~**Hold loop sleep is fixed at 150ms**~~ — FIXED: randomized `random.uniform(0.08, 0.25)`
-2. ~~**Jitter is ±1.5px uniform**~~ — FIXED: cumulative random walk ±3–5px non-uniform drift
-3. ~~**Missing `pointerdown`/`pointerup`**~~ — FIXED: `pointerDown`/`pointerUp` events added
-4. ~~**No minimum hold duration floor**~~ — FIXED: 6.0s minimum enforced before early-exit URL check
-5. **No `g=a` checkbox variant detection** — `/blocked?g=a` shows checkbox instead of hold button; not yet handled
-6. **Success check only inspects URL** — add `_px3` cookie presence as secondary success signal (not yet done)
+**Status as of 2026-04-30:**
+1. ~~Hold loop sleep fixed at 150ms~~ — FIXED: randomized `random.uniform(0.08, 0.25)`
+2. ~~Jitter ±1.5px uniform~~ — FIXED: cumulative random walk ±3–5px non-uniform drift
+3. ~~Missing `pointerdown`/`pointerup`~~ — FIXED: `pointerDown`/`pointerUp` events added
+4. ~~No minimum hold duration floor~~ — FIXED: 6.0s minimum enforced before early-exit URL check
+5. **`/blocked?g=a` checkbox variant** — NOT HANDLED. `/blocked?g=a` shows checkbox instead of hold button. Treat as unresolvable; flag for future implementation.
+6. **Success check only inspects URL** — `_px3` cookie presence not validated as secondary signal. Open gap.
 
 ### Bypass Approaches
 
-**patchright** (Playwright fork with 22 AST-level patches) is the current Walmart automation library. Patchright removes CDP leaks, patches `navigator.webdriver`, and disables `Runtime.enable`. ~67% lower detection rate than standard headless Chrome:
-- Avoids `navigator.webdriver` leak inherent in WebDriver protocol
-- Still requires stealth patching and behavioral warmup for PerimeterX
+**patchright** (Playwright fork with 22 AST-level patches) is the current Walmart automation library. Patchright removes CDP leaks, patches `navigator.webdriver`, and disables `Runtime.enable`. ~67% lower detection rate than standard headless Chrome.
 
 **Recommended stealth stack for patchright:**
 1. Run real Chrome (not bundled Chromium) with `HEADLESS=False` — non-headless reduces fingerprint distance significantly
-2. Inject stealth JS via `cdp.page.add_script_to_evaluate_on_new_document()` to patch `navigator.webdriver`, `navigator.plugins`, `navigator.mimeTypes`, `window.chrome`
+2. Inject stealth JS via `cdp.page.add_script_to_evaluate_on_new_document()` to patch `navigator.webdriver`, `navigator.plugins`, `navigator.mimeTypes`, `window.chrome` (including `webstore`, `cast`, `bluetooth` sub-properties)
 3. Use persistent Chrome profile (`user_data_dir`) so browser has real cookie history, localStorage, and cached assets
 4. Residential US proxies only — no datacenter, no non-US
-5. Warm Akamai session before drop: browse product pages, add to wishlist, navigate organically. Akamai's behavioral model updates in real time.
+5. Warm Akamai session before drop: browse product pages, add to wishlist, navigate organically with realistic scroll and mouse interactions. Akamai's behavioral model updates in real time.
 6. Keep `_px3` cookie fresh (< 50 seconds old) when entering checkout — re-warm if stale
 7. Human-like delays between all actions (200–1200ms random)
 8. Avoid direct URL navigation to `/cart` or `/checkout` when possible; prefer clicking UI elements
+9. **Mouse path simulation**: emit 3–7 intermediate mouse positions (Bezier curve) before every click — now implemented via `_realistic_click()` (Issue 8 fix, 2026-04-30)
+10. **Warmup interactions**: include scroll events and mouse movements on warmup pages, not just navigation — now implemented (Issue 7 fix, 2026-04-30)
+11. **Randomize warmup sites**: select 3–5 from a pool of 8 in random order each session — now implemented (Issue 3 fix, 2026-04-30)
+12. **Randomize stock check timing**: use exponential distribution (0.5–1.5s range) not fixed 1.0s intervals — now implemented (Issue 1 fix, 2026-04-30)
 
 **What does NOT work reliably:**
 - Selenium with `undetected_chromedriver` — still leaks WebDriver signals that Akamai catches
@@ -343,29 +412,31 @@ mousePressed (buttons=1) → [hold loop: mouseMoved with jitter] → mouseReleas
 - Datacenter or shared residential proxies
 - Raw HTTP with `sensor_data` generation (Akamai v3 uses deployment-specific JS file hashes that change with each Walmart frontend deploy; maintaining working generator requires constant reverse engineering)
 
-### Working Mitigations
+### Working Mitigations (Current — 2026-04-30)
 - **patchright (Playwright fork)** — 22 AST-level patches. Current implementation.
 - **Dual-tab warmup strategy** — Tab 1 (warmup tab) establishes Akamai behavioral profile (homepage → category → search only, NOT product pages to avoid PerimeterX sensitive-route triggers); Tab 2 (checkout tab) opened *after* Tab 1 warm, pre-loaded on the **product page URL** (not homepage) so React is already hydrated when purchase fires
-- **Tab 2 pre-warm on product page**: `open_checkout_tab(warmup_url=<product_url>)` in `session_manager.py` loads Tab 2 on the product page, not `walmart.com`. On the next purchase, `_navigate()` detects `already_on_page=True` and uses `timeout=2000` for `_wait_for_page_ready()` instead of 13000ms. This saves 8-13s per purchase.
+- **Tab 2 pre-warm on product page**: saves 8–13s per purchase by eliminating cold-start hydration delay
 - **Challenge solver** — `walmart/purchase_executor.py` handles press-and-hold PerimeterX challenge via CDP `dispatchMouseEvent`
 - **Proxy manager** — `walmart/proxy_manager.py` rotates US residential/ISP proxies with cooldown and health tracking
 - **Self-healing agent** — `walmart/self_healing_agent.py` auto-diagnoses and patches selector failures
 - **Persistent Walmart profile** — `walmart-profile/` maintains session cookies and behavioral history
 - **Session keep-alive** — navigate product pages during idle periods to keep behavioral score warm
 - **Stealth script** (`_STEALTH_SCRIPT` in `session_manager.py`) — patches `navigator.webdriver`, `navigator.plugins`, `navigator.mimeTypes`, `navigator.languages`, `window.chrome`
+- **Realistic mouse movement** — `_realistic_click()` emits 3–7 intermediate Bezier positions before every click (new, 2026-04-30)
+- **Randomized stock check timing** — exponential distribution (0.5–1.5s) replaces fixed 1.0s intervals (new, 2026-04-30)
+- **Randomized warmup sequence** — 3–5 sites from pool of 8, random order each session (new, 2026-04-30)
+- **`bm_sz` validation** — reload on missing `bm_sz` to avoid default seed `8888888` signal (new, 2026-04-30)
+- **`window.chrome` completeness** — added `webstore`, `cast`, `bluetooth` sub-properties (new, 2026-04-30)
+- **Warmup page interaction** — 2–4 scroll events + mouse movement per warmup page (new, 2026-04-30)
+- **`_px3` mid-checkout validation** — `needs_rewarm()` check integrated into `_confirm_shipping()` loop (new, 2026-04-30)
 
-### Known Code Gaps (Akamai)
+### Known Code Gaps (Still Open)
 - `_abck` and `ak_bmsc` never explicitly checked in warm loop — only `_px3` is checked. Failed Akamai challenge appears as "no _px3" with no diagnosis.
-- `bm_sz` never logged or validated — if absent after first page load, sensor.js falls back to detectable default seed `8888888`
 - After proxy rotation in stock monitor workers, cookies come from browser session but `_abck` is IP-bound — workers using different IPs than browser that generated cookies will fail silently.
-
-### Risky Code Patterns
-- CSS class selectors anywhere in walmart/ — Walmart hashes class names on every deploy; they break constantly. Use `data-automation-id`, `data-testid`, `aria-label`, `:has-text()` only. (**FIXED 2026-04-08**)
-- Any fixed `time.sleep()` values — replace with randomized human-range delays (200–1200ms). (**FIXED 2026-04-08**)
-- No `/blocked` or login-wall guards inside checkout step loop — PerimeterX can challenge between steps. (**FIXED 2026-04-08**)
-- Reusing `_abck` after proxy rotation — must re-warm session with new proxy
-- `GRAPHQL_HASH` left stale after Walmart frontend deploy — monitor for 400 responses on stock check requests
-- Raw HTTP GraphQL calls without routing through browser `fetch()` — TLS fingerprint is wrong, all required cookies must be manually maintained
+- `/blocked?g=a` checkbox variant not handled (only press-and-hold variant detected).
+- `_px3` success check only inspects URL, not cookie presence.
+- No circuit breaker on stock monitor side (purchase side has `CIRCUIT_BREAKER_FAILURES = 3`).
+- No end-to-end integration test suite.
 
 ### 456 Block Recovery
 1. Swap to a new US proxy
@@ -385,7 +456,7 @@ Minimum required cookies for a valid checkout session:
 |--------|-------------|-------|
 | `_abck` | All pages | Must be freshly generated by Akamai JS challenge |
 | `ak_bmsc` | All pages | HTTP-only; set automatically by Akamai |
-| `bm_sz` | Akamai sensor validation | Used to seed `_abck` re-encryption |
+| `bm_sz` | Akamai sensor validation | Used to seed `_abck` re-encryption; reload page if absent |
 | `_px3` | Cart + checkout pages | PerimeterX clearance; ~60s TTL on high-security pages |
 | `_pxvid` | PerimeterX tracking | Persistent visitor ID |
 | `auth` / `CID` | Account pages | Walmart account session token |
@@ -467,8 +538,8 @@ Two-factor authentication (SMS/email OTP) may be required on first login from ne
 - URL: `https://www.walmart.com/blocked` (or redirect to it)
 - This is Walmart's PerimeterX "hold the button" challenge page
 - Appears when `_px3` cookie is missing, expired, or bot score exceeds threshold
-- Solving requires: mouse-down event held for minimum ~6 seconds on specific button, followed by mouse-up (0.5–2s insufficient — PerimeterX behavioral analysis rejects short holds)
-- CDP `dispatchMouseEvent` with realistic timing and coordinates can solve this, but HUMAN Security's behavioral analysis checks for inhuman patterns (instant response, perfect coordinates, exact duration)
+- Solving requires: mouse-down event held for minimum ~6 seconds on specific button, followed by mouse-up
+- CDP `dispatchMouseEvent` with realistic timing, Bezier movement, and micro-jitter can solve this, but HUMAN Security's behavioral analysis validates the full signed telemetry payload — not just button hold duration
 - After solving, browser redirected to originally requested URL with new `_px3` cookie
 - `/blocked?g=a` variant (checkbox instead of hold button) — **NOT YET HANDLED**
 
@@ -523,7 +594,7 @@ Two-factor authentication (SMS/email OTP) may be required on first login from ne
 
 - Walmart uses persisted GraphQL queries for product data
 - Endpoints: `https://www.walmart.com/orchestra/home/graphql/<operation_name>/<hash>`
-- Primary hash (`ItemByIdBtf`): defined in `config.py` as `GRAPHQL_HASH`; may change on frontend deploy
+- Primary hash (`ItemByIdBtf`): defined in `config.py` as `GRAPHQL_HASH`; may change on frontend deploy. Current static fallback: `20d116c298a901b29763c37a4aaf8b37aeb1654e4f971cd11a7fe9de2ceab027`
 - ATF hash (`ItemByIdAtf`): auto-discovered at runtime by intercepting browser network traffic on Tab 2 (during purchase navigation to product page); no manual update needed
 - If GraphQL hash returns 400/404, must be manually re-extracted by inspecting product page network request
 
@@ -557,10 +628,11 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 
 1. **GRAPHQL_HASH staleness** — no auto-detection of stale hash (triggers silent 400 errors on stock checks when Walmart deploys). Add monitoring for 400 response rate + auto-update mechanism.
 2. **`/blocked?g=a` checkbox variant** — only press-and-hold variant handled. Add detection for checkbox variant (`/blocked?g=a` URL param).
-3. **`_px3` cookie refresh before checkout** — `needs_rewarm()` check added to `_cart_and_checkout()`, but `_px3` age is only checked at cart navigation. Add check before each checkout step in `_confirm_shipping()` loop.
+3. **`_px3` success check** — challenge solve success confirmed by URL change only; add `_px3` cookie presence as secondary signal.
 4. **Akamai cookie diagnostics** — `_abck` and `ak_bmsc` never explicitly checked in warm loop. Add validation checks for debugging failed Akamai challenges.
-5. **Circuit breaker** — no automatic pause after repeated failures. Risk of accelerated blocks during periods of degraded behavioral score.
-6. **End-to-end testing** — untested full flow from product page → confirmation on live environment.
+5. **`_abck` IP-binding after proxy rotation** — stock monitor workers use different IPs than the browser that generated `_abck`; will fail silently. Consider per-worker sessions or route all stock checks through browser tab.
+6. **Circuit breaker on stock monitor** — purchase side has circuit breaker, monitoring side does not. Risk of escalated detection during high-failure periods.
+7. **End-to-end testing** — untested full flow from product page → confirmation on live environment.
 
 ---
 
@@ -579,11 +651,13 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 - Populate `navigator.plugins` with 3 realistic plugin objects
 - Populate `navigator.mimeTypes`
 - Set `navigator.languages = ["en-US", "en"]`
-- Ensure `window.chrome` exists with `runtime`, `loadTimes`, `csi`, `app`
+- Ensure `window.chrome` exists with `runtime`, `loadTimes`, `csi`, `app`, `webstore`, `cast`, `bluetooth`
 
 **Session Warming (before drop)**
-- Warm Akamai behavioral profile 10–15 minutes before drop by browsing product pages on Tab 1
-- Open Tab 2 via `open_checkout_tab(warmup_url=<product_url>)` after Tab 1 warm — pre-loads product page on Tab 2 to eliminate cold-start hydration delay at purchase time
+- Warm Akamai behavioral profile 10–15 minutes before drop by browsing 3–5 randomly selected sites (from a pool of 8+) in random order each session
+- During warmup visits, include 2–4 scroll events and realistic mouse movement per page
+- Validate `bm_sz` cookie presence after first Walmart page load; reload once if absent
+- Open Tab 2 via `open_checkout_tab(warmup_url=<product_url>)` after Tab 1 has warmed — pre-loads product page on Tab 2 to eliminate cold-start hydration delay at purchase time
 - Ensure `_px3` cookie is fresh (< 50 seconds old) when entering checkout — `needs_rewarm()` checks this
 - Use `SESSION_VALIDATE_INTERVAL = 600` to periodically keep session alive during idle
 - Force re-login after 30 minutes idle (`SESSION_MAX_IDLE = 1800`)
@@ -596,12 +670,20 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 - Never: CSS class names (hashed, change on every deploy)
 - Always maintain arrays of 3+ fallback selectors per interactive element
 
-**Timing**
-- Add 200–1200ms human-like random delays between all interactions
-- After ATC click: single fast check at 0.3s for flyout/button-state-change, then proceed to cart regardless (cart verification is authoritative)
-- After checkout button click, wait up to 10s for `/checkout` URL (loop checking every 200ms)
-- After checkout content loads, wait up to 8s for page content signal before declaring failure
-- After Place Order click, wait up to 20s for confirmation URL
+**Timing (Human Behavior Baseline)**
+- Product page dwell: 5–20s before ATC (minimum 3s; < 3s is a bot signal)
+- ATC click → cart navigation: 0.5–2s natural pause (minimum 200ms)
+- Cart dwell: 3–10s before clicking Checkout (minimum 1.5s)
+- CVV entry: 80–200ms inter-key delay, 50–150ms keyDown hold per digit
+- Place Order: 2–5s after review page load (minimum 1s)
+- All delays: use randomized ranges, never fixed values
+- Stock check intervals: exponential distribution (0.5–1.5s range), not fixed 1.0s
+
+**Mouse Movement**
+- All clicks: emit 3–7 intermediate mouse positions along Bezier path before final click
+- Click targets: add ±5px random offset from element center
+- Post-modal-dismiss: mouse_move to randomized coordinates (400–700, 300–500), not fixed point
+- Warmup pages: include scroll events to simulate reading behavior
 
 **Proxy Requirements**
 - Residential US proxies only (no datacenter, no non-US)
@@ -612,7 +694,7 @@ POST https://www.walmart.com/orchestra/pdp/graphql/{OperationName}/{64-char-hash
 
 **Handling `/blocked`**
 - Detect by URL containing "/blocked" after any navigation
-- Attempt CDP-level mouse-down-hold-mouse-up on challenge button (minimum 6s hold)
+- Attempt CDP-level mouse-down-hold-mouse-up on challenge button (minimum 6s hold, Bezier movement with jitter during hold)
 - If CDP solve fails, session is likely too hot — rest proxy and account, re-warm from homepage before retrying
 - `/blocked?g=a` checkbox variant not yet handled — treat as unresolvable for now
 

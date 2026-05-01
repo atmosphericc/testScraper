@@ -220,7 +220,15 @@ class WalmartStockMonitor:
                 try {{
                     const resp = await fetch('/ip/' + id, {{
                         credentials: 'include',
-                        headers: {{ 'Accept': 'text/html' }}
+                        headers: {{
+                            'Accept': 'text/html',
+                            'Accept-Language': 'en-US,en;q=0.9',
+                            'Sec-Fetch-Site': 'same-origin',
+                            'Sec-Fetch-Mode': 'navigate',
+                            'Sec-Fetch-Dest': 'document',
+                            'Referer': 'https://www.walmart.com/',
+                            'Cache-Control': 'max-age=0'
+                        }}
                     }});
                     const ms = performance.now() - t0;
                     if (resp.redirected && resp.url.includes('/blocked')) {{

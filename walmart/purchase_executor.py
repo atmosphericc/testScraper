@@ -514,7 +514,7 @@ class WalmartPurchaseExecutor:
         else:
             logger.info("[PURCHASE] Navigating to cart from: %s → %s", current_url, WALMART_CART_URL)
             await self._page.get(WALMART_CART_URL)
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(random.uniform(0.6, 1.0))
             current_url = self._page.url or ""
             logger.info("[PURCHASE] Arrived at: %s", current_url)
 
@@ -527,7 +527,7 @@ class WalmartPurchaseExecutor:
             if solved:
                 self._status_cb("[PURCHASE] Challenge solved — re-navigating to cart")
                 await self._page.get(WALMART_CART_URL)
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(random.uniform(1.5, 2.5))
             else:
                 logger.error("[PURCHASE] Could not solve /blocked on cart — aborting")
                 await self._screenshot(f"blocked_cart_{item_id}")
@@ -1038,7 +1038,7 @@ class WalmartPurchaseExecutor:
         self._status_cb("[PURCHASE] Place Order clicked — waiting for confirmation...")
 
         # Wait for order confirmation page — polling loop (zendriver has no wait_for_url)
-        await asyncio.sleep(0.05)  # CDP flush yield
+        await asyncio.sleep(random.uniform(0.03, 0.10))  # CDP flush yield
         pre_click_url = self._page.url
 
         # Regex matches Walmart's known confirmation URL patterns
@@ -1120,7 +1120,7 @@ class WalmartPurchaseExecutor:
         """
         try:
             await self._page.get(WALMART_CART_URL)
-            await asyncio.sleep(1)
+            await asyncio.sleep(random.uniform(0.8, 1.2))
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',           # last verified: 2026-04-10
                 '[data-testid="cart-item"]',
@@ -1154,7 +1154,7 @@ class WalmartPurchaseExecutor:
         """
         try:
             await self._page.get(WALMART_CART_URL)
-            await asyncio.sleep(1)
+            await asyncio.sleep(random.uniform(0.8, 1.2))
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',           # last verified: 2026-04-10
                 '[data-testid="cart-item"]',
@@ -1403,7 +1403,7 @@ class WalmartPurchaseExecutor:
                 for btn in remove_btns:
                     try:
                         await btn.click()
-                        await asyncio.sleep(0.8)
+                        await asyncio.sleep(random.uniform(0.6, 1.0))
                     except Exception:
                         pass
         except Exception as e:

@@ -368,7 +368,7 @@ class WalmartSessionManager:
         try:
             await self._page.get(WALMART_LOGIN_URL)
             await self._handle_blocked_page()
-            await asyncio.sleep(2)
+            await asyncio.sleep(random.uniform(1.5, 2.5))
 
             # Fill email — try selectors individually
             email_input = await self._find_input(
@@ -413,7 +413,7 @@ class WalmartSessionManager:
                     continue
             if sign_in:
                 await sign_in.click()
-            await asyncio.sleep(3)
+            await asyncio.sleep(random.uniform(2.5, 3.5))
 
             # Verify login success — should no longer be on the login page.
             # Check the URL path only (not query string) to avoid false negatives
@@ -821,7 +821,7 @@ class WalmartSessionManager:
                 except Exception as e:
                     logger.warning("[HARVESTER] Cookie snapshot error: %s", e)
 
-                await asyncio.sleep(COOKIE_REFRESH_INTERVAL)
+                await asyncio.sleep(random.uniform(35.0, 55.0))
 
         except asyncio.CancelledError:
             pass
