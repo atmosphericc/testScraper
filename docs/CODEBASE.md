@@ -1,5 +1,6 @@
 # Codebase Map
-## Last Updated: 2026-04-30 (Walmart retailer profile re-researched, behavioral baselines added)
+## Last Updated: 2026-05-01 (8 Walmart antibot patches applied — behavioral realism Phase 1 & 2, commit 79c37eaa)
+Previous: 2026-04-30 (Walmart retailer profile re-researched, behavioral baselines added)
 
 ## Backend (Python)
 
