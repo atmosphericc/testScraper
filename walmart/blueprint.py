@@ -19,6 +19,7 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from .config import get_config, save_config, get_enabled_products
 from .purchase_manager import WalmartPurchaseManager
+from .self_healing_agent import SelfHealingAgent
 from .logging_manager import get_walmart_logger, log_activity
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,7 @@ def start_manager():
     """Launch the Walmart SelfHealingAgent in a background thread."""
     global _manager
 
-    _manager = WalmartPurchaseManager(status_callback=_status_callback)
+    _manager = SelfHealingAgent(status_callback=_status_callback)
     manager_loop = asyncio.new_event_loop()
 
     def _run():

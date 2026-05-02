@@ -162,7 +162,7 @@ class HtmlSelectorPatcher:
     Confidence rule: exactly 1 candidate must match — 0 or 2+ → skip patch.
     """
 
-    WALMART_DIR = Path("walmart")
+    WALMART_DIR = Path(__file__).parent
 
     # Maps selector list variable name → label texts to search for in HTML
     SELECTOR_TARGETS = {
@@ -362,7 +362,7 @@ class HtmlSelectorPatcher:
 class CodePatcher:
     """Applies non-selector patches (timeout bumps). Validates syntax before writing."""
 
-    WALMART_DIR = Path("walmart")
+    WALMART_DIR = Path(__file__).parent
 
     def patch_network_timeout(self) -> bool:
         """Bump timeout=NNNNN values by 50%, ceiling 60 000 ms."""
@@ -452,7 +452,7 @@ class SelfHealingAgent:
     # Public API
     # ------------------------------------------------------------------
 
-    async def start(self, email: str, password: str):
+    async def start(self, email: str = "", password: str = ""):
         self._email = email
         self._password = password
         self._running = True
@@ -551,7 +551,7 @@ class SelfHealingAgent:
                     self._failure_event.set()
 
         self._manager._run_purchase = _instrumented
-        await self._manager.start(email=self._email, password=self._password)
+        await self._manager.start()
 
     async def _stop_manager(self):
         if self._manager:

@@ -21,6 +21,11 @@ from .config import (
     CIRCUIT_BREAKER_PAUSE,
     get_enabled_products,
 )
+
+# Named timing constants (seconds) — avoids magic numbers in the purchase flow
+_CHECKOUT_PROXY_TIMEOUT = 15.0    # how long to wait for a sticky checkout proxy
+_POST_PURCHASE_COOLDOWN = 5       # sleep before transitioning state after purchase
+_FAILURE_COOLDOWN = 30            # per-item cooldown after a failed purchase attempt
 from .proxy_manager import ProxyManager
 from .session_manager import WalmartSessionManager
 from .stock_monitor import WalmartStockMonitor
@@ -153,8 +158,8 @@ class WalmartPurchaseManager:
         if products:
             warmup_url = f"https://www.walmart.com/ip/{products[0]['item_id']}"
         else:
-            warmup_url = "https://www.walmart.com/search?q=pokemon+trading+cards"
-        self._status_cb("[MANAGER] Tab 2 will pre-warm on search page (non-PDP)")
+            warmup_url = "https://www.walmart.com/browse/electronics"
+        self._status_cb(f"[MANAGER] Tab 2 pre-warming on product page: {warmup_url}")
 
         await self._session.open_checkout_tab(warmup_url=warmup_url)
 
@@ -314,9 +319,9 @@ class WalmartPurchaseManager:
         checkout_proxy = None
         try:
             # Acquire a sticky checkout proxy
-            checkout_proxy = self._proxy_manager.acquire_checkout_proxy(timeout=15.0)
+            checkout_proxy = self._proxy_manager.acquire_checkout_proxy(timeout=_CHECKOUT_PROXY_TIMEOUT)
             if checkout_proxy is None and self._proxy_manager.has_checkout_proxies():
-                logger.warning("[MANAGER] No checkout proxy available after %ss timeout — proceeding without proxy", 15.0)
+                logger.warning("[MANAGER] No checkout proxy available after %ss timeout — proceeding without proxy", _CHECKOUT_PROXY_TIMEOUT)
                 self._status_cb("[MANAGER] No checkout proxy available — trying without proxy")
             if checkout_proxy is None and not self._proxy_manager.has_checkout_proxies():
                 logger.warning("[MANAGER] No checkout proxies configured — running all checkouts without proxy (higher block risk)")
@@ -330,13 +335,11 @@ class WalmartPurchaseManager:
                 except Exception as e:
                     logger.warning("[MANAGER] Error stopping session during restart: %s", e)
                 await self._session.start()
-                login_ok = await self._session.login(
-                    os.environ.get("WALMART_EMAIL", ""),
-                    os.environ.get("WALMART_PASSWORD", ""),
-                )
-                if not login_ok:
+                # Re-auth via saved cookies (same path as initial startup)
+                session_ok = await self._session.validate_session()
+                if not session_ok:
                     self._login_ok = False
-                    raise RuntimeError("Browser restarted but re-login failed")
+                    raise RuntimeError("Browser restarted but session validation failed — run walmart_relogin.py")
                 # Re-wire the new page into the monitor
                 self._monitor.set_page(self._session.get_checkout_page())
 
@@ -430,11 +433,11 @@ class WalmartPurchaseManager:
             # _navigate() will handle navigation to the correct product on next trigger.
 
             # Reset state to MONITORING after a delay so we can try again on next restock
-            await asyncio.sleep(5)
+            await asyncio.sleep(_POST_PURCHASE_COOLDOWN)
             with self._lock:
                 current = self._state.get(item_id)
                 if current == PurchaseState.FAILED:
-                    self._cooldown_until[item_id] = time.monotonic() + 30
+                    self._cooldown_until[item_id] = time.monotonic() + _FAILURE_COOLDOWN
                 self._state[item_id] = PurchaseState.MONITORING
 
             # If item is still in stock after purchase (test mode), immediately re-queue

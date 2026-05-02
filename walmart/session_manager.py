@@ -12,7 +12,9 @@ Handles:
 import asyncio
 import json
 import logging
+import platform
 import random
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +24,7 @@ import re as _re
 
 from .config import (
     HEADLESS,
+    BROWSER_CHANNEL,
     PROFILE_DIR,
     COOKIES_FILE,
     WALMART_LOGIN_URL,
@@ -37,81 +40,142 @@ from .logging_manager import get_walmart_logger, log_error, log_activity
 logger = logging.getLogger(__name__)
 walmart_logger = get_walmart_logger()
 
+# Map Python platform to the Chrome getPlatformInfo OS string
+def _chrome_os() -> str:
+    p = sys.platform
+    if p == "darwin":
+        return "mac"
+    if p.startswith("win"):
+        return "win"
+    return "linux"
+
+_CHROME_OS = _chrome_os()
+
 # Injected before every page load to hide automation signals from PerimeterX / HUMAN Security
-_STEALTH_SCRIPT = """
-(function() {
+_STEALTH_SCRIPT = f"""
+(function() {{
     // Remove navigator.webdriver
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
+    Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
 
     // Real Chrome always has plugins; automation contexts often have 0
-    Object.defineProperty(navigator, 'plugins', {
+    Object.defineProperty(navigator, 'plugins', {{
         get: () => [
-            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+            {{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
+            {{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }},
+            {{ name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }}
         ],
         configurable: true
-    });
+    }});
 
     // Spoof mimeTypes
-    Object.defineProperty(navigator, 'mimeTypes', {
+    Object.defineProperty(navigator, 'mimeTypes', {{
         get: () => [
-            { type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' },
-            { type: 'application/x-google-chrome-pdf', description: 'Portable Document Format', suffixes: 'pdf' },
-            { type: 'application/x-nacl', description: 'Native Client Executable', suffixes: '' },
-            { type: 'application/x-pnacl', description: 'Portable Native Client Executable', suffixes: '' }
+            {{ type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' }},
+            {{ type: 'application/x-google-chrome-pdf', description: 'Portable Document Format', suffixes: 'pdf' }},
+            {{ type: 'application/x-nacl', description: 'Native Client Executable', suffixes: '' }},
+            {{ type: 'application/x-pnacl', description: 'Portable Native Client Executable', suffixes: '' }}
         ],
         configurable: true
-    });
+    }});
 
     // Languages
-    Object.defineProperty(navigator, 'languages', {
+    Object.defineProperty(navigator, 'languages', {{
         get: () => ['en-US', 'en'],
         configurable: true
-    });
+    }});
 
     // window.chrome must exist in real Chrome with realistic properties
-    Object.defineProperty(window, 'chrome', {
-        get: () => ({
-            runtime: {
-                connect: function() { throw new Error('Invalid port'); },
-                sendMessage: function() { return Promise.reject(); },
-                getPlatformInfo: function() {
-                    return Promise.resolve({ os: 'win', arch: 'x86-64' });
-                }
-            },
-            app: {
+    Object.defineProperty(window, 'chrome', {{
+        get: () => ({{
+            runtime: {{
+                connect: function() {{ throw new Error('Invalid port'); }},
+                sendMessage: function() {{ return Promise.reject(); }},
+                getPlatformInfo: function() {{
+                    return Promise.resolve({{ os: '{_CHROME_OS}', arch: 'x86-64' }});
+                }}
+            }},
+            app: {{
                 isInstalled: false
-            },
-            loadTimes: function() {
-                return {
+            }},
+            loadTimes: function() {{
+                return {{
                     requestStart: performance.now() - 2000,
                     loadEventEnd: performance.now() - 500,
                     domContentLoadedEventEnd: performance.now() - 800
-                };
-            },
-            csi: function() {
-                return {
+                }};
+            }},
+            csi: function() {{
+                return {{
                     pageLoadTime: 1500,
                     startE: performance.now() - 2000,
                     onloadT: performance.now() - 500
-                };
-            }
-        }),
+                }};
+            }}
+        }}),
         configurable: true
-    });
+    }});
 
     // Hardware fingerprint properties — real Chrome reports these
-    Object.defineProperty(navigator, 'hardwareConcurrency', {
+    Object.defineProperty(navigator, 'hardwareConcurrency', {{
         get: () => 4,  // Typical quad-core processor
         configurable: true
-    });
+    }});
 
-    Object.defineProperty(navigator, 'deviceMemory', {
+    Object.defineProperty(navigator, 'deviceMemory', {{
         get: () => 8,  // Typical 8GB RAM in modern machines
         configurable: true
-    });
-})();
+    }});
+
+    // navigator.connection — PerimeterX/HUMAN checks for undefined as bot signal
+    Object.defineProperty(navigator, 'connection', {{
+        get: () => ({{
+            effectiveType: '4g',
+            downlink: 10,
+            rtt: 50,
+            saveData: false,
+            onchange: null
+        }}),
+        configurable: true
+    }});
+
+    // navigator.getBattery() — must exist and return a Promise in real Chrome
+    if (!navigator.getBattery) {{
+        navigator.getBattery = function() {{
+            return Promise.resolve({{
+                charging: true,
+                chargingTime: 0,
+                dischargingTime: Infinity,
+                level: 1.0,
+                addEventListener: function() {{}},
+                removeEventListener: function() {{}}
+            }});
+        }};
+    }}
+
+    // screen color depth — real Chrome on modern hardware = 24
+    Object.defineProperty(screen, 'colorDepth', {{ get: () => 24, configurable: true }});
+    Object.defineProperty(screen, 'pixelDepth', {{ get: () => 24, configurable: true }});
+
+    // outerWidth/outerHeight — headless Chrome defaults to 0, which PerimeterX detects
+    if (window.outerWidth === 0) {{
+        Object.defineProperty(window, 'outerWidth', {{ get: () => 1920, configurable: true }});
+    }}
+    if (window.outerHeight === 0) {{
+        Object.defineProperty(window, 'outerHeight', {{ get: () => 1040, configurable: true }});
+    }}
+
+    // performance.memory — present in real Chrome, absent in some automation contexts
+    if (!performance.memory) {{
+        Object.defineProperty(performance, 'memory', {{
+            get: () => ({{
+                jsHeapSizeLimit: 4294705152,
+                totalJSHeapSize: 20000000 + Math.floor(Math.random() * 5000000),
+                usedJSHeapSize: 10000000 + Math.floor(Math.random() * 3000000)
+            }}),
+            configurable: true
+        }});
+    }}
+}})();
 """
 
 # Module-level lock shared between session_manager (writer) and stock_monitor (reader)
@@ -196,7 +260,8 @@ class WalmartSessionManager:
         try:
             config = uc.Config(
                 user_data_dir=str(self._profile_dir),
-                headless=False,
+                headless=HEADLESS,
+                browser_channel=BROWSER_CHANNEL,
                 browser_args=[
                     "--window-size=1920,1080",
                 ],
@@ -209,36 +274,36 @@ class WalmartSessionManager:
             # Akamai's behavioral analysis looks for: navigation history, idle patterns, referrer chains
             self._status_cb("[SESSION] Building browser legitimacy profile (pre-warmup)...")
             try:
-                # Tier 1: Search engine to establish baseline
-                self._status_cb("[SESSION] → Google search (establishing baseline)")
-                warmup = await self._browser.get("https://www.google.com")
-                await asyncio.sleep(random.uniform(1.2, 2.0))
+                # Randomized site pool — same approach as warm_session() to eliminate
+                # the fixed Google→Amazon→Reddit→YouTube→eBay behavioral signature
+                _pre_warm_pool = [
+                    "https://www.google.com",
+                    "https://www.amazon.com",
+                    "https://www.reddit.com",
+                    "https://www.youtube.com",
+                    "https://www.ebay.com",
+                    "https://news.ycombinator.com",
+                    "https://www.bestbuy.com",
+                    "https://www.target.com",
+                ]
+                _num_sites = random.randint(3, 5)
+                _selected = random.sample(_pre_warm_pool, k=_num_sites)
+                random.shuffle(_selected)
 
-                # Tier 2: Major retailer to build retail shopping pattern
-                self._status_cb("[SESSION] → Amazon (retail shopping context)")
-                warmup = await warmup.get("https://www.amazon.com")
-                await asyncio.sleep(random.uniform(1.5, 2.5))
-
-                # Tier 3: Reddit/social to diversify browsing pattern (not just shopping)
-                self._status_cb("[SESSION] → Reddit (browsing diversification)")
-                warmup = await warmup.get("https://www.reddit.com")
-                await asyncio.sleep(random.uniform(1.0, 1.8))
-
-                # Tier 4: YouTube to add video platform (comprehensive user profile)
-                self._status_cb("[SESSION] → YouTube (multimedia browsing)")
-                warmup = await warmup.get("https://www.youtube.com")
-                await asyncio.sleep(random.uniform(1.5, 2.5))
-
-                # Tier 5: Back to retail (shows legitimate shopping interest)
-                self._status_cb("[SESSION] → eBay (multi-retailer pattern)")
-                warmup = await warmup.get("https://www.ebay.com")
-                await asyncio.sleep(random.uniform(1.2, 2.0))
+                warmup = None
+                for site in _selected:
+                    self._status_cb(f"[SESSION] → {site.split('/')[2]} (legitimacy profile)")
+                    if warmup is None:
+                        warmup = await self._browser.get(site)
+                    else:
+                        warmup = await warmup.get(site)
+                    await asyncio.sleep(random.uniform(1.2, 2.5))
 
                 # Final idle: simulate real user behavior (thinking, reading)
                 self._status_cb("[SESSION] → Idle period (realistic user pause)")
                 await asyncio.sleep(random.uniform(2.0, 3.0))
 
-                logger.debug("[SESSION] Pre-legitimacy warmup complete: 5 sites, 10-15s elapsed")
+                logger.debug("[SESSION] Pre-legitimacy warmup complete: %d sites", _num_sites)
             except Exception as e:
                 logger.debug("[SESSION] Pre-warmup partial failure (non-critical): %s", e)
 
@@ -740,11 +805,14 @@ class WalmartSessionManager:
         # Low-risk pages for re-warming — never product pages (/ip/...).
         # PDPs are PerimeterX "sensitive routes": they always trigger a live
         # server-side risk call regardless of _px3 state, causing /blocked loops.
-        ALL_REWARM_PAGES = [
-            "https://www.walmart.com",
-            "https://www.walmart.com/browse/toys/trading-card-games/4171_4191_8134350",
-            "https://www.walmart.com/search?q=pokemon+trading+cards",
-        ]
+        # Override WALMART_REWARM_PAGES env var (comma-separated URLs) to use different browse pages.
+        _default_rewarm = (
+            "https://www.walmart.com"
+            "|https://www.walmart.com/browse/electronics"
+            "|https://www.walmart.com/browse/toys-games"
+        )
+        _rewarm_env = os.environ.get("WALMART_REWARM_PAGES", _default_rewarm)
+        ALL_REWARM_PAGES = [u.strip() for u in _rewarm_env.split("|") if u.strip()]
 
         async def _do_warmup():
             # Randomize selection (2-3 pages) and order to break behavioral patterns
@@ -955,9 +1023,7 @@ class WalmartSessionManager:
             with _cookie_file_lock:
                 with open(path, "r") as f:
                     cookie_list = json.load(f)
-            now = time.monotonic()
-            import time as _time
-            now_ts = _time.time()
+            now_ts = time.time()
             if isinstance(cookie_list, list):
                 return {
                     c["name"]: c["value"]

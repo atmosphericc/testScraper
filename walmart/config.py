@@ -18,8 +18,11 @@ WALMART_SELLER_ID = "F55CDC31AB754BB68FE0851F0F1F2C96"
 
 # GraphQL operation hash — auto-updated at runtime by the session harvester via CDP.
 # This value is the static fallback used until the first ItemByIdBtf request is intercepted.
-# If stock_monitor.py starts getting 400/404 responses before a session warms up, update this.
-GRAPHQL_HASH = "20d116c298a901b29763c37a4aaf8b37aeb1654e4f971cd11a7fe9de2ceab027"
+# Override via WALMART_GRAPHQL_HASH env var when the static default goes stale (HTTP 400 on stock checks).
+GRAPHQL_HASH = os.environ.get(
+    "WALMART_GRAPHQL_HASH",
+    "20d116c298a901b29763c37a4aaf8b37aeb1654e4f971cd11a7fe9de2ceab027",
+)
 
 # ATF (Above The Fold) hash — auto-discovered at runtime by the session harvester.
 # Starts as None; stock_monitor uses it as a fallback when BTF returns no product data
@@ -42,8 +45,8 @@ WALMART_ACCOUNT_URL = "https://www.walmart.com/account"
 
 # All proxies are used for monitoring (one worker per proxy, staggered).
 # A subset is reserved sticky for checkout sessions.
-CHECKOUT_PROXY_POOL_SIZE = 12   # sticky, one proxy per checkout session
-MONITOR_PROXY_POOL_SIZE = 50    # kept for reference — actual value = all loaded proxies
+CHECKOUT_PROXY_POOL_SIZE = 12   # max sticky checkout proxies carved out of the loaded pool
+MONITOR_PROXY_POOL_SIZE = 50    # soft limit reference — actual pool size = all loaded proxies
 
 PROXY_COOLDOWN_SECONDS = 300    # bench a proxy for 5 min after 403/429
 PROXY_ERROR_RATE_THRESHOLD = 0.10  # bench if error rate > 10% over last 100 reqs
@@ -54,9 +57,10 @@ PROXY_ERROR_RATE_THRESHOLD = 0.10  # bench if error rate > 10% over last 100 req
 
 HEADLESS = False          # Patchright recommendation: False reduces detection risk
 BROWSER_CHANNEL = "chrome"  # Use real Chrome, not bundled Chromium
-PROFILE_DIR = "./walmart-profile"
-COOKIES_FILE = "./walmart-profile/cookies.json"
-LOGS_DIR = "./walmart/logs"
+_WALMART_DIR = Path(__file__).parent
+PROFILE_DIR = str(_WALMART_DIR.parent / "walmart-profile")
+COOKIES_FILE = str(_WALMART_DIR.parent / "walmart-profile" / "cookies.json")
+LOGS_DIR = str(_WALMART_DIR / "logs")
 
 # ---------------------------------------------------------------------------
 # Session / PerimeterX
@@ -86,8 +90,19 @@ QUEUE_TIMEOUT = 1800        # 30 minutes — abandon if not passed through
 CHECKOUT_MODE = os.environ.get("CHECKOUT_MODE", "TEST")
 FINAL_PURCHASE = os.environ.get("FINAL_PURCHASE", "NO")
 
+# Fast-drop mode: eliminates mandatory human think-time delays during checkout.
+# Set FAST_DROP_MODE=1 for high-demand drops where seconds matter (Pokemon Wednesday, GPU releases).
+# Default 0 keeps human-like think-times for stealth in normal operation.
+FAST_DROP_MODE = os.environ.get("FAST_DROP_MODE", "0") == "1"
+
 # CVV for saved card — loaded from environment
 CARD_CVV = os.environ.get("WALMART_CVV", "")
+
+# Account credentials — only used for browser-restart re-login fallback.
+# Normal startup uses saved cookies from walmart_relogin.py (no env vars needed).
+# Set these only if you want automatic re-login on browser crash recovery.
+WALMART_EMAIL = os.environ.get("WALMART_EMAIL", "")
+WALMART_PASSWORD = os.environ.get("WALMART_PASSWORD", "")
 
 
 # ---------------------------------------------------------------------------

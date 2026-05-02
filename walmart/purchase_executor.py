@@ -32,7 +32,10 @@ from .config import (
     WALMART_CART_URL,
     WALMART_CHECKOUT_URL,
     LOGS_DIR,
+    FAST_DROP_MODE,
+    PX3_MAX_AGE_SECONDS,
     get_card_cvv,
+    get_final_purchase,
 )
 from .queue_handler import QueueHandler
 
@@ -146,13 +149,27 @@ class WalmartPurchaseExecutor:
             # Step 2: Handle virtual queue if present
             queue = QueueHandler(self._page, self._status_cb)
             in_queue = await queue.detect()
+            if not in_queue:
+                # Not yet in queue — try to join if entry button is visible
+                in_queue = await queue.join_queue()
+                if in_queue:
+                    self._status_cb("[PURCHASE] Joined queue — waiting for pass-through")
+            else:
+                self._status_cb("[PURCHASE] Already in queue — waiting for pass-through")
             if in_queue:
-                self._status_cb("[PURCHASE] Queue detected — waiting for pass-through")
                 passed = await queue.wait_for_passthrough()
                 if not passed:
                     return PurchaseResult(False, error="Queue timeout")
                 # After pass-through, re-navigate to ensure we're on the product page
                 await self._navigate(item_url)
+                # After potentially 10-30min in queue, _px3 is always stale.
+                # Refresh before checkout or PerimeterX will block on /cart navigation.
+                if self._session and hasattr(self._session, 'needs_rewarm') and self._session.needs_rewarm():
+                    self._status_cb("[PURCHASE] Queue exited — refreshing _px3 before checkout...")
+                    try:
+                        await self._session.warm_session([])
+                    except Exception as _e:
+                        logger.warning("[PURCHASE] Post-queue _px3 refresh failed: %s", _e)
 
             # Step 3: Click Add to Cart directly on the product page.
             atc_ok = await self._add_to_cart(item_id)
@@ -174,23 +191,23 @@ class WalmartPurchaseExecutor:
                 if not checkout_ok:
                     return PurchaseResult(False, error="Cart verification or checkout navigation failed")
 
-                # Real user behavior: Review cart before continuing (2-5s think time)
+                # Real user behavior: Review cart before continuing
                 self._status_cb("[PURCHASE] Reviewing cart (human think-time)...")
-                await asyncio.sleep(random.uniform(2.0, 5.0))
+                await asyncio.sleep(random.uniform(0.3, 0.6) if FAST_DROP_MODE else random.uniform(2.0, 5.0))
 
             # Step 6: Confirm shipping (pre-saved address — just continue)
             await self._confirm_shipping()
 
-            # Real user behavior: Review shipping before CVV (1-3s think time)
+            # Real user behavior: Review shipping before CVV
             self._status_cb("[PURCHASE] Reviewing shipping address (human think-time)...")
-            await asyncio.sleep(random.uniform(1.0, 3.0))
+            await asyncio.sleep(random.uniform(0.2, 0.4) if FAST_DROP_MODE else random.uniform(1.0, 3.0))
 
             # Step 7: Enter CVV if required
             await self._enter_cvv_if_needed()
 
-            # Real user behavior: Review order summary before placing (1-3s think time)
+            # Real user behavior: Review order summary before placing
             self._status_cb("[PURCHASE] Reviewing order summary (human think-time)...")
-            await asyncio.sleep(random.uniform(1.0, 3.0))
+            await asyncio.sleep(random.uniform(0.2, 0.4) if FAST_DROP_MODE else random.uniform(1.0, 3.0))
 
             # Step 7b: Select delivery day if modal appears
             await self._handle_delivery_day_modal(item_id)
@@ -199,7 +216,8 @@ class WalmartPurchaseExecutor:
             await self._dismiss_walmart_plus_popup(item_id)
 
             # TEST MODE — stop here (re-read env var at purchase time so toggle works from dashboard)
-            checkout_mode = os.environ.get("CHECKOUT_MODE", "PRODUCTION")
+            checkout_mode = os.environ.get("CHECKOUT_MODE", "TEST")
+            final_purchase = get_final_purchase()
 
             if checkout_mode != "PRODUCTION":
                 await self._screenshot(f"test_mode_stop_{item_id}")
@@ -207,6 +225,13 @@ class WalmartPurchaseExecutor:
                 logger.debug("[PURCHASE] TEST MODE — would have placed order for %s", item_id)
                 await self._clear_cart()
                 return PurchaseResult(True, order_id="TEST_MODE")
+
+            if final_purchase != "YES":
+                await self._screenshot(f"dry_run_stop_{item_id}")
+                self._status_cb("[PURCHASE] DRY RUN — CHECKOUT_MODE=PRODUCTION but FINAL_PURCHASE≠YES, clearing cart")
+                logger.warning("[PURCHASE] DRY RUN — set FINAL_PURCHASE=YES to actually place orders")
+                await self._clear_cart()
+                return PurchaseResult(True, order_id="DRY_RUN")
 
             # Step 8: Place order
 
@@ -500,7 +525,7 @@ class WalmartPurchaseExecutor:
         if self._session and hasattr(self._session, 'needs_rewarm'):
             if self._session.needs_rewarm():
                 self._status_cb("[PURCHASE] _px3 cookie approaching expiry — refreshing session...")
-                logger.info("[PURCHASE] _px3 age >%ds, refreshing before checkout", 40)
+                logger.info("[PURCHASE] _px3 age >%ds, refreshing before checkout", PX3_MAX_AGE_SECONDS)
                 try:
                     await self._session.warm_session([])
                     logger.debug("[PURCHASE] _px3 refreshed before checkout")
@@ -889,6 +914,12 @@ class WalmartPurchaseExecutor:
             logger.info("[PURCHASE] Modal appeared and was dismissed after delivery selection")
             await asyncio.sleep(random.uniform(1.0, 2.0))  # Extra pause after modal dismissal
 
+        # Fast-path: 2-step checkout (pre-saved address + payment) may show Place Order immediately
+        place_order_early = await self._find_element(PLACE_ORDER_SELECTORS, timeout=1000)
+        if place_order_early:
+            self._status_cb("[PURCHASE] Fast-path: Place Order already visible — skipping step loop")
+            return
+
         CONTINUE_SELECTORS = [
             'button:has-text("Continue")',
             'button:has-text("Deliver here")',
@@ -942,15 +973,15 @@ class WalmartPurchaseExecutor:
                 self._status_cb(f"[PURCHASE] Reached review step after {step_num} Continue click(s)")
                 return
 
-            # Human think time: pause before looking for Continue button (1-2s)
-            await asyncio.sleep(random.uniform(1.0, 2.0))
+            # Human think time: pause before looking for Continue button
+            await asyncio.sleep(random.uniform(0.3, 0.5) if FAST_DROP_MODE else random.uniform(1.0, 2.0))
 
             # Click the next Continue/advance button
             continue_btn = await self._find_element(CONTINUE_SELECTORS, timeout=4000)
             if continue_btn:
                 # Post-click pause: let page transition settle before next step
                 await continue_btn.click()
-                await asyncio.sleep(random.uniform(1.5, 2.5))
+                await asyncio.sleep(random.uniform(0.3, 0.5) if FAST_DROP_MODE else random.uniform(1.5, 2.5))
                 self._status_cb(f"[PURCHASE] Continue clicked (step {step_num + 1})")
             else:
                 # No Continue and no Place Order — checkout stalled
@@ -1056,8 +1087,10 @@ class WalmartPurchaseExecutor:
         await asyncio.sleep(random.uniform(0.03, 0.10))  # CDP flush yield
         pre_click_url = self._page.url
 
-        # Regex matches Walmart's known confirmation URL patterns
-        _confirm_pattern = re.compile(r".*(order-confirmation|order/confirm|thank-you|order-placed).*")
+        # Regex matches Walmart's known confirmation URL patterns.
+        # Live URL as of 2026: walmart.com/checkout/thankyou?version=v3/
+        # NOTE: "thankyou" has no hyphen — "thank-you" (hyphenated) never matched live orders.
+        _confirm_pattern = re.compile(r".*(order-confirmation|order/confirm|thank-you|thankyou|checkout/thankyou|order-placed).*")
         deadline = time.monotonic() + 20.0
         cvv_modal_check_count = 0
         while time.monotonic() < deadline:
@@ -1111,7 +1144,7 @@ class WalmartPurchaseExecutor:
 
         # Check URL for order ID
         url = self._page.url or ""
-        if "order-confirmation" in url or "order" in url:
+        if "order-confirmation" in url or "thankyou" in url or "order" in url:
             numbers = re.findall(r'\d{7,}', url)
             if numbers:
                 return numbers[0]
@@ -1297,6 +1330,9 @@ class WalmartPurchaseExecutor:
                 logger.info("[PURCHASE] Modal pause: %.1fs (complexity=%d)", pause_time, complexity)
                 await asyncio.sleep(pause_time)
 
+                # Wait for DOM to stabilize after modal close before resuming
+                await self._wait_for_dom_stability(timeout=3000)
+
                 # After the stealth pause, inject a mouse movement toward the form
                 # to simulate a user moving their cursor back to interact with the main checkout
                 # Randomize coordinates to avoid fixed-pattern detection
@@ -1455,12 +1491,13 @@ class WalmartPurchaseExecutor:
                     logger.info("[PURCHASE] /blocked challenge solved")
                     return True
                 else:
-                    self._status_cb("[PURCHASE] Challenge solve FAILED")
+                    self._status_cb("[PURCHASE] Challenge solve FAILED — aborting purchase")
                     logger.error("[PURCHASE] /blocked challenge could not be solved")
                     await self._screenshot("blocked_unsolved")
-                    return True  # was blocked, but couldn't solve
+                    return False
             except Exception as e:
                 logger.error("[PURCHASE] Challenge solver error: %s", e)
+                return False
 
         # Fallback: wait and check if it auto-resolves (some challenges are time-based)
         logger.info("[PURCHASE] No session manager — waiting for auto-resolve")
@@ -1470,9 +1507,9 @@ class WalmartPurchaseExecutor:
                 self._status_cb("[PURCHASE] Challenge auto-resolved")
                 return True
 
-        self._status_cb("[PURCHASE] Challenge could not be resolved")
+        self._status_cb("[PURCHASE] Challenge could not be resolved — aborting purchase")
         await self._screenshot("blocked_no_session")
-        return True  # was blocked
+        return False
 
     async def _human_delay(self, min_ms: int = 80, max_ms: int = 300):
         """Add a small randomized delay to simulate human interaction timing."""

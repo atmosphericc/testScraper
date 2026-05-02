@@ -90,6 +90,15 @@ class WalmartStockMonitor:
         self._rate_limit_hits: int = 0
         self._rate_limit_backoff: float = 0.0
 
+        # Circuit breaker — pause monitor after repeated BLOCKED responses to
+        # avoid accumulating Akamai detection signals during a hard block period
+        self._consecutive_blocked: int = 0
+        self._monitor_circuit_open_until: float = 0.0
+        _MONITOR_CIRCUIT_BREAKER_THRESHOLD = 5   # consecutive BLOCKED → trip
+        _MONITOR_CIRCUIT_BREAKER_PAUSE = 120     # seconds to pause before retry
+        self._MONITOR_CB_THRESHOLD = _MONITOR_CIRCUIT_BREAKER_THRESHOLD
+        self._MONITOR_CB_PAUSE = _MONITOR_CIRCUIT_BREAKER_PAUSE
+
     # ------------------------------------------------------------------
     # Start / stop
     # ------------------------------------------------------------------
@@ -113,7 +122,7 @@ class WalmartStockMonitor:
         self._worker_threads.append(t)
 
         logger.info("[MONITOR] Started browser-fetch monitor (%.0f checks/sec/product)",
-                     1.0 / CHECK_INTERVAL)
+                     1.0 / CHECK_INTERVAL_AVG)
         self._status_cb("[MONITOR] Stock monitoring active — browser fetch mode")
 
         hb = threading.Thread(target=self._heartbeat, daemon=True, name="WalmartMonitor-HB")
@@ -341,6 +350,22 @@ class WalmartStockMonitor:
                             error_msg = r['error']
                             errors.append(f"{item_id}:{error_msg}")
 
+                            # Count consecutive BLOCKED responses — trip monitor circuit breaker
+                            if error_msg == "BLOCKED":
+                                self._consecutive_blocked += 1
+                                if self._consecutive_blocked >= self._MONITOR_CB_THRESHOLD:
+                                    self._monitor_circuit_open_until = time.monotonic() + self._MONITOR_CB_PAUSE
+                                    self._status_cb(
+                                        f"[MONITOR] Circuit breaker open — {self._consecutive_blocked} consecutive BLOCKED "
+                                        f"responses, pausing {self._MONITOR_CB_PAUSE}s"
+                                    )
+                                    logger.warning(
+                                        "[MONITOR] Circuit breaker tripped after %d BLOCKED responses — pausing %ds",
+                                        self._consecutive_blocked, self._MONITOR_CB_PAUSE,
+                                    )
+                            else:
+                                self._consecutive_blocked = 0
+
                             # Detect rate limiting (429 = too fast, backoff needed)
                             if error_msg == "HTTP_429":
                                 with self._checks_lock:
@@ -388,6 +413,14 @@ class WalmartStockMonitor:
             # Use exponential distribution to simulate natural human check frequency
             # Average: CHECK_INTERVAL_AVG (1.0s for 10 dispatchers), Range: 0.5-1.5s
             elapsed = time.monotonic() - cycle_start
+
+            # Monitor circuit breaker — back off after repeated BLOCKED responses
+            if time.monotonic() < self._monitor_circuit_open_until:
+                remaining_cb = self._monitor_circuit_open_until - time.monotonic()
+                logger.warning("[MONITOR] Circuit breaker open — pausing %.0fs", remaining_cb)
+                self._stop_event.wait(timeout=remaining_cb)
+                self._consecutive_blocked = 0
+                continue
 
             # Check if rate limited — back off if so
             if time.monotonic() < self._rate_limit_backoff:
