@@ -129,6 +129,9 @@ class WalmartPurchaseExecutor:
         # Track last mouse position for realistic click trajectories
         self._last_mouse_x: float = random.uniform(100, 1200)
         self._last_mouse_y: float = random.uniform(100, 700)
+        # Set by _clear_cart() when post-purchase cart navigation hits /blocked.
+        # Manager reads this to avoid immediate re-queue on a poisoned _px3 cookie.
+        self._last_cart_clear_blocked: bool = False
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -1355,7 +1358,15 @@ class WalmartPurchaseExecutor:
             return False
 
     async def _dismiss_walmart_plus_popup(self, item_id: str):
-        """Dismiss Walmart+ upsell popup if present before Place Order."""
+        """Dismiss Walmart+ upsell popup if present before Place Order.
+
+        The Walmart+ upsell is shown on the most-scrutinized checkout page.
+        Dismissing it via raw element.click() leaves a deterministic DOM-event
+        signature that PerimeterX uses to fire `/blocked?g=b` (press-and-hold).
+        We mirror the Place Order pattern: getBoundingClientRect → CDP mouse
+        trajectory → realistic click, with a human read/decide pause before
+        and a settle pause after.
+        """
         popup_selectors = [
             'button[data-automation-id="walmart-plus-no-thanks"]',
             'button:has-text("No thanks")',
@@ -1367,13 +1378,41 @@ class WalmartPurchaseExecutor:
         ]
         try:
             popup_btn = await self._find_element(popup_selectors, timeout=2000)
-            if popup_btn:
-                await popup_btn.click()
-                await self._screenshot(f"walmart_plus_popup_dismissed_{item_id}")
-                logger.info("[PURCHASE] Dismissed Walmart+ popup")
-                self._status_cb("[PURCHASE] Dismissed Walmart+ popup")
-            else:
+            if not popup_btn:
                 logger.debug("[PURCHASE] No Walmart+ popup detected — proceeding")
+                return
+
+            # Human read/decide pause before dismissing (1.2-2.5s)
+            await asyncio.sleep(random.uniform(1.2, 2.5))
+
+            clicked = False
+            try:
+                rect = await popup_btn.apply("""(e) => {
+                    e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    const r = e.getBoundingClientRect();
+                    return { x: r.left, y: r.top, w: r.width, h: r.height };
+                }""")
+                if rect and rect.get('w', 0) > 0 and rect.get('h', 0) > 0:
+                    x = rect['x'] + rect['w'] / 2 + random.uniform(-4, 4)
+                    y = rect['y'] + rect['h'] / 2 + random.uniform(-3, 3)
+                    clicked = await self._realistic_click(x, y, "Walmart+ No thanks")
+            except Exception as e:
+                logger.debug("[PURCHASE] Walmart+ popup bounds lookup failed: %s — falling back", e)
+
+            if not clicked:
+                # Fallback: native click only if CDP path failed
+                try:
+                    await popup_btn.click()
+                except Exception as e:
+                    logger.debug("[PURCHASE] Walmart+ fallback click failed: %s", e)
+                    return
+
+            # Settle pause — modal close animation + DOM reflow (humans don't
+            # immediately Place Order in the same frame as dismissing a modal)
+            await asyncio.sleep(random.uniform(0.8, 1.6))
+            await self._screenshot(f"walmart_plus_popup_dismissed_{item_id}")
+            logger.info("[PURCHASE] Dismissed Walmart+ popup")
+            self._status_cb("[PURCHASE] Dismissed Walmart+ popup")
         except Exception as e:
             logger.debug("[PURCHASE] Walmart+ popup dismiss check failed: %s (continuing)", e)
 
@@ -1433,40 +1472,71 @@ class WalmartPurchaseExecutor:
         Clear all items from the cart. Called after every purchase attempt
         (success or failure) to ensure a clean state for the next attempt.
         After cleanup, re-warm Tab 1 to refresh cookies for the stock monitor.
+
+        Returns True if the cart was successfully reached and cleared (or already
+        empty). Returns False if the cart navigation landed on /blocked or
+        otherwise failed — in that case the caller should treat the session as
+        poisoned (no immediate re-queue).
         """
+        cart_cleared = False
+        landed_on_blocked = False
         try:
             await self._page.get(WALMART_CART_URL)
             await asyncio.sleep(1)
-            remove_btns = await self._query_selector_all([
-                'button[data-automation-id="remove-item"]',
-                'button[aria-label*="Remove"]',
-            ])
-            # Also try XPath for "Remove" text buttons
-            try:
-                xpath_btns = await self._page.xpath('//button[contains(., "Remove")]')
-                remove_btns.extend(xpath_btns)
-            except Exception:
-                pass
-            if not remove_btns:
-                logger.debug("[PURCHASE] Cart already empty — no cleanup needed")
+
+            # If cart navigation landed us on /blocked, the cart is NOT empty —
+            # we just can't see it. Do not log "cart already empty" here, since
+            # that masks a poisoned session and lets the manager re-queue blindly.
+            current_url = self._page.url or ""
+            if "/blocked" in current_url:
+                landed_on_blocked = True
+                logger.warning("[PURCHASE] _clear_cart: navigation landed on /blocked — cart state unknown, NOT cleared")
+                self._status_cb("[PURCHASE] Cart clear blocked — session poisoned, skipping rewarm")
             else:
-                logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
-                for btn in remove_btns:
-                    try:
-                        await btn.click()
-                        await asyncio.sleep(random.uniform(0.6, 1.0))
-                    except Exception:
-                        pass
+                remove_btns = await self._query_selector_all([
+                    'button[data-automation-id="remove-item"]',
+                    'button[aria-label*="Remove"]',
+                ])
+                # Also try XPath for "Remove" text buttons
+                try:
+                    xpath_btns = await self._page.xpath('//button[contains(., "Remove")]')
+                    remove_btns.extend(xpath_btns)
+                except Exception:
+                    pass
+                if not remove_btns:
+                    logger.debug("[PURCHASE] Cart already empty — no cleanup needed")
+                    cart_cleared = True
+                else:
+                    logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
+                    for btn in remove_btns:
+                        try:
+                            await btn.click()
+                            await asyncio.sleep(random.uniform(0.6, 1.0))
+                        except Exception:
+                            pass
+                    cart_cleared = True
         except Exception as e:
             logger.warning("[PURCHASE] _clear_cart cleanup failed: %s", e)
 
-        # Re-warm Tab 1 after purchase to refresh stock monitor cookies
+        # Stash the poisoned-session signal so the manager can read it and
+        # avoid re-queuing on the same _px3 cookie that just got challenged.
+        self._last_cart_clear_blocked = landed_on_blocked
+
+        # Re-warm Tab 1 after purchase to refresh stock monitor cookies — but
+        # NOT if the cart navigation just hit /blocked (rewarm would also be
+        # blocked and would burn the proxy cooldown).
+        if landed_on_blocked:
+            logger.warning("[PURCHASE] Skipping Tab 1 rewarm — session is in /blocked state")
+            return cart_cleared
+
         if self._session and hasattr(self._session, 'rewarm_tab1'):
             try:
                 logger.info("[PURCHASE] Re-warming Tab 1 after purchase...")
                 await self._session.rewarm_tab1()
             except Exception as e:
                 logger.warning("[PURCHASE] Tab 1 rewarm failed: %s (stock monitor may be briefly blocked)", e)
+
+        return cart_cleared
 
     async def _handle_blocked(self) -> bool:
         """

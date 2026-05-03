@@ -350,10 +350,13 @@ class WalmartStockMonitor:
                             error_msg = r['error']
                             errors.append(f"{item_id}:{error_msg}")
 
-                            # Count consecutive BLOCKED responses — trip monitor circuit breaker
+                            # Count consecutive BLOCKED responses — trip monitor circuit breaker.
+                            # Only log + emit status the FIRST time we trip per cooldown window,
+                            # otherwise a single batch of N BLOCKED results spams the log N times.
                             if error_msg == "BLOCKED":
                                 self._consecutive_blocked += 1
-                                if self._consecutive_blocked >= self._MONITOR_CB_THRESHOLD:
+                                already_open = time.monotonic() < self._monitor_circuit_open_until
+                                if self._consecutive_blocked >= self._MONITOR_CB_THRESHOLD and not already_open:
                                     self._monitor_circuit_open_until = time.monotonic() + self._MONITOR_CB_PAUSE
                                     self._status_cb(
                                         f"[MONITOR] Circuit breaker open — {self._consecutive_blocked} consecutive BLOCKED "

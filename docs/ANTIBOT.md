@@ -1,12 +1,49 @@
 # Anti-Bot Quick Reference
 
 ## Last Audited & Patched
+2026-05-02 — 4-patch fix for Walmart+ popup → /blocked detection cascade observed in live test. See "2026-05-02 Patches" section below.
 2026-05-01 — 8-patch Walmart bot behavioral audit applied (Phase 1 + 2). All patches committed. See "2026-05-01 Patches" section below.
 2026-04-25 — 6-patch antibot audit. 5 patches applied (see below), 1 investigated (patchright/zendriver question resolved).
 2026-04-10 — Consolidated to eliminate duplication. Full retailer-specific details live in `@docs/RETAILERS/TARGET.md` and `@docs/RETAILERS/WALMART.md`.
 2026-04-10 — ATC timing fix: 12s confirmation wait reverted to 6s/proceed-anyway. Cart cycling fix: `already_in_cart` path now calls `_verify_cart` to land on cart page before checkout.
 
 ## Confirmed Working Mitigations
+
+### 2026-05-02 Patches — Walmart+ Popup Dismiss → /blocked Cascade Fix
+Live test on 2026-05-02 reached Place Order page successfully, but the Walmart+ upsell popup
+dismiss triggered Akamai/PerimeterX detection: next stock check returned 24 BLOCKED responses
+in 2 seconds, and the next purchase navigation hit `/blocked?...&g=b` (press-and-hold). The
+post-purchase `_clear_cart` silently logged "cart already empty" because the cart navigation
+also hit `/blocked` — leaving the cart populated with 1 item. Manager then re-queued on the
+poisoned `_px3` cookie, cascading the block.
+
+- **Patch 14** — `walmart/purchase_executor.py:_dismiss_walmart_plus_popup`: Replaced
+  `popup_btn.click()` (raw DOM click) with `getBoundingClientRect → _realistic_click()` (CDP
+  mouse trajectory) — same pattern as Patch 9 (Place Order). Added 1.2-2.5s human read/decide
+  pause before the click and 0.8-1.6s settle pause after. The Walmart+ popup appears on the
+  most-scrutinized checkpoint (Place Order page) so a deterministic synchronous DOM click is
+  one of the strongest behavioral bot signatures PerimeterX can fire on.
+
+- **Patch 15** — `walmart/purchase_executor.py:_clear_cart`: Now detects when post-purchase
+  cart navigation lands on `/blocked` and (a) does NOT log "cart already empty" (which masks
+  a poisoned session), (b) skips the Tab 1 rewarm (which would also be blocked and burn the
+  proxy), and (c) sets `_last_cart_clear_blocked = True` so the manager can read the poisoned
+  state. Returns True/False to indicate clear success.
+
+- **Patch 16** — `walmart/purchase_manager.py:_run_purchase`: Skips the in-stock re-queue
+  branch when the previous attempt's `_clear_cart` hit `/blocked` OR the stock monitor's
+  circuit breaker is open. Prevents cascading detections by waiting for the next natural
+  in-stock signal (after monitor cooldown) instead of immediately re-attacking on the same
+  poisoned `_px3`.
+
+- **Patch 17** — `walmart/stock_monitor.py:_browser_fetch_loop`: Circuit breaker now logs
+  + emits status only on the FIRST trip per cooldown window. Previously every BLOCKED result
+  in a single batch incremented the counter and re-tripped the breaker, producing 20+ duplicate
+  log lines in 2 seconds (visible in the 2026-05-02 log).
+
+**All patches are low-risk with fallback paths**. CDP click failure → falls back to native
+click; cart blocked → caller is informed but flow continues; manager re-queue suppression →
+just waits for next in-stock signal.
 
 ### 2026-05-01 Patches — Walmart Behavioral Realism (Phase 1 & 2)
 Eight patches applied to break deterministic patterns and behavioral signals identified in 2026-04-30 audit.

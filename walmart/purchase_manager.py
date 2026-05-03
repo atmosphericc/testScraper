@@ -150,6 +150,15 @@ class WalmartPurchaseManager:
         # Do an immediate cookie harvest so workers have valid cookies from the first check
         await self._session.harvest_now()
 
+        # Return Tab 1 to Walmart.com so stock monitor fetches work correctly.
+        # warm_session() leaves Tab 1 on the last external site visited (Google, Amazon, etc).
+        # The stock monitor's fetch(/ip/{item_id}) is relative and needs walmart.com as origin.
+        self._status_cb("[MANAGER] Returning Tab 1 to Walmart for stock monitoring")
+        try:
+            await self._session.return_tab1_to_walmart()
+        except Exception as e:
+            logger.warning("[MANAGER] Failed to return Tab 1 to Walmart: %s", e)
+
         # Open Tab 2 on the actual product page we're about to buy.
         # Pre-warming on product page allows us to jump straight to cart/checkout
         # on purchase signal, saving 8-13s vs. navigating from search page.
@@ -317,6 +326,7 @@ class WalmartPurchaseManager:
     async def _run_purchase(self, item_id: str, item_url: str, name: str):
         """Run a full purchase attempt, managing proxy + session warming."""
         checkout_proxy = None
+        executor = None
         try:
             # Acquire a sticky checkout proxy
             checkout_proxy = self._proxy_manager.acquire_checkout_proxy(timeout=_CHECKOUT_PROXY_TIMEOUT)
@@ -441,16 +451,27 @@ class WalmartPurchaseManager:
                 self._state[item_id] = PurchaseState.MONITORING
 
             # If item is still in stock after purchase (test mode), immediately re-queue
-            # so the cycle repeats without waiting for a stock change event
+            # so the cycle repeats without waiting for a stock change event.
+            # SKIP re-queue when the previous attempt's _clear_cart hit /blocked or the
+            # monitor circuit breaker is open — re-queuing on a poisoned _px3 cookie
+            # cascades into more BLOCKED responses and a longer Akamai cooldown.
+            session_poisoned = bool(getattr(executor, "_last_cart_clear_blocked", False))
+            cb_open = time.monotonic() < getattr(self._monitor, "_monitor_circuit_open_until", 0.0)
             stock_states = self._monitor.get_stock_states()
             if stock_states.get(item_id, {}).get("in_stock", False):
-                logger.info("[MANAGER] Item %s still in stock after purchase — re-queuing", item_id)
-                self._on_in_stock_signal(
-                    item_id=item_id,
-                    offer_id=None,
-                    name=stock_states.get(item_id, {}).get("name", item_id),
-                    price=stock_states.get(item_id, {}).get("price"),
-                )
+                if session_poisoned or cb_open:
+                    logger.warning(
+                        "[MANAGER] Item %s still in stock but session is poisoned (cart_blocked=%s, cb_open=%s) — NOT re-queuing",
+                        item_id, session_poisoned, cb_open,
+                    )
+                else:
+                    logger.info("[MANAGER] Item %s still in stock after purchase — re-queuing", item_id)
+                    self._on_in_stock_signal(
+                        item_id=item_id,
+                        offer_id=None,
+                        name=stock_states.get(item_id, {}).get("name", item_id),
+                        price=stock_states.get(item_id, {}).get("price"),
+                    )
 
     # ------------------------------------------------------------------
     # Stock monitor health check

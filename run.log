@@ -1,4 +1,0 @@
-Traceback (most recent call last):
-  File "/Users/Eric/Desktop/testScraper/walmart/walmart_app.py", line 30, in <module>
-    from .config import get_config, save_config, get_enabled_products
-ImportError: attempted relative import with no known parent package

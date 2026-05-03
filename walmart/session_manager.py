@@ -632,13 +632,12 @@ class WalmartSessionManager:
                 # Simulate realistic user interaction during warmup
                 # (scroll 2-4 times, move mouse 3-6 times, idle for reading)
                 for _ in range(random.randint(2, 4)):
-                    # Scroll up or down
-                    await self._page.send(cdp_input.dispatch_wheel_event(
-                        x=random.randint(600, 1200),
-                        y=random.randint(300, 700),
-                        deltaX=0,
-                        deltaY=random.uniform(-300, 300)
-                    ))
+                    # Scroll up or down via JS (zendriver lacks dispatch_wheel_event)
+                    delta_y = random.uniform(-300, 300)
+                    try:
+                        await self._page.evaluate(f"window.scrollBy(0, {delta_y})")
+                    except Exception:
+                        pass
                     await asyncio.sleep(random.uniform(0.5, 1.5))
 
                 # Move mouse around page (simulate reading/browsing)
@@ -724,6 +723,26 @@ class WalmartSessionManager:
     def needs_rewarm(self) -> bool:
         """True if the _px3 cookie is stale and we should warm before checkout."""
         return (time.monotonic() - self._px3_timestamp) > PX3_MAX_AGE_SECONDS
+
+    async def return_tab1_to_walmart(self):
+        """Navigate Tab 1 back to Walmart.com after warm_session leaves it on an external site.
+
+        The stock monitor's fetch(/ip/{item_id}) uses relative URLs that depend on the page
+        origin being walmart.com. warm_session() finishes on the last visited external site
+        (Google, Amazon, etc), causing stock fetches to 404. This method ensures Tab 1 is
+        on Walmart before the monitor starts.
+        """
+        if not self._page:
+            return
+        try:
+            from zendriver import cdp
+            logger.info("[SESSION] Returning Tab 1 to walmart.com for stock monitoring...")
+            await self._page.send(cdp.page.navigate("https://www.walmart.com"))
+            await asyncio.sleep(1.0)
+            logger.info("[SESSION] Tab 1 now on walmart.com — stock monitor ready")
+        except Exception as e:
+            logger.error("[SESSION] Failed to return Tab 1 to Walmart: %s", e)
+            raise
 
     async def rewarm_tab1(self):
         """Snapshot current Tab 1 cookies without navigation — avoids triggering /blocked.

@@ -27,8 +27,8 @@ from pathlib import Path
 from html import escape as _he
 from flask import Flask, Response, jsonify, request, stream_with_context
 
-from .config import get_config, save_config, get_enabled_products
-from .purchase_manager import WalmartPurchaseManager
+from walmart.config import get_config, save_config, get_enabled_products
+from walmart.purchase_manager import WalmartPurchaseManager
 
 # Setup logging with both console and file output
 log_dir = Path(__file__).parent.parent / "logs"
