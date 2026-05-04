@@ -367,6 +367,16 @@ class WalmartPurchaseManager:
                 except Exception as _me:
                     logger.error("[MANAGER] Failed to restart stock monitor: %s", _me)
 
+            # Snapshot the trusted monitor cookies BEFORE Tab 2 enters checkout.
+            # Tab 2's cart/checkout navigations rotate _px3 with PerimeterX-flagged
+            # values; restoring this snapshot after checkout prevents the stock
+            # monitor from sending the poisoned _px3 on resume (which trips the
+            # circuit breaker and stalls the bot for 120s).
+            try:
+                await self._session.snapshot_monitor_cookies()
+            except Exception as e:
+                logger.warning("[MANAGER] Pre-checkout cookie snapshot failed: %s", e)
+
             # Pause stock monitor during purchase — its rapid fetch() calls on Tab 1
             # contaminate the shared _px3 cookie with bot-like behavioral signals,
             # causing the checkout tab (Tab 2) to get /blocked on cart navigation.
@@ -430,6 +440,15 @@ class WalmartPurchaseManager:
             except Exception as e:
                 logger.warning("[MANAGER] Tab 1 re-warm failed: %s", e)
 
+            # Restore the pre-checkout cookie snapshot so Tab 1's stock monitor
+            # fetches go out with the trusted _px3 (not the rotated/flagged one
+            # from Tab 2's checkout flow). This is what prevents the BLOCKED
+            # cascade + circuit-breaker trip immediately after a successful run.
+            try:
+                await self._session.restore_monitor_cookies()
+            except Exception as e:
+                logger.warning("[MANAGER] Post-checkout cookie restore failed: %s", e)
+
             # Resume stock monitor regardless of purchase outcome
             if self._monitor.is_paused:
                 self._monitor.resume()
@@ -450,11 +469,25 @@ class WalmartPurchaseManager:
                     self._cooldown_until[item_id] = time.monotonic() + _FAILURE_COOLDOWN
                 self._state[item_id] = PurchaseState.MONITORING
 
-            # If item is still in stock after purchase (test mode), immediately re-queue
-            # so the cycle repeats without waiting for a stock change event.
-            # SKIP re-queue when the previous attempt's _clear_cart hit /blocked or the
-            # monitor circuit breaker is open — re-queuing on a poisoned _px3 cookie
-            # cascades into more BLOCKED responses and a longer Akamai cooldown.
+            # If item is still in stock after purchase (test mode), re-queue so the
+            # cycle repeats without waiting for a stock change event. SKIP re-queue
+            # when the previous attempt's _clear_cart hit /blocked or the monitor
+            # circuit breaker is open — re-queuing on a poisoned _px3 cookie cascades
+            # into more BLOCKED responses and a longer Akamai cooldown.
+            #
+            # IMPORTANT: re-purchasing the same item within seconds is the strongest
+            # behavioral bot signal in the entire flow. Real humans don't buy two of
+            # the same item back-to-back. PerimeterX's score for a session that does
+            # this accumulates fast and trips /blocked on the next cart navigation
+            # (see live test 2026-05-03 — cycle 1 succeeded, cycle 2 hit /blocked at
+            # cart with `g=b` press-and-hold). For test-mode regression loops we
+            # intentionally need to repeat, so we add a randomized cooldown that lets
+            # the PerimeterX score decay and _px3 rotate naturally via the harvester.
+            #
+            # Env var WALMART_TEST_LOOP_COOLDOWN overrides the default range:
+            #   - unset / "default":  random 90-180s (recommended for endless test loops)
+            #   - "off" / "0":        no cooldown (legacy behavior — likely to get blocked)
+            #   - "<seconds>":        fixed delay in seconds
             session_poisoned = bool(getattr(executor, "_last_cart_clear_blocked", False))
             cb_open = time.monotonic() < getattr(self._monitor, "_monitor_circuit_open_until", 0.0)
             stock_states = self._monitor.get_stock_states()
@@ -465,6 +498,45 @@ class WalmartPurchaseManager:
                         item_id, session_poisoned, cb_open,
                     )
                 else:
+                    cooldown = self._compute_test_loop_cooldown()
+                    if cooldown > 0:
+                        logger.info(
+                            "[MANAGER] Item %s still in stock — sleeping %.0fs before re-queue (anti-detection cooldown)",
+                            item_id, cooldown,
+                        )
+                        next_cycle_at = time.strftime("%H:%M:%S", time.localtime(time.time() + cooldown))
+                        self._status_cb(
+                            f"[MANAGER] Test loop cooldown — {int(cooldown)}s before next cycle "
+                            f"(next at {next_cycle_at}, set WALMART_TEST_LOOP_COOLDOWN=off to disable)"
+                        )
+
+                        # Tick every 30s so the log doesn't go silent for 3 minutes
+                        TICK_INTERVAL = 30.0
+                        deadline = time.monotonic() + cooldown
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            sleep_for = min(TICK_INTERVAL, remaining)
+                            await asyncio.sleep(sleep_for)
+                            remaining_after = max(0.0, deadline - time.monotonic())
+                            if remaining_after > 0:
+                                self._status_cb(
+                                    f"[MANAGER] Cooldown: {int(remaining_after)}s remaining "
+                                    f"(next cycle at {next_cycle_at})"
+                                )
+
+                        # Re-check in-stock state after cooldown — item may have gone OOS,
+                        # session may have been poisoned by an unrelated event, etc.
+                        stock_states = self._monitor.get_stock_states()
+                        cb_open = time.monotonic() < getattr(self._monitor, "_monitor_circuit_open_until", 0.0)
+                        if not stock_states.get(item_id, {}).get("in_stock", False):
+                            logger.info("[MANAGER] Item %s no longer in stock after cooldown — skipping re-queue", item_id)
+                            return
+                        if cb_open:
+                            logger.warning("[MANAGER] Circuit breaker tripped during cooldown — skipping re-queue")
+                            return
+
                     logger.info("[MANAGER] Item %s still in stock after purchase — re-queuing", item_id)
                     self._on_in_stock_signal(
                         item_id=item_id,
@@ -472,6 +544,23 @@ class WalmartPurchaseManager:
                         name=stock_states.get(item_id, {}).get("name", item_id),
                         price=stock_states.get(item_id, {}).get("price"),
                     )
+
+    def _compute_test_loop_cooldown(self) -> float:
+        """Return the inter-cycle cooldown for test-mode re-queues, in seconds.
+
+        Default: random 90-180s. Configurable via WALMART_TEST_LOOP_COOLDOWN env var:
+          - "off" / "0" / "none" → 0 (no cooldown, legacy behavior)
+          - "<int>"              → fixed N seconds
+          - anything else        → default range
+        """
+        import random
+        raw = (os.environ.get("WALMART_TEST_LOOP_COOLDOWN") or "").strip().lower()
+        if raw in ("off", "0", "none", "false", "no"):
+            return 0.0
+        if raw.isdigit():
+            return float(raw)
+        # Default: human-realistic gap between repeat purchases of the same item
+        return random.uniform(90.0, 180.0)
 
     # ------------------------------------------------------------------
     # Stock monitor health check

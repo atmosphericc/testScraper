@@ -1,5 +1,6 @@
 # Codebase Map
-## Last Updated: 2026-05-01 (8 Walmart antibot patches applied — behavioral realism Phase 1 & 2, commit 79c37eaa)
+## Last Updated: 2026-05-03 (cookie-isolation snapshot/restore for Tab 2 → Tab 1 _px3 contamination + delivery-day modal switched to confirm-default-CTA pattern + corrected stale "patchright" reference — Walmart actually uses zendriver)
+Previous: 2026-05-01 (8 Walmart antibot patches applied — behavioral realism Phase 1 & 2, commit 79c37eaa)
 Previous: 2026-04-30 (Walmart retailer profile re-researched, behavioral baselines added)
 
 ## Backend (Python)
@@ -128,7 +129,7 @@ No separate CSS or JS files — all styling/logic embedded in HTML templates.
 | Retailer | Directory | Automation | Anti-Bot |
 |----------|-----------|-----------|---------|
 | Target | `src/` | zendriver (nodriver) | F5/Shape Security |
-| Walmart | `walmart/` | patchright (Playwright) | Akamai + PerimeterX/HUMAN + Cloudflare |
+| Walmart | `walmart/` | zendriver (nodriver) — code imports `from zendriver import cdp`. Docs previously said patchright; that was historical | Akamai + PerimeterX/HUMAN + Cloudflare |
 
 ## Config & Data Files
 

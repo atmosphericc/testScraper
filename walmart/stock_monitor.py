@@ -356,6 +356,12 @@ class WalmartStockMonitor:
                             if error_msg == "BLOCKED":
                                 self._consecutive_blocked += 1
                                 already_open = time.monotonic() < self._monitor_circuit_open_until
+                                # Diagnostic: on first BLOCKED, log the _px3 prefix
+                                # to confirm whether the restore actually stuck or
+                                # if Walmart re-rotated the cookie before the next
+                                # fetch (server-side session invalidation).
+                                if self._consecutive_blocked == 1:
+                                    self._log_px3_state_on_block()
                                 if self._consecutive_blocked >= self._MONITOR_CB_THRESHOLD and not already_open:
                                     self._monitor_circuit_open_until = time.monotonic() + self._MONITOR_CB_PAUSE
                                     self._status_cb(
@@ -591,6 +597,50 @@ class WalmartStockMonitor:
     # ------------------------------------------------------------------
     # GraphQL hash refresh on staleness detection
     # ------------------------------------------------------------------
+
+    def _log_px3_state_on_block(self):
+        """Log _px3 prefix from the live cookie cache and from the actual
+        browser cookie jar so we can tell whether the cookie restore stuck
+        or whether Walmart re-rotated the cookie before this fetch.
+        """
+        if not self._session:
+            return
+        try:
+            cached = "?"
+            try:
+                with self._session._live_cookies_lock:
+                    cached_val = self._session._live_cookies.get("_px3", "")
+                cached = (cached_val[:24] + "…") if cached_val else "<missing>"
+            except Exception:
+                pass
+
+            jar_prefix = "?"
+            if self._session._page and self._session._event_loop:
+                try:
+                    from zendriver import cdp
+
+                    async def _get_px3():
+                        raw = await self._session._page.send(cdp.network.get_all_cookies())
+                        for c in raw:
+                            if c.name == "_px3":
+                                return c.value
+                        return None
+
+                    fut = asyncio.run_coroutine_threadsafe(
+                        _get_px3(), self._session._event_loop,
+                    )
+                    val = fut.result(timeout=2)
+                    jar_prefix = (val[:24] + "…") if val else "<missing>"
+                except Exception as e:
+                    jar_prefix = f"<err:{e}>"
+
+            match = "match" if cached and jar_prefix and cached.split("…")[0] == jar_prefix.split("…")[0] else "DIVERGED"
+            logger.warning(
+                "[MONITOR] First BLOCKED — _px3 cache=%s jar=%s (%s)",
+                cached, jar_prefix, match,
+            )
+        except Exception as e:
+            logger.debug("[MONITOR] _log_px3_state_on_block failed: %s", e)
 
     def _trigger_graphql_hash_refresh(self):
         """

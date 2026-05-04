@@ -213,6 +213,12 @@ class WalmartSessionManager:
         self._live_cookies_lock = threading.Lock()
         self._live_cookies_timestamp: float = 0.0
 
+        # Pre-checkout cookie snapshot — captured before Tab 2 enters cart/checkout
+        # so we can restore Tab 1's trusted _px3 after Tab 2 inevitably rotates it.
+        # Cookies are shared per browser context, so Tab 2's checkout navigations
+        # contaminate Tab 1's _px3, causing the stock monitor to BLOCK on resume.
+        self._monitor_cookie_snapshot: list = []  # raw cdp.network.Cookie objects
+
         # Harvester background task + event loop reference
         self._harvester_task: Optional[asyncio.Task] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -769,6 +775,122 @@ class WalmartSessionManager:
                 logger.warning("[SESSION] Tab 1 snapshot found no _px3 — stock checks may be at risk")
         except Exception as e:
             logger.warning("[SESSION] Tab 1 snapshot failed: %s (continuing anyway)", e)
+
+    # ------------------------------------------------------------------
+    # Pre-checkout cookie isolation — protects monitor _px3 from Tab 2 rotation
+    # ------------------------------------------------------------------
+
+    async def snapshot_monitor_cookies(self):
+        """Snapshot the entire browser-context cookie jar before Tab 2 enters checkout.
+
+        Cookies are shared per browser context, so Tab 2's cart/checkout/cart-clear
+        navigations rotate _px3 with PerimeterX-flagged values. Capturing the trusted
+        cookie set here lets us restore it after checkout so the stock monitor's next
+        fetch on Tab 1 sends the un-poisoned _px3.
+        """
+        if not self._page:
+            return
+        try:
+            from zendriver import cdp
+            raw = await self._page.send(cdp.network.get_all_cookies())
+            self._monitor_cookie_snapshot = list(raw)
+            has_px3 = any(c.name == "_px3" for c in raw)
+            logger.info(
+                "[SESSION] Monitor cookie snapshot taken — %d cookies (has _px3: %s)",
+                len(raw), has_px3,
+            )
+        except Exception as e:
+            logger.warning("[SESSION] snapshot_monitor_cookies failed: %s", e)
+            self._monitor_cookie_snapshot = []
+
+    # Cookie names that PerimeterX / Akamai rotate during checkout navigation.
+    # These are the only cookies we delete + restore — cart/session cookies that
+    # Tab 2 legitimately updated are left alone so the user stays logged in.
+    _PX_AKAMAI_COOKIE_NAMES = (
+        "_px3", "_px", "_pxhd", "_pxvid", "_pxff_cc", "_pxde",
+        "_abck", "bm_sz", "bm_sv",
+    )
+
+    async def restore_monitor_cookies(self):
+        """Restore the pre-checkout cookie jar after Tab 2 finishes its purchase flow.
+
+        Replaces _px3 (and any other PerimeterX/Akamai-rotated cookies) with the
+        trusted values captured in snapshot_monitor_cookies(). Without this, the
+        stock monitor's next fetch on Tab 1 sends Tab 2's poisoned _px3 and gets
+        BLOCKED, tripping the circuit breaker.
+        """
+        if not self._page or not self._monitor_cookie_snapshot:
+            logger.warning(
+                "[SESSION] restore_monitor_cookies: skipping (page=%s, snapshot_len=%d)",
+                bool(self._page), len(self._monitor_cookie_snapshot),
+            )
+            return
+        try:
+            from zendriver import cdp
+
+            # Delete the contaminated PX/Akamai cookies first so the restore
+            # doesn't collide with existing entries of the same name+domain+path.
+            for cname in self._PX_AKAMAI_COOKIE_NAMES:
+                try:
+                    await self._page.send(cdp.network.delete_cookies(
+                        name=cname,
+                        domain=".walmart.com",
+                    ))
+                except Exception as e:
+                    logger.debug("[SESSION] delete_cookies(%s) failed: %s", cname, e)
+
+            # Re-inject the snapshot. CookieParam.expires expects TimeSinceEpoch
+            # (a float subclass with .to_json()), but Cookie.expires is a plain
+            # float — must wrap it explicitly or set_cookies fails silently.
+            params = []
+            skipped = []
+            for c in self._monitor_cookie_snapshot:
+                if c.name not in self._PX_AKAMAI_COOKIE_NAMES:
+                    continue
+                try:
+                    expires_val = None
+                    if c.expires is not None:
+                        # Wrap the raw float into TimeSinceEpoch so to_json() works.
+                        expires_val = cdp.network.TimeSinceEpoch(c.expires)
+                    params.append(cdp.network.CookieParam(
+                        name=c.name,
+                        value=c.value,
+                        domain=c.domain,
+                        path=c.path or "/",
+                        secure=c.secure,
+                        http_only=c.http_only,
+                        expires=expires_val,
+                        same_site=c.same_site,
+                    ))
+                except Exception as e:
+                    skipped.append((c.name, str(e)))
+
+            if skipped:
+                logger.warning("[SESSION] restore_monitor_cookies: skipped %d cookies: %s", len(skipped), skipped)
+
+            if params:
+                await self._page.send(cdp.network.set_cookies(cookies=params))
+                # Refresh the live cookie cache so harvester reads see the restore
+                with self._live_cookies_lock:
+                    self._live_cookies = {p.name: p.value for p in params}
+                    # Merge non-PX cookies from current state to keep cache complete
+                    try:
+                        current = await self._page.send(cdp.network.get_all_cookies())
+                        for c in current:
+                            self._live_cookies.setdefault(c.name, c.value)
+                    except Exception:
+                        pass
+                    self._live_cookies_timestamp = time.monotonic()
+                self._px3_timestamp = time.monotonic()
+                restored_names = sorted({p.name for p in params})
+                logger.info(
+                    "[SESSION] Monitor cookies restored — %d PX/Akamai cookies re-injected: %s",
+                    len(params), restored_names,
+                )
+            else:
+                logger.warning("[SESSION] restore_monitor_cookies: snapshot had no PX/Akamai cookies to restore")
+        except Exception as e:
+            logger.exception("[SESSION] restore_monitor_cookies failed: %s", e)
 
     # ------------------------------------------------------------------
     # Cookie harvester — keeps live cookies fresh for proxy workers

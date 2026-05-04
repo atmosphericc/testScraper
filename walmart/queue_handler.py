@@ -21,9 +21,7 @@ This module:
 """
 
 import asyncio
-import json
 import logging
-import random
 import time
 from typing import Optional, Callable
 
@@ -83,8 +81,7 @@ PASSTHROUGH_CLICK_TEXTS = [
 
 # ATC button selectors — becoming active is the primary pass-through signal
 ATC_SELECTORS = [
-    'button[data-automation-id="atc"]',  # Modern Walmart selector (primary)
-    'button[data-automation-id="add-to-cart-btn"]',  # Legacy fallback
+    'button[data-automation-id="add-to-cart-btn"]',
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
 ]
 
@@ -133,51 +130,20 @@ class QueueHandler:
 
         NOTE: URL-based detection is intentionally omitted — Walmart's queue keeps
         the user on the /ip/ product URL and uses a page overlay, not a redirect.
-
-        Uses a single JS evaluation to avoid multiple browser round-trips (was ~6s,
-        now <200ms). Falls back to multi-round-trip _find_entry_button only if the
-        fast JS check finds a text signal but no visible button.
         """
         try:
-            js_signals = json.dumps(QUEUE_ACTIVE_SIGNALS)
-            js_entry_texts = json.dumps(QUEUE_ENTRY_SELECTORS)
-            js_entry_css = json.dumps(QUEUE_ENTRY_CSS_SELECTORS)
-            result = await self._page.evaluate(f"""() => {{
-                const body = document.body ? document.body.innerText.toLowerCase() : '';
-                const signals = {js_signals};
-                const matchedSignal = signals.find(s => body.includes(s));
-                if (!matchedSignal) return {{ queue: false }};
+            body_text = await self._page.evaluate("document.body.innerText")
+            body_lower = body_text.lower() if body_text else ""
 
-                // Queue text found — check for entry buttons in same JS call
-                const entryTexts = {js_entry_texts};
-                const entryCss = {js_entry_css};
+            for signal in QUEUE_ACTIVE_SIGNALS:
+                if signal in body_lower:
+                    logger.info("[QUEUE] Queue detected via page text: '%s'", signal)
+                    return True
 
-                // Check text-based buttons
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {{
-                    const t = btn.textContent || '';
-                    if (entryTexts.some(et => t.includes(et))) {{
-                        if (btn.offsetWidth || btn.offsetHeight) {{
-                            return {{ queue: true, via: 'text:' + matchedSignal, hasButton: true }};
-                        }}
-                    }}
-                }}
-
-                // Check CSS-only selectors
-                for (const sel of entryCss) {{
-                    const el = document.querySelector(sel);
-                    if (el && (el.offsetWidth || el.offsetHeight)) {{
-                        return {{ queue: true, via: 'css:' + matchedSignal, hasButton: true }};
-                    }}
-                }}
-
-                // Text signal present but no visible button
-                return {{ queue: true, via: 'text-only:' + matchedSignal, hasButton: false }};
-            }}""")
-
-            if result and result.get('queue'):
-                logger.info("[QUEUE] Queue detected via: %s (button=%s)",
-                            result.get('via'), result.get('hasButton'))
+            # Also check if the queue entry button is visible — queue is about to start
+            entry_btn = await self._find_entry_button()
+            if entry_btn:
+                logger.info("[QUEUE] Queue entry button detected on page")
                 return True
 
         except Exception as e:
@@ -198,8 +164,9 @@ class QueueHandler:
         try:
             self._status_cb("[QUEUE] Found 'Hold my spot' button — joining queue...")
             logger.info("[QUEUE] Clicking queue entry button")
-            await self._cdp_click_element(entry_btn)
-            await asyncio.sleep(random.uniform(1.5, 2.5))  # wait for queue overlay to update
+            await entry_btn.scroll_into_view()
+            await entry_btn.click()
+            await asyncio.sleep(2)  # wait for queue overlay to update
 
             # Verify we're now in the queue
             in_queue = await self._confirm_in_queue()
@@ -230,12 +197,6 @@ class QueueHandler:
         self._status_cb("[QUEUE] In queue — waiting for pass-through...")
         logger.info("[QUEUE] Entered wait_for_passthrough")
 
-        # Poll every 1s for fast passthrough detection; emit status log every 30s.
-        # Prior 5s interval meant up to 5.5s of lost time after passthrough opened.
-        _FAST_POLL = 1.0
-        _STATUS_LOG_EVERY = 30.0
-        last_status_log = time.monotonic()
-
         while True:
             elapsed = time.monotonic() - start
 
@@ -244,7 +205,7 @@ class QueueHandler:
                 logger.warning("[QUEUE] Queue timeout after %.0fs", elapsed)
                 return False
 
-            await asyncio.sleep(_FAST_POLL)
+            await asyncio.sleep(QUEUE_POLL_INTERVAL)
 
             try:
                 # First: check for the "it's your turn" floating widget and click it
@@ -252,35 +213,33 @@ class QueueHandler:
                 if widget_clicked:
                     self._status_cb("[QUEUE] 'Your turn' widget found — clicked!")
                     logger.info("[QUEUE] Passthrough widget clicked after %.0fs", elapsed)
-                    await asyncio.sleep(random.uniform(0.8, 1.5))  # let page respond
+                    await asyncio.sleep(2)  # let page respond
 
-                # Primary signal: ATC button is now active (2s timeout — post-passthrough ATC appears in <500ms)
-                atc_available = await self._wait_for_atc(timeout=2)
+                # Primary signal: ATC button is now active
+                atc_available = await self._wait_for_atc(timeout=5)
                 if atc_available:
                     self._status_cb(f"[QUEUE] Passed through after {int(elapsed)}s!")
                     logger.info("[QUEUE] Pass-through confirmed — ATC active after %.0fs", elapsed)
                     return True
 
-                # Emit status log at 30s intervals to avoid spam
-                if time.monotonic() - last_status_log >= _STATUS_LOG_EVERY:
-                    still_queued = await self.detect()
-                    if still_queued:
-                        mins_waited = int(elapsed / 60)
-                        secs_waited = int(elapsed % 60)
-                        self._status_cb(
-                            f"[QUEUE] Still in queue ({mins_waited}m {secs_waited}s elapsed)"
+                # Still in queue
+                still_queued = await self.detect()
+                if still_queued:
+                    mins_waited = int(elapsed / 60)
+                    secs_waited = int(elapsed % 60)
+                    self._status_cb(
+                        f"[QUEUE] Still in queue ({mins_waited}m {secs_waited}s elapsed)"
+                    )
+                else:
+                    # Queue signals gone but ATC not yet active — may be transitioning
+                    logger.info(
+                        "[QUEUE] Queue signals gone but ATC not yet active — page may be transitioning or queue was cancelled"
+                    )
+                    if elapsed > 60:
+                        logger.warning(
+                            "[QUEUE] Queue signals disappeared after %ds with no ATC — queue may have been cancelled or item sold out",
+                            int(elapsed),
                         )
-                    else:
-                        # Queue signals gone but ATC not yet active — may be transitioning
-                        logger.info(
-                            "[QUEUE] Queue signals gone but ATC not yet active — page may be transitioning or queue was cancelled"
-                        )
-                        if elapsed > 60:
-                            logger.warning(
-                                "[QUEUE] Queue signals disappeared after %ds with no ATC — queue may have been cancelled or item sold out",
-                                int(elapsed),
-                            )
-                    last_status_log = time.monotonic()
 
             except Exception as e:
                 logger.warning("[QUEUE] Poll error: %s", e)
@@ -312,66 +271,6 @@ class QueueHandler:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    async def _cdp_click_element(self, element) -> bool:
-        """
-        Click an element via CDP mouse trajectory instead of JS el.click().
-        PerimeterX detects synthetic JS clicks by the absence of prior mousemove events.
-        Falls back to element.click() if CDP dispatch fails.
-        """
-        try:
-            from zendriver.cdp import input_ as cdp_input
-            rect = await element.apply("""(e) => {
-                e.scrollIntoView({ behavior: 'instant', block: 'center' });
-                const r = e.getBoundingClientRect();
-                return { x: r.left, y: r.top, w: r.width, h: r.height };
-            }""")
-            if not rect or rect.get('w', 0) <= 0 or rect.get('h', 0) <= 0:
-                await element.click()
-                return True
-            x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
-            y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
-            await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mouseMoved", x=x, y=y, pointer_type="mouse"))
-            await asyncio.sleep(random.uniform(0.02, 0.06))
-            await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mousePressed", x=x, y=y,
-                button=cdp_input.MouseButton.LEFT, buttons=1,
-                click_count=1, pointer_type="mouse"))
-            await asyncio.sleep(random.uniform(0.04, 0.10))
-            await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mouseReleased", x=x, y=y,
-                button=cdp_input.MouseButton.LEFT, buttons=0,
-                click_count=1, pointer_type="mouse"))
-            return True
-        except Exception as e:
-            logger.warning("[QUEUE] CDP click failed: %s — falling back to JS click", e)
-            try:
-                await element.click()
-            except Exception:
-                pass
-            return True
-
-    async def _cdp_click_at(self, x: float, y: float) -> bool:
-        """Dispatch CDP mouse click at raw coordinates (for JS-evaluated positions)."""
-        try:
-            from zendriver.cdp import input_ as cdp_input
-            await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mouseMoved", x=x, y=y, pointer_type="mouse"))
-            await asyncio.sleep(random.uniform(0.02, 0.06))
-            await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mousePressed", x=x, y=y,
-                button=cdp_input.MouseButton.LEFT, buttons=1,
-                click_count=1, pointer_type="mouse"))
-            await asyncio.sleep(random.uniform(0.04, 0.10))
-            await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mouseReleased", x=x, y=y,
-                button=cdp_input.MouseButton.LEFT, buttons=0,
-                click_count=1, pointer_type="mouse"))
-            return True
-        except Exception as e:
-            logger.warning("[QUEUE] CDP click_at failed: %s", e)
-            return False
 
     async def _find_entry_button(self):
         """Find the 'Hold my spot' / queue entry button if visible on the page."""
@@ -435,14 +334,13 @@ class QueueHandler:
                     btn = els[0]
                     is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
                     if is_vis:
-                        await self._cdp_click_element(btn)
+                        await btn.click()
                         return True
             except Exception:
                 continue
 
         # Try stable attribute selectors — class names are hashed on every Walmart deploy
-        # Only passthrough/notification patterns here — do NOT include queue-entry buttons
-        for css_pattern in ['[data-automation-id*="queue"]', '[data-testid*="queue"]']:
+        for css_pattern in ['[data-automation-id*="queue"]', '[data-testid*="queue"]', 'button:has-text("Join queue")', 'button:has-text("Hold my spot")']:
             try:
                 els = await self._page.query_selector_all(css_pattern)
                 for el in els:
@@ -451,15 +349,15 @@ class QueueHandler:
                         if text and "turn" in text.lower():
                             is_vis = await el.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
                             if is_vis:
-                                await self._cdp_click_element(el)
+                                await el.click()
                                 return True
                     except Exception:
                         continue
             except Exception:
                 continue
 
-        # Fallback: scan page text for passthrough signals, then return coordinates
-        # from JS so we can dispatch a real CDP click (not synthetic el.click())
+        # Fallback: scan page text for passthrough signals, then look for any
+        # clickable element near the bottom of viewport
         try:
             body_text = await self._page.evaluate("document.body.innerText")
             body_lower = body_text.lower() if body_text else ""
@@ -467,30 +365,26 @@ class QueueHandler:
                 signal in body_lower for signal in QUEUE_PASSTHROUGH_SIGNALS
             )
             if has_passthrough_text:
-                # Find button coordinates near the bottom of the viewport, return them
-                # to Python so we can use CDP mouse dispatch instead of el.click()
+                # Try to click a button near the bottom of the page
                 result = await self._page.evaluate("""() => {
                     const vh = window.innerHeight;
                     const allBtns = document.querySelectorAll('button, [role="button"], a[href]');
                     for (const el of allBtns) {
                         const rect = el.getBoundingClientRect();
+                        // Look for visible elements in the bottom third of viewport
                         if (rect.top > vh * 0.6 && rect.bottom <= vh + 10 &&
                             rect.width > 0 && rect.height > 0) {
                             const text = el.textContent.toLowerCase();
                             const keywords = ['turn', 'checkout', 'purchase', 'queue'];
                             if (keywords.some(k => text.includes(k))) {
-                                return {
-                                    found: true,
-                                    x: rect.left + rect.width / 2,
-                                    y: rect.top + rect.height / 2
-                                };
+                                el.click();
+                                return true;
                             }
                         }
                     }
-                    return { found: false };
+                    return false;
                 }""")
-                if result and result.get('found'):
-                    await self._cdp_click_at(result['x'], result['y'])
+                if result:
                     return True
         except Exception as e:
             logger.debug("[QUEUE] JS widget scan error: %s", e)

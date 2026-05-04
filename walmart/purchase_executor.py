@@ -1240,9 +1240,12 @@ class WalmartPurchaseExecutor:
 
     async def _handle_delivery_day_modal(self, item_id: str):
         """
-        Select a delivery day if modal appears during checkout.
-        Walmart may show a modal asking for delivery date/window after clicking Continue.
-        Waits for modal to be visible first, selects a date option, then verifies modal closes.
+        Confirm the delivery day modal that appears during checkout.
+
+        Walmart pre-selects a default delivery day. The user does NOT need to
+        change the selection — the only required action is clicking the primary
+        confirm CTA ("Continue", "Confirm", "Save"). Selecting a date button
+        unnecessarily adds a behavioral signal during the most-scrutinized step.
 
         Critical: After modal close, waits 2-4s + DOM stabilization before returning.
         Akamai detects immediate continuation after modal as bot behavior. Humans read/pause.
@@ -1264,49 +1267,85 @@ class WalmartPurchaseExecutor:
                 logger.debug("[PURCHASE] Modal check: No visible dialog found")
                 return False
 
-            logger.warning("[PURCHASE] ⚠️  DELIVERY MODAL DETECTED — initiating stealthy dismiss")
+            logger.warning("[PURCHASE] ⚠️  DELIVERY MODAL DETECTED — confirming default selection")
 
-            logger.info("[PURCHASE] Delivery day modal detected — finding option button")
+            # Find the primary confirm CTA inside the dialog. Walmart pre-selects
+            # a default day — clicking Continue/Confirm with the default is what
+            # a human normally does (most users don't change the suggested date).
+            #
+            # Strategy: locate the dialog, then within the dialog find the
+            # primary action button. We pick the *last* enabled non-close button
+            # in the dialog footer, since Walmart's UI puts the primary CTA on
+            # the right side of the footer (after any secondary "Cancel" button).
+            cta_info = await self._page.evaluate("""
+                () => {
+                    const dialog = document.querySelector('[role="dialog"]');
+                    if (!dialog) return null;
 
-            # Priority: text-based delivery day options (Today, Tomorrow, etc.)
-            day_selectors = [
-                'button:has-text("Today")',
-                'button:has-text("Tomorrow")',
-                'button:has-text("Next Day")',
-                'button:has-text("Standard")',
-                'button[role="radio"][aria-label*="Today"]',
-                'button[role="radio"][aria-label*="tomorrow"]',
-                'button[data-automation-id*="delivery-day"]',
-                'button[data-automation-id*="delivery-window"]',
-                # Fallback: any clickable in dialog that's not a close button
-                '[role="dialog"] button:not([aria-label*="close"])',
-            ]
+                    // Look for explicit primary CTAs by text first
+                    const primaryTexts = ['continue', 'confirm', 'save', 'apply', 'done', 'use this', 'looks good'];
+                    const buttons = Array.from(dialog.querySelectorAll('button'));
+                    const visible = buttons.filter(b => {
+                        if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
+                        const r = b.getBoundingClientRect();
+                        const s = window.getComputedStyle(b);
+                        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+                    });
 
-            day_btn = await self._find_element(day_selectors, timeout=2000)
-            if not day_btn:
-                logger.debug("[PURCHASE] No delivery option button found — modal may not be active")
+                    // First try: button whose text matches a known primary CTA word
+                    for (const b of visible) {
+                        const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (primaryTexts.some(p => txt === p || txt.startsWith(p + ' ') || aria.includes(p))) {
+                            // Skip close buttons
+                            if (txt.includes('close') || aria.includes('close') || txt.includes('cancel')) continue;
+                            const r = b.getBoundingClientRect();
+                            return { x: r.left + r.width/2, y: r.top + r.height/2, label: txt || aria, source: 'text-match' };
+                        }
+                    }
+
+                    // Fallback: the LAST visible non-close, non-cancel button (primary CTA is rightmost)
+                    const candidates = visible.filter(b => {
+                        const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (txt.includes('close') || aria.includes('close')) return false;
+                        if (txt.includes('cancel')) return false;
+                        // Skip radio-style "day" options — they're typically inside a list/group
+                        // and we explicitly do not want to change the default selection
+                        if (b.getAttribute('role') === 'radio') return false;
+                        return true;
+                    });
+                    if (candidates.length === 0) return null;
+                    const b = candidates[candidates.length - 1];
+                    const r = b.getBoundingClientRect();
+                    const txt = (b.innerText || b.textContent || '').trim().toLowerCase();
+                    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                    return { x: r.left + r.width/2, y: r.top + r.height/2, label: txt || aria, source: 'last-non-close' };
+                }
+            """)
+
+            if not cta_info:
+                logger.debug("[PURCHASE] No primary CTA found inside dialog — modal may have closed itself")
                 return False
 
-            logger.info("[PURCHASE] Found delivery day button — clicking")
-            # Get coordinates from the matched element (the one _find_element returned)
-            location = await day_btn.apply("""(e) => {
-                const rect = e.getBoundingClientRect();
-                return { x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
-            }""")
+            logger.info(
+                "[PURCHASE] Delivery modal: clicking primary CTA '%s' via %s at (%.0f, %.0f)",
+                cta_info.get('label', '?'), cta_info.get('source', '?'),
+                cta_info.get('x', 0), cta_info.get('y', 0),
+            )
 
-            if location:
-                # Click via CDP mouse events for authenticity
-                clicked = await self._cdp_mouse_click(location['x'], location['y'])
-                if clicked:
-                    await asyncio.sleep(random.uniform(0.04, 0.12))
-                else:
-                    # Fallback to element click if CDP click fails
-                    await day_btn.click()
-            else:
-                # Fallback to element click if coordinate extraction fails
-                await day_btn.click()
+            # Brief human read pause before clicking confirm (skim the modal contents).
+            # A confirm-with-default-value action is fast — humans glance and click.
+            await asyncio.sleep(random.uniform(0.3, 0.7))
 
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+            x = cta_info['x'] + random.uniform(-3, 3)
+            y = cta_info['y'] + random.uniform(-2, 2)
+            clicked = await self._realistic_click(x, y, "Delivery modal confirm")
+            if not clicked:
+                # Fallback to direct CDP click if realistic_click failed
+                clicked = await self._cdp_mouse_click(x, y)
+
+            await asyncio.sleep(random.uniform(0.2, 0.5))
 
             # Verify modal has closed
             modal_still_visible = await self._page.evaluate("""
@@ -1320,30 +1359,22 @@ class WalmartPurchaseExecutor:
             """)
 
             if not modal_still_visible:
-                logger.warning("[PURCHASE] ✓ Modal dismissed successfully — entering stealth pause")
-                self._status_cb("[PURCHASE] Selected delivery day")
+                logger.info("[PURCHASE] ✓ Delivery modal confirmed — settle pause")
+                self._status_cb("[PURCHASE] Confirmed delivery day")
 
-                # CRITICAL: Wait after modal close before resuming checkout
-                # Akamai's behavioral analysis flags immediate button clicks after modals close.
-                # Human users pause to read the updated form. Vary pause based on modal complexity
-                # (more options = longer to read).
-                # Estimate complexity from modal state (typically 2-4 options)
-                complexity = 2  # default: simple modal with 2 options
-                pause_time = random.uniform(0.8 + complexity * 0.5, 2.0 + complexity * 1.0)
-                logger.info("[PURCHASE] Modal pause: %.1fs (complexity=%d)", pause_time, complexity)
-                await asyncio.sleep(pause_time)
+                # Settle pause — short, since we just confirmed a default value
+                # (no decision was actually made; humans don't dwell after confirm).
+                await asyncio.sleep(random.uniform(0.4, 0.9))
 
                 # Wait for DOM to stabilize after modal close before resuming
-                await self._wait_for_dom_stability(timeout=3000)
+                await self._wait_for_dom_stability(timeout=1500)
 
-                # After the stealth pause, inject a mouse movement toward the form
-                # to simulate a user moving their cursor back to interact with the main checkout
-                # Randomize coordinates to avoid fixed-pattern detection
-                x = random.uniform(400, 700)
-                y = random.uniform(300, 500)
-                await self._page.mouse_move(x=x, y=y)
-                await asyncio.sleep(random.uniform(0.2, 0.5))
-                logger.info("[PURCHASE] ✓ Modal dismissed — resuming checkout flow")
+                # Move mouse to a randomized location near the main checkout form
+                # so the next click doesn't appear to teleport from the modal CTA.
+                mx = random.uniform(400, 700)
+                my = random.uniform(300, 500)
+                await self._page.mouse_move(x=mx, y=my)
+                await asyncio.sleep(random.uniform(0.15, 0.4))
 
                 return True
             else:
@@ -1377,13 +1408,14 @@ class WalmartPurchaseExecutor:
             'button[data-automation-id="offer-no-thanks"]',
         ]
         try:
-            popup_btn = await self._find_element(popup_selectors, timeout=2000)
+            popup_btn = await self._find_element(popup_selectors, timeout=1200)
             if not popup_btn:
                 logger.debug("[PURCHASE] No Walmart+ popup detected — proceeding")
                 return
 
-            # Human read/decide pause before dismissing (1.2-2.5s)
-            await asyncio.sleep(random.uniform(1.2, 2.5))
+            # Human read/decide pause before dismissing. A "No thanks" upsell is
+            # a reflexive dismiss for most users — sub-second is realistic.
+            await asyncio.sleep(random.uniform(0.4, 0.9))
 
             clicked = False
             try:
@@ -1409,7 +1441,7 @@ class WalmartPurchaseExecutor:
 
             # Settle pause — modal close animation + DOM reflow (humans don't
             # immediately Place Order in the same frame as dismissing a modal)
-            await asyncio.sleep(random.uniform(0.8, 1.6))
+            await asyncio.sleep(random.uniform(0.4, 0.8))
             await self._screenshot(f"walmart_plus_popup_dismissed_{item_id}")
             logger.info("[PURCHASE] Dismissed Walmart+ popup")
             self._status_cb("[PURCHASE] Dismissed Walmart+ popup")
