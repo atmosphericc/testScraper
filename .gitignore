@@ -53,3 +53,13 @@ Thumbs.db
 
 # Claude Code
 .claude/
+.aider*
+
+# Node.js
+node_modules/
+package-lock.json
+package.json
+
+# Chat/Session files
+chat-history.json
+chat.js
