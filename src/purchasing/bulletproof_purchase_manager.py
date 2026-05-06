@@ -1457,7 +1457,7 @@ class BulletproofPurchaseManager:
                 print(f"[WARMUP_CYCLE] Cycle {self._warmup_cycle_counter}: "
                       f"headers_age={headers_age:.0f}s, in_progress={in_progress}")
                 # Skip if headers are already fresh (e.g. just refreshed by a completed purchase)
-                if not in_progress and headers_age > 15:
+                if not in_progress and headers_age > 5:
                     print("[WARMUP_CYCLE] Queuing Shape header refresh...")
                     try:
                         self.purchase_executor.session_manager.submit_async_task(
