@@ -5,8 +5,9 @@ import os
 import json
 from datetime import datetime
 
-STORAGE_PATH = "target.json"
-USER_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nodriver-profile")
+STORAGE_PATH = os.environ.get("TARGET_SESSION_PATH", "target.json")
+_PROFILE_DIR_NAME = os.environ.get("TARGET_PROFILE_DIR", "nodriver-profile")
+USER_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), _PROFILE_DIR_NAME)
 
 
 def cookie_to_dict(c: cdp.network.Cookie) -> dict:

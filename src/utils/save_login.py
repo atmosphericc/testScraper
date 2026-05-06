@@ -4,7 +4,7 @@ import os
 import json
 from datetime import datetime
 
-STORAGE_PATH = "target.json"
+STORAGE_PATH = os.environ.get("TARGET_SESSION_PATH", "target.json")
 
 async def save_login():
     browser = await uc.start(

@@ -338,110 +338,109 @@ class BulletproofPurchaseManager:
         }
 
     async def _ensure_session_ready(self):
-        """Ensure session is initialized and ready - GUARANTEES browser launch"""
+        """Ensure session is initialized and ready - GUARANTEES browser launch.
+
+        At N=1 this initializes the primary Worker. At N>1 it launches every
+        Worker's browser concurrently via WorkerPool.ensure_all_ready, where
+        each Worker uses its own event loop on a dedicated thread.
+        """
         print(f"[SESSION_DEBUG] _ensure_session_ready() called")
         print(f"[SESSION_DEBUG] session_initialized={self.session_initialized}")
         print(f"[SESSION_DEBUG] session_manager={self.session_manager}")
 
         # CRITICAL FIX: Check if browser is ACTUALLY running, not just if components exist
-        # Previous logic: if flag is True, return early (prevented browser launch)
-        # New logic: if browser context exists, session is ready; otherwise launch browser
         if self.session_manager and hasattr(self.session_manager, 'browser'):
             print(f"[SESSION_DEBUG] session_manager.browser={self.session_manager.browser}")
             if self.session_manager.browser and self.session_manager.session_active:
                 print("[SESSION] ✅ Browser already running - session ready")
                 return True
 
-        # If components exist but browser isn't running, FORCE initialization
         print("[SESSION] ⚡ Browser NOT running - launching now (GUARANTEED)...")
-        self.session_initialized = False  # Reset to allow initialization
+        self.session_initialized = False
+
+        if self.worker_pool is None:
+            print("[SESSION] [ERROR] ❌ WorkerPool not initialized — cannot launch browser")
+            return False
 
         try:
             print("[SESSION] ═══════════════════════════════════════════════")
-            print("[SESSION] Starting session initialization...")
+            print(f"[SESSION] Starting session initialization ({self.worker_pool.label()})...")
             print("[SESSION] ═══════════════════════════════════════════════")
             session_start_time = time.time()
 
-            # PRE-CHECK: Validate session file exists before opening browser
-            import json
+            # Per-worker session-file pre-check (best-effort logging only).
             from pathlib import Path
-            session_path = Path("target.json")
-
-            print("[SESSION] [STEP 1/3] Checking session file...")
-            if not session_path.exists():
-                print("[SESSION] [WARNING] target.json not found - will attempt auto-login during initialization")
-                # Don't return False - let SessionManager initialize and auto-login
-            else:
+            print("[SESSION] [STEP 1/3] Checking per-worker session files...")
+            for w in self.worker_pool.workers:
+                p = Path(w.cfg.session_path)
+                if not p.exists():
+                    print(f"[SESSION] [WARNING] {p} not found for {w.label()} — auto-login may be attempted")
+                    continue
                 try:
-                    with open(session_path, 'r', encoding='utf-8') as f:
-                        session_data = json.load(f)
-
-                    # Check if cookies exist
-                    if 'cookies' not in session_data or not session_data['cookies']:
-                        print("[SESSION] [WARNING] target.json has no cookies - will attempt auto-login")
+                    import json as _json
+                    with open(p, 'r', encoding='utf-8') as f:
+                        sdata = _json.load(f)
+                    n_cookies = len(sdata.get('cookies') or [])
+                    if n_cookies == 0:
+                        print(f"[SESSION] [WARNING] {p} has no cookies for {w.label()} — auto-login may be attempted")
                     else:
-                        print(f"[SESSION] [OK] ✅ Found {len(session_data['cookies'])} cookies in session file")
-
+                        print(f"[SESSION] [OK] ✅ {w.label()}: {n_cookies} cookies in {p}")
                 except Exception as e:
-                    print(f"[SESSION] [WARNING] Invalid target.json: {e} - will attempt auto-login")
+                    print(f"[SESSION] [WARNING] Invalid {p}: {e} — auto-login may be attempted")
 
-            # Initialize session manager
-            print("[SESSION] [STEP 2/3] ⚡ Initializing SessionManager (ultra-fast mode)...")
-            print("[SESSION] ⚡ This will:")
-            print("[SESSION] ⚡   - Launch Chromium browser (~2-3 seconds)")
-            print("[SESSION] ⚡   - Skip initial navigation (on-demand only)")
-            print("[SESSION] ⚡   - Be ready for purchases immediately")
-            print("[SESSION] ⚡ Optimized for competitive bot speed...")
+            print("[SESSION] [STEP 2/3] ⚡ Launching all worker browsers concurrently...")
+            print(f"[SESSION] ⚡ Workers: {[w.label() for w in self.worker_pool.workers]}")
 
+            # Bind the primary Worker to the *current* (global) event loop so
+            # legacy callers that submit_async_task with global_event_loop —
+            # notably the stock monitor's `run_coroutine_threadsafe(sm.get_page(),
+            # global_loop)` path in app.py — keep working at N=1. Alt workers
+            # (2..N) lazily spawn their own loops on first run_async.
+            current_loop = asyncio.get_running_loop()
+            primary = self.worker_pool.primary
+            if primary.loop is None:
+                primary.bind_external_loop(current_loop)
+                print(f"[SESSION] ⚡ {primary.label()}: bound to global event loop")
+
+            # Run the blocking pool launch off the calling event loop so the
+            # caller's loop thread isn't blocked while per-worker loops do work.
             init_start = time.time()
-            if await self.session_manager.initialize():
-                init_duration = time.time() - init_start
-                print(f"[SESSION] [OK] ✅ SessionManager initialized in {init_duration:.1f}s")
+            results = await current_loop.run_in_executor(
+                None,
+                self.worker_pool.ensure_all_ready,
+            )
+            init_duration = time.time() - init_start
 
-                # DISABLED: Keep-alive not needed - stock monitoring maintains session activity
-                # Stock monitor makes API calls every 15-22 seconds, which keeps session alive
-                # Keep-alive was causing race conditions (navigating to /account during purchases)
-                # self.session_keepalive.start()
-                # print("[SESSION] [OK] Keep-alive service started")
+            ok_workers = [lbl for lbl, r in results.items() if r.get('ok')]
+            failed_workers = [(lbl, r.get('error')) for lbl, r in results.items() if not r.get('ok')]
 
-                print("[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session")
-
-                self.session_initialized = True
-
-                # Pre-warm Shape headers now that the event loop and browser are
-                # both live. This creates the warmup tab + captures Shape tokens
-                # before the first stock signal fires, eliminating the ~57s stall
-                # where the first purchase raced warmup tab creation + cdp.fetch.enable().
-                if self.purchase_executor:
-                    print("[SESSION] [STEP 3/3] Pre-warming Shape headers (warmup tab)...")
-                    warmup_start = time.time()
-                    try:
-                        warmup_ok = await self.purchase_executor.warm_shape_headers()
-                        warmup_dur = time.time() - warmup_start
-                        if warmup_ok:
-                            print(f"[SESSION] [OK] ✅ Shape headers pre-warmed in {warmup_dur:.1f}s")
-                        else:
-                            print(f"[SESSION] [WARN] Shape header pre-warm incomplete after {warmup_dur:.1f}s — will retry on first purchase")
-                    except Exception as e:
-                        print(f"[SESSION] [WARN] Shape header pre-warm failed: {e} — will retry on first purchase")
+            for lbl, r in results.items():
+                if r.get('ok'):
+                    print(f"[SESSION] [OK] ✅ {lbl}: init {r['init_seconds']}s, warmup {r['warmup_seconds']}s")
                 else:
-                    print("[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session")
+                    print(f"[SESSION] [ERROR] ❌ {lbl}: {r.get('error')}")
 
-                total_duration = time.time() - session_start_time
-                print("[SESSION] ═══════════════════════════════════════════════")
-                print(f"[SESSION] ✅ Session ready in {total_duration:.1f}s total")
-                print("[SESSION] Browser is at Target.com and ready for purchases")
-                print("[SESSION] ═══════════════════════════════════════════════")
-                return True
-            else:
-                init_duration = time.time() - init_start
-                print(f"[SESSION] [ERROR] ❌ SessionManager initialization failed after {init_duration:.1f}s")
+            print("[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session")
+
+            # Primary must be up; alts can fail-soft (manager will keep going,
+            # but those workers will fall back to primary on dispatch).
+            primary_ok = self.worker_pool.primary.label() in ok_workers
+            if not primary_ok:
+                print(f"[SESSION] [ERROR] ❌ Primary worker failed to initialize")
                 print("[SESSION] ═══════════════════════════════════════════════")
                 return False
 
-        except Exception as e:
+            self.session_initialized = True
             total_duration = time.time() - session_start_time
-            print(f"[SESSION] [ERROR] ❌ Session initialization error after {total_duration:.1f}s: {e}")
+            print("[SESSION] ═══════════════════════════════════════════════")
+            print(f"[SESSION] ✅ {len(ok_workers)}/{len(results)} workers ready in {total_duration:.1f}s total (concurrent init)")
+            if failed_workers:
+                print(f"[SESSION] ⚠️  {len(failed_workers)} worker(s) failed: {failed_workers}")
+            print("[SESSION] ═══════════════════════════════════════════════")
+            return True
+
+        except Exception as e:
+            print(f"[SESSION] [ERROR] ❌ Session initialization error: {e}")
             print("[SESSION] ═══════════════════════════════════════════════")
             import traceback
             traceback.print_exc()
@@ -1010,9 +1009,31 @@ class BulletproofPurchaseManager:
 
                 # Session is ready, proceed with purchase using subprocess (bypasses asyncio threading issues)
 
+                # Phase 6: pick the Worker bound to this TCIN. If the assigned
+                # Worker failed init (no live browser), fall back to primary so
+                # we never silently lose purchases on alt-worker init failure.
+                assigned_worker = None
+                if self.worker_pool is not None:
+                    assigned_worker = self.worker_pool.acquire_for_tcin(tcin)
+                    sm = assigned_worker.session_manager
+                    if not (sm and getattr(sm, 'browser', None) and getattr(sm, 'session_active', False)):
+                        primary = self.worker_pool.primary
+                        print(
+                            f"[DISPATCH] {assigned_worker.label()} not ready — falling back to "
+                            f"{primary.label()} for {tcin}"
+                        )
+                        assigned_worker = primary
+                # Final fallback: legacy single-worker path (shouldn't happen post-Phase 6)
+                worker = assigned_worker or self.worker
+                target_session_manager = worker.session_manager if worker else self.session_manager
+                target_purchase_executor = worker.purchase_executor if worker else self.purchase_executor
+
+                if worker is not None:
+                    print(f"[DISPATCH] {tcin} → {worker.label()}")
+
                 # BUGFIX: Set purchase lock to prevent session validation during purchase
-                if self.session_manager:
-                    self.session_manager.set_purchase_in_progress(True)
+                if target_session_manager:
+                    target_session_manager.set_purchase_in_progress(True)
 
                 # CRITICAL: Register thread in active purchases tracking
                 # This prevents race condition where next cycle starts before state is saved
@@ -1020,7 +1041,8 @@ class BulletproofPurchaseManager:
                     self._active_purchases[tcin] = {
                         'thread': threading.current_thread(),
                         'started_at': time.time(),
-                        'status': 'executing'
+                        'status': 'executing',
+                        'worker': worker.label() if worker else 'primary',
                     }
 
                 # NOTE: Status already set to 'attempting' when purchase was queued
@@ -1035,10 +1057,15 @@ class BulletproofPurchaseManager:
                     qty = max(1, int(max_qty or 1))
                     if qty != 1:
                         print(f"[REAL_PURCHASE_THREAD] [QTY] qty={qty} from RedSky purchase_limit (executor will skip PDP poll)")
-                    # Use submit_async_task to safely call async method from thread
-                    future = self.session_manager.submit_async_task(
-                        self.purchase_executor.execute_purchase(tcin, quantity=qty)
-                    )
+                    # Submit to the Worker's own loop so N workers run concurrently.
+                    if worker is not None:
+                        future = worker.run_async(
+                            target_purchase_executor.execute_purchase(tcin, quantity=qty)
+                        )
+                    else:
+                        future = target_session_manager.submit_async_task(
+                            target_purchase_executor.execute_purchase(tcin, quantity=qty)
+                        )
 
                     # Wait for result with timeout
                     result = future.result(timeout=150)
@@ -1064,9 +1091,14 @@ class BulletproofPurchaseManager:
                         if any(sig in err_lower for sig in ('1011', 'keepalive ping timeout', 'connection closed', 'websocket')):
                             print(f"[REAL_PURCHASE_THREAD] WebSocket dead — triggering browser restart before retry")
                             try:
-                                refresh_future = self.session_manager.submit_async_task(
-                                    self.session_manager.refresh_session()
-                                )
+                                if worker is not None:
+                                    refresh_future = worker.run_async(
+                                        target_session_manager.refresh_session()
+                                    )
+                                else:
+                                    refresh_future = target_session_manager.submit_async_task(
+                                        target_session_manager.refresh_session()
+                                    )
                                 refresh_future.result(timeout=60)
                                 print(f"[REAL_PURCHASE_THREAD] Browser restarted successfully")
                             except Exception as refresh_err:
@@ -1112,9 +1144,14 @@ class BulletproofPurchaseManager:
                 self._update_purchase_result(tcin, failed_result)
 
             finally:
-                # BUGFIX: Always clear purchase lock when purchase completes (success or failure)
-                if self.session_manager:
-                    self.session_manager.set_purchase_in_progress(False)
+                # BUGFIX: Always clear purchase lock when purchase completes (success or failure).
+                # Phase 6: clear on whichever worker handled the dispatch (may be an
+                # alt worker, not primary). target_session_manager is None if dispatch
+                # never picked one (very early exit path), in which case fall back to
+                # primary for backwards compat.
+                _sm_to_release = locals().get('target_session_manager') or self.session_manager
+                if _sm_to_release:
+                    _sm_to_release.set_purchase_in_progress(False)
 
                 # CRITICAL: Remove from active purchases tracking
                 # This signals to next cycle that thread has completed
@@ -1467,22 +1504,24 @@ class BulletproofPurchaseManager:
             # Auth tokens go stale in ~40-50s — 30s interval ensures the direct fetch ATC
             # stays within the valid window and avoids the slow button-click fallback path.
             self._warmup_cycle_counter += 1
-            if (self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 30 == 0) and self.purchase_executor:
-                headers_age = time.time() - getattr(self.purchase_executor, '_cached_cart_headers_ts', 0)
-                in_progress = getattr(self.purchase_executor, '_warmup_in_progress', False)
-                print(f"[WARMUP_CYCLE] Cycle {self._warmup_cycle_counter}: "
-                      f"headers_age={headers_age:.0f}s, in_progress={in_progress}")
-                # Skip if headers are already fresh (e.g. just refreshed by a completed purchase)
-                if not in_progress and headers_age > 5:
-                    print("[WARMUP_CYCLE] Queuing Shape header refresh...")
-                    try:
-                        self.purchase_executor.session_manager.submit_async_task(
-                            self.purchase_executor.warm_shape_headers()
-                        )
-                    except Exception as e:
-                        print(f"[WARMUP_CYCLE] Could not queue warmup: {e}")
-                elif not in_progress:
-                    print(f"[WARMUP_CYCLE] Skipping — headers fresh ({headers_age:.0f}s old)")
+            if (self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 30 == 0) and self.worker_pool is not None:
+                # Phase 6: cycle-warm every worker's executor on its own loop, not just primary's.
+                for w in self.worker_pool.workers:
+                    ex = w.purchase_executor
+                    if ex is None:
+                        continue
+                    headers_age = time.time() - getattr(ex, '_cached_cart_headers_ts', 0)
+                    in_progress = getattr(ex, '_warmup_in_progress', False)
+                    print(f"[WARMUP_CYCLE] Cycle {self._warmup_cycle_counter} {w.label()}: "
+                          f"headers_age={headers_age:.0f}s, in_progress={in_progress}")
+                    if not in_progress and headers_age > 5:
+                        print(f"[WARMUP_CYCLE] {w.label()}: queuing Shape header refresh...")
+                        try:
+                            w.run_async(ex.warm_shape_headers())
+                        except Exception as e:
+                            print(f"[WARMUP_CYCLE] {w.label()}: could not queue warmup: {e}")
+                    elif not in_progress:
+                        print(f"[WARMUP_CYCLE] {w.label()}: skipping — headers fresh ({headers_age:.0f}s old)")
 
             # Process each product according to state rules (in priority order)
             for tcin in sorted_tcins:

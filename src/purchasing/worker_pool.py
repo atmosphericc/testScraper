@@ -8,7 +8,7 @@ dir (`nodriver-profile-2/`, `nodriver-profile-3/`, ...). Worker 1 keeps
 the legacy `target.json` + `nodriver-profile/` paths so the existing
 file is reused without migration.
 
-Dispatch model (kept intentionally simple):
+Dispatch model:
   1. **Sticky TCIN → Worker map** — when a TCIN is dispatched the first
      time it claims a Worker, then every subsequent attempt for that TCIN
      lands on the same Worker. Keeps cookie state, account binding, and
@@ -17,31 +17,22 @@ Dispatch model (kept intentionally simple):
      `acquire_for_tcin(tcin)` picks the Worker with the fewest sticky
      TCINs, breaking ties by `worker_id`. This balances mappings as the
      SKU set grows.
-  3. **No preemption.** Today the executor layer is still serial inside
-     a single Worker (one browser → one tab). Multiple TCINs assigned to
-     the same Worker still serialize at the executor level. The pool's
-     job is to spread distinct SKU families across Workers, not to
-     parallelize within a Worker.
+  3. **Per-Worker event loops** — each Worker owns its own asyncio loop on
+     a dedicated thread (see Worker.run_async). Dispatching a purchase to
+     a Worker submits the coroutine to that Worker's loop, so N Workers
+     can run N concurrent purchases without serializing through a shared
+     loop.
 
-The pool deliberately does NOT manage:
-  - asyncio loops per Worker (deferred — single shared loop today).
-  - submit_purchase futures (the Worker.purchase_executor is still
-    awaited directly from the manager's existing thread/loop).
-  - health checks / restart (the manager's circuit breaker still runs
-    against the single primary Worker).
-
-Phase 6 builds the bookkeeping and the Worker fleet. Hooking the
-fleet into the dispatch path so distinct SKUs actually run on distinct
-browsers is a follow-up — it requires either per-Worker event loops or
-a dispatch queue. For now the pool exposes `primary` (Worker 1) which
-matches what BulletproofPurchaseManager already aliases.
+The pool exposes `ensure_all_ready()` which launches every Worker's
+SessionManager.initialize() concurrently across their per-Worker loops.
 """
 
 from __future__ import annotations
 
 import os
 import threading
-from typing import Callable, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional
 
 from .worker import Worker, WorkerConfig
 
@@ -132,6 +123,95 @@ class WorkerPool:
                 purchase_status_callback=purchase_status_callback,
             )
         self._built = True
+
+    def ensure_all_ready(
+        self,
+        *,
+        per_worker_timeout: float = 90.0,
+        warmup_shape_headers: bool = True,
+    ) -> Dict[str, Any]:
+        """Launch every Worker's browser session concurrently.
+
+        Each Worker submits `session_manager.initialize()` (and optionally
+        `purchase_executor.warm_shape_headers()`) to its own loop, so the
+        N initializations run in parallel rather than serially.
+
+        Returns a dict per worker label: {ok: bool, init_seconds, warmup_seconds,
+        error}. Caller decides what to do with partial failures — typically
+        fail-soft (mark worker unhealthy) rather than abort the whole pool.
+
+        Idempotent at the SessionManager level (initialize() short-circuits
+        on existing `session_active`), so safe to call again after a partial
+        failure.
+        """
+        if not self._built:
+            raise RuntimeError(
+                "WorkerPool.ensure_all_ready() called before build_all() — "
+                "Workers have no session_manager yet"
+            )
+
+        results: Dict[str, Any] = {}
+
+        async def _init_worker(w: Worker) -> Dict[str, Any]:
+            t0 = time.time()
+            sm = w.session_manager
+            ex = w.purchase_executor
+            out: Dict[str, Any] = {
+                "ok": False,
+                "init_seconds": 0.0,
+                "warmup_seconds": 0.0,
+                "error": None,
+            }
+            try:
+                init_ok = await sm.initialize()
+                out["init_seconds"] = round(time.time() - t0, 2)
+                if not init_ok:
+                    out["error"] = "session_manager.initialize() returned False"
+                    return out
+                if warmup_shape_headers and ex is not None:
+                    w0 = time.time()
+                    try:
+                        await ex.warm_shape_headers()
+                    except Exception as we:
+                        out["error"] = f"warm_shape_headers: {we}"
+                    out["warmup_seconds"] = round(time.time() - w0, 2)
+                out["ok"] = True
+                return out
+            except Exception as e:
+                out["error"] = f"{type(e).__name__}: {e}"
+                out["init_seconds"] = round(time.time() - t0, 2)
+                return out
+
+        # Submit each worker's init coroutine to its own loop, then block
+        # on all of them. Loops were started lazily inside run_async; if
+        # this is the first invocation each worker spins its loop here.
+        futures = []
+        for w in self._workers:
+            fut = w.run_async(_init_worker(w))
+            futures.append((w, fut))
+
+        deadline = time.time() + per_worker_timeout * max(1, len(futures))
+        for w, fut in futures:
+            remaining = max(1.0, deadline - time.time())
+            try:
+                results[w.label()] = fut.result(timeout=min(remaining, per_worker_timeout))
+            except Exception as e:
+                results[w.label()] = {
+                    "ok": False,
+                    "init_seconds": 0.0,
+                    "warmup_seconds": 0.0,
+                    "error": f"{type(e).__name__}: {e}",
+                }
+
+        return results
+
+    def shutdown(self) -> None:
+        """Stop every worker's loop+thread. Safe to call if never started."""
+        for w in self._workers:
+            try:
+                w.shutdown()
+            except Exception:
+                pass
 
     def acquire_for_tcin(self, tcin: str) -> Worker:
         """Return the Worker bound to `tcin`, creating a sticky mapping
