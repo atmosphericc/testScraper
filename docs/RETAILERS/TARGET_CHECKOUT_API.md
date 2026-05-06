@@ -37,15 +37,16 @@ The existing ATC fetch at `src/session/purchase_executor.py:704-739` is the work
 
 ---
 
-## Endpoint 2 — Pre-Checkout POST ✅ ALREADY FIRED
+## Endpoint 2 — Pre-Checkout POST ✅ FIRED + RESPONSE CHARACTERIZED (2026-05-06)
 
-- **Status:** Already fired as fire-and-forget at `purchase_executor.py:1067-1086`. The DOM `tab.get('/checkout/start')` still runs after, which is what makes navigation slow. **Phase 3 candidate:** if pre_checkout returns enough state to skip the navigation, we may be able to drive checkout entirely off the response and skip the page render.
+- **Status:** Already fired as fire-and-forget at `purchase_executor.py:1067-1086`. **Response body captured 2026-05-06** (TARGET_API_DEBUG flag, since reverted; capture preserved at `logs/api_capture.log`).
 - **Method:** POST
 - **URL:** `https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES`
 - **Body:** `{"cart_type": "REGULAR"}`
 - **Required headers:** Same Shape header pattern as ATC. `keepalive: true` (so the request survives navigation).
-- **DOM step it would replace:** `purchase_executor.py:1092` (`tab.get("https://www.target.com/checkout/start")`) — currently always navigates after pre_checkout fires. If response is sufficient, navigation can be eliminated entirely.
-- **Open question (live capture needed):** what does the response body contain? Does it include the `placeOrder` URL/key needed for Endpoint 6?
+- **Response (HTTP 201, 19102 bytes):** Carries the full checkout state — `cart_id`, `reference_id`, `cart_state: "PENDING"`, `guest_profile`, `addresses[]`, `cart_items[]` with `cart_item_id`/`fulfillment`/`available_ship_methods`, `summary.grand_total`, `payment_instructions` (truncated past 8000 chars in capture). This is **everything Place Order needs except the place-order endpoint URL itself**.
+- **Phase 3 finding:** Skipping the `/checkout/start` nav is NOT viable until Endpoint 7 (Place Order POST) is captured. The bot today still needs the page rendered to click the Place Order button. Pre_checkout's response is rich, but useless for skipping the nav unless we replace the click with a fetch.
+- **Smaller win (Phase 4 candidate):** Use pre_checkout response for delivery option selection (replaces `_handle_delivery_options`) — saves ~150ms.
 
 ---
 
@@ -91,16 +92,15 @@ The existing ATC fetch at `src/session/purchase_executor.py:704-739` is the work
 
 ---
 
-## Endpoint 7 — Place Order POST 🔴 LIVE CAPTURE NEEDED
+## Endpoint 7 — Place Order POST 🔴 LIVE CAPTURE STILL NEEDED
 
-- **Status:** UNKNOWN URL/body. The bot today uses `_dispatch_click(place_order_button)` at `purchase_executor.py:2762`. The actual POST fires from Target's React handler. TEST_MODE never reaches this path so logs don't contain the request.
-- **Best guess (from URL conventions):** likely `POST https://carts.target.com/web_checkouts/v1/checkout` (the interceptor at line 334 watches `web_checkouts/v1/checkout` POST, suggesting this is the known endpoint name).
-- **Live capture method:** to be determined. Options:
-  1. PROD_MODE walk on the $1.99 gum SKU (50270379) and let the Place Order actually fire — captures the full POST. Costs $1.99.
-  2. Static analysis of Target's checkout JS bundle to extract the URL pattern.
-  3. Browser DevTools manual checkout (user-driven) on a cancellable item, capture from Network tab.
-- **What we already know from the interceptor at line 334:** the URL contains `web_checkouts/v1/checkout`, method is POST, and the response carries `tgt-cart-error-key` headers on rejection (RESERVATION_FAILURE, INVENTORY_NOT_AVAILABLE, CART_COMPARISON_FAILURE).
-- **Headers expected:** Same Shape pattern as cart_items POST, plus likely additional auth tokens fetched during checkout-page render.
+- **Status:** URL likely `POST https://carts.target.com/web_checkouts/v1/checkout` (the existing CDP interceptor at `purchase_executor.py:414` already watches `*web_checkouts/v1/checkout*` for the response — confirms this is the endpoint name). **Body shape unknown** — TEST_MODE never reaches the click, and PROD_MODE costs a real $19.90 gum order to capture.
+- **Headers expected:** Same Shape pattern as `cart_items` POST. Note: in the 2026-05-06 capture log the POST `pre_checkout` request had **only 1 Shape X-header** (vs 7 on `cart_items`) — possible different rotation namespace. Place Order may need its own warmup fetch.
+- **Capture options:**
+  1. Manual DevTools capture during the user's next *intentional* purchase. Zero extra cost. Recommended.
+  2. PROD_MODE single-shot on the gum SKU. Costs $19.90 (10 × $1.99). The order can be cancelled immediately via Target's app.
+  3. Static analysis of Target's checkout JS bundle to extract the URL+body pattern. Possible but bundle is minified and obfuscated.
+- **Why the bot can't fully API-mode without this:** Place Order is the only remaining unknown on the checkout chain. Until captured, the DOM click at `_place_order` (line 2762) is required, and the `/checkout/start` navigation cannot be skipped.
 
 ---
 

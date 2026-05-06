@@ -53,3 +53,4 @@ Thumbs.db
 
 # Claude Code
 .claude/
+logs/api_capture.log
