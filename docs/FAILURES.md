@@ -6,8 +6,11 @@ to docs/FAILURES_ARCHIVE.md. Keep only: unresolved issues,
 recent fixes (< 30 days), and failures with "Root Fix Still Needed" notes.
 
 ## Open Actions
-- [ ] purchase_executor.py: add `order_id` + `confirmation_url` to success
-      return dict at _complete_checkout (~line 1089) — see 2026-04-08 entry
+- [x] purchase_executor.py: add `order_id` + `confirmation_url` to success
+      return dict at _complete_checkout — DONE. Executor returns both at
+      src/session/purchase_executor.py:1217-1239; manager consumes them at
+      src/purchasing/bulletproof_purchase_manager.py:1197-1204 (no more
+      `REAL-{random}` fallback).
 
 ---
 

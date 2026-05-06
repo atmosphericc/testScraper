@@ -120,13 +120,17 @@ Commit: `79c37eaa`. Expected impact: 40-60% detection reduction (Phase 1), addit
 
 ## Open Gaps (Critical)
 
-1. **Target**: Shape header TTL (~90s) not monitored — need alerting when headers approach stale
-2. **Target**: CVV modal race condition — no timeout/retry if modal appears after Place Order but before confirmation check
-3. **Walmart**: GraphQL hash staleness — no auto-detection of stale `GRAPHQL_HASH` (triggers 400 errors silently)
-4. **Walmart**: `/blocked?g=a` checkbox variant not handled — only press-and-hold variant detected (note: `_solve_checkbox_challenge()` stub exists in `walmart/session_manager.py` but the underlying PerimeterX solver is unverified)
-5. **Both**: Missing circuit breaker — no pause after repeated failures (Shape device block accumulation risk)
-6. **Both**: No integration test suite — untested end-to-end flows
-7. **Walmart**: **Checkout proxy is acquired but never wired into the browser** (discovered 2026-05-03). `walmart/proxy_manager.py:acquire_checkout_proxy()` returns a proxy URL and `walmart/purchase_manager.py:_run_purchase` logs "Checkout proxy acquired", but no code path passes that URL into the zendriver browser launch args or per-tab proxy config. Tab 2 navigates through the local machine IP regardless of which proxy was "acquired". This means: (a) all checkout traffic goes from one IP, defeating proxy rotation; (b) `_abck` IP-binding is consistent (good — restored cookies still match the IP); (c) but if Walmart blocks the local IP, no rotation will save it. To actually use checkout proxies, the browser would need to be re-launched with `--proxy-server=...` per checkout, or use a separate browser context per checkout with its own proxy.
+1. **Target**: Shape headers reactively re-warmed on 403/block — no proactive refresh before TTL expiry. Recovery costs ~1-2s on the failure path. Acceptable as-is; flagged for awareness only. Code: `src/session/purchase_executor.py:warm_shape_headers()` (called at line 671 on purchase start, line 850 on Shape-block).
+2. **Walmart**: GraphQL hash staleness — no auto-detection of stale `GRAPHQL_HASH` (triggers 400 errors silently)
+3. **Walmart**: `/blocked?g=a` checkbox variant not handled — only press-and-hold variant detected (note: `_solve_checkbox_challenge()` stub exists in `walmart/session_manager.py` but the underlying PerimeterX solver is unverified)
+4. **Both**: Missing circuit breaker — no pause after repeated failures (Shape device block accumulation risk)
+5. **Both**: No integration test suite — untested end-to-end flows
+6. **Walmart**: **Checkout proxy is acquired but never wired into the browser** (discovered 2026-05-03). `walmart/proxy_manager.py:acquire_checkout_proxy()` returns a proxy URL and `walmart/purchase_manager.py:_run_purchase` logs "Checkout proxy acquired", but no code path passes that URL into the zendriver browser launch args or per-tab proxy config. Tab 2 navigates through the local machine IP regardless of which proxy was "acquired". This means: (a) all checkout traffic goes from one IP, defeating proxy rotation; (b) `_abck` IP-binding is consistent (good — restored cookies still match the IP); (c) but if Walmart blocks the local IP, no rotation will save it. To actually use checkout proxies, the browser would need to be re-launched with `--proxy-server=...` per checkout, or use a separate browser context per checkout with its own proxy.
+
+## Resolved (kept for history)
+
+- **Target CVV modal race** (resolved): `_handle_cvv_modal` at `src/session/purchase_executor.py:1591` handles detect+fill+confirm in a single JS round-trip and is awaited inline before the success check. No race window remains.
+- **Target fake order ID fallback** (resolved): `src/purchasing/bulletproof_purchase_manager.py:1197-1204` now reads `result.get('order_id')`, falls back to parsing `?orderId=` from `confirmation_url`, and stores `None` with a warning if neither is present. The previous `f"REAL-{random.randint(...)}"` fallback is gone. Executor returns `order_id` and `confirmation_url` from `_complete_checkout` at `purchase_executor.py:1217-1239`.
 
 ---
 

@@ -3505,8 +3505,100 @@ if __name__ == '__main__':
     add_activity_log("Bulletproof monitoring dashboard initialized", "info", "system")
     add_activity_log("Activity log persistence worker started", "success", "system")
 
-    # Start background monitoring
-    start_monitoring()
+    # ========== BACKGROUND INITIALIZATION ==========
+    # Chrome launch + session validation runs on a daemon thread so Flask binds
+    # the port immediately. Without this, the dashboard appears hung for 30-90s
+    # on cold start while the browser comes up.
+    import app as _self_module
+
+    def background_init():
+        """Initialize browser, verify Target login, and start monitoring."""
+        try:
+            with shared_data.lock:
+                shared_data.initialization_status = "Initializing browser..."
+            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] Starting background initialization (PROD MODE)...")
+            print("[BACKGROUND] ═══════════════════════════════════════════════")
+
+            init_error = None
+            try:
+                initialize_global_purchase_manager()
+            except concurrent.futures.TimeoutError as e:
+                print(f"[BACKGROUND] [WARNING] Purchase manager init timed out: {e}")
+                init_error = "timeout"
+            except Exception as e:
+                print(f"[BACKGROUND] [ERROR] Purchase manager init failed: {e}")
+                import traceback; traceback.print_exc()
+                init_error = str(e)
+
+            with shared_data.lock:
+                shared_data.initialization_status = "Checking login status..."
+
+            async def check_login():
+                purchase_mgr = _self_module.global_purchase_manager
+                if not purchase_mgr or not purchase_mgr.session_manager:
+                    return False
+                return await purchase_mgr.session_manager.is_healthy()
+
+            is_logged_in = False
+            login_check_error = None
+            if not init_error and _self_module.global_event_loop:
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        check_login(), _self_module.global_event_loop
+                    )
+                    is_logged_in = future.result(timeout=90)
+                    print(f"[BACKGROUND] Login check result: {is_logged_in}")
+                except concurrent.futures.TimeoutError:
+                    print("[BACKGROUND] [WARNING] Login check timed out after 90s")
+                    login_check_error = "timeout"
+                except Exception as e:
+                    print(f"[BACKGROUND] [ERROR] Login check failed: {e}")
+                    login_check_error = str(e)
+            else:
+                login_check_error = init_error
+
+            # PROD MODE: refuse to start monitoring on a stale session.
+            # A logged-out session would silently send real purchase attempts
+            # into guaranteed failures and leave a detection trail with Shape.
+            if not is_logged_in:
+                print("=" * 60)
+                print("⚠️  NOT LOGGED IN TO TARGET.COM — MONITORING WILL NOT START")
+                print("=" * 60)
+                print("Run `python relogin.py` to refresh target.json, then restart.")
+                print("(Use test_app.py if you want to run without a verified login.)")
+                with shared_data.lock:
+                    shared_data.initialization_complete = True
+                    shared_data.initialization_status = "Not logged in — monitoring halted"
+                    shared_data.initialization_error = (
+                        f"Login check failed: {login_check_error}" if login_check_error
+                        else "Target session invalid — refresh target.json"
+                    )
+                add_activity_log(
+                    "Not logged in to Target — monitoring halted to prevent failed purchases",
+                    "error", "system"
+                )
+                return
+
+            print("✅ LOGGED IN TO TARGET.COM — starting monitoring with REAL purchases")
+            start_monitoring()
+
+            with shared_data.lock:
+                shared_data.initialization_complete = True
+                shared_data.initialization_status = "Ready - monitoring active (logged in)"
+            add_activity_log("System ready - monitoring active with real purchases", "success", "system")
+            print("=" * 60)
+            print("✅ INITIALIZATION COMPLETE")
+            print("=" * 60)
+
+        except Exception as e:
+            print(f"[BACKGROUND] [FATAL] Initialization error: {e}")
+            import traceback; traceback.print_exc()
+            with shared_data.lock:
+                shared_data.initialization_complete = True
+                shared_data.initialization_status = "Error - initialization failed"
+                shared_data.initialization_error = str(e)
+            add_activity_log(f"Fatal initialization error: {e}", "error", "system")
 
     # ========== GRACEFUL SHUTDOWN HANDLER ==========
     def _kill_browser_now():
@@ -3590,6 +3682,13 @@ if __name__ == '__main__':
             signal.signal(signal.SIGBREAK, shutdown_handler)  # Ctrl+Break on Windows
         except (AttributeError, OSError):
             pass
+
+    # Start background initialization thread (does NOT block Flask startup).
+    # Browser launch + login check run off the main thread; Waitress binds
+    # the port immediately so the dashboard is reachable during init.
+    print("[STARTUP] Starting background initialization thread...")
+    init_thread = threading.Thread(target=background_init, daemon=True, name="BackgroundInit")
+    init_thread.start()
 
     # Run Flask app with Waitress (production-grade WSGI server)
     # FIX: Replace Flask dev server with Waitress for proper SSE streaming (no buffering)
