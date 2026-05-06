@@ -3509,7 +3509,14 @@ if __name__ == '__main__':
     # Chrome launch + session validation runs on a daemon thread so Flask binds
     # the port immediately. Without this, the dashboard appears hung for 30-90s
     # on cold start while the browser comes up.
-    import app as _self_module
+    #
+    # Use sys.modules[__name__] (i.e. __main__) instead of `import app`. When this
+    # script is run via `python app.py`, the script's module is __main__ and
+    # `import app` would load a SECOND copy in the `app` namespace. Globals like
+    # `global_purchase_manager` get written to __main__ inside the function body,
+    # so the imported `app` copy stays None and the login gate misfires.
+    import sys as _sys
+    _self_module = _sys.modules[__name__]
 
     def background_init():
         """Initialize browser, verify Target login, and start monitoring."""

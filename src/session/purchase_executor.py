@@ -49,6 +49,11 @@ class PurchaseExecutor:
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
         self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
         self._checkout_reject_reason: str = ''             # tgt-cart-error-key value from 424
+        # Phase 4b — set by _api_place_order when API-mode Place Order succeeds.
+        # _complete_checkout reads these instead of parsing tab.url, since
+        # API mode does not navigate to /checkout/confirmation.
+        self._api_order_id: Optional[str] = None
+        self._api_confirmation_url: Optional[str] = None
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -436,6 +441,43 @@ class PurchaseExecutor:
                         cached_shape = len([h for h in self._cached_cart_headers if h.lower().startswith('x-')])
                         print(f"[INTERCEPTOR:{label}] {method} {url[:80]} — skipping cache (not POST, has {len(headers)} headers, {len(shape_headers)} X-headers)")
                         print(f"[INTERCEPTOR:{label}]   cache preserved: {len(self._cached_cart_headers)} headers, {cached_shape} Shape tokens, age={cache_age:.1f}s")
+
+                        # Phase 4a passive capture: when TARGET_API_CAPTURE_CHECKOUT_STEPS=true,
+                        # log full URL+headers+body for cart PUT and cart_fulfillments GET so
+                        # Endpoint 4 + 5 in TARGET_CHECKOUT_API.md can be filled in. Pass-through
+                        # only — never aborts. Default off; safe to leave on for one capture run.
+                        if os.environ.get('TARGET_API_CAPTURE_CHECKOUT_STEPS', 'false').lower() == 'true':
+                            is_cart_put = method == 'PUT' and 'web_checkouts/v1/cart' in url
+                            is_fulfillments_get = method == 'GET' and 'cart_fulfillments' in url
+                            if is_cart_put or is_fulfillments_get:
+                                tag = 'CART_PUT' if is_cart_put else 'FULFILLMENTS_GET'
+                                try:
+                                    post_data = ''
+                                    if is_cart_put:
+                                        post_data = getattr(event.request, 'post_data', '') or ''
+                                        if hasattr(event.request, 'has_post_data') and event.request.has_post_data and not post_data:
+                                            try:
+                                                post_data = await tab.send(cdp.fetch.get_request_post_data(request_id=event.request_id))
+                                            except Exception:
+                                                post_data = '<unavailable>'
+                                    import os as _os, datetime as _dt
+                                    _os.makedirs('logs', exist_ok=True)
+                                    with open('logs/api_capture.log', 'a', encoding='utf-8') as _f:
+                                        _f.write(f"\n{'='*80}\n[{_dt.datetime.now().isoformat()}] {tag} captured (pass-through)\n")
+                                        _f.write(f"url: {url}\n")
+                                        _f.write(f"method: {method}\n")
+                                        _f.write(f"headers:\n")
+                                        for h_name, h_val in headers.items():
+                                            if h_name.lower() == 'cookie':
+                                                _f.write(f"  {h_name}: <redacted, {len(h_val)} chars>\n")
+                                            else:
+                                                _f.write(f"  {h_name}: {h_val}\n")
+                                        if is_cart_put:
+                                            _f.write(f"body:\n{post_data}\n")
+                                    print(f"[INTERCEPTOR:{label}] [{tag}_CAPTURE] logged ({len(headers)} headers"
+                                          + (f", {len(post_data)} body chars" if is_cart_put else "") + ")")
+                                except Exception as cap_err:
+                                    print(f"[INTERCEPTOR:{label}] [{tag}_CAPTURE] failed: {cap_err}")
                     else:
                         print(f"[INTERCEPTOR:{label}] {method} {url[:80]} — no headers found")
                 else:
@@ -592,6 +634,8 @@ class PurchaseExecutor:
         print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin}, qty={quantity})")
         self._checkout_rejected = False
         self._checkout_reject_reason = ''
+        self._api_order_id = None
+        self._api_confirmation_url = None
 
         try:
             print(f"[PURCHASE] Starting purchase for {tcin}")
@@ -637,7 +681,14 @@ class PurchaseExecutor:
             product_url = f"https://www.target.com/p/-/A-{tcin}"
             try:
                 print(f"[PURCHASE] Navigating to {product_url}")
-                await tab.get(product_url)
+                _nav_t0 = time.time()
+                try:
+                    await asyncio.wait_for(tab.get(product_url), timeout=15.0)
+                    print(f"[PURCHASE] Navigation returned in {time.time()-_nav_t0:.2f}s")
+                except asyncio.TimeoutError:
+                    print(f"[ERROR] Navigation timed out after {time.time()-_nav_t0:.1f}s on {product_url} — "
+                          f"tab may be wedged. Aborting purchase.")
+                    raise
             except Exception as nav_error:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
@@ -1264,19 +1315,29 @@ class PurchaseExecutor:
             # Save session after successful purchase
             await self.session_manager.save_session_state()
 
-            # Extract order_id from confirmation URL
-            confirmation_url = tab.url or ""
-            order_id = None
-            if 'orderId=' in confirmation_url:
-                try:
-                    order_id = confirmation_url.split('orderId=')[1].split('&')[0]
-                except Exception as e:
-                    print(f"[PURCHASE] Failed to parse order_id from URL: {e}")
+            # Extract order_id. API mode (Phase 4b) stashes the response-derived
+            # order_id on self because the page does not navigate to /confirmation;
+            # DOM mode reads it from the post-click URL.
+            if self._api_order_id:
+                order_id = self._api_order_id
+                confirmation_url = self._api_confirmation_url or (tab.url or "")
+                print(f"[PURCHASE] order_id from API response: {order_id}")
+            else:
+                confirmation_url = tab.url or ""
+                order_id = None
+                if 'orderId=' in confirmation_url:
+                    try:
+                        order_id = confirmation_url.split('orderId=')[1].split('&')[0]
+                    except Exception as e:
+                        print(f"[PURCHASE] Failed to parse order_id from URL: {e}")
 
             self._notify_status(tcin, 'purchased', {
                 'execution_time': execution_time,
                 'timestamp': datetime.now().isoformat(),
-                'order_confirmed': True
+                'order_confirmed': True,
+                'order_number': order_id,
+                'order_id': order_id,
+                'confirmation_url': confirmation_url,
             })
 
             return {
@@ -2046,10 +2107,124 @@ class PurchaseExecutor:
             self.logger.error(f"Cart verification error: {e}")
             return False
 
+    async def _api_clear_cart(self, tab) -> Optional[bool]:
+        """Phase 4c: clear regular cart items via direct DELETE fetches.
+
+        Two-step flow per TARGET_CHECKOUT_API.md Endpoint 6:
+          1. GET /cart?field_groups=CART,CART_ITEMS → cart_items[].cart_item_id
+          2. DELETE /cart_items/<cart_item_id> for each item
+
+        Returns:
+          True  — all items removed successfully (cart_items list emptied)
+          False — at least one DELETE failed; caller should fall back to DOM clear
+          None  — cart was already empty (nothing to do)
+
+        SFL items are NOT handled here — they live behind a different endpoint
+        family that is not yet documented. The caller falls back to the DOM
+        SFL pass when needed.
+        """
+        try:
+            cart_state = await tab.evaluate("""(async () => {
+                try {
+                    const r = await fetch(
+                        'https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CART,CART_ITEMS',
+                        {credentials: 'include', headers: {'Accept': 'application/json'}}
+                    );
+                    if (!r.ok) return {ok: false, status: r.status};
+                    const d = await r.json();
+                    const ids = (d.cart_items || []).map(i => i.cart_item_id).filter(Boolean);
+                    return {ok: true, ids: ids};
+                } catch(e) { return {ok: false, error: String(e)}; }
+            })()""", await_promise=True)
+
+            if not isinstance(cart_state, dict) or not cart_state.get('ok'):
+                print(f"[CLEAR_CART_API] GET /cart failed: {cart_state}")
+                return False
+
+            ids = cart_state.get('ids', []) or []
+            if not ids:
+                print("[CLEAR_CART_API] cart already empty (no cart_item_id)")
+                return None
+
+            print(f"[CLEAR_CART_API] deleting {len(ids)} cart item(s) via API")
+
+            headers_age = time.time() - self._cached_cart_headers_ts
+            use_cached = bool(self._cached_cart_headers) and headers_age < 90
+            _strip_keys = {'cookie', 'referer'}
+            cached_shape_only = {k: v for k, v in self._cached_cart_headers.items()
+                                  if k.lower() not in _strip_keys}
+            cached_shape_only['x-application-name'] = 'web'
+            extra_headers_js = json.dumps(cached_shape_only if use_cached else {'x-application-name': 'web'})
+
+            # Issue DELETEs serially. Doing them in parallel would race the
+            # cart-state mutation; serial keeps the flow predictable.
+            for cid in ids:
+                # Defensive: cart_item_id is meant to be a UUID string. Reject
+                # anything else so a bad payload can't escape into the URL.
+                if not isinstance(cid, str) or not re.match(r'^[A-Za-z0-9_-]+$', cid):
+                    print(f"[CLEAR_CART_API] skipping suspicious cart_item_id: {cid!r}")
+                    return False
+                del_result = await tab.evaluate(f"""(async () => {{
+                    try {{
+                        const cachedHeaders = {extra_headers_js};
+                        const resp = await fetch(
+                            'https://carts.target.com/web_checkouts/v1/cart_items/{cid}',
+                            {{
+                                method: 'DELETE',
+                                credentials: 'include',
+                                headers: {{
+                                    ...cachedHeaders,
+                                    'Accept': 'application/json',
+                                    'Origin': 'https://www.target.com',
+                                    'Referer': 'https://www.target.com/cart',
+                                    'x-application-name': 'web',
+                                }},
+                            }}
+                        );
+                        const body = (await resp.text()).slice(0, 200);
+                        return {{status: resp.status, body: body}};
+                    }} catch(e) {{
+                        return {{status: 0, body: String(e)}};
+                    }}
+                }})()""", await_promise=True)
+                status = del_result.get('status', 0) if isinstance(del_result, dict) else 0
+                if status not in (200, 204):
+                    print(f"[CLEAR_CART_API] DELETE {cid[:8]}… returned {status} body={del_result.get('body', '')!r}")
+                    return False
+                print(f"[CLEAR_CART_API] DELETE {cid[:8]}… OK ({status})")
+            return True
+
+        except Exception as e:
+            print(f"[CLEAR_CART_API] exception: {e}")
+            return False
+
     async def _clear_cart(self, tab) -> bool:
-        """Clear all items from cart and saved-for-later section"""
+        """Clear all items from cart and saved-for-later section.
+
+        Phase 4c: when TARGET_API_CART_CLEAR=true, regular items are removed
+        via direct DELETE fetches first; SFL items still go through the DOM
+        path below (different endpoint, not yet documented). On any failure
+        the API path falls through to the DOM flow so behavior stays
+        backward-compatible.
+        """
         try:
             removed_count = 0
+
+            if os.environ.get('TARGET_API_CART_CLEAR', 'false').lower() == 'true':
+                api_result = await self._api_clear_cart(tab)
+                if api_result is True:
+                    print("[CLEAR_CART] API path cleared regular items — running DOM SFL pass")
+                    # Skip the regular-item DOM pass; jump to SFL handling below.
+                    # We accomplish this by setting a sentinel and falling through.
+                    _skip_regular_pass = True
+                elif api_result is None:
+                    # cart already empty — short-circuit success
+                    return True
+                else:
+                    print("[CLEAR_CART] API path failed — falling back to DOM clear")
+                    _skip_regular_pass = False
+            else:
+                _skip_regular_pass = False
 
             # --- Pass 1: regular cart items ---
             cart_remove_selectors = [
@@ -2064,26 +2239,27 @@ class PurchaseExecutor:
                 ' button[aria-label*=\\"Remove\\"]").length'
             )
 
-            for _ in range(10):
-                button_found = False
-                for selector in cart_remove_selectors:
-                    try:
-                        btn = await tab.select(selector, timeout=0.3)
-                        if btn and await self._is_visible(btn):
-                            current_count = await tab.evaluate(count_expr)
-                            await btn.apply("(el) => el.click()")
-                            await self._wait_for_function(
-                                tab,
-                                f'({count_expr}) < {current_count}',
-                                timeout=5.0
-                            )
-                            removed_count += 1
-                            button_found = True
-                            break
-                    except Exception:
-                        continue
-                if not button_found:
-                    break
+            if not _skip_regular_pass:
+                for _ in range(10):
+                    button_found = False
+                    for selector in cart_remove_selectors:
+                        try:
+                            btn = await tab.select(selector, timeout=0.3)
+                            if btn and await self._is_visible(btn):
+                                current_count = await tab.evaluate(count_expr)
+                                await btn.apply("(el) => el.click()")
+                                await self._wait_for_function(
+                                    tab,
+                                    f'({count_expr}) < {current_count}',
+                                    timeout=5.0
+                                )
+                                removed_count += 1
+                                button_found = True
+                                break
+                        except Exception:
+                            continue
+                    if not button_found:
+                        break
 
             # --- Pass 2: saved-for-later items ---
             sfl_remove_selectors = [
@@ -2778,11 +2954,242 @@ class PurchaseExecutor:
             print(f"[PAYMENT] Stock error modal check error: {e}")
             return False
 
+    async def _api_place_order(self, tab) -> Dict[str, Any]:
+        """Phase 4b — fire the Place Order POST directly via fetch (API mode).
+
+        Patterned on the ATC fetch at :704-823. Reuses `_cached_cart_headers`
+        captured by the warmup tab interceptor (Place Order shares the same
+        Shape-token namespace as `cart_items` POST — see TARGET_CHECKOUT_API.md
+        Endpoint 7).
+
+        Returns a dict {success, status, body, order_id, confirmation_url, reason}.
+        Caller decides whether to fall back to the DOM click on failure.
+        """
+        # Hard guard: if a capture flag is on, the interceptor will abort the
+        # request with a synthetic 503 — API mode would mis-report failure.
+        if os.environ.get('TARGET_API_CAPTURE_PLACE_ORDER', 'false').lower() == 'true':
+            print("[API_PLACE_ORDER] Refusing to fire — TARGET_API_CAPTURE_PLACE_ORDER is set "
+                  "(interceptor will abort). Disable capture flag before enabling API mode.")
+            return {'success': False, 'status': 0, 'body': '',
+                    'reason': 'capture_flag_active', 'order_id': None,
+                    'confirmation_url': None}
+
+        observe = os.environ.get('TARGET_API_PLACE_ORDER_OBSERVE', 'false').lower() == 'true'
+        if observe:
+            print("[API_PLACE_ORDER] OBSERVE flag set — order WILL be placed for real; "
+                  "full response body will be logged to logs/api_capture.log")
+
+        # Build headers the same way ATC does (strip Cookie/Referer, force x-application-name).
+        headers_age = time.time() - self._cached_cart_headers_ts
+        if self._cached_cart_headers and headers_age > 60:
+            print(f"[API_PLACE_ORDER] Shape headers approaching TTL (age={headers_age:.0f}s) — refreshing warmup tab")
+            warmup_ok = await self.warm_shape_headers()
+            if warmup_ok:
+                headers_age = time.time() - self._cached_cart_headers_ts
+                print(f"[API_PLACE_ORDER] Warmup refresh complete, new headers age={headers_age:.0f}s")
+            else:
+                print(f"[API_PLACE_ORDER] Warmup refresh failed, continuing with stale headers")
+
+        use_cached = bool(self._cached_cart_headers) and headers_age < 90
+        _strip_keys = {'cookie', 'referer'}
+        cached_shape_only = {k: v for k, v in self._cached_cart_headers.items()
+                              if k.lower() not in _strip_keys}
+        cached_shape_only['x-application-name'] = 'web'
+        extra_headers_js = json.dumps(cached_shape_only if use_cached else {'x-application-name': 'web'})
+        if use_cached:
+            print(f"[API_PLACE_ORDER] Injecting Shape headers (age={headers_age:.0f}s): "
+                  f"{list(cached_shape_only.keys())}")
+        elif self._cached_cart_headers:
+            print(f"[API_PLACE_ORDER] Shape headers STALE (age={headers_age:.0f}s > 90s) — sending fetch WITHOUT Shape headers")
+        else:
+            print(f"[API_PLACE_ORDER] No Shape headers cached yet — warmup tab may not have captured")
+
+        url = ('https://carts.target.com/web_checkouts/v1/checkout'
+               '?cart_type=REGULAR'
+               '&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS'
+               '%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY'
+               '&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14')
+
+        t0 = time.time()
+        print(f"[API_PLACE_ORDER] Firing checkout POST")
+        try:
+            resp = await tab.evaluate(f"""(async () => {{
+                try {{
+                    const cachedHeaders = {extra_headers_js};
+                    const r = await fetch(
+                        '{url}',
+                        {{
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {{
+                                ...cachedHeaders,
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'Referer': 'https://www.target.com/checkout',
+                                'x-application-name': 'web',
+                            }},
+                            body: JSON.stringify({{
+                                cart_type: 'REGULAR',
+                                channel_id: '10'
+                            }})
+                        }}
+                    );
+                    const body = await r.text();
+                    return {{status: r.status, body: body}};
+                }} catch(e) {{
+                    return {{status: 0, body: String(e)}};
+                }}
+            }})()""", await_promise=True)
+        except Exception as fetch_err:
+            print(f"[API_PLACE_ORDER] tab.evaluate raised: {fetch_err}")
+            return {'success': False, 'status': 0, 'body': '',
+                    'reason': f'fetch_threw:{fetch_err}',
+                    'order_id': None, 'confirmation_url': None}
+
+        elapsed = time.time() - t0
+        status = resp.get('status', 0) if isinstance(resp, dict) else 0
+        body = resp.get('body', '') if isinstance(resp, dict) else ''
+        print(f"[API_PLACE_ORDER] HTTP {status} in {elapsed:.2f}s ({len(body)} body chars)")
+
+        # OBSERVE: log the full response body before any parsing — first deployment
+        # needs the success-response shape to design order_id parsing.
+        if observe:
+            try:
+                import os as _os, datetime as _dt
+                _os.makedirs('logs', exist_ok=True)
+                with open('logs/api_capture.log', 'a', encoding='utf-8') as _f:
+                    _f.write(f"\n{'='*80}\n[{_dt.datetime.now().isoformat()}] PLACE ORDER POST response (OBSERVE)\n")
+                    _f.write(f"http_status: {status}\n")
+                    _f.write(f"elapsed_s: {elapsed:.3f}\n")
+                    _f.write(f"body_chars: {len(body)}\n")
+                    _f.write(f"body:\n{body}\n")
+                print(f"[API_PLACE_ORDER] OBSERVE: response logged to logs/api_capture.log")
+            except Exception as log_err:
+                print(f"[API_PLACE_ORDER] OBSERVE log failed: {log_err}")
+
+        if status not in (200, 201):
+            # Classify common failure modes for diagnosis (mirrors ATC error path).
+            up = body.upper()
+            if status == 403 and ('<html' in body.lower() or '<!doctype' in body.lower()):
+                reason = 'shape_block'
+            elif status == 401:
+                reason = 'auth_expired'
+            elif 'INVENTORY_NOT_AVAILABLE' in up or 'OUT_OF_STOCK' in up:
+                reason = 'oos'
+            elif 'RESERVATION_FAILURE' in up:
+                reason = 'reservation_failure'
+            else:
+                reason = f'http_{status}'
+            return {'success': False, 'status': status, 'body': body[:500],
+                    'reason': reason, 'order_id': None, 'confirmation_url': None}
+
+        # SUCCESS — extract order_id from the response.
+        # Verified shape (2026-05-06 OBSERVE run):
+        #   {"orders":[{"order_id":"<uuid>","reference_id":"<10-digit>",...}]}
+        # Primary path is orders[0].order_id; fallbacks kept for shape drift.
+        order_id = None
+        reference_id = None
+        confirmation_url = None
+        try:
+            payload = json.loads(body)
+            if isinstance(payload, dict):
+                orders = payload.get('orders')
+                if isinstance(orders, list) and orders:
+                    first = orders[0]
+                    if isinstance(first, dict):
+                        for key in ('order_id', 'orderId', 'order_number', 'id'):
+                            val = first.get(key)
+                            if isinstance(val, str) and val:
+                                order_id = val
+                                break
+                        ref = first.get('reference_id')
+                        if isinstance(ref, str) and ref:
+                            reference_id = ref
+                # Defensive fallbacks (root-level + 'order' singular) in case the
+                # response shape ever changes.
+                if not order_id:
+                    for key in ('order_id', 'orderId', 'order_number', 'id', 'reference_id'):
+                        val = payload.get(key)
+                        if isinstance(val, str) and val:
+                            order_id = val
+                            break
+                if not order_id:
+                    order = payload.get('order') if isinstance(payload.get('order'), dict) else None
+                    if order:
+                        for key in ('order_id', 'orderId', 'order_number', 'id'):
+                            val = order.get(key)
+                            if isinstance(val, str) and val:
+                                order_id = val
+                                break
+                for key in ('confirmation_url', 'redirect_url', 'order_confirmation_url'):
+                    val = payload.get(key)
+                    if isinstance(val, str) and val:
+                        confirmation_url = val
+                        break
+        except Exception as parse_err:
+            print(f"[API_PLACE_ORDER] JSON parse failed: {parse_err}")
+
+        if not order_id:
+            for pat in (r'"order_id"\s*:\s*"([^"]+)"',
+                        r'"orderId"\s*:\s*"([^"]+)"',
+                        r'"order_number"\s*:\s*"([^"]+)"'):
+                m = re.search(pat, body)
+                if m:
+                    order_id = m.group(1)
+                    break
+
+        if order_id:
+            ref_str = f" reference_id={reference_id}" if reference_id else ""
+            print(f"[API_PLACE_ORDER] Order placed — order_id={order_id}{ref_str} (t={elapsed:.2f}s)")
+            if not confirmation_url:
+                confirmation_url = f"https://www.target.com/checkout/confirmation?orderId={order_id}"
+        else:
+            print(f"[API_PLACE_ORDER] Order placed (HTTP {status}) but order_id NOT FOUND in response — "
+                  f"check logs/api_capture.log if OBSERVE was on. Body preview: {body[:300]!r}")
+
+        return {'success': True, 'status': status, 'body': body[:500],
+                'reason': 'ok', 'order_id': order_id,
+                'reference_id': reference_id,
+                'confirmation_url': confirmation_url}
+
     async def _place_order(self, tab) -> bool:
         """Find the enabled Place Order button and click it (production only).
 
         Retries up to 3 times if the 'busier than expected' modal appears.
+
+        Phase 4b: when TARGET_API_PLACE_ORDER=true (and not test_mode), tries
+        the API fetch first and falls back to DOM only on non-success.
         """
+        # ── Phase 4b — API mode ──────────────────────────────────────────────
+        _api_flag = os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
+        print(f"[PAYMENT] Phase 4b dispatch check: test_mode={self.test_mode}, "
+              f"TARGET_API_PLACE_ORDER={_api_flag} → "
+              f"{'API path' if (not self.test_mode and _api_flag) else 'DOM path'}")
+        if not self.test_mode and _api_flag:
+            print("[PAYMENT] TARGET_API_PLACE_ORDER=true — attempting API place-order")
+            api_result = await self._api_place_order(tab)
+            if api_result.get('success'):
+                self._api_order_id = api_result.get('order_id')
+                self._api_confirmation_url = api_result.get('confirmation_url')
+                print(f"[PAYMENT] API place-order succeeded — order_id={self._api_order_id}")
+                return True
+            print(f"[PAYMENT] API place-order failed (reason={api_result.get('reason')}, "
+                  f"status={api_result.get('status')}) — falling back to DOM click")
+            # Some failure reasons should NOT be retried via DOM — the order would
+            # double-place if the API actually committed but we mis-parsed. Only
+            # fall back on signals that prove the request was rejected by the server.
+            if api_result.get('reason') in ('shape_block', 'auth_expired', 'capture_flag_active',
+                                            'fetch_threw'):
+                pass  # safe to fall through to DOM
+            elif api_result.get('reason') in ('oos', 'reservation_failure'):
+                # Server rejected — DOM click would also fail. Bail with the same
+                # failure signature the DOM path produces.
+                print(f"[PAYMENT] API rejection is terminal ({api_result.get('reason')}) — "
+                      f"not retrying via DOM")
+                return False
+            # else: http_xxx or unknown — fall through and let DOM try.
+
         # Dismiss any "Checkout is busy right now" banner before attempting Place Order
         pre_dismissed = await self._handle_busy_modal(tab)
         if pre_dismissed:

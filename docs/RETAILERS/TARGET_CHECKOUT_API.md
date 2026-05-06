@@ -1,6 +1,6 @@
 # Target Checkout API — Endpoint Inventory
 
-**Status: Phase 1 — initial inventory from existing code + interceptor logs.** Place Order endpoint requires a live PROD-mode capture to fully document (TEST_MODE never clicks Place Order, so the JS-driven POST never fires). All other documented endpoints are validated against logs from `logs/purchases/purchase_50270379_*` (May 6).
+**Status: Phase 4b implemented (2026-05-06).** All checkout endpoints inventoried; Endpoint 1 (ATC) and Endpoint 7 (Place Order) are now API-mode behind flags. Endpoint 6 (cart clear) was implemented in Phase 4c. Endpoint 8 (CVV) deferred — never observed firing on the saved-card path. All endpoints validated against captures in `logs/api_capture.log` and `logs/purchases/purchase_50270379_*` (May 6).
 
 This doc is the source of truth for Phase 3+ (hybrid checkout API replacement of DOM steps). Each endpoint section maps to a candidate `tab.evaluate(fetch())` replacement gated behind a feature flag.
 
@@ -60,55 +60,78 @@ The existing ATC fetch at `src/session/purchase_executor.py:704-739` is the work
 
 ---
 
-## Endpoint 4 — Fulfillment Consolidations GET
+## Endpoint 4 — Fulfillment Consolidations GET ✅ CAPTURED (2026-05-06)
 
 - **Method:** GET
-- **URL prefix observed:** `https://carts.target.com/digital_checkouts/v1/cart_fulfillments/consolidations?k=...`
-- **Use:** Delivery option enumeration (drives the "What day to deliver" modal in DOM mode).
-- **DOM step it would replace:** `purchase_executor.py:2213-2229` (`_handle_delivery_options`).
-- **Open question (live capture needed):** full URL params, response shape. The `k=` param is a key — possibly a cart ID — needs verification.
+- **Full URL:** `https://carts.target.com/digital_checkouts/v1/cart_fulfillments/consolidations?key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14&cart_type=REGULAR&limit=20&within=25`
+- **Params:** `key` is the **public web API key** (same value used by every other web_checkouts call — not a cart ID). `cart_type=REGULAR`, `limit=20`, `within=25` (radius miles for store-pickup options).
+- **Headers (9 total):** `Accept`, `Cookie`, `Origin: https://www.target.com`, `Referer: https://www.target.com/checkout`, `User-Agent`, `sec-ch-ua*` (3 variants), `x-application-name: web`. **Only 1 Shape X-header** in the cache at the time of fire — same as pre_checkout. No `Content-Type` (it's a GET).
+- **Use:** Read-only enumeration of delivery options for the cart. Fires *automatically* during checkout page load — the bot already passively benefits.
+- **DOM step it would replace:** `_handle_delivery_options` at `purchase_executor.py:2381`.
+- **Phase 4a finding (2026-05-06):** **Replacement not viable on the warmed-up account hot path.** Both captured runs landed in `place_order` state on first checkout entry, with `[DELIVERY] Already in review state — skipping` — the DOM delivery step is already a no-op. Replacing it with a fetch saves nothing on the path the bot actually takes. Endpoint 4 stays *passively observed* (read by the page during nav). Promote to active replacement only if a future cart configuration (e.g. SHIP-only multi-day-window items, address change mid-checkout) starts triggering the DOM delivery step on the hot path.
 
 ---
 
-## Endpoint 5 — Cart PUT (used during clear)
+## Endpoint 5 — Cart PUT ✅ CAPTURED (2026-05-06) — but not the S&C variant
 
 - **Method:** PUT
-- **URL prefix:** `https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=ADDRESSES,...`
-- **Use:** Cart state mutation. Observed during `_clear_cart` flow.
-- **Body & full param shape:** unknown — needs live capture.
-- **Likely candidate:** if this is what shipping/payment "Save & Continue" buttons fire in DOM mode, it's a Phase 4 conversion target.
+- **Full URL:** `https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14`
+- **Params:** Same public web API key. `field_groups` is URL-encoded (commas → `%2C`): `ADDRESSES`, `CART`, `CART_ITEMS`, `FINANCE_PROVIDERS`, `PROMOTION_CODES`, `SUMMARY`.
+- **Headers (10 total):** `Accept: application/json`, `Content-Type: application/json`, `Cookie`, `Origin: https://www.target.com`, **`Referer: https://www.target.com/cart`** (key tell — see below), `User-Agent`, `sec-ch-ua*`, `x-application-name: web`. Only 1 Shape X-header at fire time.
+- **Body (213 chars, identical across both runs):**
+  ```json
+  {"cart_type":"REGULAR","shopping_context":"DIGITAL","channel_id":"10","guest_location":{"country":"US","latitude":"42.056656","longitude":"-87.968300","state":"IL","zip_code":"60056"},"shopping_location_id":"880"}
+  ```
+  This is a **cart-init** PUT (re-asserts location + channel context). Body has no delivery-method or address-id fields.
+- **Use:** Cart-context refresh fired by `target.com/cart` page load (Referer is `/cart`, not `/checkout`).
+- **NOT what S&C clicks fire.** The captured PUTs above fired during `_clear_cart`'s navigation back to `/cart` for cleanup — they are not the shipping/payment "Save & Continue" mutation.
+- **Phase 4a finding (2026-05-06):** The shipping/payment S&C variant of this PUT was **not observed** in either captured run, because the bot reached `place_order` state directly with `FLOW A: Place Order already enabled — no S&C needed`. Both runs printed `[PAYMENT] FLOW A: Place Order already enabled — no S&C needed`. To capture the S&C-variant PUT, the test cart needs to land in a state where S&C buttons appear (e.g. cart cleared between sessions, or a new payment method added). Until then, `_api_save_continue` is unsafe to write — there is no concrete body shape to send.
+- **What we DO have:** the cart-init PUT body. This is potentially useful for a future "force-recompute cart" call after `_clear_cart`, but is not on the Phase 4a critical path.
 
 ---
 
-## Endpoint 6 — Cart Items DELETE (cart clear)
+## Endpoint 6 — Cart Items DELETE (cart clear) ✅ API-MODE BEHIND FLAG
 
-- **Status:** DOM-driven today via `_clear_cart` at `purchase_executor.py:2002`. The DELETE fires server-side from clicking the trash icon.
+- **Status:** Phase 4c implemented (2026-05-06). Behind `TARGET_API_CART_CLEAR=true`. Default off; when off, the DOM trash-icon flow at `_clear_cart` is unchanged.
 - **Method:** DELETE
 - **URL:** `https://carts.target.com/web_checkouts/v1/cart_items/<cart_item_id>` (cart_item_id is a UUID — not the TCIN)
-- **Headers observed:** 16 total, 7 Shape X-headers (more than ATC — this is an authenticated mutation).
+- **Headers observed:** 16 total, 7 Shape X-headers (more than ATC — this is an authenticated mutation). The Phase 4c implementation reuses the cached Shape header pattern from ATC (strip Cookie/Referer, force `x-application-name:'web'`).
+- **Flow:**
+  1. `GET /cart?cart_type=REGULAR&field_groups=CART,CART_ITEMS` to pull `cart_items[].cart_item_id`.
+  2. `DELETE /cart_items/<cart_item_id>` for each — issued serially (parallel would race the cart-state mutation).
+  3. On any non-2xx the call falls back to the DOM clear path (no behavior regression).
+- **Code:** `purchase_executor.py:_api_clear_cart` (helper) + flag check at top of `_clear_cart`.
+- **Limitations:** SFL (Saved-For-Later) items are not handled by the API path — they live behind a different endpoint family that is not yet documented. The DOM SFL pass at `_clear_cart` Pass 2 still runs after the API path succeeds.
 - **Use:** Removing items post-checkout (TEST_MODE) and during failure recovery.
-- **Phase 3 lite:** Convert `_clear_cart` to direct DELETE fetches. Not on critical path for win rate but reduces the noisy DOM cart-clearing dance.
-- **Critical:** must first `GET /cart` to retrieve the `cart_item_id` for each item, then DELETE each.
 
 ---
 
-## Endpoint 7 — Place Order POST 🔴 LIVE CAPTURE STILL NEEDED
+## Endpoint 7 — Place Order POST ✅ IMPLEMENTED behind flag (2026-05-06)
 
-- **Status:** URL likely `POST https://carts.target.com/web_checkouts/v1/checkout` (the existing CDP interceptor at `purchase_executor.py:414` already watches `*web_checkouts/v1/checkout*` for the response — confirms this is the endpoint name). **Body shape unknown** — TEST_MODE never reaches the click, and PROD_MODE costs a real $19.90 gum order to capture.
-- **Headers expected:** Same Shape pattern as `cart_items` POST. Note: in the 2026-05-06 capture log the POST `pre_checkout` request had **only 1 Shape X-header** (vs 7 on `cart_items`) — possible different rotation namespace. Place Order may need its own warmup fetch.
-- **Capture options:**
-  1. Manual DevTools capture during the user's next *intentional* purchase. Zero extra cost. Recommended.
-  2. PROD_MODE single-shot on the gum SKU. Costs $19.90 (10 × $1.99). The order can be cancelled immediately via Target's app.
-  3. Static analysis of Target's checkout JS bundle to extract the URL+body pattern. Possible but bundle is minified and obfuscated.
-- **Why the bot can't fully API-mode without this:** Place Order is the only remaining unknown on the checkout chain. Until captured, the DOM click at `_place_order` (line 2762) is required, and the `/checkout/start` navigation cannot be skipped.
+- **Status:** `_api_place_order` written and wired into `_place_order` behind `TARGET_API_PLACE_ORDER=true` (default off). API attempt fires first; on non-success falls back to DOM click — except for terminal rejections (`oos`, `reservation_failure`) which return False directly to avoid double-attempt against an already-rejected cart. `TARGET_API_PLACE_ORDER_OBSERVE=true` (default off) logs the full success-response body to `logs/api_capture.log` so order_id parsing can be verified on the first real-order run. Capture flag is also checked: if `TARGET_API_CAPTURE_PLACE_ORDER` is on, the helper refuses to fire (interceptor would abort). Captured 2026-05-06 via `TARGET_API_CAPTURE_PLACE_ORDER=true` PROD-mode capture-and-abort. Full URL + headers + body in `logs/api_capture.log` from 2026-05-06T14:17:44.
+- **Method:** POST
+- **Full URL:** `https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14`
+- **URL params:** Standard public web key. `field_groups` (URL-encoded commas): `ADDRESSES`, `CART`, `CART_ITEMS`, `FINANCE_PROVIDERS`, `PAYMENT_INSTRUCTIONS`, `PICKUP_INSTRUCTIONS`, `PROMOTION_CODES`, `SUMMARY`. The response carries all of these for confirmation rendering.
+- **Body (41 chars total):**
+  ```json
+  {"cart_type":"REGULAR","channel_id":"10"}
+  ```
+  **The entire order context is implicit from the cookie session + cart state.** No items, no address, no payment ID, no CVV in the body. This is dramatically simpler than expected — the server resolves everything from the authenticated cart.
+- **Headers (16 total, 7 Shape X-headers):** Full Shape token set (`X-GyJwza5Z-a/b/c/d/f/z`). Same rotation namespace as ATC `cart_items` POST. **No separate warmup needed** — the existing `_cached_cart_headers` (refreshed by the warmup tab POST'ing to `cart_items`) provides everything.
+- **Phase 4b implementation (DONE 2026-05-06):** `_api_place_order` at `purchase_executor.py` patterned on the ATC fetch (header-injection identical: strip Cookie/Referer, force `x-application-name:'web'`, age-gate cached Shape headers at 90s with proactive 60s refresh). Wired into `_place_order` behind `TARGET_API_PLACE_ORDER=true`. On `success` the response body is JSON-parsed for the order_id (tries `order_id` / `orderId` / `order_number` / `id` / `reference_id` at root + same keys under `order`); regex fallback handles unknown shape. Synthesized `confirmation_url = https://www.target.com/checkout/confirmation?orderId=<order_id>` if response doesn't carry one. Stashed on `self._api_order_id` / `self._api_confirmation_url`; consumed by `_complete_checkout`'s success-dict builder (preferred over URL parsing).
+- **Order-id parsing — first-run validation:** Capture-and-abort returned 503, so the success-response shape has not been observed. First production deployment must run with `TARGET_API_PLACE_ORDER=true TARGET_API_PLACE_ORDER_OBSERVE=true` so the helper writes the full success body to `logs/api_capture.log`. After verifying the actual key path, the parser block in `_api_place_order` can be tightened (drop redundant fallbacks). Order is placed for real on that observation run.
+- **Confirmation-page side effects:** DOM mode also lands on `/checkout/confirmation?orderId=...` and `_complete_checkout` reads the URL plus calls `session_manager.save_session_state()`. API mode does NOT navigate, so any post-confirmation page side effects (analytics pixel firing, order-tracking link rendering) are skipped. Bot only needs the `order_id` for the success dict — this is fine, but worth noting if a future feature needs to scrape the confirmation page.
 
 ---
 
-## Endpoint 8 — CVV Submit POST 🔴 LIVE CAPTURE NEEDED
+## Endpoint 8 — CVV Submit POST 🟡 NOT FIRED IN 2026-05-06 CAPTURE
 
-- **Status:** UNKNOWN. Driven by DOM modal at `_handle_cvv_modal:1594`. Today the CVV is typed into an `<input>` field char-by-char and a submit button is clicked. The underlying POST is unobserved.
-- **Open questions:** dedicated endpoint or part of Place Order body? Does it use different Shape headers? Is there a payment-tokenize step before the CVV gets POSTed?
-- **Same capture options as Endpoint 7.**
+- **Status:** Did NOT fire during the 2026-05-06 PROD capture run on the gum SKU. The Place Order POST body (Endpoint 7 above) does NOT include CVV. Possible interpretations:
+  1. The user's saved card on this account does not require CVV re-prompt for low-risk purchases — Endpoint 8 is conditional, not always-fires.
+  2. CVV is handled by a separate POST that fires only when the CVV modal is triggered in DOM mode (`_handle_cvv_modal:1594`). On this run the modal never appeared (Place Order was already enabled, FLOW A).
+  3. CVV may be tokenized client-side and bound into a hidden field of the cart state ahead of Place Order — meaning the "CVV submit" is actually a `cart_payment_instruction` PUT, not a separate POST.
+- **Phase 4b decision:** Treat CVV as conditional-DOM. Keep `_handle_cvv_modal` as-is for now. If a future PROD capture run with `TARGET_API_CAPTURE_CHECKOUT_STEPS=true + TARGET_API_CAPTURE_PLACE_ORDER=true` ever sees an unknown POST/PUT during a CVV-modal scenario, that will surface Endpoint 8.
+- **Same capture options as Endpoint 7** if you want to force a CVV-prompting card.
 
 ---
 
@@ -140,8 +163,13 @@ These remain DOM in `purchase_executor.py:_handle_*_modal`.
 ## Implementation phasing (per main plan)
 
 - **Phase 3 (first conversion):** Endpoint 2 expansion — use the pre_checkout response to short-circuit the `/checkout/start` navigation. If response carries enough state (placeOrder URL, summary), `await tab.get(...)` becomes optional. Estimated saving: 1-2s per attempt.
-- **Phase 4a:** Endpoints 4 (delivery) and 5 (cart PUT for shipping S&C) — replace `_handle_delivery_options` and the shipping/payment S&C clicks.
-- **Phase 4b:** Endpoints 7 + 8 (Place Order + CVV) — requires live capture first.
+- **Phase 4a:** ~~Endpoints 4 (delivery) and 5 (cart PUT for shipping S&C) — replace `_handle_delivery_options` and the shipping/payment S&C clicks.~~ **Closed without code change (2026-05-06).** Capture confirmed both endpoints fire only on cold-cart paths the warmed-up bot does not take. The hot path already lands in `place_order` state on first checkout entry — there is no DOM delivery step or S&C click to replace. See Endpoints 4 + 5 above for full reasoning. Reopens only if a future cart configuration starts triggering S&C on the hot path.
+- **Phase 4b ✅ IMPLEMENTED (2026-05-06):** Endpoints 7 + 8. Endpoint 7 (`_api_place_order`) wired behind `TARGET_API_PLACE_ORDER=true`; first deployment uses `TARGET_API_PLACE_ORDER_OBSERVE=true` to log success-response body. DOM fallback on non-terminal failures (Shape block / 401 / unknown HTTP); terminal rejections (OOS / RESERVATION_FAILURE) bail without DOM retry. Endpoint 8 deferred — saved-card path on the gum SKU never fired CVV modal; conditional DOM fallback at `_handle_cvv_modal` covers the rare case.
 - **Phase 4c:** Endpoint 6 (cart clear DELETE) — low priority; nice cleanup of `_clear_cart`.
 
 Each behind its own env flag: `TARGET_API_PRECHECKOUT_NAV_SKIP`, `TARGET_API_DELIVERY`, `TARGET_API_PAYMENT_SAC`, `TARGET_API_PLACE_ORDER`, `TARGET_API_CVV`, `TARGET_API_CART_CLEAR`. Default off.
+
+## Capture flags (research; default off)
+
+- `TARGET_API_CAPTURE_PLACE_ORDER` — capture-and-abort the `/web_checkouts/v1/checkout` POST. Existing flag for Endpoint 7. Logs URL+headers+body to `logs/api_capture.log` and returns synthetic 503 to the bot — order is never placed. Cookie redacted.
+- `TARGET_API_CAPTURE_CHECKOUT_STEPS` — pass-through capture for cart PUT (Endpoint 5) and `cart_fulfillments` GET (Endpoint 4). Logs URL+headers (+body for PUT) to `logs/api_capture.log`. Never aborts. Safe to leave on for a single run; remove when Endpoints 4 + 5 are documented.

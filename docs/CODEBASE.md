@@ -1,5 +1,7 @@
 # Codebase Map
-## Last Updated: 2026-05-03 (cookie-isolation snapshot/restore for Tab 2 → Tab 1 _px3 contamination + delivery-day modal switched to confirm-default-CTA pattern + corrected stale "patchright" reference — Walmart actually uses zendriver)
+## Last Updated: 2026-05-06 (Phase 4b IMPLEMENTED — `_api_place_order` written + wired into `_place_order` behind `TARGET_API_PLACE_ORDER=true`. API fires first; falls back to DOM on Shape/auth failures; bails on terminal OOS/RESERVATION rejections. `TARGET_API_PLACE_ORDER_OBSERVE=true` logs the success-response body to `logs/api_capture.log` so order_id parsing can be validated on first real-order run. `_api_order_id` / `_api_confirmation_url` plumbed through `_complete_checkout`'s success dict — DOM mode unchanged.)
+Previous: 2026-05-06 (Phase 4b ENDPOINT 7 CAPTURED — body=`{"cart_type":"REGULAR","channel_id":"10"}` 41 chars; Phase 4a CLOSED no-op + Phase 4c TARGET_API_CART_CLEAR + Phase 6 WorkerPool. app.py namespace fix: `sys.modules[__name__]` instead of `import app as _self_module`.)
+Previous: 2026-05-03 (cookie-isolation snapshot/restore for Tab 2 → Tab 1 _px3 contamination + delivery-day modal switched to confirm-default-CTA pattern + corrected stale "patchright" reference — Walmart actually uses zendriver)
 Previous: 2026-05-01 (8 Walmart antibot patches applied — behavioral realism Phase 1 & 2, commit 79c37eaa)
 Previous: 2026-04-30 (Walmart retailer profile re-researched, behavioral baselines added)
 
@@ -50,6 +52,16 @@ Previous: 2026-04-30 (Walmart retailer profile re-researched, behavioral baselin
 - File-locking (fcntl/msvcrt), TTL-based state cleanup, race condition prevention
 - Auto-resets stuck "attempting" (>60s) and "queued" (>5s) states
 - `_PurchaseLogTee` tees console output to purchase log files
+- Holds a `WorkerPool` (default size 1) and aliases the *primary* Worker's components onto self for back-compat
+
+**src/purchasing/worker.py**
+- `Worker`, `WorkerConfig` — bundle SessionManager + SessionKeepAlive + PurchaseExecutor as one unit (Phase 5)
+
+**src/purchasing/worker_pool.py**
+- `WorkerPool` — N independent Workers; default N=1 (legacy paths). Set `TARGET_WORKER_POOL_SIZE` to spawn extras (`target-2.json` + `nodriver-profile-2/`, etc.). Sticky TCIN→Worker mapping for cookie-state coherence on repeat purchases. Phase 6.
+
+**src/purchasing/state_store.py**
+- `StateStore` — in-memory purchase state with background disk flush + atomic CAS via `transition()` (Phase 2)
 
 **src/utils/target_login.py**
 - Target.com login via zendriver — handles passkey bypass, "Keep me signed in"

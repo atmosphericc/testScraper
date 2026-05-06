@@ -21,6 +21,7 @@ from typing import Dict, Optional, Callable
 from ..session import SessionManager, SessionKeepAlive, PurchaseExecutor
 from .state_store import StateStore
 from .worker import Worker, WorkerConfig
+from .worker_pool import WorkerPool
 
 # Cross-platform file locking
 import platform
@@ -93,13 +94,14 @@ class BulletproofPurchaseManager:
             'max_session_failures': int(os.environ.get('MAX_SESSION_FAILURES', '3')),  # Reduced from 5 to 3
         }
 
-        # Persistent session management with safety tracking. The single
-        # Worker below is the Phase 5 wrapping for these three components.
-        # session_manager/session_keepalive/purchase_executor are aliased to
-        # the Worker's components after build_components() runs, so the rest
-        # of this class continues to use them directly. At Phase 6 the
-        # WorkerPool replaces this single-Worker setup with N Workers.
-        self.worker: Optional[Worker] = None
+        # Persistent session management with safety tracking. The Worker
+        # pool owns N browsers; at TARGET_WORKER_POOL_SIZE=1 (default) the
+        # pool holds one Worker and behavior matches Phase 5 exactly.
+        # session_manager/session_keepalive/purchase_executor are aliased
+        # to the *primary* Worker's components after build_all() runs, so
+        # the rest of this class continues to use them directly.
+        self.worker_pool: Optional[WorkerPool] = None
+        self.worker: Optional[Worker] = None     # alias to worker_pool.primary
         self.session_manager = None
         self.session_keepalive = None
         self.purchase_executor = None
@@ -268,20 +270,26 @@ class BulletproofPurchaseManager:
                         self.session_failure_count >= self.feature_flags['max_session_failures']):
                         self._trigger_circuit_breaker("Purchase executor session failures")
 
-            self.worker = Worker(WorkerConfig())  # default: worker_id=1, primary, target.json, nodriver-profile
-            self.worker.build_components(
+            # Phase 6: build the Worker pool (size from TARGET_WORKER_POOL_SIZE,
+            # default 1). At N=1 the pool holds the legacy Worker 1 with the
+            # legacy target.json + nodriver-profile paths — no behavior change.
+            self.worker_pool = WorkerPool.from_env()
+            self.worker_pool.build_all(
                 session_status_callback=session_status_callback,
                 purchase_status_callback=purchase_status_callback,
             )
 
-            # Alias Worker's components onto self for back-compat with the
-            # rest of this class — many call sites (and app.py via
+            # Alias the *primary* Worker's components onto self for back-compat
+            # with the rest of this class — many call sites (and app.py via
             # global_purchase_manager.session_manager) read these directly.
+            self.worker = self.worker_pool.primary
             self.session_manager = self.worker.session_manager
             self.session_keepalive = self.worker.session_keepalive
             self.purchase_executor = self.worker.purchase_executor
 
-            print(f"[SESSION] [OK] Session system components created successfully (worker={self.worker.label()})")
+            pool_label = self.worker_pool.label()
+            worker_label = self.worker.label()
+            print(f"[SESSION] [OK] Session system components created successfully ({pool_label}, primary={worker_label})")
             print("[SESSION] [INFO] Browser will be launched when _ensure_session_ready() is called")
             # NOTE: Don't set session_initialized here - let _ensure_session_ready() set it
             # after browser actually launches. This ensures browser opens on startup.
