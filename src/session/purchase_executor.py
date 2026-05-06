@@ -1063,28 +1063,78 @@ class PurchaseExecutor:
             # The HTTP request is already in-flight before navigation starts so the server
             # receives and processes it. By the time Place Order fires (~1.5s later),
             # pre_checkout has long since completed server-side (~200-300ms).
+            # pre_checkout: fire-and-forget by default to keep the hot path
+            # parallel with the /checkout/start nav. When TARGET_API_DEBUG=true,
+            # we instead AWAIT the response so we can log the body shape — this
+            # is research support for Phase 3 of the hybrid checkout refactor
+            # (deciding whether the response carries enough state to skip the
+            # subsequent nav). Default off; only enable for capture sessions.
+            api_debug = os.environ.get('TARGET_API_DEBUG', 'false').lower() == 'true'
             try:
-                await tab.evaluate(f"""(() => {{
-                    const shapeHeaders = {extra_headers_js};
-                    fetch(
-                        'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES',
-                        {{
-                            method: 'POST',
-                            keepalive: true,
-                            credentials: 'include',
-                            headers: {{
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json',
-                                'Origin': 'https://www.target.com',
-                                'Referer': 'https://www.target.com/cart',
-                                'x-application-name': 'web',
-                                ...shapeHeaders,
-                            }},
-                            body: JSON.stringify({{cart_type: 'REGULAR'}})
+                if api_debug:
+                    pre_checkout_result = await tab.evaluate(f"""(async () => {{
+                        try {{
+                            const shapeHeaders = {extra_headers_js};
+                            const resp = await fetch(
+                                'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES',
+                                {{
+                                    method: 'POST',
+                                    credentials: 'include',
+                                    headers: {{
+                                        'Content-Type': 'application/json',
+                                        'Accept': 'application/json',
+                                        'Origin': 'https://www.target.com',
+                                        'Referer': 'https://www.target.com/cart',
+                                        'x-application-name': 'web',
+                                        ...shapeHeaders,
+                                    }},
+                                    body: JSON.stringify({{cart_type: 'REGULAR'}})
+                                }}
+                            );
+                            const body = await resp.text();
+                            return {{status: resp.status, body: body.slice(0, 8000), body_len: body.length}};
+                        }} catch(e) {{
+                            return {{status: 0, body: String(e), body_len: 0}};
                         }}
-                    ).catch(() => {{}});
-                }})()""", await_promise=False)
-                print(f"[PURCHASE] pre_checkout fired (fire-and-forget) (t+{time.time()-t_nav_start:.3f}s)")
+                    }})()""", await_promise=True)
+                    pc_status = pre_checkout_result.get('status', 0) if isinstance(pre_checkout_result, dict) else 0
+                    pc_body = pre_checkout_result.get('body', '') if isinstance(pre_checkout_result, dict) else ''
+                    pc_len = pre_checkout_result.get('body_len', 0) if isinstance(pre_checkout_result, dict) else 0
+                    print(f"[API_DEBUG] pre_checkout AWAITED (t+{time.time()-t_nav_start:.3f}s) status={pc_status} body_len={pc_len}")
+                    print(f"[API_DEBUG] pre_checkout body (first 8000 chars):")
+                    print(f"[API_DEBUG] {pc_body}")
+                    # Persist to a dedicated capture log for offline analysis
+                    try:
+                        import os as _os, datetime as _dt
+                        _os.makedirs('logs', exist_ok=True)
+                        with open('logs/api_capture.log', 'a', encoding='utf-8') as _f:
+                            _f.write(f"\n{'='*80}\n[{_dt.datetime.now().isoformat()}] pre_checkout response\n")
+                            _f.write(f"status={pc_status} body_len={pc_len}\n")
+                            _f.write(f"body:\n{pc_body}\n")
+                    except Exception:
+                        pass
+                else:
+                    await tab.evaluate(f"""(() => {{
+                        const shapeHeaders = {extra_headers_js};
+                        fetch(
+                            'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES',
+                            {{
+                                method: 'POST',
+                                keepalive: true,
+                                credentials: 'include',
+                                headers: {{
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'application/json',
+                                    'Origin': 'https://www.target.com',
+                                    'Referer': 'https://www.target.com/cart',
+                                    'x-application-name': 'web',
+                                    ...shapeHeaders,
+                                }},
+                                body: JSON.stringify({{cart_type: 'REGULAR'}})
+                            }}
+                        ).catch(() => {{}});
+                    }})()""", await_promise=False)
+                    print(f"[PURCHASE] pre_checkout fired (fire-and-forget) (t+{time.time()-t_nav_start:.3f}s)")
             except Exception as e:
                 print(f"[PURCHASE] pre_checkout fire failed: {e}")
 
