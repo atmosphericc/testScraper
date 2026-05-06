@@ -383,6 +383,53 @@ class PurchaseExecutor:
                         tag = '[CHECKOUT_POST]' if is_checkout_post else ''
                         print(f"[INTERCEPTOR:{label}] {tag} {method} {url[:80]}")
                         print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers (Shape X-headers: {len(shape_headers)}, prev cache had {prev_shape_count}): {header_names}")
+
+                        # CAPTURE-AND-ABORT for Phase 3 research: when
+                        # TARGET_API_CAPTURE_PLACE_ORDER=true and this is the
+                        # Place Order POST, log the full body+headers to the
+                        # capture log and then abort the request *before* it
+                        # leaves Chrome. The bot will see the abort as a
+                        # network failure (no order placed). Default off.
+                        if is_checkout_post and os.environ.get('TARGET_API_CAPTURE_PLACE_ORDER', 'false').lower() == 'true':
+                            try:
+                                post_data = getattr(event.request, 'post_data', '') or ''
+                                if hasattr(event.request, 'has_post_data') and event.request.has_post_data and not post_data:
+                                    # post_data may need to be retrieved separately on some CDP versions
+                                    try:
+                                        post_data = await tab.send(cdp.fetch.get_request_post_data(request_id=event.request_id))
+                                    except Exception:
+                                        post_data = '<unavailable>'
+                                import os as _os, datetime as _dt
+                                _os.makedirs('logs', exist_ok=True)
+                                with open('logs/api_capture.log', 'a', encoding='utf-8') as _f:
+                                    _f.write(f"\n{'='*80}\n[{_dt.datetime.now().isoformat()}] PLACE ORDER POST captured + ABORTED\n")
+                                    _f.write(f"url: {url}\n")
+                                    _f.write(f"method: {method}\n")
+                                    _f.write(f"headers:\n")
+                                    for h_name, h_val in headers.items():
+                                        if h_name.lower() == 'cookie':
+                                            _f.write(f"  {h_name}: <redacted, {len(h_val)} chars>\n")
+                                        else:
+                                            _f.write(f"  {h_name}: {h_val}\n")
+                                    _f.write(f"body:\n{post_data}\n")
+                                print(f"[INTERCEPTOR:{label}] [PLACE_ORDER_CAPTURE] Body captured ({len(post_data)} chars), ABORTING request")
+                                # Abort with a 503 so the bot treats it as a
+                                # transient failure (clean error path) rather
+                                # than a TCP-level disconnect.
+                                await tab.send(cdp.fetch.fulfill_request(
+                                    request_id=event.request_id,
+                                    response_code=503,
+                                    response_headers=[
+                                        cdp.fetch.HeaderEntry(name='Content-Type', value='application/json'),
+                                        cdp.fetch.HeaderEntry(name='X-Capture-Aborted', value='true'),
+                                    ],
+                                    body='eyJlcnJvciI6IkNhcHR1cmUgYWJvcnQifQ==',  # base64({"error":"Capture abort"})
+                                ))
+                                return  # do NOT fall through to continue_request
+                            except Exception as cap_err:
+                                print(f"[INTERCEPTOR:{label}] [PLACE_ORDER_CAPTURE] capture/abort failed: {cap_err}")
+                                # fall through to normal continue_request — ORDER WILL FIRE
+                                # if this happens. User must watch for this log line.
                     elif headers:
                         # non-POST carts request — log but don't overwrite cache
                         cache_age = time.time() - self._cached_cart_headers_ts if self._cached_cart_headers_ts else -1
