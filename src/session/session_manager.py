@@ -25,12 +25,19 @@ _chrome_pid: Optional[int] = None
 class SessionManager:
     """Manages persistent browser session for Target.com automation using nodriver"""
 
-    def __init__(self, session_path: str = "target.json"):
+    def __init__(self, session_path: str = "target.json",
+                 user_data_dir: "str | Path | None" = None):
+        """
+        session_path: where to read/write the cookie+fingerprint JSON.
+        user_data_dir: Chrome profile directory. Default ./nodriver-profile
+            (preserves single-worker behavior). Phase 6 (worker pool) passes
+            per-worker dirs like ./nodriver-profile-1, ./nodriver-profile-2.
+        """
         self.session_path = Path(session_path)
         self.logger = logging.getLogger(__name__)
 
         # CRITICAL: User data directory - nodriver persists profile here
-        self.user_data_dir = Path("./nodriver-profile")
+        self.user_data_dir = Path(user_data_dir) if user_data_dir else Path("./nodriver-profile")
         self.user_data_dir.mkdir(exist_ok=True)
 
         # nodriver instances

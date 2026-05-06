@@ -20,6 +20,7 @@ from typing import Dict, Optional, Callable
 # Import session management components
 from ..session import SessionManager, SessionKeepAlive, PurchaseExecutor
 from .state_store import StateStore
+from .worker import Worker, WorkerConfig
 
 # Cross-platform file locking
 import platform
@@ -92,7 +93,13 @@ class BulletproofPurchaseManager:
             'max_session_failures': int(os.environ.get('MAX_SESSION_FAILURES', '3')),  # Reduced from 5 to 3
         }
 
-        # Persistent session management with safety tracking
+        # Persistent session management with safety tracking. The single
+        # Worker below is the Phase 5 wrapping for these three components.
+        # session_manager/session_keepalive/purchase_executor are aliased to
+        # the Worker's components after build_components() runs, so the rest
+        # of this class continues to use them directly. At Phase 6 the
+        # WorkerPool replaces this single-Worker setup with N Workers.
+        self.worker: Optional[Worker] = None
         self.session_manager = None
         self.session_keepalive = None
         self.purchase_executor = None
@@ -228,10 +235,10 @@ class BulletproofPurchaseManager:
             else:
                 print("[SESSION] [INIT] Initializing persistent session system...")
 
-            # Create session manager
-            self.session_manager = SessionManager(session_path="target.json")
+            # Build session_manager + session_keepalive + purchase_executor
+            # via Worker. At N=1 (today) the defaults preserve the legacy
+            # paths: target.json + nodriver-profile.
 
-            # Create session keep-alive service with enhanced callback
             def session_status_callback(event, data):
                 if self.feature_flags['debug_session_system']:
                     print(f"[SESSION] [STATS] {event}: {data}")
@@ -249,12 +256,6 @@ class BulletproofPurchaseManager:
                     # Reset failure count on success
                     self.session_failure_count = 0
 
-            self.session_keepalive = SessionKeepAlive(
-                self.session_manager,
-                status_callback=session_status_callback
-            )
-
-            # Create purchase executor with enhanced callback
             def purchase_status_callback(data):
                 # Forward purchase status to main callback
                 if self.status_callback and 'tcin' in data:
@@ -267,12 +268,20 @@ class BulletproofPurchaseManager:
                         self.session_failure_count >= self.feature_flags['max_session_failures']):
                         self._trigger_circuit_breaker("Purchase executor session failures")
 
-            self.purchase_executor = PurchaseExecutor(
-                self.session_manager,
-                status_callback=purchase_status_callback
+            self.worker = Worker(WorkerConfig())  # default: worker_id=1, primary, target.json, nodriver-profile
+            self.worker.build_components(
+                session_status_callback=session_status_callback,
+                purchase_status_callback=purchase_status_callback,
             )
 
-            print("[SESSION] [OK] Session system components created successfully")
+            # Alias Worker's components onto self for back-compat with the
+            # rest of this class — many call sites (and app.py via
+            # global_purchase_manager.session_manager) read these directly.
+            self.session_manager = self.worker.session_manager
+            self.session_keepalive = self.worker.session_keepalive
+            self.purchase_executor = self.worker.purchase_executor
+
+            print(f"[SESSION] [OK] Session system components created successfully (worker={self.worker.label()})")
             print("[SESSION] [INFO] Browser will be launched when _ensure_session_ready() is called")
             # NOTE: Don't set session_initialized here - let _ensure_session_ready() set it
             # after browser actually launches. This ensures browser opens on startup.
