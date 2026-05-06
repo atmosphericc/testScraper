@@ -1138,6 +1138,7 @@ class SessionManager:
                 return False
 
             # Get all cookies via Storage.getCookies (non-deprecated CDP method)
+            cookie_collection_failed = False
             try:
                 cookies_raw = await self._active_tab.send(uc.cdp.storage.get_cookies())
                 all_cookies = []
@@ -1157,6 +1158,30 @@ class SessionManager:
             except Exception as get_err:
                 self.logger.warning(f"Could not get cookies via CDP: {get_err}")
                 all_cookies = []
+                cookie_collection_failed = True
+
+            # SAFETY: refuse to clobber a healthy session file with an empty
+            # cookie list. This bites at shutdown when the CDP WebSocket has
+            # already closed — `cdp.storage.get_cookies()` raises, we fall
+            # back to all_cookies=[], and writing that out replaces 84 valid
+            # auth cookies with zero, locking the user out on next start.
+            if cookie_collection_failed and not all_cookies:
+                if self.session_path.exists():
+                    try:
+                        with open(self.session_path, 'r', encoding='utf-8') as f:
+                            existing = json.load(f)
+                        if existing.get('cookies'):
+                            self.logger.warning(
+                                f"Cookie collection failed AND on-disk session has "
+                                f"{len(existing['cookies'])} cookies — refusing to overwrite. "
+                                f"Preserving existing target.json."
+                            )
+                            print(f"[SESSION_SAVE] Preserving existing {self.session_path} "
+                                  f"({len(existing['cookies'])} cookies) — CDP read failed")
+                            return False
+                    except Exception:
+                        # Existing file unreadable — treat as no-existing and proceed
+                        pass
 
             target_cookies = [c for c in all_cookies if 'target.com' in c.get('domain', '')]
             self.logger.info(f"[COOKIE_DEBUG] [SAVE] Found {len(all_cookies)} total cookies, {len(target_cookies)} for Target.com")
