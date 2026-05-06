@@ -3655,6 +3655,13 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"[SYSTEM] Failed to write interrupted states: {e}")
 
+            # Flush StateStore + stop background flush thread so the on-disk
+            # purchase_states.json reflects the interrupted markers above.
+            try:
+                global_purchase_manager.shutdown()
+            except Exception as e:
+                print(f"[SYSTEM] StateStore shutdown error: {e}")
+
         # Save session via async (best effort)
         if sm and loop and loop.is_running():
             try:

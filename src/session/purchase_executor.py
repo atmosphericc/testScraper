@@ -595,70 +595,73 @@ class PurchaseExecutor:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
 
-            # purchase_limit is embedded in a non-__NEXT_DATA__ <script> tag
-            # (the React Server Components / Flight payload, ~90KB). The JSON
-            # inside is double-escaped — script.textContent surfaces it as
-            # `\"purchase_limit\":N`, so the regex has an optional escape
-            # backslash. Poll briefly because on a cold tab the script body
-            # may not be available via textContent within the first ~500ms.
-            pdp_lookup_start = time.time()
-            pdp_qty = 0
-            for _attempt in range(6):  # up to ~3s of polling
-                try:
-                    pdp_qty = await asyncio.wait_for(
-                        tab.evaluate(r"""(() => {
-                            try {
-                                // Match both `\"purchase_limit\":N` (script-tag double-escaped
-                                // form, what most Target PDP scripts use) and the plain
-                                // `"purchase_limit":N` form for safety.
-                                const re = /\\?"purchase_limit\\?"\s*:\s*(\d+)/;
-                                const scripts = document.getElementsByTagName('script');
-                                for (let i = 0; i < scripts.length; i++) {
-                                    const t = scripts[i].textContent;
-                                    if (!t || t.indexOf('purchase_limit') === -1) continue;
-                                    const m = t.match(re);
-                                    if (m) return parseInt(m[1], 10);
-                                }
-                                // Same for maximum_order_quantity.shipping.value
-                                const mqRe = /\\?"maximum_order_quantity\\?"[\s\S]{0,200}?\\?"shipping\\?"[\s\S]{0,100}?\\?"value\\?"\s*:\s*(\d+)/;
-                                for (let i = 0; i < scripts.length; i++) {
-                                    const t = scripts[i].textContent;
-                                    if (!t || t.indexOf('maximum_order_quantity') === -1) continue;
-                                    const m = t.match(mqRe);
-                                    if (m) return parseInt(m[1], 10);
-                                }
-                                // Fallback: qty <select> (present after React hydrates).
-                                const sel = document.querySelector('select[id*="quantity" i], select[name*="quantity" i]');
-                                if (sel) {
-                                    let max = 0;
-                                    for (const o of sel.options) {
-                                        const v = parseInt(o.value, 10);
-                                        if (Number.isFinite(v) && v > max) max = v;
+            # purchase_limit: trust the RedSky-derived quantity passed by the
+            # caller when it's > 1 (stock_monitor.py extracts authoritative
+            # maximum_order_quantity.shipping.value at detection time and
+            # plumbs it through start_purchase → execute_purchase). Polling
+            # the PDP again costs up to ~2.4s on the hot path before ATC,
+            # for data we already have.
+            #
+            # Fallback: if quantity == 1 (caller didn't supply a hint, or
+            # RedSky didn't populate it), poll the PDP to upgrade the qty.
+            if quantity > 1:
+                print(f"[PURCHASE] purchase_limit from RedSky: {quantity} (skipping PDP poll)")
+            else:
+                pdp_lookup_start = time.time()
+                pdp_qty = 0
+                for _attempt in range(6):  # up to ~3s of polling
+                    try:
+                        pdp_qty = await asyncio.wait_for(
+                            tab.evaluate(r"""(() => {
+                                try {
+                                    // Match both `\"purchase_limit\":N` (script-tag double-escaped
+                                    // form, what most Target PDP scripts use) and the plain
+                                    // `"purchase_limit":N` form for safety.
+                                    const re = /\\?"purchase_limit\\?"\s*:\s*(\d+)/;
+                                    const scripts = document.getElementsByTagName('script');
+                                    for (let i = 0; i < scripts.length; i++) {
+                                        const t = scripts[i].textContent;
+                                        if (!t || t.indexOf('purchase_limit') === -1) continue;
+                                        const m = t.match(re);
+                                        if (m) return parseInt(m[1], 10);
                                     }
-                                    if (max > 0) return max;
-                                }
-                                return 0;
-                            } catch (e) { return 0; }
-                        })()"""),
-                        timeout=1.0
-                    )
-                    if isinstance(pdp_qty, int) and pdp_qty > 0:
-                        break
-                except asyncio.TimeoutError:
-                    pass
-                except Exception:
-                    pass
-                await asyncio.sleep(0.4)
+                                    // Same for maximum_order_quantity.shipping.value
+                                    const mqRe = /\\?"maximum_order_quantity\\?"[\s\S]{0,200}?\\?"shipping\\?"[\s\S]{0,100}?\\?"value\\?"\s*:\s*(\d+)/;
+                                    for (let i = 0; i < scripts.length; i++) {
+                                        const t = scripts[i].textContent;
+                                        if (!t || t.indexOf('maximum_order_quantity') === -1) continue;
+                                        const m = t.match(mqRe);
+                                        if (m) return parseInt(m[1], 10);
+                                    }
+                                    // Fallback: qty <select> (present after React hydrates).
+                                    const sel = document.querySelector('select[id*="quantity" i], select[name*="quantity" i]');
+                                    if (sel) {
+                                        let max = 0;
+                                        for (const o of sel.options) {
+                                            const v = parseInt(o.value, 10);
+                                            if (Number.isFinite(v) && v > max) max = v;
+                                        }
+                                        if (max > 0) return max;
+                                    }
+                                    return 0;
+                                } catch (e) { return 0; }
+                            })()"""),
+                            timeout=1.0
+                        )
+                        if isinstance(pdp_qty, int) and pdp_qty > 0:
+                            break
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.4)
 
-            pdp_lookup_elapsed = time.time() - pdp_lookup_start
-            if isinstance(pdp_qty, int) and pdp_qty > 0:
-                if pdp_qty != quantity:
-                    print(f"[PURCHASE] purchase_limit from PDP: {pdp_qty} (was qty={quantity}, lookup {pdp_lookup_elapsed:.2f}s)")
+                pdp_lookup_elapsed = time.time() - pdp_lookup_start
+                if isinstance(pdp_qty, int) and pdp_qty > 0:
+                    print(f"[PURCHASE] purchase_limit from PDP fallback: {pdp_qty} (was qty={quantity}, lookup {pdp_lookup_elapsed:.2f}s)")
                     quantity = pdp_qty
                 else:
-                    print(f"[PURCHASE] purchase_limit from PDP: {pdp_qty} (matches, lookup {pdp_lookup_elapsed:.2f}s)")
-            else:
-                print(f"[PURCHASE] purchase_limit not found in PDP after {pdp_lookup_elapsed:.2f}s — keeping qty={quantity}")
+                    print(f"[PURCHASE] purchase_limit not found in PDP after {pdp_lookup_elapsed:.2f}s — keeping qty={quantity}")
 
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render

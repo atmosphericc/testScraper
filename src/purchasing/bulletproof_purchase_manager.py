@@ -19,6 +19,7 @@ from typing import Dict, Optional, Callable
 
 # Import session management components
 from ..session import SessionManager, SessionKeepAlive, PurchaseExecutor
+from .state_store import StateStore
 
 # Cross-platform file locking
 import platform
@@ -121,6 +122,14 @@ class BulletproofPurchaseManager:
 
         # Ensure logs directory exists
         os.makedirs('logs', exist_ok=True)
+
+        # In-memory state store with background disk flush. The legacy
+        # _load_states_unsafe / _save_states_unsafe shims (further down) now
+        # route through this so every read is a microsecond in-memory hit
+        # instead of a JSON parse off disk.
+        self.state_store = StateStore(self.state_file)
+        self.state_store.load_from_disk()
+        self.state_store.start_flush_thread()
 
         # Clean up stale purchase states from previous runs
         self._cleanup_stale_states()
@@ -810,45 +819,27 @@ class BulletproofPurchaseManager:
                 pass
 
     def _load_states_unsafe(self) -> Dict:
-        """Load states without external locking (assumes caller has lock)"""
-        try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, 'r') as f:
-                    data = json.load(f)
-                    # Validate data structure
-                    if isinstance(data, dict):
-                        return data
-                    else:
-                        print(f"[PURCHASE] Invalid state file format, resetting")
-                        return {}
-            else:
-                return {}
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"[PURCHASE] Failed to load states: {e}, resetting")
-            return {}
+        """Snapshot the in-memory state. Disk is only read once at startup.
+
+        Kept under its legacy name for back-compat with ~20 call sites that
+        all do `states = self._load_states_unsafe()` — each gets an
+        independent dict copy so mutations stay local until the matching
+        `_save_states_unsafe(states)` call writes them back.
+        """
+        return self.state_store.get_all()
 
     def _save_states_unsafe(self, states: Dict):
-        """Atomic save states without external locking (assumes caller has lock)"""
+        """Replace the in-memory state dict. Disk persistence is async.
+
+        Kept under its legacy name for back-compat. The background flush
+        thread persists changes to `self.state_file` ~4× per second; an
+        atomic write is also forced at shutdown.
+        """
         try:
-            # Atomic write using temp file
-            temp_file = f"{self.state_file}.tmp.{os.getpid()}"
-            with open(temp_file, 'w') as f:
-                json.dump(states, f, indent=2)
-
-            # Atomic rename
-            if os.path.exists(self.state_file):
-                os.remove(self.state_file)
-            os.rename(temp_file, self.state_file)
+            self.state_store.update(states)
             return True
-
         except Exception as e:
             print(f"[PURCHASE] Failed to save states: {e}")
-            # Clean up temp file
-            try:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            except OSError:
-                pass
             return False
 
     def load_states(self) -> Dict:
@@ -890,20 +881,27 @@ class BulletproofPurchaseManager:
         states = self._load_states_unsafe()
         current_state = states.get(tcin, {'status': 'ready'})
 
-        # RACE CONDITION FIX: Check for ANY active purchase (not just this TCIN)
-        active_purchase_tcin = None
-        for check_tcin, check_state in states.items():
-            if check_state.get('status') in ['attempting', 'queued']:
-                active_purchase_tcin = check_tcin
-                break
-
-        if active_purchase_tcin:
-            if active_purchase_tcin == tcin:
-                print(f"[PURCHASE] PREVENTED DUPLICATE: {tcin} already attempting")
-                return {'success': False, 'reason': 'already_attempting'}
-            else:
-                print(f"[PURCHASE] PREVENTED CONCURRENT: {tcin} blocked, {active_purchase_tcin} already active")
-                return {'success': False, 'reason': 'another_purchase_active', 'active_tcin': active_purchase_tcin}
+        # PER-TCIN LOCK (replaces former cross-TCIN scan).
+        #
+        # Old behavior: any TCIN being `attempting` or `queued` blocked every
+        # other TCIN. When two SKUs went in stock within seconds of each
+        # other, the second was rejected with `another_purchase_active` and
+        # dropped — by the time the first finished, the second was usually
+        # gone.
+        #
+        # New behavior: only THIS tcin's status blocks itself. Different
+        # TCINs route freely. Concurrency at the session/browser layer is
+        # still serial today (single browser, single executor) and
+        # downstream code in `execute_real_purchase` handles that — but the
+        # dispatch path is unblocked, so signals for distinct SKUs no
+        # longer drop.
+        #
+        # When the worker pool ships (Phase 6), the dispatcher uses the
+        # StateStore CAS directly and this code path is bypassed.
+        current_status = current_state.get('status', 'ready')
+        if current_status in ('attempting', 'queued'):
+            print(f"[PURCHASE] PREVENTED DUPLICATE: {tcin} already {current_status}")
+            return {'success': False, 'reason': 'already_attempting'}
 
         # Open per-attempt log file and tee stdout into it
         _logs_dir = Path(__file__).parent.parent.parent / 'logs' / 'purchases'
@@ -1014,11 +1012,12 @@ class BulletproofPurchaseManager:
                 # Use existing PurchaseExecutor with thread-safe async execution
 
                 try:
-                    # Floor at 1; the executor reads the authoritative purchase_limit
-                    # from the PDP after navigating, and overrides this hint.
+                    # Floor at 1. The executor trusts qty > 1 as authoritative
+                    # (RedSky already extracted purchase_limit at detection time)
+                    # and only falls back to a PDP poll when qty == 1.
                     qty = max(1, int(max_qty or 1))
                     if qty != 1:
-                        print(f"[REAL_PURCHASE_THREAD] [QTY] Hint qty={qty} from stock monitor (executor will override from PDP)")
+                        print(f"[REAL_PURCHASE_THREAD] [QTY] qty={qty} from RedSky purchase_limit (executor will skip PDP poll)")
                     # Use submit_async_task to safely call async method from thread
                     future = self.session_manager.submit_async_task(
                         self.purchase_executor.execute_purchase(tcin, quantity=qty)
@@ -1524,8 +1523,17 @@ class BulletproofPurchaseManager:
         return results
 
     def shutdown(self):
-        """Clean shutdown"""
-        pass  # No background threads to shutdown
+        """Clean shutdown — flush in-memory state to disk, stop flush thread.
+
+        The shutdown handler in `app.py` writes `interrupted` for any
+        `attempting` rows BEFORE this is called (so the disk file ends up
+        consistent), then calls this to drain pending writes and stop the
+        background thread.
+        """
+        try:
+            self.state_store.shutdown(timeout=3.0)
+        except Exception as e:
+            print(f"[PURCHASE] StateStore shutdown error: {e}")
 
 def main():
     """Test the bulletproof purchase manager"""
