@@ -138,7 +138,7 @@ POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART
 {
   "cart_item": {
     "tcin": "{TCIN}",
-    "quantity": 1,
+    "quantity": "{QUANTITY}",
     "item_channel_id": "10",
     "fulfillment_type": "SHIPPING",
     "fulfillment_type_code": "02"
@@ -149,11 +149,28 @@ POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART
 }
 ```
 
+**Quantity selection** (added 2026-05-05): `{QUANTITY}` is sourced at stock-monitor
+time from the RedSky `product_summary_with_fulfillment_v1` response. The monitor
+extracts the per-customer cap from
+`item.fulfillment.maximum_order_quantity.shipping.value` (newer shape) or
+`item.fulfillment.purchase_limit` (older), takes the lesser of that and
+`fulfillment.shipping_options.available_to_promise_quantity`, and clamps to
+[1, 10]. The value rides on the per-TCIN stock dict as `max_qty` and is passed
+through `BulletproofPurchaseManager.start_purchase(..., max_qty=...)` →
+`PurchaseExecutor.execute_purchase(..., quantity=...)` → ATC POST. When neither
+RedSky cap is present, defaults to 1.
+
+The warmup POST (fake TCIN, fires from `_warmup_tab` to capture Shape headers)
+intentionally still uses `quantity: 1`. Real users always tap "Add to cart"
+once before adjusting quantity, so warming with anything else would itself be
+a fingerprint signal.
+
 **ATC response status codes:**
 - `200` / `201` — success, item added to cart
 - `401` — auth denied (write token expired); wait for React to refresh token (button enabled = token fresh), then retry
 - `403 + HTML body` — Shape Security block (stale/missing Shape headers or 403 with JSON = different error)
 - `409` / `422` — item OOS at cart API (body contains `OUT_OF_STOCK`)
+- `409` / `422` — per-customer purchase limit exceeded (body contains `PURCHASE_LIMIT` / `MAX_QUANTITY` / `EXCEEDED`); executor retries once with `quantity: 1` if RedSky's reported cap was wrong
 - `424` — checkout POST rejected (see `tgt-cart-error-key` response header)
 
 ## `pre_checkout` API Call

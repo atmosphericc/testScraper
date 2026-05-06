@@ -152,15 +152,18 @@ class PurchaseExecutor:
     # Public entry point
     # -------------------------------------------------------------------------
 
-    async def execute_purchase(self, tcin: str) -> Dict[str, Any]:
+    async def execute_purchase(self, tcin: str, quantity: int = 1) -> Dict[str, Any]:
         """
         Execute purchase for given TCIN using persistent session.
         Uses lock to prevent concurrent tab access.
+
+        quantity: how many units to add to the cart. Sourced from RedSky's
+        per-customer purchase_limit (capped to ATP). Defaults to 1.
         """
         try:
             async with asyncio.timeout(140):  # slightly less than thread's 150s so coroutine self-cancels cleanly
                 async with self._page_lock:
-                    return await self._execute_purchase_impl(tcin)
+                    return await self._execute_purchase_impl(tcin, quantity=quantity)
         except asyncio.TimeoutError:
             return {
                 'success': False,
@@ -528,15 +531,18 @@ class PurchaseExecutor:
     # Core purchase implementation
     # -------------------------------------------------------------------------
 
-    async def _execute_purchase_impl(self, tcin: str) -> Dict[str, Any]:
+    async def _execute_purchase_impl(self, tcin: str, quantity: int = 1) -> Dict[str, Any]:
         """Execute purchase for given TCIN using persistent session"""
         start_time = time.time()
+        # Floor at 1 to avoid quantity:0 (would be rejected by Target). No upper
+        # bound — the PDP-extracted purchase_limit is authoritative.
+        quantity = max(1, int(quantity or 1))
         tab = None  # ensure tab is accessible in finally block
         prior_ids = len(self._cdp_continued_ids)
         self._cdp_continued_ids.clear()
         if prior_ids:
             print(f"[STATE_CARRY] WARNING: {prior_ids} stale cdp_continued_ids from prior purchase — cleared")
-        print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin})")
+        print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin}, qty={quantity})")
         self._checkout_rejected = False
         self._checkout_reject_reason = ''
 
@@ -589,6 +595,71 @@ class PurchaseExecutor:
                 print(f"[ERROR] Navigation failed: {nav_error}")
                 raise
 
+            # purchase_limit is embedded in a non-__NEXT_DATA__ <script> tag
+            # (the React Server Components / Flight payload, ~90KB). The JSON
+            # inside is double-escaped — script.textContent surfaces it as
+            # `\"purchase_limit\":N`, so the regex has an optional escape
+            # backslash. Poll briefly because on a cold tab the script body
+            # may not be available via textContent within the first ~500ms.
+            pdp_lookup_start = time.time()
+            pdp_qty = 0
+            for _attempt in range(6):  # up to ~3s of polling
+                try:
+                    pdp_qty = await asyncio.wait_for(
+                        tab.evaluate(r"""(() => {
+                            try {
+                                // Match both `\"purchase_limit\":N` (script-tag double-escaped
+                                // form, what most Target PDP scripts use) and the plain
+                                // `"purchase_limit":N` form for safety.
+                                const re = /\\?"purchase_limit\\?"\s*:\s*(\d+)/;
+                                const scripts = document.getElementsByTagName('script');
+                                for (let i = 0; i < scripts.length; i++) {
+                                    const t = scripts[i].textContent;
+                                    if (!t || t.indexOf('purchase_limit') === -1) continue;
+                                    const m = t.match(re);
+                                    if (m) return parseInt(m[1], 10);
+                                }
+                                // Same for maximum_order_quantity.shipping.value
+                                const mqRe = /\\?"maximum_order_quantity\\?"[\s\S]{0,200}?\\?"shipping\\?"[\s\S]{0,100}?\\?"value\\?"\s*:\s*(\d+)/;
+                                for (let i = 0; i < scripts.length; i++) {
+                                    const t = scripts[i].textContent;
+                                    if (!t || t.indexOf('maximum_order_quantity') === -1) continue;
+                                    const m = t.match(mqRe);
+                                    if (m) return parseInt(m[1], 10);
+                                }
+                                // Fallback: qty <select> (present after React hydrates).
+                                const sel = document.querySelector('select[id*="quantity" i], select[name*="quantity" i]');
+                                if (sel) {
+                                    let max = 0;
+                                    for (const o of sel.options) {
+                                        const v = parseInt(o.value, 10);
+                                        if (Number.isFinite(v) && v > max) max = v;
+                                    }
+                                    if (max > 0) return max;
+                                }
+                                return 0;
+                            } catch (e) { return 0; }
+                        })()"""),
+                        timeout=1.0
+                    )
+                    if isinstance(pdp_qty, int) and pdp_qty > 0:
+                        break
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    pass
+                await asyncio.sleep(0.4)
+
+            pdp_lookup_elapsed = time.time() - pdp_lookup_start
+            if isinstance(pdp_qty, int) and pdp_qty > 0:
+                if pdp_qty != quantity:
+                    print(f"[PURCHASE] purchase_limit from PDP: {pdp_qty} (was qty={quantity}, lookup {pdp_lookup_elapsed:.2f}s)")
+                    quantity = pdp_qty
+                else:
+                    print(f"[PURCHASE] purchase_limit from PDP: {pdp_qty} (matches, lookup {pdp_lookup_elapsed:.2f}s)")
+            else:
+                print(f"[PURCHASE] purchase_limit not found in PDP after {pdp_lookup_elapsed:.2f}s — keeping qty={quantity}")
+
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
             headers_age = time.time() - self._cached_cart_headers_ts
@@ -626,7 +697,7 @@ class PurchaseExecutor:
                 print(f"[PURCHASE] Shape headers STALE (age={headers_age:.0f}s > 90s) — sending fetch WITHOUT Shape headers")
             else:
                 print(f"[PURCHASE] No Shape headers cached yet — warmup tab may not have captured yet")
-            print(f"[PURCHASE] Firing ATC fetch (t={time.time()-start_time:.2f}s)")
+            print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
             atc_result = await tab.evaluate(f"""(async () => {{
                 try {{
                     const cachedHeaders = {extra_headers_js};
@@ -646,7 +717,7 @@ class PurchaseExecutor:
                             body: JSON.stringify({{
                                 cart_item: {{
                                     tcin: '{tcin}',
-                                    quantity: 1,
+                                    quantity: {quantity},
                                     item_channel_id: '10',
                                     fulfillment_type: 'SHIPPING',
                                     fulfillment_type_code: '02'
@@ -678,6 +749,8 @@ class PurchaseExecutor:
                     pass
             elif atc_status in (422, 409) and 'OUT_OF_STOCK' in atc_body.upper():
                 print(f"[PURCHASE] ATC fetch: item OOS at cart API ({atc_status}) (t={time.time()-start_time:.2f}s)")
+            elif atc_status in (422, 409) and any(k in atc_body.upper() for k in ('PURCHASE_LIMIT', 'MAX_QUANTITY', 'QUANTITY_LIMIT', 'EXCEEDED')):
+                print(f"[PURCHASE] ATC fetch: per-customer purchase limit hit at qty={quantity} ({atc_status}) (t={time.time()-start_time:.2f}s)")
             elif atc_status not in (200, 201):
                 print(f"[PURCHASE] ATC fetch status: {atc_status} body={atc_body!r} (t={time.time()-start_time:.2f}s)")
             else:
@@ -735,7 +808,7 @@ class PurchaseExecutor:
                                             'Origin':'https://www.target.com',
                                             'Referer':'https://www.target.com/p/-/A-{tcin}',
                                             'x-application-name':'web'}},
-                                  body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:1,
+                                  body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:{quantity},
                                     item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
                                     cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
                             );
@@ -763,6 +836,50 @@ class PurchaseExecutor:
                         cart_confirmed = False
                 else:
                     print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
+                    cart_confirmed = False
+                skip_signal_wait = True
+            elif atc_status in (422, 409) and quantity > 1 and any(
+                k in atc_body.upper() for k in ('PURCHASE_LIMIT', 'MAX_QUANTITY', 'QUANTITY_LIMIT', 'EXCEEDED')
+            ):
+                # RedSky reported a higher purchase_limit than Target now enforces.
+                # Single-shot retry with quantity=1 — never escalate further. Shape
+                # headers are single-use, so warm fresh ones if cache is stale (>85s).
+                print(f"[PURCHASE] ATC rejected qty={quantity} (per-customer limit). Retrying qty=1.")
+                if time.time() - self._cached_cart_headers_ts > 85:
+                    print(f"[PURCHASE] Shape headers stale before qty-fallback retry — warming")
+                    await self.warm_shape_headers()
+                _retry_headers_age = time.time() - self._cached_cart_headers_ts
+                _retry_use_cached = bool(self._cached_cart_headers) and _retry_headers_age < 90
+                _retry_cached = {k: v for k, v in self._cached_cart_headers.items()
+                                 if k.lower() not in {'cookie', 'referer'}}
+                _retry_cached['x-application-name'] = 'web'
+                _retry_headers_js = json.dumps(_retry_cached if _retry_use_cached else {'x-application-name': 'web'})
+                qty_fallback = 1
+                qty_retry_result = await tab.evaluate(f"""(async () => {{
+                    try {{
+                        const h = {_retry_headers_js};
+                        const resp = await fetch(
+                            'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                            {{method:'POST', credentials:'include',
+                              headers:{{...h,'Content-Type':'application/json','Accept':'application/json',
+                                        'Origin':'https://www.target.com',
+                                        'Referer':'https://www.target.com/p/-/A-{tcin}',
+                                        'x-application-name':'web'}},
+                              body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:{qty_fallback},
+                                item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
+                                cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
+                        );
+                        return {{status:resp.status, body:(await resp.text()).slice(0,300)}};
+                    }} catch(e) {{ return {{status:0, body:String(e)}}; }}
+                }})()""", await_promise=True)
+                qty_retry_status = qty_retry_result.get('status', 0) if isinstance(qty_retry_result, dict) else qty_retry_result
+                qty_retry_body = qty_retry_result.get('body', '') if isinstance(qty_retry_result, dict) else ''
+                print(f"[PURCHASE] ATC qty=1 retry: {qty_retry_status} (t={time.time()-start_time:.2f}s)")
+                if qty_retry_status in (200, 201):
+                    quantity = 1  # update so downstream logging reflects what actually shipped
+                    cart_confirmed = True
+                else:
+                    print(f"[PURCHASE] ATC qty=1 retry failed ({qty_retry_status}) body={qty_retry_body!r}")
                     cart_confirmed = False
                 skip_signal_wait = True
             else:
@@ -1901,7 +2018,7 @@ class PurchaseExecutor:
                 button_found = False
                 for selector in cart_remove_selectors:
                     try:
-                        btn = await tab.select(selector, timeout=2)
+                        btn = await tab.select(selector, timeout=0.3)
                         if btn and await self._is_visible(btn):
                             current_count = await tab.evaluate(count_expr)
                             await btn.apply("(el) => el.click()")
@@ -1938,7 +2055,7 @@ class PurchaseExecutor:
                 button_found = False
                 for selector in sfl_remove_selectors:
                     try:
-                        btn = await tab.select(selector, timeout=2)
+                        btn = await tab.select(selector, timeout=0.3)
                         if btn and await self._is_visible(btn):
                             current_count = await tab.evaluate(sfl_count_expr)
                             await btn.apply("(el) => el.click()")

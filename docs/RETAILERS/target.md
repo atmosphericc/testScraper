@@ -80,7 +80,7 @@ POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART
 {
   "cart_item": {
     "tcin": "{TCIN}",
-    "quantity": 1,
+    "quantity": "{QUANTITY}",
     "item_channel_id": "10",
     "fulfillment_type": "SHIPPING",
     "fulfillment_type_code": "02"
@@ -91,11 +91,13 @@ POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART
 }
 ```
 
+`{QUANTITY}` is the per-customer purchase cap from RedSky (`fulfillment.maximum_order_quantity.shipping.value` or `fulfillment.purchase_limit`), capped to ATP. Clamped [1, 10]. See `docs/FLOW_TARGET.md` for the propagation chain. Warmup POST stays `quantity: 1`.
+
 **Response status codes:**
 - `200` / `201` — success
 - `401` — auth token expired; wait for React to refresh, then retry
 - `403 + HTML body` — Shape Security block (stale/missing headers)
-- `409` / `422` — item OOS at cart API
+- `409` / `422` — item OOS (body: `OUT_OF_STOCK`) or purchase-limit exceeded (body: `PURCHASE_LIMIT`/`MAX_QUANTITY`/`EXCEEDED`); executor falls back to `quantity: 1` once on the latter
 - `424` — checkout POST rejected (see `tgt-cart-error-key` response header)
 
 ### `pre_checkout` API Call

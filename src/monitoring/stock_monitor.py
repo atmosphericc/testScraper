@@ -285,6 +285,29 @@ class StockMonitor:
                 services = shipping.get('services', [])
                 atp_qty = shipping.get('available_to_promise_quantity', -1)
 
+                # Per-customer purchase limit — two known shapes, both optional.
+                # When absent, no per-customer cap is in force; we'll fall back to
+                # ATP (or 1 if ATP is unavailable). Field paths verified against
+                # the public RedSky schema (Unwrangle/RedCircle docs, 2026-05).
+                purchase_limit = None
+                ship_mq = (fulfillment.get('maximum_order_quantity') or {}).get('shipping') or {}
+                if isinstance(ship_mq.get('value'), int) and ship_mq['value'] > 0:
+                    purchase_limit = ship_mq['value']
+                elif isinstance(fulfillment.get('purchase_limit'), int) and fulfillment['purchase_limit'] > 0:
+                    purchase_limit = fulfillment['purchase_limit']
+
+                # Effective max quantity: the lesser of the per-customer cap and
+                # ATP. The bulk RedSky endpoint usually doesn't expose either
+                # field; this is a hint only — the executor reads the
+                # authoritative purchase_limit from the PDP at purchase time.
+                qty_candidates = []
+                if purchase_limit:
+                    qty_candidates.append(purchase_limit)
+                if isinstance(atp_qty, int) and atp_qty > 0:
+                    qty_candidates.append(atp_qty)
+                max_qty = min(qty_candidates) if qty_candidates else 1
+                max_qty = max(1, max_qty)
+
                 # Explicit blocklist — these statuses are never purchasable
                 BLOCKED_STATUSES = {
                     'PRE_ORDER_UNSELLABLE',
@@ -325,7 +348,8 @@ class StockMonitor:
                     'availability_status': availability_status,
                     'is_preorder': availability_status == 'PRE_ORDER_SELLABLE',
                     'is_target_direct': is_target_direct,
-                    'response_time_ms': response_time
+                    'response_time_ms': response_time,
+                    'max_qty': max_qty
                 }
 
             except Exception as e:
@@ -457,7 +481,8 @@ class StockMonitor:
                     'status_detail': override_data.get('status_detail', 'OUT_OF_STOCK'),
                     'test_mode': True,
                     'test_cycle': self.test_cycle_count,
-                    'response_time_ms': random.randint(50, 200)
+                    'response_time_ms': random.randint(50, 200),
+                    'max_qty': override_data.get('max_qty', 5)
                 }
             else:
                 # Default to out of stock for base data
@@ -468,7 +493,8 @@ class StockMonitor:
                     'status_detail': 'OUT_OF_STOCK',
                     'test_mode': True,
                     'test_cycle': self.test_cycle_count,
-                    'response_time_ms': random.randint(50, 200)
+                    'response_time_ms': random.randint(50, 200),
+                    'max_qty': 5
                 }
 
         return result

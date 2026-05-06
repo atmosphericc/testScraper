@@ -109,10 +109,7 @@ if __name__ == '__main__':
                         return False
 
                     # Check if logged in by validating session
-                    is_logged_in = await purchase_mgr.session_manager._validate_session(
-                        attempt_recovery=False,  # Don't auto-login
-                        skip_initial_navigation=True  # Already at target.com
-                    )
+                    is_logged_in = await purchase_mgr.session_manager.is_healthy()
 
                     return is_logged_in
 

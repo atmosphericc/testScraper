@@ -128,16 +128,6 @@ class BulletproofPurchaseManager:
         # Initialize session system
         self._initialize_session_system()
 
-        # Queue initial Shape header warmup (fires once event loop is running)
-        if self.purchase_executor and getattr(self.purchase_executor.session_manager, '_event_loop', None):
-            try:
-                self.purchase_executor.session_manager.submit_async_task(
-                    self.purchase_executor.warm_shape_headers()
-                )
-                print("[WARMUP] Initial Shape header warmup queued")
-            except Exception as e:
-                print(f"[WARMUP] Could not queue initial warmup (event loop not ready yet): {e}")
-
     def _cleanup_stale_states(self):
         """Clean up stale purchase states on startup (prevents old states from blocking new purchases)"""
         try:
@@ -173,10 +163,10 @@ class BulletproofPurchaseManager:
                             cleaned_count += 1
                             print(f"[STARTUP_CLEANUP] Cleaned up stale QUEUED state: {tcin} was queued for {age_seconds:.1f}s (should be <5s)")
 
-                    # Clean up "attempting" states older than 120 seconds
+                    # Clean up "attempting" states older than 60 seconds
                     elif status == 'attempting' and started_at:
                         age_seconds = current_time - started_at
-                        if age_seconds > 120:
+                        if age_seconds > 60:
                             stale_states.append({
                                 'tcin': tcin,
                                 'status': status,
@@ -185,7 +175,7 @@ class BulletproofPurchaseManager:
                             # Reset to ready
                             states[tcin] = {'status': 'ready'}
                             cleaned_count += 1
-                            print(f"[STARTUP_CLEANUP] Cleaned up stale ATTEMPTING state: {tcin} was attempting for {age_seconds:.1f}s")
+                            print(f"[STARTUP_CLEANUP] Cleaned up stale ATTEMPTING state: {tcin} was attempting for {age_seconds:.1f}s (threshold: 60s)")
 
                     # Always reset "interrupted" states — app was killed during a purchase, safe to retry
                     elif status == 'interrupted':
@@ -391,6 +381,26 @@ class BulletproofPurchaseManager:
                 print("[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session")
 
                 self.session_initialized = True
+
+                # Pre-warm Shape headers now that the event loop and browser are
+                # both live. This creates the warmup tab + captures Shape tokens
+                # before the first stock signal fires, eliminating the ~57s stall
+                # where the first purchase raced warmup tab creation + cdp.fetch.enable().
+                if self.purchase_executor:
+                    print("[SESSION] [STEP 3/3] Pre-warming Shape headers (warmup tab)...")
+                    warmup_start = time.time()
+                    try:
+                        warmup_ok = await self.purchase_executor.warm_shape_headers()
+                        warmup_dur = time.time() - warmup_start
+                        if warmup_ok:
+                            print(f"[SESSION] [OK] ✅ Shape headers pre-warmed in {warmup_dur:.1f}s")
+                        else:
+                            print(f"[SESSION] [WARN] Shape header pre-warm incomplete after {warmup_dur:.1f}s — will retry on first purchase")
+                    except Exception as e:
+                        print(f"[SESSION] [WARN] Shape header pre-warm failed: {e} — will retry on first purchase")
+                else:
+                    print("[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session")
+
                 total_duration = time.time() - session_start_time
                 print("[SESSION] ═══════════════════════════════════════════════")
                 print(f"[SESSION] ✅ Session ready in {total_duration:.1f}s total")
@@ -478,23 +488,32 @@ class BulletproofPurchaseManager:
     def reset_completed_purchases_to_ready(self):
         """Reset all completed purchases to ready state for next cycle"""
         with self._state_lock:
-            # Check if running in TEST_MODE
             test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
             mode_label = "[TEST_MODE]" if test_mode else "[PROD_MODE]"
 
-            print(f"[PURCHASE_RESET_DEBUG] {mode_label} Starting reset operation at timestamp {time.time():.3f}")
+            # Load states and check if any work needs doing. The reset loop fires
+            # every cycle (~600ms); printing the banner + per-TCIN diagnostic on
+            # every call drowns out the actual purchase log.
+            states = self._load_states_unsafe()
+            now = time.time()
+            has_work = any(
+                s.get('status') in ('purchased', 'failed')
+                or (s.get('status') == 'attempting' and isinstance(s.get('started_at'), (int, float)) and now - s['started_at'] > 60)
+                or (s.get('status') == 'queued' and isinstance(s.get('started_at'), (int, float)) and now - s['started_at'] > 5)
+                for s in states.values()
+            )
+            if not has_work:
+                return 0  # Silent no-op — nothing to reset, nothing to log.
+
+            print(f"[PURCHASE_RESET_DEBUG] {mode_label} Starting reset operation at timestamp {now:.3f}")
             if test_mode:
                 print(f"[PURCHASE_RESET_DEBUG] {mode_label} TEST MODE: Resetting ALL completed purchases for endless loop")
                 print(f"[TEST_MODE_RESET] ════════════════════════════════════════════════")
                 print(f"[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'")
                 print(f"[TEST_MODE_RESET] This allows the same product to be purchased again")
                 print(f"[TEST_MODE_RESET] ════════════════════════════════════════════════")
-
-            # Load current states
-            states = self._load_states_unsafe()
             print(f"[PURCHASE_RESET_DEBUG] Loaded {len(states)} total purchase states")
 
-            # DIAGNOSTIC: Show ALL states for debugging
             if test_mode:
                 print(f"[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:")
                 for tcin, state in states.items():
@@ -504,7 +523,6 @@ class BulletproofPurchaseManager:
                     age = f"{time.time() - started_at:.1f}s ago" if isinstance(started_at, (int, float)) and started_at > 0 else "N/A"
                     print(f"[TEST_MODE_DIAGNOSTIC]   {tcin}: status='{status}', started={age}, completed={completed_at}")
 
-            # Log current state before reset
             completed_states = {tcin: state for tcin, state in states.items() if state.get('status') in ['purchased', 'failed']}
             print(f"[PURCHASE_RESET_DEBUG] Found {len(completed_states)} completed purchases to reset:")
             for tcin, state in completed_states.items():
@@ -862,8 +880,13 @@ class BulletproofPurchaseManager:
         """Check if a purchase can be started for this TCIN (thread-safe)"""
         return self.get_purchase_status(tcin) == 'ready'
 
-    def start_purchase(self, tcin: str, product_title: str) -> Dict:
-        """Start a new purchase attempt with duplicate prevention (assumes caller has lock)"""
+    def start_purchase(self, tcin: str, product_title: str, max_qty: int = 1) -> Dict:
+        """Start a new purchase attempt with duplicate prevention (assumes caller has lock)
+
+        max_qty: max quantity to add to cart (sourced from RedSky purchase limit /
+        ATP via stock monitor). Defaults to 1 so callers that don't pass it stay
+        on the legacy single-unit behavior.
+        """
         states = self._load_states_unsafe()
         current_state = states.get(tcin, {'status': 'ready'})
 
@@ -900,14 +923,14 @@ class BulletproofPurchaseManager:
             # Force real purchase even if session validation failed
             # (session may be healthy but validation too strict)
             print(f"[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for {tcin}")
-            return self._start_real_purchase(tcin, product_title, states)
+            return self._start_real_purchase(tcin, product_title, states, max_qty=max_qty)
         else:
             # Mock mode available for testing without browser
             print(f"[PURCHASE_MODE] ⚠️  [MOCK] Using MOCK mode for {tcin}")
             print(f"[PURCHASE_MODE] ⚠️  To enable browser: set use_real_purchasing=True")
             return self._start_mock_purchase(tcin, product_title, states)
 
-    def _start_real_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
+    def _start_real_purchase(self, tcin: str, product_title: str, states: Dict, max_qty: int = 1) -> Dict:
         """Start real purchase using PurchaseExecutor"""
         now = time.time()
 
@@ -991,9 +1014,14 @@ class BulletproofPurchaseManager:
                 # Use existing PurchaseExecutor with thread-safe async execution
 
                 try:
+                    # Floor at 1; the executor reads the authoritative purchase_limit
+                    # from the PDP after navigating, and overrides this hint.
+                    qty = max(1, int(max_qty or 1))
+                    if qty != 1:
+                        print(f"[REAL_PURCHASE_THREAD] [QTY] Hint qty={qty} from stock monitor (executor will override from PDP)")
                     # Use submit_async_task to safely call async method from thread
                     future = self.session_manager.submit_async_task(
-                        self.purchase_executor.execute_purchase(tcin)
+                        self.purchase_executor.execute_purchase(tcin, quantity=qty)
                     )
 
                     # Wait for result with timeout
@@ -1456,7 +1484,11 @@ class BulletproofPurchaseManager:
                             continue
 
                         # Start new purchase attempt
-                        result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'))
+                        # max_qty: stock monitor extracts the per-customer purchase limit
+                        # (capped to ATP) from RedSky. Default 1 if absent so we never
+                        # send a quantity greater than known good.
+                        max_qty = product_data.get('max_qty', 1)
+                        result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'), max_qty=max_qty)
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle
                             active_purchase = tcin
