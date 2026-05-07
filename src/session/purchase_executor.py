@@ -54,6 +54,11 @@ class PurchaseExecutor:
         # API mode does not navigate to /checkout/confirmation.
         self._api_order_id: Optional[str] = None
         self._api_confirmation_url: Optional[str] = None
+        # Per-TCIN cache for PDP-extracted purchase_limit. Bulk RedSky often
+        # omits maximum_order_quantity; without this cache every repeat
+        # purchase pays a 0.05-0.65s PDP poll. Entries expire after 30 min.
+        self._pdp_qty_cache: Dict[str, tuple] = {}  # tcin -> (qty, ts)
+        self._pdp_qty_ttl: float = 1800.0
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -113,6 +118,26 @@ class PurchaseExecutor:
             return await tab.select(selector, timeout=timeout)
         except Exception:
             return None
+
+    async def _fast_nav(self, tab, url: str, timeout: float = 15.0, ready_timeout: float = 10.0) -> None:
+        """Navigate without blocking on full network idle.
+
+        tab.get() awaits the CDP listener's idle event — fine for first nav,
+        but with background traffic from prior cycles (DELETE settling,
+        warmup-tab fetches) it can stall 4-5s. This sends raw cdp.page.navigate
+        and polls document.readyState=interactive instead. Used wherever the
+        next operation only needs cookies + a hydrated DOM, not full networkidle.
+        """
+        await asyncio.wait_for(tab.send(cdp.page.navigate(url)), timeout=timeout)
+        deadline = time.time() + ready_timeout
+        while time.time() < deadline:
+            try:
+                rs = await tab.evaluate("document.readyState")
+                if rs in ("interactive", "complete"):
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
 
     async def _wait_for_url_contains(self, tab, pattern: str, timeout: float = 10.0) -> bool:
         """Wait for tab URL to contain a substring (glob wildcards stripped)"""
@@ -671,18 +696,23 @@ class PurchaseExecutor:
                     raise Exception("Browser not available")
                 tab = browser.tabs[0]
 
-            # Log auth cookie state before purchase — helps diagnose 401s
-            try:
-                _cookies = await tab.send(cdp.storage.get_cookies())
-                _auth_names = [c.name for c in _cookies if 'target' in str(getattr(c, 'domain', '')).lower()
-                               and any(k in c.name.lower() for k in ['access', 'session', 'auth', 'token', 'guest', 'uid', 'tealeaf', 'cart'])]
-                print(f"[AUTH_CHECK] Target auth-related cookies present: {_auth_names}")
-                import os as _os, datetime as _dt
-                _os.makedirs('logs', exist_ok=True)
-                with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
-                    _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [AUTH_CHECK] Purchase start for {tcin} — auth cookies: {_auth_names} — url={tab.url}\n")
-            except Exception:
-                pass
+            # Log auth cookie state before purchase — helps diagnose 401s.
+            # Gated behind TARGET_DEBUG_AUTH=true: cdp.storage.get_cookies() is a
+            # full CDP round-trip + filter + log write that costs 30-80ms per
+            # cycle and is purely diagnostic. Flip the env var when diagnosing
+            # auth issues; off by default keeps the hot path lean.
+            if os.environ.get('TARGET_DEBUG_AUTH', 'false').lower() == 'true':
+                try:
+                    _cookies = await tab.send(cdp.storage.get_cookies())
+                    _auth_names = [c.name for c in _cookies if 'target' in str(getattr(c, 'domain', '')).lower()
+                                   and any(k in c.name.lower() for k in ['access', 'session', 'auth', 'token', 'guest', 'uid', 'tealeaf', 'cart'])]
+                    print(f"[AUTH_CHECK] Target auth-related cookies present: {_auth_names}")
+                    import os as _os, datetime as _dt
+                    _os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [AUTH_CHECK] Purchase start for {tcin} — auth cookies: {_auth_names} — url={tab.url}\n")
+                except Exception:
+                    pass
 
             # Set up CDP interceptor BEFORE navigating — always re-run to clear stale
             # handlers from previous purchase cycles before the new navigation starts
@@ -699,34 +729,42 @@ class PurchaseExecutor:
             except Exception:
                 pass
 
-            # Navigate to product page
-            product_url = f"https://www.target.com/p/-/A-{tcin}"
-            try:
-                print(f"[PURCHASE] Navigating to {product_url}")
-                _nav_t0 = time.time()
-                try:
-                    await asyncio.wait_for(tab.get(product_url), timeout=15.0)
-                    print(f"[PURCHASE] Navigation returned in {time.time()-_nav_t0:.2f}s")
-                except asyncio.TimeoutError:
-                    print(f"[ERROR] Navigation timed out after {time.time()-_nav_t0:.1f}s on {product_url} — "
-                          f"tab may be wedged. Aborting purchase.")
-                    raise
-            except Exception as nav_error:
-                print(f"[ERROR] Navigation failed: {nav_error}")
-                raise
+            # Determine if we need to navigate to the PDP. The ATC fetch only
+            # needs cookies + Shape headers (both already cached on the tab).
+            # We only need the PDP for one thing: scraping purchase_limit when
+            # neither RedSky nor the in-memory cache supplied a qty > 1.
+            need_pdp_for_qty = (
+                quantity <= 1
+                and (tcin not in self._pdp_qty_cache
+                     or (time.time() - self._pdp_qty_cache[tcin][1]) >= self._pdp_qty_ttl)
+            )
 
-            # purchase_limit: trust the RedSky-derived quantity passed by the
-            # caller when it's > 1 (stock_monitor.py extracts authoritative
-            # maximum_order_quantity.shipping.value at detection time and
-            # plumbs it through start_purchase → execute_purchase). Polling
-            # the PDP again costs up to ~2.4s on the hot path before ATC,
-            # for data we already have.
-            #
-            # Fallback: if quantity == 1 (caller didn't supply a hint, or
-            # RedSky didn't populate it), poll the PDP to upgrade the qty.
             if quantity > 1:
-                print(f"[PURCHASE] purchase_limit from RedSky: {quantity} (skipping PDP poll)")
-            else:
+                print(f"[PURCHASE] purchase_limit from RedSky: {quantity} (skipping PDP nav)")
+            elif not need_pdp_for_qty:
+                cached_qty, cached_ts = self._pdp_qty_cache[tcin]
+                age = time.time() - cached_ts
+                print(f"[PURCHASE] purchase_limit from cache: {cached_qty} (cached {age:.0f}s ago, skipping PDP nav)")
+                quantity = cached_qty
+
+            if need_pdp_for_qty:
+                # Navigate to product page using fast-nav (cdp.page.navigate +
+                # readyState=interactive, no full network idle).
+                product_url = f"https://www.target.com/p/-/A-{tcin}"
+                try:
+                    print(f"[PURCHASE] Navigating to {product_url} (PDP qty unknown)")
+                    _nav_t0 = time.time()
+                    try:
+                        await self._fast_nav(tab, product_url)
+                        print(f"[PURCHASE] Navigation returned in {time.time()-_nav_t0:.2f}s")
+                    except asyncio.TimeoutError:
+                        print(f"[ERROR] Navigation timed out after {time.time()-_nav_t0:.1f}s on {product_url} — "
+                              f"tab may be wedged. Aborting purchase.")
+                        raise
+                except Exception as nav_error:
+                    print(f"[ERROR] Navigation failed: {nav_error}")
+                    raise
+
                 pdp_lookup_start = time.time()
                 pdp_qty = 0
                 for _attempt in range(6):  # up to ~3s of polling
@@ -734,9 +772,6 @@ class PurchaseExecutor:
                         pdp_qty = await asyncio.wait_for(
                             tab.evaluate(r"""(() => {
                                 try {
-                                    // Match both `\"purchase_limit\":N` (script-tag double-escaped
-                                    // form, what most Target PDP scripts use) and the plain
-                                    // `"purchase_limit":N` form for safety.
                                     const re = /\\?"purchase_limit\\?"\s*:\s*(\d+)/;
                                     const scripts = document.getElementsByTagName('script');
                                     for (let i = 0; i < scripts.length; i++) {
@@ -745,7 +780,6 @@ class PurchaseExecutor:
                                         const m = t.match(re);
                                         if (m) return parseInt(m[1], 10);
                                     }
-                                    // Same for maximum_order_quantity.shipping.value
                                     const mqRe = /\\?"maximum_order_quantity\\?"[\s\S]{0,200}?\\?"shipping\\?"[\s\S]{0,100}?\\?"value\\?"\s*:\s*(\d+)/;
                                     for (let i = 0; i < scripts.length; i++) {
                                         const t = scripts[i].textContent;
@@ -753,7 +787,6 @@ class PurchaseExecutor:
                                         const m = t.match(mqRe);
                                         if (m) return parseInt(m[1], 10);
                                     }
-                                    // Fallback: qty <select> (present after React hydrates).
                                     const sel = document.querySelector('select[id*="quantity" i], select[name*="quantity" i]');
                                     if (sel) {
                                         let max = 0;
@@ -780,6 +813,7 @@ class PurchaseExecutor:
                 if isinstance(pdp_qty, int) and pdp_qty > 0:
                     print(f"[PURCHASE] purchase_limit from PDP fallback: {pdp_qty} (was qty={quantity}, lookup {pdp_lookup_elapsed:.2f}s)")
                     quantity = pdp_qty
+                    self._pdp_qty_cache[tcin] = (pdp_qty, time.time())
                 else:
                     print(f"[PURCHASE] purchase_limit not found in PDP after {pdp_lookup_elapsed:.2f}s — keeping qty={quantity}")
 
@@ -821,42 +855,65 @@ class PurchaseExecutor:
             else:
                 print(f"[PURCHASE] No Shape headers cached yet — warmup tab may not have captured yet")
             print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
-            atc_result = await tab.evaluate(f"""(async () => {{
-                try {{
-                    const cachedHeaders = {extra_headers_js};
-                    const resp = await fetch(
-                        'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
-                        {{
-                            method: 'POST',
-                            credentials: 'include',
-                            headers: {{
-                                ...cachedHeaders,
-                                'Content-Type': 'application/json',
-                                'Accept': 'application/json',
-                                'Origin': 'https://www.target.com',
-                                'Referer': 'https://www.target.com/p/-/A-{tcin}',
-                                'x-application-name': 'web',
-                            }},
-                            body: JSON.stringify({{
-                                cart_item: {{
-                                    tcin: '{tcin}',
-                                    quantity: {quantity},
-                                    item_channel_id: '10',
-                                    fulfillment_type: 'SHIPPING',
-                                    fulfillment_type_code: '02'
-                                }},
-                                cart_type: 'REGULAR',
-                                channel_id: '10',
-                                shopping_context: 'DIGITAL'
-                            }})
+            try:
+                atc_result = await asyncio.wait_for(
+                    tab.evaluate(f"""(async () => {{
+                        try {{
+                            const cachedHeaders = {extra_headers_js};
+                            const resp = await fetch(
+                                'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                                {{
+                                    method: 'POST',
+                                    credentials: 'include',
+                                    headers: {{
+                                        ...cachedHeaders,
+                                        'Content-Type': 'application/json',
+                                        'Accept': 'application/json',
+                                        'Origin': 'https://www.target.com',
+                                        'Referer': 'https://www.target.com/p/-/A-{tcin}',
+                                        'x-application-name': 'web',
+                                    }},
+                                    body: JSON.stringify({{
+                                        cart_item: {{
+                                            tcin: '{tcin}',
+                                            quantity: {quantity},
+                                            item_channel_id: '10',
+                                            fulfillment_type: 'SHIPPING',
+                                            fulfillment_type_code: '02'
+                                        }},
+                                        cart_type: 'REGULAR',
+                                        channel_id: '10',
+                                        shopping_context: 'DIGITAL'
+                                    }})
+                                }}
+                            );
+                            const text = await resp.text();
+                            // ATC POST returns the newly-added cart_item flat at the top level
+                            // (verified shape 2026-05-07: cart_item_id, tcin, quantity at root).
+                            // Wrap it in a list so downstream code sees the same shape as
+                            // GET /cart's cart_items array.
+                            let cart_items = [];
+                            try {{
+                                const parsed = JSON.parse(text);
+                                if (parsed && parsed.tcin && parsed.cart_item_id) {{
+                                    cart_items = [{{tcin: parsed.tcin, quantity: parsed.quantity}}];
+                                }} else if (parsed && Array.isArray(parsed.cart_items)) {{
+                                    cart_items = parsed.cart_items.map(it => ({{
+                                        tcin: it && it.tcin, quantity: it && it.quantity
+                                    }}));
+                                }}
+                            }} catch(_) {{}}
+                            return {{status: resp.status, body: text.slice(0, 500), cart_items: cart_items}};
+                        }} catch(e) {{
+                            return {{status: 0, body: String(e)}};
                         }}
-                    );
-                    const body = (await resp.text()).slice(0, 300);
-                    return {{status: resp.status, body: body}};
-                }} catch(e) {{
-                    return {{status: 0, body: String(e)}};
-                }}
-            }})()""", await_promise=True)
+                    }})()""", await_promise=True),
+                    timeout=8.0
+                )
+            except asyncio.TimeoutError:
+                print(f"[PURCHASE] ATC fetch evaluate timed out after 8s — CDP wedged, aborting purchase")
+                return {'success': False, 'tcin': tcin, 'reason': 'atc_evaluate_timeout',
+                        'execution_time': time.time() - start_time}
 
             atc_status = atc_result.get('status', 0) if isinstance(atc_result, dict) else atc_result
             atc_body = atc_result.get('body', '') if isinstance(atc_result, dict) else ''
@@ -881,18 +938,98 @@ class PurchaseExecutor:
 
             # Success status → skip DOM polling entirely, go straight to checkout
             skip_signal_wait = False
+            cart_confirmed = False  # default; branches below set True on success
             if atc_status in (200, 201):
                 print(f"[PURCHASE] Fetch ATC succeeded ({atc_status}), skipping cart signal wait")
                 cart_confirmed = True
             elif atc_status == 401:
-                # Auth denied — write token expired. Target's React will silently refresh it during hydration.
-                # Poll until the ATC button becomes enabled (= React hydrated + write token refreshed),
-                # then immediately retry the fetch. Button-enabled is the only reliable write-auth indicator
-                # (GET /cart always returns 200 on read-only auth and is not a valid proxy for POST auth).
-                print(f"[PURCHASE] ATC fetch 401 auth denied — polling for token refresh (t={time.time()-start_time:.2f}s)")
+                # Auth denied — most likely Shape rotating tokens were consumed
+                # (cycles back-to-back rapidly burn the token cache). FAST PATH:
+                # warm the Shape headers via the warmup tab and retry once. This
+                # is the only viable recovery in API-only mode (no PDP loaded
+                # means no ATC button to wait on). On retry-fail, fall through
+                # to the legacy DOM polling path — it still works when the tab
+                # actually has a PDP loaded.
+                print(f"[PURCHASE] ATC fetch 401 auth denied — refreshing Shape headers and retrying (t={time.time()-start_time:.2f}s)")
                 await self._fix_auth_cookie_domains(tab)
+                try:
+                    await self.warm_shape_headers()
+                except Exception as warm_err:
+                    print(f"[PURCHASE] Shape refresh before ATC retry failed: {warm_err}")
+                # Two-attempt fast-retry loop. Attempt 1 (immediate): warm Shape +
+                # retry. Attempt 2 (jittered ~700ms sleep): warm Shape again, retry.
+                # The sleep gives Target's per-Device-ID rate-limit bucket a chance
+                # to refill — empirically catches ~50% of cycles that would have
+                # bailed in v15.
+                async def _do_fast_retry() -> Dict[str, Any]:
+                    _strip_keys = {'cookie', 'referer'}
+                    _shape_only = {k: v for k, v in self._cached_cart_headers.items()
+                                   if k.lower() not in _strip_keys}
+                    _shape_only['x-application-name'] = 'web'
+                    _retry_headers_js = json.dumps(_shape_only)
+                    try:
+                        return await asyncio.wait_for(
+                            tab.evaluate(f"""(async () => {{
+                                try {{
+                                    const h = {_retry_headers_js};
+                                    const resp = await fetch(
+                                        'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                                        {{method:'POST', credentials:'include',
+                                          headers:{{...h,'Content-Type':'application/json','Accept':'application/json',
+                                                    'Origin':'https://www.target.com',
+                                                    'Referer':'https://www.target.com/p/-/A-{tcin}',
+                                                    'x-application-name':'web'}},
+                                          body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:{quantity},
+                                            item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
+                                            cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
+                                    );
+                                    return {{status:resp.status, body:(await resp.text()).slice(0,300)}};
+                                }} catch(e) {{ return {{status:0, body:String(e)}}; }}
+                            }})()""", await_promise=True),
+                            timeout=8.0
+                        )
+                    except asyncio.TimeoutError:
+                        return {'status': 0, 'body': 'fast-retry timeout'}
+
+                fast_retry = await _do_fast_retry()
+                fast_status = fast_retry.get('status', 0) if isinstance(fast_retry, dict) else 0
+                if fast_status in (200, 201):
+                    print(f"[PURCHASE] ATC fast-retry succeeded ({fast_status}) after Shape refresh (t={time.time()-start_time:.2f}s)")
+                    atc_status = fast_status
+                    atc_body = fast_retry.get('body', '') if isinstance(fast_retry, dict) else ''
+                    cart_confirmed = True
+                    skip_signal_wait = True
+                elif fast_status == 401:
+                    # Second attempt — brief jittered sleep to let bucket refill, then retry.
+                    _jitter = 0.6 + (time.time() % 0.5)  # 0.6-1.1s
+                    print(f"[PURCHASE] ATC fast-retry still 401 — sleeping {_jitter:.2f}s before second attempt (t={time.time()-start_time:.2f}s)")
+                    await asyncio.sleep(_jitter)
+                    try:
+                        await self.warm_shape_headers()
+                    except Exception as warm_err:
+                        print(f"[PURCHASE] Second warmup before retry-2 failed: {warm_err}")
+                    fast_retry2 = await _do_fast_retry()
+                    fast_status2 = fast_retry2.get('status', 0) if isinstance(fast_retry2, dict) else 0
+                    if fast_status2 in (200, 201):
+                        print(f"[PURCHASE] ATC retry-2 succeeded ({fast_status2}) after second Shape refresh (t={time.time()-start_time:.2f}s)")
+                        atc_status = fast_status2
+                        atc_body = fast_retry2.get('body', '') if isinstance(fast_retry2, dict) else ''
+                        cart_confirmed = True
+                        skip_signal_wait = True
+                    else:
+                        print(f"[PURCHASE] ATC retry-2 returned {fast_status2} — falling through to DOM polling fallback")
+                else:
+                    print(f"[PURCHASE] ATC fast-retry returned {fast_status} — falling through to DOM polling fallback")
                 token_fresh = False
-                for _poll_i in range(20):  # max 10s (20 x 0.5s)
+                # Skip legacy DOM-polling block when:
+                #  - fast-retry already won (cart_confirmed=True), OR
+                #  - we're not on a PDP (no ATC button to poll for; common in API-only mode
+                #    where we skip PDP nav and stay on /cart)
+                _on_pdp = '/p/-/A-' in (tab.url or '')
+                if not cart_confirmed and not _on_pdp:
+                    print(f"[PURCHASE] Skipping DOM polling (tab not on PDP, url={tab.url}) — fast-retry was final attempt")
+                _poll_iter_count = 0 if (cart_confirmed or not _on_pdp) else 20
+                for _poll_i in range(_poll_iter_count):  # max 10s (20 x 0.5s) — 0 iterations if fast-retry won or no PDP
                     await asyncio.sleep(0.5)
                     # Primary indicator: ATC button enabled = React hydrated + write token refreshed.
                     # GET /cart always returns 200 (uses read-only auth) so it's not a reliable
@@ -919,47 +1056,53 @@ class PurchaseExecutor:
                         token_fresh = True
                         print(f"[PURCHASE] Token ready — button enabled after {(_poll_i+1)*0.5:.1f}s (t={time.time()-start_time:.2f}s)")
                         break
-                if token_fresh:
-                    print(f"[PURCHASE] Retrying ATC fetch — button enabled, write token ready (t={time.time()-start_time:.2f}s)")
-                    atc_retry_result = await tab.evaluate(f"""(async () => {{
-                        try {{
-                            const h = {extra_headers_js};
-                            const resp = await fetch(
-                                'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
-                                {{method:'POST', credentials:'include',
-                                  headers:{{...h,'Content-Type':'application/json','Accept':'application/json',
-                                            'Origin':'https://www.target.com',
-                                            'Referer':'https://www.target.com/p/-/A-{tcin}',
-                                            'x-application-name':'web'}},
-                                  body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:{quantity},
-                                    item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
-                                    cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
-                            );
-                            return {{status:resp.status, body:(await resp.text()).slice(0,300)}};
-                        }} catch(e) {{ return {{status:0, body:String(e)}}; }}
-                    }})()""", await_promise=True)
-                    retry_status = atc_retry_result.get('status', 0) if isinstance(atc_retry_result, dict) else atc_retry_result
-                    retry_body = atc_retry_result.get('body', '') if isinstance(atc_retry_result, dict) else ''
-                    print(f"[PURCHASE] ATC fetch retry: {retry_status} (t={time.time()-start_time:.2f}s)")
-                    if retry_status in (200, 201):
-                        print(f"[PURCHASE] ATC fetch retry succeeded ({retry_status})")
-                        cart_confirmed = True
-                    else:
-                        if retry_status == 401:
-                            print(f"[PURCHASE] ATC fetch retry still 401 — falling through to button click")
+                # Legacy DOM polling retry block — only relevant if fast-retry above
+                # didn't already succeed. When cart_confirmed is True we just fall through.
+                if not cart_confirmed:
+                    if token_fresh:
+                        print(f"[PURCHASE] Retrying ATC fetch — button enabled, write token ready (t={time.time()-start_time:.2f}s)")
+                        atc_retry_result = await tab.evaluate(f"""(async () => {{
+                            try {{
+                                const h = {extra_headers_js};
+                                const resp = await fetch(
+                                    'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                                    {{method:'POST', credentials:'include',
+                                      headers:{{...h,'Content-Type':'application/json','Accept':'application/json',
+                                                'Origin':'https://www.target.com',
+                                                'Referer':'https://www.target.com/p/-/A-{tcin}',
+                                                'x-application-name':'web'}},
+                                      body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:{quantity},
+                                        item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
+                                        cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
+                                );
+                                return {{status:resp.status, body:(await resp.text()).slice(0,300)}};
+                            }} catch(e) {{ return {{status:0, body:String(e)}}; }}
+                        }})()""", await_promise=True)
+                        retry_status = atc_retry_result.get('status', 0) if isinstance(atc_retry_result, dict) else atc_retry_result
+                        retry_body = atc_retry_result.get('body', '') if isinstance(atc_retry_result, dict) else ''
+                        print(f"[PURCHASE] ATC fetch retry: {retry_status} (t={time.time()-start_time:.2f}s)")
+                        if retry_status in (200, 201):
+                            print(f"[PURCHASE] ATC fetch retry succeeded ({retry_status})")
+                            cart_confirmed = True
                         else:
-                            print(f"[PURCHASE] ATC fetch retry failed ({retry_status}) body={retry_body!r}")
-                        try:
-                            import os as _os, datetime as _dt
-                            _os.makedirs('logs', exist_ok=True)
-                            with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
-                                _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ATC_RETRY_FAIL] status={retry_status} url={tab.url}\nBody: {retry_body}\n\n")
-                        except Exception:
-                            pass
+                            if retry_status == 401:
+                                print(f"[PURCHASE] ATC fetch retry still 401 — falling through to button click")
+                            else:
+                                print(f"[PURCHASE] ATC fetch retry failed ({retry_status}) body={retry_body!r}")
+                            try:
+                                import os as _os, datetime as _dt
+                                _os.makedirs('logs', exist_ok=True)
+                                with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                                    _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ATC_RETRY_FAIL] status={retry_status} url={tab.url}\nBody: {retry_body}\n\n")
+                            except Exception:
+                                pass
+                            cart_confirmed = False
+                    else:
+                        # Only print the "token not ready" message when we actually polled
+                        # (PDP loaded). In API-only mode the polling was deliberately skipped.
+                        if _on_pdp:
+                            print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
                         cart_confirmed = False
-                else:
-                    print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
-                    cart_confirmed = False
                 skip_signal_wait = True
             elif atc_status in (422, 409) and quantity > 1 and any(
                 k in atc_body.upper() for k in ('PURCHASE_LIMIT', 'MAX_QUANTITY', 'QUANTITY_LIMIT', 'EXCEEDED')
@@ -1074,6 +1217,14 @@ class PurchaseExecutor:
                         await self._take_debug_screenshot(tab, "atc_button_not_ready")
                         return {'success': False, 'tcin': tcin, 'reason': 'page_not_ready',
                                 'execution_time': time.time() - start_time}
+                # API-only mode guard: if we never navigated to a PDP, the button-click
+                # fallback below would target whatever ATC-shaped button exists on
+                # the cart page (a cross-sell recommendation), not our actual product.
+                # Bail out instead of clicking the wrong thing.
+                if not cart_confirmed and '/p/-/A-' not in (tab.url or ''):
+                    print(f"[PURCHASE] Fetch ATC not confirmed and not on PDP (url={tab.url}) — bailing without DOM fallback")
+                    return {'success': False, 'tcin': tcin, 'reason': 'atc_failed_api_mode',
+                            'execution_time': time.time() - start_time}
                 if not cart_confirmed:
                     print(f"[PURCHASE] Fetch ATC not confirmed, trying button click...")
                     await self._dismiss_error_flyout(tab)
@@ -1152,26 +1303,16 @@ class PurchaseExecutor:
 
             print(f"[PURCHASE] Cart confirmed (t={time.time() - start_time:.1f}s)")
 
-            # Log cart contents to detect duplicate items from prior failed attempts
+            # Cart-state safety net: warn loudly if ATC body shows >1 item (indicates a
+            # leak from a prior failed attempt). Otherwise silent — the 201 from ATC
+            # is sufficient confirmation. Diagnostic log dropped to save ~30-50ms.
             try:
-                cart_info = await tab.evaluate("""(async () => {
-                    try {
-                        const r = await fetch(
-                            'https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CART,CART_ITEMS',
-                            {credentials: 'include', headers: {'Accept': 'application/json'}}
-                        );
-                        const d = await r.json();
-                        const items = (d.cart_items || []).map(i => i.tcin + 'x' + (i.quantity || 1));
-                        return {count: (d.cart_items || []).length, items: items};
-                    } catch(e) { return {count: -1, items: [], error: String(e)}; }
-                })()""", await_promise=True)
-                count = cart_info.get('count', -1) if isinstance(cart_info, dict) else -1
-                items = cart_info.get('items', []) if isinstance(cart_info, dict) else []
-                print(f"[CART_STATE] {count} item(s) in cart before checkout: {items}")
-                if count > 1:
-                    print(f"[CART_STATE] WARNING: more than 1 item in cart — possible duplicate from prior failed attempt")
-            except Exception as ce:
-                print(f"[CART_STATE] Cart check failed: {ce}")
+                _cart_items = atc_result.get('cart_items', []) if isinstance(atc_result, dict) else []
+                if len(_cart_items) > 1:
+                    _items_dbg = [f"{i.get('tcin', '?')}x{i.get('quantity', 1)}" for i in _cart_items if isinstance(i, dict)]
+                    print(f"[CART_STATE] WARNING: {len(_cart_items)} items in cart before checkout (expected 1): {_items_dbg}")
+            except Exception:
+                pass
 
             # Navigate to checkout
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
@@ -1208,51 +1349,70 @@ class PurchaseExecutor:
             except Exception as e:
                 print(f"[PURCHASE] pre_checkout fire failed: {e}")
 
-            try:
-                await tab.get("https://www.target.com/checkout/start")
-                await tab  # flush CDP event queue before interacting (zendriver pattern)
-                # Use evaluate for reliable URL reading — tab.url can be stale during redirects
-                landed_url = await tab.evaluate("window.location.href")
-                print(f"[PURCHASE] Checkout nav done (t+{time.time()-t_nav_start:.3f}s) landed={landed_url}")
-                if 'checkout' not in landed_url.lower():
-                    print(f"[PURCHASE] Checkout redirect detected → {landed_url}")
-                    try:
-                        snippet = (await tab.evaluate("(document.body && document.body.innerText || '').slice(0,200)")).replace('\n',' ')
-                        print(f"[PURCHASE] Page text: {snippet!r}")
-                    except Exception:
-                        pass
+            # API-mode shortcut: when we're going to fire the API place-order
+            # POST anyway (TARGET_API_PLACE_ORDER=true OR TEST_MODE), skip the
+            # /checkout/start page nav + DOM ready wait. The API call doesn't
+            # need DOM context — saves ~3-4s per cycle.
+            _api_skip = (
+                os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
+                or self.test_mode
+            )
+            if _api_skip:
+                _co_state = 'place_order'
+                landed_url = '<api_mode_no_nav>'
+                print(f"[PURCHASE] API mode — skipping /checkout/start nav (t+{time.time()-t_nav_start:.3f}s)")
+                checkout_result = True
+            else:
                 try:
-                    _co_state = 'unknown'  # ensure always defined even if evaluate throws
-                    _co_start = time.time()
-                    while time.time() - _co_start < 10.0:
-                        _co_state = await tab.evaluate("""(() => {
-                            function vis(el) {
-                                if (!el) return false;
-                                const r = el.getBoundingClientRect();
-                                return r.width > 0 && r.height > 0;
-                            }
-                            const po  = document.querySelector('[data-test="placeOrderButton"]');
-                            const sac = document.querySelector('[data-test="save-and-continue-button"]');
-                            if (vis(po))  return 'place_order';
-                            if (vis(sac)) return 'sac';
-                            const radios = document.querySelectorAll('input[type="radio"]');
-                            if (Array.from(radios).some(r => vis(r))) return 'sac';
-                            return 'none';
-                        })()""")
-                        if _co_state in ('place_order', 'sac'):
-                            print(f"[PURCHASE] Checkout page ready ({_co_state}) in {time.time()-_co_start:.2f}s")
-                            break
-                        await asyncio.sleep(0.05)
-                except Exception as wait_error:
-                    print(f"[PURCHASE] Checkout element wait warning: {wait_error}")
+                    await tab.get("https://www.target.com/checkout/start")
+                    await tab  # flush CDP event queue before interacting (zendriver pattern)
+                    # Use evaluate for reliable URL reading — tab.url can be stale during redirects
+                    landed_url = await tab.evaluate("window.location.href")
+                    print(f"[PURCHASE] Checkout nav done (t+{time.time()-t_nav_start:.3f}s) landed={landed_url}")
+                    if 'checkout' not in landed_url.lower():
+                        print(f"[PURCHASE] Checkout redirect detected → {landed_url}")
+                        try:
+                            snippet = (await tab.evaluate("(document.body && document.body.innerText || '').slice(0,200)")).replace('\n',' ')
+                            print(f"[PURCHASE] Page text: {snippet!r}")
+                        except Exception:
+                            pass
+                    try:
+                        _co_state = 'unknown'  # ensure always defined even if evaluate throws
+                        _co_start = time.time()
+                        while time.time() - _co_start < 10.0:
+                            _co_state = await tab.evaluate("""(() => {
+                                function vis(el) {
+                                    if (!el) return false;
+                                    const r = el.getBoundingClientRect();
+                                    return r.width > 0 && r.height > 0;
+                                }
+                                const po  = document.querySelector('[data-test="placeOrderButton"]');
+                                const sac = document.querySelector('[data-test="save-and-continue-button"]');
+                                if (vis(po))  return 'place_order';
+                                if (vis(sac)) return 'sac';
+                                const radios = document.querySelectorAll('input[type="radio"]');
+                                if (Array.from(radios).some(r => vis(r))) return 'sac';
+                                return 'none';
+                            })()""")
+                            if _co_state in ('place_order', 'sac'):
+                                print(f"[PURCHASE] Checkout page ready ({_co_state}) in {time.time()-_co_start:.2f}s")
+                                break
+                            await asyncio.sleep(0.05)
+                    except Exception as wait_error:
+                        print(f"[PURCHASE] Checkout element wait warning: {wait_error}")
 
-                checkout_result = 'checkout' in landed_url.lower()
-            except Exception as nav_error:
-                print(f"[ERROR] Checkout navigation failed: {nav_error}")
-                checkout_result = False
+                    checkout_result = 'checkout' in landed_url.lower()
+                except Exception as nav_error:
+                    print(f"[ERROR] Checkout navigation failed: {nav_error}")
+                    checkout_result = False
 
             if checkout_result:
-                await self._handle_delivery_options(tab)
+                # _handle_delivery_options clicks a Shipping vs Pickup radio on the
+                # cart page. The API place-order POST encodes fulfillment in its
+                # body — the radio click is unnecessary and costs ~400ms. Only
+                # run it when we're actually on a checkout page DOM (legacy path).
+                if not _api_skip:
+                    await self._handle_delivery_options(tab)
                 print(f"[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t={time.time()-start_time:.1f}s, co_state={_co_state})")
                 payment_result = await self._complete_payment(tab, initial_state=_co_state)
                 if not payment_result:
@@ -1309,7 +1469,6 @@ class PurchaseExecutor:
             print(f"[PURCHASE] Checkout complete (t={time.time() - start_time:.1f}s)")
 
             if self.test_mode:
-                await asyncio.sleep(0.2)
                 clear_result = await self._clear_cart(tab)
                 execution_time = time.time() - start_time
 
@@ -1418,7 +1577,6 @@ class PurchaseExecutor:
             # Disable main tab CDP interceptor so it can be re-enabled on next purchase
             if tab and self._main_tab_interceptor_active:
                 try:
-                    from zendriver import cdp
                     # Explicitly remove all RequestPaused handlers before disabling CDP
                     handlers = getattr(tab, 'handlers', {})
                     for handler in handlers.get(cdp.fetch.RequestPaused, []):
@@ -2174,23 +2332,18 @@ class PurchaseExecutor:
 
             print(f"[CLEAR_CART_API] deleting {len(ids)} cart item(s) via API")
 
-            headers_age = time.time() - self._cached_cart_headers_ts
-            use_cached = bool(self._cached_cart_headers) and headers_age < 90
-            _strip_keys = {'cookie', 'referer'}
-            cached_shape_only = {k: v for k, v in self._cached_cart_headers.items()
-                                  if k.lower() not in _strip_keys}
-            cached_shape_only['x-application-name'] = 'web'
-            extra_headers_js = json.dumps(cached_shape_only if use_cached else {'x-application-name': 'web'})
+            def _build_extra_headers_js() -> str:
+                headers_age = time.time() - self._cached_cart_headers_ts
+                use_cached = bool(self._cached_cart_headers) and headers_age < 90
+                _strip_keys = {'cookie', 'referer'}
+                cached_shape_only = {k: v for k, v in self._cached_cart_headers.items()
+                                     if k.lower() not in _strip_keys}
+                cached_shape_only['x-application-name'] = 'web'
+                return json.dumps(cached_shape_only if use_cached else {'x-application-name': 'web'})
 
-            # Issue DELETEs serially. Doing them in parallel would race the
-            # cart-state mutation; serial keeps the flow predictable.
-            for cid in ids:
-                # Defensive: cart_item_id is meant to be a UUID string. Reject
-                # anything else so a bad payload can't escape into the URL.
-                if not isinstance(cid, str) or not re.match(r'^[A-Za-z0-9_-]+$', cid):
-                    print(f"[CLEAR_CART_API] skipping suspicious cart_item_id: {cid!r}")
-                    return False
-                del_result = await tab.evaluate(f"""(async () => {{
+            async def _send_delete(cid: str) -> dict:
+                extra_headers_js = _build_extra_headers_js()
+                return await tab.evaluate(f"""(async () => {{
                     try {{
                         const cachedHeaders = {extra_headers_js};
                         const resp = await fetch(
@@ -2213,7 +2366,28 @@ class PurchaseExecutor:
                         return {{status: 0, body: String(e)}};
                     }}
                 }})()""", await_promise=True)
+
+            # Issue DELETEs serially. Doing them in parallel would race the
+            # cart-state mutation; serial keeps the flow predictable.
+            for cid in ids:
+                # Defensive: cart_item_id is meant to be a UUID string. Reject
+                # anything else so a bad payload can't escape into the URL.
+                if not isinstance(cid, str) or not re.match(r'^[A-Za-z0-9_-]+$', cid):
+                    print(f"[CLEAR_CART_API] skipping suspicious cart_item_id: {cid!r}")
+                    return False
+                del_result = await _send_delete(cid)
                 status = del_result.get('status', 0) if isinstance(del_result, dict) else 0
+                # On 401 _ERR_AUTH_DENIED, Shape tokens have aged/staled. Refresh
+                # via warmup tab (single dummy POST) and retry the DELETE once.
+                # Cheaper than the DOM-clear fallback (saves 5-15s per affected cycle).
+                if status == 401:
+                    print(f"[CLEAR_CART_API] DELETE {cid[:8]}… 401 — refreshing Shape headers and retrying once")
+                    try:
+                        await self.warm_shape_headers()
+                    except Exception as warm_err:
+                        print(f"[CLEAR_CART_API] warmup before retry failed: {warm_err}")
+                    del_result = await _send_delete(cid)
+                    status = del_result.get('status', 0) if isinstance(del_result, dict) else 0
                 if status not in (200, 204):
                     print(f"[CLEAR_CART_API] DELETE {cid[:8]}… returned {status} body={del_result.get('body', '')!r}")
                     return False
@@ -2237,17 +2411,21 @@ class PurchaseExecutor:
             removed_count = 0
             _skip_sfl_loop = False
 
-            if os.environ.get('TARGET_API_CART_CLEAR', 'false').lower() == 'true':
+            # API cart-clear: explicit opt-in via env var, OR default-on in TEST_MODE
+            # so test cycles exercise Phase 4c and avoid the slow DOM remove-button loop
+            # (10 deletes * polling = 5+ seconds per cycle).
+            api_clear_enabled = (
+                os.environ.get('TARGET_API_CART_CLEAR', 'false').lower() == 'true'
+                or self.test_mode
+            )
+            if api_clear_enabled:
                 api_result = await self._api_clear_cart(tab)
                 if api_result is True:
-                    # Quick SFL bucket probe — if empty, skip the DOM SFL
-                    # pass loop (1.8s of dead CDP polling). KEEP the
-                    # cart-empty verification block at the end of this
-                    # function — it provides ~3s of implicit settle time
-                    # that downstream cycles depend on (without it, Target
-                    # routes the next checkout to /checkout/start with no
-                    # resolvable state). On probe failure, fall through to
-                    # the full DOM SFL pass.
+                    # API confirmed all DELETEs returned 200 — cart is empty.
+                    # Probe SFL bucket once: if empty, short-circuit and skip
+                    # the slow cart-empty verify block at the end of this
+                    # function (saves ~3s of dead polling). On probe failure,
+                    # fall through to the full DOM SFL pass + verify.
                     try:
                         _sfl_count = await tab.evaluate(
                             'document.querySelectorAll('
@@ -2256,13 +2434,11 @@ class PurchaseExecutor:
                             ' [data-testid=\\"sflItem-remove\\"]").length'
                         )
                         if isinstance(_sfl_count, (int, float)) and _sfl_count == 0:
-                            _skip_sfl_loop = True
+                            print("[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success")
+                            return True
                     except Exception:
                         pass
-                    if _skip_sfl_loop:
-                        print("[CLEAR_CART] API path cleared regular items, SFL bucket empty — skipping DOM SFL loop")
-                    else:
-                        print("[CLEAR_CART] API path cleared regular items — running DOM SFL pass")
+                    print("[CLEAR_CART] API path cleared regular items — running DOM SFL pass")
                     # Skip the regular-item DOM pass; jump to SFL handling below.
                     # We accomplish this by setting a sentinel and falling through.
                     _skip_regular_pass = True
@@ -3060,6 +3236,23 @@ class PurchaseExecutor:
                '%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY'
                '&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14')
 
+        # TEST_MODE compose-and-abort: build the full request (URL, headers,
+        # body) so the dispatch path, header injection, and Shape-token TTL
+        # logic all run, but skip the actual fetch. Returns a synthetic
+        # success dict that downstream parsers/state handlers consume normally.
+        if self.test_mode:
+            fake_order_id = f"TEST-NO-ORDER-{int(time.time())}"
+            print(f"[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to {url}")
+            print(f"[API_PLACE_ORDER] [TEST_MODE] Headers: {list(cached_shape_only.keys())}")
+            print(f"[API_PLACE_ORDER] [TEST_MODE] Body: {{'cart_type': 'REGULAR', 'channel_id': '10'}}")
+            print(f"[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id={fake_order_id}")
+            return {
+                'success': True, 'status': 200, 'body': '<test_mode_no_request>',
+                'reason': 'ok', 'order_id': fake_order_id,
+                'reference_id': None,
+                'confirmation_url': f"https://www.target.com/checkout/confirmation?orderId={fake_order_id}"
+            }
+
         t0 = time.time()
         print(f"[API_PLACE_ORDER] Firing checkout POST")
         try:
@@ -3212,12 +3405,18 @@ class PurchaseExecutor:
         the API fetch first and falls back to DOM only on non-success.
         """
         # ── Phase 4b — API mode ──────────────────────────────────────────────
-        _api_flag = os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
+        # TEST_MODE auto-enables API path so test_app.py exercises the same
+        # fast-path app.py uses. Compose-and-abort guard inside _api_place_order
+        # prevents real orders from firing in TEST_MODE.
+        _api_flag = (
+            os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
+            or self.test_mode
+        )
         print(f"[PAYMENT] Phase 4b dispatch check: test_mode={self.test_mode}, "
-              f"TARGET_API_PLACE_ORDER={_api_flag} → "
-              f"{'API path' if (not self.test_mode and _api_flag) else 'DOM path'}")
-        if not self.test_mode and _api_flag:
-            print("[PAYMENT] TARGET_API_PLACE_ORDER=true — attempting API place-order")
+              f"api_path={_api_flag} → {'API path' if _api_flag else 'DOM path'}")
+        if _api_flag:
+            label = 'TEST_MODE compose-and-abort' if self.test_mode else 'TARGET_API_PLACE_ORDER=true'
+            print(f"[PAYMENT] {label} — attempting API place-order")
             api_result = await self._api_place_order(tab)
             if api_result.get('success'):
                 self._api_order_id = api_result.get('order_id')
@@ -3375,6 +3574,22 @@ class PurchaseExecutor:
             print("[PAYMENT] Starting checkout completion...")
 
             # Skip duplicate wait if the nav wait already confirmed page-ready state.
+            # API-mode shortcut: when API place-order is on (PROD or TEST),
+            # we skipped the /checkout/start nav, so DOM checks would fail.
+            # Go directly to _place_order which fires the API POST. In TEST_MODE
+            # the compose-and-abort guard returns synthetic success without firing.
+            _api_skip = (
+                os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
+                or self.test_mode
+            )
+            if _api_skip:
+                print(f"[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly")
+                po_result = await self._place_order(tab)
+                if self.test_mode:
+                    # TEST_MODE: redirect to cart so the cart-clear cycle can run.
+                    await self._fast_nav(tab, "https://www.target.com/cart")
+                return po_result
+
             if initial_state in ('place_order', 'sac'):
                 ready = initial_state
                 print(f"[PAYMENT] Page already confirmed ready ({ready}) — skipping wait (t+{time.time()-t_payment_start:.3f}s)")
@@ -3400,8 +3615,12 @@ class PurchaseExecutor:
                 if _po_enabled:
                     print("[PAYMENT] FLOW A: Place Order already enabled — no S&C needed")
                     if self.test_mode:
-                        print("[PAYMENT] TEST_MODE: going to cart")
-                        await tab.get("https://www.target.com/cart")
+                        # Run _place_order so the API compose-and-abort path
+                        # exercises header injection, dispatch, and parsing.
+                        # Then redirect to cart for the cart-clear cycle.
+                        po_result = await self._place_order(tab)
+                        print(f"[PAYMENT] TEST_MODE: API path returned {po_result} — going to cart for clear cycle")
+                        await self._fast_nav(tab, "https://www.target.com/cart")
                         return True
                     return await self._place_order(tab)
                 print("[PAYMENT] FLOW A: Place Order visible but disabled — entering S&C loop")
@@ -3486,9 +3705,9 @@ class PurchaseExecutor:
                     if po_btn:
                         print(f"[PAYMENT] *** PLACE ORDER IS ENABLED (step {step + 1}) ***")
                         if self.test_mode:
-                            await asyncio.sleep(1.0)           # pause so state is visible before redirect
-                            print("[PAYMENT] TEST_MODE: going to cart")
-                            await tab.get("https://www.target.com/cart")
+                            po_result = await self._place_order(tab)
+                            print(f"[PAYMENT] TEST_MODE: API path returned {po_result} — going to cart for clear cycle")
+                            await self._fast_nav(tab, "https://www.target.com/cart")
                             return True
                         return await self._place_order(tab)
 
@@ -3502,7 +3721,7 @@ class PurchaseExecutor:
             if self.test_mode:
                 # In test mode success = we tried everything and cycled back to cart.
                 print("[PAYMENT] TEST_MODE: S&C loop exhausted — going to cart")
-                await tab.get("https://www.target.com/cart")
+                await self._fast_nav(tab, "https://www.target.com/cart")
                 return True
 
             # Prod: one final attempt to find Place Order.

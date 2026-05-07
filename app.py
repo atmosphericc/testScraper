@@ -727,8 +727,14 @@ def purchase_status_callback(tcin, status, state):
     if status == 'attempting':
         add_activity_log(f"Starting purchase attempt: {state.get('product_title', tcin)}", "info", "purchase", console=False)
     elif status == 'purchased':
-        order_num = state.get('order_number') or 'unknown'
-        add_activity_log(f"Purchase successful: {state.get('product_title', tcin)} - Order: {order_num}", "success", "purchase")
+        order_num = state.get('order_number')
+        title = state.get('product_title', tcin)
+        if order_num:
+            add_activity_log(f"Purchase successful: {title} - Order: {order_num}", "success", "purchase")
+        elif os.environ.get('TEST_MODE', 'false').lower() == 'true':
+            add_activity_log(f"[TEST_MODE] Cycle complete (no real order placed): {title}", "success", "purchase")
+        else:
+            add_activity_log(f"Purchase successful: {title} - Order: unknown", "success", "purchase")
     elif status == 'failed':
         add_activity_log(f"Purchase failed: {state.get('product_title', tcin)} - {state.get('failure_reason')}", "error", "purchase")
 
@@ -1479,6 +1485,16 @@ def monitoring_loop():
         event_loop=global_event_loop
     )
     print("[MONITORING_LOOP] [OK] PurchaseManagerThread created")
+
+    # Wire stock_monitor onto the manager so it can suspend proxy stock-checks
+    # during a purchase (eliminates browser-CPU contention with ATC POST and
+    # avoids the parallel-request pattern Shape can fingerprint).
+    try:
+        if global_purchase_manager is not None and getattr(stock_thread, 'stock_monitor', None) is not None:
+            global_purchase_manager.stock_monitor = stock_thread.stock_monitor
+            print("[MONITORING_LOOP] Wired stock_monitor onto purchase manager (suspend-during-purchase)")
+    except Exception as _wire_err:
+        print(f"[MONITORING_LOOP] [WARN] Could not wire stock_monitor onto manager: {_wire_err}")
 
     print("[MONITORING_LOOP] Setting monitor_running=True...")
     with shared_data.lock:

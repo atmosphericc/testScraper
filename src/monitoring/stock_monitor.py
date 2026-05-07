@@ -39,6 +39,14 @@ class StockMonitor:
         }
         self.test_data_override = {}
         self._config_write_lock = threading.Lock()
+        # Set by purchase manager via set_suspended() to pause proxy stock-check
+        # workers during a purchase. Eliminates browser-CPU contention with the
+        # ATC POST and removes a recognizable parallel-request pattern.
+        self._suspended = False
+
+    def set_suspended(self, suspended: bool) -> None:
+        """Pause/resume proxy stock-check workers (for during-purchase muting)."""
+        self._suspended = bool(suspended)
 
     def _load_proxies(self):
         proxy_file = "config/proxyIps.json"
@@ -236,13 +244,20 @@ class StockMonitor:
         return threads
 
     def _proxy_worker(self, proxy, initial_delay, callback):
-        """Wait for stagger offset then loop every 15s."""
+        """Wait for stagger offset then loop every 15s.
+
+        Honors self._suspended: skips the actual fetch but keeps the cadence
+        timer running. Set by manager during active purchases so we don't
+        compete with ATC for CPU/network and don't broadcast a recognizable
+        parallel-request pattern to Shape.
+        """
         time.sleep(initial_delay)
         while True:
             try:
-                stock_data = self.check_stock(proxy=proxy)
-                if stock_data:
-                    callback(stock_data)
+                if not self._suspended:
+                    stock_data = self.check_stock(proxy=proxy)
+                    if stock_data:
+                        callback(stock_data)
             except Exception as e:
                 print(f"[PROXY] Worker error: {e}")
             time.sleep(random.uniform(12, 18))

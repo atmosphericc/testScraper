@@ -1034,6 +1034,15 @@ class BulletproofPurchaseManager:
                 # BUGFIX: Set purchase lock to prevent session validation during purchase
                 if target_session_manager:
                     target_session_manager.set_purchase_in_progress(True)
+                # Suspend proxy stock-check workers for the duration of the purchase
+                # so they don't compete with ATC for CPU and don't broadcast a
+                # parallel-request pattern Shape can fingerprint.
+                _stock_monitor = getattr(self, 'stock_monitor', None)
+                if _stock_monitor is not None and hasattr(_stock_monitor, 'set_suspended'):
+                    try:
+                        _stock_monitor.set_suspended(True)
+                    except Exception as _sm_err:
+                        print(f"[PURCHASE] [WARN] stock_monitor.set_suspended(True) failed: {_sm_err}")
 
                 # CRITICAL: Register thread in active purchases tracking
                 # This prevents race condition where next cycle starts before state is saved
@@ -1152,6 +1161,13 @@ class BulletproofPurchaseManager:
                 _sm_to_release = locals().get('target_session_manager') or self.session_manager
                 if _sm_to_release:
                     _sm_to_release.set_purchase_in_progress(False)
+                # Resume proxy stock-check workers
+                _stock_monitor = getattr(self, 'stock_monitor', None)
+                if _stock_monitor is not None and hasattr(_stock_monitor, 'set_suspended'):
+                    try:
+                        _stock_monitor.set_suspended(False)
+                    except Exception as _sm_err:
+                        print(f"[PURCHASE] [WARN] stock_monitor.set_suspended(False) failed: {_sm_err}")
 
                 # CRITICAL: Remove from active purchases tracking
                 # This signals to next cycle that thread has completed
@@ -1310,7 +1326,13 @@ class BulletproofPurchaseManager:
         product_title = state.get('product_title', f'Product {tcin}')
 
         if final_outcome == 'purchased':
-            print(f"[PURCHASE] Purchase successful: {product_title} - Order: {state.get('order_number')}")
+            order_num = state.get('order_number')
+            if order_num:
+                print(f"[PURCHASE] Purchase successful: {product_title} - Order: {order_num}")
+            elif os.environ.get('TEST_MODE', 'false').lower() == 'true':
+                print(f"[PURCHASE] [TEST_MODE] Cycle complete (no real order): {product_title}")
+            else:
+                print(f"[PURCHASE] Purchase successful: {product_title} - Order: unknown")
         else:
             print(f"[PURCHASE] Purchase failed: {product_title} - Reason: {state.get('failure_reason')}")
 
@@ -1446,27 +1468,36 @@ class BulletproofPurchaseManager:
                     print(f"[PURCHASE_CONCURRENCY] Background thread still active: {active_purchase} (running {elapsed:.1f}s, status: {thread_info['status']})")
 
                     # RACE CONDITION FIX: If thread is marked as 'completing' (in cleanup phase),
-                    # poll until it finishes before starting new purchase (cart clearing takes 20-30s)
+                    # poll until it finishes before starting new purchase.
+                    # DEADLOCK FIX (2026-05-07): we are holding self._state_lock here, but
+                    # the worker thread's finally block also needs that lock to del
+                    # _active_purchases[tcin]. With cycles now ~2s, the cleanup thread can
+                    # be mid-finally when we arrive — sleeping under the lock causes a
+                    # 30s timeout deadlock. Release the lock during sleep, re-take briefly
+                    # to re-check membership.
                     if thread_info.get('status') == 'completing':
                         print(f"[PURCHASE_CONCURRENCY] Thread is completing (cleanup phase) - waiting up to 30s...")
 
-                        max_wait = 30.0  # 30 second maximum
-                        poll_interval = 0.5  # Check every 0.5 seconds (was 2s)
+                        max_wait = 30.0
+                        poll_interval = 0.1  # Check every 100ms (cleanup is now <500ms)
                         waited = 0.0
+                        completed = False
 
                         while waited < max_wait:
-                            time.sleep(poll_interval)
+                            self._state_lock.release()
+                            try:
+                                time.sleep(poll_interval)
+                            finally:
+                                self._state_lock.acquire()
                             waited += poll_interval
 
-                            # Check if thread has completed
                             if active_tcin not in self._active_purchases:
                                 print(f"[PURCHASE_CONCURRENCY] Thread completed after {waited:.1f}s - safe to start new purchase")
                                 active_purchase = None  # Clear flag to allow new purchase
+                                completed = True
                                 break
 
-                            print(f"[PURCHASE_CONCURRENCY] Still waiting for cleanup... ({waited:.1f}s / {max_wait}s)")
-                        else:
-                            # Timeout - thread still active after 30s
+                        if not completed:
                             elapsed_total = time.time() - thread_info['started_at']
                             print(f"[PURCHASE_CONCURRENCY] Thread still active after {max_wait}s wait ({elapsed_total:.1f}s total) - will skip new purchases this cycle")
                             # Keep active_purchase set to block new purchases
