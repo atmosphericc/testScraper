@@ -54,3 +54,17 @@ Thumbs.db
 # Claude Code
 .claude/
 logs/api_capture.log
+
+# Aider
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v4/
+
+# Local chat artifacts
+chat-history.json
+chat.js
+
+# Local Node tooling (Claude Code + Qwen routing — not part of the app)
+node_modules/
+package.json
+package-lock.json
