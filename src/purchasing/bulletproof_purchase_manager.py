@@ -1248,12 +1248,15 @@ class BulletproofPurchaseManager:
                 # Until that is done, extract it from result['confirmation_url'] if present, otherwise
                 # fall back to result['order_id'] / result['order_number']. Never generate a fake ID.
                 raw_order_id = result.get('order_id') or result.get('order_number')
+                conf_url = result.get('confirmation_url', '')
                 if not raw_order_id:
-                    conf_url = result.get('confirmation_url', '')
                     if 'orderId=' in conf_url:
                         raw_order_id = conf_url.split('orderId=')[1].split('&')[0]
                 if not raw_order_id:
-                    print(f"[PURCHASE] WARNING: no order_id in executor result for {tcin} — executor must return order_id from confirmation URL (?orderId= param). Storing None.")
+                    # TEST_MODE intentionally lands on /cart (no order placed),
+                    # so a missing order_id is expected there — don't spam the warning.
+                    if not conf_url.rstrip('/').endswith('/cart'):
+                        print(f"[PURCHASE] WARNING: no order_id in executor result for {tcin} — executor must return order_id from confirmation URL (?orderId= param). Storing None.")
                     raw_order_id = None
 
                 final_state = {

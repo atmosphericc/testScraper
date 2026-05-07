@@ -3542,10 +3542,38 @@ if __name__ == '__main__':
                 shared_data.initialization_status = "Checking login status..."
 
             async def check_login():
+                """Verify login status by probing the live target.com tab for
+                the authenticated 'Hi,' greeting (same signal relogin.py uses).
+                session_manager.is_healthy() only reports browser liveness, not
+                auth state — using it alone returned True against an
+                unauthenticated session and the bot would charge ahead and get
+                bounced to /checkout/start at checkout time.
+                """
                 purchase_mgr = _self_module.global_purchase_manager
                 if not purchase_mgr or not purchase_mgr.session_manager:
                     return False
-                return await purchase_mgr.session_manager.is_healthy()
+                sm = purchase_mgr.session_manager
+                if not await sm.is_healthy():
+                    print("[LOGIN_CHECK] session not healthy (browser not alive)")
+                    return False
+                tab = getattr(sm, '_active_tab', None)
+                if tab is None:
+                    print("[LOGIN_CHECK] no active tab on session_manager")
+                    return False
+                try:
+                    current_url = getattr(tab, 'url', '') or ''
+                    if 'target.com' not in current_url:
+                        await tab.get("https://www.target.com")
+                        await asyncio.sleep(2)
+                    hi_elem = await tab.find("Hi,", best_match=True, timeout=4)
+                    if hi_elem:
+                        print("[LOGIN_CHECK] 'Hi,' greeting found — logged in")
+                        return True
+                    print("[LOGIN_CHECK] 'Hi,' greeting NOT found — not logged in (run relogin.py)")
+                    return False
+                except Exception as probe_err:
+                    print(f"[LOGIN_CHECK] probe error: {probe_err} — assuming not logged in")
+                    return False
 
             is_logged_in = False
             login_check_error = None
@@ -3632,9 +3660,20 @@ if __name__ == '__main__':
 
     atexit.register(_kill_browser_now)   # fires when sys.exit() is called
 
+    _shutdown_started = {'flag': False}
+
     def shutdown_handler(signum=None, frame=None):
-        """Graceful shutdown - save session, close browser, persist activity log"""
-        print("\n[SYSTEM] Shutting down gracefully...")
+        """Graceful shutdown - save session, close browser, persist activity log.
+
+        Second Ctrl+C / signal short-circuits to os._exit(1) so the user is never
+        stuck waiting on the timeouts below.
+        """
+        if _shutdown_started['flag']:
+            print("\n[SYSTEM] Force-exit on second Ctrl+C")
+            os._exit(1)
+        _shutdown_started['flag'] = True
+
+        print("\n[SYSTEM] Shutting down gracefully... (press Ctrl+C again to force-exit)")
         add_activity_log("Application shutting down", "info", "system")
 
         sm   = global_purchase_manager.session_manager if global_purchase_manager else None
@@ -3669,21 +3708,25 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"[SYSTEM] StateStore shutdown error: {e}")
 
-        # Save session via async (best effort)
-        if sm and loop and loop.is_running():
-            try:
-                future = asyncio.run_coroutine_threadsafe(sm.save_session_state(), loop)
-                future.result(timeout=5)
-                print("[SYSTEM] Session saved")
-            except Exception as e:
-                print(f"[SYSTEM] Session save error: {e}")
-
-        # Kill browser synchronously — uses taskkill /F /T to kill entire Chrome tree
+        # Kill browser FIRST so any in-flight CDP coroutines fail fast instead of
+        # waiting out the save_session_state timeout below. The on-disk session
+        # is the previous good copy; dumping cookies from a dead Chrome is
+        # impossible anyway.
         _kill_browser_now()
         print("[SYSTEM] Browser closed")
 
+        # Best-effort session save — will fail fast now that browser is dead,
+        # so the timeout is just a backstop.
+        if sm and loop and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(sm.save_session_state(), loop)
+                future.result(timeout=2)
+                print("[SYSTEM] Session saved")
+            except Exception as e:
+                print(f"[SYSTEM] Session save skipped/failed: {e}")
+
         # Stop persistence worker
-        activity_log_persistence_worker.stop(timeout=5)
+        activity_log_persistence_worker.stop(timeout=2)
 
         print("[SYSTEM] Shutdown complete")
         # os._exit bypasses Waitress cleanup that could block sys.exit

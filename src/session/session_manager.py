@@ -221,9 +221,13 @@ class SessionManager:
             except Exception as _ua_err:
                 self.logger.warning(f"[FINGERPRINT] Live UA read failed (non-fatal): {_ua_err}")
 
-            # Enable Network CDP domain
+            # Enable Network CDP domain. tab.send() expects a CDP command
+            # object, not a string — passing the string raised
+            # "'str' object is not an iterator" every startup and Network
+            # was effectively never enabled. Use the proper command (same
+            # pattern walmart/session_manager.py uses).
             try:
-                await self._active_tab.send("Network.enable")
+                await self._active_tab.send(uc.cdp.network.enable())
             except Exception as e:
                 self.logger.warning(f"[INIT] Network.enable warning: {e}")
 

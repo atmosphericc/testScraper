@@ -382,12 +382,34 @@ class PurchaseExecutor:
                     shape_headers = [h for h in header_names if h.lower().startswith('x-')]
                     # FIX 2: only cache POST — GET/OPTIONS/PUT don't carry Shape tokens
                     if method == 'POST' and headers:
-                        prev_shape_count = len([h for h in self._cached_cart_headers if h.lower().startswith('x-')])
-                        self._cached_cart_headers = headers
-                        self._cached_cart_headers_ts = time.time()
+                        # Count Shape rotating tokens only — exclude 'x-application-name'
+                        # which is a static header the bot adds and is also the
+                        # only X-header on page-driven natural fetches. Including
+                        # it would either treat the warmup's 6-token capture as
+                        # "degraded" vs the bot's 7 (warmup TIMEOUT) or fail to
+                        # filter out natural pre_checkout (1 X-header, just
+                        # x-application-name).
+                        def _shape_token_count(hdrs):
+                            return len([h for h in hdrs
+                                        if h.lower().startswith('x-')
+                                        and h.lower() != 'x-application-name'])
+                        prev_shape_count = _shape_token_count(self._cached_cart_headers)
+                        new_shape_count = _shape_token_count(header_names)
+                        # Don't let a degraded capture overwrite a richer cache.
+                        # Page-driven natural pre_checkout fetches arrive with
+                        # zero Shape rotating tokens and would poison the cache
+                        # populated by bot's POSTs / warmup tab (6 tokens).
+                        skip_cache_update = (prev_shape_count > 0 and new_shape_count < prev_shape_count)
+                        if not skip_cache_update:
+                            self._cached_cart_headers = headers
+                            self._cached_cart_headers_ts = time.time()
                         tag = '[CHECKOUT_POST]' if is_checkout_post else ''
                         print(f"[INTERCEPTOR:{label}] {tag} {method} {url[:80]}")
-                        print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers (Shape X-headers: {len(shape_headers)}, prev cache had {prev_shape_count}): {header_names}")
+                        if skip_cache_update:
+                            cache_age = time.time() - self._cached_cart_headers_ts if self._cached_cart_headers_ts else -1
+                            print(f"[INTERCEPTOR:{label}] Preserved cache ({prev_shape_count} Shape tokens, age={cache_age:.1f}s) — new capture had only {new_shape_count} Shape tokens")
+                        else:
+                            print(f"[INTERCEPTOR:{label}] Captured {len(headers)} headers (Shape tokens: {new_shape_count}, prev cache had {prev_shape_count}): {header_names}")
 
                         # CAPTURE-AND-ABORT for Phase 3 research: when
                         # TARGET_API_CAPTURE_PLACE_ORDER=true and this is the
@@ -1410,6 +1432,10 @@ class PurchaseExecutor:
                     self._main_tab_interceptor_active = False
                     if cdp.fetch in tab.enabled_domains:
                         tab.enabled_domains.remove(cdp.fetch)
+                    # Drain dedup set now that no more handler invocations
+                    # can fire — prevents the misleading STATE_CARRY warning
+                    # at the start of the next purchase.
+                    self._cdp_continued_ids.clear()
                     print(f"[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed")
                 except Exception as cleanup_err:
                     print(f"[PURCHASE] CDP interceptor cleanup warning: {cleanup_err}")
@@ -2209,11 +2235,34 @@ class PurchaseExecutor:
         """
         try:
             removed_count = 0
+            _skip_sfl_loop = False
 
             if os.environ.get('TARGET_API_CART_CLEAR', 'false').lower() == 'true':
                 api_result = await self._api_clear_cart(tab)
                 if api_result is True:
-                    print("[CLEAR_CART] API path cleared regular items — running DOM SFL pass")
+                    # Quick SFL bucket probe — if empty, skip the DOM SFL
+                    # pass loop (1.8s of dead CDP polling). KEEP the
+                    # cart-empty verification block at the end of this
+                    # function — it provides ~3s of implicit settle time
+                    # that downstream cycles depend on (without it, Target
+                    # routes the next checkout to /checkout/start with no
+                    # resolvable state). On probe failure, fall through to
+                    # the full DOM SFL pass.
+                    try:
+                        _sfl_count = await tab.evaluate(
+                            'document.querySelectorAll('
+                            '"button[data-test=\\"sflItem-remove\\"],'
+                            ' button[data-test=\\"sfl-item-remove\\"],'
+                            ' [data-testid=\\"sflItem-remove\\"]").length'
+                        )
+                        if isinstance(_sfl_count, (int, float)) and _sfl_count == 0:
+                            _skip_sfl_loop = True
+                    except Exception:
+                        pass
+                    if _skip_sfl_loop:
+                        print("[CLEAR_CART] API path cleared regular items, SFL bucket empty — skipping DOM SFL loop")
+                    else:
+                        print("[CLEAR_CART] API path cleared regular items — running DOM SFL pass")
                     # Skip the regular-item DOM pass; jump to SFL handling below.
                     # We accomplish this by setting a sentinel and falling through.
                     _skip_regular_pass = True
@@ -2277,27 +2326,28 @@ class PurchaseExecutor:
                 ' [data-testid=\\"sflItem-remove\\"]").length'
             )
 
-            for _ in range(10):
-                button_found = False
-                for selector in sfl_remove_selectors:
-                    try:
-                        btn = await tab.select(selector, timeout=0.3)
-                        if btn and await self._is_visible(btn):
-                            current_count = await tab.evaluate(sfl_count_expr)
-                            await btn.apply("(el) => el.click()")
-                            await self._wait_for_function(
-                                tab,
-                                f'({sfl_count_expr}) < {current_count}',
-                                timeout=5.0
-                            )
-                            removed_count += 1
-                            button_found = True
-                            print(f"[CLEAR_CART] Removed 1 saved-for-later item (total removed: {removed_count})")
-                            break
-                    except Exception:
-                        continue
-                if not button_found:
-                    break
+            if not _skip_sfl_loop:
+                for _ in range(10):
+                    button_found = False
+                    for selector in sfl_remove_selectors:
+                        try:
+                            btn = await tab.select(selector, timeout=0.3)
+                            if btn and await self._is_visible(btn):
+                                current_count = await tab.evaluate(sfl_count_expr)
+                                await btn.apply("(el) => el.click()")
+                                await self._wait_for_function(
+                                    tab,
+                                    f'({sfl_count_expr}) < {current_count}',
+                                    timeout=5.0
+                                )
+                                removed_count += 1
+                                button_found = True
+                                print(f"[CLEAR_CART] Removed 1 saved-for-later item (total removed: {removed_count})")
+                                break
+                        except Exception:
+                            continue
+                    if not button_found:
+                        break
 
             # Verify cart is empty
             empty_texts = ["Your cart is empty", "cart is empty"]

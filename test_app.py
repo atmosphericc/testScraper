@@ -82,14 +82,11 @@ if __name__ == '__main__':
                 print(f"[BACKGROUND] [WARNING] Will continue with monitoring anyway")
                 init_error = str(e)
 
-            # Verify global purchase manager was created
-            print(f"[BACKGROUND] [VERIFY] global_purchase_manager: {global_purchase_manager}")
-            print(f"[BACKGROUND] [VERIFY] global_event_loop: {app_module.global_event_loop}")
-
-            if global_purchase_manager:
-                print(f"[BACKGROUND] [VERIFY] session_initialized: {global_purchase_manager.session_initialized}")
-                print(f"[BACKGROUND] [VERIFY] use_real_purchasing: {global_purchase_manager.use_real_purchasing}")
-                print(f"[BACKGROUND] [VERIFY] session_manager: {global_purchase_manager.session_manager}")
+            # Read manager from app_module (canonical location). The
+            # local-scope name `global_purchase_manager` is unbound here.
+            _gpm = app_module.global_purchase_manager
+            if _gpm:
+                print(f"[BACKGROUND] [VERIFY] manager OK — session_initialized={_gpm.session_initialized}, use_real_purchasing={_gpm.use_real_purchasing}, event_loop={'live' if app_module.global_event_loop else 'missing'}")
             else:
                 print("[BACKGROUND] [ERROR] global_purchase_manager is None!")
 
@@ -100,18 +97,46 @@ if __name__ == '__main__':
 
             # Check login status using global event loop
             async def check_login():
-                """Verify login status using global purchase manager"""
+                """Verify login status by probing the live target.com tab for the
+                authenticated 'Hi,' greeting (same signal relogin.py uses).
+                The session_manager.is_healthy() helper only reports browser
+                liveness, not auth state, so previously this returned True
+                against an unauthenticated session and the bot would charge
+                ahead and get bounced to /checkout/start at checkout time.
+                """
                 try:
-                    # Access through app_module to get current value
                     purchase_mgr = app_module.global_purchase_manager
                     if not purchase_mgr or not purchase_mgr.session_manager:
                         print("[ERROR] Session manager not available")
                         return False
 
-                    # Check if logged in by validating session
-                    is_logged_in = await purchase_mgr.session_manager.is_healthy()
+                    sm = purchase_mgr.session_manager
+                    # First gate: browser must be alive at all.
+                    if not await sm.is_healthy():
+                        print("[LOGIN_CHECK] session not healthy (browser not alive)")
+                        return False
 
-                    return is_logged_in
+                    tab = getattr(sm, '_active_tab', None)
+                    if tab is None:
+                        print("[LOGIN_CHECK] no active tab on session_manager")
+                        return False
+
+                    # Probe target.com for the authenticated greeting. Same
+                    # check relogin.py performs.
+                    try:
+                        current_url = getattr(tab, 'url', '') or ''
+                        if 'target.com' not in current_url:
+                            await tab.get("https://www.target.com")
+                            await asyncio.sleep(2)
+                        hi_elem = await tab.find("Hi,", best_match=True, timeout=4)
+                        if hi_elem:
+                            print("[LOGIN_CHECK] 'Hi,' greeting found — logged in")
+                            return True
+                        print("[LOGIN_CHECK] 'Hi,' greeting NOT found — not logged in (run relogin.py)")
+                        return False
+                    except Exception as probe_err:
+                        print(f"[LOGIN_CHECK] probe error: {probe_err} — assuming not logged in")
+                        return False
 
                 except Exception as e:
                     print(f"[ERROR] Login check failed: {e}")
