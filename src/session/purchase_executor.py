@@ -13,7 +13,8 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any
+from collections import deque
+from typing import Optional, Callable, Deque, Dict, Any
 
 from zendriver import cdp
 
@@ -43,7 +44,17 @@ class PurchaseExecutor:
         # Cached auth headers captured from Target's own fetch interceptor
         self._cached_cart_headers: Dict[str, str] = {}
         self._cached_cart_headers_ts: float = 0.0          # timestamp of last capture
+        # Rotating ring of recent Shape captures. Each Shape capture is
+        # consumed by exactly one ATC POST (Target burns the rotating tokens
+        # per request); the second back-to-back POST therefore re-uses an
+        # already-burned set and gets 401. The ring lets us pop a *fresh*
+        # unconsumed capture per attempt, so multiple in-flight retries (or
+        # rapid back-to-back cycles) each get their own token set instead of
+        # re-using the most recent one. maxlen=4 keeps memory bounded; the
+        # warmup tab refills as we drain.
+        self._shape_capture_ring: Deque[Dict[str, Any]] = deque(maxlen=4)
         self._warmup_tab = None                             # single shared background tab
+        self._warmup_tab_cart_ts: float = 0.0               # last successful /cart nav on warmup tab
         self._warmup_in_progress: bool = False              # prevent concurrent warmups
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
@@ -428,6 +439,15 @@ class PurchaseExecutor:
                         if not skip_cache_update:
                             self._cached_cart_headers = headers
                             self._cached_cart_headers_ts = time.time()
+                            # Push to ring so the ATC retry path can rotate to a
+                            # fresh unconsumed token set instead of re-using the
+                            # one we just published (which the impending POST is
+                            # about to burn).
+                            self._shape_capture_ring.append({
+                                'headers': dict(headers),
+                                'ts': self._cached_cart_headers_ts,
+                                'consumed': False,
+                            })
                         tag = '[CHECKOUT_POST]' if is_checkout_post else ''
                         print(f"[INTERCEPTOR:{label}] {tag} {method} {url[:80]}")
                         if skip_cache_update:
@@ -591,6 +611,33 @@ class PurchaseExecutor:
         handler_count = len(handlers.get(cdp.fetch.RequestPaused, []))
         print(f"[INTERCEPTOR:{label}] CDP fetch interceptor ready (total RequestPaused handlers on tab: {handler_count})")
 
+    def _consume_fresh_capture(self) -> bool:
+        """Rotate `_cached_cart_headers` to the freshest unconsumed ring entry.
+
+        Each Target Shape rotating-token set is good for exactly one cart-API
+        POST (the server burns it on use). Reusing the just-published headers
+        on a back-to-back call returns 401. The interceptor pushes every new
+        capture into `_shape_capture_ring`; this method pops the newest entry
+        whose `consumed` flag is False, marks it consumed, and republishes its
+        headers as the active cache view.
+
+        Returns True if a fresh capture was rotated in. Returns False when the
+        ring is exhausted (every entry already consumed) — caller should fall
+        back to `warm_shape_headers()` to refill.
+        """
+        # Newest-first scan: iterate the deque in reverse insertion order.
+        for entry in reversed(self._shape_capture_ring):
+            if entry.get('consumed'):
+                continue
+            entry['consumed'] = True
+            self._cached_cart_headers = entry['headers']
+            self._cached_cart_headers_ts = entry['ts']
+            unused = sum(1 for e in self._shape_capture_ring if not e.get('consumed'))
+            print(f"[SHAPE_RING] Consumed fresh capture (ts age={time.time()-entry['ts']:.1f}s, "
+                  f"{unused} unused remaining of {len(self._shape_capture_ring)})")
+            return True
+        return False
+
     async def warm_shape_headers(self) -> bool:
         """Refresh Shape headers via cart page visit on the shared background warmup tab."""
         if self._warmup_in_progress:
@@ -602,6 +649,11 @@ class PurchaseExecutor:
                 return False
 
             ts_before = self._cached_cart_headers_ts
+            now = time.time()
+            # Skip the cart re-nav if we navigated < 90s ago — Shape JS is
+            # already initialized on this tab, so the dummy POST will pick up
+            # current tokens. Saves ~0.6-1.2s on the post-success refresh path.
+            cart_nav_age = now - self._warmup_tab_cart_ts if self._warmup_tab_cart_ts else 999
 
             if not self._warmup_tab:
                 print("[WARMUP] Opening new background warmup tab...")
@@ -610,15 +662,32 @@ class PurchaseExecutor:
                 )
                 print(f"[WARMUP] Warmup tab opened, URL={self._warmup_tab.url}")
                 await self._setup_cdp_fetch_interceptor(self._warmup_tab, persistent=True)
+                self._warmup_tab_cart_ts = time.time()
+                fresh_nav = True
+            elif cart_nav_age < 90:
+                print(f"[WARMUP] Skipping cart re-nav (last nav {cart_nav_age:.0f}s ago, tab still warm)")
+                fresh_nav = False
             else:
                 current_url = getattr(self._warmup_tab, 'url', 'unknown')
-                print(f"[WARMUP] Navigating warmup tab to cart (was at {current_url})")
+                print(f"[WARMUP] Navigating warmup tab to cart (was at {current_url}, age={cart_nav_age:.0f}s)")
                 await self._warmup_tab.get("https://www.target.com/cart")
+                self._warmup_tab_cart_ts = time.time()
+                fresh_nav = True
 
-            # Wait for Shape JS to initialize, then fire a dummy POST so the CDP
-            # interceptor (REQUEST stage) can capture Shape headers.
-            # Cart page load only triggers GET/PUT — never a POST.
-            await asyncio.sleep(0.8)
+            # On fresh navs, wait briefly for Shape JS to initialize before the
+            # dummy POST. Use a readyState poll (capped at 0.4s) instead of an
+            # unconditional 0.8s sleep — cart page typically reaches `complete`
+            # in 150-300ms after a fast nav.
+            if fresh_nav:
+                _ready_deadline = time.time() + 0.4
+                while time.time() < _ready_deadline:
+                    try:
+                        rs = await self._warmup_tab.evaluate("document.readyState")
+                        if rs == "complete":
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.05)
             print("[WARMUP] Firing dummy POST to trigger Shape header capture...")
             await self._warmup_tab.evaluate("""
                 fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
@@ -819,6 +888,11 @@ class PurchaseExecutor:
 
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
+            # Rotate to a fresh unconsumed Shape capture if one is sitting in the
+            # ring. The active `_cached_cart_headers` may have been burned by a
+            # prior cycle's POST; the warmup tab refills the ring in the
+            # background, so a newer entry is often already available.
+            self._consume_fresh_capture()
             headers_age = time.time() - self._cached_cart_headers_ts
 
             # PROACTIVE REFRESH: if cached headers approaching TTL (60s+), refresh warmup tab
@@ -827,6 +901,7 @@ class PurchaseExecutor:
                 print(f"[PURCHASE] Shape headers approaching TTL (age={headers_age:.0f}s) — refreshing warmup tab")
                 warmup_ok = await self.warm_shape_headers()
                 if warmup_ok:
+                    self._consume_fresh_capture()
                     headers_age = time.time() - self._cached_cart_headers_ts
                     print(f"[PURCHASE] Warmup refresh complete, new headers age={headers_age:.0f}s")
                 else:
@@ -1001,13 +1076,22 @@ class PurchaseExecutor:
                     skip_signal_wait = True
                 elif fast_status == 401:
                     # Second attempt — brief jittered sleep to let bucket refill, then retry.
-                    _jitter = 0.6 + (time.time() % 0.5)  # 0.6-1.1s
+                    # Tightened from 0.6-1.1s in v16: empirically the per-Device-ID bucket
+                    # refills sub-300ms once a fresh Shape capture lands, so the longer
+                    # human-shaped jitter was over-conservative for an API-only retry.
+                    _jitter = 0.2 + (time.time() % 0.2)  # 0.2-0.4s
                     print(f"[PURCHASE] ATC fast-retry still 401 — sleeping {_jitter:.2f}s before second attempt (t={time.time()-start_time:.2f}s)")
                     await asyncio.sleep(_jitter)
-                    try:
-                        await self.warm_shape_headers()
-                    except Exception as warm_err:
-                        print(f"[PURCHASE] Second warmup before retry-2 failed: {warm_err}")
+                    # Try the ring first — the failed retry-1's request was
+                    # itself observed by the interceptor and pushed a fresh
+                    # capture. Skip the explicit warmup round-trip in that
+                    # common case; only re-warm if the ring is empty.
+                    if not self._consume_fresh_capture():
+                        try:
+                            await self.warm_shape_headers()
+                            self._consume_fresh_capture()
+                        except Exception as warm_err:
+                            print(f"[PURCHASE] Second warmup before retry-2 failed: {warm_err}")
                     fast_retry2 = await _do_fast_retry()
                     fast_status2 = fast_retry2.get('status', 0) if isinstance(fast_retry2, dict) else 0
                     if fast_status2 in (200, 201):
