@@ -1,0 +1,951 @@
+
+###########################################################################
+  END-TO-END OVERNIGHT SIMULATION
+###########################################################################
+  IDLE_MINUTES:        30.0
+  TARGET_TEST_TCIN:    50270379
+  MONITOR_INTERVAL_S:  15.0
+  WARMUP_INTERVAL_S:   24.0
+  PHASE3_CYCLES:       3
+
+  [caffeinate] Mac sleep prevention active (PID 5498)
+
+===========================================================================
+  PHASE 0 — Pre-flight state-file regression check
+===========================================================================
+  PASS — no stuck states or fake order IDs
+
+  [12:31:35] Launching browser...
+[SESSION_INIT] Using nodriver persistent profile: nodriver-profile
+[SESSION_INIT] Cookies persist via Chrome profile automatically!
+[SESSION_INIT] UNDETECTED CHROME MODE - no automation detection!
+[SESSION_INIT] Browser launched - STEALTH MODE ACTIVE!
+[SESSION_INIT] Chrome PID stored: 5499
+[SESSION_INIT] Using existing tab (1 tabs open)
+[SESSION_INIT] UA synced from live Chrome: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like 
+[SESSION_INIT] Injected 88/88 cookies from /Users/Eric/Desktop/testScraper/target.json
+[SESSION_INIT] Navigating to target.com...
+[SESSION_INIT] Navigation successful! URL: https://www.target.com/
+[SESSION_INIT] Page rendering complete
+[SESSION_INIT] Browser ready at target.com!
+
+[SESSION_INIT] Setting up CDP cookie interception...
+[CDP_COOKIE] Cookie interception system activated!
+[SESSION_INIT] CDP cookie interception ready!
+[SESSION_INIT] Starting cookie watchdog...
+[SESSION_INIT] Cookie watchdog active!
+  [12:31:38] Browser ready
+[PROXY] Loaded 50 proxies — rate: 3.33 checks/sec
+  [12:31:38] Priming cache...
+[WARMUP] Opening new background warmup tab...
+[WARMUP] Warmup tab opened, URL=https://www.target.com/cart
+[INTERCEPTOR:warmup] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:warmup] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:warmup] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM — skipping cache (not POST, has 6 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[WARMUP] TIMEOUT after 1.6s — cache not refreshed (POST may have been intercepted but skipped by preserve rule; cache age=-1s)
+[WARMUP] Stale headers available: False, age=-1s
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[WARMUP] Skipping cart re-nav (last nav 5s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 0): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  Cache primed: 6 Shape tokens
+
+===========================================================================
+  PHASE 1 — Idle with LIVE monitor + warmup (30.0 min)
+===========================================================================
+  Test will flip in_stock_flag at end of idle to trigger detection
+  Real RedSky checks every 15.0s
+  Real warmup every 24.0s
+
+  [12:31:43  -1.0min] MONITOR cycle 1: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 5s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:31:43  -1.0min] WARMUP cycle 1: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:31:58  -0.7min] MONITOR cycle 2: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 30s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:32:07  -0.6min] WARMUP cycle 2: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:32:14  -0.5min] MONITOR cycle 3: in_stock=True, status=IN_STOCK
+  [12:32:30  -0.2min] MONITOR cycle 4: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 54s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:32:32  -0.2min] WARMUP cycle 3: UPDATED, headers_age=0.1s, shape_tokens=6
+[WATCHDOG] 'accessToken' is SESSION cookie - needs fixing!
+[WATCHDOG] 'idToken' is SESSION cookie - needs fixing!
+[WATCHDOG] 'login-session' is SESSION cookie - needs fixing!
+[WATCHDOG] Fixed 'accessToken' - now persistent for 30 days
+[WATCHDOG] Fixed 'idToken' - now persistent for 30 days
+[WATCHDOG] Fixed 'login-session' - now persistent for 30 days
+  [12:32:45   0.0min] MONITOR cycle 5: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 78s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:32:56   0.2min] WARMUP cycle 4: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:33:01   0.3min] MONITOR cycle 6: in_stock=True, status=IN_STOCK
+  [12:33:16   0.6min] MONITOR cycle 7: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=102s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:33:21   0.6min] WARMUP cycle 5: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.2s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.9s
+  [12:33:32   0.8min] MONITOR cycle 8: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:33:45   1.0min] WARMUP cycle 6: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:33:47   1.1min] MONITOR cycle 9: in_stock=True, status=IN_STOCK
+  [12:34:02   1.3min] MONITOR cycle 10: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:34:09   1.4min] WARMUP cycle 7: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:34:18   1.6min] MONITOR cycle 11: in_stock=True, status=IN_STOCK
+  [12:34:34   1.8min] MONITOR cycle 12: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:34:34   1.9min] WARMUP cycle 8: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:34:49   2.1min] MONITOR cycle 13: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:34:59   2.3min] WARMUP cycle 9: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.1s
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.4s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.1s
+  [12:35:05   2.4min] MONITOR cycle 14: in_stock=True, status=IN_STOCK
+  [12:35:20   2.6min] MONITOR cycle 15: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:35:23   2.7min] WARMUP cycle 10: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:35:36   2.9min] MONITOR cycle 16: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:35:48   3.1min] WARMUP cycle 11: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:35:51   3.1min] MONITOR cycle 17: in_stock=True, status=IN_STOCK
+  [12:36:07   3.4min] MONITOR cycle 18: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:36:12   3.5min] WARMUP cycle 12: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:36:22   3.7min] MONITOR cycle 19: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=97s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.0s
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:36:37   3.9min] WARMUP cycle 13: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.8s
+  [12:36:38   3.9min] MONITOR cycle 20: in_stock=True, status=IN_STOCK
+  [12:36:53   4.2min] MONITOR cycle 21: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:37:01   4.3min] WARMUP cycle 14: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:37:08   4.4min] MONITOR cycle 22: in_stock=True, status=IN_STOCK
+  [12:37:23   4.7min] MONITOR cycle 23: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:37:25   4.7min] WARMUP cycle 15: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:37:39   4.9min] MONITOR cycle 24: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:37:50   5.1min] WARMUP cycle 16: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:37:55   5.2min] MONITOR cycle 25: in_stock=True, status=IN_STOCK
+  [12:38:10   5.5min] MONITOR cycle 26: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.1s
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:38:15   5.5min] WARMUP cycle 17: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.7s
+  [12:38:26   5.7min] MONITOR cycle 27: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:38:39   5.9min] WARMUP cycle 18: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:38:41   6.0min] MONITOR cycle 28: in_stock=True, status=IN_STOCK
+  [12:38:57   6.2min] MONITOR cycle 29: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:39:04   6.3min] WARMUP cycle 19: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:39:12   6.5min] MONITOR cycle 30: in_stock=True, status=IN_STOCK
+  [12:39:27   6.7min] MONITOR cycle 31: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:39:28   6.8min] WARMUP cycle 20: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:39:43   7.0min] MONITOR cycle 32: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.0s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.1s
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:39:53   7.2min] WARMUP cycle 21: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.8s
+  [12:39:58   7.3min] MONITOR cycle 33: in_stock=True, status=IN_STOCK
+  [12:40:14   7.5min] MONITOR cycle 34: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:40:18   7.6min] WARMUP cycle 22: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:40:29   7.8min] MONITOR cycle 35: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:40:42   8.0min] WARMUP cycle 23: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:40:45   8.0min] MONITOR cycle 36: in_stock=True, status=IN_STOCK
+  [12:41:00   8.3min] MONITOR cycle 37: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:41:06   8.4min] WARMUP cycle 24: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:41:15   8.5min] MONITOR cycle 38: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=97s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.1s
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:41:31   8.8min] WARMUP cycle 25: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.8s
+  [12:41:32   8.8min] MONITOR cycle 39: in_stock=True, status=IN_STOCK
+  [12:41:47   9.1min] MONITOR cycle 40: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:41:55   9.2min] WARMUP cycle 26: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:42:03   9.3min] MONITOR cycle 41: in_stock=True, status=IN_STOCK
+  [12:42:18   9.6min] MONITOR cycle 42: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:42:19   9.6min] WARMUP cycle 27: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:42:34   9.9min] MONITOR cycle 43: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:42:44  10.0min] WARMUP cycle 28: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:42:49  10.1min] MONITOR cycle 44: in_stock=True, status=IN_STOCK
+  [12:43:05  10.4min] MONITOR cycle 45: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=97s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.1s
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:43:09  10.4min] WARMUP cycle 29: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.9s
+  [12:43:21  10.6min] MONITOR cycle 46: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:43:33  10.8min] WARMUP cycle 30: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:43:36  10.9min] MONITOR cycle 47: in_stock=True, status=IN_STOCK
+  [12:43:51  11.1min] MONITOR cycle 48: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:43:57  11.2min] WARMUP cycle 31: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:44:07  11.4min] MONITOR cycle 49: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:44:22  11.6min] WARMUP cycle 32: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:44:22  11.7min] MONITOR cycle 50: in_stock=True, status=IN_STOCK
+  [12:44:38  11.9min] MONITOR cycle 51: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:44:47  12.1min] WARMUP cycle 33: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.1s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.0s
+  [12:44:53  12.2min] MONITOR cycle 52: in_stock=True, status=IN_STOCK
+  [12:45:09  12.4min] MONITOR cycle 53: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:45:11  12.5min] WARMUP cycle 34: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:45:25  12.7min] MONITOR cycle 54: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:45:35  12.9min] WARMUP cycle 35: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:45:40  13.0min] MONITOR cycle 55: in_stock=True, status=IN_STOCK
+  [12:45:55  13.2min] MONITOR cycle 56: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:45:59  13.3min] WARMUP cycle 36: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:46:11  13.5min] MONITOR cycle 57: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:46:24  13.7min] WARMUP cycle 37: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.3s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.0s
+  [12:46:26  13.7min] MONITOR cycle 58: in_stock=True, status=IN_STOCK
+  [12:46:42  14.0min] MONITOR cycle 59: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:46:49  14.1min] WARMUP cycle 38: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:46:57  14.2min] MONITOR cycle 60: in_stock=True, status=IN_STOCK
+  [12:47:13  14.5min] MONITOR cycle 61: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 50s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:47:13  14.5min] WARMUP cycle 39: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:47:28  14.8min] MONITOR cycle 62: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:47:38  14.9min] WARMUP cycle 40: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:47:44  15.0min] MONITOR cycle 63: in_stock=True, status=IN_STOCK
+  [12:48:00  15.3min] MONITOR cycle 64: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.0s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:48:03  15.3min] WARMUP cycle 41: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.3s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.0s
+  [12:48:15  15.5min] MONITOR cycle 65: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:48:28  15.8min] WARMUP cycle 42: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:48:31  15.8min] MONITOR cycle 66: in_stock=True, status=IN_STOCK
+  [12:48:46  16.1min] MONITOR cycle 67: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:48:52  16.2min] WARMUP cycle 43: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:49:01  16.3min] MONITOR cycle 68: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:49:16  16.6min] WARMUP cycle 44: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:49:17  16.6min] MONITOR cycle 69: in_stock=True, status=IN_STOCK
+  [12:49:32  16.8min] MONITOR cycle 70: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.6s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:49:42  17.0min] WARMUP cycle 45: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.3s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.2s
+  [12:49:48  17.1min] MONITOR cycle 71: in_stock=True, status=IN_STOCK
+  [12:50:03  17.3min] MONITOR cycle 72: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:50:06  17.4min] WARMUP cycle 46: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:50:19  17.6min] MONITOR cycle 73: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 50s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:50:30  17.8min] WARMUP cycle 47: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:50:34  17.9min] MONITOR cycle 74: in_stock=True, status=IN_STOCK
+  [12:50:49  18.1min] MONITOR cycle 75: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:50:54  18.2min] WARMUP cycle 48: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:51:05  18.4min] MONITOR cycle 76: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.0s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[WARMUP] Shape headers captured successfully (age=0.0s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:51:20  18.6min] WARMUP cycle 49: UPDATED, headers_age=0.0s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.3s
+  [12:51:21  18.6min] MONITOR cycle 77: in_stock=True, status=IN_STOCK
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.3s
+  [12:51:36  18.9min] MONITOR cycle 78: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:51:44  19.0min] WARMUP cycle 50: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:51:52  19.2min] MONITOR cycle 79: in_stock=True, status=IN_STOCK
+  [12:52:08  19.4min] MONITOR cycle 80: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:52:09  19.4min] WARMUP cycle 51: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:52:23  19.7min] MONITOR cycle 81: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:52:33  19.8min] WARMUP cycle 52: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:52:39  19.9min] MONITOR cycle 82: in_stock=True, status=IN_STOCK
+  [12:52:54  20.2min] MONITOR cycle 83: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.9s
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Preserved cache (6 Shape tokens, age=24.9s) — new capture had only 0 Shape tokens
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.3s
+[WARMUP] TIMEOUT after 1.5s — cache not refreshed (POST may have been intercepted but skipped by preserve rule; cache age=26s)
+[WARMUP] Stale headers available: True, age=26s
+  [12:52:59  20.3min] WARMUP cycle 53: PRESERVED, headers_age=26.4s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=26.5s
+  [12:53:09  20.4min] MONITOR cycle 84: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 26s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:53:23  20.7min] WARMUP cycle 54: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:53:25  20.7min] MONITOR cycle 85: in_stock=True, status=IN_STOCK
+  [12:53:40  21.0min] MONITOR cycle 86: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 50s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:53:47  21.1min] WARMUP cycle 55: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:53:56  21.2min] MONITOR cycle 87: in_stock=True, status=IN_STOCK
+  [12:54:11  21.5min] MONITOR cycle 88: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:54:12  21.5min] WARMUP cycle 56: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:54:26  21.7min] MONITOR cycle 89: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=99s)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:54:37  21.9min] WARMUP cycle 57: UPDATED, headers_age=0.1s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.2s
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.8s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=2.0s
+  [12:54:42  22.0min] MONITOR cycle 90: in_stock=True, status=IN_STOCK
+  [12:54:58  22.2min] MONITOR cycle 91: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:55:01  22.3min] WARMUP cycle 58: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:55:13  22.5min] MONITOR cycle 92: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:55:26  22.7min] WARMUP cycle 59: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:55:29  22.8min] MONITOR cycle 93: in_stock=True, status=IN_STOCK
+  [12:55:44  23.0min] MONITOR cycle 94: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:55:50  23.1min] WARMUP cycle 60: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:56:00  23.3min] MONITOR cycle 95: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.0s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[WARMUP] Shape headers captured successfully (age=0.0s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:56:15  23.5min] WARMUP cycle 61: UPDATED, headers_age=0.0s, shape_tokens=6
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=0.6s
+  [12:56:16  23.6min] MONITOR cycle 96: in_stock=True, status=IN_STOCK
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=1.8s
+  [12:56:32  23.8min] MONITOR cycle 97: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 25s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:56:40  23.9min] WARMUP cycle 62: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:56:47  24.1min] MONITOR cycle 98: in_stock=True, status=IN_STOCK
+  [12:57:03  24.3min] MONITOR cycle 99: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 49s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:57:04  24.3min] WARMUP cycle 63: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:57:19  24.6min] MONITOR cycle 100: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 73s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:57:28  24.8min] WARMUP cycle 64: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:57:34  24.9min] MONITOR cycle 101: in_stock=True, status=IN_STOCK
+  [12:57:49  25.1min] MONITOR cycle 102: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=98s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.8s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Preserved cache (6 Shape tokens, age=24.9s) — new capture had only 0 Shape tokens
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.4s
+[WARMUP] TIMEOUT after 1.5s — cache not refreshed (POST may have been intercepted but skipped by preserve rule; cache age=26s)
+[WARMUP] Stale headers available: True, age=26s
+  [12:57:55  25.2min] WARMUP cycle 65: PRESERVED, headers_age=26.4s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=27.0s
+  [12:58:05  25.4min] MONITOR cycle 103: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 26s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:58:19  25.6min] WARMUP cycle 66: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:58:21  25.6min] MONITOR cycle 104: in_stock=True, status=IN_STOCK
+  [12:58:36  25.9min] MONITOR cycle 105: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 50s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:58:43  26.0min] WARMUP cycle 67: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:58:51  26.1min] MONITOR cycle 106: in_stock=True, status=IN_STOCK
+  [12:59:07  26.4min] MONITOR cycle 107: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 74s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:59:07  26.4min] WARMUP cycle 68: UPDATED, headers_age=0.1s, shape_tokens=6
+  [12:59:22  26.7min] MONITOR cycle 108: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=99s)
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=24.9s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Preserved cache (6 Shape tokens, age=25.5s) — new capture had only 0 Shape tokens
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.7s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=26.7s
+[WARMUP] TIMEOUT after 1.5s — cache not refreshed (POST may have been intercepted but skipped by preserve rule; cache age=27s)
+[WARMUP] Stale headers available: True, age=27s
+  [12:59:34  26.9min] WARMUP cycle 69: PRESERVED, headers_age=27.0s, shape_tokens=6
+  [12:59:37  26.9min] MONITOR cycle 109: in_stock=True, status=IN_STOCK
+  [12:59:53  27.2min] MONITOR cycle 110: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 26s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [12:59:58  27.3min] WARMUP cycle 70: UPDATED, headers_age=0.1s, shape_tokens=6
+  [13:00:08  27.4min] MONITOR cycle 111: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 51s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [13:00:23  27.7min] WARMUP cycle 71: UPDATED, headers_age=0.1s, shape_tokens=6
+  [13:00:24  27.7min] MONITOR cycle 112: in_stock=True, status=IN_STOCK
+  [13:00:39  27.9min] MONITOR cycle 113: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 75s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [13:00:47  28.1min] WARMUP cycle 72: UPDATED, headers_age=0.1s, shape_tokens=6
+  [13:00:55  28.2min] MONITOR cycle 114: in_stock=True, status=IN_STOCK
+  [13:01:10  28.5min] MONITOR cycle 115: in_stock=True, status=IN_STOCK
+[WARMUP] Navigating warmup tab to cart (was at https://www.target.com/cart, age=99s)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Preserved cache (6 Shape tokens, age=24.9s) — new capture had only 0 Shape tokens
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.0s
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=25.3s
+[WARMUP] TIMEOUT after 1.5s — cache not refreshed (POST may have been intercepted but skipped by preserve rule; cache age=26s)
+[WARMUP] Stale headers available: True, age=26s
+  [13:01:13  28.5min] WARMUP cycle 73: PRESERVED, headers_age=26.4s, shape_tokens=6
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 15 headers, 6 Shape tokens, age=26.6s
+  [13:01:26  28.7min] MONITOR cycle 116: in_stock=True, status=IN_STOCK
+[WARMUP] Skipping cart re-nav (last nav 26s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+  [13:01:38  28.9min] WARMUP cycle 74: UPDATED, headers_age=0.1s, shape_tokens=6
+  [13:01:42  29.0min] MONITOR cycle 117: in_stock=True, status=IN_STOCK
+
+  [13:01:43] >>> IDLE PERIOD COMPLETE — flipping in_stock_flag to True
+  [13:01:57  29.2min] MONITOR cycle 118: in_stock=True, status=IN_STOCK
+  [13:01:57] >>> DETECTION TRIGGERED (real_in_stock=True, flag=True)
+
+===========================================================================
+  PHASE 1 REPORT
+===========================================================================
+  MONITOR:
+    calls/successes/failures:    118/118/0
+    max silence between successes: 16.5s
+    violations:                   0
+  WARMUP:
+    calls/updates/preserves/fails: 74/70/4/0
+    max consecutive preserves:     1
+    max headers_age observed:      27.0s
+    violations:                    0
+  DETECTION → PURCHASE:
+    detection fired:    True
+    ATC HTTP status:    None
+    ATC elapsed:        None
+
+  RESULT: PHASE 1 PASSED — monitor + warmup stayed healthy
+
+===========================================================================
+  PHASE 2 — In-stock signal injected, detection fired
+===========================================================================
+  Detection time: 13:01:57
+  Stock data: {'50270379': {'title': 'Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct', 'in_stock': True, 'available_to_promise_quantity': 99, 'max_qty': 1, 'last_checked': '2026-05-08T13:01:57.349223', 'status_detail': 'IN_STOCK'}}
+
+===========================================================================
+  PHASE 3 — Multi-cycle purchase pipeline (N=3 attempts, NO real orders)
+===========================================================================
+
+  ─── CYCLE 1/3 ────────────────────────────────
+  [13:01:57] Firing execute_purchase('50270379', quantity=1)
+[STATE_CARRY] WARNING: 137 stale cdp_continued_ids from prior purchase — cleared
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/
+[PURCHASE] Navigating to https://www.target.com/p/-/A-50270379 (PDP qty unknown)
+[PURCHASE] Navigation returned in 0.82s
+[PURCHASE] purchase_limit from PDP fallback: 10 (was qty=1, lookup 0.15s)
+[SHAPE_RING] Consumed fresh capture (ts age=20.3s, 3 unused remaining of 4)
+[PURCHASE] Injecting Shape headers (age=20s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.97s)
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 15 headers, 6 Shape tokens, age=20.3s
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 400 body='{"message":"Items cannot be added to cart as max purchase limit exceeded","code":"MAX_PURCHASE_LIMIT_EXCEEDED"}' (t=2.24s)
+[PURCHASE] ATC 400 EXCEEDED — self-heal: clear_cart + retry (t=2.24s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.6s
+[SHAPE_RING] Consumed fresh capture (ts age=11.5s, 2 unused remaining of 4)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Self-heal qty=10 returned 400 — retrying qty=1 (t=12.76s)
+[SHAPE_RING] Consumed fresh capture (ts age=0.2s, 1 unused remaining of 4)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Self-heal qty=1 also failed (400) — marking 50270379 throttled for 90s
+[PURCHASE] Fetch ATC not confirmed, trying button click...
+[SHIPPING] Checking for fulfillment options...
+[SHIPPING] Clicked Shipping option
+[BUTTON_FIND] Searching for add-to-cart/preorder button...
+[BUTTON_FIND] Could not find add-to-cart/preorder button
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+  Cycle 1 result: ATC=400, elapsed=14.8s, reason=button_not_found
+  Gap: sleeping 8.0s to let cart settle before next cycle...
+
+  ─── CYCLE 2/3 ────────────────────────────────
+  [13:02:20] Firing execute_purchase('50270379', quantity=1)
+[PURCHASE] 50270379 in throttle cooldown (80s remaining) — bailing fast
+  Cycle 2 result: ATC=None, elapsed=0.0s, reason=tcin_throttled_cooldown
+  Gap: sleeping 8.0s to let cart settle before next cycle...
+
+  ─── CYCLE 3/3 ────────────────────────────────
+  [13:02:28] Firing execute_purchase('50270379', quantity=1)
+[PURCHASE] 50270379 in throttle cooldown (72s remaining) — bailing fast
+  Cycle 3 result: ATC=None, elapsed=0.0s, reason=tcin_throttled_cooldown
+
+  Multi-cycle summary:
+    ✗ cycle 1: ATC=400, 14.8s, reason=button_not_found
+    ✗ cycle 2: ATC=None, 0.0s, reason=tcin_throttled_cooldown
+    ✗ cycle 3: ATC=None, 0.0s, reason=tcin_throttled_cooldown
+  Place Order stub calls: api=0, dom=0
+
+===========================================================================
+  FINAL REPORT
+===========================================================================
+  MONITOR:
+    calls/successes/failures:    118/118/0
+    max silence between successes: 16.5s
+    violations:                   0
+  WARMUP:
+    calls/updates/preserves/fails: 74/70/4/0
+    max consecutive preserves:     1
+    max headers_age observed:      27.0s
+    violations:                    0
+  DETECTION → PURCHASE:
+    detection fired:    True
+    ATC attempts (3):
+      ✗ cycle 1: HTTP 400, 14.8s, reason=button_not_found
+      ✗ cycle 2: HTTP None, 0.0s, reason=tcin_throttled_cooldown
+      ✗ cycle 3: HTTP None, 0.0s, reason=tcin_throttled_cooldown
+    violations:
+      - cycle 1: ATC status 400 (expected 200/201)
+      - cycle 2: ATC status None (expected 200/201)
+      - cycle 3: ATC status None (expected 200/201)
+
+
+###########################################################################
+  RESULT: PHASE 2/3 FAILED — see violations
+###########################################################################
+Unhandled exception in asyncio atexit callback <function Browser.create.<locals>.browser_atexit at 0x10bf00400>: Executor shutdown has been called

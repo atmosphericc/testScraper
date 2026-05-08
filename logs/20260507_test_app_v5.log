@@ -1,0 +1,1369 @@
+============================================================
+TEST MODE DASHBOARD - SAFE TESTING ENABLED
+============================================================
+[MODE] TEST - Will stop before final purchase button
+[SAFETY] No actual purchases will be completed
+[TESTING] Full flow tested: cart -> checkout -> payment -> STOP
+[FEATURES] Real-time updates, infinite purchase loops
+[REALTIME] Server-Sent Events for immediate UI updates
+============================================================
+
+INFO: For PRODUCTION mode (actual purchases), use: python app.py
+============================================================
+[SYSTEM] Loaded 500 activity log entries
+[14:45:06] [SYSTEM] TEST MODE: Dashboard initialized (safe testing mode)
+[TEST_MODE] Using REAL API calls for live stock data
+[TEST_MODE] Endless loop enabled: purchases reset after each iteration
+[14:45:06] [SYSTEM] TEST MODE: Using real API with endless loop (resets all purchases)
+
+============================================================
+SESSION CHECK - Verifying login status
+============================================================
+[STARTUP] Starting background initialization thread...
+[STARTUP] Flask will start IMMEDIATELY - dashboard accessible at http://127.0.0.1:5001
+[STARTUP] Browser initialization continues in background...
+============================================================
+[BACKGROUND] ═══════════════════════════════════════════════
+[FLASK] Starting Flask server NOW...
+[WAITRESS] Starting production WSGI server for SSE streaming...
+[WAITRESS] Dashboard accessible at http://127.0.0.1:5001
+[BACKGROUND] Starting background initialization...
+[BACKGROUND] ═══════════════════════════════════════════════
+[BACKGROUND] [STEP 1/4] Initializing global purchase manager...
+[SYSTEM] ═══════════════════════════════════════════════
+[SYSTEM] Initializing global purchase manager...
+[SYSTEM] ═══════════════════════════════════════════════
+[EVENT_LOOP] Starting global event loop in background thread...
+[EVENT_LOOP] ✅ Global event loop thread started
+================================================================================
+[INIT] BulletproofPurchaseManager Configuration:
+[INIT]   enable_persistent_session: True
+[INIT]   force_mock_mode: False
+[INIT]   use_real_purchasing: True
+[INIT]   TEST_MODE: true
+================================================================================
+[STARTUP_CLEANUP] Checking 1 purchase states for stale entries...
+[STARTUP_CLEANUP] Cleaned up stale ATTEMPTING state: 50270379 was attempting for 1057.5s (threshold: 60s)
+[STARTUP_CLEANUP] ✅ Cleaned up 1 stale purchase state(s)
+[SESSION] [INIT] Initializing persistent session system...
+[SESSION] [OK] Session system components created successfully (Pool(size=1, sticky=0), primary=W1/primary)
+[SESSION] [INFO] Browser will be launched when _ensure_session_ready() is called
+[SYSTEM] ✅ Global purchase manager created
+[SYSTEM] Initializing browser session (timeout: 90s)...
+[SESSION_DEBUG] _ensure_session_ready() called
+[SESSION_DEBUG] session_initialized=False
+[SESSION_DEBUG] session_manager=<src.session.session_manager.SessionManager object at 0x10fa53d10>
+[SESSION_DEBUG] session_manager.browser=None
+[SESSION] ⚡ Browser NOT running - launching now (GUARANTEED)...
+[SESSION] ═══════════════════════════════════════════════
+[SESSION] Starting session initialization (Pool(size=1, sticky=0))...
+[SESSION] ═══════════════════════════════════════════════
+[SESSION] [STEP 1/3] Checking per-worker session files...
+[SESSION] [OK] ✅ W1/primary: 85 cookies in target.json
+[SESSION] [STEP 2/3] ⚡ Launching all worker browsers concurrently...
+[SESSION] ⚡ Workers: ['W1/primary']
+[SESSION] ⚡ W1/primary: bound to global event loop
+[SESSION_INIT] Using nodriver persistent profile: nodriver-profile
+[SESSION_INIT] Cookies persist via Chrome profile automatically!
+[SESSION_INIT] UNDETECTED CHROME MODE - no automation detection!
+[SESSION_INIT] Browser launched - STEALTH MODE ACTIVE!
+[SESSION_INIT] Chrome PID stored: 58132
+[SESSION_INIT] Using existing tab (1 tabs open)
+[SESSION_INIT] UA synced from live Chrome: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like 
+[SESSION_INIT] Injected 85/85 cookies from target.json
+[SESSION_INIT] Navigating to target.com...
+[SESSION_INIT] Navigation successful! URL: https://www.target.com/
+[SESSION_INIT] Page rendering complete
+[SESSION_INIT] Browser ready at target.com!
+
+[SESSION_INIT] Setting up CDP cookie interception...
+[CDP_COOKIE] Cookie interception system activated!
+[SESSION_INIT] CDP cookie interception ready!
+[SESSION_INIT] Starting cookie watchdog...
+[SESSION_INIT] Cookie watchdog active!
+[WARMUP] Opening new background warmup tab...
+[WARMUP] Warmup tab opened, URL=https://www.target.com/cart
+[INTERCEPTOR:warmup] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:warmup] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:warmup] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 3s)...
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 0 headers, 0 Shape tokens, age=-1.0s
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 9 headers (Shape tokens: 0, prev cache had 0): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.0s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[SESSION] [OK] ✅ W1/primary: init 2.38s, warmup 1.13s
+[SESSION] [STEP 3/3] Keep-alive disabled - stock API calls maintain session
+[SESSION] ═══════════════════════════════════════════════
+[SESSION] ✅ 1/1 workers ready in 3.5s total (concurrent init)
+[SESSION] ═══════════════════════════════════════════════
+[SYSTEM] ✅ Browser session initialized successfully
+[14:45:10] [SYSTEM] Global purchase manager initialized - browser ready
+[SYSTEM] ═══════════════════════════════════════════════
+[BACKGROUND] [VERIFY] manager OK — session_initialized=True, use_real_purchasing=True, event_loop=live
+[BACKGROUND] [STEP 2/4] Checking login status...
+[BACKGROUND] [STEP 2/4] Running async login check (timeout: 90s)...
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 9 headers, 0 Shape tokens, age=0.4s
+[INTERCEPTOR:warmup] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 9 headers, 0 Shape tokens, age=0.5s
+[LOGIN_CHECK] 'Hi,' greeting found — logged in
+[BACKGROUND] [STEP 2/4] Login check result: True
+[BACKGROUND] [STEP 3/4] Starting monitoring system...
+[BACKGROUND] ═══════════════════════════════════════════════
+✅ LOGGED IN TO TARGET.COM
+Starting monitoring with REAL purchase mode...
+[BACKGROUND] Calling start_monitoring()...
+[START_MONITORING] ═══════════════════════════════════════════════
+[START_MONITORING] Initializing monitoring system...
+[START_MONITORING] ═══════════════════════════════════════════════
+[START_MONITORING] Checking global_purchase_manager: <src.purchasing.bulletproof_purchase_manager.BulletproofPurchaseManager object at 0x10fa52c60>
+[START_MONITORING] [OK] global_purchase_manager already initialized
+[START_MONITORING] Creating StockMonitor instance...
+[PROXY] Loaded 50 proxies — rate: 3.33 checks/sec
+[START_MONITORING] [OK] Test monitor initialized for simulated stock data
+[START_MONITORING] Running initial stock check to pre-populate data...
+[INTERCEPTOR:warmup] OPTIONS https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 9 headers, 0 Shape tokens, age=1.2s
+[INTERCEPTOR:warmup] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:warmup]   cache preserved: 9 headers, 0 Shape tokens, age=1.3s
+[START_MONITORING] ✓ Pre-populated stock data for 1 products
+[START_MONITORING] Initial Stock Status - IN STOCK: ['50270379']
+[START_MONITORING] Initial Stock Status - OUT OF STOCK: []
+[START_MONITORING] Creating monitoring thread...
+[START_MONITORING] Starting monitoring thread...
+[MONITORING_LOOP] ═══════════════════════════════════════════════[START_MONITORING] [OK] Monitoring thread started: MonitoringLoop (is_alive: True)
+[MONITORING_LOOP] Starting bulletproof event-driven architecture...
+[MONITORING_LOOP] ═══════════════════════════════════════════════
+[MONITORING_LOOP] Creating StockMonitorThread...
+
+[PROXY] Loaded 50 proxies — rate: 3.33 checks/sec
+[PROXY] 50 workers started — 1 check every 0.3s
+[PROXY] Proxy mode active — timer hidden on dashboard
+[MONITORING_LOOP] [OK] StockMonitorThread created
+[MONITORING_LOOP] Creating PurchaseManagerThread...
+[MONITORING_LOOP] Using global_purchase_manager: <src.purchasing.bulletproof_purchase_manager.BulletproofPurchaseManager object at 0x10fa52c60>
+[MONITORING_LOOP] Using global_event_loop: <_UnixSelectorEventLoop running=True closed=False debug=False>
+[SYSTEM] Using global purchase manager instance
+[SYSTEM] Using global event loop
+[SYSTEM] Core bulletproof monitoring active
+[MONITORING_LOOP] [OK] PurchaseManagerThread created
+[MONITORING_LOOP] Setting monitor_running=True...
+[MONITORING_LOOP] [VERIFY] monitor_running: True
+[MONITORING_LOOP] Starting stock_thread...
+[14:45:11] [TIMER] Server startup: starting 10s initial timer (ensures full sync)
+[14:45:11] [SYSTEM] Stock monitor thread started[MONITORING_LOOP] [OK] stock_thread started (is_alive: True)
+
+[MONITORING_LOOP] Starting purchase_thread...
+[SYSTEM] Skipping session initialization (using global manager)
+[PURCHASE_MANAGER] Starting 5-second completion monitoring...
+[14:45:11] [SYSTEM] Purchase manager thread started
+[MONITORING_LOOP] [OK] purchase_thread started (is_alive: True)
+[MONITORING_LOOP] ═══════════════════════════════════════════════
+[MONITORING_LOOP] ✅ All threads started successfully
+[MONITORING_LOOP] Entering health monitoring loop...
+[MONITORING_LOOP] ═══════════════════════════════════════════════
+[14:45:11] [SYSTEM] Bulletproof event-driven monitoring started
+[START_MONITORING] [VERIFY] shared_data.monitor_running: True
+[START_MONITORING] ═══════════════════════════════════════════════
+[14:45:12] [SYSTEM] Background monitoring started
+[START_MONITORING] Monitoring system initialization complete
+[BACKGROUND] [OK] start_monitoring() completed
+[BACKGROUND] [VERIFY] monitor_running: True
+[BACKGROUND] [STEP 4/4] Finalizing initialization...
+[14:45:12] [SYSTEM] System ready - monitoring active with real purchases
+============================================================
+✅ INITIALIZATION COMPLETE - LOGGED IN
+============================================================
+[BACKGROUND] Background initialization finished successfully
+[BACKGROUND] ═══════════════════════════════════════════════
+[STOCK] IN STOCK: 50270379
+[14:45:13] [API_CYCLE] IN STOCK: ['50270379']
+[WARMUP_CYCLE] Cycle 1 W1/primary: headers_age=3s, in_progress=False
+[WARMUP_CYCLE] W1/primary: skipping — headers fresh (3s old)
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144513.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[STATE_CARRY] WARNING: 8 stale cdp_continued_ids from prior purchase — cleared
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'fs_uid', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/
+[PURCHASE] Navigating to https://www.target.com/p/-/A-50270379 (PDP qty unknown)
+[STOCK] IN STOCK: 50270379
+[14:45:14] [API_CYCLE] IN STOCK: ['50270379']
+[STOCK] IN STOCK: 50270379
+[14:45:15] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] Navigation returned in 1.16s
+[PURCHASE] purchase_limit from PDP fallback: 10 (was qty=1, lookup 0.34s)
+[PURCHASE] Injecting Shape headers (age=5s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=2.12s)
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 9 headers, 0 Shape tokens, age=5.6s
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 10 headers (Shape tokens: 0, prev cache had 0): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=0.1s
+[STOCK] IN STOCK: 50270379
+[14:45:16] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] ATC fetch status: 401 body='{\n  "errorCode": "T83072242",\n  "errorKey": "_ERR_AUTH_DENIED",\n  "errorMessage": "Error Code T83072242. Sorry, something went wrong. Please refresh your browser and try again.",\n  "errorParameters": "",\n  "errorRefresh": "false"\n}' (t=2.78s)
+[PURCHASE] ATC fetch 401 auth denied — polling for token refresh (t=2.78s)
+[AUTH_FIX] Found 6 www.target.com-scoped cookies: ['lux_uid', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleUserPercentile', 'kampyleSessionPageCounter', 'SwSPfmcX']
+[AUTH_FIX] Re-injected 'SwSPfmcX' with domain .target.com
+[STOCK] IN STOCK: 50270379
+[14:45:17] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] Token ready — button enabled after 0.5s (t=3.33s)
+[PURCHASE] Retrying ATC fetch — button enabled, write token ready (t=3.33s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 10 headers (Shape tokens: 0, prev cache had 0): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch retry: 201 (t=3.76s)
+[PURCHASE] ATC fetch retry succeeded (201)
+[PURCHASE] Cart confirmed (t=3.8s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=0.4s
+[STOCK] IN STOCK: 50270379
+[14:45:17] [API_CYCLE] IN STOCK: ['50270379']
+[STOCK] IN STOCK: 50270379
+[14:45:18] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.099s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.099s)
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=1.6s
+[DELIVERY] Checking for delivery option buttons...
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 10 headers (Shape tokens: 0, prev cache had 0): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=5.0s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183118
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183118
+[PURCHASE] Checkout complete (t=5.5s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=0.5s
+[STOCK] IN STOCK: 50270379
+[14:45:19] [API_CYCLE] IN STOCK: ['50270379']
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/46142aa1-4a4d-11f1-8ef6-a3c — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=1.0s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/46142aa1-4a4d-11f1-8ef6-a3c — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=1.1s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=1.1s
+[STOCK] IN STOCK: 50270379
+[14:45:20] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=1.4s
+[CLEAR_CART_API] DELETE 46142aa1… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 6.52s
+[COOKIE_SAVE] Converted 7 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183118
+[REALTIME] 50270379 status changed to: purchased
+[14:45:20] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183118
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 6.52472710609436, 'order_id': 'TEST-NO-ORDER-1778183118', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183118'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183118
+[REALTIME] 50270379 status changed to: purchased
+[14:45:20] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183118
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183120.553
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=6.8s ago, completed=1778183120.26069
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183120.26069)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183118)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183120.554
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:20] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144520.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'ffsession', 'fs_uid']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 5s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.18s)
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 10 headers, 1 Shape tokens, age=2.1s
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 0): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 201 (t=0.68s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.7s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.3s
+[STOCK] IN STOCK: 50270379
+[14:45:21] [API_CYCLE] IN STOCK: ['50270379']
+[STOCK] IN STOCK: 50270379
+[14:45:22] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.010s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.010s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Preserved cache (6 Shape tokens, age=1.2s) — new capture had only 0 Shape tokens
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.6s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=1s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183122
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183122
+[PURCHASE] Checkout complete (t=1.9s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.7s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.8s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/485eddf0-4a4d-11f1-8f22-ad0 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.9s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/485eddf0-4a4d-11f1-8f22-ad0 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=2.0s
+[STOCK] IN STOCK: 50270379
+[14:45:23] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=2.3s
+[CLEAR_CART_API] DELETE 485eddf0… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.80s
+[COOKIE_SAVE] Converted 6 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183122
+[REALTIME] 50270379 status changed to: purchased
+[14:45:23] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183122
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.8004190921783447, 'order_id': 'TEST-NO-ORDER-1778183122', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183122'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183122
+[REALTIME] 50270379 status changed to: purchased
+[14:45:23] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183122
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183123.594
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.0s ago, completed=1778183123.378846
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183123.378846)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183122)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183123.594
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:23] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144523.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'ffsession', 'fs_uid']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 8s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=3s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.07s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 201 (t=0.50s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.5s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.005s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.005s)
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.2s
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.3s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=1s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183124
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183124
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[STOCK] IN STOCK: 50270379
+[14:45:25] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] Checkout complete (t=1.7s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/4a0e3ba0-4a4d-11f1-a638-c99 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[STOCK] IN STOCK: 50270379
+[14:45:25] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/4a0e3ba0-4a4d-11f1-a638-c99 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[CLEAR_CART_API] DELETE 4a0e3ba0… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.56s
+[COOKIE_SAVE] Converted 7 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183124
+[REALTIME] 50270379 status changed to: purchased
+[14:45:26] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183124
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.5608839988708496, 'order_id': 'TEST-NO-ORDER-1778183124', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183124'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183124
+[REALTIME] 50270379 status changed to: purchased
+[14:45:26] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183124
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183126.548
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.0s ago, completed=1778183126.1697652
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183126.1697652)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183124)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183126.549
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:26] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144526.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 11s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.08s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[STOCK] IN STOCK: 50270379
+[14:45:27] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] ATC fetch status: 201 (t=0.71s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.7s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[STOCK] IN STOCK: 50270379
+[14:45:27] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.005s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.005s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.7s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183128
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183128
+[PURCHASE] Checkout complete (t=2.1s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/4be4f771-4a4d-11f1-a0ef-452 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/4be4f771-4a4d-11f1-a0ef-452 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[STOCK] IN STOCK: 50270379
+[14:45:29] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[CLEAR_CART_API] DELETE 4be4f771… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.94s
+[COOKIE_SAVE] Converted 6 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183128
+[REALTIME] 50270379 status changed to: purchased
+[14:45:29] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183128
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.935520887374878, 'order_id': 'TEST-NO-ORDER-1778183128', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183128'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183128
+[REALTIME] 50270379 status changed to: purchased
+[14:45:29] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183128
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183129.764
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.2s ago, completed=1778183129.500004
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183129.500004)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183128)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183129.764
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:29] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144529.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 14s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.01s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[STOCK] IN STOCK: 50270379
+[14:45:30] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] ATC fetch status: 201 (t=0.92s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.9s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.9s
+[STOCK] IN STOCK: 50270379
+[14:45:31] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.004s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.005s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.7s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183131
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183131
+[PURCHASE] Checkout complete (t=2.0s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[STOCK] IN STOCK: 50270379
+[14:45:32] [API_CYCLE] IN STOCK: ['50270379']
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/4ddc0c80-4a4d-11f1-b2de-7b4 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/4ddc0c80-4a4d-11f1-b2de-7b4 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.9s
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[STOCK] IN STOCK: 50270379
+[14:45:32] [API_CYCLE] IN STOCK: ['50270379']
+[CLEAR_CART_API] DELETE 4ddc0c80… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.98s
+[COOKIE_SAVE] Converted 7 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183131
+[REALTIME] 50270379 status changed to: purchased
+[14:45:32] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183131
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.9840972423553467, 'order_id': 'TEST-NO-ORDER-1778183131', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183131'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183131
+[REALTIME] 50270379 status changed to: purchased
+[14:45:32] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183131
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183133.611
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.8s ago, completed=1778183132.7598348
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183132.7598348)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183131)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183133.611
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:33] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144533.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 18s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.04s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 201 (t=0.70s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.7s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.6s
+[STOCK] IN STOCK: 50270379
+[14:45:34] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.025s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.025s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.4s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183134
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183134
+[PURCHASE] Checkout complete (t=1.8s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[STOCK] IN STOCK: 50270379
+[14:45:35] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.6s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/501b0000-4a4d-11f1-8d6d-736 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/501b0000-4a4d-11f1-8d6d-736 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.1s
+[STOCK] IN STOCK: 50270379
+[14:45:36] [API_CYCLE] IN STOCK: ['50270379']
+[CLEAR_CART_API] DELETE 501b0000… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.63s
+[COOKIE_SAVE] Converted 6 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183134
+[REALTIME] 50270379 status changed to: purchased
+[14:45:36] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183134
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.63321590423584, 'order_id': 'TEST-NO-ORDER-1778183134', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183134'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183134
+[REALTIME] 50270379 status changed to: purchased
+[14:45:36] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183134
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183136.897
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.3s ago, completed=1778183136.263623
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183136.263623)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183134)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183136.897
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:36] [API_CYCLE] IN STOCK: ['50270379']
+[WARMUP_CYCLE] Cycle 30 W1/primary: headers_age=2s, in_progress=False
+[WARMUP_CYCLE] W1/primary: skipping — headers fresh (2s old)
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144536.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 21s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.10s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[STOCK] IN STOCK: 50270379
+[14:45:37] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] ATC fetch status: 201 (t=0.85s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.8s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.6s
+[STOCK] IN STOCK: 50270379
+[14:45:37] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.005s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.005s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.6s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183138
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183138
+[PURCHASE] Checkout complete (t=1.9s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/52288341-4a4d-11f1-acfe-53b — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/52288341-4a4d-11f1-acfe-53b — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[STOCK] IN STOCK: 50270379
+[14:45:39] [API_CYCLE] IN STOCK: ['50270379']
+[CLEAR_CART_API] DELETE 52288341… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.89s
+[COOKIE_SAVE] Converted 7 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183138
+[REALTIME] 50270379 status changed to: purchased
+[14:45:39] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183138
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.4s
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[INTERCEPTOR:main] continue_request failed (req_id=interception-job-1035.0): Fetch domain is not enabled
+command:Fetch.continueRequest
+params:{'requestId': RequestId('interception-job-1035.0')} [code: -32000]
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.8916521072387695, 'order_id': 'TEST-NO-ORDER-1778183138', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183138'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183138
+[REALTIME] 50270379 status changed to: purchased
+[14:45:39] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183138
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183140.214
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.3s ago, completed=1778183139.952895
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183139.952895)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183138)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183140.214
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:40] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144540.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[DISPATCH] 50270379 → W1/primary
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 24s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.08s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[STOCK] IN STOCK: 50270379
+[14:45:40] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] ATC fetch status: 201 (t=0.85s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.9s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.004s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.004s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[STOCK] IN STOCK: 50270379
+[14:45:41] [API_CYCLE] IN STOCK: ['50270379']
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.5s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183141
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183141
+[PURCHASE] Checkout complete (t=1.8s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.3s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/53fca701-4a4d-11f1-ac0d-176 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/53fca701-4a4d-11f1-ac0d-176 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[STOCK] IN STOCK: 50270379
+[14:45:42] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[CLEAR_CART_API] DELETE 53fca701… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.64s
+[COOKIE_SAVE] Converted 6 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183141
+[REALTIME] 50270379 status changed to: purchased
+[14:45:42] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183141
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.635953903198242, 'order_id': 'TEST-NO-ORDER-1778183141', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183141'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183141
+[REALTIME] 50270379 status changed to: purchased
+[14:45:42] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183141
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183143.954
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=3.7s ago, completed=1778183142.8881059
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183142.8881059)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183141)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183143.955
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:43] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144543.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 28s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.09s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[STOCK] IN STOCK: 50270379
+[14:45:44] [API_CYCLE] IN STOCK: ['50270379']
+[PURCHASE] ATC fetch status: 201 (t=0.77s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.8s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.6s
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.005s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.005s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.5s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183145
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183145
+[PURCHASE] Checkout complete (t=1.9s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.4s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/564f97b1-4a4d-11f1-9f6c-475 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/564f97b1-4a4d-11f1-9f6c-475 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.8s
+[STOCK] IN STOCK: 50270379
+[14:45:46] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[STOCK] IN STOCK: 50270379
+[14:45:47] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart_views?cart_type=SFL&field_groups= — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.8s
+[CLEAR_CART_API] DELETE 564f97b1… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 3.82s
+[COOKIE_SAVE] Converted 6 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183145
+[REALTIME] 50270379 status changed to: purchased
+[14:45:47] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183145
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 3.8210909366607666, 'order_id': 'TEST-NO-ORDER-1778183145', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183145'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183145
+[REALTIME] 50270379 status changed to: purchased
+[14:45:47] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183145
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183148.099
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=4.1s ago, completed=1778183147.851389
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183147.851389)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183145)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183148.099
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:48] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144548.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 32s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=3s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.03s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 201 (t=0.47s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.5s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.3s
+[STOCK] IN STOCK: 50270379
+[14:45:48] [API_CYCLE] IN STOCK: ['50270379']
+[CART_STATE] 1 item(s) in cart before checkout: ['50270379x10']
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.005s)
+[PURCHASE] API mode — skipping /checkout/start nav (t+0.005s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[DELIVERY] Checking for delivery option buttons...
+[DELIVERY] Selected shipping option via: input[id*="shipping"]
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.4s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly
+[PAYMENT] Phase 4b dispatch check: test_mode=True, api_path=True → API path
+[PAYMENT] TEST_MODE compose-and-abort — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=0s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Compose-and-abort — would POST to https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14
+[API_PLACE_ORDER] [TEST_MODE] Headers: ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] [TEST_MODE] Body: {'cart_type': 'REGULAR', 'channel_id': '10'}
+[API_PLACE_ORDER] [TEST_MODE] Synthetic success — fake order_id=TEST-NO-ORDER-1778183149
+[PAYMENT] API place-order succeeded — order_id=TEST-NO-ORDER-1778183149
+[PURCHASE] Checkout complete (t=1.7s)
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.5s
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/lite_carts?cart_type=REGULAR&key=e59ce — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.6s
+[STOCK] IN STOCK: 50270379
+[14:45:50] [API_CYCLE] IN STOCK: ['50270379']
+[CLEAR_CART_API] deleting 1 cart item(s) via API
+[INTERCEPTOR:main] OPTIONS https://carts.target.com/web_checkouts/v1/cart_items/58a71c41-4a4d-11f1-a828-0b2 — skipping cache (not POST, has 7 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.9s
+[INTERCEPTOR:main] DELETE https://carts.target.com/web_checkouts/v1/cart_items/58a71c41-4a4d-11f1-a828-0b2 — skipping cache (not POST, has 16 headers, 7 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.0s
+[INTERCEPTOR:main] PUT https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=AD — skipping cache (not POST, has 10 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=1.1s
+[CLEAR_CART_API] DELETE 58a71c41… OK (200)
+[CLEAR_CART] API path cleared regular items, SFL bucket empty — short-circuit success
+[PURCHASE] TEST_MODE: Cart cleared, cycle complete: 50270379 in 2.64s
+[COOKIE_SAVE] Converted 7 session cookies to PERSISTENT
+[SESSION] Saved sessionStorage (0 bytes)
+[SESSION_SAVE] Session saved successfully to target.json
+[PURCHASE] order_id from API response: TEST-NO-ORDER-1778183149
+[REALTIME] 50270379 status changed to: purchased
+[14:45:50] [PURCHASE] Purchase successful: 50270379 - Order: TEST-NO-ORDER-1778183149
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': True, 'tcin': '50270379', 'reason': 'order_confirmed', 'execution_time': 2.6353647708892822, 'order_id': 'TEST-NO-ORDER-1778183149', 'confirmation_url': 'https://www.target.com/checkout/confirmation?orderId=TEST-NO-ORDER-1778183149'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase completed: 50270379 — order_id=TEST-NO-ORDER-1778183149
+[REALTIME] 50270379 status changed to: purchased
+[14:45:50] [PURCHASE] Purchase successful: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - Order: TEST-NO-ORDER-1778183149
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Starting reset operation at timestamp 1778183151.008
+[PURCHASE_RESET_DEBUG] [TEST_MODE] TEST MODE: Resetting ALL completed purchases for endless loop
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ENDLESS LOOP: Resetting purchases to 'ready'
+[TEST_MODE_RESET] This allows the same product to be purchased again
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Loaded 1 total purchase states
+[TEST_MODE_DIAGNOSTIC] ALL STATES BEFORE RESET:
+[TEST_MODE_DIAGNOSTIC]   50270379: status='purchased', started=2.9s ago, completed=1778183150.7484748
+[PURCHASE_RESET_DEBUG] Found 1 completed purchases to reset:
+[PURCHASE_RESET_DEBUG]   50270379: purchased (completed at: 1778183150.7484748)
+[PURCHASE_RESET_DEBUG] 50270379: purchased -> ready (was order: TEST-NO-ORDER-1778183149)
+[TEST_MODE_RESET] ✅ 50270379: 'purchased' → 'ready' (will re-attempt next cycle)
+[PURCHASE_RESET_DEBUG] Saving 1 resets to file...
+[PURCHASE_RESET_DEBUG] Successfully saved 1 resets to file
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[TEST_MODE_RESET] ✅ Reset complete: 1 purchases → 'ready'
+[TEST_MODE_RESET] Next cycle will re-attempt these products if in stock
+[TEST_MODE_RESET] ════════════════════════════════════════════════
+[PURCHASE_RESET_DEBUG] Verification passed - all 1 resets confirmed in file
+[PURCHASE] [TEST_MODE] Reset 1 completed purchases to ready state
+[PURCHASE] [TEST_MODE] ✅ Purchases reset - ready for next endless loop iteration
+[PURCHASE_RESET_DEBUG] [TEST_MODE] Reset operation completed at timestamp 1778183151.008
+[PURCHASE] [TEST_MODE] ✅ TEST MODE LOOP: 1 purchases ready to restart
+[REALTIME] 50270379 status changed to: ready
+[STOCK] IN STOCK: 50270379
+[14:45:51] [API_CYCLE] IN STOCK: ['50270379']
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: /Users/Eric/Desktop/testScraper/logs/purchases/purchase_50270379_20260507_144551.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[DISPATCH] 50270379 → W1/primary[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[AUTH_CHECK] Target auth-related cookies present: ['TealeafAkaSid', 'crl8.fpcuid', 'thx_guid', 'granify.uuid', 'granify.session.cq1cu', 'login-session', 'idToken', 'refreshToken', 'accessToken', 'lux_uid', 'GuestLocation', 'tmx_guid', '_tgt_session', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleSessionPageCounter', 'fs_uid', 'ffsession']
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 35s ago, skipping PDP nav)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.01s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 201 (t=0.62s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.6s)
+[STOCK] IN STOCK: 50270379
+[14:45:51] [API_CYCLE] IN STOCK: ['50270379']
+[INTERCEPTOR:main] GET https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CA — skipping cache (not POST, has 8 headers, 0 X-headers)
+[INTERCEPTOR:main]   cache preserved: 16 headers, 7 Shape tokens, age=0.7s

@@ -1,0 +1,10 @@
+{
+  "TEST001": {
+    "status": "success",
+    "timestamp": "2026-04-08T22:12:45.073355",
+    "attempt_count": 1,
+    "final_outcome": "purchased",
+    "last_error": null,
+    "order_id": "WM-TEST-12345"
+  }
+}
