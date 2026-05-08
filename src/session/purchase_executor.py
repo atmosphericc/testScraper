@@ -439,11 +439,21 @@ class PurchaseExecutor:
                                         and h.lower() != 'x-application-name'])
                         prev_shape_count = _shape_token_count(self._cached_cart_headers)
                         new_shape_count = _shape_token_count(header_names)
-                        # Don't let a degraded capture overwrite a richer cache.
-                        # Page-driven natural pre_checkout fetches arrive with
-                        # zero Shape rotating tokens and would poison the cache
-                        # populated by bot's POSTs / warmup tab (6 tokens).
-                        skip_cache_update = (prev_shape_count > 0 and new_shape_count < prev_shape_count)
+                        # Block ONLY zero-token poisoning (page-driven natural
+                        # pre_checkout fetches with no Shape headers). A 6-token
+                        # warmup capture is fully valid even when prev had 7 —
+                        # and stale tokens are useless, so any non-zero refresh
+                        # should be allowed. Also: if the current cache is older
+                        # than 60s (Shape rotates ~90-120s), accept any non-zero
+                        # capture regardless. Prior rule (new < prev) locked the
+                        # cache forever once a 7-token capture was seen — fix
+                        # for 2026-05-08 stale-headers stall.
+                        cache_age_now = (time.time() - self._cached_cart_headers_ts) if self._cached_cart_headers_ts else 999.0
+                        skip_cache_update = (
+                            prev_shape_count > 0
+                            and new_shape_count == 0
+                            and cache_age_now < 60.0
+                        )
                         if not skip_cache_update:
                             self._cached_cart_headers = headers
                             self._cached_cart_headers_ts = time.time()
@@ -724,7 +734,8 @@ class PurchaseExecutor:
             # below exits as soon as the interceptor writes a new ts.
             print("[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...")
 
-            deadline = time.time() + 1.5
+            wait_start = time.time()
+            deadline = wait_start + 1.5
             while time.time() < deadline:
                 if self._cached_cart_headers_ts > ts_before:
                     age = time.time() - self._cached_cart_headers_ts
@@ -733,12 +744,12 @@ class PurchaseExecutor:
                     return True
                 await asyncio.sleep(0.1)
 
-            elapsed = time.time() - ts_before
-            print(f"[WARMUP] TIMEOUT after {elapsed:.1f}s — dummy POST was NOT intercepted")
-            print(f"[WARMUP] Possible causes: Target cart page didn't load, Shape JS not initialized, "
-                  f"or CDP interceptor not active")
+            wait_elapsed = time.time() - wait_start
+            cache_age = time.time() - self._cached_cart_headers_ts if self._cached_cart_headers_ts else -1
+            print(f"[WARMUP] TIMEOUT after {wait_elapsed:.1f}s — cache not refreshed "
+                  f"(POST may have been intercepted but skipped by preserve rule; cache age={cache_age:.0f}s)")
             print(f"[WARMUP] Stale headers available: {bool(self._cached_cart_headers)}, "
-                  f"age={time.time()-self._cached_cart_headers_ts:.0f}s")
+                  f"age={cache_age:.0f}s")
             return bool(self._cached_cart_headers)
         except Exception as e:
             print(f"[WARMUP] Error: {e}")

@@ -54,6 +54,9 @@
 ## Forbidden
 - /__pycache__, /.git, /venv, /node_modules, /dist, /.pytest_cache
 
+## File Access
+- No source files are off-limits for now. `src/session/purchase_executor.py` is editable (overrides prior "DO NOT modify" guidance from the AIO refactor memory).
+
 ## Test Before Deploy
 - `python test_app.py` must pass (both retailers)
 - Use this before touching unified_app.py
