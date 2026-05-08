@@ -70,6 +70,14 @@ class PurchaseExecutor:
         # purchase pays a 0.05-0.65s PDP poll. Entries expire after 30 min.
         self._pdp_qty_cache: Dict[str, tuple] = {}  # tcin -> (qty, ts)
         self._pdp_qty_ttl: float = 1800.0
+        # Per-TCIN throttle cooldown. Set when a 400 MAX_PURCHASE_LIMIT_EXCEEDED
+        # cannot be recovered via clear_cart + qty fallback (i.e. the limit is a
+        # real per-customer/session throttle from Target, not just a cart-state
+        # race). Subsequent purchase attempts for the TCIN bail fast until the
+        # cooldown expires. Prevents test_mode infinite-looping on a throttled
+        # product. Map: tcin -> unix ts when cooldown ends.
+        self._tcin_throttle_until: Dict[str, float] = {}
+        self._tcin_throttle_cooldown_s: float = 90.0
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -707,9 +715,16 @@ class PurchaseExecutor:
                 }).catch(() => {});
             """)
 
-            print("[WARMUP] Waiting for carts.target.com POST interception (up to 3s)...")
+            # Capture window tightened from 3s to 1.5s. When the interceptor IS
+            # going to fire, it does so within 100-300ms of the dummy POST; the
+            # remaining 2.7s of a 3s wait was pure dead time on the broken-Shape
+            # JS / dead-tab failure path. Long-tail (p90/p99) cycles in v17 were
+            # dominated by this wait when cart_nav_age >90s forced a re-nav. The
+            # fast path (sub-300ms typical) is unchanged — the polling loop
+            # below exits as soon as the interceptor writes a new ts.
+            print("[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...")
 
-            deadline = time.time() + 3.0
+            deadline = time.time() + 1.5
             while time.time() < deadline:
                 if self._cached_cart_headers_ts > ts_before:
                     age = time.time() - self._cached_cart_headers_ts
@@ -742,6 +757,17 @@ class PurchaseExecutor:
         # Floor at 1 to avoid quantity:0 (would be rejected by Target). No upper
         # bound — the PDP-extracted purchase_limit is authoritative.
         quantity = max(1, int(quantity or 1))
+        # Per-TCIN throttle cooldown — bail fast if a recent attempt hit a
+        # MAX_PURCHASE_LIMIT_EXCEEDED that the self-heal path could not recover.
+        # Avoids burning ~3-5s on a guaranteed-fail ATC plus the test_mode
+        # immediate re-trigger loop. Cooldown is short enough that a transient
+        # throttle clears before next live in-stock signal in prod.
+        _throttle_ts = self._tcin_throttle_until.get(tcin, 0.0)
+        if _throttle_ts and time.time() < _throttle_ts:
+            _remaining = _throttle_ts - time.time()
+            print(f"[PURCHASE] {tcin} in throttle cooldown ({_remaining:.0f}s remaining) — bailing fast")
+            return {'success': False, 'tcin': tcin, 'reason': 'tcin_throttled_cooldown',
+                    'execution_time': time.time() - start_time}
         tab = None  # ensure tab is accessible in finally block
         prior_ids = len(self._cdp_continued_ids)
         self._cdp_continued_ids.clear()
@@ -1187,6 +1213,89 @@ class PurchaseExecutor:
                         if _on_pdp:
                             print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
                         cart_confirmed = False
+                skip_signal_wait = True
+            elif atc_status == 400 and 'EXCEEDED' in atc_body.upper():
+                # Self-heal MAX_PURCHASE_LIMIT_EXCEEDED. Two distinct root causes
+                # produce this 400, both recoverable here:
+                #   (1) Cart-state race — prior cycle's clear_cart returned 200 OK
+                #       before Target's backend committed the DELETE. Next ATC
+                #       sees the cart still populated and rejects.
+                #   (2) Real per-customer/session throttle — cumulative add-events
+                #       exceeded Target's tracked limit (test_mode-specific, since
+                #       test_mode loops the same TCIN at high frequency).
+                # Recovery: force clear_cart (handles 1), brief sleep for backend
+                # commit, retry at original qty (recovers 1), then qty=1 if still
+                # rejected (covers some throttle variants). If both retries also
+                # fail it's a hard throttle — set per-TCIN cooldown so test_mode's
+                # immediate re-trigger loop doesn't burn ~5s/cycle on guaranteed
+                # fails. Cooldown is short enough (90s) that prod's natural
+                # in-stock cadence won't be impacted.
+                print(f"[PURCHASE] ATC 400 EXCEEDED — self-heal: clear_cart + retry (t={time.time()-start_time:.2f}s)")
+                try:
+                    await self._clear_cart(tab)
+                except Exception as _ce:
+                    print(f"[PURCHASE] self-heal clear_cart failed: {_ce}")
+                await asyncio.sleep(1.0)
+                self._consume_fresh_capture()
+                _sh_strip = {'cookie', 'referer'}
+                _sh_shape = {k: v for k, v in self._cached_cart_headers.items()
+                             if k.lower() not in _sh_strip}
+                _sh_shape['x-application-name'] = 'web'
+                _sh_headers_js = json.dumps(_sh_shape)
+
+                async def _do_self_heal_retry(_qty: int) -> Dict[str, Any]:
+                    try:
+                        return await asyncio.wait_for(
+                            tab.evaluate(f"""(async () => {{
+                                try {{
+                                    const h = {_sh_headers_js};
+                                    const resp = await fetch(
+                                        'https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY',
+                                        {{method:'POST', credentials:'include',
+                                          headers:{{...h,'Content-Type':'application/json','Accept':'application/json',
+                                                    'Origin':'https://www.target.com',
+                                                    'Referer':'https://www.target.com/p/-/A-{tcin}',
+                                                    'x-application-name':'web'}},
+                                          body:JSON.stringify({{cart_item:{{tcin:'{tcin}',quantity:{_qty},
+                                            item_channel_id:'10',fulfillment_type:'SHIPPING',fulfillment_type_code:'02'}},
+                                            cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'}})}}
+                                    );
+                                    return {{status:resp.status, body:(await resp.text()).slice(0,300)}};
+                                }} catch(e) {{ return {{status:0, body:String(e)}}; }}
+                            }})()""", await_promise=True),
+                            timeout=8.0
+                        )
+                    except asyncio.TimeoutError:
+                        return {'status': 0, 'body': 'self-heal retry timeout'}
+
+                _sh1 = await _do_self_heal_retry(quantity)
+                _sh1_status = _sh1.get('status', 0) if isinstance(_sh1, dict) else 0
+                _sh1_body = _sh1.get('body', '') if isinstance(_sh1, dict) else ''
+                if _sh1_status in (200, 201):
+                    print(f"[PURCHASE] Self-heal qty={quantity} succeeded ({_sh1_status}) — race recovered (t={time.time()-start_time:.2f}s)")
+                    atc_status = _sh1_status
+                    atc_body = _sh1_body
+                    cart_confirmed = True
+                elif quantity > 1:
+                    print(f"[PURCHASE] Self-heal qty={quantity} returned {_sh1_status} — retrying qty=1 (t={time.time()-start_time:.2f}s)")
+                    self._consume_fresh_capture()
+                    _sh2 = await _do_self_heal_retry(1)
+                    _sh2_status = _sh2.get('status', 0) if isinstance(_sh2, dict) else 0
+                    _sh2_body = _sh2.get('body', '') if isinstance(_sh2, dict) else ''
+                    if _sh2_status in (200, 201):
+                        print(f"[PURCHASE] Self-heal qty=1 succeeded ({_sh2_status}) (t={time.time()-start_time:.2f}s)")
+                        atc_status = _sh2_status
+                        atc_body = _sh2_body
+                        quantity = 1
+                        cart_confirmed = True
+                    else:
+                        print(f"[PURCHASE] Self-heal qty=1 also failed ({_sh2_status}) — marking {tcin} throttled for {self._tcin_throttle_cooldown_s:.0f}s")
+                        self._tcin_throttle_until[tcin] = time.time() + self._tcin_throttle_cooldown_s
+                        cart_confirmed = False
+                else:
+                    print(f"[PURCHASE] Self-heal qty=1 still {_sh1_status} — marking {tcin} throttled for {self._tcin_throttle_cooldown_s:.0f}s")
+                    self._tcin_throttle_until[tcin] = time.time() + self._tcin_throttle_cooldown_s
+                    cart_confirmed = False
                 skip_signal_wait = True
             elif atc_status in (422, 409) and quantity > 1 and any(
                 k in atc_body.upper() for k in ('PURCHASE_LIMIT', 'MAX_QUANTITY', 'QUANTITY_LIMIT', 'EXCEEDED')

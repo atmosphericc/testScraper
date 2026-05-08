@@ -7,6 +7,10 @@ Same as app.py but sets TEST_MODE=true automatically
 import os
 import sys
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # Set TEST_MODE before importing app
 os.environ['TEST_MODE'] = 'true'
 
