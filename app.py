@@ -23,6 +23,13 @@ import sys
 import ctypes
 from waitress import serve
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+os.environ.setdefault('TARGET_API_PLACE_ORDER', 'true')
+os.environ.setdefault('TARGET_API_CART_CLEAR', 'true')
+
 # Prevent system from sleeping while the app is running (Windows + macOS).
 import platform
 _caffeinate_proc = None
@@ -632,9 +639,9 @@ def initialize_global_purchase_manager():
     import asyncio
     import concurrent.futures
 
-    print("[SYSTEM] ═══════════════════════════════════════════════")
+    print("[SYSTEM] ===============================================")
     print("[SYSTEM] Initializing global purchase manager...")
-    print("[SYSTEM] ═══════════════════════════════════════════════")
+    print("[SYSTEM] ===============================================")
 
     # Create event loop that will run forever in background thread
     global_event_loop = asyncio.new_event_loop()
@@ -688,7 +695,7 @@ def initialize_global_purchase_manager():
         traceback.print_exc()
         add_activity_log(f"Browser initialization error: {str(e)}", "error", "system")
 
-    print("[SYSTEM] ═══════════════════════════════════════════════")
+    print("[SYSTEM] ===============================================")
 
 def purchase_status_callback(tcin, status, state):
     """Callback for real-time purchase status updates"""
@@ -1100,9 +1107,9 @@ class PurchaseManagerThread:
 
         def session_init_task():
             try:
-                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                print("[PURCHASE_THREAD] [INIT] ===============================================")
                 print("[PURCHASE_THREAD] [INIT] Starting persistent session system initialization...")
-                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                print("[PURCHASE_THREAD] [INIT] ===============================================")
                 init_start_time = time.time()
 
                 # Create event loop and start it in background thread
@@ -1136,25 +1143,25 @@ class PurchaseManagerThread:
                 if session_ready:
                     print(f"[PURCHASE_THREAD] [INIT] ✅ SUCCESS! Session initialized in {init_duration:.1f}s")
                     print("[PURCHASE_THREAD] [INIT] Browser is now at Target.com and ready for purchases")
-                    print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                    print("[PURCHASE_THREAD] [INIT] ===============================================")
                     add_activity_log(f"Session initialized successfully ({init_duration:.1f}s) - browser ready", "success", "session")
                 else:
                     print(f"[PURCHASE_THREAD] [INIT] ❌ FAILED after {init_duration:.1f}s - falling back to mock mode")
-                    print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                    print("[PURCHASE_THREAD] [INIT] ===============================================")
                     add_activity_log("Session initialization failed - using mock purchasing", "warning", "session")
 
             except concurrent.futures.TimeoutError:
                 init_duration = time.time() - init_start_time
                 print(f"[PURCHASE_THREAD] [INIT] ❌ TIMEOUT after {init_duration:.1f}s")
                 print("[PURCHASE_THREAD] [INIT] Session initialization took too long - falling back to mock mode")
-                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                print("[PURCHASE_THREAD] [INIT] ===============================================")
                 add_activity_log(f"Session initialization timeout ({init_duration:.1f}s) - using mock mode", "error", "session")
             except Exception as e:
                 init_duration = time.time() - init_start_time
                 print(f"[PURCHASE_THREAD] [INIT] ❌ ERROR after {init_duration:.1f}s: {e}")
                 import traceback
                 traceback.print_exc()
-                print("[PURCHASE_THREAD] [INIT] ═══════════════════════════════════════════════")
+                print("[PURCHASE_THREAD] [INIT] ===============================================")
                 add_activity_log(f"Session initialization error: {str(e)}", "error", "session")
                 _write_error_log("session", f"Session initialization error after {init_duration:.1f}s: {e}", exc=e)
 
@@ -1461,9 +1468,9 @@ class PurchaseManagerThread:
 
 def monitoring_loop():
     """Legacy monitoring loop - replaced by event-driven architecture"""
-    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
+    print("[MONITORING_LOOP] ===============================================")
     print("[MONITORING_LOOP] Starting bulletproof event-driven architecture...")
-    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
+    print("[MONITORING_LOOP] ===============================================")
 
     # Initialize event-driven thread managers
     # Use global purchase manager and event loop to avoid duplicate browser instances
@@ -1510,10 +1517,10 @@ def monitoring_loop():
     purchase_thread.start()
     print(f"[MONITORING_LOOP] [OK] purchase_thread started (is_alive: {purchase_thread.thread.is_alive() if purchase_thread.thread else 'N/A'})")
 
-    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
+    print("[MONITORING_LOOP] ===============================================")
     print("[MONITORING_LOOP] ✅ All threads started successfully")
     print("[MONITORING_LOOP] Entering health monitoring loop...")
-    print("[MONITORING_LOOP] ═══════════════════════════════════════════════")
+    print("[MONITORING_LOOP] ===============================================")
 
     add_activity_log("Bulletproof event-driven monitoring started", "success", "system")
 
@@ -1558,9 +1565,9 @@ def monitoring_loop():
 
 def start_monitoring():
     """Start the background monitoring thread"""
-    print("[START_MONITORING] ═══════════════════════════════════════════════")
+    print("[START_MONITORING] ===============================================")
     print("[START_MONITORING] Initializing monitoring system...")
-    print("[START_MONITORING] ═══════════════════════════════════════════════")
+    print("[START_MONITORING] ===============================================")
 
     # Ensure global purchase manager is initialized
     print(f"[START_MONITORING] Checking global_purchase_manager: {global_purchase_manager}")
@@ -1611,7 +1618,7 @@ def start_monitoring():
     time.sleep(0.5)
 
     print(f"[START_MONITORING] [VERIFY] shared_data.monitor_running: {shared_data.monitor_running}")
-    print("[START_MONITORING] ═══════════════════════════════════════════════")
+    print("[START_MONITORING] ===============================================")
 
     add_activity_log("Background monitoring started", "success", "system")
     print("[START_MONITORING] Monitoring system initialization complete")
@@ -3539,9 +3546,9 @@ if __name__ == '__main__':
         try:
             with shared_data.lock:
                 shared_data.initialization_status = "Initializing browser..."
-            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] ===============================================")
             print("[BACKGROUND] Starting background initialization (PROD MODE)...")
-            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] ===============================================")
 
             init_error = None
             try:

@@ -66,9 +66,9 @@ if __name__ == '__main__':
             # Update status
             with shared_data.lock:
                 shared_data.initialization_status = "Initializing browser..."
-            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] ===============================================")
             print("[BACKGROUND] Starting background initialization...")
-            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] ===============================================")
 
             # Initialize global purchase manager (this will initialize session system)
             print("[BACKGROUND] [STEP 1/4] Initializing global purchase manager...")
@@ -174,7 +174,7 @@ if __name__ == '__main__':
             # CRITICAL: Start monitoring REGARDLESS of login status
             # Even if not logged in, monitoring can run in mock mode
             print("[BACKGROUND] [STEP 3/4] Starting monitoring system...")
-            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] ===============================================")
 
             if is_logged_in:
                 print("✅ LOGGED IN TO TARGET.COM")
@@ -216,7 +216,7 @@ if __name__ == '__main__':
                 print("=" * 60)
 
             print("[BACKGROUND] Background initialization finished successfully")
-            print("[BACKGROUND] ═══════════════════════════════════════════════")
+            print("[BACKGROUND] ===============================================")
 
         except Exception as e:
             print(f"[BACKGROUND] [ERROR] Initialization error: {e}")

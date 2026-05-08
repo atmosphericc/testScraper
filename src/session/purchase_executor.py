@@ -1542,14 +1542,13 @@ class PurchaseExecutor:
             except Exception as e:
                 print(f"[PURCHASE] pre_checkout fire failed: {e}")
 
-            # API-mode shortcut: when we're going to fire the API place-order
-            # POST anyway (TARGET_API_PLACE_ORDER=true OR TEST_MODE), skip the
-            # /checkout/start page nav + DOM ready wait. The API call doesn't
-            # need DOM context — saves ~3-4s per cycle.
-            _api_skip = (
-                os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
-                or self.test_mode
-            )
+            # API-mode shortcut: skip the /checkout/start page nav only in
+            # TEST_MODE where _place_order returns synthetic success. PROD
+            # must still nav so the cart hydrates server-side before the API
+            # place-order POST fires — skipping in PROD races pre_checkout
+            # and triggers HTTP 424 CART_COMPARISION_FAILURE_ERROR (observed
+            # 2026-05-07 23:16, all 3 cycles failed).
+            _api_skip = self.test_mode
             if _api_skip:
                 _co_state = 'place_order'
                 landed_url = '<api_mode_no_nav>'
@@ -3767,14 +3766,12 @@ class PurchaseExecutor:
             print("[PAYMENT] Starting checkout completion...")
 
             # Skip duplicate wait if the nav wait already confirmed page-ready state.
-            # API-mode shortcut: when API place-order is on (PROD or TEST),
-            # we skipped the /checkout/start nav, so DOM checks would fail.
-            # Go directly to _place_order which fires the API POST. In TEST_MODE
-            # the compose-and-abort guard returns synthetic success without firing.
-            _api_skip = (
-                os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
-                or self.test_mode
-            )
+            # Bypass DOM checkout flow only in TEST_MODE — PROD nav'd /checkout/start
+            # above so the page is hydrated; fall through to FLOW A (DOM ready check)
+            # which then dispatches to API place-order via the Phase 4b gate at
+            # _click_place_order. Pairs with the matching _api_skip change at line
+            # ~1549 (PROD must nav to avoid CART_COMPARISION_FAILURE_ERROR).
+            _api_skip = self.test_mode
             if _api_skip:
                 print(f"[PAYMENT] API mode — bypassing DOM checkout flow, calling _place_order directly")
                 po_result = await self._place_order(tab)
