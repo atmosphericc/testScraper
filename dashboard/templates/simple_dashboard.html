@@ -3957,11 +3957,13 @@
                 }
 
                 // Update product name if available (OPTIONAL - don't fail if missing)
+                // Skip the "Product <TCIN>" placeholder so it can't clobber a
+                // real name that was resolved server-side from the catalog.
+                const titleIsPlaceholder = stockInfo.title && stockInfo.title.trim() === `Product ${tcin}`;
                 try {
                     const productNameCell = document.querySelector(`tr[data-tcin="${tcin}"] .product-name`);
 
-                    // CRITICAL FIX: Make title optional - warn if missing but continue update
-                    if (stockInfo.title && stockInfo.title.trim()) {
+                    if (stockInfo.title && stockInfo.title.trim() && !titleIsPlaceholder) {
                         if (productNameCell) {
                             const oldName = productNameCell.textContent;
                             productNameCell.textContent = stockInfo.title;
@@ -3969,6 +3971,8 @@
                         } else {
                             console.warn(`⚠️ PRODUCT NAME CELL NOT FOUND for ${tcin} using selector: tr[data-tcin="${tcin}"] .product-name`);
                         }
+                    } else if (titleIsPlaceholder) {
+                        console.log(`ℹ️ Skipping name update for ${tcin} — API returned placeholder title`);
                     } else {
                         console.warn(`⚠️ No title provided for ${tcin}, keeping existing product name`);
                     }
@@ -3980,7 +3984,7 @@
                 // Also update product config section name if it exists (with error handling)
                 try {
                     const configNameCell = document.querySelector(`div[data-tcin="${tcin}"] .product-config-name`);
-                    if (configNameCell && stockInfo.title) {
+                    if (configNameCell && stockInfo.title && !titleIsPlaceholder) {
                         const oldConfigName = configNameCell.textContent;
                         configNameCell.textContent = stockInfo.title;
                         console.log(`📝 CONFIG NAME UPDATED: ${updateId} - "${oldConfigName}" -> "${stockInfo.title}"`);

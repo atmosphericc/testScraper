@@ -41,9 +41,9 @@ walmart-profile*/
 .env
 config/proxyIps.json
 
-# Logs
-logs/
-walmart/logs/
+# Logs (intentionally tracked for post-mortem of early-morning Target drops)
+# logs/
+# walmart/logs/
 
 # IDE / OS
 .vscode/
@@ -53,7 +53,7 @@ Thumbs.db
 
 # Claude Code
 .claude/
-logs/api_capture.log
+# logs/api_capture.log
 
 # Aider
 .aider.chat.history.md

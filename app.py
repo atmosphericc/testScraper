@@ -1630,6 +1630,15 @@ def index():
     stock_monitor = StockMonitor()
     config = stock_monitor.get_config()
 
+    # Load catalog up-front so we can fall back to its real product names
+    catalog_config = get_catalog_config()
+    catalog_name_map = {
+        c.get('tcin'): c.get('name')
+        for c in catalog_config.get('catalog', [])
+        if c.get('tcin') and c.get('name')
+        and c.get('name') != f"Product {c.get('tcin')}"
+    }
+
     # Get current data (thread-safe)
     with shared_data.lock:
         current_stock_data = shared_data.stock_data.copy()
@@ -1647,9 +1656,26 @@ def index():
         # Get purchase state
         purchase_state = current_purchase_states.get(tcin, {'status': 'ready'})
 
+        # Resolve display name with fallback chain. The API title and the
+        # config name can each be the "Product TCIN" placeholder — treat
+        # those as empty so we keep falling through to the catalog name.
+        placeholder = f'Product {tcin}'
+        api_title = stock_info.get('title') or ''
+        if api_title == placeholder:
+            api_title = ''
+        cfg_name = product.get('name') or ''
+        if cfg_name == placeholder:
+            cfg_name = ''
+        resolved_name = (
+            api_title
+            or catalog_name_map.get(tcin)
+            or cfg_name
+            or placeholder
+        )
+
         # Update product with combined data
         product.update({
-            'display_name': stock_info.get('title') or product.get('name', f'Product {tcin}'),
+            'display_name': resolved_name,
             'available': stock_info.get('in_stock', False),
             'stock_status': stock_info.get('status_detail', 'LOADING'),
             'status': stock_info.get('status_detail', 'LOADING'),
@@ -1681,8 +1707,7 @@ def index():
         'data_loaded': bool(current_stock_data)
     }
 
-    # Load catalog data with active status
-    catalog_config = get_catalog_config()
+    # Add active monitoring status (catalog already loaded above for name fallback)
     active_tcins = [p.get('tcin') for p in config.get('products', [])]
 
     # COHESIVE SYSTEM: Auto-populate catalog with any active products not already there
@@ -1732,6 +1757,14 @@ def index_v2():
             _write_error_log("v2", f"Catalog load error: {e}")
             catalog_config = {'catalog': []}
 
+        # Build TCIN -> real name map from catalog (skip placeholder entries)
+        catalog_name_map = {
+            c.get('tcin'): c.get('name')
+            for c in catalog_config.get('catalog', [])
+            if c.get('tcin') and c.get('name')
+            and c.get('name') != f"Product {c.get('tcin')}"
+        }
+
         # Get current data (thread-safe)
         with shared_data.lock:
             current_stock_data = shared_data.stock_data.copy()
@@ -1749,9 +1782,26 @@ def index_v2():
             # Get purchase state
             purchase_state = current_purchase_states.get(tcin, {'status': 'ready'})
 
+            # Resolve display name with fallback chain. The API title and the
+            # config name can each be the "Product TCIN" placeholder — treat
+            # those as empty so we keep falling through to the catalog name.
+            placeholder = f'Product {tcin}'
+            api_title = stock_info.get('title') or ''
+            if api_title == placeholder:
+                api_title = ''
+            cfg_name = product.get('name') or ''
+            if cfg_name == placeholder:
+                cfg_name = ''
+            resolved_name = (
+                api_title
+                or catalog_name_map.get(tcin)
+                or cfg_name
+                or placeholder
+            )
+
             # Update product with combined data
             product.update({
-                'display_name': stock_info.get('title') or product.get('name', f'Product {tcin}'),
+                'display_name': resolved_name,
                 'available': stock_info.get('in_stock', False),
                 'stock_status': stock_info.get('status_detail', 'LOADING'),
                 'status': stock_info.get('status_detail', 'LOADING'),

@@ -1,0 +1,60 @@
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: C:\Users\Anuraj\Desktop\testScraper\logs\purchases\purchase_50270379_20260508_000124.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/checkout
+[PURCHASE] purchase_limit from cache: 10 (cached 17s ago, skipping PDP nav)
+[SHAPE_RING] Consumed fresh capture (ts age=1.7s, 2 unused remaining of 4)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.00s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 201 (t=0.29s)
+[PURCHASE] Fetch ATC succeeded (201), skipping cart signal wait
+[PURCHASE] Cart confirmed (t=0.3s)
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.002s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Preserved cache (7 Shape tokens, age=0.4s) — new capture had only 0 Shape tokens
+[PURCHASE] Checkout nav done (t+0.782s) landed=https://www.target.com/checkout/start
+[INTERCEPTOR:main] GET https://carts.target.com/digital_checkouts/v1/cart_fulfillments/consolidations?k — skipping cache (not POST, has 9 headers, 1 X-headers)
+[INTERCEPTOR:main]   cache preserved: 17 headers, 8 Shape tokens, age=1.1s
+[PURCHASE] Checkout page ready (place_order) in 0.33s
+[DELIVERY] Already in review state — skipping
+[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t=1.4s, co_state=place_order)
+[PAYMENT] Starting checkout completion...
+[PAYMENT] Page already confirmed ready (place_order) — skipping wait (t+0.000s)
+[PAYMENT] FLOW A: Place Order already enabled — no S&C needed
+[PAYMENT] Phase 4b dispatch check: test_mode=False, api_path=True → API path
+[PAYMENT] TARGET_API_PLACE_ORDER=true — attempting API place-order
+[API_PLACE_ORDER] Injecting Shape headers (age=1s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[API_PLACE_ORDER] Firing checkout POST
+[INTERCEPTOR:main] [CHECKOUT_POST] POST https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_group
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+
+[SYSTEM] Shutting down gracefully... (press Ctrl+C again to force-exit)
+[00:01:26] [SYSTEM] Application shutting down
+[SYSTEM] Marked 1 in-progress purchase(s) as interrupted: ['50270379']
+[CLEANUP] taskkill /F /T /PID 42304 → exit 0
+[SYSTEM] Browser closed
+[SYSTEM] Session saved
+[PERSISTENCE] Shutdown signal received
+[PERSISTENCE] Worker loop exited
+[PERSISTENCE] Worker stopped cleanly (16 saves, 0 errors)
+[SYSTEM] Shutdown complete
