@@ -1,0 +1,45 @@
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: C:\Users\elric\Desktop\testScraper\logs\purchases\purchase_50270379_20260507_232410.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/checkout
+[PURCHASE] purchase_limit from cache: 10 (cached 11s ago, skipping PDP nav)
+[SHAPE_RING] Consumed fresh capture (ts age=2.0s, 2 unused remaining of 4)
+[PURCHASE] Injecting Shape headers (age=2s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.00s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 401 body='{\n  "errorCode": "T83072242",\n  "errorKey": "_ERR_AUTH_DENIED",\n  "errorMessage": "Error Code T83072242. Sorry, something went wrong. Please refresh your browser and try again.",\n  "errorParameters": "",\n  "errorRefresh": "false"\n}' (t=0.24s)
+[PURCHASE] ATC fetch 401 auth denied — refreshing Shape headers and retrying (t=0.24s)
+[AUTH_FIX] Found 6 www.target.com-scoped cookies: ['lux_uid', 'kampyleUserSession', 'kampyleUserSessionsCount', 'kampyleUserPercentile', 'kampyleSessionPageCounter', 'SwSPfmcX']
+[AUTH_FIX] Re-injected 'SwSPfmcX' with domain .target.com
+[WARMUP] Skipping cart re-nav (last nav 17s ago, tab still warm)
+[WARMUP] Firing dummy POST to trigger Shape header capture...
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 16 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[WARMUP] Shape headers captured successfully (age=0.1s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fast-retry succeeded (201) after Shape refresh (t=0.63s)
+[PURCHASE] Cart confirmed (t=0.6s)
+[REALTIME] 50270379 status changed to: checking_out
+[PURCHASE] pre_checkout fired (fire-and-forget) (t+0.002s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_g
+[INTERCEPTOR:main] Preserved cache (7 Shape tokens, age=0.3s) — new capture had only 0 Shape tokens

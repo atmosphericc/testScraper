@@ -1,0 +1,37 @@
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379)
+[PURCHASE_LOG] Saving to: C:\Users\elric\Desktop\testScraper\logs\purchases\purchase_50270379_20260507_220336.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 50270379
+[PURCHASE] Starting REAL purchase: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct (TCIN: 50270379) - status: attempting
+[REALTIME] 50270379 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 50270379 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 50270379
+[PURCHASE] CRITICAL RULE: 50270379 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 50270379 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (50270379, qty=1)
+[PURCHASE] Starting purchase for 50270379
+[REALTIME] 50270379 status changed to: attempting
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 10 (cached 165s ago, skipping PDP nav)
+[SHAPE_RING] Consumed fresh capture (ts age=3.1s, 0 unused remaining of 4)
+[PURCHASE] Injecting Shape headers (age=3s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=10 (t=0.00s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 17 headers (Shape tokens: 7, prev cache had 7): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-a0', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 400 body='{"message":"Items cannot be added to cart as max purchase limit exceeded","code":"MAX_PURCHASE_LIMIT_EXCEEDED"}' (t=0.26s)
+[CART_SIGNAL] No signal within 1.5s
+[PURCHASE] Fetch ATC not confirmed and not on PDP (url=https://www.target.com/cart) — bailing without DOM fallback
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': False, 'tcin': '50270379', 'reason': 'atc_failed_api_mode', 'execution_time': 2.1204259395599365}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 50270379
+[PURCHASE]  REAL purchase failed: 50270379 - atc_failed_api_mode
+[REALTIME] 50270379 status changed to: failed
+[22:03:38] [PURCHASE] Purchase failed: Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct - atc_failed_api_mode
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 50270379 from active purchases
