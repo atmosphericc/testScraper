@@ -12,6 +12,7 @@ Handles:
 import asyncio
 import json
 import logging
+import os
 import platform
 import random
 import sys
@@ -205,6 +206,10 @@ class WalmartSessionManager:
         self._cookies_path = Path(COOKIES_FILE)
         self._profile_dir = Path(PROFILE_DIR)
         self._last_validation: float = 0.0
+        # Cached outcome of the last validation — both successes and failures
+        # are cached for SESSION_VALIDATE_INTERVAL so that a missing-auth-cookie
+        # state isn't masked by a stale "recently validated" timestamp.
+        self._last_validation_result: bool = False
         self._last_activity: float = time.monotonic()
         self._px3_timestamp: float = 0.0   # when we last saw a fresh _px3 cookie
 
@@ -222,13 +227,23 @@ class WalmartSessionManager:
         # Harvester background task + event loop reference
         self._harvester_task: Optional[asyncio.Task] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Pause flag — set by purchase_manager during checkout so the harvester
+        # stops roaming Tab 1 (which would generate concurrent Walmart traffic
+        # while Tab 2 is in the most-scrutinized checkout window).
+        self._harvester_paused: bool = False
 
         # Stock intercept callback — set by WalmartStockMonitor to receive
         # parsed GraphQL responses captured from the browser's real page loads
         self._stock_intercept_cb: Optional[Callable[[dict], None]] = None
-        # Tracks pending GraphQL request IDs → item_id so we can match responses
-        self._pending_graphql: dict = {}  # requestId → item_id
+        # Tracks pending GraphQL request IDs → item_id so we can match responses.
+        # Separate dicts per tab so the body fetch uses the correct CDP session
+        # (asking Tab 1 for a request_id that was made on Tab 2 returns no body).
+        self._pending_graphql: dict = {}        # Tab 1's pending requests
+        self._pending_graphql_tab2: dict = {}   # Tab 2's pending requests
         self._pending_lock = threading.Lock()
+        # Bounded staleness — drop entries older than this so a never-completed
+        # request can't leak into the dict forever (e.g. cancelled navigation).
+        self._pending_max_age_seconds: float = 30.0
         # Signaled when a GraphQL response body has been captured, so the
         # harvester loop knows it can safely navigate to the next product.
         self._graphql_captured: Optional[asyncio.Event] = None
@@ -397,13 +412,24 @@ class WalmartSessionManager:
         # Wire CDP network handlers on Tab 2 so GraphQL hashes are
         # auto-discovered when Tab 2 navigates to product pages during purchase.
         # This eliminates the need for Tab 1 to visit PDPs (sensitive routes).
+        #
+        # Both RequestWillBeSent AND LoadingFinished are required — without
+        # LoadingFinished, requests captured on Tab 2 would queue in
+        # `_pending_graphql` forever (memory leak) and their response bodies
+        # would never be fetched (lost stock data). The handler routes through
+        # `_on_network_request_tab2` / `_on_loading_finished_tab2` so the
+        # body-fetch coroutine knows to use Tab 2's CDP session, not Tab 1's.
         try:
             await self._checkout_page.send(cdp.network.enable())
             self._checkout_page.add_handler(
                 cdp.network.RequestWillBeSent,
-                self._on_network_request,
+                self._on_network_request_tab2,
             )
-            logger.debug("[SESSION] CDP network handlers wired on Tab 2")
+            self._checkout_page.add_handler(
+                cdp.network.LoadingFinished,
+                self._on_loading_finished_tab2,
+            )
+            logger.debug("[SESSION] CDP network handlers wired on Tab 2 (req + body)")
         except Exception as e:
             logger.warning("[SESSION] Failed to wire network handlers on Tab 2: %s", e)
 
@@ -419,9 +445,26 @@ class WalmartSessionManager:
         logger.debug("[SESSION] Checkout tab opened on: %s", warmup_url)
 
     async def stop(self):
-        """Save cookies and close the browser."""
+        """Save cookies and close the browser.
+
+        Also clears restart-tainted state so a subsequent start() comes up
+        clean: cancels the harvester task (so it doesn't keep polling on the
+        dead browser), drops the live cookie cache + _px3 timestamp (so
+        needs_rewarm correctly returns True after restart), empties
+        _pending_graphql / _pending_graphql_tab2 (so stale request IDs from
+        the dead browser can't collide with new IDs on the next session),
+        and drops the monitor cookie snapshot (it references cookies that
+        belonged to a now-dead browser context).
+        """
         try:
             await self.save_cookies()
+        except Exception:
+            pass
+        # Cancel harvester first so it doesn't keep trying to read self._page
+        # after we null it out below. stop_harvester is idempotent so it's
+        # safe to call even if start_harvester was never invoked.
+        try:
+            self.stop_harvester()
         except Exception:
             pass
         self._page = None
@@ -432,7 +475,20 @@ class WalmartSessionManager:
         except Exception:
             pass
         self._browser = None
-        logger.debug("[SESSION] Browser stopped")
+        # Drop restart-tainted state — see method docstring for rationale.
+        with self._pending_lock:
+            self._pending_graphql.clear()
+            self._pending_graphql_tab2.clear()
+        with self._live_cookies_lock:
+            self._live_cookies = {}
+            self._live_cookies_timestamp = 0.0
+        self._px3_timestamp = 0.0
+        self._monitor_cookie_snapshot = []
+        # Reset validation cache so the post-restart validate_session does a
+        # real check instead of returning a stale cached True.
+        self._last_validation = 0.0
+        self._last_validation_result = False
+        logger.debug("[SESSION] Browser stopped — all session state cleared")
 
     # ------------------------------------------------------------------
     # Login
@@ -555,19 +611,27 @@ class WalmartSessionManager:
         """
         Check if we're still logged in. Navigates to account page.
         Returns True if session is valid.
+
+        Caches the LAST validation OUTCOME (not just timestamp) for
+        SESSION_VALIDATE_INTERVAL — without this, the previous version
+        cached only successes: if validation failed at T0, the cached
+        check at T0+1s would short-circuit to True (because the cache
+        check only looked at the timestamp), masking a logged-out session.
         """
         if not self._page:
             return False
 
         now = time.monotonic()
 
-        # Don't re-validate if recently done
+        # Don't re-validate if recently done — return the cached outcome
         if now - self._last_validation < SESSION_VALIDATE_INTERVAL:
-            return True
+            return getattr(self, "_last_validation_result", True)
 
         # Force re-login if too idle
         if now - self._last_activity > SESSION_MAX_IDLE:
             self._status_cb("[SESSION] Session expired due to inactivity")
+            self._last_validation = now
+            self._last_validation_result = False
             return False
 
         try:
@@ -577,13 +641,17 @@ class WalmartSessionManager:
             if "auth" not in cookie_names:
                 self._status_cb("[SESSION] No auth cookie — session invalid. Run walmart_relogin.py.")
                 logger.warning("[SESSION] No auth cookie found — not logged in")
+                self._last_validation = now
+                self._last_validation_result = False
                 return False
 
             self._last_validation = now
+            self._last_validation_result = True
             self._last_activity = now
             return True
         except Exception as e:
             logger.warning("[SESSION] Validation error: %s", e)
+            # Don't cache an exception result — retry on next call
             return False
 
     # ------------------------------------------------------------------
@@ -929,6 +997,18 @@ class WalmartSessionManager:
             self._harvester_task.cancel()
             self._harvester_task = None
 
+    def pause_harvester(self):
+        """Pause harvester roaming during checkout — call before Tab 2 enters cart/checkout."""
+        self._harvester_paused = True
+
+    def resume_harvester(self):
+        """Resume harvester roaming after checkout completes."""
+        self._harvester_paused = False
+
+    @property
+    def harvester_paused(self) -> bool:
+        return self._harvester_paused
+
     async def _harvester_loop(self):
         """
         One-time startup warmup on low-risk pages, then idles.
@@ -1020,6 +1100,15 @@ class WalmartSessionManager:
             while True:
                 if not self._page:
                     await asyncio.sleep(2.0)
+                    continue
+
+                # While the purchase_manager is in checkout, pause all harvester
+                # activity. Roaming Tab 1 during the most-scrutinized window adds
+                # concurrent Walmart traffic that contributes to PerimeterX scoring
+                # for the shared browser context. We do NOT cancel pending hash
+                # refreshes; we just defer them until checkout finishes.
+                if self._harvester_paused:
+                    await asyncio.sleep(1.0)
                     continue
 
                 # Check if stock monitor signaled GraphQL hash refresh needed (HTTP 400 detected)
@@ -1182,12 +1271,24 @@ class WalmartSessionManager:
     # ------------------------------------------------------------------
 
     async def save_cookies(self):
-        """Persist browser cookies to disk (thread-safe via module-level lock)."""
+        """Persist browser cookies to disk (thread-safe via module-level lock).
+
+        Uses `get_all_cookies()` instead of `get_cookies()` — the latter is
+        URL-filtered to the current page's origin, so if Tab 1 happened to be
+        on an external warmup site (Google/Amazon) at save time, the saved
+        file would contain THOSE cookies, not Walmart's. `get_all_cookies()`
+        ignores the current URL and returns every cookie in the browser jar.
+
+        Write goes through a tempfile + os.replace to be crash-safe — same
+        atomic-write pattern PM3 applied to walmart_config.json. A SIGKILL
+        mid-write can no longer leave a half-written cookie file that
+        _load_cookies would JSON-decode-fail on the next start.
+        """
         if not self._browser or not self._page:
             return
         try:
             from zendriver import cdp
-            all_cookies = await self._page.send(cdp.network.get_cookies())
+            all_cookies = await self._page.send(cdp.network.get_all_cookies())
             cookies = [
                 {
                     "name": c.name,
@@ -1202,9 +1303,26 @@ class WalmartSessionManager:
                 for c in all_cookies
             ]
             self._cookies_path.parent.mkdir(parents=True, exist_ok=True)
-            with _cookie_file_lock:
-                with open(self._cookies_path, "w") as f:
-                    json.dump(cookies, f, indent=2)
+            tmp_path = self._cookies_path.with_name(
+                f".{self._cookies_path.name}.tmp.{os.getpid()}"
+            )
+            try:
+                with _cookie_file_lock:
+                    with open(tmp_path, "w") as f:
+                        json.dump(cookies, f, indent=2)
+                        f.flush()
+                        try:
+                            os.fsync(f.fileno())
+                        except OSError:
+                            pass
+                    os.replace(tmp_path, self._cookies_path)
+            finally:
+                # Best-effort cleanup if os.replace didn't happen (exception path)
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
             logger.debug("[SESSION] Cookies saved (%d)", len(cookies))
         except Exception as e:
             logger.warning("[SESSION] Failed to save cookies: %s", e)
@@ -1514,10 +1632,19 @@ class WalmartSessionManager:
         return False
 
     def _on_network_request(self, event):
+        """RequestWillBeSent on Tab 1 — see _enqueue_pending_graphql."""
+        self._enqueue_pending_graphql(event, self._pending_graphql)
+
+    def _on_network_request_tab2(self, event):
+        """RequestWillBeSent on Tab 2 — same as Tab 1 but routes the body
+        fetch through the Tab 2 CDP session."""
+        self._enqueue_pending_graphql(event, self._pending_graphql_tab2)
+
+    def _enqueue_pending_graphql(self, event, pending: dict):
         """
-        CDP RequestWillBeSent handler — sniffs ItemByIdAtf/Btf URLs to:
-        1. Auto-discover ATF and BTF GraphQL hashes
-        2. Track request IDs so we can capture response bodies for stock data
+        Common logic for both tabs' RequestWillBeSent handler:
+        1. Auto-discover ATF and BTF GraphQL hashes from the URL
+        2. Track request IDs (with enqueue time for staleness pruning)
         """
         try:
             url = event.request.url
@@ -1533,33 +1660,58 @@ class WalmartSessionManager:
                 m = _re.search(r"/ip/(\d+)", url)
                 if m and self._stock_intercept_cb:
                     item_id = m.group(1)
+                    now = time.monotonic()
                     with self._pending_lock:
-                        self._pending_graphql[event.request_id] = item_id
+                        pending[event.request_id] = (item_id, now)
+                        # Opportunistic cleanup — prune entries older than
+                        # _pending_max_age_seconds across BOTH dicts so a
+                        # never-completing request can't leak forever.
+                        cutoff = now - self._pending_max_age_seconds
+                        for d in (self._pending_graphql, self._pending_graphql_tab2):
+                            stale = [rid for rid, (_iid, ts) in d.items() if ts < cutoff]
+                            for rid in stale:
+                                d.pop(rid, None)
         except Exception:
             pass
 
     def _on_loading_finished(self, event):
-        """
-        CDP LoadingFinished handler — fires after response body is fully buffered.
-        At this point get_response_body is guaranteed to succeed (unlike ResponseReceived
-        which fires before the body is ready).
-        """
+        """LoadingFinished on Tab 1."""
+        self._schedule_body_fetch(event, self._pending_graphql, self._page)
+
+    def _on_loading_finished_tab2(self, event):
+        """LoadingFinished on Tab 2."""
+        self._schedule_body_fetch(event, self._pending_graphql_tab2, self._checkout_page)
+
+    def _schedule_body_fetch(self, event, pending: dict, page):
+        """Pop the matching request ID and schedule the body fetch on the right tab."""
         try:
             with self._pending_lock:
-                item_id = self._pending_graphql.pop(event.request_id, None)
-            if item_id and self._stock_intercept_cb and self._page and self._event_loop:
+                entry = pending.pop(event.request_id, None)
+            if not entry:
+                return
+            item_id, _ts = entry
+            if item_id and self._stock_intercept_cb and page and self._event_loop:
                 asyncio.run_coroutine_threadsafe(
-                    self._fetch_graphql_body(event.request_id, item_id),
+                    self._fetch_graphql_body(event.request_id, item_id, page),
                     self._event_loop,
                 )
         except Exception:
             pass
 
-    async def _fetch_graphql_body(self, request_id, item_id: str):
-        """Fetch the response body for a captured GraphQL request and call the stock callback."""
+    async def _fetch_graphql_body(self, request_id, item_id: str, page=None):
+        """Fetch the response body for a captured GraphQL request and call the stock callback.
+
+        `page` parameter routes the body fetch to the tab that captured the
+        request. Defaults to Tab 1 for backward compatibility with any direct
+        callers.
+        """
+        if page is None:
+            page = self._page
+        if page is None:
+            return
         try:
             from zendriver import cdp
-            result = await self._page.send(
+            result = await page.send(
                 cdp.network.get_response_body(request_id=request_id)
             )
             if result and result.body:

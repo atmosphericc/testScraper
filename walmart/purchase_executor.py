@@ -295,8 +295,13 @@ class WalmartPurchaseExecutor:
             logger.info("[PURCHASE] Tab already on %s — skipping navigation", target_item_id)
         else:
             self._status_cb(f"[PURCHASE] Navigating to {url}")
+            # Wrap navigation in wait_for — same pattern PM applied to _clear_cart.
+            # A stalled `/blocked` redirect or hung page load could otherwise
+            # freeze the purchase flow indefinitely.
             try:
-                await self._page.get(url)
+                await asyncio.wait_for(self._page.get(url), timeout=20.0)
+            except asyncio.TimeoutError:
+                logger.warning("[PURCHASE] Navigation to %s timed out after 20s", url)
             except Exception as e:
                 logger.warning("[PURCHASE] Navigate encountered error: %s", e)
             await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -307,7 +312,9 @@ class WalmartPurchaseExecutor:
             # Re-navigate after solving challenge
             self._status_cb(f"[PURCHASE] Re-navigating to {url} after challenge solve")
             try:
-                await self._page.get(url)
+                await asyncio.wait_for(self._page.get(url), timeout=20.0)
+            except asyncio.TimeoutError:
+                logger.warning("[PURCHASE] Re-navigation to %s timed out after 20s", url)
             except Exception as e:
                 logger.warning("[PURCHASE] Re-navigate encountered error: %s", e)
             await asyncio.sleep(random.uniform(0.8, 1.5))
@@ -541,7 +548,12 @@ class WalmartPurchaseExecutor:
             logger.info("[PURCHASE] Already on cart page (URL: %s) — skipping navigation", current_url)
         else:
             logger.info("[PURCHASE] Navigating to cart from: %s → %s", current_url, WALMART_CART_URL)
-            await self._page.get(WALMART_CART_URL)
+            try:
+                await asyncio.wait_for(self._page.get(WALMART_CART_URL), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("[PURCHASE] Cart navigation timed out after 15s — aborting")
+                await self._screenshot(f"cart_nav_timeout_{item_id}")
+                return False
             await asyncio.sleep(random.uniform(0.6, 1.0))
             current_url = self._page.url or ""
             logger.info("[PURCHASE] Arrived at: %s", current_url)
@@ -554,7 +566,11 @@ class WalmartPurchaseExecutor:
             solved = await self._handle_blocked()
             if solved:
                 self._status_cb("[PURCHASE] Challenge solved — re-navigating to cart")
-                await self._page.get(WALMART_CART_URL)
+                try:
+                    await asyncio.wait_for(self._page.get(WALMART_CART_URL), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning("[PURCHASE] Post-challenge cart re-navigation timed out — aborting")
+                    return False
                 await asyncio.sleep(random.uniform(1.5, 2.5))
             else:
                 logger.error("[PURCHASE] Could not solve /blocked on cart — aborting")
@@ -688,7 +704,11 @@ class WalmartPurchaseExecutor:
                 self._status_cb("[PURCHASE] Blocked on checkout navigation — solving...")
                 await self._handle_blocked()
                 try:
-                    await self._page.get(WALMART_CHECKOUT_URL)
+                    await asyncio.wait_for(
+                        self._page.get(WALMART_CHECKOUT_URL), timeout=15.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[PURCHASE] Post-challenge checkout re-navigation timed out")
                 except Exception:
                     pass
             if "/account/login" in url or "/account/signin" in url or "sign-in" in url:
@@ -1170,7 +1190,11 @@ class WalmartPurchaseExecutor:
         Navigates back to item_url afterward so the caller stays on the product page.
         """
         try:
-            await self._page.get(WALMART_CART_URL)
+            try:
+                await asyncio.wait_for(self._page.get(WALMART_CART_URL), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("[PURCHASE] _is_item_already_in_cart: cart navigation timed out after 15s")
+                return False
             await asyncio.sleep(random.uniform(0.8, 1.2))
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',           # last verified: 2026-04-10
@@ -1191,8 +1215,10 @@ class WalmartPurchaseExecutor:
             # Always navigate back to the product page
             if item_url:
                 try:
-                    await self._page.get(item_url)
+                    await asyncio.wait_for(self._page.get(item_url), timeout=15.0)
                     await asyncio.sleep(1)
+                except asyncio.TimeoutError:
+                    logger.warning("[PURCHASE] Navigate-back to %s timed out after 15s", item_url)
                 except Exception as e:
                     logger.warning("[PURCHASE] Could not navigate back to item URL after cart check: %s", e)
         return found
@@ -1204,7 +1230,11 @@ class WalmartPurchaseExecutor:
         Navigates to cart, checks item count, and clicks each remove button.
         """
         try:
-            await self._page.get(WALMART_CART_URL)
+            try:
+                await asyncio.wait_for(self._page.get(WALMART_CART_URL), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("[PURCHASE] _clear_cart_if_needed: cart navigation timed out after 15s — skipping pre-clear")
+                return
             await asyncio.sleep(random.uniform(0.8, 1.2))
             cart_items = await self._query_selector_all([
                 '[data-automation-id="cart-item"]',           # last verified: 2026-04-10
@@ -1513,7 +1543,12 @@ class WalmartPurchaseExecutor:
         cart_cleared = False
         landed_on_blocked = False
         try:
-            await self._page.get(WALMART_CART_URL)
+            try:
+                await asyncio.wait_for(self._page.get(WALMART_CART_URL), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("[PURCHASE] _clear_cart: cart navigation timed out after 15s — treating as poisoned")
+                self._last_cart_clear_blocked = True
+                return False
             await asyncio.sleep(1)
 
             # If cart navigation landed us on /blocked, the cart is NOT empty —

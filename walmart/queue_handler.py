@@ -79,10 +79,17 @@ PASSTHROUGH_CLICK_TEXTS = [
     "Complete your purchase",
 ]
 
-# ATC button selectors — becoming active is the primary pass-through signal
+# ATC button selectors — becoming active is the primary pass-through signal.
+# Mirrors purchase_executor.ATC_SELECTORS — modern Walmart uses data-automation-id="atc";
+# the legacy "add-to-cart-btn" / "ProductPrimaryCTA-cta_add_to_cart_button" attributes
+# are kept as fallbacks for older A/B variants. Without "atc" the queue would never
+# detect pass-through and would time out at QUEUE_TIMEOUT (30 min).
 ATC_SELECTORS = [
+    'button[data-automation-id="atc"]',
     'button[data-automation-id="add-to-cart-btn"]',
+    'button[data-dca-event="addToCart"]',
     'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
+    'button[data-dca-name="ItemBuyBoxAddToCartButton"]',
 ]
 
 # ATC button text patterns (used with XPath)
@@ -244,17 +251,23 @@ class QueueHandler:
             except Exception as e:
                 logger.warning("[QUEUE] Poll error: %s", e)
 
-        # Guard — loop only exits via return statements above
-        return False
-
     async def enter_queue(self, item_url: str) -> bool:
         """
         Navigate to the product URL, then attempt to join the queue if present.
         Returns True if queued successfully.
+
+        Navigation wrapped in `asyncio.wait_for` so a stalled `/blocked` or
+        otherwise hung page load can't freeze the whole queue flow indefinitely
+        — same pattern PM applied to the cart-clear paths in purchase_executor.
         """
         try:
             self._status_cb(f"[QUEUE] Navigating to enter queue: {item_url}")
-            await self._page.get(item_url)
+            try:
+                await asyncio.wait_for(self._page.get(item_url), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("[QUEUE] Navigation to %s timed out after 15s", item_url)
+                self._status_cb("[QUEUE] Navigation stalled — abandoning queue join")
+                return False
             await asyncio.sleep(2)
 
             # Try to join if the entry button is visible
@@ -339,8 +352,11 @@ class QueueHandler:
             except Exception:
                 continue
 
-        # Try stable attribute selectors — class names are hashed on every Walmart deploy
-        for css_pattern in ['[data-automation-id*="queue"]', '[data-testid*="queue"]', 'button:has-text("Join queue")', 'button:has-text("Hold my spot")']:
+        # Try stable attribute selectors — class names are hashed on every Walmart deploy.
+        # NOTE: `button:has-text(...)` is patchright/Playwright-only; zendriver's
+        # query_selector_all silently fails on it, so we use pure CSS-attribute
+        # patterns here and rely on the text-XPath loop above for text matches.
+        for css_pattern in ['[data-automation-id*="queue"]', '[data-testid*="queue"]']:
             try:
                 els = await self._page.query_selector_all(css_pattern)
                 for el in els:

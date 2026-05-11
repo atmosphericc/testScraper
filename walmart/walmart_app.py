@@ -20,6 +20,8 @@ import json
 import logging
 import os
 import queue
+import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -38,19 +40,32 @@ log_file = log_dir / f"walmart_app_{time.strftime('%Y%m%d_%H%M%S')}.log"
 formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-file_handler = logging.FileHandler(log_file)
+# delay=True so the file is only created when the first log line is written —
+# prevents 0-byte log files when the process is killed during import / startup
+# before any logger.info() has fired.
+file_handler = logging.FileHandler(log_file, delay=True)
 file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.INFO)
+
+# Attach to the `walmart` package root so every submodule logger
+# (walmart.purchase_manager, walmart.purchase_executor, walmart.session_manager,
+# walmart.stock_monitor, etc.) writes to the log file via propagation.
+walmart_pkg_logger = logging.getLogger("walmart")
+walmart_pkg_logger.addHandler(file_handler)
+walmart_pkg_logger.setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
-logger.addHandler(file_handler)
 
-# Also add file handler to all other loggers
+# Named loggers used by legacy modules that don't follow the walmart.* hierarchy
 for name in ["MANAGER", "PURCHASE", "SESSION", "MONITOR", "PROXY"]:
     log = logging.getLogger(name)
     log.addHandler(file_handler)
+    log.setLevel(logging.INFO)
 
-# Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE)
-os.environ.setdefault("CHECKOUT_MODE", "LIVE")
+# Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE).
+# Executor checks `CHECKOUT_MODE == "PRODUCTION"` to gate Place Order — "LIVE"
+# is just the UI label; the executor's non-test branch is named PRODUCTION.
+os.environ.setdefault("CHECKOUT_MODE", "PRODUCTION")
 
 app = Flask(__name__)
 
@@ -625,7 +640,14 @@ def stream():
 
 @app.route("/api/status")
 def api_status():
-    status = _manager.get_status() if _manager else {"running": False}
+    # Guard against get_status() raising mid-shutdown or during a manager
+    # state-corruption hiccup — the dashboard's 15s polling should never crash
+    # the route and break the live feed.
+    try:
+        status = _manager.get_status() if _manager else {"running": False}
+    except Exception:
+        logger.exception("[APP] /api/status get_status failed")
+        status = {"running": False, "error": "status_unavailable"}
     status["test_mode"] = _test_mode
     return jsonify(status)
 
@@ -686,6 +708,43 @@ def remove_product(item_id: str):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/reorder-products", methods=["POST"])
+def reorder_products():
+    """Persist the priority order set by the dashboard's up/down buttons."""
+    try:
+        data = request.get_json(force=True) or {}
+        order = data.get("order")
+        if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
+            return jsonify({"error": "order must be a list of item_id strings"}), 400
+
+        config = get_config()
+        by_id = {p["item_id"]: p for p in config.get("products", [])}
+
+        # Assign new priorities by position in the submitted order.
+        # Products not in the submitted order keep their existing priority but
+        # get pushed below the reordered ones.
+        reordered = []
+        for i, item_id in enumerate(order, start=1):
+            p = by_id.pop(item_id, None)
+            if p is None:
+                continue
+            p["priority"] = i
+            reordered.append(p)
+
+        # Append remaining (unranked) products after the reordered ones.
+        offset = len(reordered)
+        for j, p in enumerate(by_id.values(), start=1):
+            p["priority"] = offset + j
+            reordered.append(p)
+
+        config["products"] = reordered
+        save_config(config)
+        return jsonify({"message": "reordered", "count": len(reordered)})
+    except Exception as e:
+        logger.exception("[APP] /reorder-products error")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/test/enable", methods=["POST"])
 def test_enable():
     global _test_mode
@@ -706,9 +765,13 @@ def test_disable():
 
 @app.route("/health")
 def health():
+    try:
+        running = _manager.get_status().get("running", False) if _manager else False
+    except Exception:
+        running = False
     return jsonify({
         "status": "ok",
-        "running": _manager.get_status().get("running", False) if _manager else False,
+        "running": running,
         "test_mode": _test_mode,
     })
 
@@ -717,9 +780,55 @@ def health():
 # Entry point
 # ---------------------------------------------------------------------------
 
+_shutdown_in_progress = False
+
+
+def _graceful_shutdown(signum=None, frame=None):
+    """
+    SIGINT/SIGTERM handler — schedules WalmartPurchaseManager.stop() on the
+    manager loop, waits briefly, then exits. Without this, Ctrl+C kills the
+    daemon thread mid-purchase and the browser, harvester, and monitor never
+    clean up — leaving a hung Chrome + a 0-byte log file behind.
+    """
+    global _shutdown_in_progress
+    if _shutdown_in_progress:
+        logger.warning("[APP] Second shutdown signal — forcing exit")
+        os._exit(1)
+    _shutdown_in_progress = True
+
+    sig_name = signal.Signals(signum).name if signum is not None else "shutdown"
+    logger.info("[APP] Received %s — shutting down gracefully (5s budget)", sig_name)
+
+    if _manager is not None and _manager_loop is not None and _manager_loop.is_running():
+        try:
+            fut = asyncio.run_coroutine_threadsafe(_manager.stop(), _manager_loop)
+            try:
+                fut.result(timeout=5.0)
+                logger.info("[APP] Manager stopped cleanly")
+            except Exception as e:
+                logger.warning("[APP] Manager stop did not complete in 5s: %s", e)
+        except Exception as e:
+            logger.warning("[APP] Could not schedule manager stop: %s", e)
+
+    # Flush all logging handlers so the file isn't truncated mid-write
+    for handler in logging.getLogger().handlers + logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+    sys.exit(0)
+
+
 def run_dashboard():
     """Start the Walmart dashboard on port 5001."""
     from waitress import serve
+
+    # Register graceful shutdown — only in the main thread (signal handlers
+    # cannot be registered from worker threads).
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, _graceful_shutdown)
+        signal.signal(signal.SIGTERM, _graceful_shutdown)
 
     logger.info("[APP] Starting Walmart dashboard on http://localhost:5001")
     _start_manager()

@@ -12,6 +12,7 @@ Responsibilities:
 import asyncio
 import logging
 import os
+import random
 import threading
 import time
 from typing import Callable, Optional
@@ -125,7 +126,16 @@ class WalmartPurchaseManager:
         # this same loop — Patchright objects are bound to the loop they were
         # created on, so scheduling purchases on a separate loop causes
         # cross-loop violations and silent browser failures.
-        self._loop = asyncio.get_event_loop()
+        # Use get_running_loop() — get_event_loop() is deprecated since 3.10
+        # and on 3.12+ returns a NEW loop when no loop is running, which
+        # would silently misbehave if start() were ever called outside an
+        # await context.
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — fallback for any caller that runs start()
+            # outside an await context. Matches the prior behavior.
+            self._loop = asyncio.get_event_loop()
 
         # Start browser session (includes a 3s network-stack warm-up internally)
         await self._session.start()
@@ -184,7 +194,16 @@ class WalmartPurchaseManager:
         logger.debug("[MANAGER] Walmart bot started, monitoring %d product(s)", len(products))
 
     async def stop(self):
-        """Gracefully stop the bot."""
+        """Gracefully stop the bot. Idempotent — safe to call multiple times.
+
+        Called from the dashboard's atexit/SIGINT handlers, possibly more than
+        once (e.g. blueprint.stop_manager + walmart_app graceful shutdown).
+        Without the early-return, each call would re-fire monitor.stop()
+        (which joins worker threads with a 10s timeout) and re-await
+        session.stop() (which closes an already-dead browser).
+        """
+        if not self._running:
+            return
         self._running = False
         self._monitor.stop()
         self._session.stop_harvester()
@@ -197,6 +216,15 @@ class WalmartPurchaseManager:
         self._stock_update_callback = cb
 
     def _on_stock_change(self, item_id: str, in_stock: bool, price):
+        # Keep the in-stock set in sync with the monitor — without the OOS
+        # branch the set only grows, so a long-OOS item that was briefly
+        # in-stock once would still be considered for the priority-override
+        # path forever. (No call site ever removed entries before this fix.)
+        with self._lock:
+            if in_stock:
+                self._in_stock_ids.add(item_id)
+            else:
+                self._in_stock_ids.discard(item_id)
         if self._stock_update_callback:
             self._stock_update_callback(item_id, in_stock, price)
 
@@ -261,9 +289,10 @@ class WalmartPurchaseManager:
         # not in a terminal/active state, buy that one instead.
         products = get_enabled_products()
         skip_states = (PurchaseState.PURCHASING, PurchaseState.SUCCESS, PurchaseState.IN_QUEUE)
+        original_item_id = item_id  # remember the triggered ID so we can reset it on override
         with self._lock:
             current_states = dict(self._state)
-            in_stock_ids = set(self._in_stock_ids) if hasattr(self, '_in_stock_ids') else {item_id}
+            in_stock_ids = set(self._in_stock_ids)
         in_stock_ids.add(item_id)  # always include the triggered item
 
         eligible = [
@@ -284,8 +313,14 @@ class WalmartPurchaseManager:
                 )
                 item_id = best["item_id"]
                 name = best.get("name", item_id)
-                # Mark the override target as PURCHASING
+                # Atomically: release the original item back to MONITORING (it
+                # was marked PURCHASING above for the triggered ID — without
+                # this it would be stuck PURCHASING forever, blocking all
+                # future signals via the early-return at the top of this
+                # method), and mark the override target as PURCHASING.
                 with self._lock:
+                    if self._state.get(original_item_id) == PurchaseState.PURCHASING:
+                        self._state[original_item_id] = PurchaseState.MONITORING
                     self._state[item_id] = PurchaseState.PURCHASING
 
         item_url = f"https://www.walmart.com/ip/x/{item_id}"
@@ -352,6 +387,16 @@ class WalmartPurchaseManager:
                     raise RuntimeError("Browser restarted but session validation failed — run walmart_relogin.py")
                 # Re-wire the new page into the monitor
                 self._monitor.set_page(self._session.get_checkout_page())
+                # Restart the cookie harvester — session.stop() cancels the
+                # prior task, so without this the post-restart browser has
+                # no keep-alive refreshing _px3 and the next stock-check
+                # batch would see stale cookies (most likely BLOCKED).
+                if self._loop is not None:
+                    try:
+                        self._session.start_harvester(self._loop)
+                        logger.info("[MANAGER] Cookie harvester restarted after browser restart")
+                    except Exception as e:
+                        logger.warning("[MANAGER] Failed to restart harvester after browser restart: %s", e)
 
             # Re-warm session if _px3 is stale
             if self._session.needs_rewarm():
@@ -383,6 +428,16 @@ class WalmartPurchaseManager:
             self._monitor.pause()
             self._status_cb("[MANAGER] Stock monitor paused for purchase")
             logger.info("[MANAGER] Stock monitor paused — protecting _px3 for checkout")
+
+            # Also pause the cookie harvester — it roams Tab 1 across browse/category
+            # pages on its keep-alive loop. Concurrent Tab 1 traffic during the
+            # most-scrutinized checkout window adds aggregate behavioral signal
+            # to the shared browser context and risks /blocked on Tab 2.
+            try:
+                self._session.pause_harvester()
+                logger.info("[MANAGER] Cookie harvester paused — protecting checkout context")
+            except Exception as e:
+                logger.warning("[MANAGER] Harvester pause failed: %s", e)
 
             # Let the browser settle for a moment after pausing fetch() spam,
             # then refresh cookies so Tab 2 starts with a clean _px3
@@ -454,6 +509,16 @@ class WalmartPurchaseManager:
                 self._monitor.resume()
                 self._status_cb("[MANAGER] Stock monitor resumed")
                 logger.info("[MANAGER] Stock monitor resumed after purchase attempt")
+
+            # Resume the cookie harvester last — after monitor cookies are
+            # restored and the stock monitor is back up. Pause may have been
+            # skipped if the executor never reached the pause line, so we
+            # resume unconditionally (no-op if already not paused).
+            try:
+                self._session.resume_harvester()
+                logger.info("[MANAGER] Cookie harvester resumed")
+            except Exception as e:
+                logger.warning("[MANAGER] Harvester resume failed: %s", e)
 
             if checkout_proxy:
                 self._proxy_manager.release_checkout_proxy(checkout_proxy)
@@ -553,7 +618,6 @@ class WalmartPurchaseManager:
           - "<int>"              → fixed N seconds
           - anything else        → default range
         """
-        import random
         raw = (os.environ.get("WALMART_TEST_LOOP_COOLDOWN") or "").strip().lower()
         if raw in ("off", "0", "none", "false", "no"):
             return 0.0
@@ -567,9 +631,13 @@ class WalmartPurchaseManager:
     # ------------------------------------------------------------------
 
     def _is_monitor_healthy(self) -> bool:
-        """Return True if the stock monitor's internal run flag is set."""
-        with self._monitor._running_lock:
-            return self._monitor._running
+        """Return True if the stock monitor's internal run flag is set.
+
+        Uses the monitor's public is_healthy() rather than reaching into
+        `_running_lock` + `_running` private attrs — those are an
+        implementation detail and could be renamed.
+        """
+        return self._monitor.is_healthy()
 
     # ------------------------------------------------------------------
     # Circuit breaker

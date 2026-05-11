@@ -64,6 +64,7 @@ walmart_logger = get_walmart_logger()
 # ---------------------------------------------------------------------------
 
 MAX_PATCHES_PER_SESSION = 5
+MAX_RESTARTS_PER_HOUR = 8    # circuit-breaker for the recovery loop itself
 RESTART_DELAY = 15           # seconds between restarts
 LOG_TAIL_LINES = 150
 PATCH_LOG_FILE = f"{LOGS_DIR}/patches.log"
@@ -90,12 +91,19 @@ class FailureCategory:
 class LogDiagnostician:
     """Classifies failure category from recent log lines. No API calls."""
 
+    # Rule order is significant — earlier rules win. ANTIBOT and LOGIN come
+    # first because they have the most diagnostic signal and benefit from no
+    # code mutation. WRONG_SELECTOR is the most dangerous category (auto-
+    # patches code) so its regex is tightly scoped to selector-specific
+    # diagnostic phrases (no_atc / no_checkout / etc.) rather than the broad
+    # "not found" / "element.*not" patterns that previously matched 404s,
+    # missing products, and other unrelated failures.
     _RULES = [
-        (re.compile(r"403|429|captcha|perimeterx|px.*block|akamai.*block|access denied|robot|human.*verif", re.I), FailureCategory.ANTIBOT_BLOCK),
-        (re.compile(r"login.*fail|still on login|could not find.*email|could not find.*password|login error", re.I), FailureCategory.LOGIN_FAILURE),
+        (re.compile(r"403|429|captcha|perimeterx|px.*block|akamai.*block|access denied|robot detection|human.*verif", re.I), FailureCategory.ANTIBOT_BLOCK),
+        (re.compile(r"login.*fail|still on login|could not find.*email|could not find.*password|login error|invalid.*credential", re.I), FailureCategory.LOGIN_FAILURE),
         (re.compile(r"queue.*timeout|timed out.*queue|queue.*timed out", re.I), FailureCategory.QUEUE_TIMEOUT),
-        (re.compile(r"cart.*empty|empty.*cart|out.of.stock|item not found in cart|oos", re.I), FailureCategory.OUT_OF_STOCK),
-        (re.compile(r"not found|no.*button|selector.*not|element.*not|locator.*not|no_atc|no_checkout|no_place_order", re.I), FailureCategory.WRONG_SELECTOR),
+        (re.compile(r"cart.*empty|empty.*cart|item not found in cart|out of stock|^oos\b", re.I), FailureCategory.OUT_OF_STOCK),
+        (re.compile(r"\bno_atc\b|\bno_checkout\b|\bno_place_order\b|\bno_cvv\b|ATC button not found|checkout button not found|place order button not found|cvv field not found", re.I), FailureCategory.WRONG_SELECTOR),
         (re.compile(r"timeout.*exceeded|timeouterror|connection.*timeout|read.*timed out|network.*error|err_network", re.I), FailureCategory.NETWORK_TIMEOUT),
     ]
 
@@ -185,13 +193,16 @@ class HtmlSelectorPatcher:
         ],
     }
 
-    # Which file each variable lives in
+    # Which file(s) each variable lives in. ATC_SELECTORS is duplicated
+    # across purchase_executor.py and queue_handler.py — auto-patching only
+    # one would leave the other stale (the same drift bug the 2026-05-11
+    # AM audit fixed manually). Patcher now touches every file in the list.
     _FILE_MAP = {
-        "ATC_SELECTORS":          "purchase_executor.py",
-        "CHECKOUT_SELECTORS":     "purchase_executor.py",
-        "PLACE_ORDER_SELECTORS":  "purchase_executor.py",
-        "CVV_SELECTORS":          "purchase_executor.py",
-        "QUEUE_ENTRY_SELECTORS":  "queue_handler.py",
+        "ATC_SELECTORS":          ["purchase_executor.py", "queue_handler.py"],
+        "CHECKOUT_SELECTORS":     ["purchase_executor.py"],
+        "PLACE_ORDER_SELECTORS":  ["purchase_executor.py"],
+        "CVV_SELECTORS":          ["purchase_executor.py"],
+        "QUEUE_ENTRY_SELECTORS":  ["queue_handler.py"],
     }
 
     # Attribute priority — most stable first
@@ -230,10 +241,10 @@ class HtmlSelectorPatcher:
             if result is None:
                 continue  # no match or ambiguous — skip
             new_selector = result
-            file_name = self._FILE_MAP[var_name]
-            if self._prepend_selector(var_name, new_selector, file_name):
-                patched_any = True
-                logger.info("[PATCHER] Patched %s in %s with: %s", var_name, file_name, new_selector)
+            for file_name in self._FILE_MAP[var_name]:
+                if self._prepend_selector(var_name, new_selector, file_name):
+                    patched_any = True
+                    logger.info("[PATCHER] Patched %s in %s with: %s", var_name, file_name, new_selector)
 
         return patched_any
 
@@ -445,6 +456,10 @@ class SelfHealingAgent:
         self._log_lock = threading.Lock()
         self._captured_html: str = ""   # page HTML captured before browser close
         self._failure_event: Optional[asyncio.Event] = None
+        # Rolling 1h window of restart timestamps — circuit-breaker so a
+        # persistently failing setup doesn't burn through proxy reputation
+        # by restarting every RESTART_DELAY=15s forever.
+        self._restart_history: deque = deque(maxlen=MAX_RESTARTS_PER_HOUR * 2)
 
         Path(LOGS_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -509,6 +524,22 @@ class SelfHealingAgent:
             if not should_restart:
                 self._status_cb("[HEALER] Login failure — stopping. Check credentials.")
                 break
+
+            # Restart-rate circuit breaker: stop if we've restarted too many
+            # times in the trailing 1h window. Persistent failures should
+            # produce a human-callable break, not an infinite proxy burn.
+            now = time.monotonic()
+            cutoff = now - 3600.0
+            while self._restart_history and self._restart_history[0] < cutoff:
+                self._restart_history.popleft()
+            if len(self._restart_history) >= MAX_RESTARTS_PER_HOUR:
+                self._status_cb(
+                    f"[HEALER] Restart-rate breaker — {len(self._restart_history)} restarts "
+                    f"in last hour exceeds limit ({MAX_RESTARTS_PER_HOUR}). Stopping."
+                )
+                logger.error("[HEALER] Aborting recovery — too many restarts in 1h window")
+                break
+            self._restart_history.append(now)
 
             self._status_cb(f"[HEALER] Restarting in {RESTART_DELAY}s...")
             await asyncio.sleep(RESTART_DELAY)
@@ -576,12 +607,26 @@ class SelfHealingAgent:
         """
         Grab the current page HTML from the browser before we close it.
         Saves to HTML_DUMP_FILE and stores in self._captured_html.
+
+        Prefers the checkout tab (Tab 2) since that is where ATC / checkout /
+        place-order failures occur. Falls back to the harvester tab (Tab 1)
+        if the checkout tab is unavailable.
         """
         if not self._manager:
             return
         try:
             session = self._manager._session
-            page = session.get_page() if session else None
+            # Try checkout tab first — that's where ATC/checkout/place-order
+            # selector failures happen. Tab 1 is the harvester and will be on
+            # the homepage / category pages, never showing the failed buybox.
+            page = None
+            if session:
+                try:
+                    page = session.get_checkout_page()
+                except Exception:
+                    page = None
+                if page is None:
+                    page = session.get_page()
             if page:
                 html = await page.content()
                 self._captured_html = html

@@ -87,17 +87,28 @@ class WalmartStockMonitor:
         self._checks_lock = threading.Lock()
 
         # Rate limit detection (monitor for 429 errors indicating we're too fast)
+        # _rate_limit_lock guards both _rate_limit_hits and _rate_limit_backoff —
+        # NUM_DISPATCHERS threads concurrently read/write these.
         self._rate_limit_hits: int = 0
         self._rate_limit_backoff: float = 0.0
+        self._rate_limit_lock = threading.Lock()
 
         # Circuit breaker — pause monitor after repeated BLOCKED responses to
-        # avoid accumulating Akamai detection signals during a hard block period
+        # avoid accumulating Akamai detection signals during a hard block period.
+        # _cb_lock guards _consecutive_blocked + _monitor_circuit_open_until +
+        # _graphql_refresh_signaled. Without it, NUM_DISPATCHERS dispatchers race
+        # on the increment/threshold check, producing duplicate "circuit breaker
+        # tripped" logs and (more importantly) duplicate _px3 diagnostic calls
+        # that each spawn a CDP coroutine.
         self._consecutive_blocked: int = 0
         self._monitor_circuit_open_until: float = 0.0
+        self._graphql_refresh_signaled: float = 0.0  # epoch — dedupes refresh signals
+        self._cb_lock = threading.Lock()
         _MONITOR_CIRCUIT_BREAKER_THRESHOLD = 5   # consecutive BLOCKED → trip
         _MONITOR_CIRCUIT_BREAKER_PAUSE = 120     # seconds to pause before retry
         self._MONITOR_CB_THRESHOLD = _MONITOR_CIRCUIT_BREAKER_THRESHOLD
         self._MONITOR_CB_PAUSE = _MONITOR_CIRCUIT_BREAKER_PAUSE
+        self._GRAPHQL_REFRESH_COOLDOWN = 30.0     # seconds — only refresh hash once per 30s
 
     # ------------------------------------------------------------------
     # Start / stop
@@ -354,38 +365,72 @@ class WalmartStockMonitor:
                             # Only log + emit status the FIRST time we trip per cooldown window,
                             # otherwise a single batch of N BLOCKED results spams the log N times.
                             if error_msg == "BLOCKED":
-                                self._consecutive_blocked += 1
-                                already_open = time.monotonic() < self._monitor_circuit_open_until
+                                # All circuit-breaker bookkeeping under one lock — NUM_DISPATCHERS
+                                # threads concurrently process BLOCKED results; without the lock
+                                # the increment, the "== 1" diagnostic gate, and the "trip once"
+                                # gate all race.
+                                with self._cb_lock:
+                                    self._consecutive_blocked += 1
+                                    current_blocked = self._consecutive_blocked
+                                    already_open = time.monotonic() < self._monitor_circuit_open_until
+                                    is_first_blocked = current_blocked == 1
+                                    should_trip = (
+                                        current_blocked >= self._MONITOR_CB_THRESHOLD
+                                        and not already_open
+                                    )
+                                    if should_trip:
+                                        self._monitor_circuit_open_until = (
+                                            time.monotonic() + self._MONITOR_CB_PAUSE
+                                        )
                                 # Diagnostic: on first BLOCKED, log the _px3 prefix
                                 # to confirm whether the restore actually stuck or
                                 # if Walmart re-rotated the cookie before the next
-                                # fetch (server-side session invalidation).
-                                if self._consecutive_blocked == 1:
+                                # fetch (server-side session invalidation). Run
+                                # outside _cb_lock — _log_px3_state_on_block does
+                                # a CDP round-trip and we do not want to hold the
+                                # lock across that.
+                                if is_first_blocked:
                                     self._log_px3_state_on_block()
-                                if self._consecutive_blocked >= self._MONITOR_CB_THRESHOLD and not already_open:
-                                    self._monitor_circuit_open_until = time.monotonic() + self._MONITOR_CB_PAUSE
+                                if should_trip:
                                     self._status_cb(
-                                        f"[MONITOR] Circuit breaker open — {self._consecutive_blocked} consecutive BLOCKED "
+                                        f"[MONITOR] Circuit breaker open — {current_blocked} consecutive BLOCKED "
                                         f"responses, pausing {self._MONITOR_CB_PAUSE}s"
                                     )
                                     logger.warning(
                                         "[MONITOR] Circuit breaker tripped after %d BLOCKED responses — pausing %ds",
-                                        self._consecutive_blocked, self._MONITOR_CB_PAUSE,
+                                        current_blocked, self._MONITOR_CB_PAUSE,
                                     )
                             else:
-                                self._consecutive_blocked = 0
+                                # Non-BLOCKED error resets the consecutive counter —
+                                # still under the lock so it cannot interleave with
+                                # the BLOCKED increment above.
+                                with self._cb_lock:
+                                    self._consecutive_blocked = 0
 
                             # Detect rate limiting (429 = too fast, backoff needed)
                             if error_msg == "HTTP_429":
-                                with self._checks_lock:
+                                with self._rate_limit_lock:
                                     self._rate_limit_hits += 1
-                                if self._rate_limit_hits >= 3:
-                                    logger.warning(f"[MONITOR] Rate limited (429) detected {self._rate_limit_hits}x — backing off for 30s")
-                                    self._rate_limit_backoff = time.monotonic() + 30.0
+                                    hits = self._rate_limit_hits
+                                    backoff_already_set = (
+                                        time.monotonic() < self._rate_limit_backoff
+                                    )
+                                    if hits >= 3 and not backoff_already_set:
+                                        self._rate_limit_backoff = time.monotonic() + 30.0
+                                        emit_warning = True
+                                    else:
+                                        emit_warning = False
+                                if emit_warning:
+                                    logger.warning(
+                                        "[MONITOR] Rate limited (429) detected %dx — backing off for 30s",
+                                        hits,
+                                    )
 
-                            # Detect GraphQL hash staleness (400 error pattern)
+                            # Detect GraphQL hash staleness (400 error pattern).
+                            # Multiple products in the same batch can all 400 simultaneously —
+                            # _trigger_graphql_hash_refresh dedupes so we only signal once
+                            # per cooldown window.
                             if error_msg == "HTTP_400":
-                                logger.error("[MONITOR] HTTP 400 detected — possible GraphQL hash staleness, triggering refresh")
                                 self._trigger_graphql_hash_refresh()
                             continue
 
@@ -423,20 +468,45 @@ class WalmartStockMonitor:
             # Average: CHECK_INTERVAL_AVG (1.0s for 10 dispatchers), Range: 0.5-1.5s
             elapsed = time.monotonic() - cycle_start
 
-            # Monitor circuit breaker — back off after repeated BLOCKED responses
-            if time.monotonic() < self._monitor_circuit_open_until:
-                remaining_cb = self._monitor_circuit_open_until - time.monotonic()
+            # Monitor circuit breaker — back off after repeated BLOCKED responses.
+            # Snapshot the open-until value under the lock so the wait calculation
+            # cannot race with another dispatcher trip-or-clearing it.
+            with self._cb_lock:
+                cb_open_until = self._monitor_circuit_open_until
+            now = time.monotonic()
+            if now < cb_open_until:
+                remaining_cb = cb_open_until - now
                 logger.warning("[MONITOR] Circuit breaker open — pausing %.0fs", remaining_cb)
                 self._stop_event.wait(timeout=remaining_cb)
-                self._consecutive_blocked = 0
+                # Reset the counter only once per cooldown window — without this
+                # gate, all NUM_DISPATCHERS dispatchers wake from the wait and
+                # each reset _consecutive_blocked, generating multiple "open"
+                # log lines on the next trip. Stagger resumption with random
+                # jitter so dispatchers don't all fire simultaneously after
+                # cooldown (the synchronized burst would itself look like a bot
+                # pattern to Akamai).
+                with self._cb_lock:
+                    if self._monitor_circuit_open_until == cb_open_until:
+                        # We are the first to observe the cooldown ending.
+                        self._consecutive_blocked = 0
+                        self._monitor_circuit_open_until = 0.0
+                self._stop_event.wait(timeout=random.uniform(0.0, 1.5))
                 continue
 
             # Check if rate limited — back off if so
-            if time.monotonic() < self._rate_limit_backoff:
-                # In backoff period, wait full 60s between checks
-                wait_time = max(0.0, self._rate_limit_backoff - time.monotonic())
+            with self._rate_limit_lock:
+                rl_backoff = self._rate_limit_backoff
+            now = time.monotonic()
+            if now < rl_backoff:
+                wait_time = max(0.0, rl_backoff - now)
                 logger.warning(f"[MONITOR] Rate limit backoff: waiting {wait_time:.0f}s before resuming")
                 self._stop_event.wait(timeout=wait_time)
+                # Reset the hit counter after a backoff window so a subsequent
+                # transient 429 doesn't immediately re-trip the 3-hit gate.
+                with self._rate_limit_lock:
+                    if self._rate_limit_backoff == rl_backoff:
+                        self._rate_limit_hits = 0
+                        self._rate_limit_backoff = 0.0
             else:
                 # Normal operation: exponential variance
                 interval = random.expovariate(1.0 / CHECK_INTERVAL_AVG)
@@ -446,19 +516,31 @@ class WalmartStockMonitor:
                     self._stop_event.wait(timeout=remaining)
 
     def _run_browser_fetch(self, item_ids: list[str]) -> Optional[list[dict]]:
-        """Schedule the fetch JS on the browser event loop and wait for result."""
-        if not self._session or not self._session._page or not self._session._event_loop:
+        """Schedule the fetch JS on the browser event loop and wait for result.
+
+        Snapshots `_page` and `_event_loop` references once up front — the
+        session manager clears `_page` on shutdown (session_manager.py:360,
+        431), so without a snapshot, a dispatcher already past the None
+        guard can hit `NoneType.evaluate(...)` inside the coroutine.
+        """
+        if not self._session:
+            return None
+        page = getattr(self._session, "_page", None)
+        loop = getattr(self._session, "_event_loop", None)
+        if page is None or loop is None or loop.is_closed():
             return None
 
         js = self._FETCH_JS_TEMPLATE.format(item_ids_json=json.dumps(item_ids))
 
         async def _do_fetch():
-            return await self._session._page.evaluate(js, await_promise=True)
+            return await page.evaluate(js, await_promise=True)
 
-        future = asyncio.run_coroutine_threadsafe(
-            _do_fetch(),
-            self._session._event_loop,
-        )
+        try:
+            future = asyncio.run_coroutine_threadsafe(_do_fetch(), loop)
+        except RuntimeError as e:
+            # Event loop closed between the is_closed() check and submission.
+            logger.debug("[MONITOR] Browser fetch submit failed: %s", e)
+            return None
         try:
             return future.result(timeout=15)
         except Exception as e:
@@ -574,22 +656,29 @@ class WalmartStockMonitor:
                 self._in_stock_cache[item_id] = False
             return
 
+        # Compute the cache transition under a single critical section so the
+        # "did I flip the state?" decision is atomic across dispatchers. Without
+        # this, two dispatchers reporting the same restock both see was=False
+        # before either writes True, and both fire the in-stock callback,
+        # producing duplicate purchase attempts that the manager has to dedupe.
         with self._cache_lock:
             was_in_stock = self._in_stock_cache.get(item_id, False)
             self._in_stock_cache[item_id] = is_in_stock
             self._last_checked[item_id] = time.time()
+            transitioned_to_in_stock = is_in_stock and not was_in_stock
+            transitioned_to_oos = was_in_stock and not is_in_stock
 
         if is_in_stock:
             price_str = f"${price:.2f}" if price is not None else "price unknown"
             self._status_cb(f"[MONITOR] IN STOCK: {name} @ {price_str}")
             logger.warning("[MONITOR] IN STOCK: %s (%s) @ %s", name, item_id, price_str)
-            if not was_in_stock:
+            if transitioned_to_in_stock:
                 if self._on_in_stock:
                     self._on_in_stock(item_id, offer_id, name, price)
                 if self._on_stock_change:
                     self._on_stock_change(item_id, True, price)
         else:
-            if was_in_stock:
+            if transitioned_to_oos:
                 logger.debug("[MONITOR] Out of stock: %s (%s)", name, item_id)
                 if self._on_stock_change:
                     self._on_stock_change(item_id, False, price)
@@ -614,21 +703,23 @@ class WalmartStockMonitor:
             except Exception:
                 pass
 
+            # Snapshot the page+loop refs so a concurrent shutdown can't null
+            # them between the check and the coroutine dispatch.
+            page = getattr(self._session, "_page", None)
+            loop = getattr(self._session, "_event_loop", None)
             jar_prefix = "?"
-            if self._session._page and self._session._event_loop:
+            if page is not None and loop is not None and not loop.is_closed():
                 try:
                     from zendriver import cdp
 
                     async def _get_px3():
-                        raw = await self._session._page.send(cdp.network.get_all_cookies())
+                        raw = await page.send(cdp.network.get_all_cookies())
                         for c in raw:
                             if c.name == "_px3":
                                 return c.value
                         return None
 
-                    fut = asyncio.run_coroutine_threadsafe(
-                        _get_px3(), self._session._event_loop,
-                    )
+                    fut = asyncio.run_coroutine_threadsafe(_get_px3(), loop)
                     val = fut.result(timeout=2)
                     jar_prefix = (val[:24] + "…") if val else "<missing>"
                 except Exception as e:
@@ -647,20 +738,34 @@ class WalmartStockMonitor:
         Called when HTTP 400 is detected during stock checks.
         Signals the session manager to refresh the GraphQL hash by visiting
         a fresh product page, which will auto-discover the current hash via CDP.
+
+        Deduplicated under _cb_lock — a batch of N products that all 400
+        simultaneously will signal exactly once per cooldown window, instead
+        of N times. Without dedupe a single failed hash produces N ERROR
+        log lines plus N pointless flag-sets in 100ms.
         """
         if not self._session:
             logger.warning("[MONITOR] Cannot refresh GraphQL hash — no session manager")
             return
 
+        now = time.monotonic()
+        with self._cb_lock:
+            if now < self._graphql_refresh_signaled + self._GRAPHQL_REFRESH_COOLDOWN:
+                return
+            self._graphql_refresh_signaled = now
+
         try:
-            # Signal session harvester to refresh GraphQL hash on next page visit
-            # by setting a flag. The harvester checks this flag during regular product browsing.
             if hasattr(self._session, '_graphql_refresh_needed'):
                 self._session._graphql_refresh_needed = True
-                logger.info("[MONITOR] Signaled session manager to refresh GraphQL hash")
+                logger.error(
+                    "[MONITOR] HTTP 400 detected — possible GraphQL hash staleness, "
+                    "signaled session manager to refresh"
+                )
             else:
-                # Fallback: log the issue for operator attention
-                logger.error("[MONITOR] Session manager does not support hash refresh — operator should restart app")
+                logger.error(
+                    "[MONITOR] Session manager does not support hash refresh — "
+                    "operator should restart app"
+                )
         except Exception as e:
             logger.warning("[MONITOR] Failed to signal hash refresh: %s", e)
 

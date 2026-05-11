@@ -16,6 +16,14 @@ from typing import Optional, Dict, Any, List
 class WalmartLogger:
     """Centralized logger for Walmart operations matching Target's format"""
 
+    # Hard cap on activity-log entries kept in memory + on disk.
+    # Without this cap the list grew without bound — every log_activity()
+    # / log_error() call appends one entry, and _save_activity_log pickles
+    # the entire list. A long-running bot would eventually pickle MBs per
+    # write. Cap is enforced lazily: every append checks length and trims
+    # to most-recent ACTIVITY_LOG_MAX_ENTRIES.
+    ACTIVITY_LOG_MAX_ENTRIES = 2000
+
     def __init__(self, log_dir: str = 'walmart/logs', error_log: str = 'walmart/logs/error_log.txt'):
         self.log_dir = Path(log_dir)
         self.error_log_path = Path(error_log)
@@ -30,8 +38,11 @@ class WalmartLogger:
         # Thread safety
         self._lock = threading.Lock()
 
-        # In-memory activity log (synced to disk)
+        # In-memory activity log (synced to disk). Trim on load so a previously
+        # unbounded file doesn't bring back thousands of stale entries.
         self._activity_log: List[Dict[str, Any]] = self._load_activity_log()
+        if len(self._activity_log) > self.ACTIVITY_LOG_MAX_ENTRIES:
+            self._activity_log = self._activity_log[-self.ACTIVITY_LOG_MAX_ENTRIES:]
 
     def _load_activity_log(self) -> List[Dict[str, Any]]:
         """Load activity log from pickle file"""
@@ -44,10 +55,24 @@ class WalmartLogger:
         return []
 
     def _save_activity_log(self):
-        """Save activity log to pickle file"""
+        """Save activity log to pickle file (atomic write — kill mid-write cannot corrupt the file)"""
         try:
-            with open(self.activity_log_path, 'wb') as f:
-                pickle.dump(self._activity_log, f)
+            tmp = self.activity_log_path.with_name(
+                f".{self.activity_log_path.name}.tmp.{os.getpid()}"
+            )
+            try:
+                with open(tmp, 'wb') as f:
+                    pickle.dump(self._activity_log, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self.activity_log_path)
+            except Exception:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except Exception:
+                    pass
+                raise
         except Exception as e:
             print(f"[ERROR] Failed to save activity log: {e}")
 
@@ -83,6 +108,10 @@ class WalmartLogger:
                 'date_str': date_str,
                 'full_time': full_time
             })
+            # Enforce the cap — drops oldest entries when list grows past max.
+            if len(self._activity_log) > self.ACTIVITY_LOG_MAX_ENTRIES:
+                # Trim by a small batch so we don't do this on every call.
+                self._activity_log = self._activity_log[-self.ACTIVITY_LOG_MAX_ENTRIES:]
 
             # Print to console
             print(f"[{full_time}] [ERROR] [{category}] {message}")
@@ -108,6 +137,9 @@ class WalmartLogger:
                 'date_str': date_str,
                 'full_time': full_time
             })
+            # Enforce the cap (same logic as log_error — see ACTIVITY_LOG_MAX_ENTRIES).
+            if len(self._activity_log) > self.ACTIVITY_LOG_MAX_ENTRIES:
+                self._activity_log = self._activity_log[-self.ACTIVITY_LOG_MAX_ENTRIES:]
 
             print(f"[{full_time}] [{category}] {message}")
             self._save_activity_log()
@@ -127,23 +159,53 @@ class WalmartLogger:
             try:
                 states = {}
                 if self.purchase_states_path.exists():
-                    with open(self.purchase_states_path, 'r') as f:
-                        states = json.load(f)
+                    try:
+                        with open(self.purchase_states_path, 'r') as f:
+                            states = json.load(f)
+                    except (json.JSONDecodeError, OSError) as e:
+                        # Corrupted state file (e.g., killed mid-write before the
+                        # atomic-rename patch landed). Don't propagate — start fresh
+                        # so the new write replaces the bad file.
+                        self.log_error(
+                            "purchase_state_read",
+                            f"Corrupted purchase_states.json (will be overwritten): {e}",
+                        )
+                        states = {}
 
                 states[str(item_id)] = state
 
-                with open(self.purchase_states_path, 'w') as f:
-                    json.dump(states, f, indent=2)
+                # Atomic write: tmp + os.replace so a kill mid-write cannot corrupt
+                # the canonical purchase_states.json. The state file is critical for
+                # avoiding double-purchases on restart.
+                tmp = self.purchase_states_path.with_name(
+                    f".{self.purchase_states_path.name}.tmp.{os.getpid()}"
+                )
+                try:
+                    with open(tmp, 'w') as f:
+                        json.dump(states, f, indent=2)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, self.purchase_states_path)
+                except Exception:
+                    try:
+                        if tmp.exists():
+                            tmp.unlink()
+                    except Exception:
+                        pass
+                    raise
             except Exception as e:
                 self.log_error("purchase_state_write", f"Failed to write purchase state for {item_id}: {e}")
 
     def get_purchase_state(self, item_id: str) -> Optional[Dict[str, Any]]:
-        """Get current purchase state for item"""
+        """Get current purchase state for item. Returns None if file is missing
+        or corrupted (caller should treat as 'no prior state')."""
         try:
             if self.purchase_states_path.exists():
                 with open(self.purchase_states_path, 'r') as f:
                     states = json.load(f)
                     return states.get(str(item_id))
+        except (json.JSONDecodeError, OSError) as e:
+            self.log_error("purchase_state_read", f"purchase_states.json unreadable for {item_id}: {e}")
         except Exception as e:
             self.log_error("purchase_state_read", f"Failed to read purchase state for {item_id}: {e}")
         return None
@@ -203,14 +265,20 @@ class _WalmartPurchaseLogTee:
         return getattr(self._orig, name)
 
 
-# Global logger instance
+# Global logger instance — guarded by _walmart_logger_lock so two concurrent
+# first-callers cannot each instantiate a WalmartLogger (each with its own
+# _lock, defeating the thread safety the WalmartLogger itself provides).
 _walmart_logger: Optional[WalmartLogger] = None
+_walmart_logger_lock = threading.Lock()
 
 def get_walmart_logger() -> WalmartLogger:
-    """Get or create global Walmart logger instance"""
+    """Get or create global Walmart logger instance (thread-safe singleton)."""
     global _walmart_logger
     if _walmart_logger is None:
-        _walmart_logger = WalmartLogger()
+        with _walmart_logger_lock:
+            # Re-check inside the lock (classic double-checked locking).
+            if _walmart_logger is None:
+                _walmart_logger = WalmartLogger()
     return _walmart_logger
 
 

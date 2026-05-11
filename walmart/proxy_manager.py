@@ -49,30 +49,43 @@ def _load_proxies() -> list[str]:
 
 
 class _ProxyStats:
-    """Tracks request/error counts for one proxy IP."""
+    """Tracks request/error counts for one proxy IP.
+
+    All mutating methods are guarded by an internal lock — monitor workers
+    and the dispatcher concurrently call record_success/record_error/bench,
+    and `total += 1` is not atomic in CPython for instance attributes.
+    """
 
     def __init__(self):
         self.total = 0
         self.errors = 0
         self.benched_until: float = 0.0
+        self._lock = threading.Lock()
 
     def record_success(self):
-        self.total += 1
+        with self._lock:
+            self.total += 1
 
     def record_error(self):
-        self.total += 1
-        self.errors += 1
+        with self._lock:
+            self.total += 1
+            self.errors += 1
 
     def is_benched(self) -> bool:
+        # Plain read of a float — atomic in CPython, no lock needed.
         return time.monotonic() < self.benched_until
 
     def bench(self, duration: float):
+        # Plain write of a float — atomic in CPython.
         self.benched_until = time.monotonic() + duration
 
     def error_rate(self) -> float:
-        if self.total < 10:
+        with self._lock:
+            total = self.total
+            errors = self.errors
+        if total < 10:
             return 0.0
-        return self.errors / self.total
+        return errors / total
 
 
 class ProxyManager:
@@ -113,12 +126,21 @@ class ProxyManager:
         self._checkout_lock = threading.Lock()
         self._checkout_semaphore = threading.Semaphore(len(self._checkout_proxies) or 1)
 
-        # Per-proxy stats
+        # Per-proxy stats — protected by _stats_lock because defaultdict's
+        # create-if-missing is not atomic across threads; two concurrent
+        # callers can each create a fresh _ProxyStats and silently discard
+        # one of them.
         self._stats: dict[str, _ProxyStats] = defaultdict(_ProxyStats)
+        self._stats_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Monitor pool — rotating
     # ------------------------------------------------------------------
+
+    def _get_stats(self, proxy: str) -> _ProxyStats:
+        """Thread-safe accessor for the per-proxy stats entry."""
+        with self._stats_lock:
+            return self._stats[proxy]
 
     def get_monitor_proxy(self) -> Optional[str]:
         """
@@ -133,7 +155,7 @@ class ProxyManager:
             for _ in range(len(self._monitor_proxies)):
                 proxy = self._monitor_queue[0]
                 self._monitor_queue.rotate(-1)
-                stats = self._stats[proxy]
+                stats = self._get_stats(proxy)
                 if stats.is_benched():
                     continue
                 if stats.error_rate() > PROXY_ERROR_RATE_THRESHOLD:
@@ -144,10 +166,10 @@ class ProxyManager:
         return None
 
     def record_monitor_success(self, proxy: str):
-        self._stats[proxy].record_success()
+        self._get_stats(proxy).record_success()
 
     def record_monitor_error(self, proxy: str):
-        self._stats[proxy].record_error()
+        self._get_stats(proxy).record_error()
 
     # ------------------------------------------------------------------
     # Checkout pool — sticky
@@ -169,7 +191,7 @@ class ProxyManager:
         # Semaphore acquired; must release it if we don't return a proxy
         with self._checkout_lock:
             for proxy in list(self._checkout_available):
-                if not self._stats[proxy].is_benched():
+                if not self._get_stats(proxy).is_benched():
                     self._checkout_available.remove(proxy)
                     logger.info(f"[PROXY] Checkout proxy acquired: {proxy}")
                     return proxy  # caller must call release_checkout_proxy()
@@ -180,14 +202,25 @@ class ProxyManager:
         return None
 
     def release_checkout_proxy(self, proxy: str):
-        """Return a checkout proxy to the available pool."""
+        """Return a checkout proxy to the available pool.
+
+        Idempotent: a double-release (common bug in caller's `finally` blocks)
+        is detected via the `proxy not in available` gate and the semaphore is
+        only released exactly once per actual acquisition. Calling release
+        on a proxy not in the checkout pool is also a no-op.
+        """
         if proxy not in self._checkout_proxies:
+            logger.debug(f"[PROXY] release ignored — proxy not in checkout pool: {proxy}")
             return
         with self._checkout_lock:
-            if proxy not in self._checkout_available:
-                self._checkout_available.append(proxy)
-                self._checkout_semaphore.release()
-                logger.info(f"[PROXY] Checkout proxy released: {proxy}")
+            if proxy in self._checkout_available:
+                # Already released — double-release attempt. Don't release
+                # the semaphore again or its count will drift upward.
+                logger.warning(f"[PROXY] Double release ignored for {proxy}")
+                return
+            self._checkout_available.append(proxy)
+            self._checkout_semaphore.release()
+            logger.info(f"[PROXY] Checkout proxy released: {proxy}")
 
     # ------------------------------------------------------------------
     # Failure handling (shared for both pools)
@@ -199,13 +232,14 @@ class ProxyManager:
 
     def mark_blocked(self, proxy: str, status_code: int = 403):
         """Bench a proxy after a 403/429 response."""
-        self._stats[proxy].record_error()
-        self._stats[proxy].bench(PROXY_COOLDOWN_SECONDS)
+        stats = self._get_stats(proxy)
+        stats.record_error()
+        stats.bench(PROXY_COOLDOWN_SECONDS)
         logger.warning(f"[PROXY] Benched {PROXY_COOLDOWN_SECONDS}s (HTTP {status_code}): {proxy}")
 
     def mark_failed(self, proxy: str):
         """Mark a proxy as dead (connection refused/timeout) — bench for 10 min."""
-        self._stats[proxy].bench(PROXY_COOLDOWN_SECONDS * 2)
+        self._get_stats(proxy).bench(PROXY_COOLDOWN_SECONDS * 2)
         logger.warning(f"[PROXY] Benched {PROXY_COOLDOWN_SECONDS * 2}s (dead): {proxy}")
 
     # ------------------------------------------------------------------
@@ -213,8 +247,12 @@ class ProxyManager:
     # ------------------------------------------------------------------
 
     def stats_summary(self) -> dict:
+        # Snapshot under the lock to avoid RuntimeError if a concurrent
+        # _get_stats inserts a new key during iteration.
+        with self._stats_lock:
+            items = list(self._stats.items())
         summary = {}
-        for proxy, stats in self._stats.items():
+        for proxy, stats in items:
             summary[proxy] = {
                 "total": stats.total,
                 "errors": stats.errors,

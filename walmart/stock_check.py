@@ -181,7 +181,9 @@ def parse_item(result: dict) -> "dict | None":
 
 
 def check_items(item_ids: list[str]) -> list[dict]:
-    cookies = parse_cookies(COOKIES_RAW)
+    # Prior code referenced undefined COOKIES_RAW — would NameError on first call.
+    # Cookies now come from the persistent profile via load_cookies().
+    cookies = load_cookies()
     logger.debug("[SESSION] Loaded %d cookies", len(cookies))
 
     with requests.Session() as session:

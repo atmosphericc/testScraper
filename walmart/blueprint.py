@@ -7,6 +7,7 @@ app.py's Target globals, so both retailers run safely in one process.
 """
 
 import asyncio
+import atexit
 import json
 import logging
 import os
@@ -31,14 +32,21 @@ walmart_logger = get_walmart_logger()
 
 walmart_bp = Blueprint("walmart", __name__, url_prefix="/walmart")
 
-# Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE)
-os.environ.setdefault("CHECKOUT_MODE", "LIVE")
+# Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE).
+# Executor branches on CHECKOUT_MODE == "PRODUCTION" — "LIVE" is just the UI
+# label; without PRODUCTION the non-test branch never runs and orders silently
+# fall through to TEST mode. Mirrors the walmart_app.py fix from 2026-05-11.
+os.environ.setdefault("CHECKOUT_MODE", "PRODUCTION")
 
 # ---------------------------------------------------------------------------
 # Global state (scoped to this module, not shared with Target)
 # ---------------------------------------------------------------------------
 
-_manager: WalmartPurchaseManager = None
+# Note: type annotation says WalmartPurchaseManager but start_manager()
+# instantiates SelfHealingAgent — both expose the same get_status / get_activity_log
+# / start / stop API surface used by the routes below.
+_manager = None
+_manager_loop: asyncio.AbstractEventLoop = None
 _test_mode = False  # default to LIVE
 
 _sse_clients: list[queue.Queue] = []
@@ -80,25 +88,66 @@ def _status_callback(message: str):
 
 def start_manager():
     """Launch the Walmart SelfHealingAgent in a background thread."""
-    global _manager
+    global _manager, _manager_loop
 
     _manager = SelfHealingAgent(status_callback=_status_callback)
-    manager_loop = asyncio.new_event_loop()
+    _manager_loop = asyncio.new_event_loop()
 
     def _run():
-        asyncio.set_event_loop(manager_loop)
+        asyncio.set_event_loop(_manager_loop)
         try:
-            manager_loop.run_until_complete(
+            _manager_loop.run_until_complete(
                 _manager.start()
             )
         except Exception:
             logger.exception("[WALMART] Manager start() failed — bot will not run")
             return
-        manager_loop.run_forever()
+        _manager_loop.run_forever()
 
     t = threading.Thread(target=_run, daemon=True, name="WalmartManagerThread")
     t.start()
+    # Register an atexit fallback so a clean Python exit (e.g. Waitress shutdown
+    # or a sys.exit not preceded by os._exit) still tries to stop the manager.
+    # NOTE: This does NOT run if the process exits via os._exit() — which is
+    # what app.py's Target shutdown_handler does on SIGINT/SIGTERM. Under
+    # unified_app.py, the most reliable way to stop the Walmart manager on
+    # Ctrl+C is for the operator to call stop_manager() from app.py's
+    # shutdown_handler. That edit is out of Walmart-only scope here.
+    atexit.register(stop_manager)
     logger.info("[WALMART] Purchase manager started in background thread")
+
+
+def stop_manager(timeout: float = 5.0) -> bool:
+    """Stop the Walmart manager and its event loop. Safe to call multiple times.
+
+    Returns True if the manager was stopped cleanly, False on timeout/error.
+    Designed to be called from the operator's signal handler or atexit. Idempotent.
+    """
+    global _manager, _manager_loop
+    if _manager is None or _manager_loop is None:
+        return True
+    mgr = _manager
+    loop = _manager_loop
+    # Null out the globals first so a second call short-circuits cleanly even
+    # if the stop coroutine takes a while to finish.
+    _manager = None
+    _manager_loop = None
+    try:
+        if not loop.is_closed() and loop.is_running():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(mgr.stop(), loop)
+                fut.result(timeout=timeout)
+            except Exception:
+                logger.exception("[WALMART] stop_manager: manager.stop() raised")
+                return False
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass  # loop already stopping
+        return True
+    except Exception:
+        logger.exception("[WALMART] stop_manager: unexpected error")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +188,12 @@ def _product_row(p: dict, state_by_id: dict) -> str:
 @walmart_bp.route("/")
 def index():
     products = get_enabled_products()
-    status = _manager.get_status() if _manager else {}
-    activity = _manager.get_activity_log()[-50:] if _manager else []
+    try:
+        status = _manager.get_status() if _manager else {}
+        activity = _manager.get_activity_log()[-50:] if _manager else []
+    except Exception:
+        logger.exception("[WALMART] index: get_status/get_activity_log failed")
+        status, activity = {}, []
     state_by_id = {ps["item_id"]: ps for ps in status.get("products", [])}
 
     html = f"""<!DOCTYPE html>
@@ -288,19 +341,27 @@ def stream():
 
 @walmart_bp.route("/api/status")
 def api_status():
-    if _manager:
-        status = _manager.get_status()
-        status["activity_log"] = _manager.get_activity_log()[-50:]
-    else:
-        status = {
-            "running": False,
-            "products": [
-                {"item_id": p["item_id"], "name": p.get("name", "Unknown"),
-                 "priority": p.get("priority", 999), "state": "MONITORING"}
-                for p in get_enabled_products()
-            ],
-            "activity_log": [],
-        }
+    # Wrap manager.get_status() in try/except — without it, a transient state
+    # corruption mid-shutdown crashes the 15s dashboard polling and the SSE
+    # reconnect storm follows. Mirrors the walmart_app.py PM2 fix.
+    try:
+        if _manager:
+            status = _manager.get_status()
+            status["activity_log"] = _manager.get_activity_log()[-50:]
+        else:
+            status = {
+                "running": False,
+                "products": [
+                    {"item_id": p["item_id"], "name": p.get("name", "Unknown"),
+                     "priority": p.get("priority", 999), "state": "MONITORING"}
+                    for p in get_enabled_products()
+                ],
+                "activity_log": [],
+            }
+    except Exception:
+        logger.exception("[WALMART] /api/status failed")
+        status = {"running": False, "error": "status_unavailable",
+                  "products": [], "activity_log": []}
     status["test_mode"] = _test_mode
     return jsonify(status)
 
@@ -417,8 +478,14 @@ def test_disable():
 
 @walmart_bp.route("/health")
 def health():
+    running = False
+    if _manager:
+        try:
+            running = _manager.get_status().get("running", False)
+        except Exception:
+            logger.exception("[WALMART] /health get_status failed")
     return jsonify({
         "status": "ok",
-        "running": _manager.get_status().get("running", False) if _manager else False,
+        "running": running,
         "test_mode": _test_mode,
     })

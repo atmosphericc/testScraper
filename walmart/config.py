@@ -109,28 +109,46 @@ WALMART_PASSWORD = os.environ.get("WALMART_PASSWORD", "")
 # Environment variable accessor functions (read at call time, not import time)
 # ---------------------------------------------------------------------------
 
+# Lock for the GraphQL-hash setter/getter pair. CDP RequestWillBeSent
+# handlers fire on zendriver's internal thread pool, not the main asyncio
+# loop, so two concurrent intercepts of different hash values can race on
+# the read-modify-write of the module-level globals. Without the lock,
+# both threads pass the "!=" check, both write (last writer wins), and
+# both log the INFO line — producing a duplicate-update entry and silently
+# discarding one of the values.
+_graphql_hash_lock = threading.Lock()
+
+
 def set_graphql_hash_atf(hash_value: str) -> None:
     """Called by the session harvester when it intercepts an ItemByIdAtf request."""
     global GRAPHQL_HASH_ATF
-    if hash_value and GRAPHQL_HASH_ATF != hash_value:
-        GRAPHQL_HASH_ATF = hash_value
-        logger.info("[CONFIG] ATF GraphQL hash auto-updated: %s", hash_value)
+    if not hash_value:
+        return
+    with _graphql_hash_lock:
+        if GRAPHQL_HASH_ATF != hash_value:
+            GRAPHQL_HASH_ATF = hash_value
+            logger.info("[CONFIG] ATF GraphQL hash auto-updated: %s", hash_value)
 
 
 def get_graphql_hash_atf() -> "str | None":
-    return GRAPHQL_HASH_ATF
+    with _graphql_hash_lock:
+        return GRAPHQL_HASH_ATF
 
 
 def set_graphql_hash_btf(hash_value: str) -> None:
     """Called by the session harvester when it intercepts an ItemByIdBtf request."""
     global GRAPHQL_HASH
-    if hash_value and GRAPHQL_HASH != hash_value:
-        GRAPHQL_HASH = hash_value
-        logger.info("[CONFIG] BTF GraphQL hash auto-updated: %s", hash_value)
+    if not hash_value:
+        return
+    with _graphql_hash_lock:
+        if GRAPHQL_HASH != hash_value:
+            GRAPHQL_HASH = hash_value
+            logger.info("[CONFIG] BTF GraphQL hash auto-updated: %s", hash_value)
 
 
 def get_graphql_hash_btf() -> str:
-    return GRAPHQL_HASH
+    with _graphql_hash_lock:
+        return GRAPHQL_HASH
 
 
 def get_checkout_mode() -> str:
@@ -162,13 +180,23 @@ _config_lock = threading.Lock()
 
 
 def get_config() -> dict:
-    """Load walmart_config.json, returning {'products': []} if not found."""
+    """Load walmart_config.json, returning {'products': []} if not found or corrupted."""
     with _config_lock:
         for path in _CONFIG_PATHS:
             p = Path(path)
             if p.exists():
-                with open(p, "r") as f:
-                    data = json.load(f)
+                try:
+                    with open(p, "r") as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError) as e:
+                    # Corrupted file (e.g., killed mid-write before the atomic-rename
+                    # patch landed) — log + fall through to fallback rather than crash
+                    # the dashboard's initial render.
+                    logger.error(
+                        "[CONFIG] get_config: %s is unreadable (%s) — using empty fallback",
+                        path, e,
+                    )
+                    return {"products": []}
                 if not isinstance(data, dict) or not isinstance(data.get("products"), list):
                     logger.warning(
                         "[CONFIG] get_config: invalid structure in %s — expected dict with 'products' list; using fallback",
@@ -179,21 +207,44 @@ def get_config() -> dict:
     return {"products": []}
 
 
+def _atomic_write_json(p: Path, data: dict) -> None:
+    """
+    Write `data` to `p` atomically via write-to-temp + os.replace.
+    A kill mid-write cannot corrupt `p`: either the rename completes and the
+    file is intact, or the rename never runs and the tempfile is orphaned
+    (cleaned up on next save). The fsync ensures the bytes hit disk before
+    the rename swaps the inode.
+    """
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(f".{p.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except Exception:
+        # Tempfile may be orphaned — best-effort cleanup so /tmp / cwd doesn't grow
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        raise
+
+
 def save_config(data: dict) -> None:
-    """Persist updated config back to walmart_config.json."""
+    """Persist updated config back to walmart_config.json (atomic write)."""
     with _config_lock:
         for path in _CONFIG_PATHS:
             p = Path(path)
             if p.exists():
-                with open(p, "w") as f:
-                    json.dump(data, f, indent=2)
+                _atomic_write_json(p, data)
                 _verify_write(p)
                 return
         # Write to first path if none exist yet
         p = Path(_CONFIG_PATHS[0])
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_write_json(p, data)
         _verify_write(p)
 
 
