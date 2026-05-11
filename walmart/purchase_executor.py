@@ -1738,10 +1738,12 @@ class WalmartPurchaseExecutor:
                 except Exception:
                     pass
                 if not remove_btns:
-                    logger.debug("[PURCHASE] Cart already empty — no cleanup needed")
+                    logger.info("[PURCHASE] Cart already empty — no cleanup needed")
+                    self._status_cb("[PURCHASE] Cart already empty")
                     cart_cleared = True
                 else:
-                    logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
+                    logger.info("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
+                    self._status_cb(f"[PURCHASE] Removing {len(remove_btns)} cart item(s)")
                     for btn in remove_btns:
                         try:
                             await self._click_handle_via_cdp(btn, "cart Remove (cleanup)")

@@ -38,21 +38,25 @@ log_dir.mkdir(exist_ok=True)
 log_file = log_dir / f"walmart_app_{time.strftime('%Y%m%d_%H%M%S')}.log"
 
 formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# WALMART_LOG_LEVEL=DEBUG surfaces _clear_cart removal counts, cookie deltas,
+# and other normally-suppressed diagnostics. Defaults to INFO.
+_log_level_name = os.environ.get("WALMART_LOG_LEVEL", "INFO").upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(message)s")
 
 # delay=True so the file is only created when the first log line is written —
 # prevents 0-byte log files when the process is killed during import / startup
 # before any logger.info() has fired.
 file_handler = logging.FileHandler(log_file, delay=True)
 file_handler.setFormatter(formatter)
-file_handler.setLevel(logging.INFO)
+file_handler.setLevel(_log_level)
 
 # Attach to the `walmart` package root so every submodule logger
 # (walmart.purchase_manager, walmart.purchase_executor, walmart.session_manager,
 # walmart.stock_monitor, etc.) writes to the log file via propagation.
 walmart_pkg_logger = logging.getLogger("walmart")
 walmart_pkg_logger.addHandler(file_handler)
-walmart_pkg_logger.setLevel(logging.INFO)
+walmart_pkg_logger.setLevel(_log_level)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,7 @@ logger = logging.getLogger(__name__)
 for name in ["MANAGER", "PURCHASE", "SESSION", "MONITOR", "PROXY"]:
     log = logging.getLogger(name)
     log.addHandler(file_handler)
-    log.setLevel(logging.INFO)
+    log.setLevel(_log_level)
 
 # Ensure CHECKOUT_MODE env var matches the default _test_mode=False (LIVE).
 # Executor checks `CHECKOUT_MODE == "PRODUCTION"` to gate Place Order — "LIVE"
