@@ -260,17 +260,41 @@ _STEALTH_SCRIPT = f"""
         configurable: true
     }});
 
-    // navigator.getBattery() — must exist and return a Promise in real Chrome
+    // navigator.getBattery() — must exist and return a Promise in real Chrome.
+    // PerimeterX-style detection: register a 'levelchange' listener, wait, see
+    // if it fires. Empty addEventListener stubs never fire and the listener-
+    // and-wait probe reveals automation. We track registered listeners and
+    // synthesize a one-off harmless event after a delay (any registered handler
+    // gets invoked once with the current battery state — looks like the OS
+    // pushed a small update). The handler call is JS-driven via setTimeout so
+    // it doesn't violate any spec invariants.
     if (!navigator.getBattery) {{
+        const _batteryListeners = {{ chargingchange: [], levelchange: [],
+                                     chargingtimechange: [], dischargingtimechange: [] }};
+        const _battery = {{
+            charging: true,
+            chargingTime: 0,
+            dischargingTime: Infinity,
+            level: 1.0,
+            addEventListener: function(type, fn) {{
+                if (typeof fn !== 'function') return;
+                if (!_batteryListeners[type]) return;
+                _batteryListeners[type].push(fn);
+                // Synthesize a single event ~5-25s later so a probe waiting
+                // for the listener to fire actually receives something
+                setTimeout(() => {{
+                    try {{ fn({{ type: type, target: _battery }}); }} catch(e) {{}}
+                }}, 5000 + Math.random() * 20000);
+            }},
+            removeEventListener: function(type, fn) {{
+                if (!_batteryListeners[type]) return;
+                const idx = _batteryListeners[type].indexOf(fn);
+                if (idx !== -1) _batteryListeners[type].splice(idx, 1);
+            }},
+            dispatchEvent: function() {{ return true; }}
+        }};
         navigator.getBattery = function() {{
-            return Promise.resolve({{
-                charging: true,
-                chargingTime: 0,
-                dischargingTime: Infinity,
-                level: 1.0,
-                addEventListener: function() {{}},
-                removeEventListener: function() {{}}
-            }});
+            return Promise.resolve(_battery);
         }};
     }}
 

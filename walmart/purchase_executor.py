@@ -1397,8 +1397,8 @@ class WalmartPurchaseExecutor:
                 pass
             for btn in remove_btns:
                 try:
-                    await btn.click()
-                    await asyncio.sleep(0.8)
+                    await self._click_handle_via_cdp(btn, "cart Remove (pre-ATC)")
+                    await asyncio.sleep(random.uniform(0.65, 1.05))
                 except Exception:
                     pass
         except Exception as e:
@@ -1744,7 +1744,7 @@ class WalmartPurchaseExecutor:
                     logger.debug("[PURCHASE] Post-attempt cleanup: removing %d cart item(s)", len(remove_btns))
                     for btn in remove_btns:
                         try:
-                            await btn.click()
+                            await self._click_handle_via_cdp(btn, "cart Remove (cleanup)")
                             await asyncio.sleep(random.uniform(0.6, 1.0))
                         except Exception:
                             pass
@@ -1966,6 +1966,37 @@ class WalmartPurchaseExecutor:
             logger.warning("[PURCHASE] CDP mouse click failed: %s", e)
             return False
 
+    async def _click_handle_via_cdp(self, el, label: str = "") -> bool:
+        """
+        Resolve an element handle's bounding rect and click it via CDP mouse
+        trajectory. Falls back to el.click() if the rect lookup fails or the
+        CDP click errors. Used for lower-scrutiny clicks (cart Remove buttons,
+        cleanup paths) where the full _realistic_click variance isn't critical
+        but we still want pointer events rather than synchronous DOM clicks.
+        """
+        try:
+            rect = await el.apply("""(e) => {
+                e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                const r = e.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height };
+            }""")
+            if not rect or not (rect.get('w', 0) > 0):
+                await el.click()
+                return False
+            x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+            y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+            if await self._realistic_click(x, y, label):
+                return True
+            await el.click()
+            return False
+        except Exception as e:
+            logger.debug("[PURCHASE] _click_handle_via_cdp(%s) fallback: %s", label, e)
+            try:
+                await el.click()
+            except Exception:
+                pass
+            return False
+
     # Single JS snippet that checks __NEXT_DATA__ + all ATC selectors + text fallback
     # in one browser round-trip. Returns immediately when page is ready.
     _PAGE_READY_JS = """
@@ -2032,49 +2063,64 @@ class WalmartPurchaseExecutor:
     async def _wait_for_dom_stability(self, timeout: int = 4000):
         """
         Wait for DOM to stabilize after a modal dismissal or form change.
-        Polls for absence of mutations for 800ms, indicating React has finished re-rendering.
-        Returns True if stabilized within timeout, False if timeout hit (continues anyway).
+        Returns True if stabilized within timeout, False if timeout hit.
+
+        Implementation note: a single persistent MutationObserver is installed
+        on first call and accumulates a counter on `window.__walmartMutCount`.
+        Each poll just reads the counter delta — no observer create/destroy
+        churn. HUMAN Security tracks observer creation rate as a bot signal;
+        real React apps have a small number of long-lived observers, not
+        rapid-fire creation. The observer is install-once-per-tab and is
+        idempotent (a re-install no-ops if the flag is already set).
         """
         started = time.monotonic()
         deadline = started + timeout / 1000.0
-        stable_until = started
 
-        while time.monotonic() < deadline:
-            # Check if any mutations occurred in the last 50ms
-            mutations_detected = await self._page.evaluate("""
+        # Install the persistent observer (no-op after first call per tab)
+        try:
+            await self._page.evaluate("""
                 (() => {
-                    let count = 0;
-                    const observer = new MutationObserver(() => {
-                        count++;
+                    if (window.__walmartMutObserverInstalled) return;
+                    window.__walmartMutObserverInstalled = true;
+                    window.__walmartMutCount = 0;
+                    const o = new MutationObserver((muts) => {
+                        window.__walmartMutCount += muts.length;
                     });
-                    observer.observe(document.body, {
+                    o.observe(document.body, {
                         childList: true,
                         subtree: true,
                         attributes: true,
                         characterData: false
                     });
-                    // Let it observe for 50ms
-                    return new Promise(resolve => {
-                        setTimeout(() => {
-                            observer.disconnect();
-                            resolve(count > 0);
-                        }, 50);
-                    });
+                    window.__walmartMutObserver = o;
                 })()
             """)
+        except Exception as e:
+            # Fall back to a single short sleep — better than failing the
+            # whole purchase if observer install errors.
+            logger.debug("[PURCHASE] DOM observer install failed (%s) — short-sleep fallback", e)
+            await asyncio.sleep(0.6)
+            return False
 
-            if mutations_detected:
-                # Reset the stable timer
-                stable_until = time.monotonic()
-                await asyncio.sleep(0.1)
-            else:
-                # No mutations in the last 50ms
-                if time.monotonic() - stable_until >= 0.8:
-                    # DOM has been stable for 800ms
-                    elapsed = time.monotonic() - started
-                    logger.info("[PURCHASE] DOM stabilized after %.1fs", elapsed)
-                    return True
+        last_count = -1
+        stable_since = None  # monotonic time when count last changed
+
+        while time.monotonic() < deadline:
+            try:
+                count = await self._page.evaluate("window.__walmartMutCount || 0")
+            except Exception:
+                # Page navigated mid-poll, treat as not-yet-stable
                 await asyncio.sleep(0.05)
+                continue
+            now = time.monotonic()
+            if count != last_count:
+                last_count = count
+                stable_since = now
+            elif stable_since is not None and (now - stable_since) >= 0.8:
+                elapsed = now - started
+                logger.info("[PURCHASE] DOM stabilized after %.1fs", elapsed)
+                return True
+            await asyncio.sleep(0.05)
 
         elapsed = time.monotonic() - started
         logger.debug("[PURCHASE] DOM stability timeout after %.1fs (continuing anyway)", elapsed)
