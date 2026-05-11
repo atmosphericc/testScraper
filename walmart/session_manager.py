@@ -235,15 +235,28 @@ _STEALTH_SCRIPT = f"""
         configurable: true
     }});
 
-    // navigator.connection — PerimeterX/HUMAN checks for undefined as bot signal
-    Object.defineProperty(navigator, 'connection', {{
-        get: () => ({{
+    // navigator.connection — PerimeterX/HUMAN checks for undefined as bot signal,
+    // AND probes for value variance across calls (real Chrome updates these on
+    // network changes). Fixed downlink/rtt across a 30-min session is a fingerprint.
+    // Generate plausible values on each access — bounded so the network looks
+    // stable broadband, not a swinging mobile connection.
+    function _stableConnection() {{
+        // Quantize to discrete-looking values (Chrome rounds these for privacy)
+        const downlink = Math.round((9 + Math.random() * 2) * 100) / 100;  // 9.00-11.00
+        const rtt = Math.round(35 + Math.random() * 30);  // 35-65ms, integer
+        return {{
             effectiveType: '4g',
-            downlink: 10,
-            rtt: 50,
+            downlink: downlink,
+            rtt: rtt,
             saveData: false,
-            onchange: null
-        }}),
+            onchange: null,
+            addEventListener: function() {{}},
+            removeEventListener: function() {{}},
+            dispatchEvent: function() {{ return true; }}
+        }};
+    }}
+    Object.defineProperty(navigator, 'connection', {{
+        get: () => _stableConnection(),
         configurable: true
     }});
 
@@ -393,6 +406,15 @@ class WalmartSessionManager:
                 browser_channel=BROWSER_CHANNEL,
                 browser_args=[
                     "--window-size=1920,1080",
+                    # Force Accept-Language to match navigator.languages declared
+                    # in the stealth script (['en-US', 'en']). Without --lang,
+                    # Chromium derives Accept-Language from the OS locale, which
+                    # can mismatch the spoofed navigator.languages and trip
+                    # Akamai's fingerprint-consistency check.
+                    "--lang=en-US",
+                    # Belt-and-suspenders against any AutomationControlled
+                    # blink feature being enabled by upstream defaults.
+                    "--disable-blink-features=AutomationControlled",
                 ],
                 browser_connection_timeout=1.0,
                 browser_connection_max_tries=30,
@@ -877,7 +899,13 @@ class WalmartSessionManager:
             try:
                 self._status_cb(f"[SESSION] Warming {i}/{len(warm_pages)}...")
                 await self._page.send(cdp.page.navigate(url))
-                await asyncio.sleep(random.uniform(5.0, 8.0))
+                # Log-normal dwell — humans don't dwell in a flat [5,8]s band on
+                # warmup sites. Most pages get a quick scan (2-5s), some get
+                # longer reads (occasional 10-15s outliers). Uniform distribution
+                # over many cycles is itself a machine-pattern signal.
+                # mu=1.4 σ=0.6 → median ~4s, p90 ~9s; clamped [2, 15].
+                _dwell = max(2.0, min(15.0, random.lognormvariate(1.4, 0.6)))
+                await asyncio.sleep(_dwell)
                 await self._handle_blocked_page()
 
                 # Simulate realistic user interaction during warmup
@@ -1339,7 +1367,15 @@ class WalmartSessionManager:
                 except Exception as e:
                     logger.warning("[HARVESTER] Cookie snapshot error: %s", e)
 
-                await asyncio.sleep(random.uniform(35.0, 55.0))
+                # Fat-tail idle distribution — real browsers don't refresh on
+                # a uniform [35,55]s schedule. Most cycles are short (40-60s),
+                # but occasional long idles (90-180s) match human browsing.
+                # 35s base floor + Pareto-shaped extension keeps the mean near
+                # the previous ~45s while breaking the uniform-distribution signal.
+                _base = 35.0 + random.expovariate(1 / 12.0)  # exp mean ~12s, range mostly 35-90s
+                if random.random() < 0.10:  # 10% of cycles get an extra long-tail
+                    _base += random.uniform(40.0, 120.0)
+                await asyncio.sleep(min(_base, 240.0))
 
         except asyncio.CancelledError:
             pass

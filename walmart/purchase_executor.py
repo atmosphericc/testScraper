@@ -532,7 +532,25 @@ class WalmartPurchaseExecutor:
 
             logger.info("[PURCHASE] Found checkout button in ATC flyout — attempting direct checkout")
             self._status_cb("[PURCHASE] Checking out directly from cart flyout...")
-            await checkout_btn.click()
+            # CDP trajectory click — the flyout fast-path bypasses /cart, but
+            # the Checkout button click is still a scrutinized action.
+            try:
+                rect = await checkout_btn.apply("""(e) => {
+                    e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    const r = e.getBoundingClientRect();
+                    return { x: r.x, y: r.y, w: r.width, h: r.height };
+                }""")
+                if rect and rect.get('w', 0) > 0:
+                    x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+                    y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+                    clicked = await self._realistic_click(x, y, "Flyout Checkout")
+                    if not clicked:
+                        await checkout_btn.click()
+                else:
+                    await checkout_btn.click()
+            except Exception as e:
+                logger.debug("[PURCHASE] Flyout checkout rect lookup failed (%s) — fallback click", e)
+                await checkout_btn.click()
 
             # Wait for /checkout URL
             deadline = time.monotonic() + 8.0
@@ -814,10 +832,13 @@ class WalmartPurchaseExecutor:
         try:
             result = await self._page.evaluate("""
                 (() => {
-                    // Look for Delivery tile/button on cart page
-                    // The cart page uses fulfillment tiles with text "Delivery" and "Pickup"
+                    // Look for Delivery tile/button on cart page.
+                    // The cart page uses fulfillment tiles rendered as buttons or
+                    // ARIA radio/option controls — labels and generic divs/anchors
+                    // are not actual fulfillment selectors. Narrowing the pool
+                    // saves CDP work on ~100-300 irrelevant elements per cart.
                     const candidates = document.querySelectorAll(
-                        'button, [role="tab"], [role="radio"], [role="option"], label, div[tabindex], a'
+                        'button, [role="tab"], [role="radio"], [role="option"]'
                     );
                     for (const el of candidates) {
                         const text = (el.textContent || '').trim();
@@ -1119,11 +1140,47 @@ class WalmartPurchaseExecutor:
                     await asyncio.sleep(random.uniform(0.1, 0.3))
                 except Exception:
                     pass
-                # Clear existing value if any
-                await cvv_input.apply("(e) => { e.value = ''; e.focus(); }")
+                # Clear existing value via CDP keystrokes (focus + Ctrl/Cmd-A +
+                # Delete). Setting `e.value = ''` is a synchronous DOM mutation
+                # with no `input`/`beforeinput` events, which PerimeterX's payment
+                # field sensor flags as automation. Real keyboard clears always
+                # emit the full event chain.
+                from zendriver.cdp import input_ as cdp_input
+                try:
+                    await cvv_input.apply("(e) => { e.focus(); }")
+                    await asyncio.sleep(random.uniform(0.04, 0.10))
+                    # Select-all via OS-native modifier. CDP key-event modifier bits:
+                    # 1=Alt, 2=Ctrl, 4=Meta, 8=Shift. Mac uses Cmd-A (Meta),
+                    # Windows/Linux uses Ctrl-A.
+                    import sys as _sys
+                    sel_modifier = 4 if _sys.platform == "darwin" else 2
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyDown", key="a", code="KeyA", text="a",
+                        modifiers=sel_modifier,
+                    ))
+                    await asyncio.sleep(random.uniform(0.04, 0.08))
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyUp", key="a", code="KeyA",
+                        modifiers=sel_modifier,
+                    ))
+                    await asyncio.sleep(random.uniform(0.04, 0.09))
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyDown", key="Delete", code="Delete",
+                        windows_virtual_key_code=46,
+                    ))
+                    await asyncio.sleep(random.uniform(0.04, 0.08))
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyUp", key="Delete", code="Delete",
+                        windows_virtual_key_code=46,
+                    ))
+                except Exception as clear_err:
+                    # Belt-and-suspenders: if CDP clear fails, fall back to the
+                    # old DOM-property clear. Worth the detection risk vs. typing
+                    # over an existing value.
+                    logger.debug("[PURCHASE] CDP CVV clear failed (%s) — DOM fallback", clear_err)
+                    await cvv_input.apply("(e) => { e.value = ''; e.focus(); }")
                 await asyncio.sleep(random.uniform(0.05, 0.15))
                 # Type each digit with human-like inter-key delays
-                from zendriver.cdp import input_ as cdp_input
                 for char in card_cvv:
                     await self._page.send(cdp_input.dispatch_key_event(
                         type_="keyDown", text=char, key=char,
@@ -1295,7 +1352,7 @@ class WalmartPurchaseExecutor:
             if item_url:
                 try:
                     await asyncio.wait_for(self._page.get(item_url), timeout=15.0)
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(random.uniform(0.8, 1.4))
                 except asyncio.TimeoutError:
                     logger.warning("[PURCHASE] Navigate-back to %s timed out after 15s", item_url)
                 except Exception as e:
@@ -1659,7 +1716,7 @@ class WalmartPurchaseExecutor:
                 logger.warning("[PURCHASE] _clear_cart: cart navigation timed out after 15s — treating as poisoned")
                 self._last_cart_clear_blocked = True
                 return False
-            await asyncio.sleep(1)
+            await asyncio.sleep(random.uniform(0.8, 1.4))
 
             # If cart navigation landed us on /blocked, the cart is NOT empty —
             # we just can't see it. Do not log "cart already empty" here, since

@@ -22,11 +22,111 @@ This module:
 
 import asyncio
 import logging
+import math
+import random
 import time
 from typing import Optional, Callable
 
 from .config import QUEUE_POLL_INTERVAL, QUEUE_TIMEOUT
 from .logging_manager import get_walmart_logger, log_activity
+
+
+async def _cdp_realistic_click(page, x: float, y: float, label: str = "") -> bool:
+    """
+    CDP mouse trajectory click for queue_handler interactions.
+
+    The queue entry and pass-through clicks happen during high-demand drops —
+    the most-scrutinized window for PerimeterX. Raw element.click() with no
+    pointer events is a strong bot signal. We use the same Bezier+velocity
+    pattern as purchase_executor._realistic_click, scaled-down for a self-
+    contained helper.
+
+    Returns True on success, False on CDP failure (caller should fall back
+    to element.click()).
+    """
+    try:
+        from zendriver.cdp import input_ as cdp_input
+
+        # Start from a random viewport position (queue_handler has no
+        # last-mouse tracking — every click is a fresh teleport otherwise)
+        start_x = random.uniform(200, 1700)
+        start_y = random.uniform(150, 900)
+
+        dx = x - start_x
+        dy = y - start_y
+        dist = math.hypot(dx, dy)
+        offset_mag = min(80.0, max(15.0, dist * 0.18))
+        if dist > 1.0:
+            px = -dy / dist
+            py = dx / dist
+        else:
+            px = py = 0.0
+        sign = random.choice((-1.0, 1.0))
+        cp_x = (start_x + x) / 2 + sign * offset_mag * px + random.uniform(-offset_mag * 0.4, offset_mag * 0.4)
+        cp_y = (start_y + y) / 2 + sign * offset_mag * py + random.uniform(-offset_mag * 0.4, offset_mag * 0.4)
+        steps = max(4, min(9, int(dist / 80) + random.randint(3, 5)))
+
+        for i in range(1, steps + 1):
+            t = i / (steps + 1)
+            bx = (1 - t) ** 2 * start_x + 2 * (1 - t) * t * cp_x + t ** 2 * x
+            by = (1 - t) ** 2 * start_y + 2 * (1 - t) * t * cp_y + t ** 2 * y
+            bx += random.gauss(0, 0.6)
+            by += random.gauss(0, 0.6)
+            await page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseMoved", x=int(bx), y=int(by), pointer_type="mouse"
+            ))
+            await asyncio.sleep(0.055 - 0.043 * math.sin(math.pi * t) + random.uniform(-0.005, 0.012))
+
+        await page.send(cdp_input.dispatch_mouse_event(
+            type_="mouseMoved", x=int(x), y=int(y), pointer_type="mouse"
+        ))
+        await asyncio.sleep(random.uniform(0.03, 0.11))
+        await page.send(cdp_input.dispatch_mouse_event(
+            type_="mousePressed", x=x, y=y,
+            button=cdp_input.MouseButton.LEFT, buttons=1,
+            click_count=1, pointer_type="mouse"
+        ))
+        await asyncio.sleep(random.uniform(0.06, 0.13))
+        await page.send(cdp_input.dispatch_mouse_event(
+            type_="mouseReleased", x=x, y=y,
+            button=cdp_input.MouseButton.LEFT, buttons=0,
+            click_count=1, pointer_type="mouse"
+        ))
+        if label:
+            logger.debug("[QUEUE] CDP click on %s at (%.0f, %.0f)", label, x, y)
+        return True
+    except Exception as e:
+        logger.debug("[QUEUE] CDP click failed: %s — caller will fall back", e)
+        return False
+
+
+async def _click_element_via_cdp(page, el, label: str = "") -> bool:
+    """
+    Look up the element's bounding rect and route the click through CDP.
+    Falls back to el.click() on rect lookup failure.
+    """
+    try:
+        rect = await el.apply("""(e) => {
+            e.scrollIntoView({ behavior: 'instant', block: 'center' });
+            const r = e.getBoundingClientRect();
+            return { x: r.x, y: r.y, w: r.width, h: r.height };
+        }""")
+        if not rect or not (rect.get('w', 0) > 0):
+            await el.click()
+            return False
+        x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+        y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+        if await _cdp_realistic_click(page, x, y, label):
+            return True
+        await el.click()
+        return False
+    except Exception as e:
+        logger.debug("[QUEUE] Element click fallback (%s): %s", label, e)
+        try:
+            await el.click()
+        except Exception:
+            pass
+        return False
 
 logger = logging.getLogger(__name__)
 walmart_logger = get_walmart_logger()
@@ -172,7 +272,9 @@ class QueueHandler:
             self._status_cb("[QUEUE] Found 'Hold my spot' button — joining queue...")
             logger.info("[QUEUE] Clicking queue entry button")
             await entry_btn.scroll_into_view()
-            await entry_btn.click()
+            # CDP trajectory click — queue-entry is the first interaction on a
+            # high-demand drop; PerimeterX is at peak scrutiny here.
+            await _click_element_via_cdp(self._page, entry_btn, "Hold my spot")
             await asyncio.sleep(2)  # wait for queue overlay to update
 
             # Verify we're now in the queue
@@ -347,7 +449,7 @@ class QueueHandler:
                     btn = els[0]
                     is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
                     if is_vis:
-                        await btn.click()
+                        await _click_element_via_cdp(self._page, btn, f"passthrough:{text}")
                         return True
             except Exception:
                 continue
@@ -365,7 +467,7 @@ class QueueHandler:
                         if text and "turn" in text.lower():
                             is_vis = await el.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
                             if is_vis:
-                                await el.click()
+                                await _click_element_via_cdp(self._page, el, f"passthrough:queue-attr")
                                 return True
                     except Exception:
                         continue
@@ -382,26 +484,31 @@ class QueueHandler:
             )
             if has_passthrough_text:
                 # Try to click a button near the bottom of the page
+                # Locate candidate coordinates from JS — do NOT click inside
+                # evaluate(). Python drives the click via CDP trajectory below.
                 result = await self._page.evaluate("""() => {
                     const vh = window.innerHeight;
                     const allBtns = document.querySelectorAll('button, [role="button"], a[href]');
                     for (const el of allBtns) {
                         const rect = el.getBoundingClientRect();
-                        // Look for visible elements in the bottom third of viewport
                         if (rect.top > vh * 0.6 && rect.bottom <= vh + 10 &&
                             rect.width > 0 && rect.height > 0) {
                             const text = el.textContent.toLowerCase();
                             const keywords = ['turn', 'checkout', 'purchase', 'queue'];
                             if (keywords.some(k => text.includes(k))) {
-                                el.click();
-                                return true;
+                                return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
                             }
                         }
                     }
-                    return false;
+                    return null;
                 }""")
                 if result:
-                    return True
+                    x = result['x'] + result['w'] / 2 + random.uniform(-3, 3)
+                    y = result['y'] + result['h'] / 2 + random.uniform(-2, 2)
+                    if await _cdp_realistic_click(self._page, x, y, "passthrough:bottom-scan"):
+                        return True
+                    # If CDP fails, fall through (don't try el.click() — we
+                    # don't have the element handle out here)
         except Exception as e:
             logger.debug("[QUEUE] JS widget scan error: %s", e)
 
