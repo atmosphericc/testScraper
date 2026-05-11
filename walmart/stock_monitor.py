@@ -294,13 +294,17 @@ class WalmartStockMonitor:
         logger.info(f"[MONITOR] Browser fetch loop started — {NUM_DISPATCHERS} dispatchers, targeting ~{NUM_DISPATCHERS * (1.0/CHECK_INTERVAL_AVG):.0f} checks/sec")
 
         dispatchers = []
+        # Fully randomized per-dispatcher initial offset over [0, 1.0)s.
+        # Prior version used `i * 0.1 + random(0, 0.5)` — the `i * 0.1` base
+        # creates a structured 100ms phase offset between dispatchers that
+        # appears as a deterministic stagger pattern in Akamai's server-side
+        # request timing analysis across many sessions. Pure random delay
+        # eliminates the structure while preserving the desired throughput.
         for i in range(NUM_DISPATCHERS):
-            # Randomize initial delay to break determinism and synchronization
-            # Stagger start times with jitter so not all dispatchers fire together
-            initial_jitter = random.uniform(0.0, 0.5)
+            initial_delay = random.uniform(0.0, 1.0)
             t = threading.Thread(
                 target=self._fetch_dispatcher,
-                args=(i * 0.1 + initial_jitter,),
+                args=(initial_delay,),
                 daemon=True,
                 name=f"WalmartFetch-{i}",
             )

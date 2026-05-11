@@ -20,6 +20,7 @@ Safety:
 
 import asyncio
 import logging
+import math
 import os
 import random
 import re
@@ -398,15 +399,42 @@ class WalmartPurchaseExecutor:
                         await asyncio.sleep(0.15)
                         break
                     else:
-                        # CDP mouse failed — fall back to JS click
-                        logger.warning("[PURCHASE] CDP mouse click failed — falling back to JS click")
-                        await self._page.evaluate("""
-                            (document.querySelector('button[data-automation-id="atc"]') ||
-                             document.querySelector('button[data-dca-event="addToCart"]') ||
-                             document.querySelector('button[data-automation-id="add-to-cart-btn"]'))?.click()
-                        """)
-                        self._status_cb(f"[PURCHASE] Clicked Add to Cart via JS fallback (attempt {attempt + 1})")
-                        logger.info("[PURCHASE] ATC clicked via JS fallback on attempt %d", attempt + 1)
+                        # _realistic_click failed (CDP write error). Fall back to a
+                        # raw CDP press+release at the same coordinates — still produces
+                        # pointer events that PerimeterX expects. Avoid JS .click(),
+                        # which fires a click with no pointer trace and is one of the
+                        # strongest bot signals on the ATC button specifically.
+                        try:
+                            from zendriver.cdp import input_ as cdp_input
+                            await self._page.send(cdp_input.dispatch_mouse_event(
+                                type_="mouseMoved", x=x, y=y, pointer_type="mouse"
+                            ))
+                            await asyncio.sleep(random.uniform(0.02, 0.06))
+                            await self._page.send(cdp_input.dispatch_mouse_event(
+                                type_="mousePressed", x=x, y=y,
+                                button=cdp_input.MouseButton.LEFT, buttons=1,
+                                click_count=1, pointer_type="mouse"
+                            ))
+                            await asyncio.sleep(random.uniform(0.04, 0.12))
+                            await self._page.send(cdp_input.dispatch_mouse_event(
+                                type_="mouseReleased", x=x, y=y,
+                                button=cdp_input.MouseButton.LEFT, buttons=0,
+                                click_count=1, pointer_type="mouse"
+                            ))
+                            self._last_mouse_x = x
+                            self._last_mouse_y = y
+                            self._status_cb(f"[PURCHASE] Clicked Add to Cart via CDP fallback (attempt {attempt + 1})")
+                            logger.info("[PURCHASE] ATC clicked via raw CDP fallback on attempt %d at (%.0f, %.0f)",
+                                        attempt + 1, x, y)
+                        except Exception as cdp_err:
+                            # Last-ditch: JS click. Logged loudly because it's a detection risk.
+                            logger.error("[PURCHASE] Raw CDP click also failed (%s) — last-resort JS click", cdp_err)
+                            await self._page.evaluate("""
+                                (document.querySelector('button[data-automation-id="atc"]') ||
+                                 document.querySelector('button[data-dca-event="addToCart"]') ||
+                                 document.querySelector('button[data-automation-id="add-to-cart-btn"]'))?.click()
+                            """)
+                            self._status_cb(f"[PURCHASE] Clicked Add to Cart via JS last-resort (attempt {attempt + 1})")
                         await asyncio.sleep(0.15)
                         break
 
@@ -900,10 +928,24 @@ class WalmartPurchaseExecutor:
                     await asyncio.sleep(random.uniform(0.3, 0.6))
                     self._status_cb("[PURCHASE] Delivery option selected")
                     logger.info("[PURCHASE] Delivery option clicked via: %s", via)
-                    # After selecting delivery, a modal may appear asking for delivery day
-                    await asyncio.sleep(random.uniform(0.5, 1.0))
-                    # Try to dismiss delivery day modal if it popped up
-                    await self._handle_delivery_day_modal("delivery_select")
+                    # A modal may pop after selecting delivery — poll briefly instead
+                    # of unconditionally sleeping. If [role="dialog"] hasn't rendered
+                    # within ~350ms, it isn't going to appear here (will be caught by
+                    # the step-loop handler if it shows up later).
+                    modal_poll_deadline = time.monotonic() + 0.35
+                    modal_appeared = False
+                    while time.monotonic() < modal_poll_deadline:
+                        try:
+                            modal_appeared = await self._page.evaluate(
+                                "!!document.querySelector('[role=\"dialog\"]')"
+                            )
+                        except Exception:
+                            break
+                        if modal_appeared:
+                            break
+                        await asyncio.sleep(0.05)
+                    if modal_appeared:
+                        await self._handle_delivery_day_modal("delivery_select")
                 elif action == 'already_selected':
                     logger.info("[PURCHASE] Delivery already selected via: %s", via)
                 else:
@@ -955,9 +997,23 @@ class WalmartPurchaseExecutor:
         MAX_STEPS = 6
         modal_handle_count = 0
         MAX_MODAL_HANDLES = 3  # Prevent infinite modal loop
+        # Skip the modal-handler CDP roundtrip after this many consecutive
+        # iterations where no dialog was seen. The pre-saved-address flow
+        # never triggers a modal mid-checkout, so we pay no recurring cost.
+        no_modal_streak = 0
+        NO_MODAL_SKIP_THRESHOLD = 2
 
         for step_num in range(MAX_STEPS):
-            await asyncio.sleep(random.uniform(0.3, 0.7))
+            # Top-of-iteration pacing. The previous iteration's post-click sleep
+            # (1.5-2.5s default, 0.3-0.5s in FAST_DROP_MODE) already gave the
+            # page time to render — a second sleep here is partly redundant.
+            # FAST_DROP_MODE skips this sleep entirely on iter 2+, saving
+            # ~300-700ms per iteration on drops. Iter 0 still pauses to look
+            # natural after the cart→checkout transition.
+            if step_num == 0:
+                await asyncio.sleep(random.uniform(0.3, 0.7))
+            elif not FAST_DROP_MODE:
+                await asyncio.sleep(random.uniform(0.3, 0.7))
 
             # Guard: check for PerimeterX /blocked challenge mid-checkout
             current_url = self._page.url or ""
@@ -978,17 +1034,22 @@ class WalmartPurchaseExecutor:
                 await self._screenshot("login_wall_mid_checkout")
                 return
 
-            # Guard: Dismiss any delivery day modals that appeared mid-checkout
-            # Limit to MAX_MODAL_HANDLES attempts to prevent infinite loop if modal
-            # keeps appearing or button doesn't actually close it
-            if modal_handle_count < MAX_MODAL_HANDLES:
+            # Guard: Dismiss any delivery day modals that appeared mid-checkout.
+            # Cap by MAX_MODAL_HANDLES so a stuck modal can't loop forever, AND
+            # short-circuit after NO_MODAL_SKIP_THRESHOLD consecutive iterations
+            # with no modal present — the typical pre-saved-address flow never
+            # raises a modal mid-checkout, so further CDP checks are wasted.
+            if modal_handle_count < MAX_MODAL_HANDLES and no_modal_streak < NO_MODAL_SKIP_THRESHOLD:
                 modal_dismissed = await self._handle_delivery_day_modal(f"{step_num}")
                 if modal_dismissed:
                     modal_handle_count += 1
+                    no_modal_streak = 0  # reset — a modal may reappear
                     logger.info("[PURCHASE] Delivery day modal handled (%d/%d)", modal_handle_count, MAX_MODAL_HANDLES)
                     # Modal handler now includes 2-4s pause + DOM stability wait.
                     # Do NOT add additional pause here — the handler covers it.
                     # Continue to look for Continue button since modal is gone
+                else:
+                    no_modal_streak += 1
 
             # If Place Order button is now visible, we're on the review step — done
             place_order_visible = await self._find_element(PLACE_ORDER_SELECTORS, timeout=2000)
@@ -999,11 +1060,29 @@ class WalmartPurchaseExecutor:
             # Human think time: pause before looking for Continue button
             await asyncio.sleep(random.uniform(0.3, 0.5) if FAST_DROP_MODE else random.uniform(1.0, 2.0))
 
-            # Click the next Continue/advance button
+            # Click the next Continue/advance button via CDP mouse trajectory.
+            # Continue fires 2-4× across address/payment/review — most-executed click
+            # in checkout, so raw element.click() here would be a strong bot signal.
             continue_btn = await self._find_element(CONTINUE_SELECTORS, timeout=4000)
             if continue_btn:
+                try:
+                    rect = await continue_btn.apply("""(e) => {
+                        e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        const r = e.getBoundingClientRect();
+                        return { x: r.x, y: r.y, w: r.width, h: r.height };
+                    }""")
+                    if rect and rect.get('w', 0) > 0:
+                        x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+                        y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+                        clicked = await self._realistic_click(x, y, f"Continue (step {step_num + 1})")
+                        if not clicked:
+                            await continue_btn.click()
+                    else:
+                        await continue_btn.click()
+                except Exception as e:
+                    logger.debug("[PURCHASE] Continue rect lookup failed: %s — falling back to element.click()", e)
+                    await continue_btn.click()
                 # Post-click pause: let page transition settle before next step
-                await continue_btn.click()
                 await asyncio.sleep(random.uniform(0.3, 0.5) if FAST_DROP_MODE else random.uniform(1.5, 2.5))
                 self._status_cb(f"[PURCHASE] Continue clicked (step {step_num + 1})")
             else:
@@ -1483,36 +1562,42 @@ class WalmartPurchaseExecutor:
         Aggressively dismiss any visible modal/dialog by searching for common close patterns.
         Used as a fallback when specific modal handling fails.
         Returns True if a modal was found and dismissed.
+
+        Modal close clicks happen during the most-scrutinized window (often the
+        Place Order page). We return the close button's coordinates from JS and
+        drive the click via CDP mouse trajectory instead of a synchronous
+        element.click() — PerimeterX scores DOM-only clicks during checkout as
+        bot signals.
         """
         try:
-            # Search for any visible modal with close/dismiss buttons
+            # Locate a visible modal and return its close-button coordinates.
+            # No clicking inside the evaluate — Python drives the click via CDP.
             result = await self._page.evaluate("""
                 (() => {
-                    // Look for any visible modal/dialog overlay
                     const modals = document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, [class*="modal"], [class*="Modal"], .overlay, [class*="overlay"], [data-testid*="modal"]');
 
                     for (const modal of modals) {
                         const style = window.getComputedStyle(modal);
                         if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
 
-                        // Found a visible modal — try to close it
                         const closeButtons = [
                             ...modal.querySelectorAll('button[aria-label*="close" i]'),
                             ...modal.querySelectorAll('button[aria-label*="dismiss" i]'),
                             ...modal.querySelectorAll('[data-automation-id*="close"]'),
-                            ...modal.querySelectorAll('button:last-child'),  // Often the close/no button is rightmost
+                            ...modal.querySelectorAll('button:last-child'),
                         ];
 
                         for (const btn of closeButtons) {
-                            if (btn.offsetParent !== null) {  // Is visible
-                                btn.click();
-                                return { found: true, method: 'close_button' };
+                            if (btn.offsetParent !== null) {
+                                const r = btn.getBoundingClientRect();
+                                if (r.width > 0 && r.height > 0) {
+                                    return { found: true, method: 'close_button',
+                                             x: r.x, y: r.y, w: r.width, h: r.height };
+                                }
                             }
                         }
 
-                        // If no close button, try Escape key
-                        const event = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27 });
-                        document.dispatchEvent(event);
+                        // No usable close button — caller will fall back to Escape key
                         return { found: true, method: 'escape_key' };
                     }
 
@@ -1520,10 +1605,35 @@ class WalmartPurchaseExecutor:
                 })()
             """)
 
-            if result and result.get('found'):
-                logger.debug("[PURCHASE] Dismissed modal via %s", result.get('method'))
-                await asyncio.sleep(random.uniform(0.3, 0.6))
-                return True
+            if not result or not result.get('found'):
+                return False
+
+            method = result.get('method')
+            if method == 'close_button':
+                x = result['x'] + result['w'] / 2 + random.uniform(-3, 3)
+                y = result['y'] + result['h'] / 2 + random.uniform(-2, 2)
+                clicked = await self._realistic_click(x, y, "Modal close")
+                if not clicked:
+                    # CDP click failed — fall through to Escape key
+                    method = 'escape_key'
+
+            if method == 'escape_key':
+                try:
+                    from zendriver.cdp import input_ as cdp_input
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyDown", key="Escape", code="Escape", windows_virtual_key_code=27,
+                    ))
+                    await asyncio.sleep(random.uniform(0.04, 0.10))
+                    await self._page.send(cdp_input.dispatch_key_event(
+                        type_="keyUp", key="Escape", code="Escape", windows_virtual_key_code=27,
+                    ))
+                except Exception as e:
+                    logger.debug("[PURCHASE] CDP Escape failed: %s", e)
+                    return False
+
+            logger.debug("[PURCHASE] Dismissed modal via %s", method)
+            await asyncio.sleep(random.uniform(0.3, 0.6))
+            return True
         except Exception as e:
             logger.debug("[PURCHASE] Generic modal dismiss failed: %s", e)
 
@@ -1677,45 +1787,77 @@ class WalmartPurchaseExecutor:
         """
         Click with pre-movement trajectory to simulate human behavior.
 
-        Humans always move the mouse from its previous position before clicking.
-        Akamai detects instant teleport clicks as bot signals. This method emits
-        a Bezier-like trajectory (3-7 intermediate points) before the final click.
+        Humans never move the mouse in a straight line at uniform speed. Akamai's
+        `_abck` sensor runs velocity + curvature analysis on the mouseMoved event
+        stream — straight-line linear interpolation between clicks is flagged.
+
+        Trajectory: quadratic Bezier from the last cursor position to (x, y),
+        with a random control point offset from the segment midpoint to bend
+        the path. Inter-move delay is velocity-weighted via sin(π·t) so the
+        cursor moves fast in the middle and decelerates near both endpoints
+        (matches Fitts's law / human reach kinematics).
         """
         try:
             from zendriver.cdp import input_ as cdp_input
 
-            # Starting position (track between clicks)
             current_x = self._last_mouse_x
             current_y = self._last_mouse_y
 
-            # Emit intermediate points along the path (Bezier-like)
-            steps = random.randint(3, 7)
-            for i in range(steps):
-                # Linear interpolation from current to target
-                t = i / steps
-                move_x = int(current_x + (x - current_x) * t)
-                move_y = int(current_y + (y - current_y) * t)
+            # Control point: midpoint of the segment with a perpendicular-ish
+            # random offset. Magnitude scales with distance so short hops don't
+            # get exaggerated arcs; capped so long hops don't loop offscreen.
+            dx = x - current_x
+            dy = y - current_y
+            dist = math.hypot(dx, dy)
+            offset_mag = min(80.0, max(15.0, dist * 0.18))
+            # Perpendicular unit vector (rotate the path direction by 90°)
+            if dist > 1.0:
+                px = -dy / dist
+                py = dx / dist
+            else:
+                px, py = 0.0, 0.0
+            sign = random.choice((-1.0, 1.0))
+            jitter = random.uniform(-offset_mag * 0.4, offset_mag * 0.4)
+            cp_x = (current_x + x) / 2 + sign * offset_mag * px + jitter
+            cp_y = (current_y + y) / 2 + sign * offset_mag * py + random.uniform(-offset_mag * 0.4, offset_mag * 0.4)
 
-                # Emit mouse movement event
+            # More steps on long paths, fewer on short. 4-9 typical, clamps for safety.
+            steps = max(4, min(9, int(dist / 80) + random.randint(3, 5)))
+
+            for i in range(1, steps + 1):
+                t = i / (steps + 1)
+                bx = (1 - t) ** 2 * current_x + 2 * (1 - t) * t * cp_x + t ** 2 * x
+                by = (1 - t) ** 2 * current_y + 2 * (1 - t) * t * cp_y + t ** 2 * y
+
+                # Add small Gaussian jitter so the curve isn't a perfect Bezier
+                bx += random.gauss(0, 0.6)
+                by += random.gauss(0, 0.6)
+
                 await self._page.send(cdp_input.dispatch_mouse_event(
-                    type_="mouseMoved", x=move_x, y=move_y, pointer_type="mouse"
+                    type_="mouseMoved", x=int(bx), y=int(by), pointer_type="mouse"
                 ))
-                # 10-50ms between moves (human-like)
-                await asyncio.sleep(random.uniform(0.01, 0.05))
 
-            # Final move to exact target
+                # Velocity-weighted: 12ms in the middle of the path,
+                # ~55ms near the endpoints. sin(π·t) peaks at t=0.5.
+                # Real humans accelerate-then-decelerate (ballistic phase + corrective phase).
+                base = 0.055 - 0.043 * math.sin(math.pi * t)
+                await asyncio.sleep(base + random.uniform(-0.005, 0.012))
+
+            # Final settle move to exact target (with sub-pixel jitter)
             await self._page.send(cdp_input.dispatch_mouse_event(
-                type_="mouseMoved", x=x, y=y, pointer_type="mouse"
+                type_="mouseMoved", x=int(x), y=int(y), pointer_type="mouse"
             ))
-            await asyncio.sleep(random.uniform(0.02, 0.08))
+            # Pre-click dwell — humans hesitate ~30-110ms after reaching a target
+            await asyncio.sleep(random.uniform(0.03, 0.11))
 
-            # Now click (press + release)
+            # Press + release
             await self._page.send(cdp_input.dispatch_mouse_event(
                 type_="mousePressed", x=x, y=y,
                 button=cdp_input.MouseButton.LEFT, buttons=1,
                 click_count=1, pointer_type="mouse"
             ))
-            await asyncio.sleep(random.uniform(0.04, 0.12))
+            # Press hold — humans hold a button for 60-130ms typically
+            await asyncio.sleep(random.uniform(0.06, 0.13))
 
             await self._page.send(cdp_input.dispatch_mouse_event(
                 type_="mouseReleased", x=x, y=y,
@@ -1723,12 +1865,12 @@ class WalmartPurchaseExecutor:
                 click_count=1, pointer_type="mouse"
             ))
 
-            # Track position for next click
             self._last_mouse_x = x
             self._last_mouse_y = y
 
             if selector:
-                logger.debug("[PURCHASE] Realistic click on %s at (%.0f, %.0f) with trajectory", selector, x, y)
+                logger.debug("[PURCHASE] Realistic click on %s at (%.0f, %.0f) — %d-step Bezier, dist=%.0f",
+                             selector, x, y, steps, dist)
             return True
         except Exception as e:
             logger.warning("[PURCHASE] Realistic click failed: %s", e)

@@ -439,9 +439,12 @@ class WalmartPurchaseManager:
             except Exception as e:
                 logger.warning("[MANAGER] Harvester pause failed: %s", e)
 
-            # Let the browser settle for a moment after pausing fetch() spam,
-            # then refresh cookies so Tab 2 starts with a clean _px3
-            await asyncio.sleep(1.5)
+            # Let the browser settle briefly after pausing fetch() spam, then
+            # refresh cookies so Tab 2 starts with a clean _px3. The pause flag
+            # stops new fetches; in-flight ones complete in 150-400ms typically,
+            # so a randomized 400-800ms settle covers that with margin while
+            # saving ~700-1100ms on the signal→purchase critical path.
+            await asyncio.sleep(random.uniform(0.4, 0.8))
             try:
                 await self._session.harvest_now()
             except Exception as e:

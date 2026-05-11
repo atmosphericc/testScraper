@@ -58,24 +58,63 @@ _STEALTH_SCRIPT = f"""
     // Remove navigator.webdriver
     Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined, configurable: true }});
 
-    // Real Chrome always has plugins; automation contexts often have 0
+    // Real Chrome plugins are PluginArray, not a plain array. PerimeterX/HUMAN
+    // probe namedItem(), refresh(), and per-plugin mimeTypes — undefined methods
+    // or missing sub-objects are fingerprints. Build a fake PluginArray and
+    // matching MimeTypeArray.
+    const _fakeMimeTypes = [
+        {{ type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' }},
+        {{ type: 'application/x-google-chrome-pdf', description: 'Portable Document Format', suffixes: 'pdf' }},
+        {{ type: 'application/x-nacl', description: 'Native Client Executable', suffixes: '' }},
+        {{ type: 'application/x-pnacl', description: 'Portable Native Client Executable', suffixes: '' }}
+    ];
+
+    function _makePlugin(name, filename, description, mimeTypeList) {{
+        const plugin = {{ name, filename, description, length: mimeTypeList.length }};
+        mimeTypeList.forEach((mt, i) => {{
+            const mimeWithPlugin = Object.assign({{}}, mt, {{ enabledPlugin: plugin }});
+            plugin[i] = mimeWithPlugin;
+            plugin[mt.type] = mimeWithPlugin;
+        }});
+        plugin.item = function(i) {{ return this[i] || null; }};
+        plugin.namedItem = function(n) {{ return this[n] || null; }};
+        return plugin;
+    }}
+
+    const _pluginList = [
+        _makePlugin('PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', _fakeMimeTypes.slice(0, 2)),
+        _makePlugin('Chrome PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', _fakeMimeTypes.slice(0, 2)),
+        _makePlugin('Chromium PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', _fakeMimeTypes.slice(0, 2)),
+        _makePlugin('Microsoft Edge PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', _fakeMimeTypes.slice(0, 2)),
+        _makePlugin('WebKit built-in PDF', 'internal-pdf-viewer', 'Portable Document Format', _fakeMimeTypes.slice(0, 2))
+    ];
+
+    const _pluginArray = Object.create(Object.getPrototypeOf(navigator.plugins) || Object.prototype);
+    _pluginList.forEach((p, i) => {{ _pluginArray[i] = p; _pluginArray[p.name] = p; }});
+    Object.defineProperty(_pluginArray, 'length', {{ value: _pluginList.length, enumerable: false }});
+    _pluginArray.item = function(i) {{ return this[i] || null; }};
+    _pluginArray.namedItem = function(n) {{ return this[n] || null; }};
+    _pluginArray.refresh = function() {{}};
+
     Object.defineProperty(navigator, 'plugins', {{
-        get: () => [
-            {{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
-            {{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }},
-            {{ name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }}
-        ],
+        get: () => _pluginArray,
         configurable: true
     }});
 
-    // Spoof mimeTypes
+    // MimeTypeArray — also probed by HUMAN. Each entry's enabledPlugin must point
+    // back to one of the entries in navigator.plugins.
+    const _mimeArray = Object.create(Object.getPrototypeOf(navigator.mimeTypes) || Object.prototype);
+    _fakeMimeTypes.forEach((mt, i) => {{
+        const entry = Object.assign({{}}, mt, {{ enabledPlugin: _pluginList[0] }});
+        _mimeArray[i] = entry;
+        _mimeArray[mt.type] = entry;
+    }});
+    Object.defineProperty(_mimeArray, 'length', {{ value: _fakeMimeTypes.length, enumerable: false }});
+    _mimeArray.item = function(i) {{ return this[i] || null; }};
+    _mimeArray.namedItem = function(n) {{ return this[n] || null; }};
+
     Object.defineProperty(navigator, 'mimeTypes', {{
-        get: () => [
-            {{ type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' }},
-            {{ type: 'application/x-google-chrome-pdf', description: 'Portable Document Format', suffixes: 'pdf' }},
-            {{ type: 'application/x-nacl', description: 'Native Client Executable', suffixes: '' }},
-            {{ type: 'application/x-pnacl', description: 'Portable Native Client Executable', suffixes: '' }}
-        ],
+        get: () => _mimeArray,
         configurable: true
     }});
 
@@ -85,31 +124,100 @@ _STEALTH_SCRIPT = f"""
         configurable: true
     }});
 
-    // window.chrome must exist in real Chrome with realistic properties
+    // chrome.runtime.connect — real Chrome returns a Port object (even for invalid IDs).
+    // Throwing immediately is a fingerprint that PerimeterX explicitly probes for.
+    function _makeFakePort() {{
+        return {{
+            name: '',
+            sender: undefined,
+            disconnect: function() {{}},
+            postMessage: function() {{}},
+            onMessage: {{ addListener: function() {{}}, removeListener: function() {{}}, hasListener: function() {{ return false; }} }},
+            onDisconnect: {{ addListener: function() {{}}, removeListener: function() {{}}, hasListener: function() {{ return false; }} }}
+        }};
+    }}
+
+    // Capture session-start timing so loadTimes / csi can derive realistic offsets
+    // instead of returning constant deltas. PerimeterX correlates these across
+    // multiple calls — fixed values are statistically impossible.
+    const _sessionStart = performance.now();
+
     Object.defineProperty(window, 'chrome', {{
         get: () => ({{
             runtime: {{
-                connect: function() {{ throw new Error('Invalid port'); }},
+                connect: function() {{ return _makeFakePort(); }},
                 sendMessage: function() {{ return Promise.reject(); }},
                 getPlatformInfo: function() {{
                     return Promise.resolve({{ os: '{_CHROME_OS}', arch: 'x86-64' }});
-                }}
+                }},
+                onMessage: {{ addListener: function() {{}}, removeListener: function() {{}}, hasListener: function() {{ return false; }} }},
+                onConnect: {{ addListener: function() {{}}, removeListener: function() {{}}, hasListener: function() {{ return false; }} }}
             }},
             app: {{
-                isInstalled: false
+                isInstalled: false,
+                InstallState: {{ DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }},
+                RunningState: {{ CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }},
+                getDetails: function() {{ return null; }},
+                getIsInstalled: function() {{ return false; }}
             }},
             loadTimes: function() {{
+                // Derive offsets from real performance.timing when available.
+                // Falls back to bounded random variance per call so multiple
+                // invocations during one page never return identical deltas.
+                const t = (performance && performance.timing) ? performance.timing : null;
+                const now = performance.now();
+                if (t && t.navigationStart && t.requestStart) {{
+                    return {{
+                        requestStart: (t.requestStart - t.navigationStart) / 1000,
+                        startLoadTime: (t.fetchStart - t.navigationStart) / 1000,
+                        commitLoadTime: (t.responseStart - t.navigationStart) / 1000,
+                        finishDocumentLoadTime: (t.domContentLoadedEventEnd - t.navigationStart) / 1000,
+                        finishLoadTime: (t.loadEventEnd - t.navigationStart) / 1000 || 0,
+                        firstPaintTime: (t.domLoading - t.navigationStart) / 1000,
+                        firstPaintAfterLoadTime: 0,
+                        navigationType: 'Other',
+                        wasFetchedViaSpdy: true,
+                        wasNpnNegotiated: true,
+                        npnNegotiatedProtocol: 'h2',
+                        wasAlternateProtocolAvailable: false,
+                        connectionInfo: 'h2'
+                    }};
+                }}
+                // Fallback with per-call variance
+                const rs = now / 1000 - (1.5 + Math.random() * 1.5);
                 return {{
-                    requestStart: performance.now() - 2000,
-                    loadEventEnd: performance.now() - 500,
-                    domContentLoadedEventEnd: performance.now() - 800
+                    requestStart: rs,
+                    startLoadTime: rs,
+                    commitLoadTime: rs + 0.05 + Math.random() * 0.1,
+                    finishDocumentLoadTime: rs + 0.5 + Math.random() * 0.5,
+                    finishLoadTime: rs + 1.0 + Math.random() * 1.0,
+                    firstPaintTime: rs + 0.4 + Math.random() * 0.3,
+                    firstPaintAfterLoadTime: 0,
+                    navigationType: 'Other',
+                    wasFetchedViaSpdy: true,
+                    wasNpnNegotiated: true,
+                    npnNegotiatedProtocol: 'h2',
+                    wasAlternateProtocolAvailable: false,
+                    connectionInfo: 'h2'
                 }};
             }},
             csi: function() {{
+                // pageLoadTime varies per navigation in real Chrome — fixed 1500 is
+                // statistically impossible. Derive from performance.timing when possible.
+                const t = (performance && performance.timing) ? performance.timing : null;
+                const now = performance.now();
+                let pageLoadTime;
+                if (t && t.navigationStart && t.domContentLoadedEventEnd) {{
+                    pageLoadTime = Math.max(0, t.domContentLoadedEventEnd - t.navigationStart);
+                }} else {{
+                    pageLoadTime = Math.floor(800 + Math.random() * 2200);
+                }}
                 return {{
-                    pageLoadTime: 1500,
-                    startE: performance.now() - 2000,
-                    onloadT: performance.now() - 500
+                    pageT: now - _sessionStart,
+                    onloadT: t && t.loadEventEnd ? (t.loadEventEnd - t.navigationStart) : Math.floor(500 + Math.random() * 1500),
+                    startE: t && t.navigationStart ? t.navigationStart : Date.now() - Math.floor(2000 + Math.random() * 3000),
+                    tran: 15,
+                    pageLoadTime: pageLoadTime
                 }};
             }}
         }}),
@@ -494,6 +602,71 @@ class WalmartSessionManager:
     # Login
     # ------------------------------------------------------------------
 
+    async def _cdp_click_element(self, el, label: str = "") -> bool:
+        """
+        Click an element via CDP mouse trajectory — pointer events, not synchronous
+        DOM .click(). Used for credential-stuffing-scrutinized buttons (Sign In,
+        Continue) where PerimeterX's authentication sensor is most aggressive.
+
+        Returns True if the click was driven via CDP. Falls back to el.click()
+        and returns False on rect lookup or CDP failure.
+        """
+        try:
+            from zendriver.cdp import input_ as cdp_input
+            rect = await el.apply("""(e) => {
+                e.scrollIntoView({ behavior: 'instant', block: 'center' });
+                const r = e.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height };
+            }""")
+            if not rect or not rect.get('w', 0) > 0:
+                await el.click()
+                return False
+
+            x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
+            y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
+
+            # Quadratic-Bezier-ish trajectory: 3-6 intermediate points from
+            # a random start position toward the target. Curve via a midpoint
+            # offset so the path isn't a straight line (which `_abck`'s
+            # velocity/curvature analysis flags).
+            start_x = random.uniform(200, 1700)
+            start_y = random.uniform(150, 900)
+            cp_x = (start_x + x) / 2 + random.uniform(-40, 40)
+            cp_y = (start_y + y) / 2 + random.uniform(-30, 30)
+            steps = random.randint(3, 6)
+            for i in range(1, steps + 1):
+                t = i / (steps + 1)
+                bx = (1 - t) ** 2 * start_x + 2 * (1 - t) * t * cp_x + t ** 2 * x
+                by = (1 - t) ** 2 * start_y + 2 * (1 - t) * t * cp_y + t ** 2 * y
+                await self._page.send(cdp_input.dispatch_mouse_event(
+                    type_="mouseMoved", x=int(bx), y=int(by), pointer_type="mouse"
+                ))
+                await asyncio.sleep(random.uniform(0.015, 0.045))
+
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseMoved", x=x, y=y, pointer_type="mouse"
+            ))
+            await asyncio.sleep(random.uniform(0.04, 0.10))
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y,
+                button=cdp_input.MouseButton.LEFT, buttons=1,
+                click_count=1, pointer_type="mouse"
+            ))
+            await asyncio.sleep(random.uniform(0.05, 0.12))
+            await self._page.send(cdp_input.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y,
+                button=cdp_input.MouseButton.LEFT, buttons=0,
+                click_count=1, pointer_type="mouse"
+            ))
+            return True
+        except Exception as e:
+            logger.debug("[SESSION] CDP click on %s failed (%s) — fallback to element.click()", label, e)
+            try:
+                await el.click()
+            except Exception:
+                pass
+            return False
+
     async def login(self, email: str, password: str) -> bool:
         """
         Log in to Walmart. Saves cookies on success.
@@ -537,7 +710,7 @@ class WalmartSessionManager:
             try:
                 els = await self._page.xpath('//button[contains(., "Continue")]')
                 if els:
-                    await els[0].click()
+                    await self._cdp_click_element(els[0], "login Continue")
                     await asyncio.sleep(1.5)
             except Exception:
                 pass  # Single-step form — no Continue button, that's normal
@@ -577,7 +750,11 @@ class WalmartSessionManager:
                 except Exception:
                     continue
             if sign_in:
-                await sign_in.click()
+                # Credential submission — highest-scrutiny single click in the
+                # session. PerimeterX has a dedicated credential-stuffing module
+                # that analyzes the click event chain. CDP mouse trajectory is
+                # required here.
+                await self._cdp_click_element(sign_in, "Sign In")
             await asyncio.sleep(random.uniform(2.5, 3.5))
 
             # Verify login success — should no longer be on the login page.
