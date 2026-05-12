@@ -60,7 +60,7 @@ class WalmartStockMonitor:
         self,
         proxy_manager=None,  # accepted for call-site compatibility, unused
         session=None,  # WalmartSessionManager — provides browser page + event loop
-        on_in_stock: Optional[Callable[[str, Optional[str], str, Optional[float]], None]] = None,
+        on_in_stock: Optional[Callable[[str, Optional[str], str, Optional[float], Optional[int]], None]] = None,
         on_stock_change: Optional[Callable] = None,
         status_callback: Optional[Callable[[str], None]] = None,
         page=None,  # accepted for call-site compatibility, unused
@@ -647,6 +647,7 @@ class WalmartStockMonitor:
 
         walmart_direct = result.get("walmart_direct", False)
         offer_id = result.get("offer_id")
+        order_limit = result.get("order_limit")
 
         if not walmart_direct:
             logger.debug("[MONITOR] %s — skipping third-party seller", item_id)
@@ -678,7 +679,7 @@ class WalmartStockMonitor:
             logger.warning("[MONITOR] IN STOCK: %s (%s) @ %s", name, item_id, price_str)
             if transitioned_to_in_stock:
                 if self._on_in_stock:
-                    self._on_in_stock(item_id, offer_id, name, price)
+                    self._on_in_stock(item_id, offer_id, name, price, order_limit)
                 if self._on_stock_change:
                     self._on_stock_change(item_id, True, price)
         else:

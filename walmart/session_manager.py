@@ -348,6 +348,7 @@ class WalmartSessionManager:
         self._browser = None
         self._page = None          # Tab 1: harvester — roams product pages
         self._checkout_page = None # Tab 2: checkout — stays on homepage, clean for purchases
+        self._checkout_capture = None  # optional CheckoutCapture (WALMART_CAPTURE_CHECKOUT=1)
         self._cookies_path = Path(COOKIES_FILE)
         self._profile_dir = Path(PROFILE_DIR)
         self._last_validation: float = 0.0
@@ -587,6 +588,21 @@ class WalmartSessionManager:
         except Exception as e:
             logger.warning("[SESSION] Failed to wire network handlers on Tab 2: %s", e)
 
+        # Optional checkout-capture logger (WALMART_CAPTURE_CHECKOUT=1).
+        # Writes every checkout-related HTTP call on Tab 2 to JSONL for the
+        # hybrid-API research. Disabled by default; delete the wire call and
+        # walmart/checkout_capture.py once hybrid is implemented.
+        try:
+            from .checkout_capture import CheckoutCapture, is_enabled as _cap_enabled
+            if _cap_enabled():
+                self._checkout_capture = CheckoutCapture(self._checkout_page)
+                await self._checkout_capture.attach()
+            else:
+                self._checkout_capture = None
+        except Exception as e:
+            logger.warning("[SESSION] Checkout-capture init failed: %s", e)
+            self._checkout_capture = None
+
         # Bring Tab 2 to the foreground and keep it there. This is the tab the
         # user sees and the tab that will handle the purchase, so it must not
         # be backgrounded (Chrome throttles JS in background tabs).
@@ -612,6 +628,13 @@ class WalmartSessionManager:
         """
         try:
             await self.save_cookies()
+        except Exception:
+            pass
+        # Detach checkout capture if attached.
+        try:
+            cap = getattr(self, "_checkout_capture", None)
+            if cap is not None:
+                await cap.detach()
         except Exception:
             pass
         # Cancel harvester first so it doesn't keep trying to read self._page

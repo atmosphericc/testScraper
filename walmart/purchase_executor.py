@@ -138,13 +138,19 @@ class WalmartPurchaseExecutor:
     # Main entry point
     # ------------------------------------------------------------------
 
-    async def purchase(self, item_id: str, item_url: str) -> PurchaseResult:
+    async def purchase(self, item_id: str, item_url: str, quantity: int = 1) -> PurchaseResult:
         """
-        Attempt to purchase one unit of the given item.
-        Returns PurchaseResult with success/failure and order ID if successful.
+        Attempt to purchase the requested quantity of the given item.
+
+        Quantity is bumped on the cart page via the qty input — ATC always
+        adds qty=1, then if quantity > 1 we set the cart qty input via CDP
+        keystrokes before clicking Checkout. The hard ceiling is enforced
+        by the caller (manager); this method trusts the value passed in.
         """
-        self._status_cb(f"[PURCHASE] Starting purchase attempt for {item_id}")
-        logger.debug("[PURCHASE] Starting: %s", item_id)
+        self._desired_quantity = max(1, int(quantity or 1))
+        self._status_cb(f"[PURCHASE] Starting purchase attempt for {item_id}" +
+                        (f" (qty={self._desired_quantity})" if self._desired_quantity > 1 else ""))
+        logger.debug("[PURCHASE] Starting: %s (qty=%d)", item_id, self._desired_quantity)
 
         try:
             # Step 1: Navigate to product page
@@ -709,6 +715,25 @@ class WalmartPurchaseExecutor:
                 self._status_cb("[PURCHASE] Cart appears empty after ATC")
                 return False
 
+        # --- Bump quantity if > 1 (qty input next to + / - stepper on cart row) ---
+        desired_qty = getattr(self, "_desired_quantity", 1)
+        if desired_qty and desired_qty > 1:
+            try:
+                actual = await self._set_cart_quantity(item_id, desired_qty)
+                if actual is not None and actual < desired_qty:
+                    self._status_cb(
+                        f"[PURCHASE] Cart qty clamped to {actual} (requested {desired_qty})"
+                    )
+                    logger.info(
+                        "[PURCHASE] Walmart enforced lower qty: requested=%d actual=%d",
+                        desired_qty, actual,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[PURCHASE] Qty bump failed (proceeding with qty=1): %s", e
+                )
+                self._status_cb("[PURCHASE] Qty bump failed — proceeding with qty=1")
+
         # --- Select Delivery before clicking checkout ---
         await self._select_delivery_on_cart()
 
@@ -741,6 +766,10 @@ class WalmartPurchaseExecutor:
 
         # --- Wait for /checkout URL ---
         deadline = time.monotonic() + 10.0
+        bookslot_attempts = 0
+        bookslot_max_attempts = 3
+        bookslot_last_try = 0.0
+        bookslot_retry_cooldown = 2.5
         while time.monotonic() < deadline:
             url = self._page.url or ""
             if "/checkout" in url and "/cart" not in url:
@@ -757,6 +786,70 @@ class WalmartPurchaseExecutor:
                     logger.warning("[PURCHASE] Post-challenge checkout re-navigation timed out")
                 except Exception:
                     pass
+            # Walmart now serves a mandatory delivery-slot widget at
+            # /cart?step=bookslot for every delivery-eligible item (not just
+            # grocery — observed on controller + notebook). The widget blocks
+            # /checkout until a time slot is reserved. Retry up to 3x — the
+            # drawer takes a moment to fully render after the cart redirect,
+            # and a single early miss should not fail the whole attempt.
+            if "step=bookslot" in url and bookslot_attempts < bookslot_max_attempts:
+                now = time.monotonic()
+                if now - bookslot_last_try >= bookslot_retry_cooldown:
+                    self._status_cb(
+                        f"[PURCHASE] Delivery slot widget detected — reserving slot (attempt {bookslot_attempts + 1})..."
+                    )
+                    logger.info(
+                        "[PURCHASE] step=bookslot detected at: %s (attempt %d/%d)",
+                        url, bookslot_attempts + 1, bookslot_max_attempts,
+                    )
+                    bookslot_last_try = now
+                    bookslot_attempts += 1
+                    # Try hybrid first — one POST replaces the entire drawer.
+                    bookslot_ok = False
+                    from walmart.checkout_api import (
+                        WalmartHybridCheckout, is_enabled as hybrid_enabled,
+                    )
+                    if hybrid_enabled() and bookslot_attempts == 1:
+                        try:
+                            api = WalmartHybridCheckout(self._page)
+                            ctx = await api.read_cart_context()
+                            if ctx:
+                                logger.info(
+                                    "[PURCHASE] Hybrid: attempting slot reservation via API"
+                                )
+                                rs = await api.reserve_cheapest_slot(ctx)
+                                if rs and rs.get("data", {}).get("reserveSlot", {}).get("checkoutable"):
+                                    logger.info(
+                                        "[PURCHASE] Hybrid: slot reserved via API — skipping DOM drawer"
+                                    )
+                                    bookslot_ok = True
+                                    # Server-side reservation done — navigate
+                                    # forward to /checkout. URL still says
+                                    # step=bookslot until React picks up.
+                                    try:
+                                        await self._page.get(WALMART_CHECKOUT_URL)
+                                    except Exception as nav_err:
+                                        logger.debug(
+                                            "[PURCHASE] post-slot nav raised: %s", nav_err,
+                                        )
+                        except Exception as e:
+                            logger.warning(
+                                "[PURCHASE] Hybrid slot reserve raised: %s — falling to DOM",
+                                e,
+                            )
+                    if not bookslot_ok:
+                        bookslot_ok = await self._handle_bookslot_modal()
+                    if bookslot_ok:
+                        # Slot reservation takes a few seconds + a server
+                        # roundtrip to /checkout. Extend the deadline to give
+                        # it room.
+                        deadline = max(deadline, time.monotonic() + 12.0)
+                    elif bookslot_attempts >= bookslot_max_attempts:
+                        logger.warning(
+                            "[PURCHASE] Failed to reserve delivery slot after %d attempts — falling through",
+                            bookslot_max_attempts,
+                        )
+                        await self._screenshot("bookslot_failed")
             if "/account/login" in url or "/account/signin" in url or "sign-in" in url:
                 logger.error("[PURCHASE] Redirected to login — not authenticated: %s", url)
                 self._status_cb("[PURCHASE] Login required — set WALMART_EMAIL/WALMART_PASSWORD in .env")
@@ -822,6 +915,572 @@ class WalmartPurchaseExecutor:
 
         self._status_cb(f"[PURCHASE] On checkout page — URL: {final_url}")
         return True
+
+    async def _set_cart_quantity(self, item_id: str, desired: int) -> Optional[int]:
+        """Bump the cart row quantity to ``desired``.
+
+        Walmart's ATC button always adds qty=1; multi-unit purchases require
+        adjusting the qty UI on the cart row. The qty UI varies by product
+        variant — some show a typeable ``<input>`` (with stepper buttons
+        flanking it), others render stepper-only with no input.
+
+        Strategy:
+          1. Locate typeable input via known selectors. If found, set value
+             via CDP keystrokes (focus → Cmd/Ctrl-A → type → Tab). DOM
+             ``e.value = N`` is a synchronous mutation with no input events —
+             PerimeterX's cart-mutation sensor flags it (PM8 D8 lesson).
+          2. If input path yields no commit (no input element, or input
+             ignored the keystrokes), fall back to clicking the increment
+             stepper (desired - committed) times. Each click via
+             ``_realistic_click`` to preserve antibot hygiene.
+
+        Returns the qty Walmart actually committed (may be < desired if
+        Walmart's server clamps), or None if neither path succeeded.
+        """
+        from zendriver.cdp import input_ as cdp_input
+        import sys as _sys
+
+        # Hybrid path: one GraphQL POST replaces the entire input + stepper
+        # loop. Saves ~5-12s of clicks per qty bump. The API call still
+        # runs inside the browser tab's JS context so _px3 + JA3 are real.
+        from walmart.checkout_api import (
+            WalmartHybridCheckout, is_enabled as hybrid_enabled,
+        )
+        if hybrid_enabled() and desired > 1:
+            api_committed = await self._set_cart_qty_via_api(item_id, desired)
+            if api_committed is not None:
+                # API succeeded — done. (Walmart-enforced clamp respected.)
+                return api_committed
+            # API failed or returned None — fall through to DOM path
+            logger.info("[PURCHASE] Hybrid qty API failed — falling back to DOM path")
+
+        committed = await self._set_cart_qty_via_input(item_id, desired, cdp_input, _sys)
+        if committed is not None and committed >= desired:
+            return committed
+
+        # Input path didn't reach desired — try stepper fallback for any gap.
+        current = committed or 1
+        if current < desired:
+            logger.info(
+                "[PURCHASE] Qty input %s → stepper fallback for remaining %d clicks",
+                "no-commit" if committed is None else f"committed {committed}",
+                desired - current,
+            )
+            stepper_result = await self._set_cart_qty_via_stepper(item_id, current, desired)
+            if stepper_result is not None:
+                committed = stepper_result
+        return committed
+
+    async def _set_cart_qty_via_api(
+        self, item_id: str, desired: int,
+    ) -> Optional[int]:
+        """Hybrid qty bump via updateItems GraphQL mutation.
+
+        Returns the server-committed qty on success, None on any failure
+        (caller falls back to DOM input/stepper). Side-effect: leaves
+        the cart in the same observable state as a successful DOM bump.
+        """
+        from walmart.checkout_api import WalmartHybridCheckout
+        api = WalmartHybridCheckout(self._page)
+        ctx = await api.read_cart_context()
+        if ctx is None:
+            logger.info("[PURCHASE] Hybrid: cart context unavailable — skipping API qty")
+            return None
+        # Sanity: confirm the cart line is the item we're trying to buy
+        first = ctx["lineItems"][0]
+        if str(first.get("usItemId")) != str(item_id):
+            logger.info(
+                "[PURCHASE] Hybrid: cart line usItemId=%s != requested %s — skipping API qty",
+                first.get("usItemId"), item_id,
+            )
+            return None
+        logger.info(
+            "[PURCHASE] Hybrid: bumping qty %d → %d via updateItems (cartId=%s)",
+            first.get("quantity", 1), desired, ctx["cartId"],
+        )
+        body = await api.bump_quantity(ctx, desired)
+        if not body:
+            return None
+        parsed = WalmartHybridCheckout.parse_update_items(body)
+        if not parsed:
+            logger.warning("[PURCHASE] Hybrid: updateItems response unparseable")
+            return None
+        if parsed["line_count"] == 0:
+            logger.warning(
+                "[PURCHASE] Hybrid: updateItems returned 0 line items — cart emptied"
+            )
+            return None
+        committed = parsed["committed_qty"]
+        logger.info(
+            "[PURCHASE] Hybrid: qty committed=%d (target %d, checkoutable=%s)",
+            committed, desired, parsed["checkoutable"],
+        )
+        return committed
+
+    async def _set_cart_qty_via_input(
+        self, item_id: str, desired: int, cdp_input, _sys
+    ) -> Optional[int]:
+        """Original input-based qty bump. See _set_cart_quantity docstring."""
+        find_js = """
+            (() => {
+                const candidates = [
+                    'input[data-automation-id="item-qty"]',
+                    'input[data-automation-id="qty"]',
+                    'input[aria-label*="quantity" i]',
+                    'input[name*="quantity" i]',
+                    'input[type="number"][min]',
+                    'input[type="tel"][maxlength="3"]',
+                ];
+                for (const sel of candidates) {
+                    const el = document.querySelector(sel);
+                    if (!el) continue;
+                    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0) continue;
+                    return {
+                        found: true,
+                        x: rect.x, y: rect.y, w: rect.width, h: rect.height,
+                        currentValue: String(el.value || ''),
+                        max: el.getAttribute('max') || '',
+                        via: sel,
+                    };
+                }
+                return { found: false };
+            })()
+        """
+        # Poll for the qty input — /cart is CSR and the row may not be in
+        # the DOM at navigation completion. Wait up to ~4s for it to appear.
+        find_result = None
+        find_deadline = time.monotonic() + 4.0
+        while time.monotonic() < find_deadline:
+            find_result = await self._page.evaluate(find_js)
+            if find_result and find_result.get('found'):
+                break
+            await asyncio.sleep(0.15)
+
+        if not find_result or not find_result.get('found'):
+            logger.info("[PURCHASE] No qty input on cart after 4s wait — falling back to stepper (item_id=%s)", item_id)
+            return None
+
+        max_attr = find_result.get('max') or ''
+        ceiling = desired
+        try:
+            if max_attr:
+                ceiling = min(desired, int(max_attr))
+        except ValueError:
+            pass
+        target = max(1, ceiling)
+        target_str = str(target)
+        logger.info(
+            "[PURCHASE] Cart qty bump: %s → %s (via %s, max attr=%r)",
+            find_result.get('currentValue'), target_str, find_result.get('via'), max_attr,
+        )
+
+        # Realistic click into the input (focus via mouse, not .focus()).
+        x = find_result['x'] + find_result['w'] / 2 + random.uniform(-3, 3)
+        y = find_result['y'] + find_result['h'] / 2 + random.uniform(-2, 2)
+        await self._realistic_click(x, y, "Cart qty input")
+        await asyncio.sleep(random.uniform(0.10, 0.22))
+
+        # Select-all then type new value. Mac Cmd-A (modifier=4) / Win-Linux Ctrl-A (modifier=2).
+        sel_modifier = 4 if _sys.platform == "darwin" else 2
+        await self._page.send(cdp_input.dispatch_key_event(
+            type_="keyDown", key="a", code="KeyA", text="a", modifiers=sel_modifier,
+        ))
+        await asyncio.sleep(random.uniform(0.04, 0.08))
+        await self._page.send(cdp_input.dispatch_key_event(
+            type_="keyUp", key="a", code="KeyA", modifiers=sel_modifier,
+        ))
+        await asyncio.sleep(random.uniform(0.04, 0.09))
+
+        # Type the new quantity, digit-by-digit (most carts are 1-2 digits).
+        for ch in target_str:
+            await self._page.send(cdp_input.dispatch_key_event(
+                type_="keyDown", text=ch, key=ch, code=f"Digit{ch}",
+                windows_virtual_key_code=ord(ch),
+            ))
+            await asyncio.sleep(random.uniform(0.05, 0.13))
+            await self._page.send(cdp_input.dispatch_key_event(
+                type_="keyUp", key=ch, code=f"Digit{ch}",
+                windows_virtual_key_code=ord(ch),
+            ))
+            await asyncio.sleep(random.uniform(0.07, 0.14))
+
+        # Tab to commit (real users either Tab or click away). Tab fires
+        # blur + change which is what Walmart's React handler listens for.
+        await self._page.send(cdp_input.dispatch_key_event(
+            type_="keyDown", key="Tab", code="Tab", windows_virtual_key_code=9,
+        ))
+        await asyncio.sleep(random.uniform(0.05, 0.10))
+        await self._page.send(cdp_input.dispatch_key_event(
+            type_="keyUp", key="Tab", code="Tab", windows_virtual_key_code=9,
+        ))
+
+        # Walmart's React handler debounces + roundtrips to update the cart line.
+        # Poll briefly for the committed value (server may clamp downward).
+        committed: Optional[int] = None
+        deadline = time.monotonic() + 3.5
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+            try:
+                value_now = await self._page.evaluate(f"""
+                    (() => {{
+                        const el = document.querySelector('{find_result.get('via').replace("'", "")}');
+                        return el ? String(el.value || '') : null;
+                    }})()
+                """)
+                if value_now is not None and value_now.isdigit():
+                    iv = int(value_now)
+                    if iv > 0:
+                        committed = iv
+                        if iv == target:
+                            break
+            except Exception:
+                pass
+
+        if committed is None:
+            logger.warning("[PURCHASE] Cart qty input never reflected an updated value")
+        else:
+            logger.info("[PURCHASE] Cart qty committed: %d (desired %d)", committed, target)
+        return committed
+
+    async def _set_cart_qty_via_stepper(
+        self, item_id: str, current: int, desired: int
+    ) -> Optional[int]:
+        """Click the qty increment stepper button until cart qty reaches ``desired``.
+
+        Used when the typeable input path fails or doesn't exist (some
+        Walmart product variants render only +/- steppers).
+
+        Correctness model: Walmart's cart row debounces qty updates and
+        roundtrips to the server (~200-600ms each). Naively counting clicks
+        leads to under-counting — a click that fires while the server is
+        still processing the previous one gets swallowed (button briefly
+        disables → click no-ops → button re-enables). So we VERIFY each
+        increment by reading the qty input value (or ``__NEXT_DATA__``
+        cart line) after each click and only count clicks that landed.
+        Up to MAX_RETRY_PER_STEP retries per missing increment.
+        """
+        clicks_needed = desired - current
+        if clicks_needed <= 0:
+            return current
+
+        MAX_RETRY_PER_STEP = 2
+        # Cart row updates roundtrip through GraphQL updateItems — observed
+        # ~2-3s end-to-end. Walmart also debounces rapid clicks into one
+        # batched mutation, so the visible qty may only commit several clicks
+        # later. 3.5s gives the server room without making the loop drag.
+        VERIFY_TIMEOUT_S = 3.5
+        VERIFY_POLL_MS = 120
+
+        async def _read_cart_qty() -> Optional[int]:
+            """Return the current cart-row qty as the cart sees it.
+
+            Returns:
+              positive int — committed qty
+              0            — cart is AUTHORITATIVELY empty (DOM empty-cart
+                             marker). Not derived from __NEXT_DATA__ which
+                             is empty during CSR hydration on /cart.
+              None         — couldn't read truth source (assume unchanged
+                             and keep polling)
+            """
+            try:
+                v = await self._page.evaluate("""
+                    (() => {
+                        // Authoritative empty signal: DOM has an empty-cart
+                        // marker. Check this FIRST — if Walmart actually
+                        // emptied our line, the cart shows the empty state
+                        // before anything else does.
+                        const emptyMarkers = [
+                            '[data-automation-id="empty-cart"]',
+                            '[data-testid*="empty-cart" i]',
+                            '[data-automation-id*="empty-cart" i]',
+                        ];
+                        for (const sel of emptyMarkers) {
+                            if (document.querySelector(sel)) return 0;
+                        }
+                        // Text-content empty signal — only trust if there's
+                        // also NO cart-row container present.
+                        const cartRowSelectors = [
+                            '[data-automation-id="cart-item"]',
+                            '[data-testid*="cart-item" i]',
+                            '[data-automation-id*="cart-line-item" i]',
+                            '[data-item-id]',
+                        ];
+                        let hasRow = false;
+                        for (const sel of cartRowSelectors) {
+                            if (document.querySelector(sel)) { hasRow = true; break; }
+                        }
+                        const bodyTxt = (document.body?.innerText || '').toLowerCase();
+                        if (!hasRow && /your\\s+cart\\s+is\\s+empty/.test(bodyTxt)) return 0;
+
+                        // Primary: qty input value (reflects committed state)
+                        const inputSelectors = [
+                            'input[data-automation-id="item-qty"]',
+                            'input[data-automation-id="qty"]',
+                            'input[aria-label*="quantity" i]',
+                            'input[name*="quantity" i]',
+                        ];
+                        for (const sel of inputSelectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.value && /^\\d+$/.test(el.value)) {
+                                return parseInt(el.value, 10);
+                            }
+                        }
+                        // Secondary: stepper container shows qty as text
+                        const stepper = document.querySelector(
+                            '[data-automation-id*="quantity-stepper"], [data-automation-id*="qty-stepper"]'
+                        );
+                        if (stepper) {
+                            const txt = (stepper.textContent || '').trim();
+                            const m = txt.match(/(\\d+)/);
+                            if (m) return parseInt(m[1], 10);
+                        }
+                        // Tertiary: aria-label on stepper container
+                        const sLabel = document.querySelector(
+                            '[aria-label*="quantity" i][role="group"], [aria-label*="quantity selector" i]'
+                        );
+                        if (sLabel) {
+                            const lbl = sLabel.getAttribute('aria-label') || '';
+                            const m = lbl.match(/(\\d+)/);
+                            if (m) return parseInt(m[1], 10);
+                        }
+                        // Quaternary: cart line in __NEXT_DATA__. NOTE: on a
+                        // fresh /cart load, __NEXT_DATA__.cartLines is often
+                        // [] for several seconds while CSR hydration fills
+                        // it — so empty-array does NOT mean "cart empty".
+                        // Only TRUST a positive qty from here.
+                        try {
+                            const nd = window.__NEXT_DATA__;
+                            const cart = nd?.props?.pageProps?.initialData?.data?.cart
+                                      || nd?.props?.pageProps?.cart;
+                            const lines = cart?.cartLines || cart?.lineItems || cart?.items || [];
+                            if (Array.isArray(lines) && lines.length > 0) {
+                                const q = lines[0].quantity ?? lines[0].qty;
+                                if (typeof q === 'number' && q > 0) return q;
+                            }
+                        } catch(_) {}
+                        return null;
+                    })()
+                """)
+                if isinstance(v, (int, float)) and v >= 0:
+                    return int(v)
+            except Exception:
+                pass
+            return None
+
+        async def _wait_for_cart_row(timeout_s: float = 4.0) -> Optional[int]:
+            """Block until either a positive cart qty is readable or the
+            DOM authoritatively says the cart is empty.
+
+            Walmart's /cart page hydrates async — the row + qty stepper +
+            input may not be present at navigation completion. Polling
+            _read_cart_qty immediately can produce a false None (which
+            stepper code treats as 'unknown, keep going') OR a false 0
+            (which the prior implementation returned on empty NEXT_DATA).
+            This helper waits up to 4s for the row to materialize before
+            committing to an action.
+            """
+            deadline = time.monotonic() + timeout_s
+            last_seen: Optional[int] = None
+            while time.monotonic() < deadline:
+                qty = await _read_cart_qty()
+                if qty == 0:
+                    return 0
+                if qty is not None and qty > 0:
+                    return qty
+                last_seen = qty
+                await asyncio.sleep(0.15)
+            return last_seen
+
+        async def _verify_increment(prev_qty: int) -> Optional[int]:
+            """Poll until cart qty changes (up to ``desired``) or timeout.
+
+            Returns:
+              new qty (>= 1) — qty observably changed
+              0              — cart emptied while we polled (caller must abort)
+              None           — never saw a change within VERIFY_TIMEOUT_S
+            """
+            deadline = time.monotonic() + VERIFY_TIMEOUT_S
+            while time.monotonic() < deadline:
+                qty = await _read_cart_qty()
+                if qty == 0:
+                    return 0
+                if qty is not None and qty > prev_qty:
+                    return qty
+                await asyncio.sleep(VERIFY_POLL_MS / 1000.0)
+            return None
+
+        # Read starting qty (truth, not the `current` arg we were given).
+        # Wait up to 4s for the cart row to actually hydrate — Walmart's
+        # /cart is CSR; immediately after navigation the qty input doesn't
+        # exist yet and __NEXT_DATA__.cartLines is [] (which previously was
+        # misread as "cart emptied"). _wait_for_cart_row returns 0 only on
+        # an authoritative DOM empty-cart signal.
+        observed = await _wait_for_cart_row(timeout_s=4.0)
+        if observed == 0:
+            logger.warning("[PURCHASE] Stepper: cart authoritatively empty at entry — aborting qty bump")
+            return 0
+        if observed is not None and observed > 0:
+            committed = observed
+            logger.debug("[PURCHASE] Stepper: cart starts at qty=%d (caller said %d)",
+                         committed, current)
+        else:
+            # Row never materialized but no empty signal either. Trust the
+            # caller's `current` (which came from the upstream cart-verified
+            # path that saw "1 item(s)"). Continuing to click is the right
+            # default — worst case we fail the click-find next.
+            committed = current
+            logger.info(
+                "[PURCHASE] Stepper: cart row not yet hydrated — proceeding with caller qty=%d",
+                current,
+            )
+
+        total_clicks_fired = 0
+        while committed < desired:
+            # Locate increment button each iteration — React may re-render
+            # the cart row between clicks, invalidating cached element refs.
+            find_btn = await self._page.evaluate("""
+                (() => {
+                    const candidates = [
+                        'button[data-automation-id="increment-button"]',
+                        'button[data-automation-id="qty-stepper-increment"]',
+                        'button[data-automation-id="cart-item-qty-increment"]',
+                        'button[data-automation-id*="plus" i]',
+                        'button[data-testid*="increment" i]',
+                        'button[data-testid*="plus" i]',
+                        'button[aria-label*="Increase" i]',
+                        'button[aria-label*="increment" i]',
+                        'button[aria-label*="add one" i]',
+                        'button[aria-label*="Add one more" i]',
+                        'button[aria-label="+"]',
+                    ];
+                    for (const sel of candidates) {
+                        const el = document.querySelector(sel);
+                        if (!el) continue;
+                        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) continue;
+                        return {
+                            found: true,
+                            x: rect.x, y: rect.y, w: rect.width, h: rect.height,
+                            via: sel,
+                            disabled: !!el.disabled,
+                        };
+                    }
+                    // Fallback: look for any small square button whose text is "+"
+                    // or whose aria-label CLEARLY indicates increment. Exclude
+                    // Remove/Save/Delete/Heart/etc. — those are sometimes ≤60px
+                    // square and would otherwise match `aria.includes('add')`
+                    // (e.g. "add to list").
+                    const buttons = Array.from(document.querySelectorAll('button:not([disabled])'));
+                    const incExcludeRe = /(remove|delete|save\\s*for\\s*later|favorite|heart|wishlist|add\\s*to\\s*list|share|edit|close)/i;
+                    for (const b of buttons) {
+                        const r = b.getBoundingClientRect();
+                        if (r.width <= 0 || r.height <= 0) continue;
+                        if (r.width > 60 || r.height > 60) continue;
+                        const txt = (b.textContent || '').trim();
+                        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                        if (incExcludeRe.test(txt) || incExcludeRe.test(aria)) continue;
+                        // Allow only true "+" / "increase" / "increment" signals
+                        const plusOk = (txt === '+' ||
+                                        aria.includes('increase') ||
+                                        aria.includes('increment') ||
+                                        aria === '+' ||
+                                        aria.includes('add one') ||
+                                        aria.includes('add 1'));
+                        if (!plusOk) continue;
+                        return {
+                            found: true, x: r.x, y: r.y, w: r.width, h: r.height,
+                            via: 'fallback-plus', disabled: false,
+                            aria: aria.slice(0, 60), text: txt.slice(0, 20),
+                        };
+                    }
+                    // Diagnostic
+                    const allBtns = document.querySelectorAll('button');
+                    return {
+                        found: false,
+                        button_count: allBtns.length,
+                        sample_arias: Array.from(allBtns).slice(0, 8).map(
+                            b => (b.getAttribute('aria-label') || b.textContent || '?').slice(0, 50)
+                        ),
+                    };
+                })()
+            """)
+
+            if not find_btn or not find_btn.get('found'):
+                logger.warning(
+                    "[PURCHASE] Qty stepper button vanished at qty=%d (target %d, button_count=%s, samples=%s)",
+                    committed, desired,
+                    (find_btn or {}).get('button_count'),
+                    (find_btn or {}).get('sample_arias'),
+                )
+                break
+
+            if find_btn.get('disabled'):
+                logger.info(
+                    "[PURCHASE] Qty stepper disabled at qty=%d — server-enforced cap (target %d)",
+                    committed, desired,
+                )
+                break
+
+            # Click + verify. Retry the click if the cart qty doesn't move
+            # within VERIFY_TIMEOUT_S — Walmart's debounce may have swallowed
+            # one of our clicks.
+            x = find_btn['x'] + find_btn['w'] / 2 + random.uniform(-3, 3)
+            y = find_btn['y'] + find_btn['h'] / 2 + random.uniform(-2, 2)
+
+            prev_qty = committed
+            new_qty: Optional[int] = None
+            cart_emptied = False
+            for retry in range(MAX_RETRY_PER_STEP):
+                await self._realistic_click(
+                    x, y,
+                    f"Qty stepper {committed}→{committed + 1}" +
+                    (f" (retry {retry})" if retry else ""),
+                )
+                total_clicks_fired += 1
+                # Inter-click pause. Walmart debounces rapid clicks into a
+                # single GraphQL mutation, so a moderate pause helps each
+                # click register as a discrete intent.
+                await asyncio.sleep(random.uniform(0.22, 0.42))
+                new_qty = await _verify_increment(prev_qty)
+                if new_qty == 0:
+                    cart_emptied = True
+                    break
+                if new_qty is not None:
+                    break
+                logger.debug(
+                    "[PURCHASE] Stepper click from qty=%d not reflected — retrying (%d/%d)",
+                    prev_qty, retry + 1, MAX_RETRY_PER_STEP,
+                )
+
+            if cart_emptied:
+                logger.warning(
+                    "[PURCHASE] Stepper: cart emptied at qty=%d during click (server rejected line) — aborting",
+                    committed,
+                )
+                committed = 0
+                break
+
+            if new_qty is None:
+                logger.warning(
+                    "[PURCHASE] Stepper stuck at qty=%d after %d retries (via=%s) — giving up. "
+                    "Possible cause: variant has fixed Multipack Quantity, or "
+                    "we clicked a Remove/Save button by mistake.",
+                    committed, MAX_RETRY_PER_STEP, find_btn.get('via'),
+                )
+                break
+
+            committed = new_qty
+            if committed >= desired:
+                break
+
+        logger.info(
+            "[PURCHASE] Cart qty via stepper: %d → %d (target %d, %d clicks fired)",
+            current, committed, desired, total_clicks_fired,
+        )
+        return committed
 
     async def _select_delivery_on_cart(self):
         """Select Delivery fulfillment on the /cart page before clicking checkout.
@@ -896,44 +1555,62 @@ class WalmartPurchaseExecutor:
             result = await self._page.evaluate("""
                 (() => {
                     // Strategy 1: data-automation-id selectors (most stable)
+                    // Tighten the wildcards — `*="delivery"` previously matched
+                    // delivery-tip and delivery-address containers as well as
+                    // the actual fulfillment tile.
                     const autoSelectors = [
                         '[data-automation-id="fulfillment-option-DELIVERY"]',
                         '[data-automation-id="fulfillment-option-SHIPPING"]',
-                        '[data-automation-id*="delivery"]',
-                        '[data-automation-id*="shipping"]',
+                        '[data-testid="fulfillment-option-DELIVERY"]',
+                        '[data-testid="fulfillment-option-SHIPPING"]',
+                        '[data-automation-id="cart-fulfillment-delivery"]',
+                        '[data-automation-id="cart-fulfillment-shipping"]',
                     ];
                     for (const sel of autoSelectors) {
                         const els = document.querySelectorAll(sel);
                         for (const el of els) {
                             const text = (el.textContent || '').toLowerCase();
-                            // Skip if this is clearly a Pickup option
                             if (text.includes('pickup') || text.includes('pick up')) continue;
+                            // Skip if this is a driver-tip / address container
+                            if (text.includes('driver tip') || text.includes('tip ') ||
+                                text.includes('address') || text.includes('change address')) continue;
                             const isSelected = el.getAttribute('aria-selected') === 'true' ||
                                                el.getAttribute('aria-pressed') === 'true' ||
                                                el.getAttribute('aria-checked') === 'true' ||
                                                el.classList.contains('selected');
                             if (isSelected) return { action: 'already_selected', via: sel };
                             const rect = el.getBoundingClientRect();
-                            return { action: 'clicked', via: sel, x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
+                            if (rect.width <= 0 || rect.height <= 0) continue;
+                            return { action: 'clicked', via: sel,
+                                     x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
                         }
                     }
 
-                    // Strategy 2: text-based — find any clickable element with "delivery" text
-                    const candidates = document.querySelectorAll('button, label, [role="radio"], [role="tab"], [role="option"], div[tabindex]');
+                    // Strategy 2: STRICT text match — only short tiles whose
+                    // text is "Delivery" / "Ship" / "Shipping" exactly (or with
+                    // a trailing "from store" / "to address" suffix). The old
+                    // substring check matched "Driver tip (charged separately
+                    // from delivery)" because that text contains 'delivery'.
+                    const candidates = document.querySelectorAll(
+                        'button, label, [role="radio"], [role="tab"], [role="option"]'
+                    );
+                    const exactRe = /^\\s*(delivery|ship|shipping|delivery from store|delivery to address|ship it)\\s*$/i;
+                    const excludeRe = /(driver\\s*tip|change\\s*(address|location)|address|saved|leave at door)/i;
                     for (const el of candidates) {
-                        const text = (el.textContent || '').toLowerCase().trim();
-                        if ((text.includes('delivery') || text === 'ship' || text === 'shipping') &&
-                            !text.includes('pickup') && !text.includes('pick up')) {
-                            const style = window.getComputedStyle(el);
-                            if (style.display !== 'none' && style.visibility !== 'hidden') {
-                                const isSelected = el.getAttribute('aria-selected') === 'true' ||
-                                                   el.getAttribute('aria-pressed') === 'true' ||
-                                                   el.getAttribute('aria-checked') === 'true';
-                                if (isSelected) return { action: 'already_selected', via: 'text:' + text.slice(0, 30) };
-                                const rect = el.getBoundingClientRect();
-                                return { action: 'clicked', via: 'text:' + text.slice(0, 30), x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
-                            }
-                        }
+                        const text = (el.textContent || '').trim();
+                        if (!text || text.length > 40) continue;  // tile labels are short
+                        if (excludeRe.test(text)) continue;
+                        if (!exactRe.test(text)) continue;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width <= 0 || rect.height <= 0) continue;
+                        const isSelected = el.getAttribute('aria-selected') === 'true' ||
+                                           el.getAttribute('aria-pressed') === 'true' ||
+                                           el.getAttribute('aria-checked') === 'true';
+                        if (isSelected) return { action: 'already_selected', via: 'text:' + text.slice(0, 30) };
+                        return { action: 'clicked', via: 'text:' + text.slice(0, 30),
+                                 x: rect.left + rect.width/2, y: rect.top + rect.height/2 };
                     }
 
                     return { action: 'not_found' };
@@ -976,6 +1653,106 @@ class WalmartPurchaseExecutor:
             logger.warning("[PURCHASE] _select_delivery_option raised: %s", e)
             self._status_cb("[PURCHASE] Delivery selection error — continuing")
 
+    async def _decline_driver_tip(self):
+        """
+        Click the "No tip" / "$0" / "None" option in the driver-tip section.
+
+        Walmart's checkout pre-selects a default tip ($2-$5) on delivery
+        orders. If we don't explicitly opt out, the tip is charged. The
+        tip widget renders as a row of radio buttons / pill buttons with
+        amounts ($2, $3, $5, Other) plus a "No tip" / "$0" / "None" option.
+        """
+        try:
+            result = await self._page.evaluate("""
+                (() => {
+                    // The tip widget is inside a container labeled "Driver tip"
+                    // or has a data-automation-id mentioning "tip". Find that
+                    // container first to scope the No-tip search.
+                    const containers = [];
+                    const labels = document.querySelectorAll(
+                        'h1, h2, h3, h4, h5, h6, [role="heading"], legend, label, span, div'
+                    );
+                    for (const l of labels) {
+                        const t = (l.textContent || '').trim().toLowerCase();
+                        if (t === 'driver tip' || t.startsWith('driver tip') ||
+                            t === 'add a tip' || t.startsWith('tip your driver') ||
+                            t.startsWith('want to add a tip')) {
+                            // Walk up to find a section container that holds
+                            // the radio group below the label.
+                            let node = l;
+                            for (let depth = 0; node && depth < 6; depth++) {
+                                if (node.querySelectorAll &&
+                                    node.querySelectorAll('button, [role="radio"], input[type="radio"]').length > 2) {
+                                    containers.push(node);
+                                    break;
+                                }
+                                node = node.parentElement;
+                            }
+                        }
+                    }
+                    // Fallback: data-automation-id container
+                    document.querySelectorAll(
+                        '[data-automation-id*="tip" i], [data-testid*="tip" i]'
+                    ).forEach(c => containers.push(c));
+
+                    if (containers.length === 0) {
+                        return { action: 'no_tip_section' };
+                    }
+
+                    const noTipRe = /^\\s*(no\\s*tip|none|\\$\\s*0(\\.0{1,2})?|0|no\\s*thanks)\\s*$/i;
+                    for (const ctx of containers) {
+                        const candidates = ctx.querySelectorAll(
+                            'button, [role="radio"], input[type="radio"], label'
+                        );
+                        for (const el of candidates) {
+                            // For inputs, read aria-label or sibling label
+                            let text = (el.textContent || '').trim();
+                            if (!text && el.tagName === 'INPUT') {
+                                text = (el.getAttribute('aria-label') ||
+                                        el.getAttribute('value') ||
+                                        '').trim();
+                            }
+                            if (!text) continue;
+                            if (!noTipRe.test(text)) continue;
+                            const isSelected = el.getAttribute('aria-pressed') === 'true' ||
+                                               el.getAttribute('aria-checked') === 'true' ||
+                                               (el.tagName === 'INPUT' && el.checked);
+                            if (isSelected) return { action: 'already_no_tip', text: text };
+                            const r = el.getBoundingClientRect();
+                            if (r.width <= 0 || r.height <= 0) continue;
+                            el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                            const r2 = el.getBoundingClientRect();
+                            return {
+                                action: 'clicked',
+                                x: r2.left + r2.width / 2,
+                                y: r2.top + r2.height / 2,
+                                text: text,
+                            };
+                        }
+                    }
+                    return { action: 'no_tip_button_in_section' };
+                })()
+            """)
+
+            if not result:
+                return
+            action = result.get('action')
+            if action == 'clicked':
+                await self._realistic_click(
+                    result['x'], result['y'], "No tip"
+                )
+                await asyncio.sleep(random.uniform(0.3, 0.7))
+                logger.info("[PURCHASE] Driver tip declined — clicked %r", result.get('text'))
+                self._status_cb("[PURCHASE] Driver tip declined ($0)")
+            elif action == 'already_no_tip':
+                logger.info("[PURCHASE] Driver tip already at $0 (%r)", result.get('text'))
+            elif action == 'no_tip_section':
+                logger.debug("[PURCHASE] No driver-tip section visible — skipping")
+            elif action == 'no_tip_button_in_section':
+                logger.info("[PURCHASE] Tip section visible but no $0/No-tip button found — leaving default")
+        except Exception as e:
+            logger.warning("[PURCHASE] _decline_driver_tip raised: %s — continuing", e)
+
     async def _confirm_shipping(self):
         """
         Walmart checkout has 2–3 steps depending on A/B variant: address → (payment) → review.
@@ -990,6 +1767,12 @@ class WalmartPurchaseExecutor:
 
         # First ensure delivery (not pickup) is selected
         await self._select_delivery_option()
+
+        # Decline driver tip ($0 / No tip). Walmart's checkout pre-selects
+        # a default tip ($2-$5) on delivery orders. Skip without an explicit
+        # opt-out and we get charged. Click the "No tip" / "$0" / "None"
+        # radio if present.
+        await self._decline_driver_tip()
 
         # RIGHT AFTER delivery selection, a modal may appear asking for delivery day
         # Check and dismiss it BEFORE entering the Continue button loop
@@ -1216,6 +1999,18 @@ class WalmartPurchaseExecutor:
 
     async def _place_order(self, item_id: str) -> tuple[Optional[str], Optional[str]]:
         """Click Place Order and return (order_id, confirmation_url) tuple."""
+        # Hybrid path: one CreateContract POST replaces the click + URL-wait
+        # + order-ID extraction. Saves ~5-10s and gives us the order ID
+        # straight from the response body (no DOM scraping).
+        from walmart.checkout_api import (
+            WalmartHybridCheckout, is_enabled as hybrid_enabled,
+        )
+        if hybrid_enabled():
+            api_result = await self._place_order_via_api(item_id)
+            if api_result is not None:
+                return api_result
+            logger.info("[PURCHASE] Hybrid place-order API failed — falling back to DOM click")
+
         self._status_cb("[PURCHASE] Clicking Place Order...")
         btn = await self._find_element(PLACE_ORDER_SELECTORS, timeout=10000)
         if not btn:
@@ -1286,14 +2081,75 @@ class WalmartPurchaseExecutor:
         await self._screenshot(f"order_confirmation_{item_id}")
         return order_id, confirmation_url
 
+    async def _place_order_via_api(
+        self, item_id: str,
+    ) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """Place order via CreateContract GraphQL POST.
+
+        Returns ``(order_id, confirmation_url)`` on success, or None to
+        signal the caller to fall back to the DOM click path.
+
+        Success criteria: HTTP 200 + `data.createPurchaseContract.id`
+        present (the `pcid` matching /thankyou?pcid=...). We don't
+        navigate to /thankyou — the contract is created server-side.
+        """
+        from walmart.checkout_api import WalmartHybridCheckout
+        api = WalmartHybridCheckout(self._page)
+        ctx = await api.read_cart_context()
+        if ctx is None:
+            logger.info("[PURCHASE] Hybrid place-order: cart context unavailable")
+            return None
+        self._status_cb("[PURCHASE] Hybrid: placing order via CreateContract...")
+        logger.info(
+            "[PURCHASE] Hybrid place-order: cartId=%s, %d line(s)",
+            ctx["cartId"], len(ctx["lineItems"]),
+        )
+        t0 = time.monotonic()
+        body = await api.place_order(ctx)
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+        if not body:
+            logger.warning(
+                "[PURCHASE] Hybrid place-order: CreateContract returned None after %.0fms",
+                elapsed_ms,
+            )
+            return None
+        parsed = WalmartHybridCheckout.parse_create_contract(body)
+        if not parsed or not parsed.get("pcid"):
+            logger.warning(
+                "[PURCHASE] Hybrid place-order: response missing pcid — payload may be stale"
+            )
+            return None
+        pcid = parsed["pcid"]
+        amount = parsed.get("amount_paid")
+        last4 = parsed.get("payment_last4")
+        status = parsed.get("order_status")
+        confirmation_url = f"https://www.walmart.com/thankyou?pcid={pcid}"
+        self._status_cb(
+            f"[PURCHASE] Hybrid ORDER PLACED — pcid={pcid} ${amount} card *{last4}"
+        )
+        logger.warning(
+            "[PURCHASE] Hybrid SUCCESS — pcid=%s status=%s amount=$%s card=*%s ms=%.0f",
+            pcid, status, amount, last4, elapsed_ms,
+        )
+        return pcid, confirmation_url
+
     async def _extract_order_id(self) -> Optional[str]:
+        # Primary: parse pcid from URL — Walmart's confirmation URL is
+        # /thankyou?pcid=<uuid> (the same id CreateContract returns).
+        # This is the authoritative order ID; numeric "order numbers"
+        # that some pages render are display-only.
+        url = self._page.url or ""
+        pcid_match = re.search(r"[?&]pcid=([0-9a-f-]{20,})", url, re.IGNORECASE)
+        if pcid_match:
+            return pcid_match.group(1)
+
+        # Secondary: DOM selectors (e.g. "Order # 1234567890123")
         for selector in ORDER_CONFIRM_SELECTORS:
             try:
                 el = await self._page.query_selector(selector)
                 if el:
                     text = await el.apply("(e) => e.innerText")
                     if text:
-                        # Try to pull just the numeric order ID
                         numbers = re.findall(r'\d{6,}', text)
                         if numbers:
                             return numbers[0]
@@ -1301,13 +2157,11 @@ class WalmartPurchaseExecutor:
             except Exception:
                 continue
 
-        # Check URL for order ID
-        url = self._page.url or ""
+        # Tertiary: any 7+ digit number in the URL (legacy numeric order IDs)
         if "order-confirmation" in url or "thankyou" in url or "order" in url:
             numbers = re.findall(r'\d{7,}', url)
             if numbers:
                 return numbers[0]
-            # URL is confirmation page but no numeric ID found
             logger.warning("[PURCHASE] Order confirmation page detected but could not extract order ID from selectors or URL. "
                           f"URL: {url} — order tracking may be incomplete")
             return None
@@ -1403,6 +2257,374 @@ class WalmartPurchaseExecutor:
                     pass
         except Exception as e:
             logger.warning("[PURCHASE] _clear_cart_if_needed failed: %s", e)
+
+    async def _handle_bookslot_modal(self) -> bool:
+        """
+        Reserve a delivery slot at /cart?step=bookslot.
+
+        Walmart added a mandatory delivery-slot widget between cart and
+        /checkout for all delivery-eligible items (observed 2026-05-11). The
+        widget is a side drawer (slide-in from the right), NOT a centered
+        dialog. The drawer has:
+          - A Pickup/Delivery toggle at the top
+          - A day picker row (Today / Tue 5/12 / Wed 5/13 / ...)
+          - Slot rows below, each a label with a radio bullet + text like
+            "Express 30 min or less | $9.95 + $10.00 Express" + price
+          - A "Continue" button at the bottom
+        The header reads "Reserve a time".
+
+        Empirically (capture 2026-05-11): the drawer is NOT a [role="dialog"]
+        and the radios sit in the right half of the viewport. We locate by:
+          1. Find all visible radios/labels in the right half of the viewport
+             whose text matches a time-slot pattern (price + duration).
+          2. Pick the cheapest viable one (avoid Walmart+ trial / decline).
+          3. Click it via CDP trajectory.
+          4. Find the Continue button in the same right half.
+          5. Click via CDP trajectory.
+
+        Returns True on success; caller's URL-wait loop will see /checkout next.
+        """
+        # Scroll the drawer body to surface all slot tiles. Cheap 2-hour
+        # windows render below the fold (Express / 3-hour at top); without
+        # scrolling, the candidate list only contains the expensive options.
+        # Scrolling the WHOLE page works because the drawer is a normal
+        # scrollable container — its overflow scrolls with window.scroll.
+        try:
+            await self._page.evaluate("""
+                (() => {
+                    // Find the drawer scroll container (right column) and
+                    // scroll its overflow. Fallback: scroll the page body.
+                    const vw = window.innerWidth;
+                    const minX = vw * 0.55;
+                    const scrollers = Array.from(
+                        document.querySelectorAll('div, section, aside')
+                    ).filter(el => {
+                        const r = el.getBoundingClientRect();
+                        if (r.right < minX) return false;
+                        if (r.height < 200) return false;
+                        const cs = getComputedStyle(el);
+                        return (cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+                               el.scrollHeight > el.clientHeight + 50;
+                    });
+                    if (scrollers.length > 0) {
+                        // Pick the largest scroller (the drawer body)
+                        scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight);
+                        scrollers[0].scrollTo({ top: 9999, behavior: 'instant' });
+                    } else {
+                        window.scrollTo({ top: 9999, behavior: 'instant' });
+                    }
+                })()
+            """)
+            # Brief pause so any virtualized slot rows render
+            await asyncio.sleep(random.uniform(0.4, 0.7))
+        except Exception as e:
+            logger.debug("[PURCHASE] bookslot: drawer scroll raised: %s — continuing", e)
+
+        slot_result = await self._page.evaluate("""
+            (() => {
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                // The Reserve-a-time drawer takes the right ~33% of the
+                // viewport on desktop. Anything entirely left of vw*0.55 is
+                // page content, not the drawer.
+                const minX = vw * 0.55;
+
+                // Visibility: in-DOM, non-zero size, on the right side. We
+                // INTENTIONALLY accept off-screen-below elements — Walmart
+                // may render slot tiles below the fold; we'll scrollIntoView
+                // before clicking.
+                const isVisible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) return false;
+                    if (r.bottom < 0) return false;          // entirely above
+                    if (r.right < minX) return false;        // left of drawer
+                    const cs = getComputedStyle(el);
+                    return cs.display !== 'none' && cs.visibility !== 'hidden';
+                };
+
+                // A real slot tile MUST have a time-window descriptor — not
+                // just a price. Demand either a duration ("30 min", "3 hr",
+                // "today", etc.) or a clock range ("7pm-9pm").
+                const slotTextRe = /(today|tomorrow|tonight|\\d+\\s*(?:min|mins|hr|hrs|hour|hours)\\b|\\d{1,2}\\s*(?:am|pm)\\s*[-–to]+\\s*\\d{1,2}\\s*(?:am|pm)|deliver\\s*by\\s*\\d|express\\s*\\d)/i;
+                // Exclude: pickup, navigation chrome, the "Delivery from
+                // store" tab button (it's a category toggle, NOT a slot),
+                // promo banners, Walmart+ upsells, and any plain-number rows.
+                const excludeRe  = /(pickup\\s*(at|from)|no thanks|decline|not now|skip|change\\s*address|view\\s*all|claim offer|walmart\\+|wplus|subtotal|estimated|taxes|order\\s*summary|order\\s*total|continue|reserve|confirm|delivery\\s*from\\s*store|^\\s*\\$?\\d+(\\.\\d+)?\\s*$)/i;
+
+                // Build the candidate list: anything that looks clickable
+                // and is visible in the drawer column. Prefer:
+                //   1) input[type="radio"]:not(:disabled)
+                //   2) [role="radio"]
+                //   3) label containing a radio
+                //   4) clickable cards: button | div[role="button"] | a — only
+                //      when their text matches the slot pattern
+                const all = [
+                    ...document.querySelectorAll('input[type="radio"]:not(:disabled)'),
+                    ...document.querySelectorAll('[role="radio"]:not([aria-disabled="true"])'),
+                    ...document.querySelectorAll('label'),
+                    ...document.querySelectorAll('button:not([disabled]), div[role="button"]:not([aria-disabled="true"])'),
+                ];
+
+                const slots = [];
+                const seen = new Set();
+                for (const el of all) {
+                    if (seen.has(el)) continue;
+                    if (!isVisible(el)) continue;
+                    const rawText = (el.textContent || el.getAttribute('aria-label') || '').trim();
+                    if (!rawText) continue;
+                    const lc = rawText.toLowerCase();
+                    if (excludeRe.test(lc)) continue;
+                    if (!slotTextRe.test(lc)) continue;
+                    // Skip oversize containers (the whole drawer matches too)
+                    const r = el.getBoundingClientRect();
+                    if (r.height > 220) continue;   // tile, not the whole panel
+                    if (r.width > vw * 0.5) continue;
+                    seen.add(el);
+
+                    // Extract TRUE delivery cost. Walmart's tile text packs
+                    // strikethrough/promo prices alongside the real total, e.g.
+                    //   "Express 30 min or less$9.95was $9.95 is now $0 delivery + $10.00 Express$10.00"
+                    //   true cost = $0 (base after promo) + $10 (Express add-on) = $10
+                    // Strategy:
+                    //   - if "is now $X" present, X is the base (post-promo)
+                    //     else first "$Y" not preceded by "was" is the base
+                    //   - sum every "+ $Z" addition
+                    //   - tile total = base + Σ adds
+                    // Ignore $ amounts immediately following "was" (strikethrough).
+                    const stripped = rawText.replace(/\\s+/g, ' ').trim();
+                    let base = NaN;
+                    const isNow = stripped.match(/is\\s*now\\s*\\$\\s?(\\d+(?:\\.\\d+)?)/i);
+                    if (isNow) {
+                        base = parseFloat(isNow[1]);
+                    } else {
+                        // First $X that isn't preceded by "was"
+                        const re = /(was\\s*)?\\$\\s?(\\d+(?:\\.\\d+)?)/gi;
+                        let m;
+                        while ((m = re.exec(stripped)) !== null) {
+                            if (m[1]) continue;  // "was $..." — strikethrough
+                            base = parseFloat(m[2]);
+                            break;
+                        }
+                    }
+                    let adds = 0;
+                    const addRe = /\\+\\s*\\$\\s?(\\d+(?:\\.\\d+)?)/g;
+                    let am;
+                    while ((am = addRe.exec(stripped)) !== null) {
+                        adds += parseFloat(am[1]);
+                    }
+                    let price = 9999;
+                    if (!isNaN(base)) price = base + adds;
+                    // Express tier is more expensive in practice and is a worse
+                    // signal-to-cost ratio for a non-grocery item. Soft-penalize
+                    // it so it only wins if no other slot was found.
+                    const isExpress = /\\bexpress\\b/i.test(lc);
+                    if (isExpress) price += 0.001;   // tiebreak deprioritization
+
+                    slots.push({
+                        x: r.x, y: r.y, w: r.width, h: r.height,
+                        text: rawText.slice(0, 140),
+                        price: price,
+                        base: isNaN(base) ? null : base,
+                        adds: adds,
+                        isExpress: isExpress,
+                        tag: el.tagName.toLowerCase(),
+                        aid: el.getAttribute('data-automation-id') || '',
+                        role: el.getAttribute('role') || '',
+                    });
+                }
+
+                if (slots.length === 0) {
+                    // Diagnostic dump
+                    const allRadios = document.querySelectorAll('input[type="radio"], [role="radio"]');
+                    return {
+                        found: false,
+                        radio_count: allRadios.length,
+                        viewport: { w: vw, h: vh },
+                        drawer_buttons: Array.from(
+                            document.querySelectorAll('button')
+                        ).filter(b => {
+                            const r = b.getBoundingClientRect();
+                            return r.x >= minX && r.width > 0 && r.height > 0;
+                        }).slice(0, 8).map(b => (b.textContent || '').trim().slice(0, 60)),
+                        sample_aria: Array.from(allRadios).slice(0, 5).map(
+                            r => (r.getAttribute('aria-label') || r.textContent || '?').slice(0, 80)
+                        ),
+                    };
+                }
+
+                // Extract a sortable time-position from the slot text.
+                // Earlier-in-the-day wins on price ties. Conventions:
+                //   - "Express 30 min or less"     → 0 (right now)
+                //   - "Today 3 hr or less"          → 100 (today, vague window)
+                //   - "Today 6pm-8pm" / "6pm-8pm"   → minutes from midnight
+                //   - "Tomorrow 9am-11am"           → 24*60 + slot minutes
+                //   - "Tue 5/12 8am-10am"           → day-offset*24*60 + slot
+                // Anything we can't parse falls back to its on-screen y-position
+                // (Walmart already lists slots earliest-to-latest top-to-bottom).
+                const parseTime = (text, yPos) => {
+                    const lc = text.toLowerCase();
+                    if (lc.includes('express') && /\\bmin\\b/.test(lc)) return 0;
+                    const hourRe = /(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)/i;
+                    const m = lc.match(hourRe);
+                    let dayOffset = 0;
+                    if (lc.includes('tomorrow')) dayOffset = 24 * 60;
+                    else if (/(tue|wed|thu|fri|sat|sun|mon)/i.test(lc) && !lc.includes('today')) {
+                        // Best-effort: future days come AFTER today/tomorrow
+                        dayOffset = 48 * 60;
+                    }
+                    if (m) {
+                        let h = parseInt(m[1], 10);
+                        const mins = parseInt(m[2] || '0', 10);
+                        const ampm = m[3].toLowerCase();
+                        if (ampm === 'pm' && h !== 12) h += 12;
+                        if (ampm === 'am' && h === 12) h = 0;
+                        return dayOffset + h * 60 + mins;
+                    }
+                    // Vague window like "Today 3 hr or less"
+                    if (lc.includes('today')) return dayOffset + 12 * 60;  // mid-day default
+                    return dayOffset + 24 * 60 + yPos;  // unknown — push down
+                };
+
+                for (const s of slots) {
+                    s.timeKey = parseTime(s.text, s.y);
+                }
+
+                // Earliest time at cheapest price: sort by (price ASC,
+                // timeKey ASC, y ASC). When two slots share the cheapest
+                // price, the one that comes first in time wins.
+                slots.sort((a, b) =>
+                    a.price - b.price ||
+                    a.timeKey - b.timeKey ||
+                    a.y - b.y
+                );
+                const pick = slots[0];
+                return {
+                    found: true,
+                    x: pick.x, y: pick.y, w: pick.w, h: pick.h,
+                    text: pick.text,
+                    price: pick.price,
+                    timeKey: pick.timeKey,
+                    tag: pick.tag,
+                    candidates: slots.length,
+                    samples: slots.slice(0, 5).map(
+                        s => `${s.tag}@$${s.price}/t=${s.timeKey}|${s.text.slice(0, 60)}`
+                    ),
+                };
+            })()
+        """)
+
+        if not slot_result or not slot_result.get('found'):
+            logger.warning(
+                "[PURCHASE] bookslot: no slot found (radios=%s, drawer_buttons=%s, samples=%s)",
+                slot_result.get('radio_count') if slot_result else '?',
+                slot_result.get('drawer_buttons') if slot_result else '?',
+                slot_result.get('sample_aria') if slot_result else '?',
+            )
+            await self._screenshot("bookslot_no_slot")
+            return False
+
+        sx = slot_result['x'] + slot_result['w'] / 2 + random.uniform(-3, 3)
+        sy = slot_result['y'] + slot_result['h'] / 2 + random.uniform(-2, 2)
+        logger.info(
+            "[PURCHASE] bookslot: %d slot(s); picked $%s (t=%s) %r at (%.0f, %.0f); samples=%s",
+            slot_result.get('candidates'), slot_result.get('price'),
+            slot_result.get('timeKey'), slot_result.get('text'), sx, sy,
+            slot_result.get('samples'),
+        )
+        await self._realistic_click(sx, sy, "Delivery slot")
+        await asyncio.sleep(random.uniform(0.6, 1.2))
+
+        # Step 2: Continue button in the drawer (right half of viewport).
+        # The drawer's Continue button text is JUST "Continue" — the cart-page
+        # button reads "Continue to checkout". The latter sits on the page
+        # UNDER the drawer overlay and can match if we're not careful.
+        # Poll up to 3s: right after slot click the drawer briefly replaces
+        # Continue with a spinner; without the poll we get a false miss.
+        slot_y = slot_result['y']
+        cta_result = None
+        cta_deadline = time.monotonic() + 3.0
+        while time.monotonic() < cta_deadline:
+            cta_result = await self._page.evaluate(f"""
+            (() => {{
+                const vw = window.innerWidth;
+                const vh = window.innerHeight;
+                const minX = vw * 0.60;        // tighter: deep inside drawer
+                const slotY = {slot_y};
+                // Drawer Continue is BELOW the slot list. Slot row at slotY,
+                // so the button must be at least 50px below it.
+                const minY = slotY + 50;
+
+                const excludeRe = /(close|cancel|back|change|view\\s*all|claim offer|no thanks|to\\s*checkout|continue\\s*to\\s*cart)/i;
+
+                const candidates = Array.from(
+                    document.querySelectorAll('button:not([disabled]), [role="button"]:not([aria-disabled="true"])')
+                ).filter(btn => {{
+                    const r = btn.getBoundingClientRect();
+                    if (r.width <= 0 || r.height <= 0) return false;
+                    if (r.right < minX) return false;
+                    if (r.top < minY) return false;
+                    if (r.top > vh + 50) return false;
+                    return true;
+                }});
+
+                let best = null;
+                let bestScore = -1;
+                for (const btn of candidates) {{
+                    const txt = (btn.textContent || '').trim().toLowerCase();
+                    if (!txt) continue;
+                    if (excludeRe.test(txt)) continue;
+                    // Exact "continue" wins; "reserve" / "confirm" / "save" /
+                    // "apply" / "use this" are also valid drawer CTAs.
+                    let score = 0;
+                    if (txt === 'continue') score = 100;
+                    else if (txt === 'reserve' || txt === 'confirm' || txt === 'save') score = 95;
+                    else if (txt.startsWith('continue') && !txt.includes('checkout')) score = 70;
+                    else if (txt.startsWith('reserve') || txt.startsWith('confirm') ||
+                             txt.startsWith('save') || txt.startsWith('apply') ||
+                             txt.startsWith('use this')) score = 65;
+                    if (score === 0) continue;
+                    const r = btn.getBoundingClientRect();
+                    // Prefer larger + lower-on-screen (drawer CTA is at bottom).
+                    score += Math.min(r.width / 10, 30);
+                    score += (r.y / vh) * 20;
+                    if (score > bestScore) {{
+                        bestScore = score;
+                        best = {{
+                            x: r.x, y: r.y, w: r.width, h: r.height,
+                            text: txt.slice(0, 60), score: score,
+                        }};
+                    }}
+                }}
+                return best ? {{ found: true, ...best }} : {{
+                    found: false,
+                    drawer_buttons_below_slot: candidates.slice(0, 6).map(b => {{
+                        const r = b.getBoundingClientRect();
+                        return `${{(b.textContent || '').trim().slice(0, 40)}}@(${{Math.round(r.x)}},${{Math.round(r.y)}})`;
+                    }}),
+                }};
+            }})()
+        """)
+            if cta_result and cta_result.get('found'):
+                break
+            await asyncio.sleep(0.2)
+
+        if not cta_result or not cta_result.get('found'):
+            logger.warning(
+                "[PURCHASE] bookslot: Continue button not found after slot click (buttons_below=%s)",
+                (cta_result or {}).get('drawer_buttons_below_slot'),
+            )
+            await self._screenshot("bookslot_no_cta")
+            return False
+
+        cx = cta_result['x'] + cta_result['w'] / 2 + random.uniform(-3, 3)
+        cy = cta_result['y'] + cta_result['h'] / 2 + random.uniform(-2, 2)
+        logger.info(
+            "[PURCHASE] bookslot: clicking Continue %r (score=%.1f) at (%.0f, %.0f)",
+            cta_result.get('text'), cta_result.get('score', 0), cx, cy,
+        )
+        await self._realistic_click(cx, cy, "Slot Continue")
+        await asyncio.sleep(random.uniform(0.8, 1.5))
+        return True
 
     async def _handle_delivery_day_modal(self, item_id: str):
         """

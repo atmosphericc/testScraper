@@ -39,10 +39,17 @@ log_file = log_dir / f"walmart_app_{time.strftime('%Y%m%d_%H%M%S')}.log"
 
 formatter = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
 # WALMART_LOG_LEVEL=DEBUG surfaces _clear_cart removal counts, cookie deltas,
-# and other normally-suppressed diagnostics. Defaults to INFO.
+# and other normally-suppressed diagnostics from the walmart package. Defaults
+# to INFO. Note: the ROOT logger is always pinned at INFO so third-party libs
+# (zendriver, urllib, asyncio, hpack, hyper) don't flood the console with
+# DEBUG noise — only `walmart.*` loggers respect WALMART_LOG_LEVEL.
 _log_level_name = os.environ.get("WALMART_LOG_LEVEL", "INFO").upper()
 _log_level = getattr(logging, _log_level_name, logging.INFO)
-logging.basicConfig(level=_log_level, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# Silence specific noisy third-party loggers that emit DEBUG/INFO spam during
+# normal operation. zendriver's chrome-path discovery alone produces ~100 lines.
+for noisy in ("zendriver", "urllib3", "asyncio", "websockets", "hpack", "hyper"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 # delay=True so the file is only created when the first log line is written —
 # prevents 0-byte log files when the process is killed during import / startup

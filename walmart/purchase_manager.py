@@ -100,6 +100,11 @@ class WalmartPurchaseManager:
         self._consecutive_failures = 0
         self._circuit_open_until: float = 0.0
         self._cooldown_until: dict[str, float] = {}
+        # Per-item last-known orderLimit (refreshed on every in-stock signal).
+        # The test-mode re-queue path lacks the original signal payload, so we
+        # cache it here and re-apply it on re-fire — otherwise the second
+        # purchase in a test loop would silently drop qty back to 1.
+        self._last_order_limit: dict[str, Optional[int]] = {}
         self._running = False
         self._login_ok = False   # set True after successful login in start()
         self._warmup_done = False  # set True after initial session warm + harvest
@@ -238,6 +243,7 @@ class WalmartPurchaseManager:
         offer_id: Optional[str],
         name: str,
         price: Optional[float],
+        order_limit: Optional[int] = None,
     ):
         """
         Called by WalmartStockMonitor when a configured item is in stock.
@@ -254,6 +260,8 @@ class WalmartPurchaseManager:
         # Track which items are currently in-stock for priority selection
         with self._lock:
             self._in_stock_ids.add(item_id)
+            if order_limit is not None:
+                self._last_order_limit[item_id] = order_limit
 
         with self._lock:
             current_state = self._state.get(item_id, PurchaseState.IDLE)
@@ -324,15 +332,41 @@ class WalmartPurchaseManager:
                     self._state[item_id] = PurchaseState.PURCHASING
 
         item_url = f"https://www.walmart.com/ip/x/{item_id}"
+        desired_qty: Optional[int] = None
         for p in products:
             if p["item_id"] == item_id:
                 item_url = p.get("url", item_url)
+                dq = p.get("desired_qty")
+                if isinstance(dq, int) and dq > 0:
+                    desired_qty = dq
                 break
+
+        # Hard cap — Walmart's UI dropdown maxes at 10 for most items.
+        # Override via WALMART_MAX_QTY_CAP env (e.g. for soft-cap tests).
+        try:
+            hard_cap = int(os.environ.get("WALMART_MAX_QTY_CAP", "10"))
+        except ValueError:
+            hard_cap = 10
+        hard_cap = max(1, min(hard_cap, 10))
+
+        # Clamp: limit ≤ orderLimit ≤ hard_cap; respect desired_qty if set.
+        candidates = [hard_cap]
+        if isinstance(order_limit, int) and order_limit > 0:
+            candidates.append(order_limit)
+        if desired_qty is not None:
+            candidates.append(desired_qty)
+        quantity = max(1, min(candidates))
+
+        if quantity > 1:
+            logger.info(
+                "[MANAGER] Quantity resolved for %s: qty=%d (orderLimit=%s, desired=%s, cap=%d)",
+                item_id, quantity, order_limit, desired_qty, hard_cap,
+            )
 
         # Schedule on the purchase event loop using the captured reference
         try:
             future = asyncio.run_coroutine_threadsafe(
-                self._run_purchase(item_id, item_url, name),
+                self._run_purchase(item_id, item_url, name, quantity),
                 loop,
             )
         except RuntimeError as e:
@@ -358,7 +392,7 @@ class WalmartPurchaseManager:
     # Purchase flow
     # ------------------------------------------------------------------
 
-    async def _run_purchase(self, item_id: str, item_url: str, name: str):
+    async def _run_purchase(self, item_id: str, item_url: str, name: str, quantity: int = 1):
         """Run a full purchase attempt, managing proxy + session warming."""
         checkout_proxy = None
         executor = None
@@ -457,7 +491,7 @@ class WalmartPurchaseManager:
                 raise RuntimeError("No browser page available")
 
             executor = WalmartPurchaseExecutor(page, self._status_cb, session=self._session)
-            result = await executor.purchase(item_id=item_id, item_url=item_url)
+            result = await executor.purchase(item_id=item_id, item_url=item_url, quantity=quantity)
 
             with self._lock:
                 if result.success and result.order_id not in ("TEST_MODE", "DRY_RUN"):
@@ -611,6 +645,7 @@ class WalmartPurchaseManager:
                         offer_id=None,
                         name=stock_states.get(item_id, {}).get("name", item_id),
                         price=stock_states.get(item_id, {}).get("price"),
+                        order_limit=self._last_order_limit.get(item_id),
                     )
 
     def _compute_test_loop_cooldown(self) -> float:
