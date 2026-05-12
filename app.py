@@ -838,7 +838,18 @@ class StockMonitorThread:
         if self._proxy_workers:
             with self.shared_data.lock:
                 self.shared_data.proxy_mode = True
-            print(f"[PROXY] Proxy mode active — timer hidden on dashboard")
+            print(f"[PROXY] Proxy mode active — running alongside tab-fetch path")
+            n_workers = len(self._proxy_workers)
+            # Log from a separate thread to avoid deadlock during __init__.
+            threading.Thread(
+                target=lambda: add_activity_log(
+                    f"Stock monitoring active: {n_workers} proxy workers "
+                    f"(~{n_workers/15:.1f}/sec, bulk endpoint) + tab-fetch every 15-25s "
+                    f"(real Chrome session, Shape-trusted)",
+                    "info", "system"
+                ),
+                daemon=True
+            ).start()
         self.running = False
         self.thread = None
 
@@ -939,12 +950,12 @@ class StockMonitorThread:
                         cycle_count = self.shared_data.test_monitor.test_cycle_count + 1
                         print(f"[STOCK_MONITOR] TEST MODE stock check (scenario: {scenario}, cycle: {cycle_count})")
 
-                with self.shared_data.lock:
-                    _proxy_mode = self.shared_data.proxy_mode
-                if _proxy_mode:
-                    stock_data = None  # proxies handle detection; loop still runs for SSE/timer
-                else:
-                    stock_data = self._check_stock()
+                # Always run the tab-fetch path. In proxy mode this runs IN ADDITION to the
+                # background _proxy_worker threads. The tab path uses real Chrome TLS + auth
+                # cookies (Shape-trusted); the proxy fleet provides high-cadence coverage.
+                # Both publish to the same event bus; _handle_stock_update's 0.5s debounce
+                # dedupes near-simultaneous callbacks.
+                stock_data = self._check_stock()
 
                 if stock_data:
                     # FIX: Pre-compute and set NEXT cycle's timer BEFORE publishing event
@@ -964,7 +975,8 @@ class StockMonitorThread:
                     self.event_bus.publish('stock_updated', {
                         'stock_data': stock_data,
                         'timestamp': time.time(),
-                        'next_cycle_duration': next_cycle_duration  # Pass to handler
+                        'next_cycle_duration': next_cycle_duration,  # Pass to handler
+                        'source': 'main',  # tab-fetch via _check_stock()
                     })
 
                     # Mark cycle complete
@@ -1092,8 +1104,17 @@ class PurchaseManagerThread:
         # Removed test validation system - using core purchase manager only
         print("[SYSTEM] Core bulletproof monitoring active")
 
+        # Observability state: heartbeat throttle + stock_monitor reference for
+        # worker-liveness counts. Set by set_stock_monitor() during dashboard wiring.
+        self._last_heartbeat_log_time = 0.0
+        self._stock_monitor = None
+
         # Subscribe to stock update events
         self.event_bus.subscribe('stock_updated', self._handle_stock_update)
+
+    def set_stock_monitor(self, stock_monitor):
+        """Wire a StockMonitor reference so _handle_stock_update can report worker liveness."""
+        self._stock_monitor = stock_monitor
 
     def _initialize_session_system(self):
         """Initialize persistent session system - called only once"""
@@ -1418,13 +1439,40 @@ class PurchaseManagerThread:
                 summary=summary
             )
 
-            # Add activity log entry only when something is in stock
-            if in_stock_tcins:
+            # Always emit a log line — silent overnight runs were the original failure mode.
+            # Three branches: ERROR cycles (HTTP failures/Shape hard-block), IN_STOCK cycles,
+            # or 5-min heartbeat when nothing of note is happening. `src=` tag tells us which
+            # detection path produced this event (proxy vs main/tab-fetch).
+            error_tcins = [t for t, d in stock_data.items() if d.get('status_detail') == 'ERROR']
+            now_ts = time.time()
+            heartbeat_due = (now_ts - getattr(self, '_last_heartbeat_log_time', 0.0)) >= 300.0
+            event_source = event_data.get('source', 'main')
+
+            if error_tcins:
+                self._last_heartbeat_log_time = now_ts
+                err_sample = stock_data[error_tcins[0]].get('error', '?')
+                add_activity_log(
+                    f"[STOCK ERROR] src={event_source} {len(error_tcins)}/{len(stock_data)} TCINs ERROR (e.g. {err_sample})",
+                    "warning", "api_cycle"
+                )
+            elif in_stock_tcins:
+                self._last_heartbeat_log_time = now_ts
                 in_stock_display = f"[{', '.join(in_stock_tcins)}]"
                 out_stock_display = f"[{', '.join(out_stock_tcins)}]" if out_stock_tcins else "[]"
                 add_activity_log(
-                    f"Stock Check: {summary['in_stock_count']} in stock {in_stock_display}, {len(out_stock_tcins)} out of stock {out_stock_display} • {summary['new_attempts_count']} attempts, {summary['resets_count']} resets",
+                    f"Stock Check src={event_source}: {summary['in_stock_count']} IN {in_stock_display}, {len(out_stock_tcins)} OOS {out_stock_display} • {summary['new_attempts_count']} attempts, {summary['resets_count']} resets",
                     "info", "api_cycle", console=False
+                )
+            elif heartbeat_due:
+                self._last_heartbeat_log_time = now_ts
+                sm_ref = getattr(self, '_stock_monitor', None)
+                live, total = (sm_ref.count_live_workers(60.0)
+                               if sm_ref is not None and hasattr(sm_ref, 'count_live_workers')
+                               else (0, 0))
+                worker_str = f", {live}/{total} proxy workers" if total else ""
+                add_activity_log(
+                    f"Heartbeat src={event_source}: {len(stock_data)} TCINs checked, 0 in stock, 0 errors{worker_str}",
+                    "info", "heartbeat", console=False
                 )
 
             # ENHANCED MONITORING: Record comprehensive cycle data
@@ -1503,6 +1551,14 @@ def monitoring_loop():
     except Exception as _wire_err:
         print(f"[MONITORING_LOOP] [WARN] Could not wire stock_monitor onto manager: {_wire_err}")
 
+    # Wire stock_monitor onto purchase_thread so _handle_stock_update can report
+    # worker-liveness counts in the heartbeat log entries.
+    try:
+        if getattr(stock_thread, 'stock_monitor', None) is not None:
+            purchase_thread.set_stock_monitor(stock_thread.stock_monitor)
+    except Exception as _wire_err:
+        print(f"[MONITORING_LOOP] [WARN] Could not wire stock_monitor onto purchase_thread: {_wire_err}")
+
     print("[MONITORING_LOOP] Setting monitor_running=True...")
     with shared_data.lock:
         shared_data.monitor_running = True
@@ -1554,6 +1610,11 @@ def monitoring_loop():
                     purchase_manager=global_purchase_manager,
                     event_loop=global_event_loop
                 )
+                try:
+                    if getattr(stock_thread, 'stock_monitor', None) is not None:
+                        purchase_thread.set_stock_monitor(stock_thread.stock_monitor)
+                except Exception:
+                    pass
                 purchase_thread.start()
 
     finally:

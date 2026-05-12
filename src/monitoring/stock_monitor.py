@@ -43,10 +43,21 @@ class StockMonitor:
         # workers during a purchase. Eliminates browser-CPU contention with the
         # ATC POST and removes a recognizable parallel-request pattern.
         self._suspended = False
+        # Each proxy worker writes time.time() to its slot on every loop iteration.
+        # count_live_workers() returns (live, total) for the heartbeat log entry.
+        self._proxy_worker_heartbeat: dict = {}
 
     def set_suspended(self, suspended: bool) -> None:
         """Pause/resume proxy stock-check workers (for during-purchase muting)."""
         self._suspended = bool(suspended)
+
+    def count_live_workers(self, staleness_s: float = 60.0):
+        """Return (live, total) proxy worker counts based on heartbeat timestamps.
+        A worker is 'live' if it updated its heartbeat within staleness_s seconds."""
+        now = time.time()
+        total = len(self._proxy_worker_heartbeat)
+        live = sum(1 for t in self._proxy_worker_heartbeat.values() if now - t <= staleness_s)
+        return live, total
 
     def _load_proxies(self):
         proxy_file = "config/proxyIps.json"
@@ -250,16 +261,27 @@ class StockMonitor:
         timer running. Set by manager during active purchases so we don't
         compete with ATC for CPU/network and don't broadcast a recognizable
         parallel-request pattern to Shape.
+
+        Writes a heartbeat timestamp on every iteration so count_live_workers()
+        can detect dead worker threads. Exceptions are persisted to error_log.txt
+        instead of stdout-only, so silent failures become diagnosable.
         """
         time.sleep(initial_delay)
         while True:
+            self._proxy_worker_heartbeat[proxy] = time.time()
             try:
                 if not self._suspended:
                     stock_data = self.check_stock(proxy=proxy)
                     if stock_data:
                         callback(stock_data)
             except Exception as e:
-                print(f"[PROXY] Worker error: {e}")
+                err_msg = f"[PROXY] Worker {str(proxy)[-15:]} error: {e}"
+                print(err_msg)
+                try:
+                    with open('logs/error_log.txt', 'a') as f:
+                        f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {err_msg}\n")
+                except Exception:
+                    pass
             time.sleep(random.uniform(12, 18))
 
     def _process_response(self, data, response_time):
