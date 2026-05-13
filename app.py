@@ -832,20 +832,42 @@ class StockMonitorThread:
         self.stock_monitor = StockMonitor()
         self._purchase_manager = purchase_manager  # for lazy .session_manager access
         self._event_loop = event_loop
-        self._proxy_workers = self.stock_monitor.start_proxy_monitoring(
-            self._on_proxy_stock_detected
-        )
+
+        # ── Resilient stack opt-in via env var USE_RESILIENT_STACK=1 ──
+        # When enabled: starts the Refract-pattern curl_cffi(chrome131)+
+        # local-forwarder+per-IP-state stack. Falls back to legacy proxy
+        # workers on any startup error so the bot never silently fails.
+        use_resilient = os.environ.get("USE_RESILIENT_STACK", "").strip() in ("1", "true", "yes")
+        self._proxy_workers = None
+        if use_resilient:
+            try:
+                self._proxy_workers = self.stock_monitor.start_resilient_monitoring(
+                    self._on_proxy_stock_detected,
+                    target_rps=float(os.environ.get("RESILIENT_TARGET_RPS", "3.0")),
+                )
+                if self._proxy_workers:
+                    print(f"[RESILIENT] resilient stack engaged "
+                          f"(USE_RESILIENT_STACK=1, target_rps="
+                          f"{os.environ.get('RESILIENT_TARGET_RPS', '3.0')})")
+            except Exception as e:
+                print(f"[RESILIENT] start failed, falling back to legacy: {e}")
+                self._proxy_workers = None
+
+        if self._proxy_workers is None:
+            self._proxy_workers = self.stock_monitor.start_proxy_monitoring(
+                self._on_proxy_stock_detected
+            )
         if self._proxy_workers:
             with self.shared_data.lock:
                 self.shared_data.proxy_mode = True
-            print(f"[PROXY] Proxy mode active — running alongside tab-fetch path")
+            mode = "resilient" if use_resilient else "legacy"
+            print(f"[PROXY] {mode} mode active — running alongside tab-fetch path")
             n_workers = len(self._proxy_workers)
             # Log from a separate thread to avoid deadlock during __init__.
             threading.Thread(
                 target=lambda: add_activity_log(
-                    f"Stock monitoring active: {n_workers} proxy workers "
-                    f"(~{n_workers/15:.1f}/sec, bulk endpoint) + tab-fetch every 15-25s "
-                    f"(real Chrome session, Shape-trusted)",
+                    f"Stock monitoring active ({mode}): {n_workers} workers "
+                    f"+ tab-fetch every 15-25s",
                     "info", "system"
                 ),
                 daemon=True
