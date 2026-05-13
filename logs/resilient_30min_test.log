@@ -1,0 +1,196 @@
+[TEST] proxies=27 tcins=19 duration=1800s target_rps=3.0
+2026-05-13 08:26:17,361 INFO [PROXY_STATE] loaded 27 entries
+2026-05-13 08:26:17,361 INFO [STOCK] pre-flight: validating 27 proxies on TCIN 50270379
+2026-05-13 08:26:17,361 INFO [FORWARDER] 127.0.0.1:23000 → brd.superproxy.io:33335 (exit_ip=168.158.142.216)
+2026-05-13 08:26:17,361 INFO [FORWARDER] 127.0.0.1:23001 → brd.superproxy.io:33335 (exit_ip=168.158.48.46)
+2026-05-13 08:26:17,361 INFO [FORWARDER] 127.0.0.1:23002 → brd.superproxy.io:33335 (exit_ip=168.158.202.255)
+2026-05-13 08:26:17,361 INFO [FORWARDER] 127.0.0.1:23003 → brd.superproxy.io:33335 (exit_ip=168.158.204.52)
+2026-05-13 08:26:17,361 INFO [FORWARDER] 127.0.0.1:23004 → brd.superproxy.io:33335 (exit_ip=168.158.163.24)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23005 → brd.superproxy.io:33335 (exit_ip=168.158.66.150)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23006 → brd.superproxy.io:33335 (exit_ip=168.158.220.12)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23007 → brd.superproxy.io:33335 (exit_ip=31.98.154.172)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23008 → brd.superproxy.io:33335 (exit_ip=31.105.18.86)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23009 → brd.superproxy.io:33335 (exit_ip=31.105.93.225)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23010 → brd.superproxy.io:33335 (exit_ip=168.158.141.141)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23011 → brd.superproxy.io:33335 (exit_ip=31.98.153.65)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23012 → brd.superproxy.io:33335 (exit_ip=31.98.169.203)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23013 → brd.superproxy.io:33335 (exit_ip=168.158.143.27)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23014 → brd.superproxy.io:33335 (exit_ip=31.105.63.137)
+2026-05-13 08:26:17,362 INFO [FORWARDER] 127.0.0.1:23015 → brd.superproxy.io:33335 (exit_ip=168.158.219.76)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23016 → brd.superproxy.io:33335 (exit_ip=31.98.158.87)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23017 → brd.superproxy.io:33335 (exit_ip=168.158.32.64)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23018 → brd.superproxy.io:33335 (exit_ip=168.158.74.45)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23019 → brd.superproxy.io:33335 (exit_ip=168.158.111.240)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23020 → brd.superproxy.io:33335 (exit_ip=31.105.227.219)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23021 → brd.superproxy.io:33335 (exit_ip=31.105.148.70)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23022 → brd.superproxy.io:33335 (exit_ip=31.105.212.250)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23023 → brd.superproxy.io:33335 (exit_ip=31.105.222.246)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23024 → brd.superproxy.io:33335 (exit_ip=31.105.255.43)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23025 → brd.superproxy.io:33335 (exit_ip=31.105.198.34)
+2026-05-13 08:26:17,363 INFO [FORWARDER] 127.0.0.1:23026 → brd.superproxy.io:33335 (exit_ip=31.105.228.245)
+2026-05-13 08:26:17,363 INFO [FORWARDER] started 27 listeners
+2026-05-13 08:26:18,118 INFO [PREFLIGHT] OK 168.158.202.255    status=200 752ms valid=True
+2026-05-13 08:26:18,150 INFO [PREFLIGHT] OK 168.158.163.24     status=200 784ms valid=True
+2026-05-13 08:26:18,203 INFO [PREFLIGHT] OK 168.158.48.46      status=200 838ms valid=True
+2026-05-13 08:26:18,352 INFO [PREFLIGHT] OK 168.158.204.52     status=200 985ms valid=True
+2026-05-13 08:26:18,543 INFO [PREFLIGHT] OK 31.98.154.172      status=200 339ms valid=True
+2026-05-13 08:26:18,638 INFO [PREFLIGHT] OK 168.158.66.150     status=200 519ms valid=True
+2026-05-13 08:26:18,645 INFO [PREFLIGHT] OK 168.158.142.216    status=200 1280ms valid=True
+2026-05-13 08:26:18,679 INFO [PREFLIGHT] OK 168.158.220.12     status=200 528ms valid=True
+2026-05-13 08:26:18,850 INFO [PREFLIGHT] OK 31.105.18.86       status=200 498ms valid=True
+2026-05-13 08:26:18,866 INFO [PREFLIGHT] OK 31.105.93.225      status=200 322ms valid=True
+2026-05-13 08:26:19,056 INFO [PREFLIGHT] OK 31.98.153.65       status=200 409ms valid=True
+2026-05-13 08:26:19,087 INFO [PREFLIGHT] OK 31.98.169.203      status=200 408ms valid=True
+2026-05-13 08:26:19,249 INFO [PREFLIGHT] OK 168.158.141.141    status=200 610ms valid=True
+2026-05-13 08:26:19,344 INFO [PREFLIGHT] OK 31.105.63.137      status=200 478ms valid=True
+2026-05-13 08:26:19,394 INFO [PREFLIGHT] OK 168.158.143.27     status=200 543ms valid=True
+2026-05-13 08:26:19,463 INFO [PREFLIGHT] OK 31.98.158.87       status=200 376ms valid=True
+2026-05-13 08:26:19,614 INFO [PREFLIGHT] OK 168.158.219.76     status=200 558ms valid=True
+2026-05-13 08:26:19,819 INFO [PREFLIGHT] OK 168.158.32.64      status=200 570ms valid=True
+2026-05-13 08:26:19,922 INFO [PREFLIGHT] OK 168.158.74.45      status=200 577ms valid=True
+2026-05-13 08:26:19,973 INFO [PREFLIGHT] OK 168.158.111.240    status=200 579ms valid=True
+2026-05-13 08:26:19,973 INFO [PREFLIGHT] !! 31.105.227.219     status=403 510ms valid=False
+2026-05-13 08:26:20,129 INFO [PREFLIGHT] !! 31.105.148.70      status=403 515ms valid=False
+2026-05-13 08:26:20,280 INFO [PREFLIGHT] !! 31.105.222.246     status=403 358ms valid=False
+2026-05-13 08:26:20,280 INFO [PREFLIGHT] !! 31.105.212.250     status=403 460ms valid=False
+2026-05-13 08:26:20,358 INFO [PREFLIGHT] !! 31.105.198.34      status=403 384ms valid=False
+2026-05-13 08:26:20,434 INFO [PREFLIGHT] !! 31.105.255.43      status=403 459ms valid=False
+2026-05-13 08:26:20,631 INFO [PREFLIGHT] !! 31.105.228.245     status=403 502ms valid=False
+2026-05-13 08:26:20,631 INFO [PREFLIGHT] 20/27 verified clean  (403=7, other=0)
+2026-05-13 08:26:20,631 INFO [STOCK] pre-flight done: 20/27 verified clean
+2026-05-13 08:26:20,645 INFO [FORWARDER] 127.0.0.1:24000 → brd.superproxy.io:33335 (exit_ip=168.158.202.255)
+2026-05-13 08:26:20,645 INFO [FORWARDER] 127.0.0.1:24001 → brd.superproxy.io:33335 (exit_ip=168.158.163.24)
+2026-05-13 08:26:20,645 INFO [FORWARDER] 127.0.0.1:24002 → brd.superproxy.io:33335 (exit_ip=168.158.48.46)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24003 → brd.superproxy.io:33335 (exit_ip=168.158.204.52)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24004 → brd.superproxy.io:33335 (exit_ip=31.98.154.172)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24005 → brd.superproxy.io:33335 (exit_ip=168.158.66.150)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24006 → brd.superproxy.io:33335 (exit_ip=168.158.142.216)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24007 → brd.superproxy.io:33335 (exit_ip=168.158.220.12)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24008 → brd.superproxy.io:33335 (exit_ip=31.105.18.86)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24009 → brd.superproxy.io:33335 (exit_ip=31.105.93.225)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24010 → brd.superproxy.io:33335 (exit_ip=31.98.153.65)
+2026-05-13 08:26:20,646 INFO [FORWARDER] 127.0.0.1:24011 → brd.superproxy.io:33335 (exit_ip=31.98.169.203)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24012 → brd.superproxy.io:33335 (exit_ip=168.158.141.141)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24013 → brd.superproxy.io:33335 (exit_ip=31.105.63.137)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24014 → brd.superproxy.io:33335 (exit_ip=168.158.143.27)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24015 → brd.superproxy.io:33335 (exit_ip=31.98.158.87)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24016 → brd.superproxy.io:33335 (exit_ip=168.158.219.76)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24017 → brd.superproxy.io:33335 (exit_ip=168.158.32.64)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24018 → brd.superproxy.io:33335 (exit_ip=168.158.74.45)
+2026-05-13 08:26:20,647 INFO [FORWARDER] 127.0.0.1:24019 → brd.superproxy.io:33335 (exit_ip=168.158.111.240)
+2026-05-13 08:26:20,647 INFO [FORWARDER] started 20 listeners
+2026-05-13 08:26:20,647 INFO [STOCK] started: workers=3, target_rps=3.0, tcins=19, proxies=27
+
+[!] IN_STOCK DETECTED: tcin=50270379 avail=IN_STOCK title=?
+
+2026-05-13 08:26:50,663 INFO [STOCK STATS] elapsed=30.0s rps=1.9 200=57 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:27:20,676 INFO [STOCK STATS] elapsed=60.0s rps=1.85 200=111 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:27:50,671 INFO [STOCK STATS] elapsed=90.0s rps=1.82 200=164 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:28:20,679 INFO [STOCK STATS] elapsed=120.0s rps=1.85 200=222 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:28:50,699 INFO [STOCK STATS] elapsed=150.1s rps=1.86 200=279 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:29:20,695 INFO [STOCK STATS] elapsed=180.0s rps=1.87 200=336 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:29:50,702 INFO [STOCK STATS] elapsed=210.1s rps=1.89 200=396 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:30:20,718 INFO [STOCK STATS] elapsed=240.1s rps=1.88 200=451 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:30:50,725 INFO [STOCK STATS] elapsed=270.1s rps=1.89 200=510 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:31:20,728 INFO [STOCK STATS] elapsed=300.1s rps=1.88 200=565 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:31:50,735 INFO [STOCK STATS] elapsed=330.1s rps=1.89 200=624 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:32:20,738 INFO [STOCK STATS] elapsed=360.1s rps=1.9 200=683 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:32:33,419 WARNING [PROXY_STATE] save failed: [WinError 5] Access is denied: 'state\\proxy_state.tmp.32624' -> 'state\\proxy_state.json'
+2026-05-13 08:32:50,740 INFO [STOCK STATS] elapsed=390.1s rps=1.89 200=738 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:33:20,758 INFO [STOCK STATS] elapsed=420.1s rps=1.89 200=795 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:33:50,765 INFO [STOCK STATS] elapsed=450.1s rps=1.89 200=851 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:34:20,765 INFO [STOCK STATS] elapsed=480.1s rps=1.89 200=909 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:34:50,756 INFO [STOCK STATS] elapsed=510.1s rps=1.89 200=965 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:35:20,770 INFO [STOCK STATS] elapsed=540.1s rps=1.89 200=1020 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:35:50,770 INFO [STOCK STATS] elapsed=570.1s rps=1.88 200=1072 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:36:20,758 INFO [STOCK STATS] elapsed=600.1s rps=1.87 200=1121 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:36:50,771 INFO [STOCK STATS] elapsed=630.1s rps=1.87 200=1179 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:37:20,777 INFO [STOCK STATS] elapsed=660.1s rps=1.88 200=1238 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:37:50,768 INFO [STOCK STATS] elapsed=690.1s rps=1.88 200=1296 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:38:20,775 INFO [STOCK STATS] elapsed=720.1s rps=1.88 200=1353 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:38:50,786 INFO [STOCK STATS] elapsed=750.1s rps=1.88 200=1408 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:39:20,794 INFO [STOCK STATS] elapsed=780.1s rps=1.87 200=1461 403=0 other=0 pool active=20 parked=0 burned=7
+2026-05-13 08:39:50,805 INFO [STOCK STATS] elapsed=810.2s rps=1.85 200=1496 403=0 other=1 pool active=20 parked=0 burned=7
+2026-05-13 08:40:20,830 INFO [STOCK STATS] elapsed=840.2s rps=1.83 200=1536 403=0 other=1 pool active=20 parked=0 burned=7
+2026-05-13 08:40:50,837 INFO [STOCK STATS] elapsed=870.2s rps=1.81 200=1575 403=0 other=1 pool active=20 parked=0 burned=7
+2026-05-13 08:41:20,846 INFO [STOCK STATS] elapsed=900.2s rps=1.8 200=1616 403=0 other=1 pool active=20 parked=0 burned=7
+2026-05-13 08:41:50,843 INFO [STOCK STATS] elapsed=930.2s rps=1.79 200=1660 403=0 other=1 pool active=20 parked=0 burned=7
+2026-05-13 08:41:58,792 INFO [PROXY_STATE] 31.105.63.137 PARKED for 600s (park_count=1)
+2026-05-13 08:41:59,253 INFO [PROXY_STATE] 168.158.74.45 PARKED for 600s (park_count=1)
+2026-05-13 08:42:00,660 INFO [PROXY_STATE] 168.158.163.24 PARKED for 600s (park_count=1)
+2026-05-13 08:42:05,701 INFO [PROXY_STATE] 31.105.93.225 PARKED for 600s (park_count=1)
+2026-05-13 08:42:07,757 INFO [PROXY_STATE] 168.158.220.12 PARKED for 600s (park_count=1)
+2026-05-13 08:42:07,847 INFO [PROXY_STATE] 168.158.66.150 PARKED for 600s (park_count=1)
+2026-05-13 08:42:09,254 INFO [PROXY_STATE] 31.98.169.203 PARKED for 600s (park_count=1)
+2026-05-13 08:42:09,384 INFO [PROXY_STATE] 168.158.141.141 PARKED for 600s (park_count=1)
+2026-05-13 08:42:11,372 INFO [PROXY_STATE] 168.158.111.240 PARKED for 600s (park_count=1)
+2026-05-13 08:42:12,729 INFO [PROXY_STATE] 31.98.154.172 PARKED for 600s (park_count=1)
+2026-05-13 08:42:13,206 INFO [PROXY_STATE] 168.158.143.27 PARKED for 600s (park_count=1)
+2026-05-13 08:42:14,650 INFO [PROXY_STATE] 168.158.204.52 PARKED for 600s (park_count=1)
+2026-05-13 08:42:14,782 INFO [PROXY_STATE] 168.158.219.76 PARKED for 600s (park_count=1)
+2026-05-13 08:42:15,958 INFO [PROXY_STATE] 168.158.202.255 PARKED for 600s (park_count=1)
+2026-05-13 08:42:17,573 INFO [PROXY_STATE] 168.158.32.64 PARKED for 600s (park_count=1)
+2026-05-13 08:42:18,771 INFO [PROXY_STATE] 168.158.48.46 PARKED for 600s (park_count=1)
+2026-05-13 08:42:18,991 INFO [PROXY_STATE] 31.105.18.86 PARKED for 600s (park_count=1)
+2026-05-13 08:42:19,402 INFO [PROXY_STATE] 168.158.142.216 PARKED for 600s (park_count=1)
+2026-05-13 08:42:20,206 INFO [PROXY_STATE] 31.98.153.65 PARKED for 600s (park_count=1)
+2026-05-13 08:42:20,644 INFO [PROXY_STATE] 31.98.158.87 PARKED for 600s (park_count=1)
+2026-05-13 08:42:20,858 INFO [STOCK STATS] elapsed=960.2s rps=1.78 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:42:50,867 INFO [STOCK STATS] elapsed=990.2s rps=1.72 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:43:20,884 INFO [STOCK STATS] elapsed=1020.2s rps=1.67 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:43:50,906 INFO [STOCK STATS] elapsed=1050.3s rps=1.63 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:44:20,915 INFO [STOCK STATS] elapsed=1080.3s rps=1.58 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:44:50,943 INFO [STOCK STATS] elapsed=1110.3s rps=1.54 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:45:20,949 INFO [STOCK STATS] elapsed=1140.3s rps=1.5 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:45:50,976 INFO [STOCK STATS] elapsed=1170.3s rps=1.46 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:46:20,969 INFO [STOCK STATS] elapsed=1200.3s rps=1.42 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:46:50,977 INFO [STOCK STATS] elapsed=1230.3s rps=1.39 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:47:20,963 INFO [STOCK STATS] elapsed=1260.3s rps=1.36 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:47:50,975 INFO [STOCK STATS] elapsed=1290.3s rps=1.32 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:48:20,988 INFO [STOCK STATS] elapsed=1320.3s rps=1.29 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:48:51,002 INFO [STOCK STATS] elapsed=1350.4s rps=1.26 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:49:21,010 INFO [STOCK STATS] elapsed=1380.4s rps=1.24 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:49:51,024 INFO [STOCK STATS] elapsed=1410.4s rps=1.21 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:50:21,039 INFO [STOCK STATS] elapsed=1440.4s rps=1.19 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:50:51,053 INFO [STOCK STATS] elapsed=1470.4s rps=1.16 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:51:21,054 INFO [STOCK STATS] elapsed=1500.4s rps=1.14 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:51:51,053 INFO [STOCK STATS] elapsed=1530.4s rps=1.12 200=1667 403=40 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:52:21,051 INFO [STOCK STATS] elapsed=1560.4s rps=1.12 200=1667 403=80 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:52:51,046 INFO [STOCK STATS] elapsed=1590.4s rps=1.14 200=1667 403=138 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:53:21,048 INFO [STOCK STATS] elapsed=1620.4s rps=1.15 200=1667 403=194 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:53:51,059 INFO [STOCK STATS] elapsed=1650.4s rps=1.16 200=1667 403=250 other=1 pool active=0 parked=20 burned=7
+2026-05-13 08:54:21,040 INFO [STOCK STATS] elapsed=1680.4s rps=1.16 200=1667 403=286 other=2 pool active=0 parked=20 burned=7
+2026-05-13 08:54:51,049 INFO [STOCK STATS] elapsed=1710.4s rps=1.17 200=1667 403=323 other=4 pool active=0 parked=20 burned=7
+2026-05-13 08:55:21,060 INFO [STOCK STATS] elapsed=1740.4s rps=1.16 200=1667 403=353 other=6 pool active=0 parked=20 burned=7
+2026-05-13 08:55:51,048 INFO [STOCK STATS] elapsed=1770.4s rps=1.16 200=1667 403=377 other=8 pool active=0 parked=20 burned=7
+
+[TEST] stopping ...
+2026-05-13 08:56:34,870 INFO [STOCK] stopped
+
+======================================================================
+[SUMMARY] elapsed=1814.2s  actual_rps=1.15
+  dispatched=2090  200=1667 403=413 other=10
+  pool: total=27 active=0 parked=20 burned=7
+  cum: total_success=2334 total_403=427
+
+[TCIN STATUS]
+  tcin         in_stock  http  avail                title                                   
+  95093989     False     403   OUT_OF_STOCK                                                 
+  1008581387   False     403   OUT_OF_STOCK                                                 
+  95120834     False     403   OUT_OF_STOCK                                                 
+  94681790     False     403   OUT_OF_STOCK                                                 
+  50270379     True      403   IN_STOCK                                                     
+  94636866     False     403   OUT_OF_STOCK                                                 
+  95138474     False     403   OUT_OF_STOCK                                                 
+  95163305     False     403   OUT_OF_STOCK                                                 
+  1011206804   False     403   OUT_OF_STOCK                                                 
+  95138464     False     403   OUT_OF_STOCK                                                 
+  94681776     False     403   OUT_OF_STOCK                                                 
+  95093981     False     403   OUT_OF_STOCK                                                 
+  95163306     False     403   OUT_OF_STOCK                                                 
+  93954446     False     403   OUT_OF_STOCK                                                 
+  91619960     False     403   OUT_OF_STOCK                                                 
+  94300069     False     403   OUT_OF_STOCK                                                 
+  95093982     False     403   OUT_OF_STOCK                                                 
+  95082118     False     403   OUT_OF_STOCK                                                 
+  95225595     False     403   OUT_OF_STOCK                                                 
