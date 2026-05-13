@@ -227,6 +227,85 @@ class StockMonitor:
             print(f"[STOCK] Browser fetch exception: {e}")
             return None
 
+    def start_resilient_monitoring(self, on_stock_detected, target_rps=3.0):
+        """
+        Refract-style resilient checker: curl_cffi(impersonate=chrome131) through
+        a local CONNECT-forwarder pool that handles BD upstream auth. Per-IP
+        stable visitor_id, auto-park on consecutive 403s, auto-retest of parked
+        IPs every 5 min, cloaking detection alarm.
+
+        Calls `on_stock_detected(stock_data_dict)` where stock_data_dict is
+        formatted identically to `check_stock()` returns, so callers don't need
+        to know which monitoring path is active.
+
+        Runs an asyncio event loop in a dedicated daemon thread. Returns the
+        thread handle. The legacy threaded proxy_workers path is left intact
+        in this method's sibling start_proxy_monitoring() — gate via env var
+        USE_RESILIENT_STACK=1 at the caller.
+        """
+        if not self.proxies:
+            print("[RESILIENT] no proxies configured — cannot start resilient stack")
+            return None
+
+        config = self.get_config()
+        tcins = [p['tcin'] for p in config.get('products', []) if p.get('enabled', True)]
+        if not tcins:
+            print("[RESILIENT] no enabled TCINs — cannot start resilient stack")
+            return None
+
+        # Lazy import — keeps the module load fast and avoids hard dependency
+        # on curl_cffi/zendriver-side code unless the resilient path is used.
+        import asyncio
+        import sys
+        from pathlib import Path
+        ROOT = Path(__file__).resolve().parent.parent.parent
+        sys.path.insert(0, str(ROOT))
+        from src.monitoring.stock_check_resilient import ResilientStockChecker
+
+        def _adapter(s):
+            """Convert TcinStatus → legacy stock_data dict shape."""
+            stock_data = {s.tcin: {
+                'title': s.title or f'Product {s.tcin}',
+                'in_stock': s.in_stock,
+                'last_checked': datetime.fromtimestamp(s.last_checked_at).isoformat()
+                                if s.last_checked_at else datetime.now().isoformat(),
+                'status_detail': s.availability_status,
+            }}
+            try:
+                on_stock_detected(stock_data)
+            except Exception as e:
+                print(f"[RESILIENT] callback error: {e}")
+
+        self._resilient_checker = ResilientStockChecker(
+            proxy_urls=self.proxies,
+            tcins=tcins,
+            on_in_stock=_adapter,
+            target_rps=target_rps,
+            state_dir=ROOT / "state",
+            log_per_request=False,
+        )
+
+        def _runner():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._resilient_checker.start())
+                loop.run_forever()
+            except Exception as e:
+                print(f"[RESILIENT] runner error: {e}")
+            finally:
+                try:
+                    loop.run_until_complete(self._resilient_checker.stop())
+                except Exception:
+                    pass
+                loop.close()
+
+        t = threading.Thread(target=_runner, daemon=True, name="ResilientChecker")
+        t.start()
+        print(f"[RESILIENT] started — {len(self.proxies)} proxies, "
+              f"{len(tcins)} TCINs, target_rps={target_rps}")
+        return [t]
+
     def start_proxy_monitoring(self, on_stock_detected):
         """
         Round-robin proxy rotation: Proxy 1 at t=0, Proxy 2 at t=1, ...,

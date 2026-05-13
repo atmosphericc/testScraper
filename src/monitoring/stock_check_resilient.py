@@ -39,6 +39,7 @@ from typing import Callable, Optional
 
 from curl_cffi import requests as cffi
 
+from src.monitoring.proxy_preflight import preflight_validate
 from src.proxy.local_forwarder import ForwarderPool
 from src.proxy.proxy_state import ProxyState
 
@@ -109,8 +110,10 @@ class ResilientStockChecker:
         store_id: str = DEFAULT_STORE_ID,
         state_dir: Path = Path("state"),
         cookies_jar_path: Optional[Path] = None,
-        first_local_port: int = 8080,
+        first_local_port: int = 24000,
         log_per_request: bool = True,
+        preflight: bool = True,
+        preflight_tcin: str = "50270379",
     ):
         self.proxy_urls = list(proxy_urls)
         self.tcins = list(tcins)
@@ -118,20 +121,19 @@ class ResilientStockChecker:
         self.target_rps = target_rps
         self.store_id = store_id
         self.log_per_request = log_per_request
+        self.preflight = preflight
+        self.preflight_tcin = preflight_tcin
+        self.first_local_port = first_local_port
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = state_dir
         self.cookies_jar_path = cookies_jar_path or (state_dir / "cookies_jar.json")
         self.proxy_state = ProxyState(state_dir / "proxy_state.json")
 
-        # Forwarder pool — one local port per BD upstream
-        self.pool = ForwarderPool()
-        ip_to_port: dict[str, int] = {}
-        for i, url in enumerate(self.proxy_urls):
-            port = first_local_port + i
-            up = self.pool.add_upstream(url, port)
-            ip_to_port[up.pinned_ip] = port
-        self.proxy_state.bulk_register(ip_to_port)
+        # Forwarder pool — DEFERRED to start() so pre-flight can filter the
+        # proxy list first. Keeps __init__ pure / fast.
+        self.pool: Optional[ForwarderPool] = None
+        self._verified_urls: list[str] = []
 
         # State
         self._tcin_status: dict[str, TcinStatus] = {t: TcinStatus(tcin=t) for t in self.tcins}
@@ -156,6 +158,37 @@ class ResilientStockChecker:
     # ───────── public API ─────────
 
     async def start(self):
+        # ── Pre-flight: probe every proxy once, exclude any that doesn't 200 ──
+        if self.preflight:
+            logger.info(f"[STOCK] pre-flight: validating {len(self.proxy_urls)} proxies "
+                        f"on TCIN {self.preflight_tcin}")
+            self._verified_urls = await preflight_validate(
+                self.proxy_urls,
+                tcin=self.preflight_tcin,
+                store_id=self.store_id,
+            )
+            logger.info(f"[STOCK] pre-flight done: {len(self._verified_urls)}/"
+                        f"{len(self.proxy_urls)} verified clean")
+            if not self._verified_urls:
+                raise RuntimeError("Pre-flight rejected all proxies — none are usable")
+        else:
+            self._verified_urls = list(self.proxy_urls)
+
+        # ── Build forwarder pool from verified URLs only ──
+        self.pool = ForwarderPool()
+        ip_to_port: dict[str, int] = {}
+        for i, url in enumerate(self._verified_urls):
+            port = self.first_local_port + i
+            up = self.pool.add_upstream(url, port)
+            ip_to_port[up.pinned_ip] = port
+        self.proxy_state.bulk_register(ip_to_port)
+
+        # Mark any non-verified IP as burned so the state file is honest
+        verified_ips = set(ip_to_port.keys())
+        for entry in self.proxy_state.all_entries():
+            if entry.pinned_ip not in verified_ips:
+                self.proxy_state.force_burn(entry.pinned_ip)
+
         await self.pool.start_all()
         self._start_time = time.time()
         # Spawn workers — keep concurrency 1-3 to avoid thundering herds.
@@ -186,7 +219,8 @@ class ResilientStockChecker:
                 pass
             except Exception as e:
                 logger.debug(f"[STOCK] task {t.get_name()} cleanup error: {e}")
-        await self.pool.stop_all()
+        if self.pool is not None:
+            await self.pool.stop_all()
         self.proxy_state.save()
         logger.info("[STOCK] stopped")
 

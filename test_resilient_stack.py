@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.monitoring.stock_check_resilient import ResilientStockChecker, TcinStatus
 
-DURATION_S = 60
+DURATION_S = 300
 TARGET_RPS = 3.0
 
 
