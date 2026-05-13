@@ -38,9 +38,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Policy
+# Policy — tuned 2026-05-13 after observed Shape account-level threshold trip:
+# Shape's session flag persists >15 min after a mass-burn event, so a 10-min
+# park cooldown wasn't long enough — IPs retest, fail, and re-park in a loop.
+# 30-min cooldown lets the account flag itself age out before we probe again.
 PARK_AFTER_403_STREAK = 2
-PARK_DURATION_S = 600           # 10 min
+PARK_DURATION_S = 1800          # 30 min — longer than Shape's observed account-flag persistence
 BURN_AFTER_PARKS = 4            # after this many park cycles, give up on the IP
 STALE_RETEST_S = 300            # parked IPs retest every 5 min by background loop
 

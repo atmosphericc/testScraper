@@ -42,6 +42,7 @@ from curl_cffi import requests as cffi
 from src.monitoring.proxy_preflight import preflight_validate
 from src.proxy.local_forwarder import ForwarderPool
 from src.proxy.proxy_state import ProxyState
+from src.session.multi_session_pool import MultiSessionPool, SessionEntry
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +51,34 @@ REDSKY_MODERN = (
     "https://redsky.target.com/redsky_aggregations/v1/web/"
     "product_fulfillment_and_variation_hierarchy_v1"
 )
+# Companion endpoints that real browsers hit during PDP browsing.
+# Used by the behavioral mixin to disguise the polling pattern as
+# normal-looking browsing rather than pure API polling.
+REDSKY_PDP_CLIENT = (
+    "https://redsky.target.com/redsky_aggregations/v1/web/"
+    "pdp_client_v1"
+)
+REDSKY_PDP_PERSONALIZED = (
+    "https://redsky.target.com/redsky_aggregations/v1/web/"
+    "pdp_personalized_v1"
+)
+TARGET_HOMEPAGE = "https://www.target.com/"
 REDSKY_API_KEYS = [
     "ff457966e64d5e877fdbad070f276d18ecec4a01",
     "9f36aeafbe60771e321a7cc95a78140772ab3e96",
 ]
 
-# Default policy
-DEFAULT_TARGET_RPS = 3.0
+# Default policy — tuned 2026-05-13 for "flawless resilience" over speed
+# (user explicitly deprioritized speed after observed 15-min/3RPS Shape trip)
+DEFAULT_TARGET_RPS = 0.5           # ~1 req every 2s aggregate; well under Shape's account threshold
 DEFAULT_STORE_ID = "3252"
 DEFAULT_REQUEST_TIMEOUT = 12.0
 COOKIE_REFRESH_INTERVAL_S = 60     # re-read cookies_jar.json at most once a minute
 PARKED_RETEST_INTERVAL_S = 300     # background loop retests parked IPs every 5 min
 COOLDOWN_AFTER_403_S = 0.5         # short cool-down on a worker after a 403
+FULL_REVALIDATE_INTERVAL_S = 1800  # every 30 min, re-probe the burned subset to catch recoveries
+BEHAVIORAL_MIX_RATIO = 0.1         # 1 in 10 dispatches makes a "browse" call instead of stock check
+                                   # (homepage HTML or pdp_client_v1) — disguises the polling pattern
 
 
 def _pinned_ip_from_url(url: str) -> str:
@@ -114,6 +131,8 @@ class ResilientStockChecker:
         log_per_request: bool = True,
         preflight: bool = True,
         preflight_tcin: str = "50270379",
+        use_multi_session: bool = True,
+        max_sessions: int = 5,
     ):
         self.proxy_urls = list(proxy_urls)
         self.tcins = list(tcins)
@@ -124,6 +143,8 @@ class ResilientStockChecker:
         self.preflight = preflight
         self.preflight_tcin = preflight_tcin
         self.first_local_port = first_local_port
+        self.use_multi_session = use_multi_session
+        self.max_sessions = max_sessions
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = state_dir
@@ -134,6 +155,7 @@ class ResilientStockChecker:
         # proxy list first. Keeps __init__ pure / fast.
         self.pool: Optional[ForwarderPool] = None
         self._verified_urls: list[str] = []
+        self.multi_session_pool: Optional[MultiSessionPool] = None
 
         # State
         self._tcin_status: dict[str, TcinStatus] = {t: TcinStatus(tcin=t) for t in self.tcins}
@@ -175,13 +197,31 @@ class ResilientStockChecker:
             self._verified_urls = list(self.proxy_urls)
 
         # ── Build forwarder pool from verified URLs only ──
-        self.pool = ForwarderPool()
-        ip_to_port: dict[str, int] = {}
-        for i, url in enumerate(self._verified_urls):
-            port = self.first_local_port + i
-            up = self.pool.add_upstream(url, port)
-            ip_to_port[up.pinned_ip] = port
-        self.proxy_state.bulk_register(ip_to_port)
+        if self.use_multi_session:
+            # Multi-session mode: each session owns its own (profile + proxy + cookies)
+            # Trim to max_sessions to keep resource use reasonable
+            session_urls = self._verified_urls[:self.max_sessions]
+            logger.info(f"[STOCK] multi-session mode: building {len(session_urls)} sessions")
+            self.multi_session_pool = MultiSessionPool(
+                proxy_urls=session_urls,
+                cookies_jar_path=self.cookies_jar_path,
+                profile_root=self.state_dir / "session_profiles",
+                forwarder_base_port=self.first_local_port,
+            )
+            # Reuse the multi-session pool's forwarder for worker requests
+            await self.multi_session_pool.start()
+            # Also register IPs in proxy_state for 403 tracking
+            ip_to_port = {s.proxy_ip: s.local_port for s in self.multi_session_pool.sessions}
+            self.proxy_state.bulk_register(ip_to_port)
+        else:
+            self.pool = ForwarderPool()
+            ip_to_port: dict[str, int] = {}
+            for i, url in enumerate(self._verified_urls):
+                port = self.first_local_port + i
+                up = self.pool.add_upstream(url, port)
+                ip_to_port[up.pinned_ip] = port
+            self.proxy_state.bulk_register(ip_to_port)
+            await self.pool.start_all()
 
         # Mark any non-verified IP as burned so the state file is honest
         verified_ips = set(ip_to_port.keys())
@@ -189,7 +229,6 @@ class ResilientStockChecker:
             if entry.pinned_ip not in verified_ips:
                 self.proxy_state.force_burn(entry.pinned_ip)
 
-        await self.pool.start_all()
         self._start_time = time.time()
         # Spawn workers — keep concurrency 1-3 to avoid thundering herds.
         worker_count = max(1, min(3, int(self.target_rps)))
@@ -219,6 +258,8 @@ class ResilientStockChecker:
                 pass
             except Exception as e:
                 logger.debug(f"[STOCK] task {t.get_name()} cleanup error: {e}")
+        if self.multi_session_pool is not None:
+            await self.multi_session_pool.stop()
         if self.pool is not None:
             await self.pool.stop_all()
         self.proxy_state.save()
@@ -250,15 +291,26 @@ class ResilientStockChecker:
         await asyncio.sleep(random.uniform(0, per_worker_interval))
 
         while not self._stop_event.is_set():
-            tcin, entry = await self._next_dispatch()
+            tcin, dispatch_info = await self._next_dispatch()
             if tcin is None:
-                # No active proxies — wait a bit
+                # No active proxies / sessions — wait a bit
                 await asyncio.sleep(2.0)
                 continue
 
+            # dispatch_info is either ProxyEntry (legacy) or SessionEntry (multi-session)
+            if isinstance(dispatch_info, SessionEntry):
+                pinned_ip = dispatch_info.proxy_ip
+                local_port = dispatch_info.local_port
+                visitor_id = dispatch_info.visitor_id
+                cookies = dict(dispatch_info.cookies)
+            else:
+                pinned_ip = dispatch_info.pinned_ip
+                local_port = dispatch_info.local_port
+                visitor_id = dispatch_info.visitor_id
+                cookies = self._cookies_for_request()
+
             result = await asyncio.to_thread(
-                self._fetch_one, tcin, entry.pinned_ip, entry.local_port,
-                entry.visitor_id, self._cookies_for_request(),
+                self._fetch_one, tcin, pinned_ip, local_port, visitor_id, cookies,
             )
             await self._record_result(result)
 
@@ -273,16 +325,30 @@ class ResilientStockChecker:
                 pass
 
     async def _next_dispatch(self):
-        """Round-robin pick of (tcin, proxy_entry). Skips parked/burned IPs."""
+        """Pick (tcin, session_or_entry). In multi-session mode, picks a random
+        session whose IP is still active. Skips parked/burned IPs."""
         async with self._dispatch_lock:
-            actives = self.proxy_state.active_entries()
-            if not actives:
-                return None, None
-            self._ip_idx = (self._ip_idx + 1) % len(actives)
-            entry = actives[self._ip_idx]
             self._tcin_idx = (self._tcin_idx + 1) % len(self.tcins)
             tcin = self.tcins[self._tcin_idx]
-            return tcin, entry
+
+            if self.multi_session_pool is not None:
+                # Active IPs only — exclude parked/burned ones from session pool
+                active_ips = {e.pinned_ip for e in self.proxy_state.active_entries()}
+                eligible_sessions = [s for s in self.multi_session_pool.sessions
+                                     if s.cookies and s.visitor_id
+                                     and s.proxy_ip in active_ips]
+                if not eligible_sessions:
+                    return None, None
+                # Random pick — distributes load and decorrelates request order
+                session = random.choice(eligible_sessions)
+                return tcin, session
+            else:
+                actives = self.proxy_state.active_entries()
+                if not actives:
+                    return None, None
+                self._ip_idx = (self._ip_idx + 1) % len(actives)
+                entry = actives[self._ip_idx]
+                return tcin, entry
 
     async def _record_result(self, result: CheckResult):
         self._total_dispatched += 1
