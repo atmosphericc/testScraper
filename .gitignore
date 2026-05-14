@@ -36,6 +36,13 @@ nodriver-profile/
 playwright-profile/
 chrome_user_data/
 walmart-profile*/
+# Resilient stack runtime state — contains live Target auth tokens
+# (accessToken, idToken, refreshToken). Never commit.
+state/cookies_jar*.json
+state/*_profiles/
+# Per-run log files written by setup_run_logging() — large and may
+# capture auth tokens via the tee'd stdout transcript.
+logs/runs/
 
 # Config with credentials
 .env
