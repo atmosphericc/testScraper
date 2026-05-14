@@ -202,19 +202,28 @@ class ResilientStockChecker:
         )
 
     async def stop(self):
+        """Bounded shutdown — every step has a deadline so Ctrl+C reliably
+        ends the process. Pool stop has its own internal budget; this call
+        wraps it again as a belt-and-suspenders against unexpected hangs."""
         self._stop_event.set()
         for t in self._tasks:
             t.cancel()
         for t in self._tasks:
             try:
-                await t
-            except asyncio.CancelledError:
+                await asyncio.wait_for(t, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
             except Exception as e:
                 logger.debug(f"[STOCK] task {t.get_name()} cleanup error: {e}")
         if self.multi_session_pool is not None:
-            await self.multi_session_pool.stop()
-        self.proxy_state.save()
+            try:
+                await asyncio.wait_for(self.multi_session_pool.stop(), timeout=20.0)
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"[STOCK] pool stop did not complete cleanly: {e}")
+        try:
+            self.proxy_state.save()
+        except Exception as e:
+            logger.warning(f"[STOCK] final proxy_state save failed: {e}")
         logger.info("[STOCK] stopped")
 
     def latest(self) -> dict[str, TcinStatus]:

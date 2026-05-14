@@ -112,7 +112,11 @@ class ProxyState:
 
     def _save_locked(self):
         """Atomic JSON write — caller holds the lock. fsync before replace
-        so a power loss between write and rename can't leave a half-empty file."""
+        so a power loss between write and rename can't leave a half-empty file.
+        Retries os.replace on transient WinError 5 (Access denied) — observed
+        sporadically on Windows when an external process briefly opens the
+        target file or tmp file (AV scan, IDE inspector, etc.). 5 attempts
+        with exponential backoff covers normal cases; persistent lock fails."""
         tmp = self.state_file.with_suffix(f".tmp.{os.getpid()}")
         try:
             payload = {ip: entry.to_dict() for ip, entry in self._entries.items()}
@@ -124,13 +128,31 @@ class ProxyState:
                     os.fsync(fh.fileno())
                 except OSError:
                     pass
-            os.replace(tmp, self.state_file)
+            self._replace_with_retry(tmp, self.state_file)
         except Exception as e:
             logger.warning(f"[PROXY_STATE] save failed: {e}")
             try:
                 tmp.unlink()
             except OSError:
                 pass
+
+    @staticmethod
+    def _replace_with_retry(src: Path, dst: Path, attempts: int = 5):
+        delay = 0.05
+        last_err: Optional[Exception] = None
+        for i in range(attempts):
+            try:
+                os.replace(src, dst)
+                return
+            except OSError as e:
+                last_err = e
+                if i == attempts - 1:
+                    raise
+                time.sleep(delay)
+                delay = min(0.5, delay * 2)
+        # Unreachable — kept for type checkers
+        if last_err:
+            raise last_err
 
     def save(self):
         with self._lock:

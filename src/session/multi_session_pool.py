@@ -220,19 +220,32 @@ class MultiSessionPool:
         logger.info(f"[MULTI_SESSION] started — {ready}/{total} sessions ready")
 
     async def stop(self):
+        """Tear down with hard time bounds at every step. Without these, a
+        zendriver browser.stop() that hangs on a CDP socket OR a forwarder
+        server.wait_closed() blocked on an open CONNECT tunnel keeps the bot
+        from exiting on Ctrl+C (observed during 60-min stress 2026-05-13)."""
         self._stop_event.set()
         for t in (self._keepalive_task, self._watchdog_task):
             if t:
                 t.cancel()
                 try:
-                    await t
-                except (asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(t, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                     pass
-        for s in self.sessions:
-            await self._teardown_browser(s)
+        # Tear down browsers in parallel — sequential 5s timeouts × N sessions
+        # adds up to N×5s worst case. Parallel = max 5s for the whole pool.
         try:
-            await self.forwarder_pool.stop_all()
-        except Exception:
+            await asyncio.wait_for(
+                asyncio.gather(*(self._teardown_browser(s) for s in self.sessions),
+                               return_exceptions=True),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[MULTI_SESSION] browser teardown timed out — "
+                           "leaving Chrome processes for OS to reap")
+        try:
+            await asyncio.wait_for(self.forwarder_pool.stop_all(), timeout=6.0)
+        except (asyncio.TimeoutError, Exception):
             pass
         logger.info("[MULTI_SESSION] stopped")
 

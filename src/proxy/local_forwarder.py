@@ -123,13 +123,19 @@ class ForwarderPool:
         logger.info(f"[FORWARDER] {self.listen_host}:{up.port} → "
                     f"{up.upstream_host}:{up.upstream_port} (exit_ip={up.pinned_ip})")
 
-    async def stop_all(self):
+    async def stop_all(self, per_server_timeout_s: float = 2.0):
+        """Close every server. wait_closed() blocks until ALL open connections
+        drain — and a CONNECT tunnel to a Chrome that just got killed mid-flight
+        can persist until OS-level TCP cleanup (minutes). Bound each wait so
+        shutdown is deterministic; sockets that don't close in time are
+        abandoned for the OS to reap."""
         for up in self.upstreams.values():
             if up.server:
                 up.server.close()
                 try:
-                    await up.server.wait_closed()
-                except Exception:
+                    await asyncio.wait_for(up.server.wait_closed(),
+                                           timeout=per_server_timeout_s)
+                except (asyncio.TimeoutError, Exception):
                     pass
         self._started = False
 
