@@ -19,6 +19,10 @@ import app as app_module
 from app import *
 
 if __name__ == '__main__':
+    # Set up run logging FIRST so the banner + everything below lands in
+    # logs/runs/run_<timestamp>.log. setup_run_logging was made available by
+    # `from app import *` at module top.
+    setup_run_logging()
     print("=" * 60)
     print("TEST MODE DASHBOARD - SAFE TESTING ENABLED")
     print("=" * 60)
@@ -27,6 +31,8 @@ if __name__ == '__main__':
     print("[TESTING] Full flow tested: cart -> checkout -> payment -> STOP")
     print("[FEATURES] Real-time updates, infinite purchase loops")
     print("[REALTIME] Server-Sent Events for immediate UI updates")
+    print(f"[STOCK] resilient stack={os.environ.get('USE_RESILIENT_STACK')} "
+          f"sweeps_per_sec={os.environ.get('TARGET_SWEEPS_PER_SEC')}")
     print("=" * 60)
     print()
     print("INFO: For PRODUCTION mode (actual purchases), use: python app.py")

@@ -292,6 +292,12 @@ class StockMonitor:
             target_sweeps_per_sec=target_sweeps_per_sec,
             state_dir=ROOT / "state",
             log_per_request=False,
+            # preflight uses curl_cffi which Shape false-negatives on Target IPs
+            # that are healthy via real-Chrome JA3 (verified 2026-05-14 via
+            # probe_disabled_browser.py — 28/28 of the "burned" list returned 200).
+            # The per-IP park/burn logic in proxy_state.py is the actual safety net
+            # for IPs that go bad at runtime.
+            preflight=False,
         )
 
         def _runner():

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -128,6 +129,15 @@ class ResilientStockChecker:
         self._status_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
+
+        # In TEST_MODE, reset s.in_stock to False after firing the callback so
+        # the OOS→in-stock transition re-triggers on the next sweep. Without
+        # this, a permanently in-stock TCIN (e.g. the gum test product) only
+        # fires one purchase per run because the transition gate at
+        # _ingest_bulk_response never re-arms. In production this stays off
+        # so we never double-buy on continuous in-stock state.
+        self._test_mode_loop = os.environ.get(
+            "TEST_MODE", "").strip().lower() in ("1", "true", "yes")
 
         # Stats
         self._total_dispatched = 0
@@ -368,6 +378,16 @@ class ResilientStockChecker:
                     self.on_in_stock(s)
                 except Exception:
                     logger.exception("[STOCK] on_in_stock callback failed")
+            # TEST_MODE loop: re-arm the OOS→in-stock transition gate so the
+            # next sweep re-fires the callback. The purchase manager's
+            # active_purchases dedupe filters concurrent-fire signals during
+            # an in-flight purchase, so the next callback only lands after
+            # the current cycle (cart clear) finishes. Effect: indefinite
+            # test loop on a permanently in-stock TCIN.
+            if self._test_mode_loop:
+                async with self._status_lock:
+                    if s.tcin in self._tcin_status:
+                        self._tcin_status[s.tcin].in_stock = False
 
     # ───────── background loops ─────────
 

@@ -27,8 +27,115 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
+# CRITICAL: apply zendriver CDP patches BEFORE anything else imports zendriver.
+# The purchase Chrome launches during global_purchase_manager init, which is
+# well before src.session.multi_session_pool gets imported by the stock stack.
+# Without this top-of-module import, the purchase Chrome's CDP listener spams
+# KeyError('privateNetworkRequestPolicy') for every Network event (Chrome 148+
+# renamed it to localNetworkAccessRequestPolicy and zendriver hasn't caught up).
+import src.zendriver_compat  # noqa: F401
+
 os.environ.setdefault('TARGET_API_PLACE_ORDER', 'true')
 os.environ.setdefault('TARGET_API_CART_CLEAR', 'true')
+# Default the resilient browser-native stock stack ON. Override with
+# USE_RESILIENT_STACK=0 to fall back to the legacy curl_cffi proxy workers.
+os.environ.setdefault('USE_RESILIENT_STACK', '1')
+# Default sweep rate calibrated for 8h sustained runs. Round 2 validated 1.0
+# RPS/Chrome for 60 min; at 3 RPS across ~12 Chromes that's ~0.25 RPS/Chrome,
+# well under the validated ceiling with park-recovery headroom.
+os.environ.setdefault('TARGET_SWEEPS_PER_SEC', '3.0')
+# Stagger window for spinning up the 12 stock-check Chromes. Default of 600s
+# (10 min) was an anti-coordinated-burst safety measure, but with launches
+# now running in the background (MultiSessionPool fire-and-forget) the
+# dispatcher starts sweeping as soon as the first Chrome is ready — so we
+# don't need the long stagger to mask startup latency. 30s = ~2.5s/Chrome.
+os.environ.setdefault('CHROME_STAGGER_TOTAL_S', '30')
+
+
+def setup_run_logging():
+    """Open a per-run log file and tee everything into it. Idempotent.
+
+    Without this, an 8h+ run only leaves the console buffer behind — when the
+    terminal closes there's nothing to troubleshoot from the next day. After
+    calling:
+      - every print() in this process is mirrored to logs/runs/run_<ts>.log
+      - every logger.* call from src.* modules also hits a rotating package log
+        (logs/runs/package.log, 20 MB × 10 files)
+    """
+    if getattr(setup_run_logging, '_done', False):
+        return None
+    setup_run_logging._done = True
+
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'logs', 'runs')
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write(f"[LOG] cannot create {log_dir}: {e}\n")
+        return None
+
+    run_id = time.strftime('%Y%m%d_%H%M%S')
+    run_log_path = os.path.join(log_dir, f'run_{run_id}.log')
+    try:
+        run_fh = open(run_log_path, 'a', encoding='utf-8',
+                      errors='replace', buffering=1)
+    except OSError as e:
+        sys.stderr.write(f"[LOG] cannot open {run_log_path}: {e}\n")
+        return None
+
+    class _Tee:
+        def __init__(self, *streams):
+            self._streams = streams
+
+        def write(self, data):
+            for s in self._streams:
+                try:
+                    s.write(data)
+                except Exception:
+                    pass
+            return len(data) if data else 0
+
+        def flush(self):
+            for s in self._streams:
+                try:
+                    s.flush()
+                except Exception:
+                    pass
+
+        def __getattr__(self, name):
+            return getattr(self._streams[0], name)
+
+    sys.stdout = _Tee(sys.stdout, run_fh)
+    sys.stderr = _Tee(sys.stderr, run_fh)
+
+    from logging.handlers import RotatingFileHandler
+    pkg_log_path = os.path.join(log_dir, 'package.log')
+    fmt = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+    root = logging.getLogger()
+    if root.level == 0 or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+    try:
+        if not any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+            rfh = RotatingFileHandler(pkg_log_path, maxBytes=20 * 1024 * 1024,
+                                      backupCount=10, encoding='utf-8')
+            rfh.setLevel(logging.INFO)
+            rfh.setFormatter(fmt)
+            root.addHandler(rfh)
+    except OSError as e:
+        sys.stderr.write(f"[LOG] cannot attach rotating handler: {e}\n")
+    # StreamHandler bound to (now-teed) sys.stdout — logger.* INFO+ shows live
+    # on console AND lands in run_<ts>.log automatically via the tee.
+    if not any(isinstance(h, logging.StreamHandler)
+               and not isinstance(h, RotatingFileHandler)
+               for h in root.handlers):
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setLevel(logging.INFO)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+
+    print(f"[LOG] run output → {run_log_path}", flush=True)
+    print(f"[LOG] rotating package log → {pkg_log_path} (20MB × 10)", flush=True)
+    return run_log_path
 
 # Prevent system from sleeping while the app is running (Windows + macOS).
 import platform
@@ -841,8 +948,8 @@ class StockMonitorThread:
         # bot never silently fails.
         #
         # Rate is configured by TARGET_SWEEPS_PER_SEC (one sweep = one bulk
-        # fetch covering all TCINs). Default 2.0. RESILIENT_TARGET_RPS is
-        # accepted as a backward-compat alias.
+        # fetch covering all TCINs). Module-top setdefault makes 3.0 the
+        # default; RESILIENT_TARGET_RPS is accepted as a backward-compat alias.
         use_resilient = os.environ.get("USE_RESILIENT_STACK", "").strip() in ("1", "true", "yes")
         self._use_resilient = use_resilient
         self._proxy_workers = None
@@ -850,7 +957,7 @@ class StockMonitorThread:
             try:
                 sweeps = float(os.environ.get(
                     "TARGET_SWEEPS_PER_SEC",
-                    os.environ.get("RESILIENT_TARGET_RPS", "2.0"),
+                    os.environ.get("RESILIENT_TARGET_RPS", "3.0"),
                 ))
                 self._proxy_workers = self.stock_monitor.start_resilient_monitoring(
                     self._on_proxy_stock_detected,
@@ -3656,6 +3763,7 @@ def _release_sleep_lock():
 atexit.register(_release_sleep_lock)
 
 if __name__ == '__main__':
+    setup_run_logging()
     print("=" * 60)
     print("BULLETPROOF MONITORING DASHBOARD")
     print("=" * 60)
@@ -3663,6 +3771,8 @@ if __name__ == '__main__':
     print("[SAFETY] Thread-safe, atomic operations, bulletproof error handling")
     print("[REALTIME] Server-Sent Events for immediate UI updates")
     print("[ARCH] stock_monitor.py + bulletproof_purchase_manager.py")
+    print(f"[STOCK] resilient stack={os.environ.get('USE_RESILIENT_STACK')} "
+          f"sweeps_per_sec={os.environ.get('TARGET_SWEEPS_PER_SEC')}")
     print("=" * 60)
 
     # Initialize

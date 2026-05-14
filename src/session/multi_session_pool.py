@@ -85,6 +85,36 @@ def _patch_zendriver_cookie_from_json():
 
 _patch_zendriver_cookie_from_json()
 
+
+def _patch_zendriver_client_security_state():
+    """Chrome 148+ renamed `privateNetworkRequestPolicy` →
+    `localNetworkAccessRequestPolicy` in the ClientSecurityState CDP payload.
+    Older zendriver builds (which we're pinned to) unconditionally access the
+    old key and KeyError on every Network.requestWillBeSentExtraInfo event —
+    the listener_loop catches it but logs each one at INFO with a full
+    traceback, flooding 8h-run logs.
+
+    Inject the renamed field from the new one (or a sensible default) before
+    delegating, eliminating the spam at the source.
+    """
+    from zendriver.cdp import network as _zdn
+    _orig = _zdn.ClientSecurityState.from_json
+    if getattr(_orig, "_resilient_patched", False):
+        return
+
+    def _safe_from_json(cls, json):
+        if "privateNetworkRequestPolicy" not in json:
+            json = {**json,
+                    "privateNetworkRequestPolicy":
+                        json.get("localNetworkAccessRequestPolicy", "Allow")}
+        return _orig.__func__(cls, json)
+
+    _safe_from_json._resilient_patched = True
+    _zdn.ClientSecurityState.from_json = classmethod(_safe_from_json)
+
+
+_patch_zendriver_client_security_state()
+
 logger = logging.getLogger(__name__)
 
 HARVESTER_RELEVANT_COOKIES = {
@@ -206,18 +236,26 @@ class MultiSessionPool:
         self._stop_event = asyncio.Event()
         self._keepalive_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
+        self._launch_task: Optional[asyncio.Task] = None
 
     # ───────── lifecycle ─────────
 
     async def start(self):
         await self.forwarder_pool.start_all()
+        # Block here until ALL Chromes are launched. Mixing ongoing launches
+        # with in-progress purchases creates contention (the user observed:
+        # 1st purchase fired fine, but the subsequent stream of new-Chrome
+        # launches blocked the test-mode purchase loop from re-firing). Wait
+        # for the full pool to be ready, then let the dispatcher take over.
+        # With CHROME_STAGGER_TOTAL_S=30 the wait is ~30s, not 10min.
         await self._launch_all_persistent()
         self._keepalive_task = asyncio.create_task(self._keepalive_loop(),
                                                    name="multi_session_keepalive")
         self._watchdog_task = asyncio.create_task(self._watchdog_loop(),
                                                   name="multi_session_watchdog")
         ready, total = self.session_count()
-        logger.info(f"[MULTI_SESSION] started — {ready}/{total} sessions ready")
+        logger.info(f"[MULTI_SESSION] started — {ready}/{total} sessions ready, "
+                    f"dispatcher cleared to begin sweeping")
 
     async def stop(self):
         """Tear down with hard time bounds at every step. Without these, a
@@ -225,7 +263,7 @@ class MultiSessionPool:
         server.wait_closed() blocked on an open CONNECT tunnel keeps the bot
         from exiting on Ctrl+C (observed during 60-min stress 2026-05-13)."""
         self._stop_event.set()
-        for t in (self._keepalive_task, self._watchdog_task):
+        for t in (self._launch_task, self._keepalive_task, self._watchdog_task):
             if t:
                 t.cancel()
                 try:

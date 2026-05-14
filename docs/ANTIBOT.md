@@ -1,229 +1,98 @@
 # Anti-Bot Quick Reference
 
-## Last Audited & Patched
-2026-05-11 (PM8 / Rounds A–E) — **Walmart audit round 8: stealth-critical clicks, Bezier trajectories, speed wins, defense-in-depth.** Pre-drop detection-focused sweep across 5 sub-rounds (commits `f3d4b3b3`, `e91a058a`, `a023176c`). 28 fixes spanning click realism, stealth-script fingerprint gaps, trajectory kinematics, behavioral distributions, and CDP timing. The bot now has zero raw `.click()` in any scrutinized window, curved Bezier mouse paths with velocity-weighted timing, full stealth-script API coverage, log-normal/fat-tail timing distributions, and persistent (not churn-prone) DOM observers.
+> **Pivot note (2026-05-14):** the active anti-bot strategy is the Round 2 resilient
+> stack documented in `docs/RESILIENT_STACK.md` — browser-native JA3/JA4 dispatch
+> against Shape on Target's RedSky endpoint. Walmart-era audit ledger (2026-04 →
+> 2026-05-11 Rounds A–E) and pre-pivot Target patches are in `docs/ANTIBOT_ARCHIVE.md`.
 
-**Round A — Raw `.click()` purge + stealth-script fingerprint gaps (`walmart/purchase_executor.py`, `walmart/session_manager.py`):**
-(A1) **`_confirm_shipping` Continue clicks → CDP trajectory** — the most-executed click in checkout (fires 2-4× across address/payment/review). Previous code used raw `continue_btn.click()`; now mirrors the Checkout/Place-Order pattern (rect lookup → `_realistic_click` → fallback chain). (A2) **`_dismiss_any_modal` returns coords from JS, Python drives CDP click + CDP Escape** — synchronous `btn.click()` inside `evaluate()` produced no pointer events; replaced with coord extraction + `_realistic_click` + CDP `keyDown/keyUp` for the Escape fallback. (A3) **ATC fallback now uses raw CDP press/release at captured coords** — when `_realistic_click` fails (CDP write error), the prior fallback was JS `.click()`. New code does a press/release at the already-captured ATC button coordinates before falling through to a last-resort JS click. (A4) **`chrome.runtime.connect` returns fake Port stub** — previously threw `new Error('Invalid port')` immediately. PerimeterX probes `chrome.runtime.connect({name:'test'})` and expects a Port object; throwing was a fingerprint. New stub returns `{name, sender, disconnect, postMessage, onMessage:{addListener, removeListener, hasListener}, onDisconnect:{…}}`. Also added `chrome.runtime.onMessage/onConnect` registries and expanded `chrome.app.InstallState`/`RunningState` enums + `getDetails`/`getIsInstalled` stubs. (A5) **`chrome.loadTimes()` / `chrome.csi()` derive from `performance.timing`** — previously returned constant deltas (`requestStart: now-2000`, `loadEventEnd: now-500`, `pageLoadTime: 1500`). Real Chrome varies per navigation; PerimeterX correlates these across calls. New code reads `performance.timing.{navigationStart, requestStart, fetchStart, responseStart, domContentLoadedEventEnd, loadEventEnd, domLoading}` and returns `wasFetchedViaSpdy: true, wasNpnNegotiated: true, npnNegotiatedProtocol: 'h2', connectionInfo: 'h2'`. Bounded-random fallback for the timing-API-unavailable case (anchored to `_sessionStart` captured at script load). (A6) **`navigator.plugins` is a real PluginArray, not a plain array** — added `item()`, `namedItem()`, `refresh()` plus 5 plugin entries (`PDF Viewer`, `Chrome PDF Viewer`, `Chromium PDF Viewer`, `Microsoft Edge PDF Viewer`, `WebKit built-in PDF`) each with `enabledPlugin`-linked MimeTypes. `navigator.mimeTypes` similarly upgraded to a MimeTypeArray with `item`/`namedItem`. HUMAN Security probes both interfaces. (A7) **Login Sign In + Continue clicks via CDP** — added `WalmartSessionManager._cdp_click_element` helper with quadratic-Bezier trajectory (perpendicular control-point offset, 3-6 intermediate points). Sign In is the highest-scrutiny single click in the session — PerimeterX has a dedicated credential-stuffing detection module.
+## Current Strategy (Target / F5 Shape)
 
-**Round B — Trajectory realism + dispatcher offset randomization:**
-(B1) **`_realistic_click` rewritten with quadratic Bezier + sin(π·t) velocity weighting** — previously used linear interpolation (straight-line path) with uniform 10-50ms inter-move delays. Akamai `_abck` runs velocity/curvature analysis on the mouseMoved stream; linear paths at uniform velocity are flagged. New code: control point offset perpendicular to the path direction (sign random, magnitude scales 15-80px with hop distance), 4-9 steps (distance-scaled), sub-pixel Gaussian jitter on each Bezier point, velocity weighted via `sin(π·t)` so cursor moves fast in the middle (~12ms) and decelerates near both endpoints (~40ms) — matches Fitts's law. Press hold raised to 60-130ms. Verified by simulation: 39px perpendicular deviation on a 600px target (clearly curved), U-shaped 40→12→40ms timing profile. (B2) **`stock_monitor` dispatcher initial offsets are pure random `[0, 1.0)s`** — prior version used `i * 0.1 + random.uniform(0, 0.5)`, exposing a structured 100ms phase pattern in Akamai's server-side request timing across many sessions. Pure random delay eliminates the structure while preserving throughput.
+The stock-check pipeline is the active anti-bot surface. Detection budget is
+spent at the network layer (TLS fingerprint, IP reputation, request cadence)
+rather than per-click behavioral signals.
 
-**Round C — Speed wins (zero antibot tradeoff, ~1.3-3.2s saved on a FAST_DROP_MODE clean checkout):**
-(C1) **`purchase_manager._run_purchase` settle pause `1.5s` → `random.uniform(0.4, 0.8)`** — the pause flag stops new fetches; in-flight fetches complete in 150-400ms. Saves 700-1100ms on every signal→purchase critical path. (C2) **`_select_delivery_option` modal wait → 350ms bounded poll** — unconditional `0.5-1.0s` sleep replaced with 50ms-tick poll for `[role="dialog"]`. Early-exits on dialog appearance or after 350ms (no-modal path). Saves 200-1200ms when no modal appears (the common case). (C3) **`_confirm_shipping` top-of-iter sleep skipped in FAST_DROP_MODE iter 2+** — the previous iter's post-Continue sleep already paced the server; the top-of-iter sleep was partly redundant. Iter 0 keeps the pause (natural cart→checkout transition). Saves 300-700ms per extra iteration. (C4) **Modal-handler CDP probe short-circuits after 2 consecutive no-modal iterations** — new `no_modal_streak` counter with `NO_MODAL_SKIP_THRESHOLD = 2`. Pre-saved-address flow never triggers a modal mid-checkout, so further CDP checks are wasted. Saves 100-160ms over the typical 2-3 iterations. (C5 — verified, no code change) audit flagged `_navigate` already-on-page fast-path sleep but the sleep was already correctly inside the `else` branch.
+- **JA3/JA4**: N persistent Chromes (one per BD ISP IP) — `tab.evaluate(fetch(...))`
+  inherits the real Chrome TLS handshake. **No curl_cffi in the request path.**
+- **IP reputation**: pinned per-Chrome via the local CONNECT forwarder
+  (`src/proxy/local_forwarder.py`); pre-flight validator (`src/monitoring/proxy_preflight.py`)
+  drops dead IPs at startup; `src/proxy/proxy_state.py` parks IPs after a 403 streak
+  (`PARK_AFTER_403_STREAK=2`, `PARK_DURATION_S=10800`) and auto-recovers on the next 200.
+- **Cadence**: `RESILIENT_TARGET_RPS` global rate; per-TCIN refresh = `RPS / ceil(N/28)`.
+  Chrome launch staggered over `CHROME_STAGGER_TOTAL_S` (default 600s) to avoid a
+  coordinated-burst signature. Cloaking-alarm loop watches for `previously-in-stock → OOS`
+  flips that span the whole pool (false-positive guard for legitimate OOS).
+- **Behavioral mixin**: PDP nav inside the polling tab. **Default OFF** — at 3 RPS
+  aggregate with `behavioral_mix_ratio=0.10` Shape detected the pattern (7×403 burst
+  at t=228s on 2026-05-13). Re-enable ≤0.02 only.
 
-**Round D — Secondary stealth (`walmart/purchase_executor.py`, `walmart/session_manager.py`, `walmart/queue_handler.py`):**
-(D1) **Browser launch: `--lang=en-US` + `--disable-blink-features=AutomationControlled`** — `--lang` ensures Accept-Language matches the stealth-script `navigator.languages = ['en-US', 'en']` declaration. Without `--lang`, Chromium derives Accept-Language from OS locale which can mismatch and trip Akamai's fingerprint-consistency check. (D2) **`navigator.connection` per-call variance + event-listener stubs** — previously returned fixed `downlink: 10, rtt: 50`. New getter returns `{effectiveType: '4g', downlink: 9.00-11.00 (2-decimal quantized), rtt: 35-65ms (integer), addEventListener/removeEventListener/dispatchEvent stubs}`. PerimeterX probes the connection API repeatedly across a session; constant values are statistically impossible. (D3) **`queue_handler.join_queue` Hold-my-spot click → CDP trajectory** — added module-level `_cdp_realistic_click` + `_click_element_via_cdp` helpers (Bezier+velocity, same kinematics as `purchase_executor._realistic_click`). Queue-entry click on a high-demand drop is PerimeterX peak scrutiny. (D4) **`queue_handler._check_passthrough_widget` all 3 click paths → CDP** — XPath-text matches, attribute-CSS matches, AND the JS-evaluate bottom-of-viewport fallback (which used to call `el.click()` inside `evaluate()` — now returns coordinates and Python drives the CDP click). (D5) **`_try_direct_checkout_from_flyout` Checkout click → CDP** — cart flyout fast-path still does a scrutinized Checkout action. Now uses the same rect→`_realistic_click`→fallback pattern as the cart-page Checkout button. (D6) **`warm_session` per-page dwell: uniform `[5, 8]s` → log-normal `lognormvariate(1.4, 0.6)` clamped `[2, 15]s`** — median ~4s, p90 ~9s with occasional 15s outliers. Real users have log-normal page dwells, not flat-band; uniform over many cycles is itself a machine-pattern signal. (D7) **Harvester keep-alive: uniform `[35, 55]s` → fat-tail `35s + expo(mean 12s) + 10% chance of [40-120]s extra`, capped 240s** — median ~45s preserved; 10% of cycles now exceed 90s. Verified by 10000-sample simulation. Breaks the predictable refresh cadence. (D8) **CVV field clear via CDP Cmd/Ctrl-A + Delete keystrokes** — previously `e.value = ''` (synchronous DOM mutation with no `input`/`beforeinput` events, which PerimeterX's payment field sensor flags). New code: focus → CDP `keyDown` Cmd-A (Mac, modifier `4`) or Ctrl-A (Win/Linux, modifier `2`) → keyUp → keyDown Delete → keyUp. Falls back to DOM clear on CDP failure. (D9) **`_select_delivery_on_cart` JS selector pool narrowed** — `button, [role="tab"], [role="radio"], [role="option"], label, div[tabindex], a` → `button, [role="tab"], [role="radio"], [role="option"]`. Saves 30-100ms per cart visit on ~100-300 irrelevant elements. (D10) **Fixed `asyncio.sleep(1)` calls → `random.uniform(0.8, 1.4)`** — `_clear_cart` and `_is_item_already_in_cart` post-navigation pauses now randomized.
-
-**Round E — Defense-in-depth:**
-(E1) **`_wait_for_dom_stability` uses a single persistent MutationObserver** — previously created and disconnected a fresh observer every 50ms tick (~16 observers per modal close). HUMAN Security tracks observer creation rate as a bot signal; real React apps have a small number of long-lived observers. New code installs the observer once per tab (idempotent re-install guarded by `window.__walmartMutObserverInstalled`), accumulates a counter on `window.__walmartMutCount`, and each poll reads the counter delta — observer is never disconnected. Stable-since detection unchanged. (E2) **`navigator.getBattery` event-listener registry with synthesized events** — previously empty `addEventListener`/`removeEventListener` stubs meant a listener-and-wait probe never received a callback. New stub maintains a per-event-type listener list (`chargingchange`, `levelchange`, `chargingtimechange`, `dischargingtimechange`) and on `addEventListener` schedules a single `setTimeout` 5-25s later that invokes the handler with `{type, target: _battery}`. Probes waiting for the event now get one, matching real-OS behavior where battery state ticks occasionally even on a stable AC connection. Added `dispatchEvent` stub for completeness. (E3) **Cart Remove-button clicks → CDP via new `_click_handle_via_cdp` helper** — both pre-ATC cleanup (`_clear_cart_if_needed`) and post-purchase clear (`_clear_cart`) Remove loops used raw `btn.click()`. Lower-scrutiny window than checkout but still part of the cumulative behavioral profile. New helper does rect lookup → `_realistic_click` → fallback chain.
-
-Files touched across all 5 sub-rounds: `walmart/purchase_executor.py`, `walmart/purchase_manager.py`, `walmart/session_manager.py`, `walmart/stock_monitor.py`, `walmart/queue_handler.py`. AST + import + Bezier-math simulation + distribution simulation + `node --check` on the stealth JS all pass. **No live test yet.** Commits: `f3d4b3b3` (A+B+C), `e91a058a` (D), `a023176c` (E).
-
-2026-05-11 (PM7) — **Walmart audit round 7: cross-cutting concerns.** Five fixes spanning session restart, event-loop deprecation, GraphQL hash setter thread-safety, and activity-log unbounded growth. (1) **`session_manager.stop()` now clears restart-tainted state**: cancels the harvester task (so it doesn't keep polling on the dead browser), empties `_pending_graphql` + `_pending_graphql_tab2` (stale request IDs from the dead browser can't collide with new IDs on the next session), drops the live cookie cache + `_px3_timestamp` + `_monitor_cookie_snapshot` (those cookies belonged to a now-dead browser context), and resets `_last_validation` + `_last_validation_result` (so the post-restart validate_session does a real check instead of returning a stale cached True). Previously, `_run_purchase`'s auto-restart path left all of this stale state intact — `needs_rewarm()` saw an old timestamp and skipped re-warming, the harvester task was still alive but pointing at a None `_page`, and a corrupted validation cache could mask a logged-out post-restart session. (2) **Harvester is now restarted after session restart** in `purchase_manager._run_purchase`: previously `_session.start_harvester(self._loop)` was only called once at startup. After a browser restart, the harvester task is cancelled in `stop()` (PM7 fix #1) but never re-created — leaving no keep-alive thread refreshing `_px3` on Tab 1 and almost guaranteeing the next stock check would see stale cookies. New code re-invokes `start_harvester` right after `_session.start()` + `validate_session()` succeed. (3) **`asyncio.get_event_loop()` → `get_running_loop()`** in `purchase_manager.start()`. The former is deprecated since Python 3.10 and on 3.12+ returns a NEW loop if no loop is running — silently misbehaving if `start()` were ever called outside an await context. Wrapped in try/RuntimeError fallback so callers that ARE outside an await context still work. (4) **`config.set_graphql_hash_atf/btf` thread-safety**: added `_graphql_hash_lock` guarding the read-modify-write of the module-level globals. CDP `RequestWillBeSent` handlers fire on zendriver's internal thread pool (not the main asyncio loop), so two concurrent intercepts of different hash values previously raced — both passing the `!=` check, both writing, both logging the INFO line, last writer wins and the other value is silently discarded. Getters also acquire the lock to ensure consistent reads. (5) **`WalmartLogger._activity_log` is now bounded**: `ACTIVITY_LOG_MAX_ENTRIES = 2000` constant + trim on every append in both `log_activity` and `log_error`, plus trim on load (so a previously-unbounded pickle file doesn't bring back thousands of stale entries). Previously the list grew without bound — every status callback added an entry, `_save_activity_log` pickled the entire list every time. A long-running bot would eventually pickle MBs per write, contending with the file lock. Files: `walmart/session_manager.py`, `walmart/purchase_manager.py`, `walmart/config.py`, `walmart/logging_manager.py`. AST + smoke test verified (stop() state-cleanup, hash setter round-trip, activity log cap with size=5).
-2026-05-11 (PM6) — **Walmart audit round 6: deep audit of the four largest files.** Reviewed `walmart/queue_handler.py` (438 lines), `walmart/purchase_manager.py` (691 lines), `walmart/session_manager.py` (1620 lines), `walmart/purchase_executor.py` (1948 lines) — only surface fixes had touched these in prior rounds. Eight fixes applied.
-
-(1) **`walmart/queue_handler.py:enter_queue`** — `await self._page.get(item_url)` had no timeout. A stalled `/blocked` redirect on the queue-entry navigation would freeze the whole queue flow indefinitely. Wrapped in `asyncio.wait_for(..., timeout=15.0)` — same pattern PM applied to cart-clear paths in `purchase_executor`. Also dropped two dead `button:has-text(...)` patchright-only selectors from `_check_passthrough_widget`'s CSS-pattern loop (zendriver silently fails on `:has-text()` and the exceptions were being swallowed by `continue`), and removed unreachable `return False` dead code after the `while True` loop in `wait_for_passthrough`.
-
-(2) **`walmart/purchase_manager.py:_on_stock_change`** — `_in_stock_ids` set was only ever `.add()`ed, never `.discard()`ed when an item went OOS. The priority-override path at `_on_in_stock_signal` reads this set to decide which in-stock item to buy, so a long-OOS item that was briefly in-stock once would still be a priority-override candidate forever. New code adds `_lock`-guarded `discard()` on the OOS branch.
-
-(3) **`walmart/purchase_manager.py:_on_in_stock_signal` priority-override bug** — when the override picked a different item, the ORIGINAL `item_id` had already been set to `PurchaseState.PURCHASING` (line 255) and was never reset. Future signals for that original ID would be skipped forever (early-return on PURCHASING state). Atomic fix: under the same `_lock` acquisition that marks the override target as PURCHASING, reset the original ID back to MONITORING if it was the one we marked PURCHASING.
-
-(4) **`walmart/purchase_manager.py:_is_monitor_healthy`** — was reaching into `self._monitor._running_lock` + `self._monitor._running` private attrs. Replaced with the existing public `is_healthy()` method. Also added idempotency guard to `stop()` (early-return if already stopped — the dashboard's atexit/SIGINT handlers can call it multiple times). Moved `import random` to top-level (was inside `_compute_test_loop_cooldown`).
-
-(5) **`walmart/session_manager.py`** — missing `import os` (line 971 of the harvester loop used `os.environ.get("WALMART_REWARM_PAGES")` but `os` was never imported). Would `NameError` the first time the harvester checked the env var. Fixed.
-
-(6) **`walmart/session_manager.py:validate_session`** cached only successes, not failures. If validation failed at T0, a cached check at T0+1s (within `SESSION_VALIDATE_INTERVAL`) short-circuited to True, masking a logged-out session for up to the cache interval. New code adds `_last_validation_result: bool` and caches both outcomes; exception path doesn't cache (retry on next call).
-
-(7) **`walmart/session_manager.py:save_cookies`** used `cdp.network.get_cookies()` which is URL-filtered to the current page's origin. If Tab 1 happened to be on Google/Amazon at save time (e.g. mid-warmup), the saved file would contain THOSE cookies, not Walmart's. Switched to `get_all_cookies()` (matches the documented intent of every other cookie-snapshot site in the file). Also wrapped the file write in the atomic-tempfile + `os.replace` pattern PM3 applied to the other state files.
-
-(8) **`walmart/session_manager.py` Tab 2 GraphQL handler asymmetry** — Tab 1 had both `RequestWillBeSent` AND `LoadingFinished` handlers; Tab 2 only had `RequestWillBeSent`. Tab 2 requests entered `_pending_graphql` but never popped (memory leak) and their response bodies were never fetched (lost stock data). Fix: separate `_pending_graphql_tab2` dict + new `_on_network_request_tab2` / `_on_loading_finished_tab2` handlers wired on Tab 2. `_fetch_graphql_body` now takes a `page` parameter so the body fetch goes through the correct tab's CDP session (asking Tab 1 for a request_id captured on Tab 2 silently returns empty). Stale entries (request never finished, e.g. cancelled navigation) now age out after 30s via `_pending_max_age_seconds` opportunistic prune on each new enqueue.
-
-(9) **`walmart/purchase_executor.py`** — five `await self._page.get(...)` calls were missing `asyncio.wait_for` (only the `_clear_cart` family had them after PM). Affected: `_navigate` initial nav, `_navigate` post-/blocked re-nav, `_cart_and_checkout` cart nav, `_cart_and_checkout` post-/blocked re-nav, `_go_to_checkout` post-/blocked re-nav to /checkout, `_is_item_already_in_cart` back-to-product nav. All now wrapped (timeouts 15-20s). A stalled navigation could otherwise freeze the entire purchase flow. Files touched: `walmart/queue_handler.py`, `walmart/purchase_manager.py`, `walmart/session_manager.py`, `walmart/purchase_executor.py`. AST + smoke tests pass (OOS-removal, new attrs, dual-tab handler fields, atomic-write success). No live test yet.
-
-2026-05-11 (PM5) — **Walmart audit round 5: remaining files swept.** Four files audited, multiple fixes. (1) `walmart/stock_check.py`: `check_items()` referenced undefined `COOKIES_RAW` — would `NameError` on first call. Now uses `load_cookies()` from the persistent profile (the documented path). Dev-only tool, never imported by prod, but it had been broken for a long time. (2) `walmart/proxy_manager.py`: thread-safety pass. `_ProxyStats.total += 1` was not atomic — added internal `_lock` for record_success/record_error/error_rate. The `_stats: defaultdict[str, _ProxyStats]` create-if-missing is not atomic across threads — added `_stats_lock` and new `_get_stats(proxy)` accessor used everywhere. `release_checkout_proxy(proxy)` was silently broken on double-release (caller's `finally` mistake): the original gate (`if proxy not in self._checkout_available`) released the semaphore on every legitimate release but ALSO skipped releases-after-double-call, leaving the semaphore count permanently off. New version detects double-release with an explicit WARN log and only releases the semaphore exactly once per actual acquisition. `stats_summary()` now snapshots the dict under the lock so concurrent inserts don't `RuntimeError`. (3) `walmart/blueprint.py`: closed the same gaps PM2 closed in `walmart_app.py`. New `stop_manager(timeout=5.0)` exposed publicly + auto-registered via `atexit`. `_manager_loop` now stored as a module global for the stop path. `/api/status` + `/health` + `/` index route all wrap manager calls in try/except (transient state-corruption mid-shutdown previously crashed dashboard polling). `atexit` registration is best-effort — the unified-app Target shutdown handler in `app.py` calls `os._exit(0)` which bypasses atexit; the only fully-reliable fix would be wiring `stop_manager()` into `app.py`'s `shutdown_handler` directly, but that is out of Walmart-only scope. (4) `walmart/self_healing_agent.py`: high-stakes file because it auto-mutates code. Three classes of fixes. (4a) **WRONG_SELECTOR regex tightened** — old `r"not found|no.*button|selector.*not|element.*not|locator.*not|..."` matched 404s, "product not found", "order not found", and other unrelated failures, which would then trigger auto-code-patching of `purchase_executor.py` based on irrelevant HTML. New regex requires specific phrases (`\bno_atc\b`, `\bno_checkout\b`, `ATC button not found`, etc.) that only the executor emits. Verified by test: "Page not found 404" → UNKNOWN, "product not found" → UNKNOWN, "no_atc" → WRONG_SELECTOR, "ATC button not found" → WRONG_SELECTOR. (4b) **HTML capture now uses checkout tab (Tab 2)** instead of harvester tab (Tab 1). Tab 1 is on homepage/category pages and never has the failed buybox / checkout / place-order UI. The previous code captured the harvester tab, which gave the patcher no useful HTML — every patch attempt would find 0 candidates and skip. (4c) **Restart-rate circuit breaker** — `MAX_RESTARTS_PER_HOUR = 8` with rolling-window `_restart_history` deque. Previously the agent would restart every `RESTART_DELAY=15s` forever if patches failed to fix the underlying issue, burning through proxy reputation. (4d) **ATC patching now hits both files** — `ATC_SELECTORS` exists in `purchase_executor.py` AND `queue_handler.py`; the old `_FILE_MAP[var_name]` was a single filename, so patching one left the other stale (exactly the drift bug the AM round fixed manually). `_FILE_MAP` is now `dict[str, list[str]]` and `patch_from_html` iterates. Files: `walmart/stock_check.py`, `walmart/proxy_manager.py`, `walmart/blueprint.py`, `walmart/self_healing_agent.py`. AST + import + diagnostician regex test + double-release test all passed.
-2026-05-11 (PM4) — **Walmart audit round 4: stock_monitor.py concurrency hardening.** Six fixes to `walmart/stock_monitor.py` after auditing dispatcher-thread shared state. (1) **`_cb_lock` added** to guard `_consecutive_blocked` + `_monitor_circuit_open_until` + the new `_graphql_refresh_signaled`. The three dispatcher threads were racing on the BLOCKED-counter increment and the threshold-trip gate — under load (5 BLOCKED responses arriving across two dispatchers in the same 100ms window) the breaker could trip twice in succession, emit duplicate "circuit breaker tripped" log lines, and (worse) the `_log_px3_state_on_block` diagnostic could fire concurrently and spawn parallel CDP coroutines on the same browser page. (2) **`_rate_limit_lock` added** to guard `_rate_limit_hits` + `_rate_limit_backoff`. The hit-counter was incremented inside `_checks_lock` (the wrong lock — that lock guards `_total_checks` not the rate-limit counters) and the backoff timestamp was read+written without any lock. (3) **Circuit-breaker cooldown finalizer race fixed.** When the breaker tripped, all NUM_DISPATCHERS dispatchers waited the full pause, then each independently reset `_consecutive_blocked = 0` and dropped through — the new finalizer uses the open-until timestamp as a witness: the first dispatcher to observe the cooldown ending atomically resets the counter and clears `_monitor_circuit_open_until` under `_cb_lock`; other dispatchers see open-until=0 and skip the reset. Also added 0-1.5s jitter on post-cooldown resume so dispatchers don't all fire simultaneously after the pause (the synchronized burst would itself look like a bot pattern). (4) **Rate-limit hit counter now resets** at the end of the backoff window (first dispatcher to observe the window ending resets, same witness-pattern as the circuit breaker). Without the reset, a stale `_rate_limit_hits=3` was sticky forever — the next transient 429 immediately re-tripped the gate. (5) **`_trigger_graphql_hash_refresh` deduped** with a 30-second cooldown. A batch of N products that all return HTTP 400 simultaneously previously produced N ERROR log lines and N flag-sets; now only the first call within the cooldown window signals the harvester. (6) **`_run_browser_fetch` and `_log_px3_state_on_block` snapshot `_session._page` and `_session._event_loop`** before use, with `loop.is_closed()` check. Session manager clears `_page` on shutdown (lines 360, 431); without the snapshot, a dispatcher already past the None guard could hit `NoneType.evaluate(...)` inside the coroutine if shutdown races with the fetch. Also handles `RuntimeError` from `run_coroutine_threadsafe` if loop closes between the check and submission. Files: `walmart/stock_monitor.py`. AST + import + init smoke test passed; live test pending (needs a real Walmart drop to exercise the BLOCKED-heavy paths).
-2026-05-11 (PM3) — **Walmart audit round 3: durability of on-disk state.** Three fixes to make state files crash-safe across `walmart/config.py` + `walmart/logging_manager.py`. (1) `walmart_config.json` is now written via tempfile + `os.replace` (atomic on POSIX); a kill mid-write cannot leave the canonical config in a half-written state. `get_config` also now catches `json.JSONDecodeError` / `OSError` and returns the empty fallback instead of crashing the dashboard's initial render. (2) Same atomic-write treatment for `walmart/logs/purchase_states.json` (`log_purchase_state`) and `walmart/logs/activity_log.pkl` (`_save_activity_log`). The purchase-states file is the most critical of the three — a corrupted entry could mask a "still attempting" record and let the bot double-purchase on restart. `get_purchase_state` now isolates `JSONDecodeError` from generic exceptions for clearer logs. (3) `get_walmart_logger()` singleton init guarded by `_walmart_logger_lock` (double-checked locking) — two concurrent first-callers can no longer each instantiate a `WalmartLogger` with its own `_lock`, defeating the rest of the thread-safety story. Files: `walmart/config.py`, `walmart/logging_manager.py`. AST + round-trip read/write test passed.
-2026-05-11 (PM2) — **Walmart audit round 2: walmart_app.py lifecycle + robustness.** Four fixes to `walmart/walmart_app.py` after auditing the standalone dashboard's startup / shutdown / error paths. (1) Added `_graceful_shutdown(signum, frame)` SIGINT/SIGTERM handler that schedules `WalmartPurchaseManager.stop()` on the manager loop (5s budget) + flushes logging handlers + `sys.exit(0)` — without this, Ctrl+C killed the daemon thread mid-purchase, left Chrome hung, and produced 0-byte .log files (six of those observed from the 10:06-10:15 start/kill cycles). Double-Ctrl+C escape hatch via `os._exit(1)`. Signal handlers only registered when running on the main thread. (2) `FileHandler(log_file, delay=True)` — file is only created when the first log line is written; eliminates future 0-byte log artifacts on quick start/kill cycles. (3) `/api/status` and `/health` routes both wrap `_manager.get_status()` in try/except — dashboard polling no longer crashes the route if get_status raises mid-shutdown. Also cleaned up stale entries in the Open Gaps list below — Walmart GraphQL hash staleness and Walmart circuit breaker were both implemented and moved to Resolved. Files: `walmart/walmart_app.py`, `docs/ANTIBOT.md`, `docs/FAILURES.md`. AST + signal-handler reload-safety verified; live test pending.
-2026-05-11 (PM) — **Walmart audit follow-ups.** Three open gaps from the morning audit closed before live testing. (1) `walmart/purchase_executor.py`: all three cart navigations (`_clear_cart`, `_clear_cart_if_needed`, `_is_item_already_in_cart`) now wrap `await self._page.get(WALMART_CART_URL)` in `asyncio.wait_for(..., timeout=15.0)`. Without the wrapper, a stalled cart navigation would propagate up through the manager's `finally` clause and freeze the whole purchase loop. On timeout, `_clear_cart` flags `_last_cart_clear_blocked = True` so the manager treats the session as poisoned (same path as the existing `/blocked` detection). (2) `walmart/session_manager.py`: cookie harvester gains `pause_harvester()` / `resume_harvester()` + `_harvester_paused` flag; the keep-alive loop checks the flag at the top of each iteration and short-sleeps 1s while paused (no GraphQL refresh, no re-warm, no homepage navigation). (3) `walmart/purchase_manager.py:_run_purchase` pauses the harvester right after the stock monitor pause (same window), resumes it in `finally` right after the monitor resume — concurrent Tab 1 traffic during the most-scrutinized Tab 2 checkout window is eliminated. (4) `walmart/blueprint.py:35` `CHECKOUT_MODE` default flipped `"LIVE"` → `"PRODUCTION"` — mirrors the morning fix in `walmart_app.py`. Unified app (`unified_app.py`) was also silently falling through to TEST mode whenever the env var wasn't set. Files: `walmart/purchase_executor.py`, `walmart/session_manager.py`, `walmart/purchase_manager.py`, `walmart/blueprint.py`. No live test yet; AST + flow trace verified.
-2026-05-11 — **Walmart standalone dashboard audit (`walmart/walmart_app.py`).** Four fixes applied. (1) `CHECKOUT_MODE` default changed `"LIVE"` → `"PRODUCTION"` (`walmart/walmart_app.py:55`) — the executor's non-test branch is keyed on `CHECKOUT_MODE == "PRODUCTION"` (`walmart/purchase_executor.py:225`), so the previous `"LIVE"` default silently fell through to TEST mode and **no real orders were ever placed** despite the UI badge reading LIVE. Same bug existed in `walmart/blueprint.py:35` — patched in the PM follow-up entry above. (2) `/reorder-products` Flask route added (`walmart/walmart_app.py:699-733`) — the dashboard JS posts to this endpoint on every priority up/down click (`walmart_app.py:509`) but no handler existed, so reorder did a 404 and the new order was lost on refresh. (3) File handler now attached to the `walmart` package logger (`walmart/walmart_app.py:38-56`) so every submodule (`walmart.purchase_executor`, `walmart.session_manager`, `walmart.stock_monitor`, `walmart.purchase_manager`) writes to `logs/walmart_app_<ts>.log` via propagation. Previously only five named loggers (`MANAGER`, `PURCHASE`, `SESSION`, `MONITOR`, `PROXY`) were captured — those are also still attached for legacy modules. (4) `walmart/queue_handler.py:ATC_SELECTORS` updated to mirror `purchase_executor.ATC_SELECTORS` — primary `data-automation-id="atc"` was missing, plus `data-dca-event="addToCart"` and `data-dca-name="ItemBuyBoxAddToCartButton"`. Without "atc" the virtual-queue pass-through detection (`queue_handler._wait_for_atc`) would have timed out at `QUEUE_TIMEOUT` (30 min) on every high-demand drop, since Walmart's modern buybox renders the button with `data-automation-id="atc"` not the legacy `"add-to-cart-btn"`. No live test yet; fixes verified by AST parse + route registration check. Files: `walmart/walmart_app.py`, `walmart/queue_handler.py`. Open gaps from this entry (harvester not paused during checkout, `_clear_cart` had no `asyncio.wait_for`) were both closed in the 2026-05-11 PM follow-up entry above.
-2026-05-06 — **Target Phase 4b place-order: LIVE-VALIDATED.** OBSERVE-mode run on TCIN 50270379 (single-account, N=1) placed a real order via API in 0.92s (HTTP 200, 8807-byte body). Parser at `src/session/purchase_executor.py:3094-3140` extracted `order_id=69341e41-49a9-11f1-8a23-dd806c72f8cb` and `reference_id=102003451858955` from `orders[0]` on first try — speculative parser shape confirmed correct. End-to-end checkout (navigate → ATC → pre_checkout → API place-order) reduced from ~12-15s (DOM) to **7.34s**. Production env going forward: `TARGET_API_PLACE_ORDER=true TARGET_API_CART_CLEAR=true` (drop `_OBSERVE`). Phase 6 dispatch with N=1 worker pool exercised in the same run — primary worker bound to global event loop, no regressions. Phase 6 at N≥2 still untested live (requires a second account; parked). Also: shutdown handler refactored to add a double-Ctrl+C escape hatch and reorder browser-kill before session-save so CDP coroutines fail fast (`app.py:3635-3705`). Files: docs/RETAILERS/TARGET_CHECKOUT_API.md, app.py, src/session/purchase_executor.py.
-2026-05-05 — **Target ATC: max-quantity from RedSky.** Hardcoded `quantity: 1` in the cart POST replaced with the per-customer purchase limit RedSky already returns (`fulfillment.maximum_order_quantity.shipping.value` or legacy `fulfillment.purchase_limit`), capped to ATP and clamped [1, 10]. Carried on the stock dict as `max_qty`, plumbed through `BulletproofPurchaseManager.start_purchase` → `PurchaseExecutor.execute_purchase(quantity=)` → ATC fetch body. Hot path is unchanged (still one POST). One-shot fallback to `quantity: 1` only when Target rejects with `PURCHASE_LIMIT`/`MAX_QUANTITY`/`EXCEEDED` (re-warms Shape headers if stale before retry). **Antibot rationale:** the new payload values are within the visible-dropdown range that real users send, so the variance is human-shaped; the warmup POST (line 497) intentionally still uses `quantity: 1` since real users always tap ATC once before adjusting quantity. Each TCIN's payload is consistent across visits. Files: `src/monitoring/stock_monitor.py`, `src/purchasing/bulletproof_purchase_manager.py`, `src/session/purchase_executor.py`.
-2026-05-03 (PM, late) — **Test-mode inter-cycle cooldown.** Live test confirmed cookie-restore fix works (cycle 1 succeeded with no BLOCKED on monitor resume), BUT cycle 2 hit `/blocked?...&g=b` (press-and-hold) at the cart page navigation. Root cause: re-purchasing the same item 5s after the previous one is the strongest behavioral bot signal in the entire flow — humans don't buy two of the same thing back-to-back. PerimeterX's session score accumulates fast and serves the press-and-hold challenge on cart-page navigation. Fix: `walmart/purchase_manager.py:_run_purchase` now sleeps a random 90-180s between test-mode re-queue cycles (configurable via `WALMART_TEST_LOOP_COOLDOWN` env var: `off`/`0` to disable, `<int>` for fixed delay, unset for default range). Re-checks in-stock + circuit-breaker state after the cooldown so we don't re-queue on a stale signal. Also caught a stale architecture claim: the checkout proxy is acquired but never actually wired into Tab 2's traffic — `walmart/proxy_manager.py` allocation is decorative bookkeeping. Tab 2 navigates through the local browser IP. Filing this as a separate open gap.
-2026-05-03 (PM) — Three follow-up fixes after the morning cookie-isolation patch failed silently in live test:
-  - **Type fix in `restore_monitor_cookies`**: `Cookie.expires` is a plain `float` but `CookieParam.expires` requires `cdp.network.TimeSinceEpoch`. Without wrapping, `set_cookies()` raised `'float' object has no attribute 'to_json'` and the entire restore was skipped → BLOCKED cascade returned. Fixed: wrap `c.expires` in `TimeSinceEpoch(...)` before passing to `CookieParam`.
-  - **Akamai cookies were not being deleted before restore**: Original code only `delete_cookies` for `_px*` family, missing `_abck`/`bm_sz`/`bm_sv`. Without delete-first, `set_cookies` collides with existing entries. Fixed: extracted `_PX_AKAMAI_COOKIE_NAMES` class constant covering all 9 cookies; both delete and restore use it.
-  - **Logging**: `logger.warning` → `logger.exception` on the outer except in `restore_monitor_cookies` so future failures show full traceback. Restore now also logs which cookie names were re-injected.
-2026-05-03 (PM) — Delivery-day modal: switched from "find a date radio button" to "click the primary CTA". Walmart pre-selects a default day; clicking a day radio is an unnecessary interaction during the most-scrutinized checkout step. New impl finds primary CTA inside `[role="dialog"]` by text match (`continue|confirm|save|apply|done|use this|looks good`), with fallback to the rightmost non-close, non-cancel, non-radio button (Walmart UI convention: primary CTA is rightmost in footer). Click goes through `_realistic_click` (CDP mouse trajectory). Post-click pause trimmed from 1.8-6s to 0.8-1.6s — a confirm-with-default action doesn't need long human-think-time. Files: `walmart/purchase_executor.py:_handle_delivery_day_modal`.
-2026-05-03 (AM) — Cookie-isolation fix for Tab 2 → Tab 1 _px3 contamination. After a successful test-mode checkout, Tab 2's cart/checkout navigations rotated _px3 with PerimeterX-flagged values; on monitor resume, Tab 1's fetches sent the poisoned _px3 → 5 BLOCKED → circuit breaker → 120s stall. Fix: `snapshot_monitor_cookies()` before pause, `restore_monitor_cookies()` after `_clear_cart` re-injects the trusted PX/Akamai cookie set (`_px3`, `_px`, `_pxhd`, `_pxvid`, `_pxff_cc`, `_pxde`, `_abck`, `bm_sz`, `bm_sv`) via CDP `Network.deleteCookies` + `Network.setCookies`. Files: `walmart/session_manager.py` (new methods), `walmart/purchase_manager.py:_run_purchase` (snapshot before `monitor.pause()`, restore in finally before `monitor.resume()`). Preserves checkout speed — no added delays. **NOTE:** Initial commit had a silent type bug — see PM entries above for the actual working version.
-2026-05-02 — 4-patch fix for Walmart+ popup → /blocked detection cascade observed in live test. See "2026-05-02 Patches" section below.
-2026-05-01 — 8-patch Walmart bot behavioral audit applied (Phase 1 + 2). All patches committed. See "2026-05-01 Patches" section below.
-2026-04-25 — 6-patch antibot audit. 5 patches applied (see below), 1 investigated (patchright/zendriver question resolved).
-2026-04-10 — Consolidated to eliminate duplication. Full retailer-specific details live in `@docs/RETAILERS/TARGET.md` and `@docs/RETAILERS/WALMART.md`.
-2026-04-10 — ATC timing fix: 12s confirmation wait reverted to 6s/proceed-anyway. Cart cycling fix: `already_in_cart` path now calls `_verify_cart` to land on cart page before checkout.
-
-## Confirmed Working Mitigations
-
-### 2026-05-11 PM8 — Rounds A–E (28 patches, pre-drop detection sweep)
-
-See the "Last Audited & Patched" section above for the full A1–E3 ledger. The bot now has:
-
-- **Zero raw `element.click()` in any PerimeterX-scrutinized window** — ATC, Continue, Checkout, Place Order, Walmart+ popup dismiss, modal close, queue-entry, queue-passthrough, flyout-checkout, login Sign-In, login Continue, and cart Remove all route through CDP mouse trajectory.
-- **Curved Bezier mouse paths with velocity-weighted timing** — quadratic Bezier with perpendicular control-point offset (sign random, magnitude 15-80px), 4-9 distance-scaled steps, sub-pixel Gaussian jitter, sin(π·t) velocity (12ms mid-path, 40ms endpoints), 60-130ms press hold. Replaces previous straight-line linear interpolation.
-- **Full stealth-script API coverage** — `navigator.plugins` is a PluginArray (not plain array) with 5 plugin entries + `item`/`namedItem`/`refresh` + linked MimeTypeArray; `chrome.runtime.connect` returns a Port stub (was throwing); `chrome.loadTimes`/`csi` derive from `performance.timing` with per-call variance (were constant deltas); `navigator.connection` returns quantized per-call random `downlink`/`rtt` (was fixed `10`/`50`); `navigator.getBattery` synthesizes a single event 5-25s after listener registration (was empty stubs); `chrome.app` has full `InstallState`/`RunningState` enums.
-- **Human-shaped timing distributions** — `warm_session` per-page dwell is log-normal (median 4s, p90 9s, tail to 15s) instead of uniform [5,8]; harvester keep-alive is `35s + expo(mean 12s)` with 10% long-tail to 120s+ instead of uniform [35,55]; dispatcher initial offsets are pure random [0,1.0)s instead of deterministic `i*0.1 + jitter`.
-- **Persistent (not churn-prone) DOM observer** — `_wait_for_dom_stability` installs one MutationObserver per tab and reads an accumulated counter on each poll, instead of creating/disconnecting ~16 observers per modal close.
-- **CDP keystroke-based CVV field clear** — `e.value = ''` (synchronous DOM mutation, no input events) replaced with Cmd/Ctrl-A + Delete via CDP `keyDown`/`keyUp` so `input`/`beforeinput` events fire on the payment field.
-- **Browser launch hardened** — `--lang=en-US` ensures Accept-Language matches stealth-script declaration; `--disable-blink-features=AutomationControlled` belt-and-suspenders against upstream defaults.
-
-Speed bonus (Round C, zero antibot cost): ~1.3-3.2s shaved from FAST_DROP_MODE checkout via settle-pause cut, bounded modal poll, top-of-iter sleep skip, and modal-handler short-circuit.
-
-**Files:** `walmart/purchase_executor.py`, `walmart/purchase_manager.py`, `walmart/session_manager.py`, `walmart/stock_monitor.py`, `walmart/queue_handler.py`. **Commits:** `f3d4b3b3` (A+B+C), `e91a058a` (D), `a023176c` (E). **Verification:** AST + import + Bezier math sim + distribution sim + `node --check` on stealth JS all pass; **no live test yet**.
-
-### 2026-05-02 Patches — Walmart+ Popup Dismiss → /blocked Cascade Fix
-Live test on 2026-05-02 reached Place Order page successfully, but the Walmart+ upsell popup
-dismiss triggered Akamai/PerimeterX detection: next stock check returned 24 BLOCKED responses
-in 2 seconds, and the next purchase navigation hit `/blocked?...&g=b` (press-and-hold). The
-post-purchase `_clear_cart` silently logged "cart already empty" because the cart navigation
-also hit `/blocked` — leaving the cart populated with 1 item. Manager then re-queued on the
-poisoned `_px3` cookie, cascading the block.
-
-- **Patch 14** — `walmart/purchase_executor.py:_dismiss_walmart_plus_popup`: Replaced
-  `popup_btn.click()` (raw DOM click) with `getBoundingClientRect → _realistic_click()` (CDP
-  mouse trajectory) — same pattern as Patch 9 (Place Order). Added 1.2-2.5s human read/decide
-  pause before the click and 0.8-1.6s settle pause after. The Walmart+ popup appears on the
-  most-scrutinized checkpoint (Place Order page) so a deterministic synchronous DOM click is
-  one of the strongest behavioral bot signatures PerimeterX can fire on.
-
-- **Patch 15** — `walmart/purchase_executor.py:_clear_cart`: Now detects when post-purchase
-  cart navigation lands on `/blocked` and (a) does NOT log "cart already empty" (which masks
-  a poisoned session), (b) skips the Tab 1 rewarm (which would also be blocked and burn the
-  proxy), and (c) sets `_last_cart_clear_blocked = True` so the manager can read the poisoned
-  state. Returns True/False to indicate clear success.
-
-- **Patch 16** — `walmart/purchase_manager.py:_run_purchase`: Skips the in-stock re-queue
-  branch when the previous attempt's `_clear_cart` hit `/blocked` OR the stock monitor's
-  circuit breaker is open. Prevents cascading detections by waiting for the next natural
-  in-stock signal (after monitor cooldown) instead of immediately re-attacking on the same
-  poisoned `_px3`.
-
-- **Patch 17** — `walmart/stock_monitor.py:_browser_fetch_loop`: Circuit breaker now logs
-  + emits status only on the FIRST trip per cooldown window. Previously every BLOCKED result
-  in a single batch incremented the counter and re-tripped the breaker, producing 20+ duplicate
-  log lines in 2 seconds (visible in the 2026-05-02 log).
-
-**All patches are low-risk with fallback paths**. CDP click failure → falls back to native
-click; cart blocked → caller is informed but flow continues; manager re-queue suppression →
-just waits for next in-stock signal.
-
-### 2026-05-01 Patches — Walmart Behavioral Realism (Phase 1 & 2)
-Eight patches applied to break deterministic patterns and behavioral signals identified in 2026-04-30 audit.
-Commit: `79c37eaa`. Expected impact: 40-60% detection reduction (Phase 1), additional 20-30% (Phase 2).
-
-**Phase 1 — Machine Pattern Elimination:**
-
-- **Patch 6** — `walmart/stock_monitor.py:35`: `NUM_DISPATCHERS` reduced 10→3. Eliminates aggregate machine-pattern signal from 10 overlapping stock checks every 1.0s; three dispatchers still achieve ~3 checks/sec with natural variance. ~20-30% Akamai detection reduction.
-
-- **Patch 7** — `walmart/purchase_manager.py:152`: Tab 2 pre-warm URL changed from search page to `/ip/{item_id}` of first enabled product. Restores 8-13s checkout speed advantage and reduces behavioral divergence from humans.
-
-- **Patch 8** — `walmart/session_manager.py:380-430`: Email + password login via char-by-char CDP key events (50-150ms inter-key hold). Replaced `set_value()` (JS synchronous DOM mutation detected by PerimeterX at authentication checkpoint) with realistic keyDown/keyUp CDP events.
-
-- **Patch 9** — `walmart/purchase_executor.py:1037-1051`: Place Order button click via `_realistic_click()` with CDP mouse trajectory. Changed from JS click() to getBoundingClientRect bounds + curved CDP mouse movement. Place Order is the most scrutinized button (triggers server-side payment).
-
-**Phase 2 — Behavioral Randomization:**
-
-- **Patch 10** — `walmart/session_manager.py:732-750`: Harvester page warmup randomized. Changed from fixed order (homepage → browse → search) to random selection of 2-3 pages + shuffle. Breaks _px3-refresh behavioral signature.
-
-- **Patch 11** — `walmart/session_manager.py:1127, 1171, 1175`: Press-and-hold challenge timing randomization. Fixed `0.08s` → `random(0.06, 0.15)`. Fixed `0.5s` pauses → `random(0.3, 0.8)`. Prevents timing-based bot detection during challenge solve.
-
-- **Patch 12** — `walmart/queue_handler.py:84-88`: ATC selector priority. Prioritize `data-automation-id="atc"` (modern Walmart). Fallback: `data-automation-id="add-to-cart-btn"` (legacy). Fixes stale selector issue.
-
-- **Patch 13** — `walmart/session_manager.py` stealth script: Added `navigator.hardwareConcurrency = 4` (quad-core) and `navigator.deviceMemory = 8` (8GB RAM). Prevents device-memory ML feature usage by PerimeterX/HUMAN Security.
-
-**All patches are low-risk with fallback paths** (e.g., CDP click failure → falls back to btn.click()).
-
-### 2026-04-25 Patches
-
-- **Patch 3** — `src/session/session_manager.py`: Static UA pool removed from fingerprint fallback path. After browser launch, `initialize()` now reads `navigator.userAgent` from the live tab via `tab.evaluate("navigator.userAgent")` and overwrites `fingerprint_data['user_agent']`. This eliminates the detection vector where the stored/logged UA diverged from the actual Chrome JA3 fingerprint.
-
-- **Patch 4** — `walmart/purchase_executor.py`: CVV `keyDown` hold duration raised from `random.uniform(0.01, 0.03)` (10–30ms) to `random.uniform(0.05, 0.15)` (50–150ms). The prior range is below the minimum physically achievable human keypress (~50ms floor); PerimeterX keystroke analysis on payment fields treats sub-50ms holds as automation.
-
-- **Patch 5** — `src/monitoring/stock_monitor.py` + `app.py`:
-  - Removed `'is_bot': 'false'` from RedSky API params in both files. Shape Security treats explicit `is_bot=false` self-declaration as a bot heuristic — real browsers never send this parameter.
-  - Updated Chrome/120 UA strings to Chrome/131 in both files (last verified: 2026-04-25). Chrome/120 is EOL and a version-mismatch signal when the actual browser reports Chrome/131.
-
-- **Patch 1** — `src/session/purchase_executor.py:820-822`: Removed `el.removeAttribute('disabled')` and `el.removeAttribute('aria-disabled')` from the forced-click fallback. The `.click()` call alone is sufficient and avoids the DOM mutation signal that Shape Security tracks before click events on purchase buttons.
-
-- **Patch 2** — `src/session/purchase_executor.py:494`: Replaced warmup POST TCIN `'00000000'` with `'81926151'` (Target $25 eGiftCard — always available). Eliminates the repeating-404-pattern signal that Shape Device ID+ accumulates against the device fingerprint.
-
-- **Patch 3** — `src/session/session_manager.py`: Static UA pool removed from fingerprint fallback path. After browser launch, `initialize()` now reads `navigator.userAgent` from the live tab via `tab.evaluate("navigator.userAgent")` and overwrites `fingerprint_data['user_agent']`. This eliminates the detection vector where the stored/logged UA diverged from the actual Chrome JA3 fingerprint.
-
-- **Patch 4** — `walmart/purchase_executor.py`: CVV `keyDown` hold duration raised from `random.uniform(0.01, 0.03)` (10–30ms) to `random.uniform(0.05, 0.15)` (50–150ms). The prior range is below the minimum physically achievable human keypress (~50ms floor); PerimeterX keystroke analysis on payment fields treats sub-50ms holds as automation.
-
-- **Patch 5** — `src/monitoring/stock_monitor.py` + `app.py`:
-  - Removed `'is_bot': 'false'` from RedSky API params in both files. Shape Security treats explicit `is_bot=false` self-declaration as a bot heuristic — real browsers never send this parameter.
-  - Updated Chrome/120 UA strings to Chrome/131 in both files (last verified: 2026-04-25). Chrome/120 is EOL and a version-mismatch signal when the actual browser reports Chrome/131.
-
-- **Patch 1** — `src/session/purchase_executor.py:820-822`: Removed `el.removeAttribute('disabled')` and `el.removeAttribute('aria-disabled')` from the forced-click fallback. The `.click()` call alone is sufficient and avoids the DOM mutation signal that Shape Security tracks before click events on purchase buttons.
-
-- **Patch 2** — `src/session/purchase_executor.py:494`: Replaced warmup POST TCIN `'00000000'` with `'81926151'` (Target $25 eGiftCard — always available). Eliminates the repeating-404-pattern signal that Shape Device ID+ accumulates against the device fingerprint.
-
----
+### Target purchase path
+The checkout side uses the API place-order path (`TARGET_API_PLACE_ORDER=true`,
+`TARGET_API_CART_CLEAR=true`) — see `docs/RETAILERS/TARGET_CHECKOUT_API.md` and
+the 2026-05-06 entry in this file for live validation.
 
 ## Retailer Anti-Bot Stacks
 
 | Retailer | Vendor | Detection Vectors | Bypass Status |
 |----------|--------|-------------------|---------------|
-| **Target** | F5 Shape Security | TLS fingerprinting (JA3/JA4), JS sensor payload, Device ID+ ML, IP reputation, CDP artifacts | ✅ Working: zendriver + warmup tab + CDP Fetch interception |
-| **Walmart** | Akamai (v2/v3) + PerimeterX/HUMAN + Cloudflare | TLS, JS sensor payload, behavioral analysis, IP reputation, HTTP/2 fingerprinting | ✅ Working: zendriver + dual-tab warmup + press-and-hold challenge solver |
+| **Target** (active) | F5 Shape Security | TLS fingerprinting (JA3/JA4), JS sensor payload, Device ID+ ML, IP reputation, CDP artifacts | ✅ Round 2 resilient stack — 99.95% over 60 min @ 3 RPS / 3 IPs / 33 TCINs |
+| **Walmart** (legacy) | Akamai (v2/v3) + PerimeterX/HUMAN + Cloudflare | TLS, JS sensor payload, behavioral analysis, IP reputation, HTTP/2 fingerprinting | ⏸ Implemented in `walmart/` but not actively exercised post-pivot. See ANTIBOT_ARCHIVE.md. |
 
-**Difficulty**: Target ~7/10, Walmart ~9/10 (three independent vendors)
+**Difficulty (reference)**: Target ~7/10, Walmart ~9/10.
 
----
+## Recent Target Patches
 
-## Open Gaps (Critical)
+2026-05-06 — **Target Phase 4b place-order: LIVE-VALIDATED.** OBSERVE-mode run on TCIN 50270379
+(single-account, N=1) placed a real order via API in 0.92s (HTTP 200, 8807-byte body). Parser at
+`src/session/purchase_executor.py:3094-3140` extracted `order_id=69341e41-49a9-11f1-8a23-dd806c72f8cb`
+and `reference_id=102003451858955` from `orders[0]` on first try. End-to-end checkout (navigate → ATC
+→ pre_checkout → API place-order) reduced from ~12-15s (DOM) to **7.34s**. Production env:
+`TARGET_API_PLACE_ORDER=true TARGET_API_CART_CLEAR=true` (drop `_OBSERVE`). Phase 6 at N≥2 still
+untested live. Also: shutdown handler refactored with double-Ctrl+C escape hatch
+(`app.py:3635-3705`).
 
-1. **Target**: Shape headers reactively re-warmed on 403/block — no proactive refresh before TTL expiry. Recovery costs ~1-2s on the failure path. Acceptable as-is; flagged for awareness only. Code: `src/session/purchase_executor.py:warm_shape_headers()` (called at line 671 on purchase start, line 850 on Shape-block).
-2. **Walmart**: `/blocked?g=a` checkbox variant solver is implemented (`walmart/session_manager.py:1439 _solve_checkbox_challenge`) but **unverified live** — never observed firing in production, so the click+wait logic has not been validated against a real PerimeterX checkbox challenge.
-3. **Both**: No integration test suite — untested end-to-end flows.
-4. **Walmart**: **Checkout proxy is acquired but never wired into the browser** (discovered 2026-05-03). `walmart/proxy_manager.py:acquire_checkout_proxy()` returns a proxy URL and `walmart/purchase_manager.py:_run_purchase` logs "Checkout proxy acquired", but no code path passes that URL into the zendriver browser launch args or per-tab proxy config. Tab 2 navigates through the local machine IP regardless of which proxy was "acquired". This means: (a) all checkout traffic goes from one IP, defeating proxy rotation; (b) `_abck` IP-binding is consistent (good — restored cookies still match the IP); (c) but if Walmart blocks the local IP, no rotation will save it. To actually use checkout proxies, the browser would need to be re-launched with `--proxy-server=...` per checkout, or use a separate browser context per checkout with its own proxy.
-5. **Walmart**: **Rounds A–E (PM8) are not live-tested.** 28 patches verified by AST + math/distribution simulation + `node --check`, but no real Walmart drop has exercised the new Bezier trajectories, persistent DOM observer, getBattery listener synthesis, or fat-tail harvester schedule. First live run will validate; revert candidates if BLOCKED rate increases unexpectedly: the persistent MutationObserver (E1) is the highest-risk change since it leaves a global observer running indefinitely (could be probed via `window.__walmartMutObserver`).
+2026-05-05 — **Target ATC: max-quantity from RedSky.** Hardcoded `quantity: 1` in cart POST
+replaced with the per-customer purchase limit RedSky returns
+(`fulfillment.maximum_order_quantity.shipping.value` or legacy `fulfillment.purchase_limit`),
+capped to ATP and clamped [1, 10]. Carried as `max_qty` and plumbed through
+`BulletproofPurchaseManager.start_purchase` → `PurchaseExecutor.execute_purchase(quantity=)` → ATC
+fetch body. One-shot fallback to `quantity: 1` on `PURCHASE_LIMIT`/`MAX_QUANTITY`/`EXCEEDED`
+(re-warms Shape headers if stale before retry). Warmup POST (line 497) still uses `quantity: 1`
+(humans tap ATC once before adjusting). Files: `src/monitoring/stock_monitor.py`,
+`src/purchasing/bulletproof_purchase_manager.py`, `src/session/purchase_executor.py`.
 
-## Do NOT Re-Flag (PM8 sweep already addressed)
+2026-04-25 — Target patches: removed `is_bot=false` from RedSky params (Shape treats explicit
+self-declaration as a heuristic); UA strings updated Chrome/120 → Chrome/131; static UA pool
+removed from fingerprint fallback (live `navigator.userAgent` overwrites the stored UA
+post-launch); warmup POST TCIN `'00000000'` → `'81926151'` (Target $25 eGiftCard, always
+available — eliminates the repeating-404 pattern signal); removed `removeAttribute('disabled')`
+from the forced-click fallback. Full list in ANTIBOT_ARCHIVE.md.
 
-Future audits checking `walmart/` should NOT re-report these as findings — they were considered and patched in PM8 / Rounds A–E:
+## Open Gaps
 
-- **Raw `element.click()` in any checkout/queue/login flow** — every scrutinized click now routes through CDP mouse trajectory. The only remaining `el.click()` calls are documented fallback paths inside try/except chains (CDP failure → JS click last-resort).
-- **Linear / straight-line mouse trajectories** — `_realistic_click` is quadratic Bezier with velocity weighting (B1). The `queue_handler` helpers mirror the same Bezier kinematics (D3).
-- **`chrome.runtime.connect` throwing** — returns a Port stub (A4).
-- **`chrome.loadTimes()` / `csi()` returning fixed offsets** — both derive from `performance.timing` with bounded random fallback (A5).
-- **`navigator.plugins` as a plain array** — now a real PluginArray with `item`/`namedItem`/`refresh` and 5 plugin entries (A6).
-- **`navigator.connection` returning constant `downlink`/`rtt`** — per-call quantized random (D2).
-- **`navigator.getBattery` with empty `addEventListener` stubs** — synthesizes a single event 5-25s after listener registration (E2).
-- **Stock dispatcher fixed phase offset (`i * 0.1`)** — pure random `[0, 1.0)s` per dispatcher (B2).
-- **`warm_session` uniform `[5, 8]s` dwell** — log-normal (D6).
-- **Harvester uniform `[35, 55]s` idle** — fat-tail (D7).
-- **CVV clear via `e.value = ''`** — CDP Cmd/Ctrl-A + Delete (D8).
-- **`_select_delivery_on_cart` overly-broad selector pool** — narrowed (D9).
-- **Fixed `asyncio.sleep(1)` in cart paths** — randomized (D10).
-- **`_wait_for_dom_stability` create-and-disconnect-per-tick MutationObserver** — single persistent observer (E1).
-- **Cart Remove-button raw clicks** — CDP via `_click_handle_via_cdp` helper (E3).
-- **Browser launch missing `--lang=en-US`** — added (D1).
+1. **Resilient stack**: behavioral mixin disabled by default after 2026-05-13 finding. If
+   re-enabling, use `behavioral_mix_ratio ≤ 0.02` (one nav per >15s aggregate).
+2. **Target**: Shape headers reactively re-warmed on 403/block — no proactive refresh before
+   TTL expiry. Recovery costs ~1-2s on the failure path. Acceptable as-is; flagged for
+   awareness only. Code: `src/session/purchase_executor.py:warm_shape_headers()` (called at
+   line 671 on purchase start, line 850 on Shape-block).
+3. **Both retailers**: no integration test suite — end-to-end flows untested.
 
 ## Resolved (kept for history)
 
-- **Walmart GraphQL hash staleness** (resolved): `walmart/stock_monitor.py:388` detects HTTP 400 on GraphQL stock checks and calls `_trigger_graphql_hash_refresh()` (line 645). The flag flips `session_manager._graphql_refresh_needed = True`; the harvester loop sees it on the next iteration and navigates Tab 1 to a product page to re-discover the hash via the CDP intercept at `walmart/session_manager.py:1552`. No more silent 400 cascades.
-- **Walmart missing circuit breaker** (resolved): Two layers in place. (a) `walmart/stock_monitor.py:96` tracks `_monitor_circuit_open_until` — after N consecutive BLOCKED responses the dispatch loop sleeps `_MONITOR_CB_PAUSE` (120s) before resuming. (b) `walmart/purchase_manager.py:99` tracks `_consecutive_failures` + `_circuit_open_until` — after `CIRCUIT_BREAKER_FAILURES` failed purchases the manager pauses for `CIRCUIT_BREAKER_PAUSE` before accepting new in-stock signals.
-- **Target CVV modal race** (resolved): `_handle_cvv_modal` at `src/session/purchase_executor.py:1591` handles detect+fill+confirm in a single JS round-trip and is awaited inline before the success check. No race window remains.
-- **Target fake order ID fallback** (resolved): `src/purchasing/bulletproof_purchase_manager.py:1197-1204` now reads `result.get('order_id')`, falls back to parsing `?orderId=` from `confirmation_url`, and stores `None` with a warning if neither is present. The previous `f"REAL-{random.randint(...)}"` fallback is gone. Executor returns `order_id` and `confirmation_url` from `_complete_checkout` at `purchase_executor.py:1217-1239`.
-
----
+- **Target CVV modal race** (resolved): `_handle_cvv_modal` at
+  `src/session/purchase_executor.py:1591` handles detect+fill+confirm in a single JS round-trip
+  and is awaited inline before the success check. No race window remains.
+- **Target fake order ID fallback** (resolved): `src/purchasing/bulletproof_purchase_manager.py:1197-1204`
+  now reads `result.get('order_id')`, falls back to parsing `?orderId=` from `confirmation_url`,
+  stores `None` with a warning if neither is present. Executor returns both at
+  `purchase_executor.py:1217-1239`.
 
 ## Universal Automation Hygiene
 
-**Delays**: Never use fixed `time.sleep()`. Always randomize in human norms: 200–1200ms for UI interactions, 1–3s for page transitions.
+**Delays**: Never use fixed `time.sleep()`. Always randomize in human norms: 200–1200ms for UI
+interactions, 1–3s for page transitions.
 
-**Browser Properties**: Ensure patched:
+**Browser Properties** (when running real Chrome):
 - `navigator.webdriver = undefined` (not `false`)
 - `navigator.plugins` populated with 3+ real objects
 - `navigator.mimeTypes` populated
@@ -232,18 +101,26 @@ Future audits checking `walmart/` should NOT re-report these as findings — the
 
 **HTTP/2**: Use only HTTP/2-capable libraries or real browser. HTTP/1.1 is a signal.
 
-**Header Order**: Browser-consistent order required. Missing `Sec-Fetch-*`, `Accept-Language` are signals.
+**Header Order**: Browser-consistent order required. Missing `Sec-Fetch-*`, `Accept-Language`
+are signals.
 
-**TLS**: Only real Chrome (zendriver/patchright) produces valid JA3. Python raw HTTP is instantly flagged.
+**TLS**: Only real Chrome (zendriver/patchright) produces valid JA3. Python raw HTTP is
+instantly flagged. The resilient stack relies on this — *no curl_cffi in the request path*.
 
-**Persistent Profiles**: Always use persistent browser profiles (`nodriver-profile/`, `walmart-profile/`). Cold browsers score worse.
+**Persistent Profiles**: Always use persistent browser profiles
+(`state/session_profiles/`, `nodriver-profile/`). Cold browsers score worse.
 
-**Credentials**: All must be in `.env`, never hardcoded: `EMAIL`, `PASSWORD`, `CARD_CVV`, `WALMART_CVV`.
-
----
+**Credentials**: All must be in `.env`, never hardcoded: `EMAIL`, `PASSWORD`, `CARD_CVV`,
+`WALMART_CVV`.
 
 ## File Pointers
 
-- **Full Target details** (Shape Security, sensor headers, TLS, Device ID+ recovery, CDP safety, IP requirements, bypass techniques): @docs/RETAILERS/TARGET.md
-- **Full Walmart details** (Akamai, PerimeterX, `_abck` pipeline, GraphQL staleness, virtual queue, `/blocked` challenge): @docs/RETAILERS/WALMART.md
-- **Checkout flow selectors & state machines**: @docs/FLOW.md
+- **Resilient stack architecture**: `docs/RESILIENT_STACK.md`,
+  `docs/RESILIENT_STACK_OPERATIONAL_NOTES.md`
+- **Target details** (Shape Security, sensor headers, TLS, Device ID+ recovery, CDP safety,
+  IP requirements, bypass techniques): `docs/RETAILERS/target.md`,
+  `docs/RETAILERS/TARGET_CHECKOUT_API.md`
+- **Walmart details** (Akamai, PerimeterX, `_abck` pipeline, GraphQL staleness, virtual queue,
+  `/blocked` challenge): `docs/RETAILERS/walmart.md`, `docs/RETAILERS/WALMART_CHECKOUT_API.md`
+- **Checkout flow selectors & state machines**: `docs/FLOW.md`
+- **Archived audit history**: `docs/ANTIBOT_ARCHIVE.md`

@@ -90,7 +90,17 @@
     "status": "ready"
   },
   "50270379": {
-    "status": "ready"
+    "status": "purchased",
+    "tcin": "50270379",
+    "product_title": "Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct",
+    "started_at": 1778740062.3735414,
+    "final_outcome": "purchased",
+    "attempt_count": 1,
+    "real_purchase": true,
+    "completed_at": 1778740066.2067254,
+    "execution_time": 3.823005199432373,
+    "order_number": "c2167431-4a95-11f1-8e95-0fc0ff587659",
+    "price": null
   },
   "95138474": {
     "status": "ready"
