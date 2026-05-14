@@ -57,6 +57,16 @@
 ## File Access
 - No source files are off-limits for now. `src/session/purchase_executor.py` is editable (overrides prior "DO NOT modify" guidance from the AIO refactor memory).
 
+## Resilient Stock Stack (Round 2 — 2026-05-13)
+- Browser-native dispatcher: N persistent Chromes (one per BD ISP IP) fire bulk RedSky via `tab.evaluate(fetch(...))`. No curl_cffi in request path. Stress-validated 99.95% over 60 min @ 3 RPS / 3 IPs / 33 TCINs (zero 403s, 5 self-healed timeouts).
+- Code: `src/monitoring/{stock_check_resilient,tab_dispatcher}.py`, `src/session/multi_session_pool.py`, `src/proxy/{local_forwarder,proxy_state}.py`. Architecture doc: `docs/RESILIENT_STACK.md`. Operational findings: `docs/RESILIENT_STACK_OPERATIONAL_NOTES.md`.
+- Smoke test: `python test_resilient_stack.py` — env knobs `RESILIENT_TEST_DURATION_S`, `RESILIENT_TEST_NUM_IPS`, `RESILIENT_TEST_RPS`, `RESILIENT_TEST_BEHAVIORAL`, `CHROME_STAGGER_TOTAL_S`.
+- Production: `USE_RESILIENT_STACK=1 python app.py`. Adjust rate via `RESILIENT_TARGET_RPS` (alias: `TARGET_SWEEPS_PER_SEC`).
+- TCIN handling is dynamic — chunked at 28 (Target hard-caps `product_summary_with_fulfillment_v1` at 30/req). Any TCIN count works; per-TCIN refresh = `RPS / ceil(N/28)`.
+- Behavioral mixin defaults OFF: `behavioral_mix_ratio=0.10` triggered a 7×403 burst on one session at ~4 min in. Re-enable ≤0.02 only.
+- Legacy `src/session/cookie_harvester.py` is deprecated (Round 1 curl_cffi path). Each session in MultiSessionPool now owns its own live cookies.
+
 ## Test Before Deploy
 - `python test_app.py` must pass (both retailers)
 - Use this before touching unified_app.py
+- For resilient stack changes: `python test_resilient_stack.py` (default 30 min) or short `RESILIENT_TEST_DURATION_S=120 RESILIENT_TEST_NUM_IPS=1 python test_resilient_stack.py` for a fast smoke.

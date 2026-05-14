@@ -4,20 +4,41 @@
 
 ### Headline finding
 The browser-native stack (real Chrome firing `tab.evaluate(fetch(...))` from
-inside its own target.com tab) **sustains 100% success at 3 RPS for at least
-20 minutes**, beating Round 1's 15.7-min ceiling at the same RPS.
+inside its own target.com tab) **sustains 99.95% success at 3 RPS over 60
+minutes / 10K+ dispatches** with zero Shape-related failures and full self-
+healing on session glitches. This beats Round 1's 15.7-min mass-burn ceiling
+by 4×.
 
 ### Test data
-- **20-min sustained, 3 IPs / 33 TCINs (chunked) / 3 RPS / no behavioral**:
-  - 3562/3562 = 100.0% success, 0 403s, 0 other
-  - All 3 sessions stayed `ready` throughout
-- **5-min behavioral=0.10 follow-up (same config)**:
+- **60-min stress, 3 fresh IPs / 33 TCINs (chunked) / 3 RPS / no behavioral**:
+  - **10,585 / 10,590 = 99.95% success at last measurement (t=3570s)**
+  - **Zero 403s** — Shape never blocked across the full hour
+  - 5 timeouts total — all on one session (s2) in a single burst at t≈51 min
+  - Self-heal triggered at 5 consec errors → state=crashed → watchdog → new
+    Chrome → cookies=11/visitor_id ready in ~30s end-to-end
+  - The 5 timeouts were a zendriver internal bug (CDP `StopIteration` during
+    response routing), not Shape: the underlying RedSky fetches actually
+    returned 200s with valid product_summaries data — zendriver's response
+    listener just crashed delivering them back to the awaiter
+- **20-min sustained (prior, same config)**: 3562/3562 = 100.0%
+- **5-min behavioral=0.10 follow-up**:
   - 645/652 = 98.9%, 7 403s, 0 other
-  - All 7 403s in one ~2s burst on session s2 at t=228s
-  - Burst contained — did not cascade to s1/s3
+  - All 7 403s in one ~2s burst on session s2 at t=228s (contained, no cascade)
   - **Conclusion**: behavioral=0.10 too aggressive at 3 RPS (PDP nav every 3.3s
     aggregate). Default is now 0.0 (off). Re-enable cautiously at ≤0.02 if
-    disguise is needed for very long-duration runs.
+    disguise is needed.
+
+### Known issues from stress (cosmetic — don't block operation)
+- **Shutdown hangs**: 60-min run finished cleanly but `checker.stop()` never
+  returned — had to force-kill. Likely `forwarder_pool.stop_all()` or browser
+  teardown deadlock. Workaround: SIGKILL via Task Manager. Zombie Chromes
+  may need manual cleanup. Tracked as a follow-up.
+- **proxy_state.json `WinError 5` on save**: observed once during stress —
+  `os.replace(tmp, state/proxy_state.json)` blocked, likely concurrent save
+  attempts. In-memory state was unaffected. Tracked as a follow-up.
+- **zendriver listener tracebacks during recycle**: `InvalidStateError` /
+  `StopIteration` exceptions logged from the dead Chrome's CDP listener after
+  teardown. Cosmetic — the new (recycled) Chrome works fine.
 
 ### What works
 - `tab.evaluate(fetch(...))` from a long-lived target.com tab — JA3, cookies,

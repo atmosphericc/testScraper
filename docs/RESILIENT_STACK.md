@@ -1,9 +1,9 @@
 # Resilient Stock-Check Stack (Refract-pattern + browser-native dispatch)
 
 ## Status
-**Round 2 validated 2026-05-13** — **100% success sustained 20 min at 3 RPS / 3 IPs / 33 TCINs**
-(3562/3562 200s, zero 403s, zero "other"). This beats Round 1's 15.7-min ceiling
-that mass-burned all IPs at the same rate.
+**Round 2 stress-validated 2026-05-13** — **99.95% success over 60 min @ 3 RPS / 3 IPs / 33 TCINs**
+(10,585/10,590 200s, **zero 403s**, 5 timeouts self-healed via watchdog).
+Beats Round 1's 15.7-min mass-burn ceiling by 4×.
 
 ## Purpose
 Hit Target's RedSky stock-status API continuously without detection or rate
