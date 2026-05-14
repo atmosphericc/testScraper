@@ -92,6 +92,104 @@ USE_RESILIENT_STACK=1 RESILIENT_TARGET_RPS=2 python app.py
 ```
 Falls back to legacy proxy_workers path on any startup error.
 
+## How a single sweep flows (the 4-layer pipeline)
+
+```
+  ┌─────────────────────────────────────────────────────────┐
+  │  Sweep loop (1 every ~333ms at RESILIENT_TARGET_RPS=3)  │
+  │   └─> picks next TCIN chunk (rotates)                   │
+  │       └─> picks an idle Chrome (random ready session)   │
+  │           └─> tab.evaluate(fetch(redsky.target.com))    │
+  └─────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  Chrome #N  (one of N persistent browsers)              │
+  │   - long-lived target.com tab                           │
+  │   - real Chrome JA3/JA4 fingerprint                     │
+  │   - live cookies (_abck, _px3, visitor_id)              │
+  │   - --proxy-server=127.0.0.1:24000+N                    │
+  └─────────────────────────────────────────────────────────┘
+                         │ HTTPS via local proxy
+                         ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  Local CONNECT forwarder (127.0.0.1:24000+N)            │
+  │   - injects Proxy-Authorization for Bright Data         │
+  │   - Chrome doesn't have to know BD credentials          │
+  └─────────────────────────────────────────────────────────┘
+                         │ CONNECT to BD with auth header
+                         ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │  Bright Data superproxy (brd.superproxy.io:33335)       │
+  │   - exits via the IP pinned in the username             │
+  │   - one specific BD ISP IP (e.g. 168.158.220.12)        │
+  └─────────────────────────────────────────────────────────┘
+                         │
+                         ▼
+                redsky.target.com
+```
+
+Every layer has a single responsibility. The dispatcher knows TCINs and rates.
+Chrome handles browser/TLS/cookies. The forwarder solves Bright Data's "Chrome
+can't embed credentials in --proxy-server" problem cleanly. BD picks the exit
+IP by parsing the username.
+
+### What one fetch traverses (timing)
+
+For a single sweep at t=T:
+1. **t=T**: sweep loop wakes, picks `chunks[next_idx]`, picks a random ready
+   Chrome (`pick_session()` filters by `state=ready, not in_flight, has cookies, has visitor_id`)
+2. **t=T+1ms**: dispatcher acquires the Chrome's `busy_lock` (per-session serializer)
+3. **t=T+2ms**: `tab.evaluate(JS)` where `JS = "await fetch('https://redsky.target.com/...?key=...&tcins=A,B,C&store_id=865')"`
+4. **t=T+5ms**: Chrome routes the fetch through `--proxy-server=127.0.0.1:<port>`
+5. **t=T+10ms**: Local forwarder receives CONNECT to `redsky.target.com:443`, injects `Proxy-Authorization: Basic <BD-creds>`, opens TCP to `brd.superproxy.io:33335`
+6. **t=T+150ms**: BD authenticates, exits via the pinned IP, completes upstream TLS to Target
+7. **t=T+200ms**: Chrome (still inside the forwarded tunnel) does its OWN TLS handshake to Target — this is the **real Chrome JA3/JA4** Shape sees
+8. **t=T+300ms**: HTTP/2 request sent with full cookie jar + `Origin: https://www.target.com`
+9. **t=T+600ms**: Response arrives → bytes stream back through tunnel → Chrome → JS fetch resolves → `tab.evaluate` returns `{__http_status: 200, __body: {data: {product_summaries: [...]}}}`
+10. **t=T+650ms**: Dispatcher returns `BulkResult` → orchestrator parses → updates per-TCIN state → fires `on_in_stock` callback if any TCIN flipped → releases `busy_lock`
+
+End-to-end ~600-900ms. The `busy_lock` ensures one Chrome handles only one
+fetch at a time. Aggregate throughput comes from picking across N Chromes.
+
+## Sweep math (per-TCIN refresh rate)
+
+The dispatcher fires bulk RedSky calls; each call covers up to 28 TCINs.
+**It does NOT fire one call per TCIN per sweep.** Per-TCIN refresh depends on
+chunk count:
+
+```
+  sweeps_per_sec  = R   (RESILIENT_TARGET_RPS, default 3.0)
+  TCINs           = N   (count of enabled in product_config.json)
+  chunks          = ceil(N / 28)
+  per-TCIN refresh = R / chunks  Hz
+```
+
+| TCINs (N) | Chunks | Per-TCIN refresh @ R=3 | RedSky requests/hour |
+|---|---|---|---|
+| ≤28 | 1 | every 0.33s | 10,800 |
+| 29–56 | 2 | every 0.67s | 10,800 |
+| 57–84 | 3 | every 1.0s | 10,800 |
+| 85–112 | 4 | every 1.3s | 10,800 |
+| 200 | 8 | every 2.7s | 10,800 |
+
+Note: total RedSky load stays constant at R req/sec regardless of TCIN count —
+chunking just spreads which TCINs are covered per request. To keep fast
+per-TCIN refresh with many TCINs, scale `RESILIENT_TARGET_RPS` proportionally.
+
+## Pool size (N Chromes) is a tuning knob, not architectural
+
+`N` = `len(enabled proxies in proxyIps.json)`. Trade-off:
+- **More Chromes** = lower per-IP rate (`R / N` req/sec/IP) → less per-IP
+  suspicion → safer for sustained operation. Cost: ~1.5-2 GB RAM per Chrome,
+  longer launch (10-min stagger for 22).
+- **Fewer Chromes** = higher per-IP rate → cheaper, faster launch, but each IP
+  burns through trust faster.
+
+Validated 3 Chromes / 3 RPS = 1 RPS per IP for 60 min @ 99.95%. Could run 22
+Chromes / 3 RPS = 0.14 RPS per IP for much longer sustained operation, or 3
+Chromes / 0.5 RPS for 24/7 monitoring with even less footprint.
+
 ## Why this works against Shape Security
 
 Shape's primary detector is JA3/JA4 TLS fingerprint plus higher-order session
