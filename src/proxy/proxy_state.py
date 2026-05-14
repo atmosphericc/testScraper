@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 # park cooldown wasn't long enough — IPs retest, fail, and re-park in a loop.
 # 30-min cooldown lets the account flag itself age out before we probe again.
 PARK_AFTER_403_STREAK = 2
-PARK_DURATION_S = 1800          # 30 min — longer than Shape's observed account-flag persistence
+PARK_DURATION_S = 10800         # 3h — matches observed natural Shape recovery time
+                                # (47/50 IPs burned at 08:42 today; 22 recovered by ~12:00)
 BURN_AFTER_PARKS = 4            # after this many park cycles, give up on the IP
 STALE_RETEST_S = 300            # parked IPs retest every 5 min by background loop
 
@@ -110,11 +111,19 @@ class ProxyState:
             self._entries = {}
 
     def _save_locked(self):
-        """Atomic JSON write — caller holds the lock."""
+        """Atomic JSON write — caller holds the lock. fsync before replace
+        so a power loss between write and rename can't leave a half-empty file."""
         tmp = self.state_file.with_suffix(f".tmp.{os.getpid()}")
         try:
             payload = {ip: entry.to_dict() for ip, entry in self._entries.items()}
-            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            data = json.dumps(payload, indent=2)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(data)
+                fh.flush()
+                try:
+                    os.fsync(fh.fileno())
+                except OSError:
+                    pass
             os.replace(tmp, self.state_file)
         except Exception as e:
             logger.warning(f"[PROXY_STATE] save failed: {e}")
@@ -171,12 +180,22 @@ class ProxyState:
             if status == 200:
                 entry.total_success += 1
                 entry.consec_403 = 0
-                # If it was parked and we got a success — unpark
-                if entry.status == "parked":
-                    logger.info(f"[PROXY_STATE] {pinned_ip} recovered from parked → active")
+                # If it was parked OR burned and we got a success — recover.
+                # Burned recovery added 2026-05-13: a successful 200 from this IP
+                # is hard evidence Shape's flag has cleared (BD account-level flag
+                # ages out >15 min — observed). Without this, an IP that was
+                # auto-burned in a prior run stays burned forever despite serving
+                # 200s, causing pool stats to misreport (A=0 with 100% success).
+                if entry.status in ("parked", "burned"):
+                    prev_state = entry.status
+                    logger.info(f"[PROXY_STATE] {pinned_ip} recovered from "
+                                f"{prev_state} → active")
                     entry.status = "active"
                     entry.parked_until = 0.0
-            elif status == 403:
+            elif status in (401, 403):
+                # Refract docs (2026-05-13): 401 is also a Shape block/ban,
+                # same severity as 403. Bucket both under total_403/consec_403
+                # so existing on-disk state file keys remain readable.
                 entry.total_403 += 1
                 entry.consec_403 += 1
                 if (entry.consec_403 >= PARK_AFTER_403_STREAK

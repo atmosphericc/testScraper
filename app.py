@@ -834,21 +834,31 @@ class StockMonitorThread:
         self._event_loop = event_loop
 
         # ── Resilient stack opt-in via env var USE_RESILIENT_STACK=1 ──
-        # When enabled: starts the Refract-pattern curl_cffi(chrome131)+
-        # local-forwarder+per-IP-state stack. Falls back to legacy proxy
-        # workers on any startup error so the bot never silently fails.
+        # When enabled: starts the browser-native rearchitect — N permanent
+        # Chrome instances, one per BD ISP IP, firing bulk RedSky requests via
+        # tab.evaluate(fetch). curl_cffi is out of the request path (preflight
+        # only). Falls back to legacy proxy workers on any startup error so the
+        # bot never silently fails.
+        #
+        # Rate is configured by TARGET_SWEEPS_PER_SEC (one sweep = one bulk
+        # fetch covering all TCINs). Default 2.0. RESILIENT_TARGET_RPS is
+        # accepted as a backward-compat alias.
         use_resilient = os.environ.get("USE_RESILIENT_STACK", "").strip() in ("1", "true", "yes")
+        self._use_resilient = use_resilient
         self._proxy_workers = None
         if use_resilient:
             try:
+                sweeps = float(os.environ.get(
+                    "TARGET_SWEEPS_PER_SEC",
+                    os.environ.get("RESILIENT_TARGET_RPS", "2.0"),
+                ))
                 self._proxy_workers = self.stock_monitor.start_resilient_monitoring(
                     self._on_proxy_stock_detected,
-                    target_rps=float(os.environ.get("RESILIENT_TARGET_RPS", "3.0")),
+                    target_sweeps_per_sec=sweeps,
                 )
                 if self._proxy_workers:
-                    print(f"[RESILIENT] resilient stack engaged "
-                          f"(USE_RESILIENT_STACK=1, target_rps="
-                          f"{os.environ.get('RESILIENT_TARGET_RPS', '3.0')})")
+                    print(f"[RESILIENT] browser-native stack engaged "
+                          f"(USE_RESILIENT_STACK=1, sweeps_per_sec={sweeps})")
             except Exception as e:
                 print(f"[RESILIENT] start failed, falling back to legacy: {e}")
                 self._proxy_workers = None
@@ -1033,20 +1043,25 @@ class StockMonitorThread:
                 print("[STOCK_MONITOR] Circuit breaker open - skipping API call")
                 return None
 
-            # Try browser-native fetch first (avoids Shape TLS fingerprint detection)
+            # Try browser-native fetch first (avoids Shape TLS fingerprint detection).
+            # Skipped entirely when the resilient stack is active — that stack
+            # owns the data path via per-IP Chromes + bulk fetches, and this
+            # tab fetch would duplicate traffic on the purchase session's tab
+            # (shape-protected) for no benefit.
             stock_data = None
-            sm = getattr(self._purchase_manager, 'session_manager', None)
-            if sm and self._event_loop and self._event_loop.is_running():
-                try:
-                    future = asyncio.run_coroutine_threadsafe(sm.get_page(), self._event_loop)
-                    tab = future.result(timeout=3)
-                    if tab:
-                        stock_data = monitor_to_use.check_stock_via_tab(tab, self._event_loop)
-                except Exception as e:
-                    print(f"[STOCK] Browser fetch unavailable, falling back to requests: {e}")
+            if not getattr(self, "_use_resilient", False):
+                sm = getattr(self._purchase_manager, 'session_manager', None)
+                if sm and self._event_loop and self._event_loop.is_running():
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(sm.get_page(), self._event_loop)
+                        tab = future.result(timeout=3)
+                        if tab:
+                            stock_data = monitor_to_use.check_stock_via_tab(tab, self._event_loop)
+                    except Exception as e:
+                        print(f"[STOCK] Browser fetch unavailable, falling back to requests: {e}")
 
-            if stock_data is None:
-                stock_data = monitor_to_use.check_stock()
+                if stock_data is None:
+                    stock_data = monitor_to_use.check_stock()
 
             if stock_data:
                 # Update cache with fresh stock data

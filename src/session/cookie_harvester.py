@@ -1,6 +1,20 @@
 """
 Cookie harvester — Refract-pattern session anchor.
 
+⚠️  DEPRECATED (2026-05-13): Superseded by the browser-native rearchitect.
+
+In the new architecture, MultiSessionPool maintains N permanent Chrome
+instances (one per BD IP); each Chrome owns its own live session and live
+cookie jar. There is no longer a single shared cookies_jar.json that workers
+read — each session has its own cookies in memory on its own Chrome.
+
+The legacy curl_cffi worker path (which read cookies_jar.json) has been
+removed from ResilientStockChecker. This file remains only for emergency
+fallback if the legacy path is re-enabled. Schedule deletion after 2 weeks
+of stable browser-native operation.
+
+──────────────────────────────────────────────────────────────────────────
+
 One zendriver headed browser maintains a real Target session through the local
 forwarder pool (which handles BD upstream auth). On a heartbeat schedule it
 navigates back to target.com to refresh PX/Akamai cookies, then atomically

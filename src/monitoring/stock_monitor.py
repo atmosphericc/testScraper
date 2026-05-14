@@ -227,22 +227,31 @@ class StockMonitor:
             print(f"[STOCK] Browser fetch exception: {e}")
             return None
 
-    def start_resilient_monitoring(self, on_stock_detected, target_rps=3.0):
+    def start_resilient_monitoring(self, on_stock_detected, target_sweeps_per_sec=2.0,
+                                   target_rps=None):
         """
-        Refract-style resilient checker: curl_cffi(impersonate=chrome131) through
-        a local CONNECT-forwarder pool that handles BD upstream auth. Per-IP
-        stable visitor_id, auto-park on consecutive 403s, auto-retest of parked
-        IPs every 5 min, cloaking detection alarm.
+        Browser-native resilient checker (post-2026-05-13 rearchitect):
+          - N permanently-running Chrome instances, one per BD ISP IP
+          - Bulk RedSky fetches fired via tab.evaluate() inside long-lived tabs
+          - Inherits real Chrome JA3/JA4 + live cookies + real visitor_id
+          - Behavioral mixin: ~10% of sweeps navigate to real PDPs
+          - ProxyState tracks 401/403 per IP, auto-parks after 2-streak
 
         Calls `on_stock_detected(stock_data_dict)` where stock_data_dict is
         formatted identically to `check_stock()` returns, so callers don't need
         to know which monitoring path is active.
 
+        `target_sweeps_per_sec`: one sweep = one bulk fetch covering all TCINs.
+        Default 2.0 (each TCIN checked every ~500ms). Bump to 5.0 for drop mode.
+
+        `target_rps`: backward-compat alias. If provided, used as the sweep rate.
+
         Runs an asyncio event loop in a dedicated daemon thread. Returns the
         thread handle. The legacy threaded proxy_workers path is left intact
-        in this method's sibling start_proxy_monitoring() — gate via env var
-        USE_RESILIENT_STACK=1 at the caller.
+        in start_proxy_monitoring() — gate via env var USE_RESILIENT_STACK=1.
         """
+        if target_rps is not None and target_sweeps_per_sec == 2.0:
+            target_sweeps_per_sec = float(target_rps)
         if not self.proxies:
             print("[RESILIENT] no proxies configured — cannot start resilient stack")
             return None
@@ -280,7 +289,7 @@ class StockMonitor:
             proxy_urls=self.proxies,
             tcins=tcins,
             on_in_stock=_adapter,
-            target_rps=target_rps,
+            target_sweeps_per_sec=target_sweeps_per_sec,
             state_dir=ROOT / "state",
             log_per_request=False,
         )
@@ -302,8 +311,8 @@ class StockMonitor:
 
         t = threading.Thread(target=_runner, daemon=True, name="ResilientChecker")
         t.start()
-        print(f"[RESILIENT] started — {len(self.proxies)} proxies, "
-              f"{len(tcins)} TCINs, target_rps={target_rps}")
+        print(f"[RESILIENT] browser-native stack engaged — {len(self.proxies)} proxies, "
+              f"{len(tcins)} TCINs, sweeps_per_sec={target_sweeps_per_sec}")
         return [t]
 
     def start_proxy_monitoring(self, on_stock_detected):

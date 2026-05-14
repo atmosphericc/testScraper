@@ -1,89 +1,68 @@
 """
-Resilient stock-check engine — Refract-style.
+Resilient stock-check engine — browser-native.
 
-Architecture:
-  - One ForwarderPool fronts N BD ISP proxies on local ports.
-  - ProxyState tracks per-IP visitor_id, 403 streaks, park/burn state.
-  - One async dispatch loop fires per-TCIN curl_cffi calls at a configured
-    rate (default 3 req/sec) round-robin across (tcin × proxy) tuples.
-  - curl_cffi(impersonate="chrome131") gives Chrome JA3/JA4 so Shape's
-    primary fingerprint detector passes.
-  - Modern endpoint: product_fulfillment_and_variation_hierarchy_v1.
-  - Cookies (if present in cookies_jar.json) are attached. Optional —
-    the chain works without them but cookies improve trust scoring.
-  - Latest per-TCIN status held in memory; in-stock callback fires when
-    a TCIN flips from non-in-stock to in-stock.
-  - Cloaking detection: alarms if ALL TCINs simultaneously flip OOS.
+Architecture (post-2026-05-13 rearchitect):
+  - MultiSessionPool maintains N permanently-running Chrome instances, one per
+    BD ISP IP. Each Chrome owns a long-lived target.com tab.
+  - TabDispatcher fires bulk RedSky requests via tab.evaluate(fetch(...))
+    inside random ready Chromes. No curl_cffi in the request path.
+  - One async _sweep_loop schedules dispatches at the configured rate
+    (target_sweeps_per_sec). Each sweep fires asynchronously so a slow tab
+    doesn't block others.
+  - Behavioral mixin: every Nth sweep navigates a Chrome to a real PDP and
+    dwells ~5s, instead of firing the API. Makes traffic shape look like
+    "user occasionally browses" rather than "pure API polling".
+  - Per-IP 401/403 tracking via ProxyState → park/burn lifecycle.
+  - Cloaking alarm watches for all-TCIN-OOS sync (Shape cloaking signature).
 
 Reads:
   - config/proxyIps.json (enabled IPs)
-  - config/product_config.json (enabled TCINs)
-  - state/cookies_jar.json (optional, from harvester)
+  - config/product_config.json (enabled TCINs — caller's responsibility)
 
 Writes:
-  - state/proxy_state.json (per-IP visitor_id + health)
-  - state/stock_check.log (in-memory ring + occasional flush)
+  - state/proxy_state.json (per-IP 401/403 history)
+  - state/cookies_jar.json (forensic snapshot of per-session cookies)
+
+curl_cffi survives only in proxy_preflight (30-sec startup IP filter).
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
-import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from curl_cffi import requests as cffi
-
 from src.monitoring.proxy_preflight import preflight_validate
-from src.proxy.local_forwarder import ForwarderPool
+from src.monitoring.tab_dispatcher import TabDispatcher, BulkResult
 from src.proxy.proxy_state import ProxyState
-from src.session.multi_session_pool import MultiSessionPool, SessionEntry
+from src.session.multi_session_pool import MultiSessionPool
 
 logger = logging.getLogger(__name__)
 
-# Endpoints
-REDSKY_MODERN = (
-    "https://redsky.target.com/redsky_aggregations/v1/web/"
-    "product_fulfillment_and_variation_hierarchy_v1"
-)
-# Companion endpoints that real browsers hit during PDP browsing.
-# Used by the behavioral mixin to disguise the polling pattern as
-# normal-looking browsing rather than pure API polling.
-REDSKY_PDP_CLIENT = (
-    "https://redsky.target.com/redsky_aggregations/v1/web/"
-    "pdp_client_v1"
-)
-REDSKY_PDP_PERSONALIZED = (
-    "https://redsky.target.com/redsky_aggregations/v1/web/"
-    "pdp_personalized_v1"
-)
-TARGET_HOMEPAGE = "https://www.target.com/"
-REDSKY_API_KEYS = [
-    "ff457966e64d5e877fdbad070f276d18ecec4a01",
-    "9f36aeafbe60771e321a7cc95a78140772ab3e96",
-]
+# ───────── tuning constants ─────────
+DEFAULT_TARGET_SWEEPS_PER_SEC = 2.0   # one bulk fetch covers all TCINs at once
+DEFAULT_STORE_ID = "865"               # matches the validated in-tab fetch path
+PARKED_RETEST_INTERVAL_S = 300         # 5 min — unpark expired-park IPs
 
-# Default policy — tuned 2026-05-13 for "flawless resilience" over speed
-# (user explicitly deprioritized speed after observed 15-min/3RPS Shape trip)
-DEFAULT_TARGET_RPS = 0.5           # ~1 req every 2s aggregate; well under Shape's account threshold
-DEFAULT_STORE_ID = "3252"
-DEFAULT_REQUEST_TIMEOUT = 12.0
-COOKIE_REFRESH_INTERVAL_S = 60     # re-read cookies_jar.json at most once a minute
-PARKED_RETEST_INTERVAL_S = 300     # background loop retests parked IPs every 5 min
-COOLDOWN_AFTER_403_S = 0.5         # short cool-down on a worker after a 403
-FULL_REVALIDATE_INTERVAL_S = 1800  # every 30 min, re-probe the burned subset to catch recoveries
-BEHAVIORAL_MIX_RATIO = 0.1         # 1 in 10 dispatches makes a "browse" call instead of stock check
-                                   # (homepage HTML or pdp_client_v1) — disguises the polling pattern
+# Behavioral mixin: every (1/ratio)-th sweep is a PDP nav instead of bulk fetch.
+# Disguises pure-API polling pattern with the look of a user occasionally
+# loading a product page. Side benefit: PDP nav refreshes _abck/_px3 cookies.
+#
+# DEFAULT 0.0 (off) after 2026-05-13 validation: at 3 RPS aggregate, ratio=0.10
+# means one PDP nav every 3.3s account-wide, which Shape detected as a bot
+# pattern (single 7×403 burst on one session at t=228s during 5-min test).
+# Pure API polling sustained 100% for 20 min at the same RPS without behavioral.
+# If enabling, prefer 0.02 or lower (1 nav per >15s aggregate).
+DEFAULT_BEHAVIORAL_MIX_RATIO = 0.0
 
-
-def _pinned_ip_from_url(url: str) -> str:
-    m = re.search(r"-ip-([\d\.]+):", url)
-    return m.group(1) if m else ""
+# Backpressure: if more than this many dispatches are in-flight, the sweep loop
+# pauses scheduling new ones. Prevents runaway tab.evaluate stalls from creating
+# unbounded coroutine pile-up.
+MAX_OUTSTANDING_DISPATCHES = 50
 
 
 @dataclass
@@ -93,29 +72,15 @@ class TcinStatus:
     last_status_code: int = 0
     last_checked_at: float = 0.0
     availability_status: str = "UNKNOWN"
-    sold_out: Optional[bool] = None
-    oos_all: Optional[bool] = None
     title: str = ""
     consecutive_non_200: int = 0
-
-
-@dataclass
-class CheckResult:
-    tcin: str
-    pinned_ip: str
-    http_status: int
-    latency_ms: int
-    sold_out: Optional[bool] = None
-    oos_all: Optional[bool] = None
-    availability: Optional[str] = None
-    title: Optional[str] = None
-    error: Optional[str] = None
+    max_qty: int = 1
 
 
 class ResilientStockChecker:
     """
-    Async dispatch loop. Start with .start(), stop with .stop().
-    Provides .latest() for current TCIN statuses.
+    Async stock-check engine. Start with .start(), stop with .stop().
+    .latest() returns the current per-TCIN status snapshot.
     """
 
     def __init__(
@@ -123,7 +88,7 @@ class ResilientStockChecker:
         proxy_urls: list[str],
         tcins: list[str],
         on_in_stock: Optional[Callable[[TcinStatus], None]] = None,
-        target_rps: float = DEFAULT_TARGET_RPS,
+        target_sweeps_per_sec: float = DEFAULT_TARGET_SWEEPS_PER_SEC,
         store_id: str = DEFAULT_STORE_ID,
         state_dir: Path = Path("state"),
         cookies_jar_path: Optional[Path] = None,
@@ -131,56 +96,52 @@ class ResilientStockChecker:
         log_per_request: bool = True,
         preflight: bool = True,
         preflight_tcin: str = "50270379",
-        use_multi_session: bool = True,
-        max_sessions: int = 5,
+        behavioral_mix_ratio: float = DEFAULT_BEHAVIORAL_MIX_RATIO,
+        harvest_via_local_ip: bool = False,
     ):
         self.proxy_urls = list(proxy_urls)
         self.tcins = list(tcins)
         self.on_in_stock = on_in_stock
-        self.target_rps = target_rps
+        self.target_sweeps_per_sec = float(target_sweeps_per_sec)
         self.store_id = store_id
         self.log_per_request = log_per_request
         self.preflight = preflight
         self.preflight_tcin = preflight_tcin
         self.first_local_port = first_local_port
-        self.use_multi_session = use_multi_session
-        self.max_sessions = max_sessions
+        self.behavioral_mix_ratio = max(0.0, min(0.5, float(behavioral_mix_ratio)))
+        self.harvest_via_local_ip = harvest_via_local_ip
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = state_dir
         self.cookies_jar_path = cookies_jar_path or (state_dir / "cookies_jar.json")
         self.proxy_state = ProxyState(state_dir / "proxy_state.json")
 
-        # Forwarder pool — DEFERRED to start() so pre-flight can filter the
-        # proxy list first. Keeps __init__ pure / fast.
-        self.pool: Optional[ForwarderPool] = None
-        self._verified_urls: list[str] = []
+        # Built in start()
         self.multi_session_pool: Optional[MultiSessionPool] = None
+        self.dispatcher: Optional[TabDispatcher] = None
+        self._verified_urls: list[str] = []
+        self._stock_monitor_parser = None     # lazy StockMonitor() for _process_response
 
         # State
         self._tcin_status: dict[str, TcinStatus] = {t: TcinStatus(tcin=t) for t in self.tcins}
+        self._ever_seen_in_stock: set[str] = set()
         self._status_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
-        self._tcin_idx = 0
-        self._ip_idx = 0
-        self._dispatch_lock = asyncio.Lock()
-
-        # Cookies
-        self._cookies_cache: dict[str, str] = {}
-        self._cookies_cache_at: float = 0.0
 
         # Stats
         self._total_dispatched = 0
         self._total_200 = 0
         self._total_403 = 0
         self._total_other = 0
+        self._total_behavioral = 0
+        self._outstanding = 0
+        self._sweep_count = 0
         self._start_time: Optional[float] = None
 
     # ───────── public API ─────────
 
     async def start(self):
-        # ── Pre-flight: probe every proxy once, exclude any that doesn't 200 ──
         if self.preflight:
             logger.info(f"[STOCK] pre-flight: validating {len(self.proxy_urls)} proxies "
                         f"on TCIN {self.preflight_tcin}")
@@ -196,55 +157,48 @@ class ResilientStockChecker:
         else:
             self._verified_urls = list(self.proxy_urls)
 
-        # ── Build forwarder pool from verified URLs only ──
-        if self.use_multi_session:
-            # Multi-session mode: each session owns its own (profile + proxy + cookies)
-            # Trim to max_sessions to keep resource use reasonable
-            session_urls = self._verified_urls[:self.max_sessions]
-            logger.info(f"[STOCK] multi-session mode: building {len(session_urls)} sessions")
-            self.multi_session_pool = MultiSessionPool(
-                proxy_urls=session_urls,
-                cookies_jar_path=self.cookies_jar_path,
-                profile_root=self.state_dir / "session_profiles",
-                forwarder_base_port=self.first_local_port,
-            )
-            # Reuse the multi-session pool's forwarder for worker requests
-            await self.multi_session_pool.start()
-            # Also register IPs in proxy_state for 403 tracking
-            ip_to_port = {s.proxy_ip: s.local_port for s in self.multi_session_pool.sessions}
-            self.proxy_state.bulk_register(ip_to_port)
-        else:
-            self.pool = ForwarderPool()
-            ip_to_port: dict[str, int] = {}
-            for i, url in enumerate(self._verified_urls):
-                port = self.first_local_port + i
-                up = self.pool.add_upstream(url, port)
-                ip_to_port[up.pinned_ip] = port
-            self.proxy_state.bulk_register(ip_to_port)
-            await self.pool.start_all()
+        # Build the persistent Chrome pool
+        self.multi_session_pool = MultiSessionPool(
+            proxy_urls=self._verified_urls,
+            cookies_jar_path=self.cookies_jar_path,
+            profile_root=self.state_dir / "session_profiles",
+            forwarder_base_port=self.first_local_port,
+            harvest_via_local_ip=self.harvest_via_local_ip,
+        )
+        await self.multi_session_pool.start()
 
-        # Mark any non-verified IP as burned so the state file is honest
+        # Register IPs in ProxyState for 401/403 → park tracking
+        ip_to_port = {s.proxy_ip: s.local_port
+                      for s in self.multi_session_pool.sessions}
+        self.proxy_state.bulk_register(ip_to_port)
+        # Burn ONLY IPs we tried this run that failed preflight — not every
+        # entry that's not in this run's verified set, which would also burn
+        # IPs from prior runs that aren't in today's input. The proxy_state file
+        # is shared across runs and shouldn't be destroyed by a partial sweep.
+        from src.session.multi_session_pool import _pinned_ip as _extract_ip
+        input_ips = {ip for ip in (_extract_ip(u) for u in self.proxy_urls) if ip}
         verified_ips = set(ip_to_port.keys())
-        for entry in self.proxy_state.all_entries():
-            if entry.pinned_ip not in verified_ips:
-                self.proxy_state.force_burn(entry.pinned_ip)
+        for ip in input_ips - verified_ips:
+            self.proxy_state.force_burn(ip)
+
+        # Build the dispatcher
+        self.dispatcher = TabDispatcher(
+            session_pool=self.multi_session_pool,
+            tcins=self.tcins,
+            store_id=self.store_id,
+        )
 
         self._start_time = time.time()
-        # Spawn workers — keep concurrency 1-3 to avoid thundering herds.
-        worker_count = max(1, min(3, int(self.target_rps)))
-        for w in range(worker_count):
-            self._tasks.append(asyncio.create_task(
-                self._worker_loop(w), name=f"stock_worker_{w}"))
-        self._tasks.append(asyncio.create_task(
-            self._parked_retest_loop(), name="parked_retest"))
-        self._tasks.append(asyncio.create_task(
-            self._cloaking_alarm_loop(), name="cloaking_alarm"))
-        self._tasks.append(asyncio.create_task(
-            self._stats_loop(), name="stats"))
+        self._tasks.append(asyncio.create_task(self._sweep_loop(), name="sweep_loop"))
+        self._tasks.append(asyncio.create_task(self._parked_retest_loop(),
+                                               name="parked_retest"))
+        self._tasks.append(asyncio.create_task(self._cloaking_alarm_loop(),
+                                               name="cloaking_alarm"))
+        self._tasks.append(asyncio.create_task(self._stats_loop(), name="stats"))
         logger.info(
-            f"[STOCK] started: workers={worker_count}, "
-            f"target_rps={self.target_rps}, tcins={len(self.tcins)}, "
-            f"proxies={len(self.proxy_urls)}"
+            f"[STOCK] started: sweeps/sec={self.target_sweeps_per_sec} "
+            f"behavioral_mix={self.behavioral_mix_ratio:.2f} "
+            f"tcins={len(self.tcins)} proxies={len(self._verified_urls)}"
         )
 
     async def stop(self):
@@ -260,8 +214,6 @@ class ResilientStockChecker:
                 logger.debug(f"[STOCK] task {t.get_name()} cleanup error: {e}")
         if self.multi_session_pool is not None:
             await self.multi_session_pool.stop()
-        if self.pool is not None:
-            await self.pool.stop_all()
         self.proxy_state.save()
         logger.info("[STOCK] stopped")
 
@@ -276,263 +228,172 @@ class ResilientStockChecker:
             "total_200": self._total_200,
             "total_403": self._total_403,
             "total_other": self._total_other,
-            "actual_rps": round(self._total_dispatched / elapsed, 2) if elapsed > 0 else 0,
+            "total_behavioral": self._total_behavioral,
+            "outstanding": self._outstanding,
+            "sweep_count": self._sweep_count,
+            "actual_sweeps_per_sec": round(self._sweep_count / elapsed, 2) if elapsed > 0 else 0,
             "proxy_state": self.proxy_state.stats_summary(),
+            "session_state": (self.multi_session_pool.state_summary()
+                              if self.multi_session_pool else {}),
         }
 
     # ───────── inner loops ─────────
 
-    async def _worker_loop(self, worker_id: int):
-        """Pull (tcin, ip) tuples from the round-robin queue and fetch them."""
-        # Per-worker target rate (each worker = total_rps / worker_count, roughly)
-        worker_count = max(1, min(3, int(self.target_rps)))
-        per_worker_interval = worker_count / self.target_rps
-        # Start with a small phase offset to de-sync workers
-        await asyncio.sleep(random.uniform(0, per_worker_interval))
+    async def _sweep_loop(self):
+        """Schedule one dispatch every (1/target_sweeps_per_sec) seconds, with
+        ±15% jitter. Dispatches run as background tasks so a slow tab.evaluate
+        doesn't block the schedule. Backpressure caps outstanding dispatches."""
+        # Behavioral cadence: 1 in N sweeps is a PDP nav (N = round(1/ratio)).
+        # ratio=0.1 → every 10th sweep is behavioral. ratio=0 → never.
+        behavioral_period = (round(1.0 / self.behavioral_mix_ratio)
+                             if self.behavioral_mix_ratio > 0 else 0)
 
         while not self._stop_event.is_set():
-            tcin, dispatch_info = await self._next_dispatch()
-            if tcin is None:
-                # No active proxies / sessions — wait a bit
-                await asyncio.sleep(2.0)
-                continue
-
-            # dispatch_info is either ProxyEntry (legacy) or SessionEntry (multi-session)
-            if isinstance(dispatch_info, SessionEntry):
-                pinned_ip = dispatch_info.proxy_ip
-                local_port = dispatch_info.local_port
-                visitor_id = dispatch_info.visitor_id
-                cookies = dict(dispatch_info.cookies)
-            else:
-                pinned_ip = dispatch_info.pinned_ip
-                local_port = dispatch_info.local_port
-                visitor_id = dispatch_info.visitor_id
-                cookies = self._cookies_for_request()
-
-            result = await asyncio.to_thread(
-                self._fetch_one, tcin, pinned_ip, local_port, visitor_id, cookies,
-            )
-            await self._record_result(result)
-
-            # Pace
-            jitter = random.uniform(-0.1, 0.1) * per_worker_interval
-            sleep_for = max(0.05, per_worker_interval + jitter)
+            period = 1.0 / max(0.01, self.target_sweeps_per_sec)
+            jitter = period * random.uniform(-0.15, 0.15)
+            sleep_for = max(0.05, period + jitter)
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=sleep_for)
-                if self._stop_event.is_set():
-                    return
+                return
             except asyncio.TimeoutError:
                 pass
 
-    async def _next_dispatch(self):
-        """Pick (tcin, session_or_entry). In multi-session mode, picks a random
-        session whose IP is still active. Skips parked/burned IPs."""
-        async with self._dispatch_lock:
-            self._tcin_idx = (self._tcin_idx + 1) % len(self.tcins)
-            tcin = self.tcins[self._tcin_idx]
+            self._sweep_count += 1
+            if self._outstanding > MAX_OUTSTANDING_DISPATCHES:
+                logger.warning(f"[STOCK] backlog={self._outstanding} > {MAX_OUTSTANDING_DISPATCHES}, "
+                               f"skipping sweep {self._sweep_count}")
+                continue
 
-            if self.multi_session_pool is not None:
-                # Active IPs only — exclude parked/burned ones from session pool
-                active_ips = {e.pinned_ip for e in self.proxy_state.active_entries()}
-                eligible_sessions = [s for s in self.multi_session_pool.sessions
-                                     if s.cookies and s.visitor_id
-                                     and s.proxy_ip in active_ips]
-                if not eligible_sessions:
-                    return None, None
-                # Random pick — distributes load and decorrelates request order
-                session = random.choice(eligible_sessions)
-                return tcin, session
-            else:
-                actives = self.proxy_state.active_entries()
-                if not actives:
-                    return None, None
-                self._ip_idx = (self._ip_idx + 1) % len(actives)
-                entry = actives[self._ip_idx]
-                return tcin, entry
-
-    async def _record_result(self, result: CheckResult):
-        self._total_dispatched += 1
-        if result.http_status == 200:
-            self._total_200 += 1
-        elif result.http_status == 403:
-            self._total_403 += 1
-        else:
-            self._total_other += 1
-
-        self.proxy_state.record_status(result.pinned_ip, result.http_status)
-
-        if result.http_status == 200 and result.sold_out is not None:
-            await self._update_tcin_status(result)
-        elif result.http_status != 200:
-            async with self._status_lock:
-                s = self._tcin_status.get(result.tcin)
-                if s:
-                    s.consecutive_non_200 += 1
-                    s.last_status_code = result.http_status
-                    s.last_checked_at = time.time()
-
-        if self.log_per_request:
-            mark = "OK" if result.http_status == 200 else "!!"
-            if result.http_status == 200:
-                logger.debug(
-                    f"  {mark} {result.tcin} via {result.pinned_ip:<16} "
-                    f"http=200 {result.latency_ms}ms "
-                    f"avail={result.availability} sold_out={result.sold_out}"
-                )
-            else:
-                logger.info(
-                    f"  {mark} {result.tcin} via {result.pinned_ip:<16} "
-                    f"http={result.http_status} {result.latency_ms}ms "
-                    f"err={result.error}"
-                )
-
-    async def _update_tcin_status(self, result: CheckResult):
-        in_stock_now = (
-            result.sold_out is False
-            and result.oos_all is False
-            and (result.availability in (None, "IN_STOCK", "PRE_ORDER_SELLABLE"))
-        )
-        async with self._status_lock:
-            s = self._tcin_status[result.tcin]
-            was_in_stock = s.in_stock
-            s.in_stock = in_stock_now
-            s.last_status_code = 200
-            s.last_checked_at = time.time()
-            s.availability_status = result.availability or "UNKNOWN"
-            s.sold_out = result.sold_out
-            s.oos_all = result.oos_all
-            if result.title:
-                s.title = result.title
-            s.consecutive_non_200 = 0
-
-        if in_stock_now and not was_in_stock and self.on_in_stock:
-            try:
-                self.on_in_stock(s)
-            except Exception as e:
-                logger.exception(f"[STOCK] on_in_stock callback failed: {e}")
-
-    def _cookies_for_request(self) -> dict[str, str]:
-        """Read cookies_jar.json if present, cached for COOKIE_REFRESH_INTERVAL_S."""
-        now = time.time()
-        if now - self._cookies_cache_at < COOKIE_REFRESH_INTERVAL_S:
-            return dict(self._cookies_cache)
-        try:
-            if self.cookies_jar_path.exists():
-                data = json.loads(self.cookies_jar_path.read_text(encoding="utf-8"))
-                cookies = data.get("cookies", {})
-                if isinstance(cookies, dict):
-                    self._cookies_cache = cookies
-                    self._cookies_cache_at = now
-                    return dict(cookies)
-        except Exception as e:
-            logger.debug(f"[STOCK] cookies jar read failed: {e}")
-        return dict(self._cookies_cache)
-
-    def _fetch_one(self, tcin: str, pinned_ip: str, local_port: int,
-                   visitor_id: str, cookies: dict[str, str]) -> CheckResult:
-        """Sync HTTP via curl_cffi — called from to_thread."""
-        local_proxy = f"http://127.0.0.1:{local_port}"
-        params = {
-            "key": random.choice(REDSKY_API_KEYS),
-            "tcin": tcin,
-            "store_id": self.store_id,
-            "pricing_store_id": self.store_id,
-            "has_pricing_store_id": "true",
-            "is_bot": "false",
-            "channel": "WEB",
-            "page": f"/p/A-{tcin}",
-            "visitor_id": visitor_id,
-        }
-        headers = {
-            "accept": "application/json",
-            "accept-language": "en-US,en;q=0.9",
-            "origin": "https://www.target.com",
-            "referer": f"https://www.target.com/p/A-{tcin}",
-            "priority": "u=1, i",
-            "sec-ch-ua": '"Chromium";v="131", "Google Chrome";v="131", "Not_A Brand";v="24"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
-            "sec-fetch-dest": "empty",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-        }
-        t0 = time.time()
-        try:
-            r = cffi.get(
-                REDSKY_MODERN,
-                params=params,
-                headers=headers,
-                cookies=cookies if cookies else None,
-                proxies={"http": local_proxy, "https": local_proxy},
-                timeout=DEFAULT_REQUEST_TIMEOUT,
-                impersonate="chrome131",
+            is_behavioral = (behavioral_period > 0
+                             and self._sweep_count % behavioral_period == 0)
+            self._outstanding += 1
+            asyncio.create_task(
+                self._dispatch_one(is_behavioral),
+                name=f"sweep_{self._sweep_count}",
             )
-            ms = int((time.time() - t0) * 1000)
-            if r.status_code == 200:
+
+    async def _dispatch_one(self, behavioral: bool):
+        try:
+            if behavioral:
+                tcin = random.choice(self.tcins)
+                result = await self.dispatcher.dispatch_behavioral_pdp(tcin)
+                if result is None:
+                    return    # no session available; quiet skip
+                self._total_behavioral += 1
+                if self.log_per_request:
+                    logger.debug(f"[BEHAVIORAL] {result.session_id} pdp={tcin} "
+                                 f"http={result.http_status} {result.latency_ms}ms")
+                # Behavioral nav: do NOT record into ProxyState — different
+                # status distribution from API calls, would skew park heuristic.
+                return
+
+            result = await self.dispatcher.dispatch_one_sweep()
+            if result is None:
+                return    # no session available; quiet skip
+
+            self._total_dispatched += 1
+            if result.http_status == 200:
+                self._total_200 += 1
+                self.proxy_state.record_status(result.pinned_ip, 200)
+                if result.raw:
+                    await self._ingest_bulk_response(result)
+            elif result.http_status in (401, 403):
+                self._total_403 += 1
+                self.proxy_state.record_status(result.pinned_ip, result.http_status)
+                if self.log_per_request:
+                    logger.info(f"  !! {result.session_id} ({result.pinned_ip}) "
+                                f"http={result.http_status} {result.latency_ms}ms "
+                                f"err={(result.error or '')[:80]}")
+            else:
+                self._total_other += 1
+                self.proxy_state.record_status(result.pinned_ip, result.http_status)
+                if self.log_per_request:
+                    logger.info(f"  ?? {result.session_id} ({result.pinned_ip}) "
+                                f"http={result.http_status} err={(result.error or '')[:300]}")
+        except Exception:
+            logger.exception("[STOCK] dispatch error")
+        finally:
+            self._outstanding -= 1
+
+    async def _ingest_bulk_response(self, result: BulkResult):
+        """Parse a 200 bulk response through StockMonitor._process_response
+        (reuse — already handles the bulk product_summaries shape correctly),
+        update per-TCIN state, fire on_in_stock callback on transitions."""
+        if not result.raw:
+            return
+
+        if self._stock_monitor_parser is None:
+            from src.monitoring.stock_monitor import StockMonitor
+            self._stock_monitor_parser = StockMonitor()
+
+        try:
+            parsed = self._stock_monitor_parser._process_response(
+                result.raw, result.latency_ms)
+        except Exception:
+            logger.exception("[STOCK] _process_response failed")
+            return
+
+        in_stock_transitions = []
+        async with self._status_lock:
+            for tcin, info in parsed.items():
+                s = self._tcin_status.get(tcin)
+                if s is None:
+                    s = TcinStatus(tcin=tcin)
+                    self._tcin_status[tcin] = s
+                was_in_stock = s.in_stock
+                s.in_stock = bool(info.get("in_stock"))
+                s.last_status_code = 200
+                s.last_checked_at = time.time()
+                s.availability_status = info.get("availability_status", "UNKNOWN")
+                s.title = info.get("title", s.title)
+                s.max_qty = int(info.get("max_qty", s.max_qty or 1))
+                s.consecutive_non_200 = 0
+                if s.in_stock:
+                    self._ever_seen_in_stock.add(tcin)
+                if s.in_stock and not was_in_stock:
+                    in_stock_transitions.append(s)
+
+        for s in in_stock_transitions:
+            if self.on_in_stock:
                 try:
-                    j = r.json()
-                    product = j.get("data", {}).get("product", {}) or {}
-                    f_ = product.get("fulfillment", {}) or {}
-                    shipping = f_.get("shipping_options", {}) or {}
-                    title = (product.get("item", {}) or {}).get(
-                        "product_description", {}).get("title")
-                    return CheckResult(
-                        tcin=tcin, pinned_ip=pinned_ip,
-                        http_status=200, latency_ms=ms,
-                        sold_out=f_.get("sold_out"),
-                        oos_all=f_.get("is_out_of_stock_in_all_store_locations"),
-                        availability=shipping.get("availability_status"),
-                        title=title,
-                    )
-                except Exception as e:
-                    return CheckResult(tcin=tcin, pinned_ip=pinned_ip,
-                                       http_status=200, latency_ms=ms,
-                                       error=f"parse: {e}")
-            return CheckResult(tcin=tcin, pinned_ip=pinned_ip,
-                               http_status=r.status_code, latency_ms=ms,
-                               error=r.text[:120])
-        except cffi.exceptions.RequestException as e:
-            return CheckResult(tcin=tcin, pinned_ip=pinned_ip,
-                               http_status=0, latency_ms=int((time.time() - t0) * 1000),
-                               error=f"{type(e).__name__}: {e}")
-        except Exception as e:
-            return CheckResult(tcin=tcin, pinned_ip=pinned_ip,
-                               http_status=0, latency_ms=int((time.time() - t0) * 1000),
-                               error=f"{type(e).__name__}: {e}")
+                    self.on_in_stock(s)
+                except Exception:
+                    logger.exception("[STOCK] on_in_stock callback failed")
 
     # ───────── background loops ─────────
 
     async def _parked_retest_loop(self):
-        """Periodically retest parked IPs to recover soft-flagged ones."""
+        """Periodically force-unpark IPs whose park has expired. The next
+        normal dispatch picks one up; if it 403s again, it re-parks automatically."""
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(),
                                        timeout=PARKED_RETEST_INTERVAL_S)
-                if self._stop_event.is_set():
-                    return
+                return
             except asyncio.TimeoutError:
                 pass
-
             due = self.proxy_state.retest_due()
             if not due:
                 continue
             logger.info(f"[STOCK] retesting {len(due)} parked IPs")
             for entry in due:
-                # Force-unpark; next normal dispatch will use it. If it 403s,
-                # auto-park triggers again.
                 self.proxy_state.force_unpark(entry.pinned_ip)
 
     async def _cloaking_alarm_loop(self):
-        """Watchdog: if ALL TCINs simultaneously report OOS for multiple cycles,
-        Shape is likely cloaking the session — log alarm. Real-world OOS
-        cannot synchronize across many unrelated products."""
-        OOS_THRESHOLD = 2     # cycles
+        """Watchdog: alarm if at least one TCIN that was previously seen in_stock
+        during this run has now flipped OOS along with everything else.
+
+        Without the previously-in-stock gate, this fires constantly when reality
+        is "everything OOS" (e.g. tracking unreleased Pokemon products) — a
+        false positive that drowns the real signal. The cloaking pattern Shape
+        exhibits is "session was seeing real stock, now it sees only OOS",
+        which requires us to have observed at least one in_stock transition."""
+        OOS_THRESHOLD = 2
         oos_streak = 0
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=30.0)
-                if self._stop_event.is_set():
-                    return
+                return
             except asyncio.TimeoutError:
                 pass
 
@@ -541,30 +402,39 @@ class ResilientStockChecker:
                             if s.last_status_code == 200]
             if len(statuses) < 3:
                 continue
+            if not self._ever_seen_in_stock:
+                # Nothing has ever been in stock this run; can't distinguish
+                # "Shape cloaked us" from "everything is genuinely OOS".
+                oos_streak = 0
+                continue
             all_oos = all(not s.in_stock for s in statuses)
             if all_oos:
                 oos_streak += 1
                 if oos_streak >= OOS_THRESHOLD:
                     logger.warning(
                         f"[STOCK] CLOAKING ALARM: all {len(statuses)} TCINs reported OOS "
-                        f"for {oos_streak} cycles. Shape may be cloaking session."
+                        f"for {oos_streak} cycles, but {len(self._ever_seen_in_stock)} "
+                        f"of them were in_stock earlier this run — Shape may be cloaking."
                     )
             else:
                 oos_streak = 0
 
     async def _stats_loop(self):
-        """Heartbeat log of pool health every 30s."""
+        """Heartbeat: log pool + dispatch stats every 30s."""
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=30.0)
-                if self._stop_event.is_set():
-                    return
+                return
             except asyncio.TimeoutError:
                 pass
             st = self.stats()
             ps = st["proxy_state"]
+            ss = st["session_state"]
             logger.info(
-                f"[STOCK STATS] elapsed={st['elapsed_s']}s rps={st['actual_rps']} "
+                f"[STOCK STATS] t={st['elapsed_s']}s "
+                f"sweeps={st['sweep_count']} ({st['actual_sweeps_per_sec']}/s) "
                 f"200={st['total_200']} 403={st['total_403']} other={st['total_other']} "
-                f"pool active={ps['active']} parked={ps['parked']} burned={ps['burned']}"
+                f"beh={st['total_behavioral']} outstanding={st['outstanding']} "
+                f"sessions={ss.get('ready', 0)}r/{ss.get('crashed', 0)}c/{ss.get('recycling', 0)}rc "
+                f"pool A={ps['active']} P={ps['parked']} B={ps['burned']}"
             )
