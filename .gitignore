@@ -45,10 +45,27 @@ state/*_profiles/
 # capture auth tokens via the tee'd stdout transcript.
 logs/runs/
 
-# One-off audit / probe tooling — not required by app.py or test_app.py.
-# Lives locally if you need to re-run it; out of git to keep the repo lean.
+# One-off audit / probe / stress tooling — not required by app.py or
+# test_app.py. Lives locally for re-runs; out of git to keep the repo lean.
 probe_disabled_browser.py
+audit_*.py
+probe_*.py
+stress_*.py
+test_persistent_chromes.py
+test_proxies.py
+
+# Output artifacts from the above (CSVs + side-channel logs)
+*audit*.csv
+stress_*.log
 logs/probe_disabled_browser_*.log
+logs/resilient_*.log
+logs/round2_*.log
+logs/smoke_*.log
+logs/stage_*.log
+logs/purchases/
+
+# Debug screenshots
+image.png
 
 # Config with credentials
 .env
