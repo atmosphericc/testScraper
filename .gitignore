@@ -37,12 +37,18 @@ playwright-profile/
 chrome_user_data/
 walmart-profile*/
 # Resilient stack runtime state — contains live Target auth tokens
-# (accessToken, idToken, refreshToken). Never commit.
-state/cookies_jar*.json
+# (accessToken, idToken, refreshToken). Never commit. The *jar*.json pattern
+# also catches probe-script artifacts (e.g. disabled_probe_jar.json).
+state/*jar*.json
 state/*_profiles/
 # Per-run log files written by setup_run_logging() — large and may
 # capture auth tokens via the tee'd stdout transcript.
 logs/runs/
+
+# One-off audit / probe tooling — not required by app.py or test_app.py.
+# Lives locally if you need to re-run it; out of git to keep the repo lean.
+probe_disabled_browser.py
+logs/probe_disabled_browser_*.log
 
 # Config with credentials
 .env
