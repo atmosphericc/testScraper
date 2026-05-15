@@ -18,7 +18,17 @@
     "status": "ready"
   },
   "94681790": {
-    "status": "ready"
+    "status": "failed",
+    "tcin": "94681790",
+    "product_title": "Pok\u00e9mon Trading Card Game : Charizard X ex Ultra-Premium Collection",
+    "started_at": 1778835025.851886,
+    "final_outcome": "failed",
+    "attempt_count": 1,
+    "real_purchase": true,
+    "completed_at": 1778835035.4768074,
+    "execution_time": 9.622920751571655,
+    "failure_reason": "atc_evaluate_timeout",
+    "error_details": ""
   },
   "94724987": {
     "status": "ready"
@@ -90,17 +100,7 @@
     "status": "ready"
   },
   "50270379": {
-    "status": "purchased",
-    "tcin": "50270379",
-    "product_title": "Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct",
-    "started_at": 1778740062.3735414,
-    "final_outcome": "purchased",
-    "attempt_count": 1,
-    "real_purchase": true,
-    "completed_at": 1778740066.2067254,
-    "execution_time": 3.823005199432373,
-    "order_number": "c2167431-4a95-11f1-8e95-0fc0ff587659",
-    "price": null
+    "status": "ready"
   },
   "95138474": {
     "status": "ready"

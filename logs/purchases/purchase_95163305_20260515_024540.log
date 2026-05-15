@@ -1,0 +1,59 @@
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box (TCIN: 95163305)
+[PURCHASE_LOG] Saving to: C:\Users\Anuraj\Desktop\testScraper\logs\purchases\purchase_95163305_20260515_024540.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 95163305
+[PURCHASE] Starting REAL purchase: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box (TCIN: 95163305) - status: attempting
+[REALTIME] 95163305 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 95163305 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 95163305
+[PURCHASE] CRITICAL RULE: 95163305 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 95163305 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (95163305, qty=1)
+[PURCHASE] Starting purchase for 95163305
+[REALTIME] 95163305 status changed to: attempting
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 2 (cached 305s ago, skipping PDP nav)
+[SHAPE_RING] Consumed fresh capture (ts age=49.0s, 2 unused remaining of 4)
+[PURCHASE] Injecting Shape headers (age=49s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=2 (t=0.00s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] ATC fetch status: 424 body='{"message":"Encountered errors with required dependent services.","code":"DEPENDENT_SERVICE_ERROR","alerts":[{"integration":"CARTS.FULFILLMENT_AGGREGATOR","message":"inventory is not available for this item","code":"INVENTORY_UNAVAILABLE","metadata":{"tcin":"95163305"}}]}' (t=0.28s)
+[STOCK] IN STOCK: 95163305
+[02:45:41] [API_CYCLE] IN STOCK: ['95163305']
+[CART_SIGNAL] No signal within 1.5s
+[PURCHASE] ATC button absent — waiting up to 5.8s for readiness
+[STOCK] IN STOCK: 95163305
+[02:45:46] [API_CYCLE] IN STOCK: ['95163305']
+[STOCK] IN STOCK: 95163305
+[02:45:47] [API_CYCLE] IN STOCK: ['95163305']
+[READY] ATC button not ready after 5.8103485107421875s
+[STOCK] IN STOCK: 95163305
+[02:45:51] [API_CYCLE] IN STOCK: ['95163305']
+[STOCK] IN STOCK: 95163305
+[02:45:53] [API_CYCLE] IN STOCK: ['95163305']
+[STOCK] IN STOCK: 95163305
+[02:45:56] [API_CYCLE] IN STOCK: ['95163305']
+[STOCK] IN STOCK: 95163305
+[02:45:56] [API_CYCLE] IN STOCK: ['95163305']
+[PURCHASE_FORCE_COMPLETE] 95163305 REAL purchase timeout after 120.5s, forcing completion
+[PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box - Reason: None
+[REALTIME] 95163305 status changed to: failed
+[02:47:40] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box - None
+[PURCHASE_MANAGER] Completed 1 purchases
+[PURCHASE_MANAGER] 95163305 -> failed
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': False, 'tcin': '95163305', 'reason': 'lock_timeout', 'error': 'Could not acquire page lock within 120 seconds'}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 95163305
+[PURCHASE] Warning: 95163305 state is 'failed' (not 'attempting') — purchase thread finished late. Still applying result.
+[PURCHASE]  REAL purchase failed: 95163305 - lock_timeout
+[REALTIME] 95163305 status changed to: failed
+[02:48:00] [PURCHASE] Purchase failed: 95163305 - lock_timeout
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 95163305 from active purchases

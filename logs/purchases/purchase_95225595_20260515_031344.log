@@ -1,0 +1,43 @@
+================================================================================
+[PURCHASE_TRIGGER] Product IN STOCK: Pokémon Trading Card Game: First Partner Illustration Collection Series 1 (TCIN: 95225595)
+[PURCHASE_LOG] Saving to: C:\Users\Anuraj\Desktop\testScraper\logs\purchases\purchase_95225595_20260515_031344.log
+================================================================================
+[PURCHASE_MODE] ✅ [REAL] Using REAL browser automation for 95225595
+[PURCHASE] Starting REAL purchase: Pokémon Trading Card Game: First Partner Illustration Collection Series 1 (TCIN: 95225595) - status: attempting
+[REALTIME] 95225595 status changed to: attempting
+[PURCHASE] Dashboard notified immediately: 95225595 -> attempting
+[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for 95225595
+[PURCHASE] CRITICAL RULE: 95225595 IN STOCK + ready -> attempting (60s)
+[DISPATCH] 95225595 → W1/primary
+[SESSION] Purchase in progress - validation paused
+[PURCHASE] cdp_continued_ids cleared for new purchase (95225595, qty=1)
+[PURCHASE] Starting purchase for 95225595
+[REALTIME] 95225595 status changed to: attempting
+[INTERCEPTOR:main] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt 1)
+[INTERCEPTOR:main] Added cdp.fetch to enabled_domains
+[INTERCEPTOR:main] CDP fetch interceptor ready (total RequestPaused handlers on tab: 1)
+[SESSION_REUSE] Tab starting from: https://www.target.com/cart
+[PURCHASE] purchase_limit from cache: 2 (cached 33s ago, skipping PDP nav)
+[SHAPE_RING] Consumed fresh capture (ts age=24.2s, 1 unused remaining of 4)
+[PURCHASE] Injecting Shape headers (age=24s): ['Accept', 'Content-Type', 'Origin', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[PURCHASE] Firing ATC fetch qty=2 (t=0.00s)
+[INTERCEPTOR:main]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:main] Captured 16 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...
+[WARMUP] Shape headers captured successfully (age=0.0s): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'x-application-name']
+[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEM
+[INTERCEPTOR:warmup] Captured 15 headers (Shape tokens: 6, prev cache had 6): ['Accept', 'Content-Type', 'Cookie', 'Origin', 'Referer', 'User-Agent', 'X-GyJwza5Z-a', 'X-GyJwza5Z-b', 'X-GyJwza5Z-c', 'X-GyJwza5Z-d', 'X-GyJwza5Z-f', 'X-GyJwza5Z-z', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']
+[PURCHASE] ATC fetch status: 429 body='{"message":"Rate Limited","code":"DCO_RATE_LIMITED","alerts":[{"message":"Request throttled due to high demand item","code":"FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION","level":"ERROR"}]}' (t=0.14s)
+[CART_SIGNAL] No signal within 1.5s
+[PURCHASE] ATC button absent — waiting up to 5.9s for readiness
+[READY] ATC button enabled after 0.17s
+[PURCHASE] Fetch ATC not confirmed and not on PDP (url=https://www.target.com/cart) — bailing without DOM fallback
+[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed
+[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {'success': False, 'tcin': '95225595', 'reason': 'atc_failed_api_mode', 'execution_time': 2.3094842433929443}
+[REAL_PURCHASE_THREAD] Marked thread as completing: 95225595
+[PURCHASE]  REAL purchase failed: 95225595 - atc_failed_api_mode
+[REALTIME] 95225595 status changed to: failed
+[03:13:46] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration Collection Series 1 - atc_failed_api_mode
+[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle
+[SESSION] Purchase complete - validation resumed
+[REAL_PURCHASE_THREAD] Removing 95225595 from active purchases

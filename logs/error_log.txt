@@ -1079,3 +1079,219 @@ DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; 
 [2026-05-08 13:50:33] [CHECKOUT_FAIL] url=https://www.target.com/checkout reject_key=none
 [2026-05-08 13:50:52] [CHECKOUT_FAIL] url=https://www.target.com/checkout reject_key=none
 [2026-05-08 13:51:10] [CHECKOUT_FAIL] url=https://www.target.com/checkout reject_key=none
+[2026-05-15 02:20:54] [ATC_RETRY_FAIL] status=401 url=https://www.target.com/p/-/A-95163306
+Body: {
+  "errorCode": "T83072242",
+  "errorKey": "_ERR_AUTH_DENIED",
+  "errorMessage": "Error Code T83072242. Sorry, something went wrong. Please refresh your browser and try again.",
+  "errorParameters": "",
+  "errorRefresh": "false"
+}
+
+[2026-05-15 02:21:03] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-95163306 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_022102.png
+[2026-05-15 02:21:03] [CART_SIGNAL] No cart signal within 8.0s — url=https://www.target.com/p/-/A-95163306
+DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; opacity: 0;"></div><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_873b287e-674d-4027-ba9e-30b5f593dff9?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_873b287e-674d-4027-ba9e-30b5f593dff9?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_873b287e-674d-4027-ba9e-30b5f593dff9?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/i
+
+[2026-05-15 02:22:40] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Feraligatr ex Box - None
+[2026-05-15 02:22:59] [PURCHASE] Purchase failed: 95163306 - lock_timeout
+[2026-05-15 02:25:46] [ATC_RETRY_FAIL] status=401 url=https://www.target.com/p/-/A-95163306
+Body: {
+  "errorCode": "T83072242",
+  "errorKey": "_ERR_AUTH_DENIED",
+  "errorMessage": "Error Code T83072242. Sorry, something went wrong. Please refresh your browser and try again.",
+  "errorParameters": "",
+  "errorRefresh": "false"
+}
+
+[2026-05-15 02:25:56] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-95163306 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_022555.png
+[2026-05-15 02:25:56] [CART_SIGNAL] No cart signal within 8.0s — url=https://www.target.com/p/-/A-95163306
+DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; opacity: 0;"></div><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_b8c91f6d-38f9-4900-8ee2-028b480a096c?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_237313ff-15cc-4f1e-b013-1367786efa4e?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_873b287e-674d-4027-ba9e-30b5f593dff9?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_873b287e-674d-4027-ba9e-30b5f593dff9?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_873b287e-674d-4027-ba9e-30b5f593dff9?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/i
+
+[2026-05-15 02:27:44] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Feraligatr ex Box - None
+[2026-05-15 02:28:03] [PURCHASE] Purchase failed: 95163306 - lock_timeout
+[2026-05-15 02:40:43] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box - atc_evaluate_timeout
+[2026-05-15 02:44:50] [ATC_RETRY_FAIL] status=401 url=https://www.target.com/p/-/A-95163305
+Body: {
+  "errorCode": "T83072242",
+  "errorKey": "_ERR_AUTH_DENIED",
+  "errorMessage": "Error Code T83072242. Sorry, something went wrong. Please refresh your browser and try again.",
+  "errorParameters": "",
+  "errorRefresh": "false"
+}
+
+[2026-05-15 02:44:59] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-95163305 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_024459.png
+[2026-05-15 02:44:59] [CART_SIGNAL] No cart signal within 8.0s — url=https://www.target.com/p/-/A-95163305
+DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; opacity: 0;"></div><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_1db01b00-c606-407b-a162-10e3939c1e73?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_1db01b00-c606-407b-a162-10e3939c1e73?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_1db01b00-c606-407b-a162-10e3939c1e73?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_1db01b00-c606-407b-a162-10e3939c1e73?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_1db01b00-c606-407b-a162-10e3939c1e73?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_c99e42a1-9747-44b3-abd0-8ac44b60c50d?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_c99e42a1-9747-44b3-abd0-8ac44b60c50d?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_c99e42a1-9747-44b3-abd0-8ac44b60c50d?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_c99e42a1-9747-44b3-abd0-8ac44b60c50d?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_c99e42a1-9747-44b3-abd0-8ac44b60c50d?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_465fbec9-53de-45a1-abf3-e0692896b4b2?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_465fbec9-53de-45a1-abf3-e0692896b4b2?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_465fbec9-53de-45a1-abf3-e0692896b4b2?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/i
+
+[2026-05-15 02:45:36] [SCREENSHOT] atc_not_confirmed — url=https://www.target.com/p/-/A-95163305 — saved: logs/screenshots/debug_atc_not_confirmed_20260515_024459.png
+[2026-05-15 02:45:36] [ATC_FAIL] page_state=error url=https://www.target.com/p/-/A-95163305
+[2026-05-15 02:45:38] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box - cart_addition_failed
+[2026-05-15 02:45:39] [PURCHASE_RESET] Cycle 1778831139697: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 02:45:42] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/cart — saved: logs/screenshots/debug_cart_signal_timeout_20260515_024542.png
+[2026-05-15 02:45:42] [CART_SIGNAL] No cart signal within 1.5s — url=https://www.target.com/cart
+DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLink" tabindex="-1" class="styles_ndsLink__GUaai h-display-flex"></button><div data-test="skipLinks" id="skipLinks"><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="content" href="#content">skip to main content</a><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="footer" href="#footerHeader">skip to footer</a></div><div><div class="sc-d3088906-0 pgIyi"><div class="l-container-fixed styles_utilityHeaderContainer__k6A7s"><div class="styles_flexColumnLeft__myhIR"><div class="styles_styledZipPlaceholder___SQW1 "><button class="styles_btn__1hjpW styles_styledZipCodeButton__tAL1k  " type="button" aria-expanded="false" aria-label="Ship to location: 60056" data-test="@web/ZipCodeButton/StyledZipCodeButton" id="zip-code-id-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center"><div class="styles_geoLocationIconWrapper__VjQD2 "><svg viewBox="0 0 24 24" height="15" width="15"><use href="/icons-illustrations/v2/location.svg#location" xlink:href="/icons-illustrations/v2/location.svg#location"></use></svg></div><span class="styles_styledNameSpan__tzkJR  " data-test="@web/ZipCodeButton/ZipCodeNumber">Ship to 60056</span></div></button></div><div class="h-text-grayLight"><button class="styles_btn__1hjpW styles_base__CPnMk styles_md__QaqTQ styles_storeNameButton__zWVs4  " type="button" aria-expanded="false" aria-label="Store: Lake Zurich" data-test="@web/StoreName/Button" id="web-store-id-msg-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center" data-test="@web/StoreName/StoreName"><div class="styles_myStoreIconWrapper__wRU2R "><svg viewBox="0 0 24 24" height="16" width="16"><use href="/icons-illustrations/v2/store.svg#store" xlink:href="/icons-illustrations/v2/store.svg#store"></use></svg></div><div class="styles_ndsTruncate__0rtO0" style="--truncate-lines: 2;"><span class="styles_styledStoreNameSpan__l8eeV ">Lake Z
+
+[2026-05-15 02:47:40] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box - None
+[2026-05-15 02:48:00] [PURCHASE] Purchase failed: 95163305 - lock_timeout
+[2026-05-15 02:58:44] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_evaluate_timeout
+[2026-05-15 03:02:40] [ATC_RETRY_FAIL] status=401 url=https://www.target.com/p/-/A-1008581387
+Body: {
+  "errorCode": "T83072242",
+  "errorKey": "_ERR_AUTH_DENIED",
+  "errorMessage": "Error Code T83072242. Sorry, something went wrong. Please refresh your browser and try again.",
+  "errorParameters": "",
+  "errorRefresh": "false"
+}
+
+[2026-05-15 03:02:49] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-1008581387 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_030249.png
+[2026-05-15 03:02:49] [CART_SIGNAL] No cart signal within 8.0s — url=https://www.target.com/p/-/A-1008581387
+DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; opacity: 0;"></div><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_8935e160-a7a6-4da0-a7c1-f834ef27a855?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_8935e160-a7a6-4da0-a7c1-f834ef27a855?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_8935e160-a7a6-4da0-a7c1-f834ef27a855?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_8935e160-a7a6-4da0-a7c1-f834ef27a855?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_8935e160-a7a6-4da0-a7c1-f834ef27a855?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_e055fb7b-4caa-4f90-a007-6a69079ed1c5?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_e055fb7b-4caa-4f90-a007-6a69079ed1c5?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_e055fb7b-4caa-4f90-a007-6a69079ed1c5?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_e055fb7b-4caa-4f90-a007-6a69079ed1c5?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_e055fb7b-4caa-4f90-a007-6a69079ed1c5?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_7b81d877-58eb-4c5e-ac2e-378d0c090fe8?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_7b81d877-58eb-4c5e-ac2e-378d0c090fe8?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_7b81d877-58eb-4c5e-ac2e-378d0c090fe8?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/i
+
+[2026-05-15 03:03:37] [SCREENSHOT] atc_not_confirmed — url=https://www.target.com/p/-/A-1008581387 — saved: logs/screenshots/debug_atc_not_confirmed_20260515_030249.png
+[2026-05-15 03:03:37] [ATC_FAIL] page_state=error url=https://www.target.com/p/-/A-1008581387
+[2026-05-15 03:03:38] [PURCHASE] Purchase failed: 1008581387 - cart_addition_failed
+[2026-05-15 03:03:44] [PURCHASE_RESET] Cycle 1778832224773: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:00] [SCREENSHOT] atc_button_not_ready — url=https://www.target.com/cart — saved: logs/screenshots/debug_atc_button_not_ready_20260515_030400.png
+[2026-05-15 03:04:00] [ATC_READY] Button not ready after 12.890691041946411s — url=https://www.target.com/cart
+DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLink" tabindex="-1" class="styles_ndsLink__GUaai h-display-flex"></button><div data-test="skipLinks" id="skipLinks"><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="content" href="#content">skip to main content</a><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="footer" href="#footerHeader">skip to footer</a></div><div><div class="sc-d3088906-0 pgIyi"><div class="l-container-fixed styles_utilityHeaderContainer__k6A7s"><div class="styles_flexColumnLeft__myhIR"><div class="styles_styledZipPlaceholder___SQW1 "><button class="styles_btn__1hjpW styles_styledZipCodeButton__tAL1k  " type="button" aria-expanded="false" aria-label="Ship to location: 60056" data-test="@web/ZipCodeButton/StyledZipCodeButton" id="zip-code-id-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center"><div class="styles_geoLocationIconWrapper__VjQD2 "><svg viewBox="0 0 24 24" height="15" width="15"><use href="/icons-illustrations/v2/location.svg#location" xlink:href="/icons-illustrations/v2/location.svg#location"></use></svg></div><span class="styles_styledNameSpan__tzkJR  " data-test="@web/ZipCodeButton/ZipCodeNumber">Ship to 60056</span></div></button></div><div class="h-text-grayLight"><button class="styles_btn__1hjpW styles_base__CPnMk styles_md__QaqTQ styles_storeNameButton__zWVs4  " type="button" aria-expanded="false" aria-label="Store: Lake Zurich" data-test="@web/StoreName/Button" id="web-store-id-msg-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center" data-test="@web/StoreName/StoreName"><div class="styles_myStoreIconWrapper__wRU2R "><svg viewBox="0 0 24 24" height="16" width="16"><use href="/icons-illustrations/v2/store.svg#store" xlink:href="/icons-illustrations/v2/store.svg#store"></use></svg></div><div class="styles_ndsTruncate__0rtO0" style="--truncate-lines: 2;"><span class="styles_styledStoreNameSpan__l8eeV ">Lake Z
+
+[2026-05-15 03:04:02] [SCREENSHOT] atc_button_not_ready — url=https://www.target.com/cart — saved: logs/screenshots/debug_atc_button_not_ready_20260515_030400.png
+[2026-05-15 03:04:02] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - page_not_ready
+[2026-05-15 03:04:07] [PURCHASE_RESET] Cycle 1778832247919: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:13] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_failed_api_mode
+[2026-05-15 03:04:14] [PURCHASE_RESET] Cycle 1778832254853: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:16] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_failed_api_mode
+[2026-05-15 03:04:19] [PURCHASE_RESET] Cycle 1778832260030: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:21] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_failed_api_mode
+[2026-05-15 03:04:24] [PURCHASE_RESET] Cycle 1778832264099: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:25] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_failed_api_mode
+[2026-05-15 03:04:29] [PURCHASE_RESET] Cycle 1778832269515: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:32] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_failed_api_mode
+[2026-05-15 03:04:33] [PURCHASE_RESET] Cycle 1778832273854: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:04:39] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box - atc_failed_api_mode
+[2026-05-15 03:13:19] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-95225595 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_031318.png
+[2026-05-15 03:13:19] [CART_SIGNAL] No cart signal within 1.5s — url=https://www.target.com/p/-/A-95225595
+DOM: <link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=800&amp;hei=800&amp;qlt=80 800w,
+  
+
+[2026-05-15 03:13:24] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-95225595 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_031324.png
+[2026-05-15 03:13:24] [CART_SIGNAL] No cart signal within 4.0s — url=https://www.target.com/p/-/A-95225595
+DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; opacity: 0;"></div><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_cdeb1f00-4b02-45e6-af0c-7ed9f5c0215b?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_fdf439a7-7129-4b1e-b8b1-3091831a7af1?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_b1a2017c-2b35-4674-8202-68990e7e2d78?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/i
+
+[2026-05-15 03:13:37] [SCREENSHOT] atc_not_confirmed — url=https://www.target.com/p/-/A-95225595 — saved: logs/screenshots/debug_atc_not_confirmed_20260515_031324.png
+[2026-05-15 03:13:37] [ATC_FAIL] page_state=error url=https://www.target.com/p/-/A-95225595
+[2026-05-15 03:13:38] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration Collection Series 1 - cart_addition_failed
+[2026-05-15 03:13:42] [PURCHASE_RESET] Cycle 1778832822307: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:13:46] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/cart — saved: logs/screenshots/debug_cart_signal_timeout_20260515_031346.png
+[2026-05-15 03:13:46] [CART_SIGNAL] No cart signal within 1.5s — url=https://www.target.com/cart
+DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLink" tabindex="-1" class="styles_ndsLink__GUaai h-display-flex"></button><div data-test="skipLinks" id="skipLinks"><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="content" href="#content">skip to main content</a><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="footer" href="#footerHeader">skip to footer</a></div><div><div class="sc-d3088906-0 pgIyi"><div class="l-container-fixed styles_utilityHeaderContainer__k6A7s"><div class="styles_flexColumnLeft__myhIR"><div class="styles_styledZipPlaceholder___SQW1 "><button class="styles_btn__1hjpW styles_styledZipCodeButton__tAL1k  " type="button" aria-expanded="false" aria-label="Ship to location: 60056" data-test="@web/ZipCodeButton/StyledZipCodeButton" id="zip-code-id-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center"><div class="styles_geoLocationIconWrapper__VjQD2 "><svg viewBox="0 0 24 24" height="15" width="15"><use href="/icons-illustrations/v2/location.svg#location" xlink:href="/icons-illustrations/v2/location.svg#location"></use></svg></div><span class="styles_styledNameSpan__tzkJR  " data-test="@web/ZipCodeButton/ZipCodeNumber">Ship to 60056</span></div></button></div><div class="h-text-grayLight"><button class="styles_btn__1hjpW styles_base__CPnMk styles_md__QaqTQ styles_storeNameButton__zWVs4  " type="button" aria-expanded="false" aria-label="Store: Lake Zurich" data-test="@web/StoreName/Button" id="web-store-id-msg-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center" data-test="@web/StoreName/StoreName"><div class="styles_myStoreIconWrapper__wRU2R "><svg viewBox="0 0 24 24" height="16" width="16"><use href="/icons-illustrations/v2/store.svg#store" xlink:href="/icons-illustrations/v2/store.svg#store"></use></svg></div><div class="styles_ndsTruncate__0rtO0" style="--truncate-lines: 2;"><span class="styles_styledStoreNameSpan__l8eeV ">Lake Z
+
+[2026-05-15 03:13:46] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration Collection Series 1 - atc_failed_api_mode
+[2026-05-15 03:13:49] [PURCHASE_RESET] Cycle 1778832829329: Stock-aware reset verification failed for 1 purchases
+[2026-05-15 03:15:10] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/cart — saved: logs/screenshots/debug_cart_signal_timeout_20260515_031351.png
+[2026-05-15 03:15:10] [CART_SIGNAL] No cart signal within 1.5s — url=https://www.target.com/cart
+DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLink" tabindex="-1" class="styles_ndsLink__GUaai h-display-flex"></button><div data-test="skipLinks" id="skipLinks"><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="content" href="#content">skip to main content</a><a class="sc-a5fadc1d-0 hWRrAG h-sr-only h-sr-only-focusable" data-command="footer" href="#footerHeader">skip to footer</a></div><div><div class="sc-d3088906-0 pgIyi"><div class="l-container-fixed styles_utilityHeaderContainer__k6A7s"><div class="styles_flexColumnLeft__myhIR"><div class="styles_styledZipPlaceholder___SQW1 "><button class="styles_btn__1hjpW styles_styledZipCodeButton__tAL1k  " type="button" aria-expanded="false" aria-label="Ship to location: 60056" data-test="@web/ZipCodeButton/StyledZipCodeButton" id="zip-code-id-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center"><div class="styles_geoLocationIconWrapper__VjQD2 "><svg viewBox="0 0 24 24" height="15" width="15"><use href="/icons-illustrations/v2/location.svg#location" xlink:href="/icons-illustrations/v2/location.svg#location"></use></svg></div><span class="styles_styledNameSpan__tzkJR  " data-test="@web/ZipCodeButton/ZipCodeNumber">Ship to 60056</span></div></button></div><div class="h-text-grayLight"><button class="styles_btn__1hjpW styles_base__CPnMk styles_md__QaqTQ styles_storeNameButton__zWVs4  " type="button" aria-expanded="false" aria-label="Store: Lake Zurich" data-test="@web/StoreName/Button" id="web-store-id-msg-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center" data-test="@web/StoreName/StoreName"><div class="styles_myStoreIconWrapper__wRU2R "><svg viewBox="0 0 24 24" height="16" width="16"><use href="/icons-illustrations/v2/store.svg#store" xlink:href="/icons-illustrations/v2/store.svg#store"></use></svg></div><div class="styles_ndsTruncate__0rtO0" style="--truncate-lines: 2;"><span class="styles_styledStoreNameSpan__l8eeV ">Lake Z
+
+[2026-05-15 03:15:10] [PURCHASE] Purchase failed: 95225595 - atc_failed_api_mode
+[2026-05-15 03:32:17] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-1011206804 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_033217.png
+[2026-05-15 03:32:17] [CART_SIGNAL] No cart signal within 1.5s — url=https://www.target.com/p/-/A-1011206804
+DOM: <link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=800&amp;hei=800&amp;qlt=80 800w,
+  
+
+[2026-05-15 03:32:25] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/p/-/A-1011206804 — saved: logs/screenshots/debug_cart_signal_timeout_20260515_033222.png
+[2026-05-15 03:32:25] [CART_SIGNAL] No cart signal within 4.0s — url=https://www.target.com/p/-/A-1011206804
+DOM: <div data-react-modal-body-trap="" tabindex="0" style="position: absolute; opacity: 0;"></div><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_ee0584e7-cf46-445d-9906-cb99094b848a?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 60vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=800&amp;hei=800&amp;qlt=80 800w,
+      https://target.scene7.com/is/image/Target/GUEST_f0155a24-5479-4c03-9eac-442e9d515961?wid=1200&amp;hei=1200&amp;qlt=80 1200w" imagesizes="(min-width: 992px) 30vw, 50vw"><link rel="preload" as="image" imagesrcset="https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=300&amp;hei=300&amp;qlt=80 300w,
+      https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=400&amp;hei=400&amp;qlt=80 400w,
+      https://target.scene7.com/is/image/Target/GUEST_4367a58c-4289-4f7e-8781-0b3f25d8e4e2?wid=600&amp;hei=600&amp;qlt=80 600w,
+      https://target.scene7.com/is/i
+
+[2026-05-15 03:34:11] [SCREENSHOT] atc_not_confirmed — url=https://www.target.com/p/-/A-1011206804 — saved: logs/screenshots/debug_atc_not_confirmed_20260515_033225.png
+[2026-05-15 03:34:11] [ATC_FAIL] page_state=error url=https://www.target.com/p/-/A-1011206804
+[2026-05-15 03:34:12] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Elite Trainer Box - cart_addition_failed
+[2026-05-15 03:37:40] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Gardevoir - atc_evaluate_timeout
+[2026-05-15 03:50:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game : Charizard X ex Ultra-Premium Collection - atc_evaluate_timeout
