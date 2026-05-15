@@ -1595,11 +1595,23 @@ class BulletproofPurchaseManager:
                             print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
                             continue
 
-                        # Start new purchase attempt
-                        # max_qty: stock monitor extracts the per-customer purchase limit
-                        # (capped to ATP) from RedSky. Default 1 if absent so we never
-                        # send a quantity greater than known good.
-                        max_qty = product_data.get('max_qty', 1)
+                        # Start new purchase attempt.
+                        #
+                        # Hot-drop default: qty=1. RedSky-extracted purchase_limit
+                        # commonly returns 2 for Pokemon TCG, which trips two
+                        # avoidable failure modes:
+                        #  - 422/409 PURCHASE_LIMIT/MAX_QUANTITY rejections that
+                        #    we then self-heal down to qty=1 anyway (executor
+                        #    lines ~1311+), burning a Shape capture per cycle.
+                        #  - Higher order-cancellation rates post-checkout (Target
+                        #    auto-cancels qty>1 on capped TCG SKUs).
+                        # Set TARGET_FORCE_QTY_1=false to restore the legacy
+                        # purchase_limit-driven behavior.
+                        force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'true').lower() == 'true'
+                        if force_qty_1:
+                            max_qty = 1
+                        else:
+                            max_qty = product_data.get('max_qty', 1)
                         result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'), max_qty=max_qty)
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle
