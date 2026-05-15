@@ -984,13 +984,25 @@ class PurchaseExecutor:
             # needs cookies + Shape headers (both already cached on the tab).
             # We only need the PDP for one thing: scraping purchase_limit when
             # neither RedSky nor the in-memory cache supplied a qty > 1.
+            #
+            # Fix #3 hard-ceiling: when TARGET_FORCE_QTY_1=true (Pokemon TCG
+            # is strict 1-per-customer on hot drops), qty is already 1 from the
+            # manager and the PDP lookup can only *raise* it back to 2. Bypass
+            # the lookup entirely — saves a nav and prevents the 422
+            # PURCHASE_LIMIT self-heal cycle that burns a Shape capture per
+            # cycle.
+            force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'true').lower() == 'true'
             need_pdp_for_qty = (
-                quantity <= 1
+                not force_qty_1
+                and quantity <= 1
                 and (tcin not in self._pdp_qty_cache
                      or (time.time() - self._pdp_qty_cache[tcin][1]) >= self._pdp_qty_ttl)
             )
 
-            if quantity > 1:
+            if force_qty_1:
+                quantity = 1
+                print(f"[PURCHASE] qty=1 hard-ceiling (TARGET_FORCE_QTY_1=true, skipping PDP nav)")
+            elif quantity > 1:
                 print(f"[PURCHASE] purchase_limit from RedSky: {quantity} (skipping PDP nav)")
             elif not need_pdp_for_qty:
                 cached_qty, cached_ts = self._pdp_qty_cache[tcin]
