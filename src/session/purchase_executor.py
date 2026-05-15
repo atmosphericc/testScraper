@@ -966,6 +966,27 @@ class PurchaseExecutor:
                 print(f"[PURCHASE] Shape headers STALE (age={headers_age:.0f}s > 90s) — sending fetch WITHOUT Shape headers")
             else:
                 print(f"[PURCHASE] No Shape headers cached yet — warmup tab may not have captured yet")
+            # CDP health-check before firing the ATC POST. A wedged tab
+            # (dead WebSocket, stalled CDP session) wastes the 8s ATC timeout
+            # on a guaranteed-fail and locks the page_lock for the full
+            # duration. A 250ms probe with a trivial evaluate catches this in
+            # ~10ms when healthy. The 'websocket' keyword in the error string
+            # matches bulletproof_purchase_manager.py's existing restart-
+            # trigger (line ~1123), so the manager reuses its WebSocket-dead
+            # recovery path (refresh_session()) without changes here.
+            try:
+                await asyncio.wait_for(tab.evaluate("1"), timeout=0.25)
+            except asyncio.TimeoutError:
+                print(f"[PURCHASE] CDP health-check timed out >250ms — tab wedged, bailing for browser restart (t={time.time()-start_time:.2f}s)")
+                return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
+                        'error': 'CDP health-check timeout — websocket likely dead',
+                        'execution_time': time.time() - start_time}
+            except Exception as _hc_err:
+                print(f"[PURCHASE] CDP health-check raised {type(_hc_err).__name__}: {_hc_err} — bailing for browser restart (t={time.time()-start_time:.2f}s)")
+                return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
+                        'error': f'CDP health-check error: {_hc_err} — websocket likely dead',
+                        'execution_time': time.time() - start_time}
+
             print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
             try:
                 atc_result = await asyncio.wait_for(
