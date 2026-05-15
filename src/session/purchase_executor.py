@@ -50,12 +50,23 @@ class PurchaseExecutor:
         # already-burned set and gets 401. The ring lets us pop a *fresh*
         # unconsumed capture per attempt, so multiple in-flight retries (or
         # rapid back-to-back cycles) each get their own token set instead of
-        # re-using the most recent one. maxlen=4 keeps memory bounded; the
-        # warmup tab refills as we drain.
-        self._shape_capture_ring: Deque[Dict[str, Any]] = deque(maxlen=4)
-        self._warmup_tab = None                             # single shared background tab
-        self._warmup_tab_cart_ts: float = 0.0               # last successful /cart nav on warmup tab
+        # re-using the most recent one. maxlen=30 covers the typical Shape
+        # token TTL (~300s); entries older than the TTL are evicted on every
+        # pop so we never hand out stale tokens. Pool of warmup tabs refills
+        # the ring on a jittered background cadence.
+        self._shape_capture_ring: Deque[Dict[str, Any]] = deque(maxlen=30)
+        self._shape_capture_ttl_s: float = 300.0           # drop captures older than this on pop
+        # Pool of persistent warmup tabs. Each tab has its own CDP interceptor
+        # (persistent=True) and its own background refill loop that fires a
+        # dummy POST to /cart on a jittered ~60-90s cadence. Tabs are opened
+        # lazily on first warmup call; the pool size is env-gated.
+        self._warmup_tabs: list = []                        # list of tab handles
+        self._warmup_tab_cart_ts: Dict[int, float] = {}    # idx -> last /cart nav ts
+        self._warmup_refill_tasks: list = []                # list of asyncio.Task
+        self._warmup_pool_size: int = max(1, int(os.environ.get('TARGET_WARMUP_TAB_COUNT', '2')))
         self._warmup_in_progress: bool = False              # prevent concurrent warmups
+        self._warmup_rr_idx: int = 0                        # round-robin selector
+        self._warmup_pool_lock = asyncio.Lock()            # serialize pool growth
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
         self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
@@ -636,13 +647,30 @@ class PurchaseExecutor:
         POST (the server burns it on use). Reusing the just-published headers
         on a back-to-back call returns 401. The interceptor pushes every new
         capture into `_shape_capture_ring`; this method pops the newest entry
-        whose `consumed` flag is False, marks it consumed, and republishes its
-        headers as the active cache view.
+        whose `consumed` flag is False AND younger than the TTL, marks it
+        consumed, and republishes its headers as the active cache view.
 
         Returns True if a fresh capture was rotated in. Returns False when the
-        ring is exhausted (every entry already consumed) — caller should fall
-        back to `warm_shape_headers()` to refill.
+        ring is exhausted (every entry already consumed or expired) — caller
+        should fall back to `warm_shape_headers()` to refill.
         """
+        # Evict stale entries before scanning. Shape tokens expire ~300s after
+        # capture; handing out an expired set produces a guaranteed 401 and
+        # wastes the retry budget.
+        now = time.time()
+        ttl = self._shape_capture_ttl_s
+        evicted = 0
+        for entry in list(self._shape_capture_ring):
+            if now - entry['ts'] > ttl:
+                try:
+                    self._shape_capture_ring.remove(entry)
+                    evicted += 1
+                except ValueError:
+                    pass
+        if evicted:
+            print(f"[SHAPE_RING] Evicted {evicted} stale capture(s) (>{ttl:.0f}s old); "
+                  f"{len(self._shape_capture_ring)} remain in ring")
+
         # Newest-first scan: iterate the deque in reverse insertion order.
         for entry in reversed(self._shape_capture_ring):
             if entry.get('consumed'):
@@ -651,63 +679,90 @@ class PurchaseExecutor:
             self._cached_cart_headers = entry['headers']
             self._cached_cart_headers_ts = entry['ts']
             unused = sum(1 for e in self._shape_capture_ring if not e.get('consumed'))
-            print(f"[SHAPE_RING] Consumed fresh capture (ts age={time.time()-entry['ts']:.1f}s, "
+            print(f"[SHAPE_RING] Consumed fresh capture (ts age={now-entry['ts']:.1f}s, "
                   f"{unused} unused remaining of {len(self._shape_capture_ring)})")
             return True
         return False
 
-    async def warm_shape_headers(self) -> bool:
-        """Refresh Shape headers via cart page visit on the shared background warmup tab."""
-        if self._warmup_in_progress:
-            return bool(self._cached_cart_headers)
-        self._warmup_in_progress = True
+    async def _ensure_warmup_tab(self, idx: int):
+        """Lazily open warmup tab at pool index `idx`, install CDP interceptor.
+
+        Returns the tab handle, or None on failure. Stagger between successive
+        tab opens is handled by the caller (see `warm_shape_headers`).
+        """
+        browser = self.session_manager.browser
+        if not browser:
+            return None
+        # Grow the list if needed (length may be < idx+1 on first call).
+        while len(self._warmup_tabs) <= idx:
+            self._warmup_tabs.append(None)
+        tab = self._warmup_tabs[idx]
+        if tab is not None:
+            return tab
         try:
-            browser = self.session_manager.browser
-            if not browser:
+            print(f"[WARMUP] Opening warmup tab #{idx}...")
+            tab = await browser.get("https://www.target.com/cart", new_tab=True)
+            print(f"[WARMUP] Warmup tab #{idx} opened, URL={tab.url}")
+            await self._setup_cdp_fetch_interceptor(tab, persistent=True)
+            self._warmup_tabs[idx] = tab
+            self._warmup_tab_cart_ts[idx] = time.time()
+            return tab
+        except Exception as e:
+            print(f"[WARMUP] Failed to open warmup tab #{idx}: {e}")
+            self._warmup_tabs[idx] = None
+            return None
+
+    async def _refresh_on_tab(self, idx: int) -> bool:
+        """Fire a /cart re-nav + dummy POST on warmup tab `idx` and wait for
+        the interceptor to record a fresh capture. Returns True on success."""
+        browser = self.session_manager.browser
+        if not browser:
+            return False
+        async with self._warmup_pool_lock:
+            tab = await self._ensure_warmup_tab(idx)
+        if tab is None:
+            return False
+
+        ts_before = self._cached_cart_headers_ts
+        now = time.time()
+        # Skip the cart re-nav if we navigated < 90s ago — Shape JS is
+        # already initialized on this tab, so the dummy POST will pick up
+        # current tokens. Saves ~0.6-1.2s on the post-success refresh path.
+        last_nav = self._warmup_tab_cart_ts.get(idx, 0.0)
+        cart_nav_age = (now - last_nav) if last_nav else 999
+
+        if cart_nav_age < 90:
+            print(f"[WARMUP#{idx}] Skipping cart re-nav (last nav {cart_nav_age:.0f}s ago, tab still warm)")
+            fresh_nav = False
+        else:
+            try:
+                current_url = getattr(tab, 'url', 'unknown')
+                print(f"[WARMUP#{idx}] Navigating warmup tab to cart (was at {current_url}, age={cart_nav_age:.0f}s)")
+                await tab.get("https://www.target.com/cart")
+                self._warmup_tab_cart_ts[idx] = time.time()
+                fresh_nav = True
+            except Exception as e:
+                print(f"[WARMUP#{idx}] Nav failed: {e} — dropping tab handle")
+                self._warmup_tabs[idx] = None
                 return False
 
-            ts_before = self._cached_cart_headers_ts
-            now = time.time()
-            # Skip the cart re-nav if we navigated < 90s ago — Shape JS is
-            # already initialized on this tab, so the dummy POST will pick up
-            # current tokens. Saves ~0.6-1.2s on the post-success refresh path.
-            cart_nav_age = now - self._warmup_tab_cart_ts if self._warmup_tab_cart_ts else 999
-
-            if not self._warmup_tab:
-                print("[WARMUP] Opening new background warmup tab...")
-                self._warmup_tab = await browser.get(
-                    "https://www.target.com/cart", new_tab=True
-                )
-                print(f"[WARMUP] Warmup tab opened, URL={self._warmup_tab.url}")
-                await self._setup_cdp_fetch_interceptor(self._warmup_tab, persistent=True)
-                self._warmup_tab_cart_ts = time.time()
-                fresh_nav = True
-            elif cart_nav_age < 90:
-                print(f"[WARMUP] Skipping cart re-nav (last nav {cart_nav_age:.0f}s ago, tab still warm)")
-                fresh_nav = False
-            else:
-                current_url = getattr(self._warmup_tab, 'url', 'unknown')
-                print(f"[WARMUP] Navigating warmup tab to cart (was at {current_url}, age={cart_nav_age:.0f}s)")
-                await self._warmup_tab.get("https://www.target.com/cart")
-                self._warmup_tab_cart_ts = time.time()
-                fresh_nav = True
-
-            # On fresh navs, wait briefly for Shape JS to initialize before the
-            # dummy POST. Use a readyState poll (capped at 0.4s) instead of an
-            # unconditional 0.8s sleep — cart page typically reaches `complete`
-            # in 150-300ms after a fast nav.
-            if fresh_nav:
-                _ready_deadline = time.time() + 0.4
-                while time.time() < _ready_deadline:
-                    try:
-                        rs = await self._warmup_tab.evaluate("document.readyState")
-                        if rs == "complete":
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.05)
-            print("[WARMUP] Firing dummy POST to trigger Shape header capture...")
-            await self._warmup_tab.evaluate("""
+        # On fresh navs, wait briefly for Shape JS to initialize before the
+        # dummy POST. Use a readyState poll (capped at 0.4s) instead of an
+        # unconditional 0.8s sleep — cart page typically reaches `complete`
+        # in 150-300ms after a fast nav.
+        if fresh_nav:
+            _ready_deadline = time.time() + 0.4
+            while time.time() < _ready_deadline:
+                try:
+                    rs = await tab.evaluate("document.readyState")
+                    if rs == "complete":
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
+        print(f"[WARMUP#{idx}] Firing dummy POST to trigger Shape header capture...")
+        try:
+            await tab.evaluate("""
                 fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
                     method: 'POST',
                     credentials: 'include',
@@ -724,36 +779,126 @@ class PurchaseExecutor:
                     })
                 }).catch(() => {});
             """)
+        except Exception as e:
+            print(f"[WARMUP#{idx}] Dummy POST failed: {e} — dropping tab handle")
+            self._warmup_tabs[idx] = None
+            return False
 
-            # Capture window tightened from 3s to 1.5s. When the interceptor IS
-            # going to fire, it does so within 100-300ms of the dummy POST; the
-            # remaining 2.7s of a 3s wait was pure dead time on the broken-Shape
-            # JS / dead-tab failure path. Long-tail (p90/p99) cycles in v17 were
-            # dominated by this wait when cart_nav_age >90s forced a re-nav. The
-            # fast path (sub-300ms typical) is unchanged — the polling loop
-            # below exits as soon as the interceptor writes a new ts.
-            print("[WARMUP] Waiting for carts.target.com POST interception (up to 1.5s)...")
+        # Capture window: 1.5s (interceptor fires in 100-300ms when it's going
+        # to fire at all; the rest is wasted on broken-Shape JS / dead tabs).
+        print(f"[WARMUP#{idx}] Waiting for carts.target.com POST interception (up to 1.5s)...")
+        wait_start = time.time()
+        deadline = wait_start + 1.5
+        while time.time() < deadline:
+            if self._cached_cart_headers_ts > ts_before:
+                age = time.time() - self._cached_cart_headers_ts
+                print(f"[WARMUP#{idx}] Shape headers captured successfully (age={age:.1f}s): "
+                      f"{list(self._cached_cart_headers.keys())}")
+                return True
+            await asyncio.sleep(0.1)
 
-            wait_start = time.time()
-            deadline = wait_start + 1.5
-            while time.time() < deadline:
-                if self._cached_cart_headers_ts > ts_before:
-                    age = time.time() - self._cached_cart_headers_ts
-                    print(f"[WARMUP] Shape headers captured successfully (age={age:.1f}s): "
-                          f"{list(self._cached_cart_headers.keys())}")
-                    return True
-                await asyncio.sleep(0.1)
+        wait_elapsed = time.time() - wait_start
+        cache_age = time.time() - self._cached_cart_headers_ts if self._cached_cart_headers_ts else -1
+        print(f"[WARMUP#{idx}] TIMEOUT after {wait_elapsed:.1f}s — cache not refreshed "
+              f"(POST may have been intercepted but skipped by preserve rule; cache age={cache_age:.0f}s)")
+        return bool(self._cached_cart_headers)
 
-            wait_elapsed = time.time() - wait_start
-            cache_age = time.time() - self._cached_cart_headers_ts if self._cached_cart_headers_ts else -1
-            print(f"[WARMUP] TIMEOUT after {wait_elapsed:.1f}s — cache not refreshed "
-                  f"(POST may have been intercepted but skipped by preserve rule; cache age={cache_age:.0f}s)")
-            print(f"[WARMUP] Stale headers available: {bool(self._cached_cart_headers)}, "
-                  f"age={cache_age:.0f}s")
+    async def _background_refill_loop(self, idx: int) -> None:
+        """Periodically refresh Shape headers on warmup tab `idx`.
+
+        Runs forever (until cancelled when the worker loop stops). Sleeps a
+        jittered 60-90s between refreshes — long enough that we don't look
+        like a polling bot, short enough that the ring keeps captures younger
+        than the 300s Shape TTL. Skips a tick if a foreground warmup is in
+        progress (don't fight the caller for the singleton flag).
+        """
+        # Stagger initial start so the N tabs don't all fire at once. Each
+        # tab waits idx * (60s/N) before its first refresh.
+        initial_offset = idx * (60.0 / max(1, self._warmup_pool_size))
+        try:
+            await asyncio.sleep(initial_offset)
+        except asyncio.CancelledError:
+            return
+        print(f"[WARMUP_REFILL#{idx}] Background refill loop started (offset {initial_offset:.0f}s)")
+        while True:
+            try:
+                if not self._warmup_in_progress:
+                    try:
+                        await self._refresh_on_tab(idx)
+                    except Exception as e:
+                        print(f"[WARMUP_REFILL#{idx}] Refresh raised: {e}")
+                # Jittered 60-90s sleep.
+                delay = 60.0 + random.uniform(0, 30.0)
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                print(f"[WARMUP_REFILL#{idx}] Cancelled, exiting")
+                return
+            except Exception as e:
+                # Defensive: log and keep looping. Don't let a bad tab nuke
+                # the entire refill task.
+                print(f"[WARMUP_REFILL#{idx}] Unexpected error: {e}; continuing after 30s")
+                try:
+                    await asyncio.sleep(30.0)
+                except asyncio.CancelledError:
+                    return
+
+    def _start_background_refill(self) -> None:
+        """Kick off one `_background_refill_loop` task per pool index. Idempotent."""
+        # Drop completed/cancelled tasks before deciding whether to spawn new ones.
+        self._warmup_refill_tasks = [t for t in self._warmup_refill_tasks if not t.done()]
+        if len(self._warmup_refill_tasks) >= self._warmup_pool_size:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        existing_idxs = {getattr(t, '_warmup_idx', -1) for t in self._warmup_refill_tasks}
+        for idx in range(self._warmup_pool_size):
+            if idx in existing_idxs:
+                continue
+            task = loop.create_task(self._background_refill_loop(idx))
+            task._warmup_idx = idx  # tag so we don't double-spawn for the same idx
+            self._warmup_refill_tasks.append(task)
+            print(f"[WARMUP_REFILL] Spawned background refill task for tab #{idx}")
+
+    async def warm_shape_headers(self) -> bool:
+        """Refresh Shape headers via cart page visit on a pool warmup tab.
+
+        Uses round-robin tab selection across `_warmup_pool_size` persistent
+        tabs. Each tab has its own CDP interceptor and feeds the same
+        `_shape_capture_ring`, so a multi-tab pool gives us a larger steady-
+        state pool of unconsumed Shape captures for back-to-back retries.
+        On first successful warmup, spawns background refill tasks (one per
+        pool index) that keep the ring topped up between purchases.
+        """
+        if self._warmup_in_progress:
+            return bool(self._cached_cart_headers)
+        self._warmup_in_progress = True
+        try:
+            # Round-robin selection. First-touch on an index lazily opens the
+            # tab; subsequent calls reuse it.
+            idx = self._warmup_rr_idx % self._warmup_pool_size
+            self._warmup_rr_idx = (self._warmup_rr_idx + 1) % self._warmup_pool_size
+
+            ok = await self._refresh_on_tab(idx)
+            if not ok and self._warmup_pool_size > 1:
+                # If the chosen tab failed, try the next one in the pool
+                # (single fallback hop) before reporting failure.
+                alt = (idx + 1) % self._warmup_pool_size
+                print(f"[WARMUP] Primary tab #{idx} failed, trying fallback #{alt}")
+                ok = await self._refresh_on_tab(alt)
+            if ok:
+                # Pool is healthy enough to keep refilling in the background.
+                self._start_background_refill()
+                return True
+            if self._cached_cart_headers_ts:
+                cache_age = time.time() - self._cached_cart_headers_ts
+                print(f"[WARMUP] Stale headers available: {bool(self._cached_cart_headers)}, age={cache_age:.0f}s")
+            else:
+                print("[WARMUP] No headers available")
             return bool(self._cached_cart_headers)
         except Exception as e:
             print(f"[WARMUP] Error: {e}")
-            self._warmup_tab = None  # dead connection — force recreation next cycle
             return False
         finally:
             self._warmup_in_progress = False
