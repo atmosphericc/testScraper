@@ -1043,6 +1043,14 @@ class PurchaseExecutor:
                 print(f"[PURCHASE] ATC fetch: item OOS at cart API ({atc_status}) (t={time.time()-start_time:.2f}s)")
             elif atc_status in (422, 409) and any(k in atc_body.upper() for k in ('PURCHASE_LIMIT', 'MAX_QUANTITY', 'QUANTITY_LIMIT', 'EXCEEDED')):
                 print(f"[PURCHASE] ATC fetch: per-customer purchase limit hit at qty={quantity} ({atc_status}) (t={time.time()-start_time:.2f}s)")
+            elif atc_status == 429 or 'RATE_LIMITED' in atc_body.upper() or 'DCO_RATE_LIMITED' in atc_body.upper():
+                # Target's natural checkout rate-limit. Per Refract's Target docs:
+                # "Target now rate-limits checkouts to prevent backend spam — just
+                # let your task retry." This is NOT a Shape signal; the slow DOM
+                # button-click fallback can't recover it and burns ~10s per cycle.
+                # Bail fast so the manager's 3.5s Error Delay re-tries on the next
+                # stock cycle with a fresh Shape capture.
+                print(f"[PURCHASE] ATC fetch: rate-limited ({atc_status}) body={atc_body[:120]!r} — bailing for Error Delay retry (t={time.time()-start_time:.2f}s)")
             elif atc_status not in (200, 201):
                 print(f"[PURCHASE] ATC fetch status: {atc_status} body={atc_body!r} (t={time.time()-start_time:.2f}s)")
             else:
@@ -1054,6 +1062,15 @@ class PurchaseExecutor:
             if atc_status in (200, 201):
                 print(f"[PURCHASE] Fetch ATC succeeded ({atc_status}), skipping cart signal wait")
                 cart_confirmed = True
+            elif atc_status == 429 or 'RATE_LIMITED' in atc_body.upper() or 'DCO_RATE_LIMITED' in atc_body.upper():
+                # Fast-bail. The slow DOM polling / button-click fallback below
+                # exists for Shape token issues (401) and React-hydration races;
+                # neither recovers a 429. Returning here lets the purchase
+                # manager flip state to 'failed' and the next stock cycle
+                # re-attempts after the 3.5s Error Delay with a fresh capture.
+                return {'success': False, 'tcin': tcin, 'reason': 'rate_limited_429',
+                        'error': f'ATC rate-limited ({atc_status})',
+                        'execution_time': time.time() - start_time}
             elif atc_status == 401:
                 # Auth denied — most likely Shape rotating tokens were consumed
                 # (cycles back-to-back rapidly burn the token cache). FAST PATH:
