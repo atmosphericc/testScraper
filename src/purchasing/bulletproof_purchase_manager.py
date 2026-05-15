@@ -729,12 +729,35 @@ class BulletproofPurchaseManager:
                         old_failure = state.get('failure_reason', 'unknown')
                         old_completed_at = state.get('completed_at', 0)
 
-                        # For failures, wait 30s before retrying to avoid hammering
-                        # the session and triggering auth lockouts
+                        # Tiered Error Delay (replaces blanket 15s gate).
+                        # Refract's published Target default is 3500ms; Stellar
+                        # documents Checkout Delay ≤3000ms. The 15s gate was
+                        # locking us out of every flash drop. Now we scope by
+                        # failure type:
+                        #   - Shape signal (403 / 401 / shape_block):     10s
+                        #   - DCO_RATE_LIMITED / 429 ("just retry"):       3.5s
+                        #   - generic transient (timeout / cart / exec):   3.5s
+                        # The Shape branch stays longer because retrying inside
+                        # a true Shape block burns more cookies for no gain
+                        # (Stellar: full Shape block needs hours of rest).
                         if current_status == 'failed':
                             time_since = time.time() - old_completed_at if old_completed_at else 999
-                            if time_since < 15:
-                                print(f"[RESET] {tcin}: failed {time_since:.0f}s ago, waiting for 15s backoff")
+                            failure_reason = (state.get('failure_reason') or '').lower()
+                            error_details = (state.get('error_details') or '').lower()
+                            shape_signal = (
+                                'shape' in failure_reason
+                                or 'shape' in error_details
+                                or '403' in failure_reason
+                                or '401' in failure_reason
+                                or 'auth_denied' in failure_reason
+                            )
+                            gate_s = 10.0 if shape_signal else 3.5
+                            if time_since < gate_s:
+                                print(
+                                    f"[RESET] {tcin}: failed {time_since:.1f}s ago, "
+                                    f"waiting for {gate_s:.1f}s Error Delay "
+                                    f"(reason={failure_reason or 'unknown'}, shape={shape_signal})"
+                                )
                                 continue
 
                         states[tcin] = {'status': 'ready'}
