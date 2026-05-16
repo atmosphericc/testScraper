@@ -1,7 +1,7 @@
 {
   "_comment_active": "USED BY APP \u2014 16 best IPs (6 proven 95%+ + 10 fastest fresh). Chrome count == len(this list).",
   "proxies": [
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.153.65:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.154.172:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-72.56.171.184:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.18.86:jw569klxgs9c@brd.superproxy.io:33335",
@@ -20,7 +20,6 @@
   ],
   "_comment_reserve": "Spare clean IPs \u2014 manually move into 'proxies' if an active one burns. 12 entries.",
   "reserve_proxies": [
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.169.203:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.166.218:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.180.157:jw569klxgs9c@brd.superproxy.io:33335",
@@ -44,7 +43,8 @@
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.198.34:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.160.228:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.32.64:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.220.12:jw569klxgs9c@brd.superproxy.io:33335"
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.220.12:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.153.65:jw569klxgs9c@brd.superproxy.io:33335"
   ],
   "_comment_disabled": "Known bad \u2014 403/captcha. 12 entries. Do NOT re-enable without a successful re-probe.",
   "disabled_proxies": [

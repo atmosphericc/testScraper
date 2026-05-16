@@ -210,14 +210,23 @@ python test_walmart_framework_unit.py     # should exit 0, 48/48 pass
 ```
 
 #### Step 1 — Dev gate on laptop (15 min)
-1. Bootstrap 2 sessions (manual login each):
+1. **Master login on home IP** (only needed once, or when session expires):
+   ```
+   python walmart_relogin.py
+   ```
+   Manually log in. Produces authenticated profile at `walmart-profile-login/`.
+2. **Seed + verify N session profiles** (no manual logins per-session):
    ```
    python -m walmart.walmart_session_bootstrap --first 2
    ```
-   - Confirms by listing `s1, s2` and prompting `y/N`
-   - For each: opens real Chrome, runs warmup, navigates to walmart.com/account/login
-   - Type credentials, complete any CAPTCHA, then press Enter at the console
-   - Cookies/profile saved to `state/walmart_session_profiles/s{N}/`
+   - Copies `walmart-profile-login/Default/` → `state/walmart_session_profiles/s{N}/Default/`
+   - Skips caches/locks (saves ~10x disk space)
+   - Launches each session briefly through its assigned proxy to verify the
+     session is still recognized (auth cookie valid, no /blocked redirect)
+   - If verify fails on a session: swap that proxy IP in `config/proxyIps.json`
+     and re-run with `--session s{N}`
+   - Pattern mirrors Refract's "Saved Session" feature documented at
+     help.refractbot.com/modules/walmart
 2. Run 15-min smoke:
    ```
    WALMART_TEST_DURATION_S=900 WALMART_TEST_NUM_IPS=2 WALMART_TEST_RPS=1 \
@@ -233,8 +242,10 @@ python test_walmart_framework_unit.py     # should exit 0, 48/48 pass
 
 #### Step 2 — Prod soak on 64 GB box (60 min)
 1. Move repo to prod box, ensure `config/proxyIps.json` has the same 16
-   active proxies
-2. Bootstrap all 16 (one manual login each, ~10 min total):
+   active proxies. Also copy over `walmart-profile-login/` (the master
+   login profile) so seed has something to copy from. Or re-run
+   `python walmart_relogin.py` on the prod box.
+2. Seed + verify all 16 sessions (no manual logins — uses master profile):
    ```
    python -m walmart.walmart_session_bootstrap
    ```
