@@ -511,13 +511,21 @@ class MultiSessionPool:
 
     def pick_session(self) -> Optional[SessionEntry]:
         """Pick a random ready, non-busy session. None if no session is
-        currently available (all parked / busy / refreshing / crashed)."""
+        currently available (all parked / busy / refreshing / crashed).
+
+        Note: the legacy Target version of this method also required
+        `s.visitor_id` to be set, because RedSky needs a stable visitor
+        identity. That check is retailer-specific and was dropped here so
+        Walmart (which doesn't issue a `visitorId` cookie) and any future
+        retailer can use the same pool unchanged. Retailers that need a
+        per-session identity can validate it in their adapter's
+        `build_fetch_js` instead.
+        """
         ready = [s for s in self.sessions
                  if s.state == "ready"
                  and s.tab is not None
                  and not s.in_flight
-                 and s.cookies
-                 and s.visitor_id]
+                 and s.cookies]
         if not ready:
             return None
         return random.choice(ready)
@@ -525,7 +533,7 @@ class MultiSessionPool:
     def session_count(self) -> tuple[int, int]:
         """Return (ready_sessions, total_sessions)."""
         ready = sum(1 for s in self.sessions
-                    if s.state == "ready" and s.cookies and s.visitor_id)
+                    if s.state == "ready" and s.cookies)
         return ready, len(self.sessions)
 
     def state_summary(self) -> dict[str, int]:
