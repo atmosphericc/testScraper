@@ -1,0 +1,406 @@
+{
+  "timestamp": 1778893844.545871,
+  "elapsed_s": 774.3384370803833,
+  "results": [
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.142.216:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.142.216",
+      "status": 200,
+      "latency_ms": 460,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.48.46:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.48.46",
+      "status": 200,
+      "latency_ms": 488,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.202.255:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.202.255",
+      "status": 200,
+      "latency_ms": 523,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.204.52:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.204.52",
+      "status": 200,
+      "latency_ms": 462,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.220.12:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.220.12",
+      "status": 200,
+      "latency_ms": 524,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.163.24:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.163.24",
+      "status": 200,
+      "latency_ms": 419,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.66.150:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.66.150",
+      "status": 200,
+      "latency_ms": 543,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.74.14:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "75.153.74.14",
+      "status": 200,
+      "latency_ms": 97,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.166.218:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.166.218",
+      "status": 200,
+      "latency_ms": 376,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.75.7:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.75.7",
+      "status": 200,
+      "latency_ms": 152,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.53.131:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.53.131",
+      "status": 200,
+      "latency_ms": 164,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.168.109:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.168.109",
+      "status": 200,
+      "latency_ms": 414,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.51.225:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.51.225",
+      "status": 200,
+      "latency_ms": 2623,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.36.241:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.36.241",
+      "status": 200,
+      "latency_ms": 481,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.120.117:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "75.153.120.117",
+      "status": 200,
+      "latency_ms": 256,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.114.122:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "75.153.114.122",
+      "status": 200,
+      "latency_ms": 200,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.66.213:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "75.153.66.213",
+      "status": 200,
+      "latency_ms": 209,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-176.100.141.206:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "176.100.141.206",
+      "status": 403,
+      "latency_ms": 2388,
+      "error": "http_403:{\n  \"captchaRelativeURL\":\"/captcha?trackingId=e0e85131-e82b-44cb-acab-341de9110580\",\n  \"captchaAbsoluteURL\":\"https://redsky.target.com/captcha?trackingId=e0e851",
+      "pass": false
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.38.14:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.38.14",
+      "status": 200,
+      "latency_ms": 396,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-109.203.188.232:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "109.203.188.232",
+      "status": 200,
+      "latency_ms": 179,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.180.157:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.180.157",
+      "status": 200,
+      "latency_ms": 384,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.169.203:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.98.169.203",
+      "status": 200,
+      "latency_ms": 313,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-72.56.171.184:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "72.56.171.184",
+      "status": 200,
+      "latency_ms": 303,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.154.172:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.98.154.172",
+      "status": 200,
+      "latency_ms": 286,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.153.65:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.98.153.65",
+      "status": 200,
+      "latency_ms": 275,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.141.141:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.141.141",
+      "status": 200,
+      "latency_ms": 504,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.18.86:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.18.86",
+      "status": 200,
+      "latency_ms": 306,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.93.225:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.93.225",
+      "status": 200,
+      "latency_ms": 310,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.111.240:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.111.240",
+      "status": 200,
+      "latency_ms": 391,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.74.45:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.74.45",
+      "status": 200,
+      "latency_ms": 396,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.143.27:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.143.27",
+      "status": 200,
+      "latency_ms": 447,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.160.228:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.160.228",
+      "status": 200,
+      "latency_ms": 370,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.63.137:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.63.137",
+      "status": 200,
+      "latency_ms": 412,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-92.112.18.99:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "92.112.18.99",
+      "status": 200,
+      "latency_ms": 1551,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.32.64:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.32.64",
+      "status": 200,
+      "latency_ms": 474,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.219.76:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "168.158.219.76",
+      "status": 200,
+      "latency_ms": 395,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.158.87:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.98.158.87",
+      "status": 200,
+      "latency_ms": 108,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.227.219:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.227.219",
+      "status": 200,
+      "latency_ms": 291,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.155.55:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.155.55",
+      "status": 200,
+      "latency_ms": 103,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.148.70:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.148.70",
+      "status": 200,
+      "latency_ms": 113,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.212.250:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.212.250",
+      "status": 200,
+      "latency_ms": 117,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.222.246:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.222.246",
+      "status": 200,
+      "latency_ms": 119,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.255.43:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.255.43",
+      "status": 200,
+      "latency_ms": 284,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.198.34:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.198.34",
+      "status": 200,
+      "latency_ms": 344,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.153.101:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.153.101",
+      "status": 200,
+      "latency_ms": 295,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.133.83",
+      "status": 200,
+      "latency_ms": 309,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.183.245:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.183.245",
+      "status": 200,
+      "latency_ms": 268,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.171.7:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.171.7",
+      "status": 200,
+      "latency_ms": 646,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.250.38:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.250.38",
+      "status": 200,
+      "latency_ms": 456,
+      "error": null,
+      "pass": true
+    },
+    {
+      "proxy_url": "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.228.245:jw569klxgs9c@brd.superproxy.io:33335",
+      "pinned_ip": "31.105.228.245",
+      "status": 200,
+      "latency_ms": 116,
+      "error": null,
+      "pass": true
+    }
+  ]
+}

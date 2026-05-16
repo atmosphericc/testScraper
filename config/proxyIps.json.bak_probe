@@ -17,6 +17,7 @@
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.120.117:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.114.122:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-75.153.66.213:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-176.100.141.206:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.38.14:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-109.203.188.232:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.180.157:jw569klxgs9c@brd.superproxy.io:33335",
@@ -50,7 +51,5 @@
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.250.38:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.228.245:jw569klxgs9c@brd.superproxy.io:33335"
   ],
-  "disabled_proxies": [
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-176.100.141.206:jw569klxgs9c@brd.superproxy.io:33335"
-  ]
+  "disabled_proxies": []
 }

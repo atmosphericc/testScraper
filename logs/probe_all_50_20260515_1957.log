@@ -1,0 +1,214 @@
+2026-05-15 19:57:50,207 [INFO] probe_all_50_browser: [+] backed up original config → proxyIps.json.bak_probe
+2026-05-15 19:57:50,207 [INFO] probe_all_50_browser: [+] probing 50 IPs sequentially via browser path (tcin=50270379, store=865)
+2026-05-15 19:57:50,207 [INFO] probe_all_50_browser: [ 1/50] 168.158.142.216
+2026-05-15 19:57:50,208 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25001 → brd.superproxy.io:33335 (exit_ip=168.158.142.216)
+2026-05-15 19:57:50,208 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:58:10,809 [INFO] probe_all_50_browser:   ↳ 168.158.142.216    launch=20136ms fetch=460ms status=200 pass=True
+2026-05-15 19:58:14,957 [INFO] probe_all_50_browser: [ 2/50] 168.158.48.46
+2026-05-15 19:58:14,958 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25002 → brd.superproxy.io:33335 (exit_ip=168.158.48.46)
+2026-05-15 19:58:14,958 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:58:25,775 [INFO] probe_all_50_browser:   ↳ 168.158.48.46      launch=10326ms fetch=488ms status=200 pass=True
+2026-05-15 19:58:29,977 [INFO] probe_all_50_browser: [ 3/50] 168.158.202.255
+2026-05-15 19:58:29,978 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25003 → brd.superproxy.io:33335 (exit_ip=168.158.202.255)
+2026-05-15 19:58:29,978 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:58:40,880 [INFO] probe_all_50_browser:   ↳ 168.158.202.255    launch=10378ms fetch=523ms status=200 pass=True
+2026-05-15 19:58:45,051 [INFO] probe_all_50_browser: [ 4/50] 168.158.204.52
+2026-05-15 19:58:45,052 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25004 → brd.superproxy.io:33335 (exit_ip=168.158.204.52)
+2026-05-15 19:58:45,052 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:58:56,164 [INFO] probe_all_50_browser:   ↳ 168.158.204.52     launch=10647ms fetch=462ms status=200 pass=True
+2026-05-15 19:59:00,332 [INFO] probe_all_50_browser: [ 5/50] 168.158.220.12
+2026-05-15 19:59:00,333 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25005 → brd.superproxy.io:33335 (exit_ip=168.158.220.12)
+2026-05-15 19:59:00,333 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:59:11,177 [INFO] probe_all_50_browser:   ↳ 168.158.220.12     launch=10315ms fetch=524ms status=200 pass=True
+2026-05-15 19:59:15,340 [INFO] probe_all_50_browser: [ 6/50] 168.158.163.24
+2026-05-15 19:59:15,341 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25006 → brd.superproxy.io:33335 (exit_ip=168.158.163.24)
+2026-05-15 19:59:15,341 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:59:26,123 [INFO] probe_all_50_browser:   ↳ 168.158.163.24     launch=10361ms fetch=419ms status=200 pass=True
+2026-05-15 19:59:30,328 [INFO] probe_all_50_browser: [ 7/50] 168.158.66.150
+2026-05-15 19:59:30,329 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25007 → brd.superproxy.io:33335 (exit_ip=168.158.66.150)
+2026-05-15 19:59:30,329 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:59:41,200 [INFO] probe_all_50_browser:   ↳ 168.158.66.150     launch=10324ms fetch=543ms status=200 pass=True
+2026-05-15 19:59:45,363 [INFO] probe_all_50_browser: [ 8/50] 75.153.74.14
+2026-05-15 19:59:45,364 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25008 → brd.superproxy.io:33335 (exit_ip=75.153.74.14)
+2026-05-15 19:59:45,364 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 19:59:55,602 [INFO] probe_all_50_browser:   ↳ 75.153.74.14       launch=10137ms fetch=97ms status=200 pass=True
+2026-05-15 19:59:59,801 [INFO] probe_all_50_browser: [ 9/50] 168.158.166.218
+2026-05-15 19:59:59,802 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25009 → brd.superproxy.io:33335 (exit_ip=168.158.166.218)
+2026-05-15 19:59:59,802 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:00:10,423 [INFO] probe_all_50_browser:   ↳ 168.158.166.218    launch=10243ms fetch=376ms status=200 pass=True
+2026-05-15 20:00:14,533 [INFO] probe_all_50_browser: [10/50] 168.158.75.7
+2026-05-15 20:00:14,534 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25010 → brd.superproxy.io:33335 (exit_ip=168.158.75.7)
+2026-05-15 20:00:14,534 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:00:25,253 [INFO] probe_all_50_browser:   ↳ 168.158.75.7       launch=10564ms fetch=152ms status=200 pass=True
+2026-05-15 20:00:29,419 [INFO] probe_all_50_browser: [11/50] 168.158.53.131
+2026-05-15 20:00:29,420 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25011 → brd.superproxy.io:33335 (exit_ip=168.158.53.131)
+2026-05-15 20:00:29,420 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:00:46,335 [INFO] probe_all_50_browser:   ↳ 168.158.53.131     launch=16748ms fetch=164ms status=200 pass=True
+2026-05-15 20:00:50,523 [INFO] probe_all_50_browser: [12/50] 168.158.168.109
+2026-05-15 20:00:50,524 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25012 → brd.superproxy.io:33335 (exit_ip=168.158.168.109)
+2026-05-15 20:00:50,524 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:01:01,148 [INFO] probe_all_50_browser:   ↳ 168.158.168.109    launch=10206ms fetch=414ms status=200 pass=True
+2026-05-15 20:01:05,333 [INFO] probe_all_50_browser: [13/50] 168.158.51.225
+2026-05-15 20:01:05,333 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25013 → brd.superproxy.io:33335 (exit_ip=168.158.51.225)
+2026-05-15 20:01:05,334 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:01:18,673 [INFO] probe_all_50_browser:   ↳ 168.158.51.225     launch=10713ms fetch=2623ms status=200 pass=True
+2026-05-15 20:01:22,778 [INFO] probe_all_50_browser: [14/50] 168.158.36.241
+2026-05-15 20:01:22,779 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25014 → brd.superproxy.io:33335 (exit_ip=168.158.36.241)
+2026-05-15 20:01:22,779 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:01:33,677 [INFO] probe_all_50_browser:   ↳ 168.158.36.241     launch=10414ms fetch=481ms status=200 pass=True
+2026-05-15 20:01:37,828 [INFO] probe_all_50_browser: [15/50] 75.153.120.117
+2026-05-15 20:01:37,829 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25015 → brd.superproxy.io:33335 (exit_ip=75.153.120.117)
+2026-05-15 20:01:37,829 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:01:48,241 [INFO] probe_all_50_browser:   ↳ 75.153.120.117     launch=10153ms fetch=256ms status=200 pass=True
+2026-05-15 20:01:52,397 [INFO] probe_all_50_browser: [16/50] 75.153.114.122
+2026-05-15 20:01:52,398 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25016 → brd.superproxy.io:33335 (exit_ip=75.153.114.122)
+2026-05-15 20:01:52,398 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:02:02,990 [INFO] probe_all_50_browser:   ↳ 75.153.114.122     launch=10389ms fetch=200ms status=200 pass=True
+2026-05-15 20:02:07,128 [INFO] probe_all_50_browser: [17/50] 75.153.66.213
+2026-05-15 20:02:07,129 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25017 → brd.superproxy.io:33335 (exit_ip=75.153.66.213)
+2026-05-15 20:02:07,129 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:02:17,402 [INFO] probe_all_50_browser:   ↳ 75.153.66.213      launch=10060ms fetch=209ms status=200 pass=True
+2026-05-15 20:02:21,577 [INFO] probe_all_50_browser: [18/50] 176.100.141.206
+2026-05-15 20:02:21,578 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25018 → brd.superproxy.io:33335 (exit_ip=176.100.141.206)
+2026-05-15 20:02:21,578 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:02:37,333 [INFO] probe_all_50_browser:   ↳ 176.100.141.206    launch=13365ms fetch=2388ms status=403 pass=False err=http_403:{
+  "captchaRelativeURL":"/captcha?trackingId=e0e85131-e82b-44cb-acab-3
+2026-05-15 20:02:43,398 [INFO] probe_all_50_browser: [19/50] 168.158.38.14
+2026-05-15 20:02:43,399 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25019 → brd.superproxy.io:33335 (exit_ip=168.158.38.14)
+2026-05-15 20:02:43,399 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:02:54,275 [INFO] probe_all_50_browser:   ↳ 168.158.38.14      launch=10477ms fetch=396ms status=200 pass=True
+2026-05-15 20:02:58,465 [INFO] probe_all_50_browser: [20/50] 109.203.188.232
+2026-05-15 20:02:58,465 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25020 → brd.superproxy.io:33335 (exit_ip=109.203.188.232)
+2026-05-15 20:02:58,465 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:03:09,225 [INFO] probe_all_50_browser:   ↳ 109.203.188.232    launch=10577ms fetch=179ms status=200 pass=True
+2026-05-15 20:03:13,439 [INFO] probe_all_50_browser: [21/50] 168.158.180.157
+2026-05-15 20:03:13,439 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25021 → brd.superproxy.io:33335 (exit_ip=168.158.180.157)
+2026-05-15 20:03:13,439 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:03:24,175 [INFO] probe_all_50_browser:   ↳ 168.158.180.157    launch=10349ms fetch=384ms status=200 pass=True
+2026-05-15 20:03:28,346 [INFO] probe_all_50_browser: [22/50] 31.98.169.203
+2026-05-15 20:03:28,346 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25022 → brd.superproxy.io:33335 (exit_ip=31.98.169.203)
+2026-05-15 20:03:28,347 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:03:39,079 [INFO] probe_all_50_browser:   ↳ 31.98.169.203      launch=10416ms fetch=313ms status=200 pass=True
+2026-05-15 20:03:43,245 [INFO] probe_all_50_browser: [23/50] 72.56.171.184
+2026-05-15 20:03:43,246 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25023 → brd.superproxy.io:33335 (exit_ip=72.56.171.184)
+2026-05-15 20:03:43,246 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:03:53,485 [INFO] probe_all_50_browser:   ↳ 72.56.171.184      launch=9932ms fetch=303ms status=200 pass=True
+2026-05-15 20:03:57,683 [INFO] probe_all_50_browser: [24/50] 31.98.154.172
+2026-05-15 20:03:57,684 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25024 → brd.superproxy.io:33335 (exit_ip=31.98.154.172)
+2026-05-15 20:03:57,684 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:04:08,930 [INFO] probe_all_50_browser:   ↳ 31.98.154.172      launch=10956ms fetch=286ms status=200 pass=True
+2026-05-15 20:04:13,111 [INFO] probe_all_50_browser: [25/50] 31.98.153.65
+2026-05-15 20:04:13,111 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25025 → brd.superproxy.io:33335 (exit_ip=31.98.153.65)
+2026-05-15 20:04:13,112 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:04:23,767 [INFO] probe_all_50_browser:   ↳ 31.98.153.65       launch=10377ms fetch=275ms status=200 pass=True
+2026-05-15 20:04:27,894 [INFO] probe_all_50_browser: [26/50] 168.158.141.141
+2026-05-15 20:04:27,895 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25026 → brd.superproxy.io:33335 (exit_ip=168.158.141.141)
+2026-05-15 20:04:27,895 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:04:39,049 [INFO] probe_all_50_browser:   ↳ 168.158.141.141    launch=10646ms fetch=504ms status=200 pass=True
+2026-05-15 20:04:43,262 [INFO] probe_all_50_browser: [27/50] 31.105.18.86
+2026-05-15 20:04:43,262 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25027 → brd.superproxy.io:33335 (exit_ip=31.105.18.86)
+2026-05-15 20:04:43,262 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:04:53,596 [INFO] probe_all_50_browser:   ↳ 31.105.18.86       launch=10024ms fetch=306ms status=200 pass=True
+2026-05-15 20:04:57,913 [INFO] probe_all_50_browser: [28/50] 31.105.93.225
+2026-05-15 20:04:57,913 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25028 → brd.superproxy.io:33335 (exit_ip=31.105.93.225)
+2026-05-15 20:04:57,913 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:05:08,860 [INFO] probe_all_50_browser:   ↳ 31.105.93.225      launch=10634ms fetch=310ms status=200 pass=True
+2026-05-15 20:05:13,130 [INFO] probe_all_50_browser: [29/50] 168.158.111.240
+2026-05-15 20:05:13,131 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25029 → brd.superproxy.io:33335 (exit_ip=168.158.111.240)
+2026-05-15 20:05:13,131 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:05:30,255 [INFO] probe_all_50_browser:   ↳ 168.158.111.240    launch=16731ms fetch=391ms status=200 pass=True
+2026-05-15 20:05:34,404 [INFO] probe_all_50_browser: [30/50] 168.158.74.45
+2026-05-15 20:05:34,405 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25030 → brd.superproxy.io:33335 (exit_ip=168.158.74.45)
+2026-05-15 20:05:34,405 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:05:44,888 [INFO] probe_all_50_browser:   ↳ 168.158.74.45      launch=10085ms fetch=396ms status=200 pass=True
+2026-05-15 20:05:49,047 [INFO] probe_all_50_browser: [31/50] 168.158.143.27
+2026-05-15 20:05:49,047 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25031 → brd.superproxy.io:33335 (exit_ip=168.158.143.27)
+2026-05-15 20:05:49,047 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:06:00,093 [INFO] probe_all_50_browser:   ↳ 168.158.143.27     launch=10596ms fetch=447ms status=200 pass=True
+2026-05-15 20:06:04,268 [INFO] probe_all_50_browser: [32/50] 168.158.160.228
+2026-05-15 20:06:04,269 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25032 → brd.superproxy.io:33335 (exit_ip=168.158.160.228)
+2026-05-15 20:06:04,269 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:06:14,762 [INFO] probe_all_50_browser:   ↳ 168.158.160.228    launch=10120ms fetch=370ms status=200 pass=True
+2026-05-15 20:06:18,899 [INFO] probe_all_50_browser: [33/50] 31.105.63.137
+2026-05-15 20:06:18,899 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25033 → brd.superproxy.io:33335 (exit_ip=31.105.63.137)
+2026-05-15 20:06:18,899 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:06:29,550 [INFO] probe_all_50_browser:   ↳ 31.105.63.137      launch=10236ms fetch=412ms status=200 pass=True
+2026-05-15 20:06:33,743 [INFO] probe_all_50_browser: [34/50] 92.112.18.99
+2026-05-15 20:06:33,744 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25034 → brd.superproxy.io:33335 (exit_ip=92.112.18.99)
+2026-05-15 20:06:33,744 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:06:45,540 [INFO] probe_all_50_browser:   ↳ 92.112.18.99       launch=10241ms fetch=1551ms status=200 pass=True
+2026-05-15 20:06:49,662 [INFO] probe_all_50_browser: [35/50] 168.158.32.64
+2026-05-15 20:06:49,663 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25035 → brd.superproxy.io:33335 (exit_ip=168.158.32.64)
+2026-05-15 20:06:49,663 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:07:00,640 [INFO] probe_all_50_browser:   ↳ 168.158.32.64      launch=10500ms fetch=474ms status=200 pass=True
+2026-05-15 20:07:04,815 [INFO] probe_all_50_browser: [36/50] 168.158.219.76
+2026-05-15 20:07:04,816 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25036 → brd.superproxy.io:33335 (exit_ip=168.158.219.76)
+2026-05-15 20:07:04,816 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:07:15,511 [INFO] probe_all_50_browser:   ↳ 168.158.219.76     launch=10297ms fetch=395ms status=200 pass=True
+2026-05-15 20:07:19,681 [INFO] probe_all_50_browser: [37/50] 31.98.158.87
+2026-05-15 20:07:19,682 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25037 → brd.superproxy.io:33335 (exit_ip=31.98.158.87)
+2026-05-15 20:07:19,682 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:07:29,759 [INFO] probe_all_50_browser:   ↳ 31.98.158.87       launch=9966ms fetch=108ms status=200 pass=True
+2026-05-15 20:07:33,896 [INFO] probe_all_50_browser: [38/50] 31.105.227.219
+2026-05-15 20:07:33,896 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25038 → brd.superproxy.io:33335 (exit_ip=31.105.227.219)
+2026-05-15 20:07:33,896 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:07:44,517 [INFO] probe_all_50_browser:   ↳ 31.105.227.219     launch=10326ms fetch=291ms status=200 pass=True
+2026-05-15 20:07:48,670 [INFO] probe_all_50_browser: [39/50] 31.105.155.55
+2026-05-15 20:07:48,670 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25039 → brd.superproxy.io:33335 (exit_ip=31.105.155.55)
+2026-05-15 20:07:48,670 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:07:58,842 [INFO] probe_all_50_browser:   ↳ 31.105.155.55      launch=10065ms fetch=103ms status=200 pass=True
+2026-05-15 20:08:02,992 [INFO] probe_all_50_browser: [40/50] 31.105.148.70
+2026-05-15 20:08:02,992 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25040 → brd.superproxy.io:33335 (exit_ip=31.105.148.70)
+2026-05-15 20:08:02,992 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:08:13,908 [INFO] probe_all_50_browser:   ↳ 31.105.148.70      launch=10801ms fetch=113ms status=200 pass=True
+2026-05-15 20:08:18,091 [INFO] probe_all_50_browser: [41/50] 31.105.212.250
+2026-05-15 20:08:18,092 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25041 → brd.superproxy.io:33335 (exit_ip=31.105.212.250)
+2026-05-15 20:08:18,092 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:08:28,452 [INFO] probe_all_50_browser:   ↳ 31.105.212.250     launch=10240ms fetch=117ms status=200 pass=True
+2026-05-15 20:08:32,598 [INFO] probe_all_50_browser: [42/50] 31.105.222.246
+2026-05-15 20:08:32,599 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25042 → brd.superproxy.io:33335 (exit_ip=31.105.222.246)
+2026-05-15 20:08:32,599 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:08:42,890 [INFO] probe_all_50_browser:   ↳ 31.105.222.246     launch=10169ms fetch=119ms status=200 pass=True
+2026-05-15 20:08:47,101 [INFO] probe_all_50_browser: [43/50] 31.105.255.43
+2026-05-15 20:08:47,102 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25043 → brd.superproxy.io:33335 (exit_ip=31.105.255.43)
+2026-05-15 20:08:47,102 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:08:57,433 [INFO] probe_all_50_browser:   ↳ 31.105.255.43      launch=10045ms fetch=284ms status=200 pass=True
+2026-05-15 20:09:01,578 [INFO] probe_all_50_browser: [44/50] 31.105.198.34
+2026-05-15 20:09:01,579 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25044 → brd.superproxy.io:33335 (exit_ip=31.105.198.34)
+2026-05-15 20:09:01,579 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:09:12,107 [INFO] probe_all_50_browser:   ↳ 31.105.198.34      launch=10180ms fetch=344ms status=200 pass=True
+2026-05-15 20:09:16,262 [INFO] probe_all_50_browser: [45/50] 31.105.153.101
+2026-05-15 20:09:16,263 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25045 → brd.superproxy.io:33335 (exit_ip=31.105.153.101)
+2026-05-15 20:09:16,263 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:09:26,691 [INFO] probe_all_50_browser:   ↳ 31.105.153.101     launch=10130ms fetch=295ms status=200 pass=True
+2026-05-15 20:09:30,839 [INFO] probe_all_50_browser: [46/50] 31.105.133.83
+2026-05-15 20:09:30,839 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25046 → brd.superproxy.io:33335 (exit_ip=31.105.133.83)
+2026-05-15 20:09:30,840 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:09:41,246 [INFO] probe_all_50_browser:   ↳ 31.105.133.83      launch=10094ms fetch=309ms status=200 pass=True
+2026-05-15 20:09:45,436 [INFO] probe_all_50_browser: [47/50] 31.105.183.245
+2026-05-15 20:09:45,437 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25047 → brd.superproxy.io:33335 (exit_ip=31.105.183.245)
+2026-05-15 20:09:45,437 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:09:55,849 [INFO] probe_all_50_browser:   ↳ 31.105.183.245     launch=10142ms fetch=268ms status=200 pass=True
+2026-05-15 20:10:00,009 [INFO] probe_all_50_browser: [48/50] 31.105.171.7
+2026-05-15 20:10:00,010 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25048 → brd.superproxy.io:33335 (exit_ip=31.105.171.7)
+2026-05-15 20:10:00,010 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:10:11,074 [INFO] probe_all_50_browser:   ↳ 31.105.171.7       launch=10415ms fetch=646ms status=200 pass=True
+2026-05-15 20:10:15,244 [INFO] probe_all_50_browser: [49/50] 31.105.250.38
+2026-05-15 20:10:15,245 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25049 → brd.superproxy.io:33335 (exit_ip=31.105.250.38)
+2026-05-15 20:10:15,245 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:10:25,937 [INFO] probe_all_50_browser:   ↳ 31.105.250.38      launch=10234ms fetch=456ms status=200 pass=True
+2026-05-15 20:10:30,133 [INFO] probe_all_50_browser: [50/50] 31.105.228.245
+2026-05-15 20:10:30,134 [INFO] src.proxy.local_forwarder: [FORWARDER] 127.0.0.1:25050 → brd.superproxy.io:33335 (exit_ip=31.105.228.245)
+2026-05-15 20:10:30,134 [INFO] src.proxy.local_forwarder: [FORWARDER] started 1 listeners
+2026-05-15 20:10:40,342 [INFO] probe_all_50_browser:   ↳ 31.105.228.245     launch=10088ms fetch=116ms status=200 pass=True
+2026-05-15 20:10:44,549 [INFO] probe_all_50_browser: 
+2026-05-15 20:10:44,549 [INFO] probe_all_50_browser: ────────────────────────────────────────────────────────────
+2026-05-15 20:10:44,549 [INFO] probe_all_50_browser: DONE in 774s — pass=49 fail=1 untested=0
+2026-05-15 20:10:44,549 [INFO] probe_all_50_browser: ────────────────────────────────────────────────────────────
+2026-05-15 20:10:44,549 [INFO] probe_all_50_browser: FAILS:
+2026-05-15 20:10:44,549 [INFO] probe_all_50_browser:   176.100.141.206    status=403 err=http_403:{
+  "captchaRelativeURL":"/captcha?trackingId=e0e85131-e82b-44cb-acab-341de9110580",
+  "captchaAbsoluteURL":"ht
+2026-05-15 20:10:44,551 [INFO] probe_all_50_browser: [+] config rewritten: proxies=49 disabled=1 (added 1 this run)
+2026-05-15 20:10:44,551 [INFO] probe_all_50_browser: [+] full report → /Users/Eric/Desktop/testScraper/state/probe_all_50_results.json
+2026-05-15 20:10:44,551 [INFO] probe_all_50_browser: [+] backup at → /Users/Eric/Desktop/testScraper/config/proxyIps.json.bak_probe
