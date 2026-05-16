@@ -106,11 +106,19 @@ class RetailerAdapter(Protocol):
     # detector. Target=600 (Shape), Walmart=1200 (PerimeterX is tighter).
     chrome_stagger_seconds: int
 
-    # Seconds between cookie-heartbeat refreshes per session. Should be well
-    # under the shortest cookie_max_age_seconds entry. Walmart _px3 expires
-    # ~60s on checkout pages, so heartbeat should be ~15min for monitoring
-    # tabs (which can tolerate stale _px3) but checkout sessions need fresher.
-    session_heartbeat_seconds: int
+    # Maximum age (seconds) any session's freshness-keyed cookies can have
+    # at dispatch time. The framework computes per-session refresh interval
+    # = max_session_cookie_age_seconds * N, so with smaller N each session
+    # refreshes more often (there are fewer sessions round-robining the
+    # heartbeat slot).
+    #
+    # Walmart: ~50s (one 10s safety margin under _px3's ~60s TTL on
+    #               checkout-sensitive pages — at N=2 that's a refresh
+    #               every 100s, at N=16 every 800s, _px3 stays fresh
+    #               either way)
+    # Target:  ~1800s (visitor_id is stable for hours; Akamai cookies
+    #                  rotate slowly via tab traffic; no _px3 analog)
+    max_session_cookie_age_seconds: int
 
     # ── stock-check fetch construction ───────────────────────────────────
     def build_fetch_js(self, items: list[str]) -> str:

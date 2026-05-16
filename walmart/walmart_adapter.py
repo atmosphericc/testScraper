@@ -134,11 +134,13 @@ class WalmartAdapter:
     # serially over 20 min instead of clustering at startup.
     chrome_stagger_seconds: int = 1200
 
-    # 15 min between heartbeat interactions per session. Each heartbeat is
-    # a real interaction (scroll, hover, mouse-move into nav), not a bare
-    # page reload — PerimeterX behavioral model treats real interactions
-    # as gold for trust accumulation.
-    session_heartbeat_seconds: int = 900
+    # _px3 has ~60s TTL on Walmart's checkout pages. We need every dispatch
+    # to use a _px3 that's <60s old, so the framework computes per-session
+    # refresh interval = max_session_cookie_age_seconds * N. At N=2 that's
+    # one refresh per session every 100s; at N=16 every 800s. Either way
+    # _px3 stays fresh because there are always (N-1) sessions firing
+    # fetches during your own session's refresh window.
+    max_session_cookie_age_seconds: int = 50
 
     # ── stock-check fetch construction ───────────────────────────────────
     # JS template — fetches /ip/<item_id> as a navigation request, extracts

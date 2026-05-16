@@ -140,12 +140,36 @@ class ResilientChecker:
         if "CHROME_STAGGER_TOTAL_S" not in os.environ:
             os.environ["CHROME_STAGGER_TOTAL_S"] = str(self.adapter.chrome_stagger_seconds)
 
+        # Per-session keepalive interval. The pool's _keepalive_loop
+        # round-robins refreshes — with N sessions, each session gets
+        # refreshed every (interval / N) seconds. We want every session's
+        # cookies to be <= adapter.max_session_cookie_age_seconds old at
+        # dispatch time, so we set the round-robin period to N * max_age.
+        # That's the per-session interval at which each session refreshes.
+        # Concretely for Walmart at N=2 / max_age=50: interval=100, each
+        # session refreshes every 100s, _px3 max age = 100s (could be
+        # tighter; we'd need parallel refreshes for stricter guarantee).
+        # For Target at N=16 / max_age=1800: interval=28800 (8 hours),
+        # each session refreshes every 8h — Target's cookies are stable.
+        per_session_refresh_s = max(
+            60.0,  # floor — don't refresh more often than once per minute
+            float(self.adapter.max_session_cookie_age_seconds * n_sessions),
+        )
+
         self.session_pool = MultiSessionPool(
             proxy_urls=self.proxy_urls,
             cookies_jar_path=self.state_dir / f"{self.adapter.name}_cookies_jar.json",
             profile_root=self.profile_root,
             forwarder_base_port=self.first_local_port,
             homepage_url=self.adapter.base_url,
+            refresh_interval_per_session_s=per_session_refresh_s,
+        )
+        logger.info(
+            "[%s] keepalive: max_cookie_age=%ds * N=%d sessions = "
+            "per-session refresh every %.0fs",
+            self.adapter.name.upper(),
+            self.adapter.max_session_cookie_age_seconds,
+            n_sessions, per_session_refresh_s,
         )
         await self.session_pool.start()
 
