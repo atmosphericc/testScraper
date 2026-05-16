@@ -145,6 +145,7 @@ class ResilientChecker:
             cookies_jar_path=self.state_dir / f"{self.adapter.name}_cookies_jar.json",
             profile_root=self.profile_root,
             forwarder_base_port=self.first_local_port,
+            homepage_url=self.adapter.base_url,
         )
         await self.session_pool.start()
 

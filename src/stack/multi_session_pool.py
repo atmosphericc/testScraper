@@ -202,7 +202,14 @@ class MultiSessionPool:
         forwarder_base_port: int = DEFAULT_FORWARDER_BASE_PORT,
         refresh_interval_per_session_s: float = DEFAULT_REFRESH_INTERVAL_PER_SESSION_S,
         harvest_via_local_ip: bool = False,
+        homepage_url: str = HOMEPAGE_URL,
     ):
+        # homepage_url — the retailer's homepage that each session's tab
+        # parks on after launch and keepalive-renavigates. Defaults to
+        # the module-level HOMEPAGE_URL (Target) so existing callers stay
+        # unchanged; Walmart's ResilientChecker passes
+        # "https://www.walmart.com" via WalmartAdapter.base_url.
+        self.homepage_url = homepage_url
         # If harvest_via_local_ip=True, Chromes launch WITHOUT --proxy-server,
         # so the cookie harvest happens on the user's home IP (high trust).
         # Workers would still need to send requests through BD — but in the
@@ -356,7 +363,7 @@ class MultiSessionPool:
         try:
             t0 = time.time()
             s.browser = await uc.start(cfg)
-            s.tab = await asyncio.wait_for(s.browser.get(HOMEPAGE_URL), timeout=30.0)
+            s.tab = await asyncio.wait_for(s.browser.get(self.homepage_url), timeout=30.0)
             await asyncio.sleep(SETTLE_AFTER_NAV_S)
             await self._refresh_cookies_from_tab(s)
             s.last_homepage_nav_at = time.time()
@@ -416,7 +423,7 @@ class MultiSessionPool:
         async with s.busy_lock:
             s.state = "refreshing"
             try:
-                await asyncio.wait_for(s.tab.get(HOMEPAGE_URL), timeout=20.0)
+                await asyncio.wait_for(s.tab.get(self.homepage_url), timeout=20.0)
                 await asyncio.sleep(random.uniform(4.0, 8.0))
                 await self._refresh_cookies_from_tab(s)
                 s.last_homepage_nav_at = time.time()
