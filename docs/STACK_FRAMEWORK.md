@@ -1,11 +1,15 @@
 # Resilient Stack Framework (`src/stack/`)
 
 ## Status
-**Phase 1b complete 2026-05-16.** Framework + Walmart adapter implemented
-and wired end-to-end. Dispatcher + ResilientChecker bodies done. Bootstrap
-+ entry point + smoke test in place. Verified clean imports, factory
-constructs without network. Next: run actual smoke tests on the laptop
-(N=2, 15 min) then prod (N=16, 60 min).
+**Phase 1b complete + unit gate passed 2026-05-16.** Framework + Walmart
+adapter implemented and wired end-to-end. Dispatcher + ResilientChecker
+bodies done. Bootstrap + entry point + smoke test in place. 48/48 unit
+tests pass (`test_walmart_framework_unit.py`) — every code path through
+the framework + adapter verified with synthetic data, zero network.
+
+Next: Phase 1c — actual network soak. Requires manual Walmart logins
+(one per session) so the user has to drive that. See "Phase 1c Runbook"
+section below for exact commands.
 
 ## Purpose
 Retailer-agnostic resilient stock-monitoring infrastructure. Target's
@@ -193,17 +197,69 @@ Implemented:
 Verified: framework + Walmart adapter import clean; `build_walmart_checker`
 factory constructs without network; Target's legacy imports still intact.
 
-### Phase 1c — Validation soak (NEXT)
-Run actual stack on live Walmart. Two gates:
-- **Dev smoke (laptop)**: bootstrap 2 sessions, then
-  `WALMART_TEST_DURATION_S=900 WALMART_TEST_NUM_IPS=2 WALMART_TEST_RPS=1 \
-      python test_walmart_resilient.py` — 15 min, ≥98% 200s, zero IP burns
-- **Prod soak (64 GB box)**: bootstrap all 16 sessions, then
-  `WALMART_TEST_DURATION_S=3600 WALMART_TEST_NUM_IPS=16 WALMART_TEST_RPS=6 \
-      python test_walmart_resilient.py` — 60 min, ≥98% 200s, zero IP burns,
-  `_px3` stays fresh on all 16 sessions through the run
+### Phase 1c — Validation soak (NEXT — user action required)
 
-If both pass, Phase 2 (env-gated cutover in `walmart_app.py`) is safe.
+**Why this is a user-action phase:** Bootstrap needs manual Walmart login
+(typing credentials per-session). Soak fires real BD-proxy traffic at
+Walmart. Both have cost / IP-trust implications that warrant explicit
+human approval.
+
+#### Pre-flight: confirm unit gate
+```
+python test_walmart_framework_unit.py     # should exit 0, 48/48 pass
+```
+
+#### Step 1 — Dev gate on laptop (15 min)
+1. Bootstrap 2 sessions (manual login each):
+   ```
+   python -m walmart.walmart_session_bootstrap --first 2
+   ```
+   - Confirms by listing `s1, s2` and prompting `y/N`
+   - For each: opens real Chrome, runs warmup, navigates to walmart.com/account/login
+   - Type credentials, complete any CAPTCHA, then press Enter at the console
+   - Cookies/profile saved to `state/walmart_session_profiles/s{N}/`
+2. Run 15-min smoke:
+   ```
+   WALMART_TEST_DURATION_S=900 WALMART_TEST_NUM_IPS=2 WALMART_TEST_RPS=1 \
+       python test_walmart_resilient.py
+   ```
+   - Heartbeat stats every 30s show `rps`, `total_200`, `total_blocked`
+   - Final summary at end: success ratio, per-IP state
+3. Pass criteria:
+   - ≥98% of dispatches return `http_status=200` and not blocked
+   - Zero IPs burned (`state/walmart_proxy_state.json` shows no "burned" status)
+   - Actual RPS within ±20% of 1.0 target
+   - No worker crashes that fail to recover via watchdog
+
+#### Step 2 — Prod soak on 64 GB box (60 min)
+1. Move repo to prod box, ensure `config/proxyIps.json` has the same 16
+   active proxies
+2. Bootstrap all 16 (one manual login each, ~10 min total):
+   ```
+   python -m walmart.walmart_session_bootstrap
+   ```
+3. Run 60-min soak:
+   ```
+   WALMART_TEST_DURATION_S=3600 WALMART_TEST_NUM_IPS=16 WALMART_TEST_RPS=6 \
+       python test_walmart_resilient.py
+   ```
+4. Same pass criteria as Step 1, but at the full N=16/RPS=6 load.
+
+#### After both gates pass: Phase 2 — env-gated cutover
+Wire `walmart/walmart_app.py` to switch on `WALMART_USE_RESILIENT=1`:
+the new path runs `build_walmart_checker(...)`, existing
+`WalmartStockMonitor` stays as fallback for `WALMART_USE_RESILIENT=0`.
+Same env-gate pattern as Target's `USE_RESILIENT_STACK`.
+
+#### What happens if a gate fails
+
+| Failure mode | Likely cause | Where to look |
+|---|---|---|
+| Bootstrap won't connect to Walmart | Forwarder port collision | `--base-port 26000` |
+| Bootstrap login page redirects to /blocked | BD IP flagged on cold start | Try a `reserve_proxies` IP — swap in `proxyIps.json` |
+| Smoke shows many `tab_evaluate_timeout` | Session crashed mid-fetch | Check `walmart_session_profiles/s{N}/` for chrome crash logs |
+| Smoke shows many `BLOCKED` | PerimeterX scoring too hot | Drop RPS to 0.5, observe; if still blocked, IPs need cool-down |
+| Smoke shows many `HTTP_400` | (Shouldn't happen with HTML transport) | Check `adapter.build_fetch_js` not somehow hitting GraphQL endpoint |
 
 ### Phase 2 — Env-gated cutover
 `WALMART_USE_RESILIENT=1` switches `walmart_app.py` to the new path;
