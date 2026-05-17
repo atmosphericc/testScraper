@@ -261,9 +261,20 @@ class QueueHandler:
         self,
         page,
         status_callback: Optional[Callable[[str], None]] = None,
+        session=None,
     ):
+        """
+        session: optional resilient-stack SessionEntry. If provided, the
+        handler auto-sets session.in_queue=True on detect-and-wait entry
+        and clears it on exit (admission/eviction/timeout). This prevents
+        the pool's keepalive heartbeat from navigating the tab away from
+        /qp and discarding the ticket. Required for proper queue behavior
+        when running inside the resilient stack; can be omitted for
+        legacy single-session purchase flows.
+        """
         self._page = page
         self._status_cb = status_callback or (lambda msg: None)
+        self._session = session
         self._last_ticket: Optional[QueueTicket] = None
         self._unlikely_streak = 0
         self._cdp_handler_attached = False
@@ -314,7 +325,31 @@ class QueueHandler:
         this many times in a row, return early with the latest ticket so
         the caller can decide whether to bail. This avoids waiting hours
         for an item that's effectively gone.
+
+        Session-managed in_queue flag: if a SessionEntry was provided at
+        construction, this method sets session.in_queue=True for the
+        duration of the wait so the pool's keepalive doesn't discard the
+        ticket by navigating off /qp. Cleared in finally regardless of
+        outcome.
         """
+        # Set in_queue flag if we have a session reference
+        if self._session is not None:
+            self._session.in_queue = True
+            logger.debug("[QUEUE] session.in_queue=True (keepalive will skip)")
+
+        try:
+            return await self._detect_and_wait_inner(timeout, max_unlikely_streak)
+        finally:
+            if self._session is not None:
+                self._session.in_queue = False
+                logger.debug("[QUEUE] session.in_queue=False (released)")
+
+    async def _detect_and_wait_inner(
+        self,
+        timeout: float,
+        max_unlikely_streak: int,
+    ) -> Optional[QueueTicket]:
+        """Inner wait loop — caller handles in_queue flag lifecycle."""
         # Initial detection
         ticket = await self.detect()
         if ticket is None:

@@ -170,6 +170,12 @@ class SessionEntry:
     consecutive_errors: int = 0
     crash_count: int = 0
     state: str = "starting"              # starting | ready | refreshing | crashed | recycling
+    # When True, the pool's keepalive heartbeat MUST skip this session because
+    # re-navigating to the homepage would discard a queue ticket the session is
+    # currently holding. Set by the queue handler before entering queue;
+    # cleared on admission, eviction, or timeout. Also gates pick_session so
+    # a queueing session isn't returned for a normal stock-check dispatch.
+    in_queue: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -416,11 +422,26 @@ class MultiSessionPool:
                     s.failed_refreshes += 1
 
     async def _heartbeat_one(self, s: SessionEntry):
-        """Navigate this session's EXISTING tab back to target.com homepage,
-        let cookies settle, dump them. Browser stays alive throughout."""
+        """Navigate this session's EXISTING tab back to the retailer's homepage,
+        let cookies settle, dump them. Browser stays alive throughout.
+
+        Skips sessions with in_queue=True — those are waiting at /qp and
+        re-navigating would discard their queue ticket. The queue handler
+        is responsible for refreshing cookies on those sessions via the
+        queue page's own JS-driven PerimeterX challenges.
+        """
         if s.state != "ready" or s.tab is None:
             return
+        if s.in_queue:
+            logger.debug(
+                f"[MULTI_SESSION] {s.id} heartbeat SKIPPED (in_queue=True)"
+            )
+            return
         async with s.busy_lock:
+            # Re-check inside the lock — caller may have set in_queue between
+            # the outer check and lock acquisition.
+            if s.in_queue:
+                return
             s.state = "refreshing"
             try:
                 await asyncio.wait_for(s.tab.get(self.homepage_url), timeout=20.0)
@@ -511,7 +532,7 @@ class MultiSessionPool:
 
     def pick_session(self) -> Optional[SessionEntry]:
         """Pick a random ready, non-busy session. None if no session is
-        currently available (all parked / busy / refreshing / crashed).
+        currently available (all parked / busy / refreshing / crashed / in queue).
 
         Note: the legacy Target version of this method also required
         `s.visitor_id` to be set, because RedSky needs a stable visitor
@@ -520,11 +541,16 @@ class MultiSessionPool:
         retailer can use the same pool unchanged. Retailers that need a
         per-session identity can validate it in their adapter's
         `build_fetch_js` instead.
+
+        Sessions with in_queue=True are also excluded — they're parked at
+        /qp holding a queue ticket and shouldn't be used for normal
+        stock-check dispatches.
         """
         ready = [s for s in self.sessions
                  if s.state == "ready"
                  and s.tab is not None
                  and not s.in_flight
+                 and not s.in_queue
                  and s.cookies]
         if not ready:
             return None

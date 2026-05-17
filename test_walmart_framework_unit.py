@@ -417,6 +417,56 @@ def test_parse_queued_with_malformed_price_doesnt_crash():
            out and out[0].title == "Bad Price")
 
 
+# ── in_queue flag — pool integration ─────────────────────────────────────
+
+
+def test_pick_session_excludes_in_queue():
+    """pick_session must skip sessions with in_queue=True so a queueing
+    session isn't returned for a normal stock-check dispatch (which would
+    consume its CPU and potentially the busy_lock, blocking queue progress).
+    """
+    from src.stack.multi_session_pool import MultiSessionPool, SessionEntry
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    pool = MultiSessionPool.__new__(MultiSessionPool)
+    # Two synthetic sessions: s1 ready+in_queue=True, s2 ready+in_queue=False
+    s1 = SessionEntry(
+        id="s1", proxy_url="x", proxy_ip="1.1.1.1", local_port=25000,
+        profile_dir=Path("/tmp/x1"), state="ready", cookies={"_px3": "abc"},
+        in_queue=True, tab=MagicMock(),
+    )
+    s2 = SessionEntry(
+        id="s2", proxy_url="y", proxy_ip="2.2.2.2", local_port=25001,
+        profile_dir=Path("/tmp/x2"), state="ready", cookies={"_px3": "def"},
+        in_queue=False, tab=MagicMock(),
+    )
+    pool.sessions = [s1, s2]
+    # Pick 50 times — should ONLY ever return s2 since s1 is in queue
+    picks = set()
+    for _ in range(50):
+        p = pool.pick_session()
+        if p is not None:
+            picks.add(p.id)
+    _check("pick_session never picks in_queue=True session",
+           "s1" not in picks)
+    _check("pick_session does pick non-queueing sessions",
+           "s2" in picks)
+
+
+def test_session_entry_defaults_in_queue_false():
+    """New sessions default to in_queue=False so existing dispatch behavior
+    is unchanged for any caller that doesn't manage the flag.
+    """
+    from src.stack.multi_session_pool import SessionEntry
+    from pathlib import Path
+    s = SessionEntry(
+        id="s1", proxy_url="x", proxy_ip="1.1.1.1", local_port=25000,
+        profile_dir=Path("/tmp/x"),
+    )
+    _check("SessionEntry.in_queue defaults to False", s.in_queue is False)
+
+
 # ── Test 11: Per-IP RPS ceiling validation (warn but don't crash) ────────
 
 def test_checker_high_rps_warns():
@@ -456,6 +506,11 @@ def main():
         ("Queue: parse body-signature shape", test_parse_queued_body_signature_shape),
         ("Queue: normal OOS not falsely flagged", test_parse_queued_does_not_falsely_flag_oos),
         ("Queue: malformed price doesn't crash", test_parse_queued_with_malformed_price_doesnt_crash),
+        # in_queue flag integration with pool
+        ("in_queue: pick_session excludes queueing sessions",
+         test_pick_session_excludes_in_queue),
+        ("in_queue: SessionEntry defaults to False",
+         test_session_entry_defaults_in_queue_false),
         ("High-RPS warns (no crash)", test_checker_high_rps_warns),
     ]
     print("=" * 70)
