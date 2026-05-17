@@ -101,6 +101,7 @@ class QueueState:
 
 class AdmissionLikelihood:
     LIKELY = "likely"
+    MODERATE = "moderate"     # observed in alxmyth/walmart-queue-monitor allowlist
     UNLIKELY = "unlikely"
     UNKNOWN = "unknown"
 
@@ -164,24 +165,50 @@ def parse_qpdata(qpdata_str: str) -> Optional[QueueTicket]:
     )
 
 
-def parse_ticket_response(body: dict) -> Optional[QueueTicket]:
-    """Parse a checkTicket/issueTicket/refreshTicket response body.
+def parse_ticket_response(body) -> Optional[QueueTicket]:
+    """Parse a checkTicket/issueTicket/refreshTicket/validateTickets response.
 
-    Shape (from research, walmart-queue-tracker GitHub):
+    Real shape captured 2026-05-17 from matthew7j2014/walmart-queue-tracker
+    README (real Pokemon TCG queue response):
       {
-        queue: "qa484c0ebd7014",
-        ticket: "<numeric>",
-        state: "pending" | "valid" | "expired",
-        expectedTurnTimeUnixTimestamp: <ms>,
-        customMetadata: {
-          admissionLikelihood: "likely" | "unlikely",
-          ...
-        },
-        nextRefreshRelativeTime: <ms>,
-        itemId: "<id>",
-        expires: <ts>,
+        "site": "usgm",
+        "queue": "qa484c0ebd7014",
+        "shard": 49,
+        "ticket": 2529,
+        "state": "pending" | "valid" | "expired",
+        "expires": 1771034402836,
+        "signature": "<base64>",
+        "itemId": "19012610850",
+        "expectedTurnTimeUnixTimestamp": 1770951237733,
+        "nextRefreshUnixTimestamp": 1770951214376,
+        "nextRefreshRelativeTime": 36000,
+        "customMetadata": {
+          "admissionLikelihood": "likely" | "moderate" | "unlikely",
+          "title": "This deal is going fast",
+          "item": {
+            "name": "...",
+            "currentPrice": "$X.XX",
+            "itemID": "<same as top-level itemId>"
+          }
+        }
       }
+
+    `validateTickets` wraps responses as {"tickets": [<above>, ...]}.
+    `checkTicket` / `refreshTicket` may return a single object or array.
+    This function accepts a dict, a list, OR a dict with a "tickets" array
+    and parses the FIRST ticket it finds.
     """
+    # Unwrap array shapes: list, or dict with "tickets": [...]
+    if isinstance(body, list):
+        if not body:
+            return None
+        body = body[0]
+    elif isinstance(body, dict) and isinstance(body.get("tickets"), list):
+        tickets = body["tickets"]
+        if not tickets:
+            return None
+        body = tickets[0]
+
     if not isinstance(body, dict):
         return None
     custom = body.get("customMetadata") or {}
@@ -191,7 +218,9 @@ def parse_ticket_response(body: dict) -> Optional[QueueTicket]:
     ) else QueueState.UNKNOWN
     likelihood_raw = (custom.get("admissionLikelihood") or "").lower()
     likelihood = likelihood_raw if likelihood_raw in (
-        AdmissionLikelihood.LIKELY, AdmissionLikelihood.UNLIKELY,
+        AdmissionLikelihood.LIKELY,
+        AdmissionLikelihood.MODERATE,
+        AdmissionLikelihood.UNLIKELY,
     ) else AdmissionLikelihood.UNKNOWN
     return QueueTicket(
         queue_id=body.get("queue"),

@@ -138,6 +138,150 @@ def test_parse_qpdata_malformed():
 
 # ── ticket API response parser ───────────────────────────────────────────
 
+# ── REAL captured payload fixtures ──────────────────────────────────────
+# These tests use the actual JSON payload captured from a real Walmart
+# Pokemon TCG queue, published in the README of github.com/matthew7j2014/
+# walmart-queue-tracker. This is the gold-standard fixture: if the parser
+# handles this, it handles real Walmart.
+
+# Real Pokemon TCG queue response (verbatim from the GitHub README)
+REAL_TICKET_RESPONSE = {
+    "site": "usgm",
+    "queue": "qa484c0ebd7014",
+    "shard": 49,
+    "ticket": 2529,
+    "state": "pending",
+    "expires": 1771034402836,
+    "signature": "evse+tJEvFgVsOpinrNpD/aBXPv3UHVwqVv7j4wbQkE=",
+    "itemId": "19012610850",
+    "expectedTurnTimeUnixTimestamp": 1770951237733,
+    "nextRefreshUnixTimestamp": 1770951214376,
+    "nextRefreshRelativeTime": 36000,
+    "customMetadata": {
+        "admissionLikelihood": "likely",
+        "title": "This deal is going fast",
+        "item": {
+            "name": "Pokemon Trading Card Games ...",
+            "currentPrice": "$29.97",
+            "itemID": "19012610850",
+        },
+    },
+}
+
+# Real Xbox Series X pre-ticket qpdata (Google-indexed)
+REAL_XBOX_QPDATA = {
+    "queued": True,
+    "queue": "x21639376266",
+    "url": "https://api.waiting-room.walmart.com/issueTicket?queue=x21639376266",
+    "customMetadata": {
+        "item": {
+            "itemID": "443574645",
+            "name": "Xbox Series X",
+            "imageURL": "https://i5.walmartimages.com/asr/551f9b29.jpeg",
+            "currentPrice": "$499.00",
+            "itemURL": "/ip/seort/443574645",
+        },
+    },
+}
+
+
+def test_real_pokemon_ticket_parses():
+    """Parses the verbatim real Pokemon TCG queue response published by
+    walmart-queue-tracker. If the parser handles this, it handles the
+    canonical real shape.
+    """
+    ticket = parse_ticket_response(REAL_TICKET_RESPONSE)
+    _check("real Pokemon ticket parses", ticket is not None)
+    if ticket:
+        _check("real ticket state=pending",
+               ticket.state == QueueState.PENDING)
+        _check("real ticket likelihood=likely",
+               ticket.likelihood == AdmissionLikelihood.LIKELY)
+        _check("real ticket queue_id captured",
+               ticket.queue_id == "qa484c0ebd7014")
+        _check("real ticket ticket-id stringified ('2529')",
+               ticket.ticket == "2529")
+        _check("real ticket next_refresh_ms=36000",
+               ticket.next_refresh_ms == 36000)
+        _check("real ticket item_id matched at top-level",
+               ticket.item_id == "19012610850")
+
+
+def test_real_xbox_qpdata_parses():
+    """Parses the verbatim real Xbox qpdata payload from a live drop."""
+    import json, urllib.parse
+    encoded = urllib.parse.quote(json.dumps(REAL_XBOX_QPDATA))
+    ticket = parse_qpdata(encoded)
+    _check("real Xbox qpdata parses", ticket is not None)
+    if ticket:
+        _check("real qpdata queue=x21639376266",
+               ticket.queue_id == "x21639376266")
+        _check("real qpdata item=443574645",
+               ticket.item_id == "443574645")
+
+
+def test_validate_tickets_array_shape_parses():
+    """`validateTickets` wraps responses as {'tickets': [...]}. The parser
+    must handle this — alxmyth/walmart-queue-monitor confirms this shape
+    in production.
+    """
+    array_response = {"tickets": [REAL_TICKET_RESPONSE]}
+    ticket = parse_ticket_response(array_response)
+    _check("validateTickets array shape parses", ticket is not None)
+    if ticket:
+        _check("array shape: state extracted correctly",
+               ticket.state == QueueState.PENDING)
+        _check("array shape: ticket-id extracted",
+               ticket.ticket == "2529")
+
+
+def test_bare_list_response_parses():
+    """Some endpoints return a bare array. Parser should pick the first
+    entry.
+    """
+    list_response = [REAL_TICKET_RESPONSE]
+    ticket = parse_ticket_response(list_response)
+    _check("bare list response parses", ticket is not None)
+    if ticket:
+        _check("bare list: state extracted",
+               ticket.state == QueueState.PENDING)
+
+
+def test_empty_array_returns_none():
+    _check("empty list returns None",
+           parse_ticket_response([]) is None)
+    _check("empty tickets array returns None",
+           parse_ticket_response({"tickets": []}) is None)
+
+
+def test_moderate_likelihood_recognized():
+    """alxmyth/walmart-queue-monitor whitelists 'moderate' as a third tier
+    between 'likely' and 'unlikely'. Our parser must recognize it (not
+    fall back to UNKNOWN), so the unlikely-streak bail doesn't trigger
+    on moderate.
+    """
+    body = dict(REAL_TICKET_RESPONSE)
+    body["customMetadata"] = dict(body["customMetadata"])
+    body["customMetadata"]["admissionLikelihood"] = "moderate"
+    ticket = parse_ticket_response(body)
+    _check("moderate likelihood is recognized",
+           ticket is not None
+           and ticket.likelihood == AdmissionLikelihood.MODERATE)
+
+
+def test_state_transitions_through_real_shape():
+    """Drive the parser through pending → valid → expired using mutations
+    of the real shape. Catches any state-specific code paths that fail
+    on the realistic surrounding fields.
+    """
+    for state_value in ("pending", "valid", "expired"):
+        body = dict(REAL_TICKET_RESPONSE)
+        body["state"] = state_value
+        ticket = parse_ticket_response(body)
+        _check(f"real shape with state={state_value} parses",
+               ticket is not None and ticket.state == state_value)
+
+
 def test_parse_ticket_response_pending():
     body = {
         "queue": "x21639376266",
@@ -375,6 +519,17 @@ def main():
         ("URL: extract_qpdata_from_url", test_extract_qpdata_from_url),
         ("parse_qpdata: full shape", test_parse_qpdata_full_shape),
         ("parse_qpdata: malformed inputs", test_parse_qpdata_malformed),
+        # Real captured payload fixtures
+        ("REAL Pokemon TCG ticket response parses",
+         test_real_pokemon_ticket_parses),
+        ("REAL Xbox qpdata parses", test_real_xbox_qpdata_parses),
+        ("validateTickets array shape parses",
+         test_validate_tickets_array_shape_parses),
+        ("bare list response parses", test_bare_list_response_parses),
+        ("empty arrays return None", test_empty_array_returns_none),
+        ("moderate likelihood recognized", test_moderate_likelihood_recognized),
+        ("real shape: state transitions parse",
+         test_state_transitions_through_real_shape),
         ("parse_ticket_response: pending", test_parse_ticket_response_pending),
         ("parse_ticket_response: valid", test_parse_ticket_response_valid),
         ("parse_ticket_response: expired", test_parse_ticket_response_expired),
