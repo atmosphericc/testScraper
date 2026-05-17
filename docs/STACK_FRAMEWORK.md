@@ -1,15 +1,21 @@
 # Resilient Stack Framework (`src/stack/`)
 
 ## Status
-**Phase 1b complete + unit gate passed 2026-05-16.** Framework + Walmart
-adapter implemented and wired end-to-end. Dispatcher + ResilientChecker
-bodies done. Bootstrap + entry point + smoke test in place. 48/48 unit
-tests pass (`test_walmart_framework_unit.py`) — every code path through
-the framework + adapter verified with synthetic data, zero network.
+**Phase 1c dev gate PASSED 2026-05-16.** Framework + Walmart adapter
+validated under live Walmart traffic on laptop: **702/702 dispatches
+returned HTTP 200, 0 blocks, 0 parks, 0 burns over 13 min @ 1 RPS
+across 2 sessions (0.5 RPS/IP)**. Same two BD ISP IPs that hit 231/199
+consecutive 403s on the first attempt served 345/357 clean responses
+after the keepalive fix.
 
-Next: Phase 1c — actual network soak. Requires manual Walmart logins
-(one per session) so the user has to drive that. See "Phase 1c Runbook"
-section below for exact commands.
+Bugs surfaced and fixed during Phase 1c:
+1. `pool.homepage_url` hardcoded `target.com` — fix `82260fd0`
+2. `pool.pick_session` required `visitor_id` (Target cookie, not Walmart) —
+   fix `d35b2416`
+3. Keepalive interval too slow for `_px3` 60s TTL — fix `68aa8696`
+   (now interval = `adapter.max_session_cookie_age_seconds * N`)
+
+Next: Phase 1c prod gate on 64 GB box (N=16, 6 RPS, 60 min).
 
 ## Purpose
 Retailer-agnostic resilient stock-monitoring infrastructure. Target's
