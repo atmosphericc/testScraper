@@ -404,13 +404,23 @@ class QueueHandler:
 
             # Also check URL — sometimes Walmart's queue JS navigates the
             # tab off /qp on admission without us seeing a state="valid"
-            # ticket response (timing race)
+            # ticket response (timing race). Use document.location.href
+            # via JS as the authoritative source — tab.url can lag and
+            # may not reflect post-JS navigation in some zendriver builds.
             try:
-                url = self._page.url or ""
+                url_attr = self._page.url or ""
             except Exception:
-                url = ""
+                url_attr = ""
+            try:
+                url_js = await self._page.evaluate("document.location.href")
+                if not isinstance(url_js, str):
+                    url_js = ""
+            except Exception:
+                url_js = ""
+            # Prefer the JS-fetched URL if it differs from the cached attr —
+            # JS reflects the live state of the tab after redirects/SPA navs.
+            url = url_js or url_attr
             if url and not is_queue_url(url):
-                # Navigated away from /qp — likely admitted
                 self._status_cb("[QUEUE] Page navigated away from /qp — admitted")
                 logger.info("[QUEUE] URL navigated to %s, treating as admitted", url[:80])
                 return QueueTicket(state=QueueState.VALID)

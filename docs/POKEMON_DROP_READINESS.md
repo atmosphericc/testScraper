@@ -96,6 +96,47 @@ and we observe.
 
 Unit tests: `test_walmart_queue_handler.py` (41 cases).
 
+## Mock-drop harness (test_walmart_queue_mock_drop.py)
+
+**Status: partial validation, exposes a known architecture nuance.**
+
+The harness launches a real Chrome via zendriver, enables CDP Fetch
+interception to fake all walmart.com + api.waiting-room.walmart.com
+responses, and drives QueueHandler against the rigged tab through 5
+scenarios:
+
+| Scenario | Pass | What it proves |
+|---|---|---|
+| `no_queue` | ✓ | Mock plumbing works; detect() correctly returns None |
+| `quick_admission` | ✗ | (limitation below) |
+| `standard_admission` | ✗ | (limitation below) |
+| `eviction` | ✗ | (limitation below) |
+| `unlikely_streak_bail` | ✗ | (limitation below) |
+
+**Known limitation**: when CDP Fetch interception is enabled, the
+`Fetch.fulfill_request` path bypasses Chrome's normal Network domain.
+This means QueueHandler's `Network.ResponseReceived` listener never
+fires for the mocked ticket API responses — even though the page's
+own JS receives and processes them correctly.
+
+In a real Walmart drop, this isn't an issue: Walmart's queue page makes
+real network requests via the normal Network stack, so the listener
+fires. The mock simply can't replicate that path because using Fetch
+interception inherently bypasses Network events.
+
+To fully validate end-to-end via mocks would require pivoting to a
+man-in-the-middle proxy (mitmproxy or aiohttp DNS override) so Chrome
+makes "real" network requests to a fake server. That's a ~4-6 hour
+follow-on project.
+
+**What this means for drop readiness**: the QueueHandler's CDP listener
+code path is currently validated only by unit tests against synthetic
+QueueTicket objects (test_walmart_queue_handler.py, 45 tests). The
+first time the listener actually fires against real Walmart traffic
+will be during an actual drop. The URL-watcher fallback (admission
+detected via tab navigation) is a backup that doesn't require the
+CDP listener — that improves the safety net.
+
 ## What our code does NOT handle (gaps for drop day)
 
 ### 1. Multi-session queue racing — DESIGN ONLY
