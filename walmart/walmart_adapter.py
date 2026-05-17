@@ -160,8 +160,19 @@ class WalmartAdapter:
     # ── stock-check fetch construction ───────────────────────────────────
     # JS template — fetches /ip/<item_id> as a navigation request, extracts
     # __NEXT_DATA__ from the HTML, returns the product subtree.
-    # Mirrors walmart/stock_monitor.py:_FETCH_JS_TEMPLATE verbatim — proven
-    # in production. The {item_ids_json} placeholder is filled per call.
+    # Mirrors walmart/stock_monitor.py:_FETCH_JS_TEMPLATE — proven in production
+    # for normal-load monitoring.
+    #
+    # QUEUE DETECTION (added 2026-05-17 after Pokemon-drop research):
+    # During high-demand drops (Pokemon Wednesdays, etc.) Walmart serves a
+    # waiting-room interstitial instead of the product PDP. Two observed shapes:
+    #   (A) 302 redirect to /qp?qpdata=<URL-encoded JSON>
+    #   (B) 200 on /ip/<id> with the body being the queue interstitial HTML
+    #       (no __NEXT_DATA__ shape, but body mentions waiting-room API or
+    #        qpdata token)
+    # The JS detects both, extracts the qpdata token if present, and emits
+    # error="QUEUED" with the queue info so the framework treats this as a
+    # near-in-stock signal that should trigger purchase-side queue handling.
     _FETCH_JS_TEMPLATE = """
     (async () => {{
         const ids = {item_ids_json};
@@ -182,13 +193,50 @@ class WalmartAdapter:
                         }}
                     }});
                     const ms = performance.now() - t0;
-                    if (resp.redirected && resp.url.includes('/blocked')) {{
+                    const final_url = resp.url || '';
+                    if (resp.redirected && final_url.includes('/blocked')) {{
                         return {{ item_id: id, error: 'BLOCKED', ms, http_status: resp.status }};
+                    }}
+                    // ── Queue detection: shape (A) redirect to /qp ────────
+                    if (final_url.includes('/qp') || final_url.includes('qpdata=')) {{
+                        let queue_info = null;
+                        try {{
+                            const m = final_url.match(/qpdata=([^&]+)/);
+                            if (m) queue_info = JSON.parse(decodeURIComponent(m[1]));
+                        }} catch (e) {{}}
+                        return {{
+                            item_id: id, error: 'QUEUED', ms,
+                            http_status: resp.status,
+                            queue_info: queue_info,
+                            queue_source: 'redirect_url',
+                        }};
                     }}
                     if (!resp.ok) {{
                         return {{ item_id: id, error: 'HTTP_' + resp.status, ms, http_status: resp.status }};
                     }}
                     const html = await resp.text();
+                    // ── Queue detection: shape (B) interstitial in body ───
+                    // Body mentions the ticket API or has a qpdata token even
+                    // though URL didn't redirect. Indicators (ordered by
+                    // specificity — first wins):
+                    //   1. "api.waiting-room.walmart.com" — direct reference
+                    //   2. "qpdata" token in body or page state
+                    //   3. "issueTicket" or "checkTicket" endpoint names
+                    if (html.includes('api.waiting-room.walmart.com') ||
+                        html.includes('issueTicket') ||
+                        html.includes('checkTicket')) {{
+                        let queue_info = null;
+                        try {{
+                            const qm = html.match(/qpdata["'=:\\s]+([^"'&<\\s]+)/);
+                            if (qm && qm[1]) queue_info = JSON.parse(decodeURIComponent(qm[1]));
+                        }} catch (e) {{}}
+                        return {{
+                            item_id: id, error: 'QUEUED', ms,
+                            http_status: resp.status,
+                            queue_info: queue_info,
+                            queue_source: 'body_signature',
+                        }};
+                    }}
                     const m = html.match(/<script id="__NEXT_DATA__"[^>]*>(.*?)<\\/script>/);
                     if (!m) {{
                         return {{ item_id: id, error: 'NO_NEXT_DATA', ms, http_status: resp.status }};
@@ -207,7 +255,10 @@ class WalmartAdapter:
         );
         const out = results.map(r => r.status === 'fulfilled' ? r.value : {{ item_id: '?', error: r.reason?.message || 'rejected' }});
         // Aggregate worst HTTP status for the framework to see — first BLOCKED
-        // wins, then first non-200, then 200 if all clean.
+        // wins, then first non-200, then 200 if all clean. QUEUED is a 200
+        // (the page loaded fine, it's just the queue interstitial) so it
+        // doesn't change agg_status — the framework treats QUEUED as an
+        // operational state, not a transport failure.
         let agg_status = 200;
         for (const r of out) {{
             if (r.error === 'BLOCKED') {{ agg_status = 999; break; }}
@@ -233,6 +284,12 @@ class WalmartAdapter:
 
         Walmart's response is an array of {item_id, product?, error?, ms}
         objects (one per requested item). We extract availability + price.
+
+        Special case: error="QUEUED" indicates the item is behind Walmart's
+        virtual waiting room (typical during Pokemon drops). We treat this
+        as in_stock=True with availability_status="QUEUED" so the purchase
+        manager fires its on_in_stock callback — the purchase flow then
+        encounters the queue interstitial and the queue_handler takes over.
         """
         out: list[ItemStatus] = []
         if not result.body_json:
@@ -241,14 +298,45 @@ class WalmartAdapter:
         per_item = (result.body_json or {}).get("results", [])
         for entry in per_item:
             item_id = entry.get("item_id", "?")
-            if item_id == "?" or "error" in entry:
-                # Error case — emit a no-stock status so the framework
-                # records the dispatch but doesn't fire the in_stock callback.
+            err = entry.get("error")
+
+            # Queue detection — emit as in_stock=True so downstream fires
+            # the purchase flow. The purchase flow then runs through
+            # walmart/queue_handler.py to get a real ATC opportunity.
+            if err == "QUEUED":
+                qinfo = entry.get("queue_info") or {}
+                qsrc = entry.get("queue_source", "unknown")
+                # qpdata.customMetadata.item carries product title + price
+                # if Walmart embedded them in the queue payload.
+                meta = (qinfo.get("customMetadata") or {}).get("item") or {}
+                title = meta.get("name") or None
+                price_str = meta.get("currentPrice") or ""
+                price = None
+                if isinstance(price_str, str):
+                    try:
+                        # "$499.00" → 499.00
+                        price = float(price_str.replace("$", "").replace(",", "").strip())
+                    except (ValueError, AttributeError):
+                        price = None
+                out.append(
+                    ItemStatus(
+                        item_id=item_id if item_id != "?" else (items[0] if items else "?"),
+                        in_stock=True,
+                        title=title,
+                        price=price,
+                        availability_status=f"QUEUED:{qsrc}",
+                    )
+                )
+                continue
+
+            if item_id == "?" or err:
+                # Generic error case — no-stock so framework doesn't fire
+                # in_stock callback.
                 out.append(
                     ItemStatus(
                         item_id=item_id if item_id != "?" else (items[0] if items else "?"),
                         in_stock=False,
-                        availability_status=entry.get("error", "ERROR"),
+                        availability_status=err or "ERROR",
                     )
                 )
                 continue

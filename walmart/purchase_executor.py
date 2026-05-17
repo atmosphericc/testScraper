@@ -156,24 +156,34 @@ class WalmartPurchaseExecutor:
             # Step 1: Navigate to product page
             await self._navigate(item_url)
 
-            # Step 2: Handle virtual queue if present
+            # Step 2: Handle virtual queue if present (2026 ticket-API model)
             queue = QueueHandler(self._page, self._status_cb)
-            in_queue = await queue.detect()
-            if not in_queue:
-                # Not yet in queue — try to join if entry button is visible
-                in_queue = await queue.join_queue()
-                if in_queue:
-                    self._status_cb("[PURCHASE] Joined queue — waiting for pass-through")
-            else:
-                self._status_cb("[PURCHASE] Already in queue — waiting for pass-through")
-            if in_queue:
-                passed = await queue.wait_for_passthrough()
-                if not passed:
-                    return PurchaseResult(False, error="Queue timeout")
-                # After pass-through, re-navigate to ensure we're on the product page
+            ticket = await queue.detect()
+            if ticket is not None:
+                # We're in a queue — wait for admission, eviction, or unlikely-streak bail
+                from .queue_handler import QueueState, AdmissionLikelihood
+                self._status_cb("[PURCHASE] In queue — awaiting ticket state...")
+                final_ticket = await queue.detect_and_wait()
+                if final_ticket is None or final_ticket.state == QueueState.EXPIRED:
+                    return PurchaseResult(
+                        False,
+                        error=f"Queue evicted/timeout: {final_ticket}",
+                    )
+                if final_ticket.state != QueueState.VALID:
+                    # Likely 'unlikely' streak bail or pending-timeout — caller can retry
+                    if final_ticket.likelihood == AdmissionLikelihood.UNLIKELY:
+                        return PurchaseResult(
+                            False, error="Queue admissionLikelihood=unlikely — bailing",
+                        )
+                    return PurchaseResult(False, error=f"Queue timeout: {final_ticket}")
+                self._status_cb(f"[PURCHASE] Queue admitted (state=valid)")
+                # After admission, re-navigate to ensure we're on the product page.
+                # Walmart's queue JS sometimes navigates the tab automatically;
+                # this is a no-op in that case.
                 await self._navigate(item_url)
-                # After potentially 10-30min in queue, _px3 is always stale.
-                # Refresh before checkout or PerimeterX will block on /cart navigation.
+                # After 10-30min in queue, _px3 is usually stale despite Walmart's
+                # own JS refresh attempts. Refresh before checkout or PerimeterX
+                # will block on /cart navigation.
                 if self._session and hasattr(self._session, 'needs_rewarm') and self._session.needs_rewarm():
                     self._status_cb("[PURCHASE] Queue exited — refreshing _px3 before checkout...")
                     try:

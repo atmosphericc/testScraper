@@ -1,225 +1,260 @@
 """
-Walmart virtual queue handler.
+Walmart virtual queue handler — 2026 ticket-API model.
 
-Walmart deploys a proprietary virtual queue for high-demand drops (e.g. Pokemon
-Wednesday releases ~9PM EST). Key confirmed mechanics:
+Rewritten 2026-05-17 after research uncovered Walmart's actual queue
+mechanics (not the DOM-overlay-only model the previous version assumed).
 
-  - The queue is an OVERLAY on the product page — URL stays at /ip/... (no redirect)
-  - A "Hold my spot and Keep shopping" button appears when demand is high
-  - After clicking, a floating widget at bottom-left shows "You're in line"
-  - Users can continue browsing while in queue
-  - Walmart releases users in WAVES (not sequentially) — timers shown are placeholders
-  - When it's your turn, the floating widget updates with an action prompt
-  - Clicking it (or the normal ATC button becoming active) is the pass-through signal
+Walmart's 2026 queue is its own in-house system (not Queue-it):
+  - URL pattern: walmart.com/qp?qpdata=<URL-encoded JSON>
+  - Ticket API host: api.waiting-room.walmart.com
+  - Endpoints: issueTicket, checkTicket, refreshTicket, validateTickets
+  - State machine: pending → valid (admitted) | expired (evicted)
+  - Server dictates polling cadence via nextRefreshRelativeTime (20-40s)
+  - admissionLikelihood field: "likely" | "unlikely" — Walmart's confidence
+    that stock will remain by the time you reach checkout
 
-This module:
-  1. Detects if the queue overlay is present on the current product page
-  2. Clicks the "Hold my spot" button to join the queue if found
-  3. Polls every QUEUE_POLL_INTERVAL seconds for pass-through
-  4. On pass-through: clicks any notification widget, then confirms ATC is active
-  5. Times out after QUEUE_TIMEOUT seconds if never released
+The queue activates server-side at drop time when traffic on a flagged
+SKU crosses threshold. Pokemon TCG drops (Wednesdays ~9 PM ET) always
+queue popular items.
+
+Detection approach:
+  1. URL contains /qp or /qp?qpdata=... → we've been redirected to queue
+  2. CDP Network listener catches responses from api.waiting-room.walmart.com
+     → we have a ticket and can read state/likelihood
+  3. (Fallback) DOM scan for legacy "Hold my spot" overlay text — older
+     drops sometimes used this; modern drops appear to skip it
+
+Pass-through detection:
+  - state="valid" from any ticket API response → admitted, ATC available
+
+Bail-out signal:
+  - state="expired" → ticket was evicted, must re-enter from fresh session
+  - admissionLikelihood="unlikely" repeated → stock probably gone
+
+This module does NOT actively click anything in the 2026 model — Walmart's
+own page JS handles polling and admission. We just observe and report.
+For the legacy DOM-overlay path we still have join_queue() that clicks
+the "Hold my spot" button.
+
+Cookie freshness:
+  _px3 has ~60s TTL. The queue page's own JS continuously refreshes _px3
+  via PerimeterX challenges while polling. Our keepalive heartbeat
+  (homepage nav) must NOT fire on a queueing session because that would
+  navigate away from /qp and discard the ticket. The resilient stack's
+  pool keepalive needs to know "this session is in queue, skip it".
+  (Not yet wired — see TODO at end of file.)
 """
 
 import asyncio
+import json
 import logging
-import math
-import random
+import re
 import time
 from typing import Optional, Callable
+from urllib.parse import unquote
 
 from .config import QUEUE_POLL_INTERVAL, QUEUE_TIMEOUT
-from .logging_manager import get_walmart_logger, log_activity
-
-
-async def _cdp_realistic_click(page, x: float, y: float, label: str = "") -> bool:
-    """
-    CDP mouse trajectory click for queue_handler interactions.
-
-    The queue entry and pass-through clicks happen during high-demand drops —
-    the most-scrutinized window for PerimeterX. Raw element.click() with no
-    pointer events is a strong bot signal. We use the same Bezier+velocity
-    pattern as purchase_executor._realistic_click, scaled-down for a self-
-    contained helper.
-
-    Returns True on success, False on CDP failure (caller should fall back
-    to element.click()).
-    """
-    try:
-        from zendriver.cdp import input_ as cdp_input
-
-        # Start from a random viewport position (queue_handler has no
-        # last-mouse tracking — every click is a fresh teleport otherwise)
-        start_x = random.uniform(200, 1700)
-        start_y = random.uniform(150, 900)
-
-        dx = x - start_x
-        dy = y - start_y
-        dist = math.hypot(dx, dy)
-        offset_mag = min(80.0, max(15.0, dist * 0.18))
-        if dist > 1.0:
-            px = -dy / dist
-            py = dx / dist
-        else:
-            px = py = 0.0
-        sign = random.choice((-1.0, 1.0))
-        cp_x = (start_x + x) / 2 + sign * offset_mag * px + random.uniform(-offset_mag * 0.4, offset_mag * 0.4)
-        cp_y = (start_y + y) / 2 + sign * offset_mag * py + random.uniform(-offset_mag * 0.4, offset_mag * 0.4)
-        steps = max(4, min(9, int(dist / 80) + random.randint(3, 5)))
-
-        for i in range(1, steps + 1):
-            t = i / (steps + 1)
-            bx = (1 - t) ** 2 * start_x + 2 * (1 - t) * t * cp_x + t ** 2 * x
-            by = (1 - t) ** 2 * start_y + 2 * (1 - t) * t * cp_y + t ** 2 * y
-            bx += random.gauss(0, 0.6)
-            by += random.gauss(0, 0.6)
-            await page.send(cdp_input.dispatch_mouse_event(
-                type_="mouseMoved", x=int(bx), y=int(by), pointer_type="mouse"
-            ))
-            await asyncio.sleep(0.055 - 0.043 * math.sin(math.pi * t) + random.uniform(-0.005, 0.012))
-
-        await page.send(cdp_input.dispatch_mouse_event(
-            type_="mouseMoved", x=int(x), y=int(y), pointer_type="mouse"
-        ))
-        await asyncio.sleep(random.uniform(0.03, 0.11))
-        await page.send(cdp_input.dispatch_mouse_event(
-            type_="mousePressed", x=x, y=y,
-            button=cdp_input.MouseButton.LEFT, buttons=1,
-            click_count=1, pointer_type="mouse"
-        ))
-        await asyncio.sleep(random.uniform(0.06, 0.13))
-        await page.send(cdp_input.dispatch_mouse_event(
-            type_="mouseReleased", x=x, y=y,
-            button=cdp_input.MouseButton.LEFT, buttons=0,
-            click_count=1, pointer_type="mouse"
-        ))
-        if label:
-            logger.debug("[QUEUE] CDP click on %s at (%.0f, %.0f)", label, x, y)
-        return True
-    except Exception as e:
-        logger.debug("[QUEUE] CDP click failed: %s — caller will fall back", e)
-        return False
-
-
-async def _click_element_via_cdp(page, el, label: str = "") -> bool:
-    """
-    Look up the element's bounding rect and route the click through CDP.
-    Falls back to el.click() on rect lookup failure.
-    """
-    try:
-        rect = await el.apply("""(e) => {
-            e.scrollIntoView({ behavior: 'instant', block: 'center' });
-            const r = e.getBoundingClientRect();
-            return { x: r.x, y: r.y, w: r.width, h: r.height };
-        }""")
-        if not rect or not (rect.get('w', 0) > 0):
-            await el.click()
-            return False
-        x = rect['x'] + rect['w'] / 2 + random.uniform(-3, 3)
-        y = rect['y'] + rect['h'] / 2 + random.uniform(-2, 2)
-        if await _cdp_realistic_click(page, x, y, label):
-            return True
-        await el.click()
-        return False
-    except Exception as e:
-        logger.debug("[QUEUE] Element click fallback (%s): %s", label, e)
-        try:
-            await el.click()
-        except Exception:
-            pass
-        return False
 
 logger = logging.getLogger(__name__)
-walmart_logger = get_walmart_logger()
 
-# Button text patterns to click in order to JOIN the queue
-# Note: :has-text() is patchright-specific; we use XPath in _find_entry_button instead
-QUEUE_ENTRY_SELECTORS = [
-    'Hold my spot and Keep shopping',
-    'Hold my spot',
-    'Keep my spot',
-    'Join the queue',
-    'Get in line',
-]
 
-# CSS-only queue entry selectors (no text matching needed)
-QUEUE_ENTRY_CSS_SELECTORS = [
-    '[data-automation-id*="queue-entry"]',
-    '[data-automation-id*="hold-spot"]',
-]
+# ── URL + body signatures for queue detection ────────────────────────────
 
-# Text patterns that confirm the user IS in the queue (overlay is active)
-QUEUE_ACTIVE_SIGNALS = [
+# Definitive: if we're at /qp the page IS the queue interstitial
+_QP_URL_RE = re.compile(r"/qp(\?|/|$)")
+
+# Walmart's queue API host. CDP Network events with these hosts in the
+# response URL mean we have a live ticket being polled.
+_TICKET_API_HOST = "api.waiting-room.walmart.com"
+
+# Endpoints we care about (subset of: issueTicket, checkTicket, refreshTicket,
+# validateTickets). State updates come through any of them.
+_TICKET_ENDPOINTS = ("issueTicket", "checkTicket", "refreshTicket")
+
+# Legacy DOM-overlay text patterns. Older drops (pre-2026) showed a
+# "Hold my spot and Keep shopping" button in an overlay. Some restocks
+# may still use this — we keep detection but no longer assume it.
+_LEGACY_OVERLAY_TEXTS = [
     "you're in line",
     "you are in line",
     "your place in line",
-    "virtual queue",
-    "high demand",
     "hold my spot",
     "keep my spot",
-    "you're next",
+    "virtual queue",
+]
+_LEGACY_OVERLAY_BUTTON_TEXTS = [
+    "Hold my spot and Keep shopping",
+    "Hold my spot",
+    "Keep my spot",
 ]
 
-# Text patterns in the floating widget that signal it's the user's turn
-QUEUE_PASSTHROUGH_SIGNALS = [
-    "it's your turn",
-    "your turn",
-    "time to checkout",
-    "checkout now",
-    "you're up",
-    "ready to checkout",
-    "complete your purchase",
-]
 
-# Text patterns for passthrough click buttons (used with XPath)
-PASSTHROUGH_CLICK_TEXTS = [
-    "It's your turn",
-    "Your turn",
-    "Checkout now",
-    "Time to checkout",
-    "Complete your purchase",
-]
+# ── data shapes ──────────────────────────────────────────────────────────
 
-# ATC button selectors — becoming active is the primary pass-through signal.
-# Mirrors purchase_executor.ATC_SELECTORS — modern Walmart uses data-automation-id="atc";
-# the legacy "add-to-cart-btn" / "ProductPrimaryCTA-cta_add_to_cart_button" attributes
-# are kept as fallbacks for older A/B variants. Without "atc" the queue would never
-# detect pass-through and would time out at QUEUE_TIMEOUT (30 min).
-ATC_SELECTORS = [
-    'button[data-automation-id="atc"]',
-    'button[data-automation-id="add-to-cart-btn"]',
-    'button[data-dca-event="addToCart"]',
-    'button[data-tl-id="ProductPrimaryCTA-cta_add_to_cart_button"]',
-    'button[data-dca-name="ItemBuyBoxAddToCartButton"]',
-]
 
-# ATC button text patterns (used with XPath)
-ATC_XPATH_TEXTS = [
-    "Add to cart",
-    "Add to Cart",
-]
+class QueueState:
+    PENDING = "pending"
+    VALID = "valid"          # admitted — ATC available
+    EXPIRED = "expired"      # ticket evicted — must re-enter
+    UNKNOWN = "unknown"
+
+
+class AdmissionLikelihood:
+    LIKELY = "likely"
+    UNLIKELY = "unlikely"
+    UNKNOWN = "unknown"
+
+
+class QueueTicket:
+    """Parsed ticket API response or qpdata payload."""
+
+    def __init__(
+        self,
+        queue_id: Optional[str] = None,
+        ticket: Optional[str] = None,
+        state: str = QueueState.UNKNOWN,
+        likelihood: str = AdmissionLikelihood.UNKNOWN,
+        next_refresh_ms: Optional[int] = None,
+        expected_turn_unix_ms: Optional[int] = None,
+        item_id: Optional[str] = None,
+        expires: Optional[int] = None,
+        raw: Optional[dict] = None,
+    ):
+        self.queue_id = queue_id
+        self.ticket = ticket
+        self.state = state
+        self.likelihood = likelihood
+        self.next_refresh_ms = next_refresh_ms
+        self.expected_turn_unix_ms = expected_turn_unix_ms
+        self.item_id = item_id
+        self.expires = expires
+        self.raw = raw or {}
+
+    def __repr__(self):
+        return (
+            f"QueueTicket(state={self.state}, likelihood={self.likelihood}, "
+            f"queue_id={self.queue_id}, ticket={self.ticket}, "
+            f"next_refresh_ms={self.next_refresh_ms}, item_id={self.item_id})"
+        )
+
+
+# ── parsers ──────────────────────────────────────────────────────────────
+
+
+def parse_qpdata(qpdata_str: str) -> Optional[QueueTicket]:
+    """Parse the qpdata URL parameter into a QueueTicket.
+
+    Shape: { queued: true, queue: "<id>", url: "<ticket-api-url>",
+             customMetadata: { item: {...} } }
+    No ticket/state in qpdata itself — those come from checkTicket later.
+    """
+    try:
+        data = json.loads(unquote(qpdata_str))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    meta_item = (data.get("customMetadata") or {}).get("item") or {}
+    return QueueTicket(
+        queue_id=data.get("queue"),
+        state=QueueState.PENDING,
+        likelihood=AdmissionLikelihood.UNKNOWN,
+        item_id=str(meta_item.get("itemID") or "") or None,
+        raw=data,
+    )
+
+
+def parse_ticket_response(body: dict) -> Optional[QueueTicket]:
+    """Parse a checkTicket/issueTicket/refreshTicket response body.
+
+    Shape (from research, walmart-queue-tracker GitHub):
+      {
+        queue: "qa484c0ebd7014",
+        ticket: "<numeric>",
+        state: "pending" | "valid" | "expired",
+        expectedTurnTimeUnixTimestamp: <ms>,
+        customMetadata: {
+          admissionLikelihood: "likely" | "unlikely",
+          ...
+        },
+        nextRefreshRelativeTime: <ms>,
+        itemId: "<id>",
+        expires: <ts>,
+      }
+    """
+    if not isinstance(body, dict):
+        return None
+    custom = body.get("customMetadata") or {}
+    state_raw = (body.get("state") or "").lower()
+    state = state_raw if state_raw in (
+        QueueState.PENDING, QueueState.VALID, QueueState.EXPIRED,
+    ) else QueueState.UNKNOWN
+    likelihood_raw = (custom.get("admissionLikelihood") or "").lower()
+    likelihood = likelihood_raw if likelihood_raw in (
+        AdmissionLikelihood.LIKELY, AdmissionLikelihood.UNLIKELY,
+    ) else AdmissionLikelihood.UNKNOWN
+    return QueueTicket(
+        queue_id=body.get("queue"),
+        ticket=str(body.get("ticket")) if body.get("ticket") is not None else None,
+        state=state,
+        likelihood=likelihood,
+        next_refresh_ms=body.get("nextRefreshRelativeTime"),
+        expected_turn_unix_ms=body.get("expectedTurnTimeUnixTimestamp"),
+        item_id=str(body.get("itemId")) if body.get("itemId") is not None else None,
+        expires=body.get("expires"),
+        raw=body,
+    )
+
+
+def is_queue_url(url: str) -> bool:
+    """True if URL is the queue interstitial (/qp path)."""
+    if not url:
+        return False
+    return bool(_QP_URL_RE.search(url))
+
+
+def is_ticket_api_url(url: str) -> bool:
+    """True if URL is a ticket API endpoint."""
+    if not url:
+        return False
+    if _TICKET_API_HOST not in url:
+        return False
+    return any(ep in url for ep in _TICKET_ENDPOINTS)
+
+
+def extract_qpdata_from_url(url: str) -> Optional[str]:
+    """Pull the qpdata parameter from a queue URL, if present."""
+    if not url:
+        return None
+    m = re.search(r"[?&]qpdata=([^&]+)", url)
+    return m.group(1) if m else None
+
+
+# ── handler ──────────────────────────────────────────────────────────────
 
 
 class QueueHandler:
-    """
-    Detects and handles Walmart's virtual queue overlay.
+    """Detects and waits through Walmart's virtual queue.
 
-    The queue appears as an overlay on the product page (URL never changes).
-    The bot must click the "Hold my spot" button to join, then poll for
-    pass-through (ATC button becoming active or a "your turn" widget appearing).
+    Usage during a purchase flow:
+        handler = QueueHandler(page, status_callback=_status)
+        ticket = await handler.detect_and_wait(timeout=QUEUE_TIMEOUT)
+        if ticket and ticket.state == QueueState.VALID:
+            # admitted — caller proceeds to ATC
+        elif ticket and ticket.state == QueueState.EXPIRED:
+            # evicted — caller should re-enter from fresh session
+        else:
+            # timeout or unknown — caller decides next action
 
-    Usage:
-        handler = QueueHandler(page, status_callback)
+    Detection sources (any one is sufficient):
+      1. page URL contains /qp
+      2. CDP Network response from api.waiting-room.walmart.com
+      3. Legacy: page body contains 'you're in line' text + 'Hold my spot' button
 
-        # Check for queue and join it
-        in_queue = await handler.detect()
-        if not in_queue:
-            # Try to join if entry button is visible
-            in_queue = await handler.join_queue()
-
-        if in_queue:
-            passed_through = await handler.wait_for_passthrough()
-            if not passed_through:
-                # timed out — caller should reset / try again
+    Pass-through detection (any one):
+      1. Ticket API response with state="valid"
+      2. URL navigates AWAY from /qp (queue page redirects on admission)
+      3. Legacy: ATC button becomes active on the original /ip/ page
     """
 
     def __init__(
@@ -229,326 +264,262 @@ class QueueHandler:
     ):
         self._page = page
         self._status_cb = status_callback or (lambda msg: None)
+        self._last_ticket: Optional[QueueTicket] = None
+        self._unlikely_streak = 0
+        self._cdp_handler_attached = False
 
-    async def detect(self) -> bool:
-        """
-        Check if the current browser page has an active Walmart queue overlay.
-        Returns True if queue signals are present (already in queue or entry button visible).
+    # ── public API ───────────────────────────────────────────────────────
 
-        NOTE: URL-based detection is intentionally omitted — Walmart's queue keeps
-        the user on the /ip/ product URL and uses a page overlay, not a redirect.
-        """
-        try:
-            body_text = await self._page.evaluate("document.body.innerText")
-            body_lower = body_text.lower() if body_text else ""
+    async def detect(self) -> Optional[QueueTicket]:
+        """Return a QueueTicket if we're currently in a queue, else None.
 
-            for signal in QUEUE_ACTIVE_SIGNALS:
-                if signal in body_lower:
-                    logger.info("[QUEUE] Queue detected via page text: '%s'", signal)
-                    return True
-
-            # Also check if the queue entry button is visible — queue is about to start
-            entry_btn = await self._find_entry_button()
-            if entry_btn:
-                logger.info("[QUEUE] Queue entry button detected on page")
-                return True
-
-        except Exception as e:
-            logger.warning("[QUEUE] Detection error: %s", e)
-
-        return False
-
-    async def join_queue(self) -> bool:
-        """
-        Attempt to click the "Hold my spot" button to join the queue.
-        Returns True if the button was found and clicked AND queue entry confirmed.
-        Returns False if no entry button found (no queue active).
-        """
-        entry_btn = await self._find_entry_button()
-        if not entry_btn:
-            return False
-
-        try:
-            self._status_cb("[QUEUE] Found 'Hold my spot' button — joining queue...")
-            logger.info("[QUEUE] Clicking queue entry button")
-            await entry_btn.scroll_into_view()
-            # CDP trajectory click — queue-entry is the first interaction on a
-            # high-demand drop; PerimeterX is at peak scrutiny here.
-            await _click_element_via_cdp(self._page, entry_btn, "Hold my spot")
-            await asyncio.sleep(2)  # wait for queue overlay to update
-
-            # Verify we're now in the queue
-            in_queue = await self._confirm_in_queue()
-            if in_queue:
-                self._status_cb("[QUEUE] Queue joined — 'You're in line'")
-                logger.info("[QUEUE] Successfully joined queue")
-                return True
-            else:
-                logger.warning("[QUEUE] Clicked entry button but queue confirmation not seen")
-                return False
-
-        except Exception as e:
-            logger.warning("[QUEUE] Error joining queue: %s", e)
-            return False
-
-    async def wait_for_passthrough(self) -> bool:
-        """
-        Poll until the queue releases the user or QUEUE_TIMEOUT is exceeded.
-        Returns True if passed through, False on timeout.
-
-        Pass-through is detected when:
-          - A "your turn" floating widget appears (click it), then ATC is active, OR
-          - ATC button becomes directly active/available (primary reliable signal)
-
-        The URL will NOT change — we stay on the /ip/ product page throughout.
-        """
-        start = time.monotonic()
-        self._status_cb("[QUEUE] In queue — waiting for pass-through...")
-        logger.info("[QUEUE] Entered wait_for_passthrough")
-
-        while True:
-            elapsed = time.monotonic() - start
-
-            if elapsed > QUEUE_TIMEOUT:
-                self._status_cb(f"[QUEUE] Timed out after {int(elapsed)}s")
-                logger.warning("[QUEUE] Queue timeout after %.0fs", elapsed)
-                return False
-
-            await asyncio.sleep(QUEUE_POLL_INTERVAL)
-
-            try:
-                # First: check for the "it's your turn" floating widget and click it
-                widget_clicked = await self._check_passthrough_widget()
-                if widget_clicked:
-                    self._status_cb("[QUEUE] 'Your turn' widget found — clicked!")
-                    logger.info("[QUEUE] Passthrough widget clicked after %.0fs", elapsed)
-                    await asyncio.sleep(2)  # let page respond
-
-                # Primary signal: ATC button is now active
-                atc_available = await self._wait_for_atc(timeout=5)
-                if atc_available:
-                    self._status_cb(f"[QUEUE] Passed through after {int(elapsed)}s!")
-                    logger.info("[QUEUE] Pass-through confirmed — ATC active after %.0fs", elapsed)
-                    return True
-
-                # Still in queue
-                still_queued = await self.detect()
-                if still_queued:
-                    mins_waited = int(elapsed / 60)
-                    secs_waited = int(elapsed % 60)
-                    self._status_cb(
-                        f"[QUEUE] Still in queue ({mins_waited}m {secs_waited}s elapsed)"
-                    )
-                else:
-                    # Queue signals gone but ATC not yet active — may be transitioning
-                    logger.info(
-                        "[QUEUE] Queue signals gone but ATC not yet active — page may be transitioning or queue was cancelled"
-                    )
-                    if elapsed > 60:
-                        logger.warning(
-                            "[QUEUE] Queue signals disappeared after %ds with no ATC — queue may have been cancelled or item sold out",
-                            int(elapsed),
-                        )
-
-            except Exception as e:
-                logger.warning("[QUEUE] Poll error: %s", e)
-
-    async def enter_queue(self, item_url: str) -> bool:
-        """
-        Navigate to the product URL, then attempt to join the queue if present.
-        Returns True if queued successfully.
-
-        Navigation wrapped in `asyncio.wait_for` so a stalled `/blocked` or
-        otherwise hung page load can't freeze the whole queue flow indefinitely
-        — same pattern PM applied to the cart-clear paths in purchase_executor.
+        Checks URL first (cheapest), then body for legacy overlay.
+        Does NOT poll the ticket API — that's done by the page's own JS.
+        We just inspect what's there.
         """
         try:
-            self._status_cb(f"[QUEUE] Navigating to enter queue: {item_url}")
-            try:
-                await asyncio.wait_for(self._page.get(item_url), timeout=15.0)
-            except asyncio.TimeoutError:
-                logger.warning("[QUEUE] Navigation to %s timed out after 15s", item_url)
-                self._status_cb("[QUEUE] Navigation stalled — abandoning queue join")
-                return False
-            await asyncio.sleep(2)
+            url = self._page.url or ""
+        except Exception:
+            url = ""
 
-            # Try to join if the entry button is visible
-            in_queue = await self.join_queue()
-            if not in_queue:
-                # Entry button not found — check if already in queue
-                in_queue = await self.detect()
-            return in_queue
+        if is_queue_url(url):
+            qp = extract_qpdata_from_url(url)
+            if qp:
+                ticket = parse_qpdata(qp)
+                if ticket:
+                    logger.info("[QUEUE] Detected queue via /qp URL: %s", ticket)
+                    return ticket
+            # /qp URL but no qpdata — still a queue page, just less info
+            logger.info("[QUEUE] Detected /qp URL without qpdata")
+            return QueueTicket(state=QueueState.PENDING)
 
-        except Exception as e:
-            logger.warning("[QUEUE] Error entering queue: %s", e)
-            return False
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    async def _find_entry_button(self):
-        """Find the 'Hold my spot' / queue entry button if visible on the page."""
-        deadline = time.monotonic() + 5.0
-
-        # Try text-based XPath selectors first
-        for text in QUEUE_ENTRY_SELECTORS:
-            if time.monotonic() > deadline:
-                break
-            try:
-                els = await self._page.xpath(f'//button[contains(., "{text}")]')
-                if els:
-                    btn = els[0]
-                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
-                    if is_vis:
-                        return btn
-            except Exception:
-                continue
-
-        # Try CSS-only selectors (no text matching)
-        for selector in QUEUE_ENTRY_CSS_SELECTORS:
-            if time.monotonic() > deadline:
-                break
-            try:
-                btn = await self._page.query_selector(selector)
-                if btn:
-                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
-                    if is_vis:
-                        return btn
-            except Exception:
-                continue
+        # Legacy overlay detection — older drop UIs may still use this
+        if await self._has_legacy_overlay():
+            logger.info("[QUEUE] Detected legacy overlay (Hold-my-spot button or text)")
+            return QueueTicket(state=QueueState.PENDING)
 
         return None
 
-    async def _confirm_in_queue(self) -> bool:
-        """Check page text for confirmation that we are now in the queue."""
+    async def detect_and_wait(
+        self,
+        timeout: float = QUEUE_TIMEOUT,
+        max_unlikely_streak: int = 3,
+    ) -> Optional[QueueTicket]:
+        """Wait until admitted, evicted, or timeout.
+
+        Returns the latest QueueTicket with state set, or None on hard
+        timeout with no signal at all.
+
+        max_unlikely_streak: if admissionLikelihood='unlikely' is observed
+        this many times in a row, return early with the latest ticket so
+        the caller can decide whether to bail. This avoids waiting hours
+        for an item that's effectively gone.
+        """
+        # Initial detection
+        ticket = await self.detect()
+        if ticket is None:
+            return None
+
+        # If already admitted on first check (rare but possible), return
+        if ticket.state == QueueState.VALID:
+            return ticket
+
+        # Attach CDP listener for ticket API responses if we haven't yet
+        await self._maybe_attach_cdp_listener()
+
+        # Legacy overlay path: click "Hold my spot" if it's there
+        await self._try_legacy_join()
+
+        deadline = time.monotonic() + timeout
+        self._status_cb("[QUEUE] In queue — waiting for admission...")
+        logger.info("[QUEUE] Starting wait loop (timeout=%.0fs)", timeout)
+
+        check_interval = 1.0   # poll the page state every second
+        while time.monotonic() < deadline:
+            # Check if we have a fresh ticket from CDP
+            if self._last_ticket is not None:
+                t = self._last_ticket
+
+                if t.state == QueueState.VALID:
+                    self._status_cb("[QUEUE] Admitted — ticket state=valid")
+                    logger.info("[QUEUE] Admitted: %s", t)
+                    return t
+
+                if t.state == QueueState.EXPIRED:
+                    self._status_cb("[QUEUE] Ticket EXPIRED — must re-enter")
+                    logger.warning("[QUEUE] Ticket expired: %s", t)
+                    return t
+
+                # Track unlikely streak for early bail
+                if t.likelihood == AdmissionLikelihood.UNLIKELY:
+                    self._unlikely_streak += 1
+                    if self._unlikely_streak >= max_unlikely_streak:
+                        self._status_cb(
+                            f"[QUEUE] Bailing — admissionLikelihood=unlikely "
+                            f"x{self._unlikely_streak}"
+                        )
+                        logger.warning(
+                            "[QUEUE] Early bail on unlikely streak=%d: %s",
+                            self._unlikely_streak, t,
+                        )
+                        return t
+                else:
+                    # Reset streak on any non-unlikely observation
+                    self._unlikely_streak = 0
+
+            # Also check URL — sometimes Walmart's queue JS navigates the
+            # tab off /qp on admission without us seeing a state="valid"
+            # ticket response (timing race)
+            try:
+                url = self._page.url or ""
+            except Exception:
+                url = ""
+            if url and not is_queue_url(url):
+                # Navigated away from /qp — likely admitted
+                self._status_cb("[QUEUE] Page navigated away from /qp — admitted")
+                logger.info("[QUEUE] URL navigated to %s, treating as admitted", url[:80])
+                return QueueTicket(state=QueueState.VALID)
+
+            await asyncio.sleep(check_interval)
+
+        # Hit timeout
+        self._status_cb(f"[QUEUE] Timed out after {timeout:.0f}s")
+        logger.warning("[QUEUE] Timeout — last ticket: %s", self._last_ticket)
+        return self._last_ticket   # may be None or a stale pending ticket
+
+    # ── CDP listener for ticket API responses ────────────────────────────
+
+    async def _maybe_attach_cdp_listener(self):
+        """Attach a one-shot CDP listener that captures responses from
+        api.waiting-room.walmart.com and parses them into self._last_ticket.
+
+        Idempotent — only attaches once per QueueHandler instance.
+
+        zendriver-specific API: page.add_handler(network event handler).
+        If the underlying API differs we fall back gracefully — the URL
+        check and legacy overlay detection still work without it.
+        """
+        if self._cdp_handler_attached:
+            return
+        try:
+            from zendriver import cdp as _cdp
+
+            async def _on_response_received(event):
+                """Catch Network.responseReceived for ticket API URLs."""
+                try:
+                    resp = getattr(event, "response", None)
+                    if resp is None:
+                        return
+                    url = getattr(resp, "url", "") or ""
+                    if not is_ticket_api_url(url):
+                        return
+                    request_id = getattr(event, "request_id", None)
+                    if not request_id:
+                        return
+                    # Pull the body via Network.getResponseBody
+                    try:
+                        body_event = await self._page.send(
+                            _cdp.network.get_response_body(request_id)
+                        )
+                    except Exception as e:
+                        logger.debug("[QUEUE] getResponseBody failed: %s", e)
+                        return
+                    # zendriver returns (body, base64encoded) tuple
+                    if isinstance(body_event, tuple) and len(body_event) >= 1:
+                        raw_body = body_event[0]
+                    else:
+                        raw_body = body_event
+                    if not raw_body:
+                        return
+                    try:
+                        body_json = json.loads(raw_body)
+                    except (json.JSONDecodeError, TypeError):
+                        return
+                    parsed = parse_ticket_response(body_json)
+                    if parsed is None:
+                        return
+                    self._last_ticket = parsed
+                    logger.info(
+                        "[QUEUE] CDP captured ticket: %s",
+                        parsed,
+                    )
+                except Exception as e:
+                    logger.debug("[QUEUE] CDP handler raised: %s", e)
+
+            # zendriver's tab.add_handler API
+            try:
+                self._page.add_handler(
+                    _cdp.network.ResponseReceived, _on_response_received,
+                )
+                self._cdp_handler_attached = True
+                logger.debug("[QUEUE] CDP Network listener attached")
+            except AttributeError:
+                # Older/newer zendriver may use different API — fail soft
+                logger.info(
+                    "[QUEUE] zendriver Network handler unavailable — "
+                    "falling back to URL/DOM detection only"
+                )
+        except ImportError:
+            logger.debug("[QUEUE] zendriver.cdp not available — URL/DOM detection only")
+
+    # ── legacy overlay support ───────────────────────────────────────────
+
+    async def _has_legacy_overlay(self) -> bool:
+        """Check page body for legacy 'you're in line' text or Hold-my-spot button."""
         try:
             body_text = await self._page.evaluate("document.body.innerText")
-            body_lower = body_text.lower() if body_text else ""
-            for signal in QUEUE_ACTIVE_SIGNALS:
-                if signal in body_lower:
-                    return True
         except Exception:
-            pass
-        return False
+            return False
+        if not body_text:
+            return False
+        body_lower = body_text.lower()
+        return any(sig in body_lower for sig in _LEGACY_OVERLAY_TEXTS)
 
-    async def _check_passthrough_widget(self) -> bool:
-        """
-        Look for the floating 'it's your turn' notification widget.
-        If found, click it. Returns True if clicked.
+    async def _try_legacy_join(self) -> bool:
+        """If a legacy 'Hold my spot' button is visible, click it.
 
-        Since exact DOM selectors for Walmart's floating queue widget are not
-        publicly documented, we use text-based matching and a JS fallback to
-        find fixed/absolute positioned elements near the viewport bottom.
+        Returns True if a click was issued. The 2026 queue doesn't usually
+        present this button — it just redirects to /qp — but older drop
+        UIs sometimes still do.
         """
-        # Try known text-based XPath selectors first
-        for text in PASSTHROUGH_CLICK_TEXTS:
+        for text in _LEGACY_OVERLAY_BUTTON_TEXTS:
             try:
                 els = await self._page.xpath(f'//button[contains(., "{text}")]')
-                if els:
-                    btn = els[0]
-                    is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
-                    if is_vis:
-                        await _click_element_via_cdp(self._page, btn, f"passthrough:{text}")
-                        return True
-            except Exception:
-                continue
-
-        # Try stable attribute selectors — class names are hashed on every Walmart deploy.
-        # NOTE: `button:has-text(...)` is patchright/Playwright-only; zendriver's
-        # query_selector_all silently fails on it, so we use pure CSS-attribute
-        # patterns here and rely on the text-XPath loop above for text matches.
-        for css_pattern in ['[data-automation-id*="queue"]', '[data-testid*="queue"]']:
-            try:
-                els = await self._page.query_selector_all(css_pattern)
-                for el in els:
-                    try:
-                        text = await el.apply("(e) => e.innerText")
-                        if text and "turn" in text.lower():
-                            is_vis = await el.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
-                            if is_vis:
-                                await _click_element_via_cdp(self._page, el, f"passthrough:queue-attr")
-                                return True
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        # Fallback: scan page text for passthrough signals, then look for any
-        # clickable element near the bottom of viewport
-        try:
-            body_text = await self._page.evaluate("document.body.innerText")
-            body_lower = body_text.lower() if body_text else ""
-            has_passthrough_text = any(
-                signal in body_lower for signal in QUEUE_PASSTHROUGH_SIGNALS
-            )
-            if has_passthrough_text:
-                # Try to click a button near the bottom of the page
-                # Locate candidate coordinates from JS — do NOT click inside
-                # evaluate(). Python drives the click via CDP trajectory below.
-                result = await self._page.evaluate("""() => {
-                    const vh = window.innerHeight;
-                    const allBtns = document.querySelectorAll('button, [role="button"], a[href]');
-                    for (const el of allBtns) {
-                        const rect = el.getBoundingClientRect();
-                        if (rect.top > vh * 0.6 && rect.bottom <= vh + 10 &&
-                            rect.width > 0 && rect.height > 0) {
-                            const text = el.textContent.toLowerCase();
-                            const keywords = ['turn', 'checkout', 'purchase', 'queue'];
-                            if (keywords.some(k => text.includes(k))) {
-                                return { x: rect.x, y: rect.y, w: rect.width, h: rect.height };
-                            }
-                        }
-                    }
-                    return null;
-                }""")
-                if result:
-                    x = result['x'] + result['w'] / 2 + random.uniform(-3, 3)
-                    y = result['y'] + result['h'] / 2 + random.uniform(-2, 2)
-                    if await _cdp_realistic_click(self._page, x, y, "passthrough:bottom-scan"):
-                        return True
-                    # If CDP fails, fall through (don't try el.click() — we
-                    # don't have the element handle out here)
-        except Exception as e:
-            logger.debug("[QUEUE] JS widget scan error: %s", e)
-
-        return False
-
-    async def _wait_for_atc(self, timeout: float = 5) -> bool:
-        """
-        Wait briefly for ATC button to appear and be enabled.
-        Returns True if found and enabled within timeout.
-        """
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            # Try CSS selectors first
-            for selector in ATC_SELECTORS:
+                if not els:
+                    continue
+                btn = els[0]
                 try:
-                    btn = await self._page.query_selector(selector)
-                    if btn:
-                        is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
-                        if is_vis:
-                            disabled = await btn.apply("(e) => e.getAttribute('disabled')")
-                            aria_disabled = await btn.apply("(e) => e.getAttribute('aria-disabled')")
-                            if disabled is None and aria_disabled != "true":
-                                return True
+                    visible = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
+                except Exception:
+                    visible = True
+                if not visible:
+                    continue
+                try:
+                    await btn.scroll_into_view()
                 except Exception:
                     pass
-
-            # Try XPath text-based selectors
-            for text in ATC_XPATH_TEXTS:
                 try:
-                    els = await self._page.xpath(f'//button[contains(., "{text}")]')
-                    if els:
-                        btn = els[0]
-                        is_vis = await btn.apply("(e) => !!(e.offsetWidth || e.offsetHeight)")
-                        if is_vis:
-                            disabled = await btn.apply("(e) => e.getAttribute('disabled')")
-                            aria_disabled = await btn.apply("(e) => e.getAttribute('aria-disabled')")
-                            if disabled is None and aria_disabled != "true":
-                                return True
-                except Exception:
-                    pass
-
-            await asyncio.sleep(0.5)
+                    await btn.click()
+                    logger.info("[QUEUE] Clicked legacy '%s' button", text)
+                    return True
+                except Exception as e:
+                    logger.debug("[QUEUE] Legacy click failed: %s", e)
+            except Exception:
+                continue
         return False
+
+
+# ── TODO: cooperation with the resilient-stack keepalive ─────────────────
+#
+# When a session enters a queue, its tab is parked on /qp. The pool's
+# keepalive loop would normally re-navigate the tab to the homepage every
+# (max_age * N) seconds — that would discard the queue ticket.
+#
+# Fix path: SessionEntry needs a "do not keepalive" flag. The purchase
+# manager sets it on the chosen checkout-bound session before queue entry
+# and clears it on admission or abandonment. The pool's _heartbeat_one
+# skips sessions with the flag set.
+#
+# Not implemented yet because the resilient stack itself hasn't been
+# wired to the purchase flow (Phase 2 cutover hasn't happened). Add this
+# when Phase 2 lands.

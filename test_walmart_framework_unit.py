@@ -293,6 +293,130 @@ def test_checker_construction():
            str(c.profile_root).endswith("walmart_session_profiles"))
 
 
+# ── Queue detection (Pokemon-drop readiness) ─────────────────────────────
+
+def test_fetch_js_includes_queue_detection():
+    """The fetch JS must check for both /qp URL redirects AND body-embedded
+    queue signatures so we never miss a queue interstitial.
+    """
+    adapter = WalmartAdapter()
+    js = adapter.build_fetch_js(["X"])
+    _check("js detects /qp in final_url", "'/qp'" in js or "/qp" in js)
+    _check("js parses qpdata from URL", "qpdata=" in js)
+    _check("js detects api.waiting-room body signature",
+           "api.waiting-room.walmart.com" in js)
+    _check("js detects issueTicket / checkTicket body signature",
+           "issueTicket" in js and "checkTicket" in js)
+    _check("js emits QUEUED error for caller", "QUEUED" in js)
+
+
+def test_parse_queued_redirect_url_shape():
+    """Queue redirect case: fetch JS reports the URL contained /qp+qpdata
+    and parsed the JSON. Parser should emit in_stock=True with
+    availability_status='QUEUED:redirect_url' and extract title/price
+    from customMetadata.
+    """
+    adapter = WalmartAdapter()
+    fake = FetchResult(http_status=200, body_json={"results": [{
+        "item_id": "999111",
+        "error": "QUEUED",
+        "ms": 350,
+        "http_status": 200,
+        "queue_source": "redirect_url",
+        "queue_info": {
+            "queued": True,
+            "queue": "x21639376266",
+            "url": "https://api.waiting-room.walmart.com/issueTicket?queue=x21639376266",
+            "customMetadata": {
+                "item": {
+                    "itemID": "999111",
+                    "name": "Pokemon TCG Test Box",
+                    "currentPrice": "$49.99",
+                },
+            },
+        },
+    }]})
+    out = adapter.parse_response(fake, ["999111"])
+    _check("queue redirect → 1 ItemStatus", len(out) == 1)
+    if out:
+        s = out[0]
+        _check("queue redirect → in_stock=True", s.in_stock is True)
+        _check("queue redirect → availability='QUEUED:redirect_url'",
+               s.availability_status == "QUEUED:redirect_url")
+        _check("queue redirect → title extracted",
+               s.title == "Pokemon TCG Test Box")
+        _check("queue redirect → price parsed from '$49.99'",
+               s.price == 49.99)
+
+
+def test_parse_queued_body_signature_shape():
+    """Queue body-signature case: fetch JS saw queue API names in the HTML
+    body even though the URL didn't visibly redirect. queue_info may be
+    None if the JS couldn't extract qpdata from the body.
+    """
+    adapter = WalmartAdapter()
+    fake = FetchResult(http_status=200, body_json={"results": [{
+        "item_id": "999111",
+        "error": "QUEUED",
+        "ms": 280,
+        "http_status": 200,
+        "queue_source": "body_signature",
+        "queue_info": None,
+    }]})
+    out = adapter.parse_response(fake, ["999111"])
+    _check("queue body-sig → 1 ItemStatus", len(out) == 1)
+    if out:
+        s = out[0]
+        _check("queue body-sig → in_stock=True (purchase flow fires)",
+               s.in_stock is True)
+        _check("queue body-sig → availability='QUEUED:body_signature'",
+               s.availability_status == "QUEUED:body_signature")
+        _check("queue body-sig → no title/price extracted (queue_info=None)",
+               s.title is None and s.price is None)
+
+
+def test_parse_queued_does_not_falsely_flag_oos():
+    """A normal OOS response (no QUEUED error) must still emit in_stock=False
+    so the queue detection doesn't accidentally fire on every cycle.
+    """
+    adapter = WalmartAdapter()
+    fake = FetchResult(http_status=200, body_json={"results": [{
+        "item_id": "X1", "ms": 200, "product": {
+            "usItemId": "X1", "name": "OOS Item",
+            "sellerId": WALMART_SELLER_ID, "sellerName": "Walmart.com",
+            "availabilityStatus": "OUT_OF_STOCK", "showAtc": False,
+            "priceInfo": {"currentPrice": {"price": 9.99}},
+        }},
+    ]})
+    out = adapter.parse_response(fake, ["X1"])
+    _check("normal OOS doesn't trip queue path",
+           len(out) == 1 and out[0].in_stock is False
+           and not (out[0].availability_status or "").startswith("QUEUED"))
+
+
+def test_parse_queued_with_malformed_price_doesnt_crash():
+    """Queue payload with garbled currentPrice should not crash the parser —
+    price stays None and the item is still emitted as in_stock=True.
+    """
+    adapter = WalmartAdapter()
+    fake = FetchResult(http_status=200, body_json={"results": [{
+        "item_id": "999111",
+        "error": "QUEUED",
+        "ms": 100,
+        "http_status": 200,
+        "queue_source": "redirect_url",
+        "queue_info": {
+            "customMetadata": {"item": {"name": "Bad Price", "currentPrice": "not-a-price"}},
+        },
+    }]})
+    out = adapter.parse_response(fake, ["999111"])
+    _check("garbled price → still emits ItemStatus",
+           len(out) == 1 and out[0].in_stock is True)
+    _check("garbled price → price=None", out and out[0].price is None)
+    _check("garbled price → title still extracted",
+           out and out[0].title == "Bad Price")
+
+
 # ── Test 11: Per-IP RPS ceiling validation (warn but don't crash) ────────
 
 def test_checker_high_rps_warns():
@@ -326,6 +450,12 @@ def main():
         ("is_preflight_clean", test_preflight_clean),
         ("Dispatcher._interpret_eval_result", test_dispatcher_interpret_results),
         ("ResilientChecker construction", test_checker_construction),
+        # Queue detection (Pokemon-drop readiness)
+        ("Queue: fetch JS detects /qp + body signatures", test_fetch_js_includes_queue_detection),
+        ("Queue: parse redirect-URL shape", test_parse_queued_redirect_url_shape),
+        ("Queue: parse body-signature shape", test_parse_queued_body_signature_shape),
+        ("Queue: normal OOS not falsely flagged", test_parse_queued_does_not_falsely_flag_oos),
+        ("Queue: malformed price doesn't crash", test_parse_queued_with_malformed_price_doesnt_crash),
         ("High-RPS warns (no crash)", test_checker_high_rps_warns),
     ]
     print("=" * 70)
