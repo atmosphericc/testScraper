@@ -157,7 +157,12 @@ class WalmartPurchaseExecutor:
             await self._navigate(item_url)
 
             # Step 2: Handle virtual queue if present (2026 ticket-API model)
-            queue = QueueHandler(self._page, self._status_cb)
+            # Pass self._session through. In the current single-Chrome path
+            # this is a WalmartSessionManager (no in_queue attr — flag ops
+            # are no-ops). In a future Phase 2 path it would be a
+            # resilient-stack SessionEntry (in_queue flag activates and
+            # protects the queue ticket from keepalive eviction).
+            queue = QueueHandler(self._page, self._status_cb, session=self._session)
             ticket = await queue.detect()
             if ticket is not None:
                 # We're in a queue — wait for admission, eviction, or unlikely-streak bail

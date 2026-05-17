@@ -297,6 +297,48 @@ def test_in_queue_flag_unaffected_when_no_session_given():
         _check("no-session path runs without crashing", False, str(e))
 
 
+class _LegacyWalmartSessionMock:
+    """Stand-in for legacy WalmartSessionManager — no in_queue attr."""
+    def __init__(self):
+        self.warmed = 0
+    async def warm_session(self, items):
+        self.warmed += 1
+
+
+def test_legacy_session_no_in_queue_attr_tolerated():
+    """purchase_executor passes a WalmartSessionManager, which doesn't have
+    an `in_queue` attribute. The handler must detect this and skip the
+    flag operations silently — not crash with AttributeError.
+    """
+    page = _FakePage(url="https://www.walmart.com/ip/123", body_text="normal page")
+    legacy_session = _LegacyWalmartSessionMock()
+    h = QueueHandler(page, session=legacy_session)
+    # Detect that the handler chose the no-op path
+    _check("legacy session → _session_has_in_queue False",
+           h._session_has_in_queue is False)
+    # Run detect_and_wait — must not raise AttributeError on legacy session
+    try:
+        result = _run_async(h.detect_and_wait(timeout=0.3))
+        _check("legacy session: detect_and_wait runs without crashing",
+               True)
+        _check("legacy session: returns None when not queued",
+               result is None)
+    except AttributeError as e:
+        _check("legacy session: handler tolerates missing in_queue attr",
+               False, f"AttributeError: {e}")
+
+
+def test_session_entry_style_in_queue_detected():
+    """A session object that DOES have in_queue=False is detected and the
+    handler will set/clear the flag.
+    """
+    page = _FakePage(url="https://www.walmart.com/ip/123", body_text="normal page")
+    session_entry_like = _FakeSessionEntry()
+    h = QueueHandler(page, session=session_entry_like)
+    _check("session with in_queue attr → _session_has_in_queue True",
+           h._session_has_in_queue is True)
+
+
 def test_in_queue_flag_cleared_after_already_admitted():
     """When detect() returns a queue ticket, detect_and_wait enters the
     wait loop. With our short timeout it'll loop-out and return whatever
@@ -348,6 +390,10 @@ def main():
          test_in_queue_flag_unaffected_when_no_session_given),
         ("in_queue flag cleared after wait completes",
          test_in_queue_flag_cleared_after_already_admitted),
+        ("legacy session without in_queue attr tolerated",
+         test_legacy_session_no_in_queue_attr_tolerated),
+        ("SessionEntry-style with in_queue attr detected",
+         test_session_entry_style_in_queue_detected),
     ]
     print("=" * 70)
     print("Walmart queue_handler unit tests (no network, no browser)")

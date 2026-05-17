@@ -264,17 +264,25 @@ class QueueHandler:
         session=None,
     ):
         """
-        session: optional resilient-stack SessionEntry. If provided, the
-        handler auto-sets session.in_queue=True on detect-and-wait entry
-        and clears it on exit (admission/eviction/timeout). This prevents
-        the pool's keepalive heartbeat from navigating the tab away from
-        /qp and discarding the ticket. Required for proper queue behavior
-        when running inside the resilient stack; can be omitted for
-        legacy single-session purchase flows.
+        session: optional session object. Two types are supported:
+          - resilient-stack SessionEntry (has `in_queue: bool` attribute):
+            the handler auto-sets session.in_queue=True on detect-and-wait
+            entry and clears it on exit, preventing the pool's keepalive
+            from navigating off /qp and discarding the ticket.
+          - legacy WalmartSessionManager (no in_queue attribute): flag
+            operations are silent no-ops. Other session features (e.g.
+            warm_session for post-queue _px3 refresh) are still accessible
+            via the caller.
+
+        We detect which type by checking hasattr(session, 'in_queue'),
+        which keeps the QueueHandler usable in both the current single-
+        Chrome path (purchase_executor.py) and the future Phase 2 path
+        (resilient stack purchase manager).
         """
         self._page = page
         self._status_cb = status_callback or (lambda msg: None)
         self._session = session
+        self._session_has_in_queue = hasattr(session, "in_queue") if session else False
         self._last_ticket: Optional[QueueTicket] = None
         self._unlikely_streak = 0
         self._cdp_handler_attached = False
@@ -332,15 +340,16 @@ class QueueHandler:
         ticket by navigating off /qp. Cleared in finally regardless of
         outcome.
         """
-        # Set in_queue flag if we have a session reference
-        if self._session is not None:
+        # Set in_queue flag if we have a SessionEntry-style session
+        # (legacy WalmartSessionManager doesn't have the attr — skip silently)
+        if self._session_has_in_queue:
             self._session.in_queue = True
             logger.debug("[QUEUE] session.in_queue=True (keepalive will skip)")
 
         try:
             return await self._detect_and_wait_inner(timeout, max_unlikely_streak)
         finally:
-            if self._session is not None:
+            if self._session_has_in_queue:
                 self._session.in_queue = False
                 logger.debug("[QUEUE] session.in_queue=False (released)")
 
