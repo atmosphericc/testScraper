@@ -142,6 +142,21 @@ class WalmartAdapter:
     # fetches during your own session's refresh window.
     max_session_cookie_age_seconds: int = 50
 
+    # ── PerimeterX park/burn policy ──────────────────────────────────────
+    # During Phase 1c dev gate (2026-05-16) both IPs hit 200+ consec 403s
+    # in the failed first attempt, parked, then verified clean again within
+    # ~14 min of the run ending. Suggests PerimeterX block-decay is fast.
+    # park_duration=600s (10 min) is conservative against that observation;
+    # the parked_retest background loop retests every 5 min so a healthy
+    # IP returns to active pool within 10-15 min of parking.
+    #
+    # 401/403 streak=2 matches Target (consistent with both retailers'
+    # typical behavior — one 403 is usually a flaky signal, two confirms).
+    # burn_after_parks=4 preserves Target's tolerance.
+    park_after_403_streak: int = 2
+    park_duration_seconds: int = 600        # 10 min (vs Target's 3h)
+    burn_after_parks: int = 4
+
     # ── stock-check fetch construction ───────────────────────────────────
     # JS template — fetches /ip/<item_id> as a navigation request, extracts
     # __NEXT_DATA__ from the HTML, returns the product subtree.

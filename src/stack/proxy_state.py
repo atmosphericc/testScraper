@@ -86,11 +86,27 @@ class ProxyEntry:
 
 
 class ProxyState:
-    """Thread-safe, atomic-persisted per-IP state."""
+    """Thread-safe, atomic-persisted per-IP state.
 
-    def __init__(self, state_file: Path):
+    Per-retailer policy values (park threshold, park duration, burn threshold)
+    are accepted as kwargs so each retailer adapter can tune them for its
+    anti-bot system. Defaults preserve Target's original constants.
+    """
+
+    def __init__(
+        self,
+        state_file: Path,
+        park_after_403_streak: int = PARK_AFTER_403_STREAK,
+        park_duration_seconds: float = PARK_DURATION_S,
+        burn_after_parks: int = BURN_AFTER_PARKS,
+    ):
         self.state_file = Path(state_file)
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        # Per-instance policy (defaults match Target's historical values
+        # so any caller not passing kwargs gets Target-equivalent behavior).
+        self.park_after_403_streak = int(park_after_403_streak)
+        self.park_duration_seconds = float(park_duration_seconds)
+        self.burn_after_parks = int(burn_after_parks)
         self._lock = threading.RLock()
         self._entries: dict[str, ProxyEntry] = {}     # keyed by pinned_ip
         self._load()
@@ -220,10 +236,10 @@ class ProxyState:
                 # so existing on-disk state file keys remain readable.
                 entry.total_403 += 1
                 entry.consec_403 += 1
-                if (entry.consec_403 >= PARK_AFTER_403_STREAK
+                if (entry.consec_403 >= self.park_after_403_streak
                         and entry.status == "active"):
                     entry.park_count += 1
-                    if entry.park_count >= BURN_AFTER_PARKS:
+                    if entry.park_count >= self.burn_after_parks:
                         entry.status = "burned"
                         logger.warning(
                             f"[PROXY_STATE] {pinned_ip} BURNED after "
@@ -231,10 +247,10 @@ class ProxyState:
                         )
                     else:
                         entry.status = "parked"
-                        entry.parked_until = now + PARK_DURATION_S
+                        entry.parked_until = now + self.park_duration_seconds
                         logger.info(
                             f"[PROXY_STATE] {pinned_ip} PARKED for "
-                            f"{PARK_DURATION_S}s (park_count={entry.park_count})"
+                            f"{self.park_duration_seconds:.0f}s (park_count={entry.park_count})"
                         )
             self._save_locked()
 

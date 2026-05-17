@@ -120,6 +120,23 @@ class RetailerAdapter(Protocol):
     #                  rotate slowly via tab traffic; no _px3 analog)
     max_session_cookie_age_seconds: int
 
+    # ── per-IP park/burn policy ──────────────────────────────────────────
+    # Different anti-bot systems have different block-recovery semantics.
+    # Shape/Akamai (Target): observed natural recovery ~3 hours after a
+    # mass-burn event; conservative parking minimizes IP churn.
+    # PerimeterX (Walmart): observed 14-min recovery in dev gate; can
+    # park aggressively + unpark fast.
+    #
+    # Consecutive 401/403s before an IP is parked.
+    park_after_403_streak: int
+
+    # Seconds an IP stays parked before background loop retests it.
+    park_duration_seconds: int
+
+    # After this many park cycles on the same IP, mark it permanently
+    # burned (no longer retested by the background loop).
+    burn_after_parks: int
+
     # ── stock-check fetch construction ───────────────────────────────────
     def build_fetch_js(self, items: list[str]) -> str:
         """Return the JavaScript string the dispatcher will run inside the

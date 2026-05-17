@@ -129,8 +129,13 @@ class ResilientChecker:
                 n_sessions,
             )
 
-        # ProxyState (per retailer)
-        self.proxy_state = ProxyState(self.proxy_state_path)
+        # ProxyState (per retailer) — park/burn policy from adapter
+        self.proxy_state = ProxyState(
+            self.proxy_state_path,
+            park_after_403_streak=self.adapter.park_after_403_streak,
+            park_duration_seconds=self.adapter.park_duration_seconds,
+            burn_after_parks=self.adapter.burn_after_parks,
+        )
 
         # Build the persistent Chrome pool. Stagger comes from the adapter
         # but the pool reads it from CHROME_STAGGER_TOTAL_S env var, so we
