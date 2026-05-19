@@ -41,6 +41,11 @@ walmart-profile*/
 # also catches probe-script artifacts (e.g. disabled_probe_jar.json).
 state/*jar*.json
 state/*_profiles/
+# Per-retailer proxy state — runtime-only, has live park/burn timestamps
+state/proxy_state.json
+state/*_proxy_state.json
+# Local proxy-pool rollback backups (e.g. config/proxyIps.json.bak_*)
+config/proxyIps.json.bak_*
 # Per-run log files written by setup_run_logging() — large and may
 # capture auth tokens via the tee'd stdout transcript.
 logs/runs/
