@@ -132,8 +132,24 @@ class _ButtonExtractor(HTMLParser):
         self._current: Optional[dict] = None
         self._depth = 0
 
+    # <input> is a void element — has no closing tag. handle_startendtag fires
+    # for self-closing tags like <input />, but plain <input> typed without
+    # a slash also has no closing element. We treat <input> specially: emit
+    # immediately on starttag without waiting for an endtag that will never
+    # come.
+    _VOID_TAGS = ("input",)
+
     def handle_starttag(self, tag: str, attrs):
-        if tag in ("button", "a", "input"):
+        if tag in self._VOID_TAGS:
+            # Void element: emit immediately, don't wait for endtag.
+            self.buttons.append({
+                "tag": tag,
+                "attrs": dict(attrs),
+                "text": "",
+                "depth": self._depth,
+            })
+            return
+        if tag in ("button", "a"):
             self._current = {
                 "tag": tag,
                 "attrs": dict(attrs),
@@ -144,10 +160,14 @@ class _ButtonExtractor(HTMLParser):
         elif self._current is not None:
             self._depth += 1
 
+    def handle_startendtag(self, tag: str, attrs):
+        """Self-closing tags like <input /> — same as void element handling."""
+        self.handle_starttag(tag, attrs)
+
     def handle_endtag(self, tag: str):
         if self._current is not None:
             self._depth -= 1
-            if tag in ("button", "a", "input") and self._depth <= self._current["depth"]:
+            if tag in ("button", "a") and self._depth <= self._current["depth"]:
                 self.buttons.append(self._current)
                 self._current = None
 
@@ -333,9 +353,21 @@ class HtmlSelectorPatcher:
             logger.warning("[PATCHER] Could not locate %s list in %s", var_name, file_name)
             return False
 
-        # Build the insertion: add new selector as first item with same indentation
+        # Build the insertion: add new selector as first item with same indentation.
+        # Selector values often contain double quotes (e.g.,
+        # 'button[data-automation-id="atc"]'). Wrapping such a value in
+        # double-quotes again produces invalid Python — use single quotes
+        # when the selector contains a literal " . If the selector somehow
+        # contains BOTH ' and ", fall back to escape-the-doubles.
         indent = match.group(2)
-        insertion = f'{match.group(1)}\n{indent}"{new_selector}",  # auto-patched {datetime.now().strftime("%Y-%m-%d %H:%M")}\n{indent}'
+        if '"' in new_selector and "'" not in new_selector:
+            quoted = f"'{new_selector}'"
+        elif "'" in new_selector and '"' not in new_selector:
+            quoted = f'"{new_selector}"'
+        else:
+            # Both kinds present — escape the doubles
+            quoted = '"' + new_selector.replace('"', '\\"') + '"'
+        insertion = f'{match.group(1)}\n{indent}{quoted},  # auto-patched {datetime.now().strftime("%Y-%m-%d %H:%M")}\n{indent}'
         updated = original[:match.start()] + insertion + original[match.end():]
 
         # Validate syntax

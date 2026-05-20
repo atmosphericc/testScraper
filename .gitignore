@@ -105,3 +105,4 @@ chat.js
 node_modules/
 package.json
 package-lock.json
+walmart/logs/patches.log
