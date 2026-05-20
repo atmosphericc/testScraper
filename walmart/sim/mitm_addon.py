@@ -455,6 +455,19 @@ def _route_sim_control(flow: http.HTTPFlow) -> http.Response:
         # actually transmitted via the PIE-encrypted submission path
         return _json_response({"pie_decrypted": SIM_STATE.pie_decrypted})
 
+    if path == "/__sim__/fp_report" and method == "POST":
+        # The fingerprint_probe.html page POSTs its findings here. Tests
+        # then GET /__sim__/fp_reports to inspect what real Chrome reported.
+        try:
+            report = json.loads(flow.request.text or "{}")
+            SIM_STATE.fp_reports.append(report)
+            return _json_response({"ok": True, "report_count": len(SIM_STATE.fp_reports)})
+        except Exception as e:
+            return _json_response({"error": str(e)}, status=400)
+
+    if path == "/__sim__/fp_reports" and method == "GET":
+        return _json_response({"fp_reports": SIM_STATE.fp_reports})
+
     if path == "/__sim__/ping" and method == "GET":
         # Sentinel for harness to confirm sim is up
         return _json_response({"ok": True, "sim": "walmart"})
@@ -478,6 +491,15 @@ def request(flow: http.HTTPFlow) -> None:
     if method == "OPTIONS":
         flow.response = http.Response.make(
             204, b"", _cors_headers(flow),
+        )
+        return
+
+    # Serve the fingerprint probe HTML to Chrome. Reachable as
+    # https://www.walmart.com/__fp_probe__/ so it's same-origin with the
+    # /__sim__/fp_report endpoint Chrome posts back to (no CORS issues).
+    if path == "/__fp_probe__/" or path == "/__fp_probe__":
+        flow.response = _html_response(
+            SimState.load_fixture("fingerprint_probe.html"), flow=flow,
         )
         return
 

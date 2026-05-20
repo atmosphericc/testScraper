@@ -258,6 +258,13 @@ class SimControlClient:
         Tests use this to verify which CVV the bot transmitted."""
         return self._get("/__sim__/pie_decrypted").get("pie_decrypted", [])
 
+    def get_fp_reports(self) -> list:
+        """Return list of fingerprint probe reports. Each entry is the
+        full FP dict the probe page POST'd back (navigator.webdriver,
+        plugins, WebGL renderer, cdc_ leaks, etc.). Tests assert on
+        these to validate antibot posture."""
+        return self._get("/__sim__/fp_reports").get("fp_reports", [])
+
 
 def main():
     """CLI entrypoint: `python -m walmart.sim.server` for manual testing."""

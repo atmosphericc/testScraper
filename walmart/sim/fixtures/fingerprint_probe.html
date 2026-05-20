@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html><head><title>FP Probe</title></head>
+<body>
+<h1>Walmart Sim — Fingerprint Probe</h1>
+<pre id="result">running...</pre>
+<script>
+// Aggregated checks from:
+//   - antoinevastel/fpscanner (DataDome ex-VP-of-Research, ~70% overlap
+//     with what PerimeterX scores)
+//   - bot.sannysoft.com  (community baseline)
+//   - bot.incolumitas.com  (more aggressive checks)
+//   - intoli/puppeteer-extra-plugin-stealth  (canonical patches)
+//
+// This page runs every detection in real Chrome, then POSTs the
+// results to /__sim__/fp_report so the test process can read them.
+
+(function() {
+  const fp = {};
+  const failures = [];
+
+  // ── 1. navigator.webdriver ────────────────────────────────────────────
+  // Real Chrome: false (or undefined). Headless without proper patches:
+  // true. ChromeDriver leaks this trivially.
+  fp.webdriver = navigator.webdriver;
+  if (fp.webdriver === true) failures.push("webdriver_true");
+
+  // ── 2. navigator.plugins.length ───────────────────────────────────────
+  // Real Chrome: 3-5 typical (PDF Viewer, Chrome PDF Viewer, Native Client).
+  // Headless: 0. This is one of the oldest, most reliable bot signals.
+  fp.plugins_length = navigator.plugins ? navigator.plugins.length : -1;
+  if (fp.plugins_length === 0) failures.push("plugins_empty");
+
+  // ── 3. navigator.languages ────────────────────────────────────────────
+  // Real Chrome: ["en-US", "en"] or similar. Headless without patches: [].
+  fp.languages = navigator.languages || [];
+  fp.languages_count = fp.languages.length;
+  if (fp.languages_count === 0) failures.push("languages_empty");
+
+  // ── 4. navigator.userAgent ────────────────────────────────────────────
+  fp.ua = navigator.userAgent || "";
+  if (fp.ua.toLowerCase().includes("headless")) failures.push("ua_headless");
+
+  // ── 5. WebGL renderer ─────────────────────────────────────────────────
+  // Real Chrome on Mac/Linux: "Intel Iris Plus" / "AMD Radeon" / etc.
+  // Headless WITHOUT --use-gl=swiftshader: ANGLE (Google SwiftShader)
+  // Headless WITH GPU: real renderer string. PerimeterX scores this.
+  try {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+    if (gl) {
+      const dbgInfo = gl.getExtension("WEBGL_debug_renderer_info");
+      fp.webgl_vendor = dbgInfo ? gl.getParameter(dbgInfo.UNMASKED_VENDOR_WEBGL) : null;
+      fp.webgl_renderer = dbgInfo ? gl.getParameter(dbgInfo.UNMASKED_RENDERER_WEBGL) : null;
+      if (fp.webgl_renderer && fp.webgl_renderer.includes("SwiftShader")) {
+        failures.push("webgl_swiftshader");
+      }
+    } else {
+      fp.webgl_renderer = null;
+      failures.push("webgl_unavailable");
+    }
+  } catch (e) {
+    fp.webgl_error = String(e).slice(0, 100);
+  }
+
+  // ── 6. chrome.runtime ─────────────────────────────────────────────────
+  // Real Chrome: window.chrome.runtime is defined. Headless: undefined.
+  // puppeteer-extra-plugin-stealth specifically patches this.
+  fp.has_chrome = typeof window.chrome !== "undefined";
+  fp.has_chrome_runtime = fp.has_chrome && typeof window.chrome.runtime !== "undefined";
+  // (Note: chrome.runtime can be undefined in real Chrome too if no
+  // extensions are installed — we DON'T fail on this alone; just record.)
+
+  // ── 7. cdc_* leaks ────────────────────────────────────────────────────
+  // ChromeDriver historically leaks `cdc_adoQpoasnfa76pfcZLmcfl_*` keys
+  // on window/document. modern nodriver should NOT leak these.
+  const cdc_keys = [];
+  for (const k of Object.getOwnPropertyNames(window)) {
+    if (k.startsWith("cdc_") || k.startsWith("$cdc_") || k.includes("cdc_adoQpoasnfa")) {
+      cdc_keys.push(k);
+    }
+  }
+  fp.cdc_leak_keys = cdc_keys;
+  if (cdc_keys.length > 0) failures.push("cdc_leak");
+
+  // ── 8. permissions/Notification.permission ────────────────────────────
+  // Real Chrome: "default" or "denied" depending on user.
+  // Headless: often returns "denied" but in inconsistent state with the
+  // Permissions API (a known stealth bug). Just record both.
+  try {
+    fp.notification_permission = Notification.permission;
+  } catch (e) {
+    fp.notification_permission = "error";
+  }
+
+  // ── 9. screen / window dimensions ─────────────────────────────────────
+  fp.screen_w = screen.width;
+  fp.screen_h = screen.height;
+  fp.inner_w = window.innerWidth;
+  fp.inner_h = window.innerHeight;
+  fp.device_pixel_ratio = window.devicePixelRatio;
+  if (fp.screen_w === 0 || fp.screen_h === 0) failures.push("screen_zero");
+
+  // ── 10. hardwareConcurrency / deviceMemory ────────────────────────────
+  // Real Chrome reports real values; headless can leak default constants.
+  fp.hardware_concurrency = navigator.hardwareConcurrency;
+  fp.device_memory = navigator.deviceMemory;
+
+  // ── 11. Document properties ───────────────────────────────────────────
+  // Headless without stealth has documentElement attributes that betray it
+  fp.document_has_chrome_flag = !!document.documentElement.getAttribute("webdriver");
+
+  // ── 12. Function.prototype.toString tampering check ───────────────────
+  // puppeteer-extra-plugin-stealth wraps native functions; if our test
+  // sees "function () { [native code] }" everywhere even for tampered
+  // functions, we're hidden. If we see [non-native code patterns], we
+  // failed to hide.
+  try {
+    const tostr = Function.prototype.toString.toString();
+    fp.fn_tostring_native = tostr.includes("[native code]");
+  } catch (e) {
+    fp.fn_tostring_native = false;
+  }
+
+  // ── 13. Performance API timing ────────────────────────────────────────
+  // performance.now() should have sub-millisecond precision in real
+  // Chrome. Some headless modes coarsen this.
+  fp.performance_now_precision = (function() {
+    const t1 = performance.now();
+    let t2 = t1;
+    let iters = 0;
+    while (t2 === t1 && iters < 10000) { t2 = performance.now(); iters++; }
+    return t2 - t1;
+  })();
+
+  // ── 14. iframe contentWindow ──────────────────────────────────────────
+  // Older puppeteer-extra-plugin-stealth had bugs where iframes had
+  // different navigator.webdriver than the parent. Cross-check.
+  try {
+    const iframe = document.createElement("iframe");
+    document.body.appendChild(iframe);
+    fp.iframe_webdriver = iframe.contentWindow.navigator.webdriver;
+    if (fp.iframe_webdriver === true) failures.push("iframe_webdriver_leak");
+    document.body.removeChild(iframe);
+  } catch (e) {
+    fp.iframe_error = String(e).slice(0, 100);
+  }
+
+  // ── pack + post ───────────────────────────────────────────────────────
+  fp._failures = failures;
+  fp._timestamp = Date.now();
+
+  // Display for visual debugging
+  document.getElementById("result").textContent = JSON.stringify(fp, null, 2);
+
+  // POST to sim for test assertions
+  fetch("/__sim__/fp_report", {
+    method: "POST",
+    credentials: "include",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(fp),
+  }).then(() => {
+    // signal completion so tests can poll on this marker
+    window.__fp_probe_done__ = true;
+  }).catch(e => {
+    window.__fp_probe_error__ = String(e);
+  });
+})();
+</script>
+</body></html>

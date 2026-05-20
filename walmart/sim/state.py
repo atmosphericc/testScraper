@@ -125,6 +125,9 @@ class SimState:
         self.pie_phase: str = "0"
         # PIE: decryption log — tests can verify what CVVs were submitted
         self.pie_decrypted: list[dict[str, Any]] = []
+        # Fingerprint probe reports — populated when the probe page POSTs
+        # its results (one entry per page load)
+        self.fp_reports: list[dict[str, Any]] = []
         # Sim start time for absolute timestamps
         self.start_time = time.time()
         # Initialize PIE keypair so the sim is ready to decrypt out of the box
@@ -268,6 +271,7 @@ class SimState:
         self.hashes.clear()
         self.request_log.clear()
         self.pie_decrypted.clear()
+        self.fp_reports.clear()
         self.start_time = time.time()
         self._init_pie_keypair()
 
