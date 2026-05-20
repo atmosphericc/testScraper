@@ -350,7 +350,10 @@ class WalmartSessionManager:
         self._checkout_page = None # Tab 2: checkout — stays on homepage, clean for purchases
         self._checkout_capture = None  # optional CheckoutCapture (WALMART_CAPTURE_CHECKOUT=1)
         self._cookies_path = Path(COOKIES_FILE)
-        self._profile_dir = Path(PROFILE_DIR)
+        # Tests/sim-mode can override the profile path via env so scenarios
+        # don't collide with the real walmart-profile/ (SingletonLock).
+        _override = os.environ.get("WALMART_TEST_PROFILE_DIR", "").strip()
+        self._profile_dir = Path(_override) if _override else Path(PROFILE_DIR)
         self._last_validation: float = 0.0
         # Cached outcome of the last validation — both successes and failures
         # are cached for SESSION_VALIDATE_INTERVAL so that a missing-auth-cookie
@@ -425,26 +428,69 @@ class WalmartSessionManager:
         self._status_cb("[SESSION] Starting browser...")
 
         try:
+            # Build browser args. If WALMART_SIM_PROXY is set, route Chrome
+            # through the mitmproxy sim instead of touching real Walmart.
+            # Used by tests/test_walmart_e2e_purchase_with_queue.py.
+            _browser_args = [
+                "--window-size=1920,1080",
+                # Force Accept-Language to match navigator.languages declared
+                # in the stealth script (['en-US', 'en']). Without --lang,
+                # Chromium derives Accept-Language from the OS locale, which
+                # can mismatch the spoofed navigator.languages and trip
+                # Akamai's fingerprint-consistency check.
+                "--lang=en-US",
+                # Belt-and-suspenders against any AutomationControlled
+                # blink feature being enabled by upstream defaults.
+                "--disable-blink-features=AutomationControlled",
+            ]
+            _sim_proxy = os.environ.get("WALMART_SIM_PROXY", "").strip()
+            if _sim_proxy:
+                # E.g. http://127.0.0.1:8089 — points at mitmproxy sim
+                _browser_args.extend([
+                    f"--proxy-server={_sim_proxy}",
+                    "--ignore-certificate-errors",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ])
+                self._status_cb(f"[SESSION] WALMART_SIM_PROXY set — routing through {_sim_proxy}")
+                logger.info(f"[SESSION] Sim proxy mode: {_sim_proxy}")
+
             config = uc.Config(
                 user_data_dir=str(self._profile_dir),
                 headless=HEADLESS,
                 browser_channel=BROWSER_CHANNEL,
-                browser_args=[
-                    "--window-size=1920,1080",
-                    # Force Accept-Language to match navigator.languages declared
-                    # in the stealth script (['en-US', 'en']). Without --lang,
-                    # Chromium derives Accept-Language from the OS locale, which
-                    # can mismatch the spoofed navigator.languages and trip
-                    # Akamai's fingerprint-consistency check.
-                    "--lang=en-US",
-                    # Belt-and-suspenders against any AutomationControlled
-                    # blink feature being enabled by upstream defaults.
-                    "--disable-blink-features=AutomationControlled",
-                ],
+                browser_args=_browser_args,
                 browser_connection_timeout=1.0,
                 browser_connection_max_tries=30,
             )
             self._browser = await uc.start(config)
+
+            # When running against the mitmproxy sim, skip the multi-site
+            # pre-warmup entirely. The sim only intercepts walmart.com, so
+            # warmup nav to google/amazon/etc would either pass through to
+            # the real internet (slow + fragile) or fail with a TLS error.
+            # The bot's "browser legitimacy" doesn't apply against a sim.
+            if _sim_proxy:
+                self._status_cb("[SESSION] WALMART_SIM_PROXY mode — skipping pre-warmup")
+                self._page = await self._browser.get("https://www.walmart.com")
+                await self._page.activate()
+                from zendriver import cdp
+                await self._page.send(
+                    cdp.page.add_script_to_evaluate_on_new_document(source=_STEALTH_SCRIPT)
+                )
+                await self._load_cookies()
+                await self._page.send(cdp.network.enable())
+                self._page.add_handler(
+                    cdp.network.RequestWillBeSent,
+                    self._on_network_request,
+                )
+                self._page.add_handler(
+                    cdp.network.LoadingFinished,
+                    self._on_loading_finished,
+                )
+                self._status_cb("[SESSION] Browser ready (sim mode)")
+                logger.debug("[SESSION] Browser started (sim fast-path)")
+                return
 
             # Extended pre-legitimacy warmup: Build comprehensive browser history BEFORE walmart
             # Akamai's behavioral analysis looks for: navigation history, idle patterns, referrer chains
@@ -917,6 +963,11 @@ class WalmartSessionManager:
         scrutiny applied to PDPs.
         """
         if not self._page:
+            return
+
+        # In sim mode, skip multi-site warmup — sim only intercepts walmart.com.
+        if os.environ.get("WALMART_SIM_PROXY", "").strip():
+            self._status_cb("[SESSION] WALMART_SIM_PROXY mode — skipping warm_session")
             return
 
         self._status_cb("[SESSION] Warming session...")

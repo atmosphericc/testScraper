@@ -119,6 +119,9 @@ class SimState:
         self.hashes: dict[str, HashScenario] = {}
         # Recorded request log for tests to inspect
         self.request_log: list[dict[str, Any]] = []
+        # The last item_id fetched via /ip/ — used to personalize cart/checkout
+        # fixtures so the bot's _read_cart_context() can match by usItemId.
+        self.last_ip_item_id: Optional[str] = None
         # PIE: keypair set on init or after pie_setup() call
         self.pie_keypair: Optional[Any] = None       # cryptography RSA priv key
         self.pie_public_key_id: str = "test-pie-key-id-0"
@@ -272,6 +275,7 @@ class SimState:
         self.request_log.clear()
         self.pie_decrypted.clear()
         self.fp_reports.clear()
+        self.last_ip_item_id = None
         self.start_time = time.time()
         self._init_pie_keypair()
 

@@ -67,6 +67,15 @@ _RE_GETKEY = re.compile(
 )
 
 
+def _auth_cookie_header() -> dict[str, str]:
+    """Set the `auth` cookie that walmart/session_manager.py:validate_session
+    checks for. Real Walmart sets this on login; sim sets it on every response
+    so the bot's "am I logged in" check always passes against the sim."""
+    return {
+        "Set-Cookie": "auth=sim-test-auth-cookie; Path=/; Domain=.walmart.com; SameSite=Lax",
+    }
+
+
 def _cors_headers(flow: http.HTTPFlow) -> dict[str, str]:
     """CORS headers permissive enough for any cross-origin fetch from
     walmart.com → api.waiting-room.walmart.com. Chrome enforces these
@@ -123,9 +132,19 @@ def _html_response(body: bytes | str, status: int = 200,
                    flow: Optional[http.HTTPFlow] = None) -> http.Response:
     if isinstance(body, str):
         body = body.encode("utf-8")
-    headers = {"Content-Type": "text/html; charset=utf-8"}
+    headers = {
+        "Content-Type": "text/html; charset=utf-8",
+        # Force Chrome to fetch fresh on every call. Without this, the
+        # browser caches /ip/<sku> and re-uses the stale (often OOS)
+        # response when state changes mid-run.
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    }
     if flow is not None:
         headers.update(_cors_headers(flow))
+        # Set walmart.com auth cookie so bot's login check passes against sim
+        if flow.request.host and "walmart.com" in flow.request.host:
+            headers.update(_auth_cookie_header())
     return http.Response.make(status, body, headers)
 
 
@@ -143,23 +162,51 @@ def _redirect_response(location: str, status: int = 302,
 def _route_ip_page(flow: http.HTTPFlow, item_id: str) -> http.Response:
     availability = SIM_STATE.get_item(item_id)
     SIM_STATE.log_request(route="/ip/", item_id=item_id, availability=availability.value)
+    # Track the last-fetched item so cart/checkout fixtures can be
+    # personalized with the SKU the bot is actually trying to buy.
+    SIM_STATE.last_ip_item_id = item_id
 
     if availability == ItemAvailability.QUEUED:
-        # 302 → /qp?qpdata=<encoded JSON>
-        # Pick the first configured queue or build a default one keyed by item
+        # Tricky case: the bot's stock_monitor does fetch('/ip/<sku>') from
+        # within Tab 1, which doesn't run scripts — so a meta-refresh or JS
+        # redirect on the response body won't redirect the fetch. The bot
+        # needs the fetch to return IN_STOCK-shaped data so the stock signal
+        # fires; THEN when the bot navigates to /ip/<sku> as a real browser
+        # navigation, the response script redirects to /qp.
+        #
+        # If the queue has already admitted (state == "valid"), short-circuit
+        # to a normal IN_STOCK response so the bot can proceed to ATC.
         queue = next(iter(SIM_STATE.queues.values()), None)
         if queue is None:
             queue = QueueScenario(item_id=item_id)
             SIM_STATE.set_queue(queue)
-        qpdata = build_qpdata_url(queue.queue_id, item_id)
-        return _redirect_response(f"/qp?qpdata={qpdata}", flow=flow)
+        if queue.current_state() == "valid":
+            return _html_response(_personalize_fixture("ip_in_stock.html", item_id), flow=flow)
 
+        # Still queued — return IN_STOCK HTML with a JS redirect to /qp at
+        # the end. fetch() doesn't execute scripts (it just reads the body),
+        # so the bot's stock_monitor parses __NEXT_DATA__ → IN_STOCK.
+        # Browser navigation does execute the script and redirects to /qp,
+        # putting the bot in the queue handler.
+        qpdata = build_qpdata_url(queue.queue_id, item_id)
+        body = _personalize_fixture("ip_in_stock.html", item_id).decode("utf-8")
+        redirect_script = (
+            f'<script>'
+            f'window.location.replace("/qp?qpdata={qpdata}");'
+            f'</script>'
+        )
+        body = body.replace("</body>", redirect_script + "</body>")
+        return _html_response(body.encode("utf-8"), flow=flow)
+
+    # Substitute the requested item_id into the fixture HTML's usItemId
+    # field. Otherwise the bot's _extract_product() rejects the response
+    # because product.usItemId != requested item_id.
     if availability == ItemAvailability.IN_STOCK:
-        return _html_response(SimState.load_fixture("ip_in_stock.html"), flow=flow)
+        return _html_response(_personalize_fixture("ip_in_stock.html", item_id), flow=flow)
     if availability == ItemAvailability.THIRD_PARTY:
-        return _html_response(SimState.load_fixture("ip_third_party.html"), flow=flow)
+        return _html_response(_personalize_fixture("ip_third_party.html", item_id), flow=flow)
     # default: OOS
-    return _html_response(SimState.load_fixture("ip_oos.html"), flow=flow)
+    return _html_response(_personalize_fixture("ip_oos.html", item_id), flow=flow)
 
 
 def _route_qp(flow: http.HTTPFlow) -> http.Response:
@@ -167,12 +214,36 @@ def _route_qp(flow: http.HTTPFlow) -> http.Response:
     return _html_response(SimState.load_fixture("qp_pending.html"), flow=flow)
 
 
+def _personalize_fixture(template_name: str, item_id: Optional[str]) -> bytes:
+    """Replace the canonical fixture usItemId with the SKU the bot is buying.
+    Falls back to leaving the fixture as-is when item_id is unknown.
+    """
+    raw = SimState.load_fixture(template_name).decode("utf-8")
+    if item_id:
+        raw = raw.replace('"usItemId":"19012610850"', f'"usItemId":"{item_id}"')
+    return raw.encode("utf-8")
+
+
 def _route_cart(flow: http.HTTPFlow) -> http.Response:
     """The /cart page — serves a populated cart so WalmartHybridCheckout.
     read_cart_context() can extract cartId + lineItems from __NEXT_DATA__.
     """
     SIM_STATE.log_request(route="/cart", url=flow.request.url)
-    return _html_response(SimState.load_fixture("cart_populated.html"), flow=flow)
+    return _html_response(
+        _personalize_fixture("cart_populated.html", SIM_STATE.last_ip_item_id),
+        flow=flow,
+    )
+
+
+def _route_checkout(flow: http.HTTPFlow) -> http.Response:
+    """The /checkout page. Bot navigates here from /cart, then the
+    hybrid flow takes over via GraphQL mutations.
+    """
+    SIM_STATE.log_request(route="/checkout", url=flow.request.url)
+    return _html_response(
+        _personalize_fixture("checkout_page.html", SIM_STATE.last_ip_item_id),
+        flow=flow,
+    )
 
 
 def _route_ticket_api(flow: http.HTTPFlow) -> http.Response:
@@ -532,6 +603,9 @@ def request(flow: http.HTTPFlow) -> None:
             return
         if path == "/cart" or path.startswith("/cart?") or path.startswith("/cart/"):
             flow.response = _route_cart(flow)
+            return
+        if path == "/checkout" or path.startswith("/checkout?") or path.startswith("/checkout/"):
+            flow.response = _route_checkout(flow)
             return
 
         # GraphQL operations: /orchestra/<service>/graphql/<op>/<hash>

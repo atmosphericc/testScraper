@@ -3481,11 +3481,21 @@ class WalmartPurchaseExecutor:
         return results
 
     async def _screenshot(self, label: str):
-        """Save a screenshot to walmart/logs/ for debugging."""
+        """Save a screenshot to walmart/logs/ for debugging.
+
+        Wrapped in wait_for because CDP Page.captureScreenshot can hang
+        indefinitely when the tab is mid-navigation (post-queue-admission was
+        a real incident — 2.3 min hang in the executor's fallback path).
+        """
         try:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = f"{LOGS_DIR}/{label}_{ts}.png"
-            await self._page.save_screenshot(filename=path)
+            await asyncio.wait_for(
+                self._page.save_screenshot(filename=path),
+                timeout=3.0,
+            )
             logger.debug("[PURCHASE] Screenshot: %s", path)
+        except asyncio.TimeoutError:
+            logger.warning("[PURCHASE] Screenshot timed out (%s) — tab likely mid-nav", label)
         except Exception as e:
             logger.warning("[PURCHASE] Screenshot failed: %s", e)
