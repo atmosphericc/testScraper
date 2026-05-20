@@ -9,6 +9,14 @@
     <h2>Order summary</h2>
     <p>Payment | Shipping | Delivery | Place order | Credit | Fulfillment</p>
   </section>
+  <!-- Place Order button — bot's _confirm_shipping() takes a fast-path when
+       this is already visible (line 1801-1805 in purchase_executor.py),
+       skipping the 6-step Continue-button loop. Without this the bot wastes
+       ~40s scanning for buttons that don't exist on a minimal fixture.
+       Hybrid checkout (WALMART_CHECKOUT_API=1) doesn't actually click this
+       — it fires CreateContract via GraphQL — but presence triggers the
+       fast-path skip. -->
+  <button data-automation-id="place-order-btn">Place order</button>
 </div>
 <script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"initialData":{"data":{"cart":{"id":"test-cart-id-001","cartId":"test-cart-id-001","cartLines":[{"usItemId":"19012610850","offerId":"test-offer-id-001","lineItemId":"test-line-id-001","quantity":1,"productName":"Pokemon TCG Test Item","fulfillmentPreference":"DELIVERY","availableFulfillmentOptions":["SCHEDULED_DELIVERY","SCHEDULED_PICKUP"],"isPharmacyPrescription":false}]}}}}},"query":{},"buildId":"sim-test"}</script>
 <script>

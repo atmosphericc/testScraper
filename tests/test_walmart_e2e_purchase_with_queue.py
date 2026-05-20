@@ -163,7 +163,9 @@ async def _patch_config_for_test(test_sku: str, tmp_dir: Path) -> Path:
     return config_path
 
 
-async def run_scenario(scenario_name: str, queue: bool) -> tuple[LatencyRecorder, bool]:
+async def run_scenario(
+    scenario_name: str, queue: bool, fast_drop: bool = False,
+) -> tuple[LatencyRecorder, bool]:
     """Run one scenario: spawn sim, configure it, drive WalmartPurchaseManager.
 
     Returns (recorder, success: bool).
@@ -229,6 +231,11 @@ async def run_scenario(scenario_name: str, queue: bool) -> tuple[LatencyRecorder
         # we want it to keep retrying ASAP until either pcid arrives or our
         # 180s wait_for fires.
         os.environ["WALMART_TEST_LOOP_COOLDOWN"] = "off"
+        # Optional fast-drop mode: eliminates human think-times during checkout
+        if fast_drop:
+            os.environ["FAST_DROP_MODE"] = "1"
+        else:
+            os.environ.pop("FAST_DROP_MODE", None)
 
         # Configure logging
         logging.basicConfig(
@@ -272,7 +279,8 @@ async def run_scenario(scenario_name: str, queue: bool) -> tuple[LatencyRecorder
         # Clean up env
         for k in ("WALMART_SIM_PROXY", "WALMART_CHECKOUT_API", "WALMART_PIE_CVV",
                   "WALMART_CVV", "CHECKOUT_MODE", "FINAL_PURCHASE",
-                  "WALMART_TEST_PROFILE_DIR", "WALMART_TEST_LOOP_COOLDOWN"):
+                  "WALMART_TEST_PROFILE_DIR", "WALMART_TEST_LOOP_COOLDOWN",
+                  "FAST_DROP_MODE"):
             os.environ.pop(k, None)
 
 
@@ -325,6 +333,27 @@ async def main():
             _dump_message_trace(recorder)
     except Exception as e:
         _check("queue: harness ran without exception", False,
+               detail=f"{type(e).__name__}: {e}\n{traceback.format_exc()[:500]}")
+
+    # Scenario 3: FAST_DROP_MODE — proves mechanical-speed checkout
+    # The baseline scenarios use intentional human think-time delays that
+    # add ~30-40s to the purchase. FAST_DROP_MODE eliminates those for
+    # high-demand drops (Pokemon Wednesday). This scenario validates the
+    # bot still completes the purchase with the delays removed.
+    print("\n=== Scenario 3: FAST_DROP_MODE (mechanical-speed checkout) ===")
+    try:
+        recorder, ok = await run_scenario("fast_drop", queue=False, fast_drop=True)
+        _check("fast_drop: purchase completed",
+               ok and recorder.latency.pcid,
+               detail=f"pcid={recorder.latency.pcid}")
+        if ok and recorder.latency.pcid:
+            print(f"  ✓ pcid received: {recorder.latency.pcid}")
+            if recorder.latency.detect_to_pcid_ms > 0:
+                print(f"  Latency (ATC → pcid): {recorder.latency.detect_to_pcid_ms:.0f}ms")
+        else:
+            _dump_message_trace(recorder)
+    except Exception as e:
+        _check("fast_drop: harness ran without exception", False,
                detail=f"{type(e).__name__}: {e}\n{traceback.format_exc()[:500]}")
 
     # ── summary ──────────────────────────────────────────────────────────
