@@ -470,6 +470,107 @@ class WalmartHybridCheckout:
             logger.info("[HYBRID] Slot reserved + cart checkoutable")
         return result
 
+    async def submit_cvv_via_pie(self, cvv: str) -> Optional[dict]:
+        """Encrypt the CVV via Walmart's PIE.js scheme and POST it to
+        /api/checkout-customer/encrypted-pan, bypassing DOM keystroke entry.
+
+        Why: DOM CVV entry (typing one char at a time into an iframe input)
+        is the single most-scrutinized form in Walmart's checkout for
+        PerimeterX behavioral biometrics. Encrypting + POSTing the CVV
+        directly removes the keystroke timing signal entirely.
+
+        Flow:
+          1. fetch_pie_key(tab) — pulls getkey.js via tab.evaluate, parses
+             the RSA modulus + key_id.
+          2. encrypt_cvv(key, cvv) — pure-Python RSA-PKCS1v15 encryption.
+          3. tab.evaluate(fetch POST /api/checkout-customer/encrypted-pan)
+             with the ciphertext payload. Server returns {cardToken: ...}.
+
+        Returns the server response dict on success, None on any failure
+        (caller falls back to DOM CVV entry — preserves regression-free).
+
+        Env gate `WALMART_PIE_CVV=1` should be checked by the caller
+        before invoking this; this method always tries when called.
+        """
+        from walmart.pie import fetch_pie_key, encrypt_cvv
+
+        # 1. Fetch the public key
+        key = await fetch_pie_key(self._tab)
+        if key is None:
+            logger.warning("[HYBRID] PIE: could not fetch public key — falling back")
+            return None
+
+        # 2. Encrypt in pure Python (no JS runtime needed)
+        try:
+            encrypted = encrypt_cvv(key, cvv)
+        except ValueError as e:
+            logger.warning(f"[HYBRID] PIE: encrypt_cvv rejected input: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"[HYBRID] PIE: encrypt_cvv raised: {type(e).__name__}: {e}")
+            return None
+
+        # 3. POST the encrypted payload via tab.evaluate
+        payload = encrypted.to_dict()
+        body_json = json.dumps(payload, separators=(",", ":"))
+        body_literal = json.dumps(body_json)
+        url = "/api/checkout-customer/encrypted-pan"
+        js = f"""
+            (async () => {{
+                const t0 = performance.now();
+                try {{
+                    const resp = await fetch({json.dumps(url)}, {{
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-O-Bu': 'WALMART-US',
+                            'X-O-Mart': 'B2C',
+                            'X-O-Platform': 'rweb',
+                            'Sec-Fetch-Site': 'same-origin',
+                            'Sec-Fetch-Mode': 'cors',
+                            'Sec-Fetch-Dest': 'empty',
+                            'Referer': location.origin + '/checkout',
+                        }},
+                        body: {body_literal},
+                    }});
+                    const ms = performance.now() - t0;
+                    const text = await resp.text();
+                    let json_ = null;
+                    try {{ json_ = JSON.parse(text); }} catch(_) {{}}
+                    return {{ok: resp.ok, status: resp.status, ms, text: text.slice(0, 2000), json: json_}};
+                }} catch (e) {{
+                    return {{ok: false, status: 0, ms: performance.now()-t0, error: String(e).slice(0, 200)}};
+                }}
+            }})()
+        """
+        try:
+            res = await self._tab.evaluate(js, await_promise=True)
+        except TypeError:
+            res = await self._tab.evaluate(js)
+        except Exception as e:
+            logger.warning(f"[HYBRID] PIE submit raised: {e}")
+            return None
+
+        if not isinstance(res, dict) or not res.get("ok"):
+            logger.warning(
+                f"[HYBRID] PIE submit failed: status={(res or {}).get('status')} "
+                f"err={(res or {}).get('error') or (res or {}).get('text', '')[:200]!r}"
+            )
+            return None
+
+        body = res.get("json")
+        if not body:
+            logger.warning("[HYBRID] PIE submit: response not JSON")
+            return None
+
+        logger.info(
+            f"[HYBRID] PIE submit OK status={res.get('status')} ms={res.get('ms'):.0f} "
+            f"token={(body.get('cardToken') or '?')[:24]}"
+        )
+        return body
+
     async def place_order(self, ctx: dict) -> Optional[dict]:
         """POST CreateContract — Walmart's Place Order mutation.
 

@@ -119,12 +119,64 @@ class SimState:
         self.hashes: dict[str, HashScenario] = {}
         # Recorded request log for tests to inspect
         self.request_log: list[dict[str, Any]] = []
-        # PIE: when set, sim accepts ciphertext + decrypts with this private key
-        self.pie_private_key_pem: Optional[bytes] = None
-        # PIE: pubkey JSON returned by getkey.js (set during test setup)
-        self.pie_pubkey_response: Optional[dict[str, Any]] = None
+        # PIE: keypair set on init or after pie_setup() call
+        self.pie_keypair: Optional[Any] = None       # cryptography RSA priv key
+        self.pie_public_key_id: str = "test-pie-key-id-0"
+        self.pie_phase: str = "0"
+        # PIE: decryption log — tests can verify what CVVs were submitted
+        self.pie_decrypted: list[dict[str, Any]] = []
         # Sim start time for absolute timestamps
         self.start_time = time.time()
+        # Initialize PIE keypair so the sim is ready to decrypt out of the box
+        self._init_pie_keypair()
+
+    def _init_pie_keypair(self) -> None:
+        """Generate a 2048-bit RSA keypair. Done once on init AND on reset()
+        so each test scenario has fresh keys (no cross-scenario decryption
+        contamination).
+
+        2048 chosen because: matches real Walmart PIE.js typical L value;
+        fast enough to generate in ~50ms (1024 risks Cybersource rejection
+        in real prod; 3072+ is slow).
+        """
+        try:
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            from cryptography.hazmat.backends import default_backend
+            self.pie_keypair = rsa.generate_private_key(
+                public_exponent=0x10001, key_size=2048,
+                backend=default_backend(),
+            )
+        except ImportError:
+            # cryptography lib not installed — sim PIE routes will fail,
+            # but the rest of the sim still works for non-PIE tests.
+            self.pie_keypair = None
+
+    def get_pie_modulus_hex(self) -> str:
+        """Return the RSA modulus n as hex (no 0x prefix, lowercase).
+        Used by sim's getkey.js route to construct the var PIE JS body."""
+        if self.pie_keypair is None:
+            return "00"   # placeholder if cryptography unavailable
+        n = self.pie_keypair.public_key().public_numbers().n
+        return format(n, "x")
+
+    def decrypt_pie_payload(self, ciphertext_hex: str) -> Optional[str]:
+        """Decrypt a hex-encoded PIE ciphertext with the sim's private key.
+        Returns the plaintext (e.g. CVV digits) on success, None on failure.
+
+        Tests use this to verify the bot encrypted the expected CVV without
+        having to inspect the wire bytes directly.
+        """
+        if self.pie_keypair is None:
+            return None
+        try:
+            from cryptography.hazmat.primitives.asymmetric import padding
+            ciphertext = bytes.fromhex(ciphertext_hex)
+            plaintext = self.pie_keypair.decrypt(
+                ciphertext, padding.PKCS1v15(),
+            )
+            return plaintext.decode("ascii", errors="replace")
+        except Exception:
+            return None
 
     # ── item availability ────────────────────────────────────────────────
 
@@ -205,12 +257,19 @@ class SimState:
     # ── reset for next test ──────────────────────────────────────────────
 
     def reset(self) -> None:
-        """Clear all state for the next test scenario."""
+        """Clear all state for the next test scenario.
+
+        Note: regenerates the PIE keypair so cross-scenario decryption is
+        impossible. A test that scripts ctl.reset() between scenarios
+        will get a fresh public modulus served by getkey.js.
+        """
         self.items.clear()
         self.queues.clear()
         self.hashes.clear()
         self.request_log.clear()
+        self.pie_decrypted.clear()
         self.start_time = time.time()
+        self._init_pie_keypair()
 
 
 # Default canonical queue scenario — matches the verbatim real Pokemon TCG

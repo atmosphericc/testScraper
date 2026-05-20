@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -284,35 +285,78 @@ def _graphql_success_body(op_name: str, hash_value: str,
 
 
 def _route_getkey(flow: http.HTTPFlow) -> http.Response:
-    """PIE.js public-key endpoint. Returns the JS body wrapped as a script."""
+    """PIE.js public-key endpoint. Returns the JS body wrapped as a script.
+
+    Serves the sim's actual RSA modulus (from SIM_STATE.pie_keypair) so the
+    bot's encrypted CVV can be decrypted by the sim's matching private key.
+    """
     SIM_STATE.log_request(route="getkey.js", url=flow.request.url)
     headers = {"Content-Type": "application/javascript"}
     headers.update(_cors_headers(flow))
-    if SIM_STATE.pie_pubkey_response is not None:
-        body = "var PIE = " + json.dumps(SIM_STATE.pie_pubkey_response) + ";"
-        return http.Response.make(200, body.encode("utf-8"), headers)
-    try:
-        body_bytes = SimState.load_fixture("getkey.js")
-        return http.Response.make(200, body_bytes, headers)
-    except FileNotFoundError:
-        body = (
-            'var PIE = {"K0c":"test-keyid","key_id":"test-keyid",'
-            '"phase":"1","L":3072,"n":"abcd","e":"AQAB"};'
-        )
-        return http.Response.make(200, body.encode("utf-8"), headers)
+
+    modulus_hex = SIM_STATE.get_pie_modulus_hex()
+    pie_obj = {
+        "K0c": SIM_STATE.pie_public_key_id,
+        "key_id": SIM_STATE.pie_public_key_id,
+        "phase": SIM_STATE.pie_phase,
+        "L": 2048,
+        "k": modulus_hex,
+        "c1": 1,
+    }
+    body = "var PIE = " + json.dumps(pie_obj) + ";"
+    return http.Response.make(200, body.encode("utf-8"), headers)
 
 
 def _route_pie_submit(flow: http.HTTPFlow) -> http.Response:
-    """Accept the PIE-encrypted CVV payload. Day 4 will decrypt + assert."""
+    """Accept the PIE-encrypted CVV payload, decrypt with sim's test private
+    key, log the plaintext for test assertions.
+
+    The bot's submit_cvv_via_pie POSTs {encryptedSecurityCode, key_id, phase,
+    ...} to this route. We decrypt encryptedSecurityCode and store the
+    plaintext in SIM_STATE.pie_decrypted so the test can assert which CVV
+    was actually transmitted (without inspecting the wire bytes directly).
+    """
     try:
         body_json = json.loads(flow.request.text or "{}")
     except (json.JSONDecodeError, TypeError):
         body_json = {}
+
+    encrypted_cvv = body_json.get("encryptedSecurityCode")
+    key_id = body_json.get("key_id")
+    phase = body_json.get("phase")
+
+    decrypted_plaintext: Optional[str] = None
+    decrypt_error: Optional[str] = None
+    if encrypted_cvv:
+        try:
+            decrypted_plaintext = SIM_STATE.decrypt_pie_payload(encrypted_cvv)
+            if decrypted_plaintext is None:
+                decrypt_error = "decrypt_returned_none"
+        except Exception as e:
+            decrypt_error = f"{type(e).__name__}: {e}"
+
+    SIM_STATE.pie_decrypted.append({
+        "key_id": key_id,
+        "phase": phase,
+        "ciphertext_hex_len": len(encrypted_cvv) if encrypted_cvv else 0,
+        "decrypted": decrypted_plaintext,
+        "error": decrypt_error,
+        "t": time.time() - SIM_STATE.start_time,
+    })
     SIM_STATE.log_request(
         route="pie_submit", path=flow.request.path,
-        has_encryptedCvv="encryptedCvv" in body_json,
+        has_encryptedSecurityCode=bool(encrypted_cvv),
+        decrypted_ok=decrypted_plaintext is not None,
     )
-    return _json_response({"cardToken": "test-card-token", "status": "ok"}, flow=flow)
+
+    if decrypted_plaintext is None:
+        return _json_response(
+            {"error": "ciphertext could not be decrypted", "detail": decrypt_error},
+            status=400, flow=flow,
+        )
+    return _json_response(
+        {"cardToken": "test-card-token", "status": "ok"}, flow=flow,
+    )
 
 
 # ── /__sim__/ control plane ──────────────────────────────────────────────
@@ -405,6 +449,11 @@ def _route_sim_control(flow: http.HTTPFlow) -> http.Response:
             for op_name, scenario in SIM_STATE.hashes.items()
         }
         return _json_response({"graphql": out})
+
+    if path == "/__sim__/pie_decrypted" and method == "GET":
+        # Tests read this to verify which CVVs (plaintexts) the bot
+        # actually transmitted via the PIE-encrypted submission path
+        return _json_response({"pie_decrypted": SIM_STATE.pie_decrypted})
 
     if path == "/__sim__/ping" and method == "GET":
         # Sentinel for harness to confirm sim is up

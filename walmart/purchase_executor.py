@@ -1926,6 +1926,43 @@ class WalmartPurchaseExecutor:
         card_cvv = get_card_cvv()
         if not card_cvv:
             return
+
+        # PIE.js CVV submission shortcut.
+        # When WALMART_CHECKOUT_API=1 AND WALMART_PIE_CVV=1, we encrypt the
+        # CVV with Walmart's PIE public key (fetched from
+        # securedataweb.walmart.com/pie/v1/wmcom_us_vtg_pie/getkey.js) and
+        # POST the ciphertext directly to /api/checkout-customer/encrypted-pan.
+        # This bypasses the DOM keystroke dance entirely — the most-
+        # scrutinized form on Walmart's checkout for PerimeterX biometrics.
+        #
+        # Falls through to DOM entry on any failure (preserves regression).
+        pie_enabled = (
+            os.environ.get("WALMART_CHECKOUT_API", "").strip().lower() in ("1", "true", "yes", "on")
+            and os.environ.get("WALMART_PIE_CVV", "").strip().lower() in ("1", "true", "yes", "on")
+        )
+        if pie_enabled:
+            try:
+                from walmart.checkout_api import WalmartHybridCheckout
+                api = WalmartHybridCheckout(self._page)
+                pie_result = await api.submit_cvv_via_pie(card_cvv)
+                if pie_result and pie_result.get("status") == "ok":
+                    self._status_cb("[PURCHASE] CVV submitted via PIE (no DOM keystrokes)")
+                    logger.info(
+                        "[PURCHASE] PIE CVV submit OK — skipping DOM entry. "
+                        "token=%s", (pie_result.get("cardToken") or "?")[:24],
+                    )
+                    return
+                logger.info(
+                    "[PURCHASE] PIE submit returned no/non-ok result — "
+                    "falling back to DOM CVV entry"
+                )
+            except Exception as e:
+                logger.warning(
+                    "[PURCHASE] PIE submit raised, falling back to DOM CVV: %s: %s",
+                    type(e).__name__, e,
+                )
+            # Fall through to DOM keystroke path
+
         try:
             cvv_input = await self._find_element(CVV_SELECTORS, timeout=4000)
             if cvv_input:

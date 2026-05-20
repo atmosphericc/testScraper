@@ -252,6 +252,12 @@ class SimControlClient:
     def get_graphql_log(self) -> dict:
         return self._get("/__sim__/graphql_log").get("graphql", {})
 
+    def get_pie_decrypted(self) -> list:
+        """Return list of decrypted PIE submissions (plaintext CVVs).
+        Each entry: {key_id, phase, ciphertext_hex_len, decrypted, error, t}.
+        Tests use this to verify which CVV the bot transmitted."""
+        return self._get("/__sim__/pie_decrypted").get("pie_decrypted", [])
+
 
 def main():
     """CLI entrypoint: `python -m walmart.sim.server` for manual testing."""
