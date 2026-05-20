@@ -3,21 +3,40 @@
 What's tested vs. what we're betting on hope for.
 
 ## Last updated
-2026-05-17
+2026-05-20 (Week-long test push: Days 1-7 complete)
 
 ## TL;DR for drop day
 
-The bot is **not** validated against a real queue. The dev gate (2026-05-16)
-proved the resilient stack works against a permissive baseline product (notebook).
-Pokemon drops are a different operating mode (always-queue, elevated PerimeterX
-scoring, sub-second checkout window after admission). Going into a real drop
-you should expect failures in code paths that haven't been exercised against
-the queue interstitial.
+The bot's CODE has been comprehensively tested via a mitmproxy-based
+Walmart simulator: 421 assertions across 14 test suites pass deterministically.
+That includes the CDP listener path that was unverifiable until Day 2.
+
+The bot has NEVER been run against a real Walmart queue. Until that
+happens, the assertion "the bot can win a Pokemon drop" remains
+empirically unsupported. What we CAN now claim with high confidence:
+
+- The QueueHandler's CDP `Network.responseReceived` listener actually
+  fires when a ticket API response arrives (Day 2 — 19/19 E2E against sim)
+- The bot survives mid-drop GraphQL hash rotation via APQ full-query
+  fallback with `extensions.code == "PERSISTED_QUERY_NOT_FOUND"` sentinel
+  (Day 3 — 41 unit + 15 E2E assertions)
+- CVV submission via PIE.js encryption is wired end-to-end, bypassing
+  the most-scrutinized DOM keystroke form (Day 4 — 42 unit + 16 E2E)
+- Chrome fingerprint baseline is clean (navigator.webdriver false,
+  plugins non-empty, no cdc_ leaks, WebGL not SwiftShader) (Day 5)
+- Mouse trajectory and keystroke distributions match human baselines
+  (Day 5 — 34 statistical assertions)
+- Self-healing patcher works correctly after 2 production bug fixes
+  it had silently broken behavior before this week's tests (Day 6)
+- Stock parser handles every documented edge case (Day 6 — 26 cases)
+- Session concurrency safe under asyncio.gather contention (Day 6)
 
 What we've code-prepared but not validated under live drop conditions:
 - Queue interstitial detection in monitoring fetch (Walmart adapter)
 - 2026 ticket-API queue handler (state, likelihood, expiration parsing)
 - Hybrid checkout via GraphQL mutations (`walmart/checkout_api.py`)
+- PIE.js CVV encryption (env-gated `WALMART_PIE_CVV=1`)
+- APQ fallback for hash rotation
 
 What we have NOT done that real drops need:
 - Multi-session queue racing (sketched below, not implemented)

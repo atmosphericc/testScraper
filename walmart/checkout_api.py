@@ -113,7 +113,14 @@ def is_apq_miss(body: dict) -> bool:
 
 # Hashes captured 2026-05-11 from real Place Order + slot-reservation runs.
 # Auto-discoverable via `python -m walmart.capture_analyzer --emit-py`.
-# If Walmart rotates these, the bot logs HTTP 400 and the DOM path takes over.
+#
+# Walmart rotates these ~weekly. Stale hashes used to bring down the bot
+# (HTTP 400 → DOM fallback). Day 3 (2026-05-20) wired APQ fallback: when
+# the sentinel `extensions.code == "PERSISTED_QUERY_NOT_FOUND"` (Apollo
+# Client #10253) appears in the response, the bot retries with the full
+# query body from walmart/checkout_apq_queries.json. Server caches the
+# new hash on success; next normal POST hits the warm cache. The bot
+# now self-heals through hash rotations.
 UPDATE_ITEMS_HASH = "8f04790148c52a6bd70449c7c6c56d57f74fec0301878d6ffc50acc059343180"
 CREATE_CONTRACT_HASH = "cc8455e5a9158dc86b9b96656595396c110f231e148863107287c46ec5aa9144"
 GET_SLOTS_HASH = "284fc996d255acb14e392a7b83f3d8dc43caade8d921a518349fc20f44a11aa0"

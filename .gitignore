@@ -106,3 +106,5 @@ node_modules/
 package.json
 package-lock.json
 walmart/logs/patches.log
+# Live queue capture JSONL files (regenerated per run, large)
+walmart/logs/live_capture_*.jsonl
