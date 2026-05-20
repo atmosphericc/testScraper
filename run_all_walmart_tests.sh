@@ -62,6 +62,7 @@ SLOW_SUITES=(
     "tests/test_checkout_api_against_sim.py"
     "tests/test_e2e_hybrid_checkout.py"
     "tests/test_fingerprint_probe.py"
+    "tests/test_walmart_e2e_purchase_with_queue.py"
 )
 
 # ── runner ───────────────────────────────────────────────────────────────
