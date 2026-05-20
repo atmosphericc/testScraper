@@ -73,8 +73,8 @@ def test_is_ticket_api_url():
            is_ticket_api_url("https://api.waiting-room.walmart.com/issueTicket?queue=q1"))
     _check("refreshTicket → ticket API",
            is_ticket_api_url("https://api.waiting-room.walmart.com/refreshTicket?ticket=42"))
-    _check("validateTickets (no endpoint match) → NOT ticket API by our filter",
-           not is_ticket_api_url("https://api.waiting-room.walmart.com/validateTickets"))
+    _check("validateTickets → ticket API (added 2026-05-20)",
+           is_ticket_api_url("https://api.waiting-room.walmart.com/validateTickets"))
     _check("checkTicket wrong host → NOT ticket API",
            not is_ticket_api_url("https://api.example.com/checkTicket"))
     _check("normal walmart URL → NOT ticket API",

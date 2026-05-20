@@ -152,6 +152,106 @@ class SimServer:
         """For use as --proxy-server or HTTPS_PROXY."""
         return f"http://127.0.0.1:{self.port}"
 
+    def control(self) -> "SimControlClient":
+        """Return a typed client for the /__sim__/ control plane."""
+        return SimControlClient(self.proxy_url)
+
+
+class SimControlClient:
+    """Type-friendly wrapper for the /__sim__/ control endpoints.
+
+    All methods POST through the sim proxy to `http://sim.local/__sim__/...`.
+    Tests use this to script SimState in the subprocess.
+
+    Usage:
+      sim = SimServer()
+      sim.start()
+      ctl = sim.control()
+      ctl.reset()
+      ctl.set_item("12345", "in_stock")
+      ctl.set_queue(queue_id="q1", state_transitions=[(3, "valid")])
+      log = ctl.get_log()
+    """
+
+    def __init__(self, proxy_url: str):
+        self.proxy_url = proxy_url
+        import requests
+        self._session = requests.Session()
+        self._session.proxies = {"http": proxy_url, "https": proxy_url}
+        self._session.verify = False
+
+    def _post(self, endpoint: str, body: Optional[dict] = None) -> dict:
+        # http://sim.local is a sentinel host — mitmproxy intercepts the
+        # /__sim__/ path before any DNS lookup, so the hostname can be
+        # arbitrary; we use http (not https) to skip the TLS handshake.
+        url = f"http://sim.local{endpoint}"
+        r = self._session.post(url, json=body or {}, timeout=5.0)
+        r.raise_for_status()
+        return r.json()
+
+    def _get(self, endpoint: str) -> dict:
+        url = f"http://sim.local{endpoint}"
+        r = self._session.get(url, timeout=5.0)
+        r.raise_for_status()
+        return r.json()
+
+    def ping(self) -> dict:
+        """Health-check the control plane is reachable. Useful as a
+        post-start handshake before scripting scenarios."""
+        return self._get("/__sim__/ping")
+
+    def reset(self) -> dict:
+        return self._post("/__sim__/reset")
+
+    def set_item(self, item_id: str, availability: str) -> dict:
+        """availability ∈ {in_stock, oos, third_party, queued}"""
+        return self._post("/__sim__/item", {
+            "item_id": item_id, "availability": availability,
+        })
+
+    def set_queue(
+        self,
+        queue_id: str = "qa484c0ebd7014",
+        item_id: str = "19012610850",
+        initial_state: str = "pending",
+        initial_likelihood: str = "likely",
+        next_refresh_relative_time_ms: int = 2000,
+        state_transitions: Optional[list] = None,
+        likelihood_transitions: Optional[list] = None,
+    ) -> dict:
+        """Configure a queue scenario.
+
+        state_transitions: list of [poll_count, state] e.g. [[3, "valid"]]
+        likelihood_transitions: same shape with likelihood values
+        """
+        return self._post("/__sim__/queue", {
+            "queue_id": queue_id,
+            "item_id": item_id,
+            "initial_state": initial_state,
+            "initial_likelihood": initial_likelihood,
+            "next_refresh_relative_time_ms": next_refresh_relative_time_ms,
+            "state_transitions": state_transitions or [],
+            "likelihood_transitions": likelihood_transitions or [],
+        })
+
+    def set_hash_scenario(
+        self,
+        op_name: str,
+        known_hashes: Optional[list] = None,
+        force_miss: bool = False,
+    ) -> dict:
+        return self._post("/__sim__/hash", {
+            "op_name": op_name,
+            "known_hashes": known_hashes or [],
+            "force_miss": force_miss,
+        })
+
+    def get_log(self) -> list:
+        return self._get("/__sim__/log").get("log", [])
+
+    def get_graphql_log(self) -> dict:
+        return self._get("/__sim__/graphql_log").get("graphql", {})
+
 
 def main():
     """CLI entrypoint: `python -m walmart.sim.server` for manual testing."""

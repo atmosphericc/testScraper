@@ -67,9 +67,15 @@ _QP_URL_RE = re.compile(r"/qp(\?|/|$)")
 # response URL mean we have a live ticket being polled.
 _TICKET_API_HOST = "api.waiting-room.walmart.com"
 
-# Endpoints we care about (subset of: issueTicket, checkTicket, refreshTicket,
-# validateTickets). State updates come through any of them.
-_TICKET_ENDPOINTS = ("issueTicket", "checkTicket", "refreshTicket")
+# Endpoints we care about. All four are documented at api.waiting-room.walmart.com
+# and any of them can carry a state update. validateTickets in particular wraps
+# the response in {"tickets": [...]} (confirmed by alxmyth/walmart-queue-monitor
+# Chrome extension source), and parse_ticket_response handles that shape.
+# Was previously missing validateTickets — sim smoke + research surfaced it
+# 2026-05-20.
+_TICKET_ENDPOINTS = (
+    "issueTicket", "checkTicket", "refreshTicket", "validateTickets",
+)
 
 # Legacy DOM-overlay text patterns. Older drops (pre-2026) showed a
 # "Hold my spot and Keep shopping" button in an overlay. Some restocks
