@@ -28,9 +28,87 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("walmart.checkout_api")
+
+
+# ── APQ (Apollo Persisted Query) fallback ────────────────────────────────
+# Walmart rotates the SHA-256 persisted-query hashes ~weekly. When a hash
+# goes stale the server returns:
+#     HTTP 200 + {"errors": [{"message": "...", "extensions": {"code":
+#                "PERSISTED_QUERY_NOT_FOUND"}}]}
+# The CORRECT sentinel is `extensions.code == "PERSISTED_QUERY_NOT_FOUND"`
+# (NOT the message text — per Apollo Client #10253, the message is not
+# guaranteed stable but the extensions.code is). On detection, retry the
+# same request with a `query` field carrying the full operation body;
+# the server caches the new hash on success.
+#
+# Query bodies live in walmart/checkout_apq_queries.json so they can be
+# updated independently of code when Walmart introduces new operations or
+# changes argument shapes.
+
+_APQ_QUERIES_PATH = Path(__file__).parent / "checkout_apq_queries.json"
+
+# Loaded lazily so the module imports cheaply even if the file is missing
+_APQ_QUERIES_CACHE: Optional[dict[str, str]] = None
+
+
+def _load_apq_queries() -> dict[str, str]:
+    """Read walmart/checkout_apq_queries.json once and cache.
+    Returns empty dict if the file is missing or malformed (logged warn).
+    """
+    global _APQ_QUERIES_CACHE
+    if _APQ_QUERIES_CACHE is not None:
+        return _APQ_QUERIES_CACHE
+    try:
+        data = json.loads(_APQ_QUERIES_PATH.read_text(encoding="utf-8"))
+        queries = data.get("queries") or {}
+        if not isinstance(queries, dict):
+            logger.warning("[APQ] checkout_apq_queries.json 'queries' is not a dict")
+            queries = {}
+        _APQ_QUERIES_CACHE = queries
+        logger.info("[APQ] loaded %d query bodies", len(queries))
+        return queries
+    except FileNotFoundError:
+        logger.warning("[APQ] checkout_apq_queries.json not found at %s — "
+                       "fallback disabled", _APQ_QUERIES_PATH)
+        _APQ_QUERIES_CACHE = {}
+        return {}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("[APQ] failed to parse checkout_apq_queries.json: %s", e)
+        _APQ_QUERIES_CACHE = {}
+        return {}
+
+
+def apq_query_for(op_name: str) -> Optional[str]:
+    """Return the full GraphQL query string for an operation, or None if
+    not captured yet. Callers must handle None gracefully (skip retry)."""
+    return _load_apq_queries().get(op_name)
+
+
+def is_apq_miss(body: dict) -> bool:
+    """Strict APQ-miss detection per Apollo Client #10253.
+
+    Returns True iff body.errors[*].extensions.code includes the canonical
+    sentinel. Does NOT match by message text — Walmart could change the
+    message at any time and we'd misfire on unrelated errors.
+    """
+    if not isinstance(body, dict):
+        return False
+    errors = body.get("errors")
+    if not isinstance(errors, list):
+        return False
+    for err in errors:
+        if not isinstance(err, dict):
+            continue
+        ext = err.get("extensions") or {}
+        if not isinstance(ext, dict):
+            continue
+        if ext.get("code") == "PERSISTED_QUERY_NOT_FOUND":
+            return True
+    return False
 
 
 # Hashes captured 2026-05-11 from real Place Order + slot-reservation runs.
@@ -542,7 +620,27 @@ class WalmartHybridCheckout:
             )
             return None
         body = res.get("json")
-        if not body or body.get("errors"):
+        if body is None:
+            logger.warning("[HYBRID] %s GET returned non-JSON", op_name)
+            return None
+
+        if body.get("errors"):
+            # APQ miss? Retry with full-query body via POST (GET-side APQ
+            # convention varies; POST with extensions.persistedQuery is the
+            # safest universal fallback path for Apollo servers).
+            if is_apq_miss(body):
+                logger.warning(
+                    "[APQ] %s GET: PERSISTED_QUERY_NOT_FOUND — retrying via POST with full query body",
+                    apollo_name,
+                )
+                retry_body = await self._get_graphql_full_query(
+                    op_name, url, apollo_name,
+                )
+                if retry_body is not None:
+                    return retry_body
+                logger.warning("[APQ] %s GET full-query retry also failed", apollo_name)
+                return None
+
             logger.warning(
                 "[HYBRID] %s GET returned errors: %s",
                 op_name, (body or {}).get("errors", "no-json"),
@@ -551,6 +649,102 @@ class WalmartHybridCheckout:
         logger.info(
             "[HYBRID] %s GET ok: status=%s ms=%.0f",
             op_name, res.get("status"), res.get("ms"),
+        )
+        return body
+
+    async def _get_graphql_full_query(
+        self, op_name: str, url: str, apollo_name: str,
+    ) -> Optional[dict]:
+        """GET-side APQ fallback. Real Apollo Server accepts both GET (with
+        query in URL) and POST (with query in body). We use POST to keep
+        the wire shape consistent with the POST-side fallback and avoid
+        URL-length limits for big queries.
+
+        Strategy: extract `variables` from the original GET URL, build the
+        POST body with extensions.persistedQuery + query + variables.
+        """
+        query_body = apq_query_for(apollo_name)
+        if query_body is None:
+            logger.warning("[APQ] %s GET: no captured query body", apollo_name)
+            return None
+
+        # Parse variables out of the GET URL
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query)
+        variables_raw = (qs.get("variables") or ["{}"])[0]
+        try:
+            variables = json.loads(variables_raw)
+        except (json.JSONDecodeError, TypeError):
+            variables = {}
+
+        # Strip query params from the base URL — POST goes to the bare
+        # /orchestra/...graphql/<op>/<hash> path
+        post_url = urllib.parse.urlunparse(parsed._replace(query=""))
+
+        payload = {
+            "query": query_body,
+            "variables": variables,
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": parsed.path.rsplit("/", 1)[-1] if "/" in parsed.path else "",
+                },
+            },
+        }
+
+        body_json = json.dumps(payload, separators=(",", ":"))
+        body_literal = json.dumps(body_json)
+        js = f"""
+            (async () => {{
+                const t0 = performance.now();
+                try {{
+                    const resp = await fetch({json.dumps(post_url)}, {{
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-APOLLO-OPERATION-NAME': {json.dumps(apollo_name)},
+                            'X-O-Bu': 'WALMART-US',
+                            'X-O-Mart': 'B2C',
+                            'X-O-Platform': 'rweb',
+                            'X-O-Segment': 'oaoh',
+                            'X-O-Ccm': 'server',
+                            'X-O-Gql-Query': 'query ' + {json.dumps(apollo_name)},
+                            'Sec-Fetch-Site': 'same-origin',
+                            'Sec-Fetch-Mode': 'cors',
+                            'Sec-Fetch-Dest': 'empty',
+                            'Referer': location.origin + '/cart',
+                        }},
+                        body: {body_literal},
+                    }});
+                    const ms = performance.now() - t0;
+                    const text = await resp.text();
+                    let json_ = null;
+                    try {{ json_ = JSON.parse(text); }} catch(_) {{}}
+                    return {{ok: resp.ok, status: resp.status, ms, text: text.slice(0, 8000), json: json_}};
+                }} catch (e) {{
+                    return {{ok: false, status: 0, ms: performance.now()-t0, error: String(e).slice(0, 200)}};
+                }}
+            }})()
+        """
+        try:
+            res = await self._tab.evaluate(js, await_promise=True)
+        except TypeError:
+            res = await self._tab.evaluate(js)
+        except Exception as e:
+            logger.warning("[APQ] %s GET retry raised: %s", apollo_name, e)
+            return None
+
+        if not isinstance(res, dict) or not res.get("ok"):
+            return None
+        body = res.get("json")
+        if not body or body.get("errors"):
+            return None
+        logger.info(
+            "[APQ] %s GET-retry-via-POST OK status=%s ms=%.0f",
+            apollo_name, res.get("status"), res.get("ms"),
         )
         return body
 
@@ -648,6 +842,23 @@ class WalmartHybridCheckout:
             return None
 
         if body.get("errors"):
+            # APQ miss? Try the full-query fallback once.
+            if is_apq_miss(body):
+                logger.warning(
+                    "[APQ] %s POST: PERSISTED_QUERY_NOT_FOUND — retrying with full query body",
+                    apollo_name,
+                )
+                retry_body = await self._post_graphql_full_query(
+                    op_name, url, payload, apollo_name,
+                )
+                if retry_body is not None:
+                    return retry_body
+                logger.warning(
+                    "[APQ] %s POST: full-query retry also failed; falling back to DOM",
+                    apollo_name,
+                )
+                return None
+
             logger.warning(
                 "[HYBRID] %s POST returned GraphQL errors: %s",
                 op_name, body["errors"][:3] if isinstance(body["errors"], list) else body["errors"],
@@ -657,6 +868,99 @@ class WalmartHybridCheckout:
         logger.info(
             "[HYBRID] %s POST ok: status=%s ms=%.0f",
             op_name, status, ms,
+        )
+        return body
+
+    async def _post_graphql_full_query(
+        self, op_name: str, url: str, payload: dict, apollo_name: str,
+    ) -> Optional[dict]:
+        """APQ fallback POST — sends the request again with the `query`
+        field included carrying the full operation body. On success the
+        server caches the new hash; we don't have to manually update
+        constants in code because the next normal POST will hit the
+        warm cache.
+
+        Returns the GraphQL response body on success, None on any failure.
+        """
+        query_body = apq_query_for(apollo_name)
+        if query_body is None:
+            logger.warning(
+                "[APQ] %s: no captured query body — cannot retry. "
+                "Capture via walmart/apq_capture.py and add to "
+                "walmart/checkout_apq_queries.json.",
+                apollo_name,
+            )
+            return None
+
+        # Apollo APQ retry shape: include the same persistedQuery extensions
+        # block AND a `query` field with the full operation body. The
+        # server uses the query body to compute and cache the new hash.
+        retry_payload = dict(payload)
+        retry_payload["query"] = query_body
+
+        body_json = json.dumps(retry_payload, separators=(",", ":"))
+        body_literal = json.dumps(body_json)
+        js = f"""
+            (async () => {{
+                const t0 = performance.now();
+                try {{
+                    const resp = await fetch({json.dumps(url)}, {{
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {{
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-APOLLO-OPERATION-NAME': {json.dumps(apollo_name)},
+                            'X-O-Bu': 'WALMART-US',
+                            'X-O-Mart': 'B2C',
+                            'X-O-Platform': 'rweb',
+                            'X-O-Segment': 'oaoh',
+                            'X-O-Ccm': 'server',
+                            'X-O-Gql-Query': 'mutation ' + {json.dumps(apollo_name)},
+                            'Sec-Fetch-Site': 'same-origin',
+                            'Sec-Fetch-Mode': 'cors',
+                            'Sec-Fetch-Dest': 'empty',
+                            'Referer': location.origin + '/cart',
+                        }},
+                        body: {body_literal},
+                    }});
+                    const ms = performance.now() - t0;
+                    const text = await resp.text();
+                    let json_ = null;
+                    try {{ json_ = JSON.parse(text); }} catch(_) {{}}
+                    return {{ok: resp.ok, status: resp.status, ms, text: text.slice(0, 8000), json: json_}};
+                }} catch (e) {{
+                    return {{ok: false, status: 0, ms: performance.now()-t0, error: String(e).slice(0, 200)}};
+                }}
+            }})()
+        """
+        try:
+            res = await self._tab.evaluate(js, await_promise=True)
+        except TypeError:
+            res = await self._tab.evaluate(js)
+        except Exception as e:
+            logger.warning("[APQ] %s retry raised: %s", apollo_name, e)
+            return None
+
+        if not isinstance(res, dict) or not res.get("ok"):
+            logger.warning("[APQ] %s retry failed: %r",
+                           apollo_name, (res or {}).get("error") or (res or {}).get("text", "")[:200])
+            return None
+
+        body = res.get("json")
+        if body is None:
+            logger.warning("[APQ] %s retry got non-JSON body", apollo_name)
+            return None
+        if body.get("errors"):
+            # The retry shouldn't get APQ_NOT_FOUND again (we sent the query
+            # body). If we still get errors, it's a real server-side issue
+            # (bad query syntax, schema mismatch, etc).
+            logger.warning("[APQ] %s retry returned errors: %s",
+                           apollo_name, body["errors"][:3])
+            return None
+        logger.info(
+            "[APQ] %s retry OK status=%s ms=%.0f — hash should now be cached server-side",
+            apollo_name, res.get("status"), res.get("ms"),
         )
         return body
 

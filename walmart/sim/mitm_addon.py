@@ -166,6 +166,14 @@ def _route_qp(flow: http.HTTPFlow) -> http.Response:
     return _html_response(SimState.load_fixture("qp_pending.html"), flow=flow)
 
 
+def _route_cart(flow: http.HTTPFlow) -> http.Response:
+    """The /cart page — serves a populated cart so WalmartHybridCheckout.
+    read_cart_context() can extract cartId + lineItems from __NEXT_DATA__.
+    """
+    SIM_STATE.log_request(route="/cart", url=flow.request.url)
+    return _html_response(SimState.load_fixture("cart_populated.html"), flow=flow)
+
+
 def _route_ticket_api(flow: http.HTTPFlow) -> http.Response:
     parsed = urlparse(flow.request.url)
     params = parse_qs(parsed.query)
@@ -450,6 +458,9 @@ def request(flow: http.HTTPFlow) -> None:
     if "walmart.com" in host:
         if path.startswith("/qp"):
             flow.response = _route_qp(flow)
+            return
+        if path == "/cart" or path.startswith("/cart?") or path.startswith("/cart/"):
+            flow.response = _route_cart(flow)
             return
 
         # GraphQL operations: /orchestra/<service>/graphql/<op>/<hash>

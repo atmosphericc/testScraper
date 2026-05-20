@@ -457,13 +457,24 @@ class WalmartAdapter:
 
     def apq_full_query(self, operation_name: str) -> Optional[str]:
         """Walmart uses Apollo persisted queries with weekly hash rotation.
-        Phase 3 work: capture the full GraphQL query body for ItemByIdBtf
-        (and the checkout mutations) so APQ full-query fallback can recover
-        when a hash goes stale.
 
-        Returns None for now — framework treats None as "APQ not supported
-        for this operation" and skips the fallback retry.
+        Query bodies are stored at walmart/checkout_apq_queries.json and
+        loaded by walmart/checkout_api.py:apq_query_for(). When a hash
+        goes stale, checkout_api retries with the full query body and the
+        server caches the new hash.
+
+        Returns the full GraphQL query string for the named operation,
+        or None if not captured. Framework treats None as "APQ not
+        supported for this operation" and skips the fallback retry.
+
+        Operations currently captured (see checkout_apq_queries.json):
+          - ItemByIdBtf (stock-check)
+          - updateItems (cart qty mutation)
+          - CreateContract (place order mutation)
+          - getSlots (delivery slot fetch)
+          - reserveSlotMutation (slot booking)
         """
-        # TODO Phase 3: return full ItemByIdBtf query body when operation_name
-        # == "ItemByIdBtf". Capture via walmart/checkout_capture.py first.
-        return None
+        # Delegate to checkout_api's loader — single source of truth for
+        # both the adapter's Protocol surface AND the in-tab fetch path.
+        from walmart.checkout_api import apq_query_for
+        return apq_query_for(operation_name)
