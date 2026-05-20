@@ -1,0 +1,22 @@
+{
+  "site": "usgm",
+  "queue": "qa484c0ebd7014",
+  "shard": 49,
+  "ticket": 2529,
+  "state": "expired",
+  "expires": 1771034402836,
+  "signature": "evse+tJEvFgVsOpinrNpD/aBXPv3UHVwqVv7j4wbQkE=",
+  "itemId": "19012610850",
+  "expectedTurnTimeUnixTimestamp": 0,
+  "nextRefreshUnixTimestamp": 0,
+  "nextRefreshRelativeTime": 0,
+  "customMetadata": {
+    "admissionLikelihood": "unlikely",
+    "title": "Your spot has expired",
+    "item": {
+      "name": "Pokemon TCG Test Item",
+      "currentPrice": "$29.97",
+      "itemID": "19012610850"
+    }
+  }
+}

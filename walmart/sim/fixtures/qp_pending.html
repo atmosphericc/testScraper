@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><title>Walmart - Reserve a time</title></head>
+<body>
+<h1 id="hdr">You're in line</h1>
+<p>Hold tight — high demand. Your spot is reserved.</p>
+<div id="status">Estimated wait time: 30 minutes</div>
+<!-- Real Walmart queue pages contain references to the ticket API.
+     The walmart_adapter.py JS scans for these substrings as a
+     queue-detection fallback shape (B): body_signature. -->
+<!-- Endpoints: api.waiting-room.walmart.com checkTicket issueTicket -->
+<script>
+  // Real-Walmart-style polling. Our QueueHandler attaches a CDP listener
+  // for Network.responseReceived on the api.waiting-room.walmart.com
+  // host, and that's what fires on each fetch below.
+  (async function poll() {
+    try {
+      const q = new URLSearchParams(window.location.search).get("qpdata");
+      let queue = "qa484c0ebd7014";
+      if (q) { try { queue = JSON.parse(decodeURIComponent(q)).queue || queue; } catch(_){} }
+      const r = await fetch("https://api.waiting-room.walmart.com/checkTicket?queue=" + queue, {credentials: "include"});
+      const data = await r.json();
+      document.getElementById("status").textContent = "state=" + data.state;
+      if (data.state === "valid") {
+        // Real Walmart: navigate to the product/cart on admission
+        const itemId = (data.itemId || "19012610850");
+        window.location.href = "/ip/" + itemId;
+        return;
+      }
+      if (data.state === "expired") {
+        document.getElementById("status").textContent = "EXPIRED — please refresh";
+        return;
+      }
+      // pending — poll again at server's dictated cadence
+      const next = data.nextRefreshRelativeTime || 2000;
+      setTimeout(poll, next);
+    } catch (e) {
+      document.getElementById("status").textContent = "poll error: " + e;
+    }
+  })();
+</script>
+</body></html>

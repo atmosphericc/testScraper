@@ -79,6 +79,8 @@ config/proxyIps.json
 # Logs (intentionally tracked for post-mortem of early-morning Target drops)
 # logs/
 # walmart/logs/
+# Sim subprocess run logs (transient, regenerated each test run)
+walmart/logs/mitm_sim_*.log
 
 # IDE / OS
 .vscode/
