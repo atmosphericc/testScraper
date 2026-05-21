@@ -46,6 +46,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+import src.zendriver_compat  # noqa: E402, F401  # Chrome 148 CDP compat — must precede any zendriver-driven Chrome launch
+
 import urllib3   # noqa: E402
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
