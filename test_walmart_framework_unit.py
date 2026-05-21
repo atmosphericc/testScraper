@@ -554,6 +554,89 @@ def test_dispatch_queue_race_falls_through_to_manager():
            kwargs.get("order_limit") is None)
 
 
+def test_pool_session_shim_exposes_tab_as_page():
+    """PoolSessionShim mirrors SessionEntry.tab as _page so the executor's
+    `self._session._page` reads find the tab without changes to executor code.
+    """
+    from walmart.queue_race import PoolSessionShim
+    from unittest.mock import MagicMock
+    fake_tab = MagicMock(name="zendriver_tab")
+    entry = MagicMock(tab=fake_tab, id="s7", proxy_ip="1.2.3.4")
+    shim = PoolSessionShim(entry)
+    _check("shim._page is entry.tab", shim._page is fake_tab)
+    _check("shim.session_entry returns raw entry", shim.session_entry is entry)
+
+
+def test_pool_session_shim_needs_rewarm_always_false():
+    """needs_rewarm() returns False — the pool harvester owns _px3 freshness,
+    so the executor's per-purchase rewarm cadence isn't applicable.
+    """
+    from walmart.queue_race import PoolSessionShim
+    from unittest.mock import MagicMock
+    shim = PoolSessionShim(MagicMock(tab=MagicMock()))
+    _check("shim.needs_rewarm() is False", shim.needs_rewarm() is False)
+
+
+def test_pool_session_shim_warm_methods_are_async_noop():
+    """warm_session / rewarm_tab1 are awaitable no-ops — pool sessions don't
+    self-warm; the harvester does."""
+    import asyncio
+    from walmart.queue_race import PoolSessionShim
+    from unittest.mock import MagicMock
+    shim = PoolSessionShim(MagicMock(tab=MagicMock()))
+    loop = asyncio.new_event_loop()
+    try:
+        _check("warm_session() returns None",
+               loop.run_until_complete(shim.warm_session([])) is None)
+        _check("rewarm_tab1() returns None",
+               loop.run_until_complete(shim.rewarm_tab1()) is None)
+    finally:
+        loop.close()
+
+
+def test_pool_session_shim_handle_blocked_reloads_and_returns_true():
+    """_handle_blocked_page_on reloads the given page and reports success
+    when reload doesn't raise. Pool sessions lack the manager's PX solver,
+    so reload + next harvest cycle is the recovery path.
+    """
+    import asyncio
+    from walmart.queue_race import PoolSessionShim
+    from unittest.mock import MagicMock, AsyncMock
+
+    page = MagicMock(reload=AsyncMock(return_value=None))
+    shim = PoolSessionShim(MagicMock(tab=MagicMock()))
+
+    loop = asyncio.new_event_loop()
+    try:
+        ok = loop.run_until_complete(shim._handle_blocked_page_on(page))
+    finally:
+        loop.close()
+
+    _check("_handle_blocked_page_on returns True on successful reload", ok is True)
+    _check("_handle_blocked_page_on called page.reload()", page.reload.called)
+
+
+def test_pool_session_shim_handle_blocked_returns_false_on_reload_error():
+    """If the reload itself raises, _handle_blocked_page_on swallows the
+    exception and returns False — the caller treats False as 'recovery
+    failed, continue to higher-level retry'.
+    """
+    import asyncio
+    from walmart.queue_race import PoolSessionShim
+    from unittest.mock import MagicMock, AsyncMock
+
+    page = MagicMock(reload=AsyncMock(side_effect=RuntimeError("nav failed")))
+    shim = PoolSessionShim(MagicMock(tab=MagicMock()))
+
+    loop = asyncio.new_event_loop()
+    try:
+        ok = loop.run_until_complete(shim._handle_blocked_page_on(page))
+    finally:
+        loop.close()
+    _check("_handle_blocked_page_on returns False on reload exception",
+           ok is False)
+
+
 def test_dispatch_queue_race_handles_missing_title():
     """When ItemStatus.title is None, name falls back to item_id so the
     manager's activity log still has something readable.
@@ -678,6 +761,17 @@ def main():
          test_dispatch_queue_race_falls_through_to_manager),
         ("queue race: dispatch handles missing title",
          test_dispatch_queue_race_handles_missing_title),
+        # PoolSessionShim — adapter for executor on pool sessions
+        ("queue race: PoolSessionShim exposes tab as _page",
+         test_pool_session_shim_exposes_tab_as_page),
+        ("queue race: PoolSessionShim.needs_rewarm() is False",
+         test_pool_session_shim_needs_rewarm_always_false),
+        ("queue race: PoolSessionShim warm methods are async no-ops",
+         test_pool_session_shim_warm_methods_are_async_noop),
+        ("queue race: PoolSessionShim _handle_blocked reloads + True",
+         test_pool_session_shim_handle_blocked_reloads_and_returns_true),
+        ("queue race: PoolSessionShim _handle_blocked False on error",
+         test_pool_session_shim_handle_blocked_returns_false_on_reload_error),
         ("High-RPS warns (no crash)", test_checker_high_rps_warns),
     ]
     print("=" * 70)

@@ -45,9 +45,10 @@ The signature is the contract future work will fulfil.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from src.stack.multi_session_pool import SessionEntry
     from src.stack.resilient_checker import ResilientChecker
     from src.stack.retailer_adapter import ItemStatus
     from walmart.purchase_manager import WalmartPurchaseManager
@@ -56,6 +57,61 @@ logger = logging.getLogger(__name__)
 
 
 QUEUED_PREFIX = "QUEUED:"
+
+
+class PoolSessionShim:
+    """Adapts a SessionEntry from `src/stack/multi_session_pool` to the
+    `WalmartSessionManager` surface that `WalmartPurchaseExecutor` expects.
+
+    The executor reaches into session via these methods:
+      - `session.needs_rewarm()` — _px3 staleness check
+      - `await session.warm_session(items)` — _px3 refresh by browsing
+      - `await session.rewarm_tab1()` — homepage warm
+      - `await session._handle_blocked_page_on(page)` — PX Press-and-Hold solver
+      - `session._page` — the executor's tab handle
+
+    Pool sessions don't own _px3 management (the harvester does it across
+    all sessions every ~30s) and don't have the manager's specialized
+    blocked-page recovery. The shim:
+      - reports needs_rewarm()=False (harvester handles freshness)
+      - makes warm_session / rewarm_tab1 no-ops
+      - falls back to a plain `page.reload()` for _handle_blocked_page_on
+      - mirrors `entry.tab` as `_page` so executor reads work unchanged
+
+    Callers can still reach the raw SessionEntry via `shim.session_entry`
+    when they need to flip `in_queue`, read `id`/`proxy_ip`, etc.
+    """
+
+    def __init__(self, entry: "SessionEntry"):
+        self._entry = entry
+        # Mirror entry.tab as _page — same primitive (a zendriver Tab),
+        # just the attribute name the executor reads.
+        self._page = entry.tab
+
+    @property
+    def session_entry(self) -> "SessionEntry":
+        return self._entry
+
+    def needs_rewarm(self) -> bool:
+        return False
+
+    async def warm_session(self, items=None) -> None:
+        return None
+
+    async def rewarm_tab1(self) -> None:
+        return None
+
+    async def _handle_blocked_page_on(self, page) -> bool:
+        """Last-ditch recovery for PerimeterX /blocked redirects.
+        Pool sessions lack the manager's press-and-hold solver, so reload
+        the page and let the harvester's next cookie refresh do the rest.
+        """
+        try:
+            await page.reload()
+            return True
+        except Exception as e:
+            logger.warning("[QUEUE_RACE] PoolSessionShim reload failed: %s", e)
+            return False
 
 
 def is_queued_status(status: "ItemStatus") -> bool:
