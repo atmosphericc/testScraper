@@ -556,6 +556,26 @@ class MultiSessionPool:
             return None
         return random.choice(ready)
 
+    def all_ready_sessions(self) -> list[SessionEntry]:
+        """Return every session that pick_session() would consider — used by
+        the multi-session queue-race entry point.
+
+        When a SKU enters Walmart's queue, the resilient stack dispatches
+        an independent queue-then-purchase task on every ready session so
+        N concurrent waits race for admission instead of one. Same filter
+        as pick_session: state=='ready', tab attached, not mid-fetch, not
+        already in a queue, has cookies. The caller is expected to flip
+        in_queue=True on each returned session before the keepalive loop's
+        next pass, otherwise heartbeats can navigate the tab off /qp and
+        forfeit the ticket.
+        """
+        return [s for s in self.sessions
+                if s.state == "ready"
+                and s.tab is not None
+                and not s.in_flight
+                and not s.in_queue
+                and s.cookies]
+
     def session_count(self) -> tuple[int, int]:
         """Return (ready_sessions, total_sessions)."""
         ready = sum(1 for s in self.sessions

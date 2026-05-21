@@ -467,6 +467,78 @@ def test_session_entry_defaults_in_queue_false():
     _check("SessionEntry.in_queue defaults to False", s.in_queue is False)
 
 
+def test_all_ready_sessions_returns_all_eligible():
+    """all_ready_sessions returns every session that pick_session() would
+    consider — used by the multi-session queue-race entry point so N
+    concurrent queue waits race for admission instead of one.
+    """
+    from src.stack.multi_session_pool import MultiSessionPool, SessionEntry
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    pool = MultiSessionPool.__new__(MultiSessionPool)
+    sessions = []
+    for i in range(3):
+        sessions.append(SessionEntry(
+            id=f"s{i}", proxy_url=f"x{i}", proxy_ip=f"1.1.1.{i}",
+            local_port=25000 + i, profile_dir=Path(f"/tmp/x{i}"),
+            state="ready", cookies={"_px3": f"v{i}"}, tab=MagicMock(),
+        ))
+    pool.sessions = sessions
+
+    ready = pool.all_ready_sessions()
+    _check("all_ready_sessions returns every eligible session", len(ready) == 3)
+    _check("all_ready_sessions returns SessionEntry instances",
+           all(isinstance(s, SessionEntry) for s in ready))
+    _check("all_ready_sessions preserves session identity",
+           {s.id for s in ready} == {"s0", "s1", "s2"})
+
+
+def test_all_ready_sessions_filters_match_pick_session():
+    """all_ready_sessions and pick_session share the same eligibility filter
+    so the race entry point and the dispatch path agree on what 'ready' means.
+    Excludes: state != 'ready', no tab, in_flight, in_queue, no cookies.
+    """
+    from src.stack.multi_session_pool import MultiSessionPool, SessionEntry
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    pool = MultiSessionPool.__new__(MultiSessionPool)
+    # One of each disqualifier + one fully eligible session
+    pool.sessions = [
+        SessionEntry(id="ok", proxy_url="x", proxy_ip="1", local_port=25000,
+                     profile_dir=Path("/t/ok"), state="ready",
+                     cookies={"_px3": "a"}, tab=MagicMock()),
+        SessionEntry(id="starting", proxy_url="x", proxy_ip="2", local_port=25001,
+                     profile_dir=Path("/t/s"), state="starting",
+                     cookies={"_px3": "b"}, tab=MagicMock()),
+        SessionEntry(id="no_tab", proxy_url="x", proxy_ip="3", local_port=25002,
+                     profile_dir=Path("/t/n"), state="ready",
+                     cookies={"_px3": "c"}, tab=None),
+        SessionEntry(id="in_flight", proxy_url="x", proxy_ip="4", local_port=25003,
+                     profile_dir=Path("/t/f"), state="ready",
+                     cookies={"_px3": "d"}, tab=MagicMock(), in_flight=True),
+        SessionEntry(id="in_queue", proxy_url="x", proxy_ip="5", local_port=25004,
+                     profile_dir=Path("/t/q"), state="ready",
+                     cookies={"_px3": "e"}, tab=MagicMock(), in_queue=True),
+        SessionEntry(id="no_cookies", proxy_url="x", proxy_ip="6", local_port=25005,
+                     profile_dir=Path("/t/c"), state="ready",
+                     cookies={}, tab=MagicMock()),
+    ]
+    ready = pool.all_ready_sessions()
+    _check("all_ready_sessions returns only the fully-eligible session",
+           [s.id for s in ready] == ["ok"])
+
+    # And it agrees with pick_session — repeated picks only return 'ok'
+    picks = set()
+    for _ in range(20):
+        p = pool.pick_session()
+        if p is not None:
+            picks.add(p.id)
+    _check("all_ready_sessions filter matches pick_session filter",
+           picks == {"ok"})
+
+
 # ── Test 11: Per-IP RPS ceiling validation (warn but don't crash) ────────
 
 def test_checker_high_rps_warns():
@@ -511,6 +583,11 @@ def main():
          test_pick_session_excludes_in_queue),
         ("in_queue: SessionEntry defaults to False",
          test_session_entry_defaults_in_queue_false),
+        # multi-session queue race API
+        ("queue race: all_ready_sessions returns eligible sessions",
+         test_all_ready_sessions_returns_all_eligible),
+        ("queue race: all_ready_sessions filter matches pick_session",
+         test_all_ready_sessions_filters_match_pick_session),
         ("High-RPS warns (no crash)", test_checker_high_rps_warns),
     ]
     print("=" * 70)
