@@ -85,10 +85,27 @@ run_suite() {
     t0=$(date +%s)
     echo "${BOLD}── $name ──${RESET}"
 
-    # Capture output; pull the "Results: X passed, Y failed" line
-    local output
-    output=$("$PYTHON" "$suite" 2>&1)
+    # Capture output via a temp file rather than `output=$(...)` — Walmart
+    # E2E suites spawn Chrome subprocesses that inherit the python child's
+    # stdout. If we capture via command substitution, the bash subshell
+    # blocks on EOF until every inheriting child closes its stdout. Chrome
+    # cleanup can take many minutes (the dashboard's atexit handlers, the
+    # zendriver browser-process shutdown, the user-data-dir lock release),
+    # so a suite that finished in seconds appears to "run" for minutes
+    # while we wait for orphan Chrome FDs to drain. Symptom observed
+    # 2026-05-20: test_walmart_e2e_purchase_with_queue.py reported 2615s
+    # in the sweep vs 70s standalone.
+    #
+    # Temp-file capture decouples our wait from Chrome's stdout handle —
+    # python exits and we read the file. Orphans still exist but no
+    # longer block the runner.
+    local tmp
+    tmp="$(mktemp 2>/dev/null || echo "/tmp/walmart_test_$$_$name.out")"
+    "$PYTHON" "$suite" >"$tmp" 2>&1
     local rc=$?
+    local output
+    output=$(cat "$tmp")
+    rm -f "$tmp"
 
     # Parse the final results line
     local results_line
