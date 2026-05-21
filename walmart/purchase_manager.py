@@ -63,7 +63,16 @@ class WalmartPurchaseManager:
     def __init__(
         self,
         status_callback: Optional[Callable[[str], None]] = None,
+        external_stock_monitor: bool = False,
     ):
+        # external_stock_monitor=True means an outside detector (e.g. the
+        # resilient stack's ResilientChecker) will pump signals directly into
+        # self._on_in_stock_signal. The internal WalmartStockMonitor is still
+        # constructed (other code paths read its state queries) but its
+        # background thread is never started, and the browser-intercepted
+        # GraphQL feed is not wired to it.
+        self._external_stock_monitor = external_stock_monitor
+
         # Activity log must exist before _status_cb is wired — callbacks may fire during init
         self._activity_log: list[dict] = []
         self._activity_lock = threading.Lock()
@@ -86,9 +95,10 @@ class WalmartPurchaseManager:
             on_stock_change=self._on_stock_change,
             status_callback=self._status_cb,
         )
-        # Feed browser-intercepted GraphQL responses into the monitor.
-        # This is the primary stock check path — real Chrome TLS, no proxy blocks.
-        self._session.set_stock_intercept_callback(self._monitor.on_browser_graphql)
+        if not self._external_stock_monitor:
+            # Feed browser-intercepted GraphQL responses into the monitor.
+            # This is the primary stock check path — real Chrome TLS, no proxy blocks.
+            self._session.set_stock_intercept_callback(self._monitor.on_browser_graphql)
 
         # Optional callback for dashboard: cb(item_id, in_stock, price)
         self._stock_update_callback: Optional[Callable] = None
@@ -193,9 +203,12 @@ class WalmartPurchaseManager:
         # Warmup is complete — purchases are now allowed
         self._warmup_done = True
 
-        # Start stock monitor
-        self._monitor.start()
-        self._status_cb("[MANAGER] Walmart bot running — monitoring stock")
+        # Start stock monitor (unless an external detector is driving signals)
+        if not self._external_stock_monitor:
+            self._monitor.start()
+            self._status_cb("[MANAGER] Walmart bot running — monitoring stock")
+        else:
+            self._status_cb("[MANAGER] Walmart bot ready — awaiting external in-stock signals")
         logger.debug("[MANAGER] Walmart bot started, monitoring %d product(s)", len(products))
 
     async def stop(self):
@@ -210,7 +223,8 @@ class WalmartPurchaseManager:
         if not self._running:
             return
         self._running = False
-        self._monitor.stop()
+        if not self._external_stock_monitor:
+            self._monitor.stop()
         self._session.stop_harvester()
         await self._session.stop()
         self._status_cb("[MANAGER] Walmart bot stopped")
@@ -674,7 +688,13 @@ class WalmartPurchaseManager:
         Uses the monitor's public is_healthy() rather than reaching into
         `_running_lock` + `_running` private attrs — those are an
         implementation detail and could be renamed.
+
+        When external_stock_monitor=True the internal monitor is intentionally
+        idle, so report healthy unconditionally — otherwise the per-cycle
+        "monitor is dead — attempting restart" branch would fire forever.
         """
+        if self._external_stock_monitor:
+            return True
         return self._monitor.is_healthy()
 
     # ------------------------------------------------------------------

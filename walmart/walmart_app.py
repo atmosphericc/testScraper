@@ -32,6 +32,10 @@ from flask import Flask, Response, jsonify, request, stream_with_context
 from walmart.config import get_config, save_config, get_enabled_products
 from walmart.purchase_manager import WalmartPurchaseManager
 
+# Resilient stack imports are lazy — only loaded when WALMART_USE_RESILIENT=1.
+# Importing them eagerly would pull `src.stack.*` and adapter machinery into
+# the default single-Chrome path for no benefit.
+
 # Setup logging with both console and file output
 log_dir = Path(__file__).parent.parent / "logs"
 log_dir.mkdir(exist_ok=True)
@@ -86,6 +90,7 @@ app = Flask(__name__)
 
 _manager: WalmartPurchaseManager = None
 _manager_loop: asyncio.AbstractEventLoop = None
+_resilient_checker = None  # ResilientChecker | None — set when WALMART_USE_RESILIENT=1
 _test_mode = False  # default to LIVE
 
 # Per-client SSE queues
@@ -132,8 +137,14 @@ def _stock_update_callback(item_id: str, in_stock: bool, price):
 # ---------------------------------------------------------------------------
 
 def _start_manager():
-    """Launch the WalmartPurchaseManager in a background thread."""
-    global _manager, _manager_loop
+    """Launch the WalmartPurchaseManager in a background thread.
+
+    `WALMART_USE_RESILIENT=1` swaps the manager's internal single-Chrome
+    stock monitor for the multi-session ResilientChecker (Phase 2 cutover).
+    The manager still owns login, warmup, session, purchase, and circuit-
+    breaker; only the stock-detection layer is replaced.
+    """
+    global _manager, _manager_loop, _resilient_checker
 
     email = os.environ.get("WALMART_EMAIL", "")
     password = os.environ.get("WALMART_PASSWORD", "")
@@ -144,24 +155,84 @@ def _start_manager():
             "but purchases will fail. Set env vars and restart."
         )
 
-    _manager = WalmartPurchaseManager(status_callback=_status_callback)
+    use_resilient = os.environ.get("WALMART_USE_RESILIENT", "").strip() in ("1", "true", "yes")
+
+    _manager = WalmartPurchaseManager(
+        status_callback=_status_callback,
+        external_stock_monitor=use_resilient,
+    )
     _manager.set_stock_update_callback(_stock_update_callback)
     _manager_loop = asyncio.new_event_loop()
 
     def _run():
         asyncio.set_event_loop(_manager_loop)
         try:
-            _manager_loop.run_until_complete(
-                _manager.start()
-            )
+            _manager_loop.run_until_complete(_manager.start())
         except Exception:
             logger.exception("[APP] Manager start() failed — bot will not run")
             return
+
+        if use_resilient and _manager._login_ok:
+            # Login + warmup completed inside _manager.start(). Now bring up
+            # the resilient checker on the same loop and bridge its
+            # ItemStatus signals into the manager's purchase pipeline.
+            try:
+                _manager_loop.run_until_complete(_start_resilient_checker())
+                logger.info("[APP] Resilient stock checker started — single-Chrome monitor disabled")
+            except Exception:
+                logger.exception("[APP] Resilient checker start() failed — bot has no monitor")
+                return
+
         _manager_loop.run_forever()
 
     t = threading.Thread(target=_run, daemon=True, name="WalmartManagerThread")
     t.start()
-    logger.info("[APP] Walmart purchase manager started in background")
+    mode = "resilient stack" if use_resilient else "single Chrome"
+    logger.info("[APP] Walmart purchase manager started in background (%s)", mode)
+
+
+async def _start_resilient_checker():
+    """Build + start the resilient stack and bridge its on_in_stock signal
+    into the existing manager's purchase pipeline.
+
+    Runs on _manager_loop so the checker, manager, browser session, and
+    purchase coroutines all share one loop — same constraint as the
+    single-Chrome path.
+    """
+    global _resilient_checker
+
+    from walmart.walmart_stock_resilient import build_walmart_checker, DEFAULT_RPS
+
+    items = [p["item_id"] for p in get_enabled_products()]
+    if not items:
+        logger.warning("[APP] No enabled items — resilient checker will idle")
+        items = ["320424995"]  # throwaway notebook, matches walmart_stock_resilient fallback
+
+    rps = float(os.environ.get("WALMART_RESILIENT_RPS", DEFAULT_RPS))
+    num_str = os.environ.get("WALMART_RESILIENT_NUM_CHROMES")
+    num_chromes = int(num_str) if num_str else None
+    first_port = int(os.environ.get("WALMART_RESILIENT_FIRST_PORT", 25000))
+
+    def _bridge_in_stock(status):
+        # ItemStatus → manager._on_in_stock_signal signature.
+        # ItemStatus has no offer_id/order_limit fields; the manager already
+        # handles None for both. Title falls back to item_id if missing.
+        _manager._on_in_stock_signal(
+            item_id=status.item_id,
+            offer_id=None,
+            name=status.title or status.item_id,
+            price=status.price,
+            order_limit=None,
+        )
+
+    _resilient_checker = build_walmart_checker(
+        items=items,
+        on_in_stock=_bridge_in_stock,
+        target_rps=rps,
+        num_chromes=num_chromes,
+        first_local_port=first_port,
+    )
+    await _resilient_checker.start()
 
 
 # ---------------------------------------------------------------------------
