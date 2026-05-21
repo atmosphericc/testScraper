@@ -887,6 +887,24 @@ def _graceful_shutdown(signum=None, frame=None):
     sig_name = signal.Signals(signum).name if signum is not None else "shutdown"
     logger.info("[APP] Received %s — shutting down gracefully (5s budget)", sig_name)
 
+    # Stop the resilient checker BEFORE the manager so in-flight pool tasks
+    # don't try to call _on_in_stock_signal on a halfway-torn-down manager.
+    # Resilient stack owns N persistent Chromes + local forwarders + watchdog;
+    # without explicit stop the SIGINT exits before those release, leaking
+    # Chrome processes and the BD proxy state file.
+    if (_resilient_checker is not None and _manager_loop is not None
+            and _manager_loop.is_running()):
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                _resilient_checker.stop(), _manager_loop)
+            try:
+                fut.result(timeout=5.0)
+                logger.info("[APP] Resilient checker stopped cleanly")
+            except Exception as e:
+                logger.warning("[APP] Resilient checker stop did not complete in 5s: %s", e)
+        except Exception as e:
+            logger.warning("[APP] Could not schedule resilient checker stop: %s", e)
+
     if _manager is not None and _manager_loop is not None and _manager_loop.is_running():
         try:
             fut = asyncio.run_coroutine_threadsafe(_manager.stop(), _manager_loop)
