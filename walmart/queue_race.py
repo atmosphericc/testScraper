@@ -44,6 +44,8 @@ The signature is the contract future work will fulfil.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import logging
 from typing import TYPE_CHECKING, Optional
 
@@ -57,6 +59,12 @@ logger = logging.getLogger(__name__)
 
 
 QUEUED_PREFIX = "QUEUED:"
+
+# Cap on the whole race. If no session reaches state=VALID within this
+# window, the drop is effectively gone and we fall through to the single-
+# session path so the manager at least gets a chance. 30 min matches the
+# upper bound for typical Pokemon-Wednesday queue waits (per readiness doc).
+DEFAULT_RACE_TIMEOUT_S = 1800.0
 
 
 class PoolSessionShim:
@@ -126,39 +134,14 @@ def is_queued_status(status: "ItemStatus") -> bool:
     return av.startswith(QUEUED_PREFIX)
 
 
-def dispatch_queue_race(
-    checker: "ResilientChecker",
+def _fallback_to_manager(
     manager: "WalmartPurchaseManager",
     status: "ItemStatus",
 ) -> None:
-    """Entry point for the multi-session queue race.
-
-    Called from the resilient stack's on_in_stock bridge whenever
-    `is_queued_status(status)` is True. The intent is to dispatch a
-    queue-then-purchase task on every session that
-    `pool.all_ready_sessions()` returns; the first session to reach
-    `state=valid` wins and the rest are cancelled.
-
-    Current behavior: log the race intent (session count, item) and
-    forward the signal to the existing single-session purchase pipeline
-    via `manager._on_in_stock_signal`. Reasons documented in the module
-    docstring.
-
-    Idempotent and safe to call multiple times — the underlying
-    `manager._on_in_stock_signal` already guards against re-entering an
-    in-progress purchase for the same item.
+    """Single-session path — same shape as the non-queued bridge call.
+    Used when no eligible pool sessions exist, the manager loop is
+    unavailable, or the race times out without admission.
     """
-    pool = checker.session_pool
-    eligible = pool.all_ready_sessions() if pool is not None else []
-    n_eligible = len(eligible)
-
-    logger.warning(
-        "[QUEUE_RACE] %s entered queue (%s) — %d session(s) eligible to race; "
-        "falling through to single-session purchase (race not yet implemented)",
-        status.item_id, status.availability_status, n_eligible,
-    )
-
-    # Single-session fallback — same as the non-queued path today.
     manager._on_in_stock_signal(
         item_id=status.item_id,
         offer_id=None,
@@ -166,3 +149,194 @@ def dispatch_queue_race(
         price=status.price,
         order_limit=None,
     )
+
+
+def _pdp_url_for(item_id: str) -> str:
+    """Canonical Walmart product-detail-page URL. The walmart adapter sets
+    availability_status='QUEUED:<source>' where <source> is just a label
+    ('redirect_url' / 'body_signature') — not the redirect URL itself —
+    so we reconstruct the PDP from item_id and let Walmart re-engage the
+    queue interstitial on navigation.
+    """
+    return f"https://www.walmart.com/ip/{item_id}"
+
+
+async def _race_one_session(
+    entry: "SessionEntry",
+    item_url: str,
+    admitted_event: asyncio.Event,
+    winner_holder: dict,
+) -> None:
+    """Drive ONE pool session through the queue. On `state=VALID` claim
+    the win (set the shared event + holder) if no other session beat us.
+    Returns None on any non-VALID terminal or cancellation.
+
+    All exceptions are swallowed (logged) — one session crashing must not
+    take down the whole race.
+    """
+    from walmart.queue_handler import QueueHandler, QueueState
+
+    def _log(msg):
+        logger.info("[QUEUE_RACE %s] %s", entry.id, msg)
+
+    try:
+        await entry.tab.get(item_url)
+        handler = QueueHandler(entry.tab, _log, session=entry)
+        ticket = await handler.detect()
+        if ticket is None:
+            _log("no queue interstitial detected after PDP nav")
+            return None
+
+        final = await handler.detect_and_wait()
+        if final is not None and final.state == QueueState.VALID:
+            # First-to-claim wins. asyncio.Event.set() is idempotent but
+            # we still gate the winner_holder write so the "winner" is
+            # deterministic even if two sessions admit in the same tick.
+            if not admitted_event.is_set():
+                winner_holder["entry"] = entry
+                admitted_event.set()
+                _log(f"ADMITTED (winner): {final}")
+            else:
+                _log(f"admitted but another session won first: {final}")
+            return None
+        _log(f"non-VALID terminal: {final}")
+        return None
+    except asyncio.CancelledError:
+        _log("cancelled (another session won, or race timed out)")
+        raise
+    except Exception as e:
+        logger.warning("[QUEUE_RACE %s] race_one error: %s", entry.id, e)
+        return None
+
+
+async def _run_race(
+    checker: "ResilientChecker",
+    manager: "WalmartPurchaseManager",
+    status: "ItemStatus",
+) -> None:
+    """Async race coordinator — runs on the manager's event loop."""
+    pool = checker.session_pool
+    eligible = pool.all_ready_sessions() if pool is not None else []
+    if not eligible:
+        logger.warning(
+            "[QUEUE_RACE] %s queued but no eligible pool sessions — "
+            "falling through to single-session purchase",
+            status.item_id,
+        )
+        _fallback_to_manager(manager, status)
+        return
+
+    item_id = status.item_id
+    item_url = _pdp_url_for(item_id)
+    timeout_s = float(os.environ.get(
+        "WALMART_QUEUE_RACE_TIMEOUT_S", str(DEFAULT_RACE_TIMEOUT_S)))
+
+    # Mark every racer in_queue=True BEFORE the pool's keepalive loop's
+    # next pass — otherwise a heartbeat could navigate the tab off /qp
+    # and forfeit the ticket before our race-one task even runs.
+    for s in eligible:
+        s.in_queue = True
+
+    admitted_event = asyncio.Event()
+    winner_holder: dict = {"entry": None}
+
+    logger.warning(
+        "[QUEUE_RACE] %s entered queue — racing %d session(s) "
+        "(timeout=%.0fs)", item_id, len(eligible), timeout_s,
+    )
+
+    tasks = [
+        asyncio.create_task(
+            _race_one_session(s, item_url, admitted_event, winner_holder),
+            name=f"qrace_{s.id}",
+        )
+        for s in eligible
+    ]
+
+    winner: Optional["SessionEntry"] = None
+    try:
+        await asyncio.wait_for(admitted_event.wait(), timeout=timeout_s)
+        winner = winner_holder["entry"]
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[QUEUE_RACE] %s — no admission within %.0fs; cancelling "
+            "racers and falling through to manager", item_id, timeout_s,
+        )
+
+    # Cancel all racer tasks. The winning task already finished setting
+    # admitted_event before we got here, but Python is happy to cancel a
+    # completed task (it's a no-op). Cancelling losers releases them
+    # from their detect_and_wait so the pool can recover.
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+
+    # Release in_queue on losers immediately so the keepalive can resume
+    # rotating them. Winner stays in_queue=True until purchase finishes —
+    # the executor's _navigate moves it off /qp but in_queue protects
+    # the tab during the brief race-end → purchase-start window.
+    for s in eligible:
+        if s is not winner:
+            s.in_queue = False
+
+    if winner is None:
+        _fallback_to_manager(manager, status)
+        return
+
+    # Drive purchase on the winning session's tab via PoolSessionShim.
+    # PoolSessionShim adapts SessionEntry to the WalmartSessionManager
+    # surface that WalmartPurchaseExecutor expects.
+    from walmart.purchase_executor import WalmartPurchaseExecutor
+
+    def _purchase_log(msg):
+        logger.info("[QUEUE_RACE PURCHASE %s] %s", winner.id, msg)
+
+    shim = PoolSessionShim(winner)
+    executor = WalmartPurchaseExecutor(
+        page=winner.tab,
+        session=shim,
+        status_callback=_purchase_log,
+    )
+
+    try:
+        logger.warning(
+            "[QUEUE_RACE] %s — winner=%s — dispatching purchase",
+            item_id, winner.id,
+        )
+        result = await executor.purchase(item_id=item_id, item_url=item_url)
+        logger.warning(
+            "[QUEUE_RACE %s] purchase result: success=%s order=%s error=%s",
+            winner.id, result.success, result.order_id, result.error,
+        )
+    except Exception as e:
+        logger.exception("[QUEUE_RACE %s] purchase raised: %s", winner.id, e)
+    finally:
+        # Winner returns to pool's idle rotation. Caller hasn't cleaned
+        # up cart/checkout state; that's the executor's concern.
+        winner.in_queue = False
+
+
+def dispatch_queue_race(
+    checker: "ResilientChecker",
+    manager: "WalmartPurchaseManager",
+    status: "ItemStatus",
+) -> None:
+    """Sync entry from the resilient checker's on_in_stock bridge.
+
+    Schedules the async race on the manager's event loop (where the
+    pool sessions' tabs live and the executor must run). Falls back to
+    the single-session manager path when the loop isn't available.
+    """
+    loop = getattr(manager, "_loop", None)
+    if loop is None or not loop.is_running():
+        logger.warning(
+            "[QUEUE_RACE] manager loop unavailable — falling through "
+            "to single-session purchase",
+        )
+        _fallback_to_manager(manager, status)
+        return
+
+    # Fire-and-forget: the bridge thread (resilient checker callback
+    # dispatcher) must not block waiting on the race. The race owns its
+    # own lifecycle and logs progress.
+    asyncio.run_coroutine_threadsafe(_run_race(checker, manager, status), loop)

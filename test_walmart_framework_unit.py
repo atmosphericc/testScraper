@@ -518,10 +518,10 @@ def test_is_queued_status_detects_prefix():
            not is_queued_status(_s("")))
 
 
-def test_dispatch_queue_race_falls_through_to_manager():
-    """dispatch_queue_race today is a scaffold — logs the race intent and
-    forwards to manager._on_in_stock_signal. Verifies the contract: caller
-    can swap behavior in later without re-routing the bridge.
+def test_dispatch_queue_race_falls_back_when_loop_unavailable():
+    """When manager._loop is None or not running, dispatch_queue_race
+    can't schedule the async race — falls through to the single-session
+    path so the bridge doesn't silently drop the signal.
     """
     from walmart.queue_race import dispatch_queue_race
     from unittest.mock import Mock, MagicMock
@@ -530,28 +530,135 @@ def test_dispatch_queue_race_falls_through_to_manager():
     pool.all_ready_sessions = MagicMock(return_value=[])
     checker = MagicMock(session_pool=pool)
     manager = MagicMock()
+    manager._loop = None  # Force the no-loop fallback branch
     status = Mock(
-        item_id="99999",
-        title="Test SKU",
-        price=29.97,
+        item_id="99999", title="Test SKU", price=29.97,
         availability_status="QUEUED:redirect_url",
     )
 
     dispatch_queue_race(checker, manager, status)
 
-    _check("dispatch_queue_race forwards to manager._on_in_stock_signal",
+    _check("loop=None → manager._on_in_stock_signal called (fallback)",
            manager._on_in_stock_signal.called)
     kwargs = manager._on_in_stock_signal.call_args.kwargs
-    _check("dispatch_queue_race passes item_id",
-           kwargs.get("item_id") == "99999")
-    _check("dispatch_queue_race passes title as name",
-           kwargs.get("name") == "Test SKU")
-    _check("dispatch_queue_race passes price",
-           kwargs.get("price") == 29.97)
-    _check("dispatch_queue_race passes offer_id=None",
-           kwargs.get("offer_id") is None)
-    _check("dispatch_queue_race passes order_limit=None",
-           kwargs.get("order_limit") is None)
+    _check("fallback passes item_id", kwargs.get("item_id") == "99999")
+    _check("fallback passes title as name", kwargs.get("name") == "Test SKU")
+    _check("fallback passes price", kwargs.get("price") == 29.97)
+    _check("fallback passes offer_id=None", kwargs.get("offer_id") is None)
+    _check("fallback passes order_limit=None", kwargs.get("order_limit") is None)
+
+
+def test_dispatch_queue_race_schedules_on_loop_when_available():
+    """When manager._loop is running, dispatch_queue_race schedules the
+    async _run_race coroutine on it via run_coroutine_threadsafe — does
+    NOT call _on_in_stock_signal synchronously (the race's own code path
+    decides whether to fall back or drive a purchase).
+    """
+    from walmart import queue_race as qr
+    from unittest.mock import Mock, MagicMock, patch
+
+    loop = MagicMock()
+    loop.is_running.return_value = True
+
+    manager = MagicMock()
+    manager._loop = loop
+
+    pool = MagicMock()
+    pool.all_ready_sessions = MagicMock(return_value=[])
+    checker = MagicMock(session_pool=pool)
+
+    status = Mock(
+        item_id="44444", title="X", price=1.0,
+        availability_status="QUEUED:redirect_url",
+    )
+
+    with patch.object(qr.asyncio, "run_coroutine_threadsafe") as mock_sched:
+        qr.dispatch_queue_race(checker, manager, status)
+
+    _check("loop running → schedules _run_race on manager loop",
+           mock_sched.called)
+    args, _ = mock_sched.call_args
+    _check("scheduled on the manager's loop", args[1] is loop)
+    _check("manager._on_in_stock_signal NOT called synchronously",
+           not manager._on_in_stock_signal.called)
+
+
+def test_run_race_falls_back_when_no_eligible_sessions():
+    """When pool.all_ready_sessions() is empty, _run_race calls the
+    single-session fallback so the manager still gets a chance — the
+    bridge can't silently drop the signal.
+    """
+    import asyncio
+    from walmart import queue_race as qr
+    from unittest.mock import Mock, MagicMock
+
+    pool = MagicMock()
+    pool.all_ready_sessions = MagicMock(return_value=[])
+    checker = MagicMock(session_pool=pool)
+    manager = MagicMock()
+    status = Mock(
+        item_id="33333", title="Y", price=2.0,
+        availability_status="QUEUED:redirect_url",
+    )
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(qr._run_race(checker, manager, status))
+    finally:
+        loop.close()
+
+    _check("no eligible sessions → manager._on_in_stock_signal called",
+           manager._on_in_stock_signal.called)
+    _check("no-eligible fallback passes item_id correctly",
+           manager._on_in_stock_signal.call_args.kwargs.get("item_id") == "33333")
+
+
+def test_run_race_marks_then_clears_in_queue_on_timeout():
+    """Before spawning racer tasks, _run_race sets in_queue=True on every
+    eligible session so the pool's keepalive heartbeat won't navigate the
+    tab off /qp during the race. On timeout with no admission, in_queue
+    is cleared on every session so the pool can resume monitoring.
+    """
+    import asyncio
+    from walmart import queue_race as qr
+    from unittest.mock import MagicMock, AsyncMock, Mock
+
+    # Stub sessions whose tab.get sleeps long enough that no admission
+    # ever happens within our tight race timeout
+    sessions = []
+    for i in range(3):
+        s = Mock()
+        s.id = f"s{i}"
+        s.in_queue = False
+        s.tab = MagicMock()
+        s.tab.get = AsyncMock(side_effect=lambda *_a, **_kw: asyncio.sleep(10))
+        sessions.append(s)
+
+    pool = MagicMock()
+    pool.all_ready_sessions = MagicMock(return_value=sessions)
+    checker = MagicMock(session_pool=pool)
+    manager = MagicMock()
+    status = Mock(
+        item_id="77777", title="Z", price=3.0,
+        availability_status="QUEUED:redirect_url",
+    )
+
+    import os as _os
+    _os.environ["WALMART_QUEUE_RACE_TIMEOUT_S"] = "0.05"
+    try:
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(qr._run_race(checker, manager, status))
+        finally:
+            loop.close()
+    finally:
+        del _os.environ["WALMART_QUEUE_RACE_TIMEOUT_S"]
+
+    for s in sessions:
+        _check(f"{s.id} in_queue cleared after race timeout",
+               s.in_queue is False)
+    _check("no admission → manager fallback fires after race timeout",
+           manager._on_in_stock_signal.called)
 
 
 def test_pool_session_shim_exposes_tab_as_page():
@@ -638,9 +745,7 @@ def test_pool_session_shim_handle_blocked_returns_false_on_reload_error():
 
 
 def test_dispatch_queue_race_handles_missing_title():
-    """When ItemStatus.title is None, name falls back to item_id so the
-    manager's activity log still has something readable.
-    """
+    """Fallback path: name falls back to item_id when title is None."""
     from walmart.queue_race import dispatch_queue_race
     from unittest.mock import Mock, MagicMock
 
@@ -648,16 +753,15 @@ def test_dispatch_queue_race_handles_missing_title():
     pool.all_ready_sessions = MagicMock(return_value=[])
     checker = MagicMock(session_pool=pool)
     manager = MagicMock()
+    manager._loop = None
     status = Mock(
-        item_id="55555",
-        title=None,
-        price=None,
+        item_id="55555", title=None, price=None,
         availability_status="QUEUED:redirect_url",
     )
 
     dispatch_queue_race(checker, manager, status)
     kwargs = manager._on_in_stock_signal.call_args.kwargs
-    _check("dispatch_queue_race name falls back to item_id when title None",
+    _check("name falls back to item_id when title None",
            kwargs.get("name") == "55555")
 
 
@@ -757,8 +861,14 @@ def main():
          test_all_ready_sessions_filters_match_pick_session),
         ("queue race: is_queued_status detects QUEUED prefix",
          test_is_queued_status_detects_prefix),
-        ("queue race: dispatch falls through to manager (today)",
-         test_dispatch_queue_race_falls_through_to_manager),
+        ("queue race: dispatch falls back when loop unavailable",
+         test_dispatch_queue_race_falls_back_when_loop_unavailable),
+        ("queue race: dispatch schedules on loop when available",
+         test_dispatch_queue_race_schedules_on_loop_when_available),
+        ("queue race: _run_race falls back with no eligible sessions",
+         test_run_race_falls_back_when_no_eligible_sessions),
+        ("queue race: _run_race marks then clears in_queue on timeout",
+         test_run_race_marks_then_clears_in_queue_on_timeout),
         ("queue race: dispatch handles missing title",
          test_dispatch_queue_race_handles_missing_title),
         # PoolSessionShim — adapter for executor on pool sessions
