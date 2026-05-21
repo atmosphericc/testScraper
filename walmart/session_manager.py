@@ -23,6 +23,18 @@ from typing import Optional, Callable
 
 import re as _re
 
+# Chrome 148+ removed `privateNetworkRequestPolicy` from the CDP
+# ClientSecurityState payload; older zendriver builds (the pin in
+# requirements.txt) raise KeyError on every Network.requestWillBeSentExtraInfo
+# event, flooding logs and dropping the events themselves so downstream
+# listeners (queue handler, stock monitor) silently miss critical signals.
+# The runtime monkey-patch in src/zendriver_compat tolerates the missing key.
+# Must load BEFORE any Chrome is launched in this process — every Walmart
+# entry point that touches WalmartSessionManager gets the patch via this
+# import. Listed earliest in the import order so even error paths during
+# walmart/__init__ don't beat it.
+import src.zendriver_compat  # noqa: F401
+
 from .config import (
     HEADLESS,
     BROWSER_CHANNEL,
