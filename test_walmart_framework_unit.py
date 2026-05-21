@@ -494,6 +494,90 @@ def test_all_ready_sessions_returns_all_eligible():
            {s.id for s in ready} == {"s0", "s1", "s2"})
 
 
+def test_is_queued_status_detects_prefix():
+    """is_queued_status flags only ItemStatus with availability_status
+    starting with 'QUEUED:' — that's the marker the walmart adapter emits
+    on /qp redirect or ticket-API body signature.
+    """
+    from walmart.queue_race import is_queued_status
+    from unittest.mock import Mock
+
+    def _s(av): return Mock(availability_status=av)
+
+    _check("queue_race: QUEUED:redirect_url is queued",
+           is_queued_status(_s("QUEUED:redirect_url")))
+    _check("queue_race: QUEUED:body_signature is queued",
+           is_queued_status(_s("QUEUED:body_signature")))
+    _check("queue_race: IN_STOCK is NOT queued",
+           not is_queued_status(_s("IN_STOCK")))
+    _check("queue_race: OUT_OF_STOCK is NOT queued",
+           not is_queued_status(_s("OUT_OF_STOCK")))
+    _check("queue_race: None status is NOT queued",
+           not is_queued_status(_s(None)))
+    _check("queue_race: empty string is NOT queued",
+           not is_queued_status(_s("")))
+
+
+def test_dispatch_queue_race_falls_through_to_manager():
+    """dispatch_queue_race today is a scaffold — logs the race intent and
+    forwards to manager._on_in_stock_signal. Verifies the contract: caller
+    can swap behavior in later without re-routing the bridge.
+    """
+    from walmart.queue_race import dispatch_queue_race
+    from unittest.mock import Mock, MagicMock
+
+    pool = MagicMock()
+    pool.all_ready_sessions = MagicMock(return_value=[])
+    checker = MagicMock(session_pool=pool)
+    manager = MagicMock()
+    status = Mock(
+        item_id="99999",
+        title="Test SKU",
+        price=29.97,
+        availability_status="QUEUED:redirect_url",
+    )
+
+    dispatch_queue_race(checker, manager, status)
+
+    _check("dispatch_queue_race forwards to manager._on_in_stock_signal",
+           manager._on_in_stock_signal.called)
+    kwargs = manager._on_in_stock_signal.call_args.kwargs
+    _check("dispatch_queue_race passes item_id",
+           kwargs.get("item_id") == "99999")
+    _check("dispatch_queue_race passes title as name",
+           kwargs.get("name") == "Test SKU")
+    _check("dispatch_queue_race passes price",
+           kwargs.get("price") == 29.97)
+    _check("dispatch_queue_race passes offer_id=None",
+           kwargs.get("offer_id") is None)
+    _check("dispatch_queue_race passes order_limit=None",
+           kwargs.get("order_limit") is None)
+
+
+def test_dispatch_queue_race_handles_missing_title():
+    """When ItemStatus.title is None, name falls back to item_id so the
+    manager's activity log still has something readable.
+    """
+    from walmart.queue_race import dispatch_queue_race
+    from unittest.mock import Mock, MagicMock
+
+    pool = MagicMock()
+    pool.all_ready_sessions = MagicMock(return_value=[])
+    checker = MagicMock(session_pool=pool)
+    manager = MagicMock()
+    status = Mock(
+        item_id="55555",
+        title=None,
+        price=None,
+        availability_status="QUEUED:redirect_url",
+    )
+
+    dispatch_queue_race(checker, manager, status)
+    kwargs = manager._on_in_stock_signal.call_args.kwargs
+    _check("dispatch_queue_race name falls back to item_id when title None",
+           kwargs.get("name") == "55555")
+
+
 def test_all_ready_sessions_filters_match_pick_session():
     """all_ready_sessions and pick_session share the same eligibility filter
     so the race entry point and the dispatch path agree on what 'ready' means.
@@ -588,6 +672,12 @@ def main():
          test_all_ready_sessions_returns_all_eligible),
         ("queue race: all_ready_sessions filter matches pick_session",
          test_all_ready_sessions_filters_match_pick_session),
+        ("queue race: is_queued_status detects QUEUED prefix",
+         test_is_queued_status_detects_prefix),
+        ("queue race: dispatch falls through to manager (today)",
+         test_dispatch_queue_race_falls_through_to_manager),
+        ("queue race: dispatch handles missing title",
+         test_dispatch_queue_race_handles_missing_title),
         ("High-RPS warns (no crash)", test_checker_high_rps_warns),
     ]
     print("=" * 70)

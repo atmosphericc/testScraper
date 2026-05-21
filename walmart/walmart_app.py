@@ -202,6 +202,7 @@ async def _start_resilient_checker():
     global _resilient_checker
 
     from walmart.walmart_stock_resilient import build_walmart_checker, DEFAULT_RPS
+    from walmart import queue_race
 
     items = [p["item_id"] for p in get_enabled_products()]
     if not items:
@@ -214,6 +215,11 @@ async def _start_resilient_checker():
     first_port = int(os.environ.get("WALMART_RESILIENT_FIRST_PORT", 25000))
 
     def _bridge_in_stock(status):
+        # Route queue events through the multi-session race coordinator;
+        # all other status types follow the single-session path.
+        if queue_race.is_queued_status(status):
+            queue_race.dispatch_queue_race(_resilient_checker, _manager, status)
+            return
         # ItemStatus → manager._on_in_stock_signal signature.
         # ItemStatus has no offer_id/order_limit fields; the manager already
         # handles None for both. Title falls back to item_id if missing.
