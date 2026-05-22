@@ -139,6 +139,14 @@ class ResilientStockChecker:
         self._test_mode_loop = os.environ.get(
             "TEST_MODE", "").strip().lower() in ("1", "true", "yes")
 
+        # Cloaking-alarm verification: when the alarm fires (all-OOS but TCINs
+        # were in stock earlier this run), re-probe the ever-in-stock TCINs
+        # with a cache-busted origin fetch and fire on_in_stock on a real hit.
+        # Default ON — the 2026-05-22 missed-ETB-drop fix. Disable with
+        # RESILIENT_VERIFY_ON_CLOAK=0.
+        self._verify_on_cloak = os.environ.get(
+            "RESILIENT_VERIFY_ON_CLOAK", "1").strip().lower() in ("1", "true", "yes")
+
         # Stats
         self._total_dispatched = 0
         self._total_200 = 0
@@ -334,23 +342,25 @@ class ResilientStockChecker:
         finally:
             self._outstanding -= 1
 
+    def _parse_bulk(self, raw: dict) -> dict:
+        """Run a raw RedSky body through StockMonitor._process_response.
+        Shared by the sweep-ingest path and the cloaking-alarm verify probe."""
+        if self._stock_monitor_parser is None:
+            from src.monitoring.stock_monitor import StockMonitor
+            self._stock_monitor_parser = StockMonitor()
+        try:
+            return self._stock_monitor_parser._process_response(raw, 0)
+        except Exception:
+            logger.exception("[STOCK] _process_response failed")
+            return {}
+
     async def _ingest_bulk_response(self, result: BulkResult):
         """Parse a 200 bulk response through StockMonitor._process_response
         (reuse — already handles the bulk product_summaries shape correctly),
         update per-TCIN state, fire on_in_stock callback on transitions."""
         if not result.raw:
             return
-
-        if self._stock_monitor_parser is None:
-            from src.monitoring.stock_monitor import StockMonitor
-            self._stock_monitor_parser = StockMonitor()
-
-        try:
-            parsed = self._stock_monitor_parser._process_response(
-                result.raw, result.latency_ms)
-        except Exception:
-            logger.exception("[STOCK] _process_response failed")
-            return
+        parsed = self._parse_bulk(result.raw)
 
         in_stock_transitions = []
         async with self._status_lock:
@@ -443,10 +453,64 @@ class ResilientStockChecker:
                     logger.warning(
                         f"[STOCK] CLOAKING ALARM: all {len(statuses)} TCINs reported OOS "
                         f"for {oos_streak} cycles, but {len(self._ever_seen_in_stock)} "
-                        f"of them were in_stock earlier this run — Shape may be cloaking."
+                        f"of them were in_stock earlier this run — verifying via origin fetch."
                     )
+                    if self._verify_on_cloak:
+                        try:
+                            await self._verify_in_stock_candidates()
+                        except Exception:
+                            logger.exception("[STOCK] verify-on-cloak failed")
             else:
                 oos_streak = 0
+
+    async def _verify_in_stock_candidates(self):
+        """Cloaking-alarm response. The sweep path reports all-OOS, but the
+        bulk RedSky endpoint is edge-cached and can serve a stale OUT_OF_STOCK
+        for the cache TTL — masking a live restock (2026-05-22 missed-ETB-drop
+        root cause). Re-probe every ever-in-stock TCIN with a cache-busted
+        origin fetch; on a real hit, fire on_in_stock so the purchase still
+        launches even though the cached sweep path missed it."""
+        if self.dispatcher is None or not self._ever_seen_in_stock:
+            return
+        candidates = sorted(self._ever_seen_in_stock)
+        result = await self.dispatcher.dispatch_verify(candidates)
+        if result is None or result.http_status != 200 or not result.raw:
+            logger.warning(
+                f"[STOCK] VERIFY: origin probe for {candidates} returned no "
+                f"usable data (http={getattr(result, 'http_status', '?')})"
+            )
+            return
+        parsed = self._parse_bulk(result.raw)
+        hits = []
+        async with self._status_lock:
+            for tcin, info in parsed.items():
+                fresh = bool(info.get("in_stock"))
+                avail = info.get("availability_status", "UNKNOWN")
+                logger.warning(f"[STOCK] VERIFY (cache-bust): {tcin} -> "
+                               f"{avail} in_stock={fresh}")
+                s = self._tcin_status.get(tcin)
+                if s is None:
+                    s = TcinStatus(tcin=tcin)
+                    self._tcin_status[tcin] = s
+                if fresh:
+                    was = s.in_stock
+                    s.in_stock = True
+                    s.availability_status = avail
+                    s.last_status_code = 200
+                    s.last_checked_at = time.time()
+                    s.title = info.get("title", s.title)
+                    s.max_qty = int(info.get("max_qty", s.max_qty or 1))
+                    self._ever_seen_in_stock.add(tcin)
+                    if not was:
+                        hits.append(s)
+        for s in hits:
+            logger.warning(f"[STOCK] VERIFY CONFIRMED IN STOCK: {s.tcin} — "
+                           f"sweep path had it OOS (stale cache); firing purchase")
+            if self.on_in_stock:
+                try:
+                    self.on_in_stock(s)
+                except Exception:
+                    logger.exception("[STOCK] on_in_stock (verify) failed")
 
     async def _stats_loop(self):
         """Heartbeat: log pool + dispatch stats every 30s."""
@@ -467,3 +531,16 @@ class ResilientStockChecker:
                 f"sessions={ss.get('ready', 0)}r/{ss.get('crashed', 0)}c/{ss.get('recycling', 0)}rc "
                 f"pool A={ps['active']} P={ps['parked']} B={ps['burned']}"
             )
+            # Per-TCIN visibility for the ever-in-stock set — makes a missed
+            # restock diagnosable (raw availability + read-age) instead of
+            # inferred. Added after the 2026-05-22 audit.
+            now = time.time()
+            async with self._status_lock:
+                watch = [self._tcin_status[t]
+                         for t in sorted(self._ever_seen_in_stock)
+                         if t in self._tcin_status]
+            for s in watch:
+                age = (now - s.last_checked_at) if s.last_checked_at else -1.0
+                logger.info(f"[STOCK WATCH] {s.tcin}: in_stock={s.in_stock} "
+                            f"avail={s.availability_status} "
+                            f"last_clean_read={age:.0f}s ago")

@@ -113,6 +113,18 @@ class TabDispatcher:
         self._next_chunk_idx = (self._next_chunk_idx + 1) % len(self._chunks)
         return await self._fire_bulk_on(s, chunk)
 
+    async def dispatch_verify(self, tcins: list[str]) -> Optional[BulkResult]:
+        """Fire a cache-busted bulk fetch for a small TCIN set through a random
+        ready Chrome. Used by the cloaking-alarm verification path: forces an
+        origin read so a stale edge-cached OUT_OF_STOCK cannot mask a live
+        restock. Returns None if no session is available."""
+        if not tcins:
+            return None
+        s = self.session_pool.pick_session()
+        if s is None:
+            return None
+        return await self._fire_bulk_on(s, list(tcins), cache_bust=True)
+
     # ───────── behavioral mixin: navigate to a PDP, dwell, return ─────────
 
     async def dispatch_behavioral_pdp(self, target_tcin: str) -> Optional[BulkResult]:
@@ -159,7 +171,8 @@ class TabDispatcher:
 
     # ───────── internals ─────────
 
-    async def _fire_bulk_on(self, s: SessionEntry, tcins: list[str]) -> BulkResult:
+    async def _fire_bulk_on(self, s: SessionEntry, tcins: list[str],
+                            cache_bust: bool = False) -> BulkResult:
         async with s.busy_lock:
             if s.tab is None or s.state != "ready":
                 return BulkResult(s.id, s.proxy_ip, 0, 0,
@@ -167,7 +180,7 @@ class TabDispatcher:
             s.in_flight = True
             s.last_request_at = time.time()
             t0 = time.time()
-            js = self._build_bulk_fetch_js(tcins, self.store_id)
+            js = self._build_bulk_fetch_js(tcins, self.store_id, cache_bust)
             try:
                 result = await asyncio.wait_for(
                     s.tab.evaluate(js, await_promise=True, return_by_value=True),
@@ -221,15 +234,25 @@ class TabDispatcher:
                           error=f"unexpected_eval_result:{str(result)[:120]}")
 
     @staticmethod
-    def _build_bulk_fetch_js(tcins: list[str], store_id: str) -> str:
+    def _build_bulk_fetch_js(tcins: list[str], store_id: str,
+                             cache_bust: bool = False) -> str:
         """Inside-tab JS that fires a bulk RedSky fetch, awaits the response,
         and returns {__http_status, __body} (or {__err} on JS exception).
 
         is_bot=false intentionally OMITTED — Shape treats explicit non-bot
         declarations as a bot heuristic (CLAUDE.md 2026-04-25 patch).
+
+        cache_bust=True adds a unique query param + cache:'no-store' so the
+        request is an origin read, not an Akamai/RedSky edge-cache HIT. Edge
+        HITs can serve a stale OUT_OF_STOCK for the cache TTL and mask a live
+        restock — the 2026-05-22 missed-ETB-drop root cause. Used by the
+        cloaking-alarm verification probe.
         """
         key = random.choice(REDSKY_API_KEYS)
         tcins_csv = ",".join(tcins)
+        cb_param = ("url.searchParams.set('_', String(Date.now()) + "
+                    "Math.random().toString(36).slice(2));" if cache_bust else "")
+        cache_opt = "cache: 'no-store'," if cache_bust else ""
         return f"""(async () => {{
             try {{
                 const url = new URL('{REDSKY_BULK}');
@@ -239,7 +262,9 @@ class TabDispatcher:
                 url.searchParams.set('pricing_store_id', '{store_id}');
                 url.searchParams.set('has_pricing_context', 'true');
                 url.searchParams.set('has_promotions', 'true');
+                {cb_param}
                 const resp = await fetch(url.toString(), {{
+                    {cache_opt}
                     credentials: 'include',
                     headers: {{
                         'accept': 'application/json',
