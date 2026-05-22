@@ -5,3 +5,4 @@ DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLi
 
 [2026-05-22 03:40:14] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
 [2026-05-22 03:40:34] [PURCHASE] Purchase failed: 95267143 - lock_timeout
+[2026-05-22 16:13:18] [SYSTEM] Not logged in to Target — monitoring halted to prevent failed purchases

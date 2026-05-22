@@ -1,1 +1,12 @@
 [Fri 05/22/2026  1:09:08.09] launch #1 app.py 
+[Fri 05/22/2026 16:13:10.90] launch #1 app.py 
+[Fri 05/22/2026 16:13:30.15] app.py exited code=1 
+[Fri 05/22/2026 16:13:30.41] launch #2 app.py 
+[Fri 05/22/2026 16:13:30.68] app.py exited code=-1073741510 
+[Fri 05/22/2026 16:13:30.95] launch #3 app.py 
+[Fri 05/22/2026 16:13:31.24] app.py exited code=-1073741510 
+[Fri 05/22/2026 16:13:31.52] launch #4 app.py 
+[Fri 05/22/2026 16:13:31.84] app.py exited code=-1073741510 
+[Fri 05/22/2026 16:13:32.44] launch #5 app.py 
+[Fri 05/22/2026 16:14:52.14] launch #1 app.py 
+[Fri 05/22/2026 18:02:32.55] app.py exited code=1 
