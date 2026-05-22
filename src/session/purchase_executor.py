@@ -970,11 +970,26 @@ class PurchaseExecutor:
             await self._setup_cdp_fetch_interceptor(tab, persistent=False)
             self._main_tab_interceptor_active = True
 
-            # Detect session reuse from a prior confirmation page
+            # Detect session reuse and reset a stale tab. A tab left on
+            # /checkout, /cart or a confirmation page (e.g. after a prior
+            # order — the qty=1 fast path skips PDP nav and would otherwise
+            # fire ATC straight from that stale page) makes carts.target.com
+            # reject the ATC with 401 _ERR_AUTH_DENIED. Re-nav to a clean
+            # origin first. (2026-05-22 attempt-#3 root cause.)
             try:
-                prior_url = tab.url
-                if any(p in prior_url.lower() for p in ['confirmation', 'thank', 'order-confirmation']):
-                    print(f"[SESSION_REUSE] Tab is on prior confirmation page: {prior_url}")
+                prior_url = (tab.url or "")
+                _pl = prior_url.lower()
+                _dirty = any(p in _pl for p in
+                             ('confirmation', 'thank', '/checkout', '/cart'))
+                if _dirty:
+                    print(f"[SESSION_REUSE] Tab on stale post-purchase page "
+                          f"({prior_url}) — re-navigating to homepage")
+                    try:
+                        await asyncio.wait_for(
+                            tab.get("https://www.target.com/"), timeout=12.0)
+                    except Exception as _rn_err:
+                        print(f"[SESSION_REUSE] homepage re-nav failed "
+                              f"({type(_rn_err).__name__}) — continuing anyway")
                 elif prior_url and prior_url not in ('about:blank', ''):
                     print(f"[SESSION_REUSE] Tab starting from: {prior_url}")
             except Exception:
