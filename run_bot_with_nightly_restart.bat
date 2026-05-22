@@ -27,6 +27,11 @@ set "RUNLOG=%LOGDIR%\bot_restart_wrapper.log"
 REM Target production stack (app.py also defaults this, set explicitly anyway).
 set USE_RESILIENT_STACK=1
 
+REM Force REAL-PURCHASE mode. app.py places real orders unless TEST_MODE=true;
+REM pinned to false here so a stray TEST_MODE=true left in the environment
+REM cannot silently turn an unattended live run into a no-op (zero orders).
+set "TEST_MODE=false"
+
 if not exist "%PYTHON%" (
     echo [ERROR] venv python not found at "%PYTHON%"
     echo Create the venv first, then re-run.
