@@ -1,0 +1,52 @@
+@echo off
+REM ===========================================================================
+REM  run_bot_with_nightly_restart.bat  --  Fix #7, post-5/21 incident plan
+REM ---------------------------------------------------------------------------
+REM  Overnight crash-resilience wrapper for the Target bot.
+REM
+REM  The bot is run unattended overnight. If app.py exits or crashes at 3am,
+REM  this loop relaunches it immediately so the bot is not dead until morning
+REM  (and does not miss a drop).
+REM
+REM  There is intentionally NO timed runtime cutoff: the operator stops the
+REM  bot manually each morning, so a MAX_RUNTIME cutoff would never fire.
+REM  This wrapper exists purely to survive crashes while unattended.
+REM
+REM  Usage:  double-click, or run from a cmd window in the repo root.
+REM  Stop:   press Ctrl+C, then answer Y to "Terminate batch job".
+REM ===========================================================================
+
+setlocal EnableExtensions
+cd /d "%~dp0"
+
+set "PYTHON=%~dp0venv\Scripts\python.exe"
+set "LOGDIR=%~dp0logs"
+if not exist "%LOGDIR%" mkdir "%LOGDIR%"
+set "RUNLOG=%LOGDIR%\bot_restart_wrapper.log"
+
+REM Target production stack (app.py also defaults this, set explicitly anyway).
+set USE_RESILIENT_STACK=1
+
+if not exist "%PYTHON%" (
+    echo [ERROR] venv python not found at "%PYTHON%"
+    echo Create the venv first, then re-run.
+    pause
+    exit /b 1
+)
+
+set /a ATTEMPT=0
+
+:loop
+set /a ATTEMPT+=1
+echo.
+echo === launch #%ATTEMPT%  --  %date% %time% ===
+echo [%date% %time%] launch #%ATTEMPT% app.py >> "%RUNLOG%"
+
+"%PYTHON%" app.py
+set "EXITCODE=%ERRORLEVEL%"
+
+echo [%date% %time%] app.py exited code=%EXITCODE% >> "%RUNLOG%"
+echo.
+echo app.py exited (code=%EXITCODE%). Restarting in 10s -- press Ctrl+C to stop.
+timeout /t 10 /nobreak >nul
+goto loop
