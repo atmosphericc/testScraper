@@ -1,0 +1,45 @@
+Walmart bot — full test sweep
+Python: Python 3.12.4
+Repo:   /c/Users/elric/Desktop/testScraper
+
+== Fast suites (pure Python) ==
+── test_walmart_framework_unit.py ──
+  ✓ test_walmart_framework_unit.py  (69 passed, 1s)
+── test_walmart_queue_handler.py ──
+  ✓ test_walmart_queue_handler.py  (70 passed, 1s)
+── test_apq_fallback.py ──
+  ✓ test_apq_fallback.py  (41 passed, 1s)
+── test_pie_encryption.py ──
+  ✓ test_pie_encryption.py  (42 passed, 0s)
+── test_stock_edge_cases.py ──
+  ✓ test_stock_edge_cases.py  (26 passed, 0s)
+── test_self_healing_agent.py ──
+  ✓ test_self_healing_agent.py  (40 passed, 1s)
+── test_session_concurrency.py ──
+  ✓ test_session_concurrency.py  (16 passed, 0s)
+── test_mouse_trajectory_stats.py ──
+  ✓ test_mouse_trajectory_stats.py  (11 passed, 1s)
+── test_keystroke_stats.py ──
+  ✓ test_keystroke_stats.py  (23 passed, 0s)
+
+== Slow suites (sim + Chrome) ==
+── test_mitm_sim_smoke.py ──
+  ✓ test_mitm_sim_smoke.py  (23 passed, 3s)
+── test_walmart_queue_e2e_mitm.py ──
+  ✓ test_walmart_queue_e2e_mitm.py  (19 passed, 85s)
+── test_checkout_api_against_sim.py ──
+  ✓ test_checkout_api_against_sim.py  (15 passed, 19s)
+── test_e2e_hybrid_checkout.py ──
+  ✓ test_e2e_hybrid_checkout.py  (16 passed, 18s)
+── test_fingerprint_probe.py ──
+  ✓ test_fingerprint_probe.py  (10 passed, 5s)
+── test_walmart_e2e_purchase_with_queue.py ──
+  ✓ test_walmart_e2e_purchase_with_queue.py  (3 passed, 2615s)
+
+═════════════════════════════════════════════════════════
+Summary
+═════════════════════════════════════════════════════════
+Total passed:  424
+Total failed:  0
+Total runtime: 2750s
+WARNING: runtime exceeded 5-minute budget

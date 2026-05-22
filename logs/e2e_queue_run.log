@@ -1,0 +1,479 @@
+========================================================================
+Walmart bot — end-to-end purchase against sim (with queue)
+========================================================================
+
+=== Scenario 1: non-queue baseline ===
+2026-05-20 21:35:08,053 [walmart.proxy_manager] [PROXY] Loaded 16 proxies from config/proxyIps.json
+2026-05-20 21:35:08,053 [walmart.proxy_manager] [PROXY] Monitor pool: 16 | Checkout pool: 12
+[2026-05-20 21:35:08] [MANAGER] [MANAGER] Starting Walmart purchase manager...
+[2026-05-20 21:35:08] [MANAGER] [SESSION] Starting browser...
+[2026-05-20 21:35:08] [MANAGER] [SESSION] WALMART_SIM_PROXY set — routing through http://127.0.0.1:57242
+2026-05-20 21:35:08,063 [walmart.session_manager] [SESSION] Sim proxy mode: http://127.0.0.1:57242
+2026-05-20 21:35:08,064 [zendriver.core.browser] starting
+	executable :C:\Program Files\Google\Chrome\Application\chrome.exe
+
+arguments:
+--remote-allow-origins=*
+	--no-first-run
+	--no-service-autorun
+	--no-default-browser-check
+	--homepage=about:blank
+	--no-pings
+	--password-store=basic
+	--disable-infobars
+	--disable-breakpad
+	--disable-component-update
+	--disable-backgrounding-occluded-windows
+	--disable-renderer-backgrounding
+	--disable-background-networking
+	--disable-dev-shm-usage
+	--disable-features=IsolateOrigins,DisableLoadExtensionCommandLineSwitch,site-per-process
+	--disable-session-crashed-bubble
+	--disable-search-engine-choice-screen
+	--user-data-dir=C:\Users\elric\AppData\Local\Temp\e2e_walmart_ncfdljhp
+	--disable-features=IsolateOrigins,site-per-process
+	--disable-session-crashed-bubble
+	--window-size=1920,1080
+	--lang=en-US
+	--disable-blink-features=AutomationControlled
+	--proxy-server=http://127.0.0.1:57242
+	--ignore-certificate-errors
+	--remote-debugging-host=127.0.0.1
+	--remote-debugging-port=55817
+	--webrtc-ip-handling-policy=disable_non_proxied_udp
+	--force-webrtc-ip-handling-policy
+	about:blank
+2026-05-20 21:35:09,088 [zendriver.core.browser] enabling autodiscover targets
+[2026-05-20 21:35:09] [MANAGER] [SESSION] WALMART_SIM_PROXY mode — skipping pre-warmup
+[2026-05-20 21:35:09] [MANAGER] [SESSION] Browser ready (sim mode)
+[2026-05-20 21:35:09] [MANAGER] [SESSION] WALMART_SIM_PROXY mode — skipping warm_session
+[2026-05-20 21:35:09] [MANAGER] [MANAGER] Returning Tab 1 to Walmart for stock monitoring
+2026-05-20 21:35:09,615 [walmart.session_manager] [SESSION] Returning Tab 1 to walmart.com for stock monitoring...
+2026-05-20 21:35:10,667 [walmart.session_manager] [SESSION] Tab 1 now on walmart.com — stock monitor ready
+[2026-05-20 21:35:10] [MANAGER] [MANAGER] Tab 2 pre-warming on product page: https://www.walmart.com/ip/99999000001
+[2026-05-20 21:35:10] [MANAGER] [SESSION] Opening checkout tab...
+[2026-05-20 21:35:11] [MANAGER] [SESSION] Checkout tab ready — pre-loaded on product page (foreground)
+2026-05-20 21:35:11,217 [walmart.stock_monitor] [MONITOR] Browser fetch loop started — 3 dispatchers, targeting ~3 checks/sec
+2026-05-20 21:35:11,218 [walmart.stock_monitor] [MONITOR] Started browser-fetch monitor (1 checks/sec/product)
+[2026-05-20 21:35:11] [MANAGER] [MONITOR] Stock monitoring active — browser fetch mode
+[2026-05-20 21:35:11] [MANAGER] [MANAGER] Walmart bot running — monitoring stock
+[2026-05-20 21:35:11] [MANAGER] [MONITOR] IN STOCK: Sim Test Item @ $29.97
+2026-05-20 21:35:11,615 [walmart.stock_monitor] [MONITOR] IN STOCK: Sim Test Item (99999000001) @ $29.97
+[2026-05-20 21:35:11] [MANAGER] In-stock signal: Sim Test Item @ $29.97
+2026-05-20 21:35:11,618 [walmart.purchase_manager] [MANAGER] In-stock signal for 99999000001 — scheduling purchase
+2026-05-20 21:35:11,619 [walmart.purchase_manager] [MANAGER] Quantity resolved for 99999000001: qty=3 (orderLimit=3, desired=None, cap=10)
+2026-05-20 21:35:11,619 [walmart.stock_monitor] [MONITOR] IN STOCK: [Sim Test Item] | 23ms
+2026-05-20 21:35:11,619 [walmart.proxy_manager] [PROXY] Checkout proxy acquired: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335
+2026-05-20 21:35:11,623 [walmart.session_manager] [SESSION] Monitor cookie snapshot taken — 169 cookies (has _px3: True)
+2026-05-20 21:35:11,624 [walmart.stock_monitor] [MONITOR] Stock monitoring paused
+[2026-05-20 21:35:11] [MANAGER] [MANAGER] Stock monitor paused for purchase
+2026-05-20 21:35:11,627 [walmart.purchase_manager] [MANAGER] Stock monitor paused — protecting _px3 for checkout
+2026-05-20 21:35:11,627 [walmart.purchase_manager] [MANAGER] Cookie harvester paused — protecting checkout context
+[2026-05-20 21:35:12] [MANAGER] [PURCHASE] Starting purchase attempt for 99999000001 (qty=3)
+[2026-05-20 21:35:12] [MANAGER] [PURCHASE] Already on product page — skipping navigation
+2026-05-20 21:35:12,070 [walmart.purchase_executor] [PURCHASE] Tab already on 99999000001 — skipping navigation
+2026-05-20 21:35:12,070 [walmart.purchase_executor] [PURCHASE] Page ready in 0.0s — ATC button found via: button[data-automation-id="atc"] (hasSize=True)
+[2026-05-20 21:35:12] [MANAGER] [PURCHASE] Page ready — ATC button found (0.0s)
+[2026-05-20 21:35:12] [MANAGER] [PURCHASE] Looking for Add to Cart button...
+[2026-05-20 21:35:12] [MANAGER] [PURCHASE] Clicked Add to Cart (attempt 1)
+2026-05-20 21:35:12,379 [walmart.purchase_executor] [PURCHASE] ATC clicked via CDP mouse on attempt 1 via data-automation-id="atc" at (52, 89)
+2026-05-20 21:35:12,831 [walmart.purchase_executor] [PURCHASE] No immediate ATC confirmation — proceeding to checkout
+2026-05-20 21:35:12,831 [walmart.purchase_executor] [PURCHASE] Attempting fast path checkout from ATC flyout...
+2026-05-20 21:35:12,832 [walmart.purchase_executor] [PURCHASE] ATC flyout not visible — falling back to cart page
+[2026-05-20 21:35:13] [MANAGER] [PURCHASE] Navigating to cart...
+2026-05-20 21:35:13,149 [walmart.purchase_executor] [PURCHASE] Navigating to cart from: https://www.walmart.com/ip/99999000001 → https://www.walmart.com/cart
+2026-05-20 21:35:14,072 [walmart.purchase_executor] [PURCHASE] Arrived at: https://www.walmart.com/cart
+[2026-05-20 21:35:14] [MANAGER] [PURCHASE] Cart verified via __NEXT_DATA__ — 1 item(s)
+2026-05-20 21:35:14,080 [walmart.purchase_executor] [PURCHASE] Cart verified via __NEXT_DATA__ — 1 item(s)
+2026-05-20 21:35:14,082 [walmart.checkout_api] [HYBRID] Cart context ready in 1 polls: cartId=test-cart-id-001, 1 line(s), first=usItemId 99999000001 qty=1
+2026-05-20 21:35:14,082 [walmart.purchase_executor] [PURCHASE] Hybrid: bumping qty 1 → 3 via updateItems (cartId=test-cart-id-001)
+2026-05-20 21:35:14,088 [walmart.checkout_api] [HYBRID] updateItems POST ok: status=200 ms=5
+2026-05-20 21:35:14,088 [walmart.purchase_executor] [PURCHASE] Hybrid: qty committed=5 (target 3, checkoutable=True)
+2026-05-20 21:35:14,089 [walmart.purchase_executor] [PURCHASE] Cart: no Delivery tile found — may already be delivery-only
+[2026-05-20 21:35:14] [MANAGER] [PURCHASE] Clicking Checkout...
+2026-05-20 21:35:14,370 [walmart.purchase_executor] [PURCHASE] Checkout button clicked via realistic mouse trajectory at (81, 88)
+2026-05-20 21:35:14,572 [walmart.purchase_executor] [PURCHASE] URL reached checkout: https://www.walmart.com/checkout
+[2026-05-20 21:35:14] [MANAGER] [PURCHASE] On checkout page — URL: https://www.walmart.com/checkout
+[2026-05-20 21:35:14] [MANAGER] [PURCHASE] Reviewing cart (human think-time)...
+2026-05-20 21:35:17,324 [walmart.session_manager] [HARVESTER] Startup warmup complete — Tab 1 ready for fetch() stock checks
+2026-05-20 21:35:17,794 [walmart.purchase_executor] [PURCHASE] No fulfillment selector found — assuming delivery is default or step not shown
+[2026-05-20 21:35:17] [MANAGER] [PURCHASE] No fulfillment choice shown — continuing
+2026-05-20 21:35:17,798 [walmart.purchase_executor] [PURCHASE] Checking for delivery day modal after fulfillment selection...
+[2026-05-20 21:35:18] [MANAGER] [PURCHASE] Fast-path: Place Order already visible — skipping step loop
+[2026-05-20 21:35:18] [MANAGER] [PURCHASE] Reviewing shipping address (human think-time)...
+2026-05-20 21:35:21,070 [walmart.pie] [PIE] key fetched: key_id=test-pie-key-id-0 phase=0 L=2048
+2026-05-20 21:35:21,084 [walmart.checkout_api] [HYBRID] PIE submit OK status=200 ms=7 token=test-card-token
+[2026-05-20 21:35:21] [MANAGER] [PURCHASE] CVV submitted via PIE (no DOM keystrokes)
+2026-05-20 21:35:21,087 [walmart.purchase_executor] [PURCHASE] PIE CVV submit OK — skipping DOM entry. token=test-card-token
+[2026-05-20 21:35:21] [MANAGER] [PURCHASE] Reviewing order summary (human think-time)...
+[2026-05-20 21:35:27] [MANAGER] [MONITOR] 0.1/s | 1 in stock | 0 out of stock
+2026-05-20 21:35:34,040 [walmart.checkout_api] [HYBRID] Cart context ready in 1 polls: cartId=test-cart-id-001, 1 line(s), first=usItemId 99999000001 qty=1
+[2026-05-20 21:35:34] [MANAGER] [PURCHASE] Hybrid: placing order via CreateContract...
+2026-05-20 21:35:34,043 [walmart.purchase_executor] [PURCHASE] Hybrid place-order: cartId=test-cart-id-001, 1 line(s)
+2026-05-20 21:35:34,050 [walmart.checkout_api] [HYBRID] CreateContract POST ok: status=200 ms=5
+[2026-05-20 21:35:34] [MANAGER] [PURCHASE] Hybrid ORDER PLACED — pcid=test-pcid-12345 $29.97 card *1234
+2026-05-20 21:35:34,053 [walmart.purchase_executor] [PURCHASE] Hybrid SUCCESS — pcid=test-pcid-12345 status=PLACED amount=$29.97 card=*1234 ms=0
+[2026-05-20 21:35:34] [MANAGER] [PURCHASE] ORDER PLACED! ID: test-pcid-12345
+2026-05-20 21:35:34,056 [walmart.purchase_executor] [PURCHASE] SUCCESS — order ID: test-pcid-12345 at https://www.walmart.com/thankyou?pcid=test-pcid-12345
+[2026-05-20 21:35:37] [MANAGER] [MANAGER] Walmart bot stopped
+2026-05-20 21:35:37,157 [walmart.sim.server] SimServer stopped
+  ✓ pcid received: test-pcid-12345
+  Latency (ATC → pcid): 21980ms
+
+=== Scenario 2: queue path ===
+2026-05-20 21:35:37,158 [walmart.sim.server] Starting mitmdump: mitmdump -s C:\Users\elric\Desktop\testScraper\walmart\sim\mitm_addon.py --listen-host 127.0.0.1 --listen-port 64877 --set termlog_verbosity=warn --set flow_detail=0 --ssl-insecure
+2026-05-20 21:35:37,158 [walmart.sim.server] mitmdump output → C:\Users\elric\Desktop\testScraper\walmart\logs\mitm_sim_1779330937.log
+2026-05-20 21:35:37,890 [walmart.sim.server] SimServer ready on 127.0.0.1:64877
+2026-05-20 21:35:37,913 [walmart.proxy_manager] [PROXY] Loaded 16 proxies from config/proxyIps.json
+2026-05-20 21:35:37,913 [walmart.proxy_manager] [PROXY] Monitor pool: 16 | Checkout pool: 12
+[2026-05-20 21:35:37] [MANAGER] [MANAGER] Starting Walmart purchase manager...
+[2026-05-20 21:35:37] [MANAGER] [SESSION] Starting browser...
+[2026-05-20 21:35:37] [MANAGER] [SESSION] WALMART_SIM_PROXY set — routing through http://127.0.0.1:64877
+2026-05-20 21:35:37,923 [walmart.session_manager] [SESSION] Sim proxy mode: http://127.0.0.1:64877
+2026-05-20 21:35:37,923 [zendriver.core.browser] starting
+	executable :C:\Program Files\Google\Chrome\Application\chrome.exe
+
+arguments:
+--remote-allow-origins=*
+	--no-first-run
+	--no-service-autorun
+	--no-default-browser-check
+	--homepage=about:blank
+	--no-pings
+	--password-store=basic
+	--disable-infobars
+	--disable-breakpad
+	--disable-component-update
+	--disable-backgrounding-occluded-windows
+	--disable-renderer-backgrounding
+	--disable-background-networking
+	--disable-dev-shm-usage
+	--disable-features=IsolateOrigins,DisableLoadExtensionCommandLineSwitch,site-per-process
+	--disable-session-crashed-bubble
+	--disable-search-engine-choice-screen
+	--user-data-dir=C:\Users\elric\AppData\Local\Temp\e2e_walmart_eeaf_a82
+	--disable-features=IsolateOrigins,site-per-process
+	--disable-session-crashed-bubble
+	--window-size=1920,1080
+	--lang=en-US
+	--disable-blink-features=AutomationControlled
+	--proxy-server=http://127.0.0.1:64877
+	--ignore-certificate-errors
+	--remote-debugging-host=127.0.0.1
+	--remote-debugging-port=64884
+	--webrtc-ip-handling-policy=disable_non_proxied_udp
+	--force-webrtc-ip-handling-policy
+	about:blank
+2026-05-20 21:35:38,949 [zendriver.core.browser] enabling autodiscover targets
+[2026-05-20 21:35:38] [MANAGER] [SESSION] WALMART_SIM_PROXY mode — skipping pre-warmup
+[2026-05-20 21:35:39] [MANAGER] [SESSION] Browser ready (sim mode)
+[2026-05-20 21:35:39] [MANAGER] [SESSION] WALMART_SIM_PROXY mode — skipping warm_session
+[2026-05-20 21:35:39] [MANAGER] [MANAGER] Returning Tab 1 to Walmart for stock monitoring
+2026-05-20 21:35:39,340 [walmart.session_manager] [SESSION] Returning Tab 1 to walmart.com for stock monitoring...
+2026-05-20 21:35:40,433 [walmart.session_manager] [SESSION] Tab 1 now on walmart.com — stock monitor ready
+[2026-05-20 21:35:40] [MANAGER] [MANAGER] Tab 2 pre-warming on product page: https://www.walmart.com/ip/99999000001
+[2026-05-20 21:35:40] [MANAGER] [SESSION] Opening checkout tab...
+[2026-05-20 21:35:40] [MANAGER] [SESSION] Checkout tab ready — pre-loaded on product page (foreground)
+2026-05-20 21:35:40,986 [walmart.stock_monitor] [MONITOR] Browser fetch loop started — 3 dispatchers, targeting ~3 checks/sec
+2026-05-20 21:35:40,986 [walmart.stock_monitor] [MONITOR] Started browser-fetch monitor (1 checks/sec/product)
+[2026-05-20 21:35:40] [MANAGER] [MONITOR] Stock monitoring active — browser fetch mode
+[2026-05-20 21:35:40] [MANAGER] [MANAGER] Walmart bot running — monitoring stock
+[2026-05-20 21:35:41] [MANAGER] [MONITOR] IN STOCK: Sim Test Item @ $29.97
+2026-05-20 21:35:41,604 [walmart.stock_monitor] [MONITOR] IN STOCK: Sim Test Item (99999000001) @ $29.97
+[2026-05-20 21:35:41] [MANAGER] In-stock signal: Sim Test Item @ $29.97
+2026-05-20 21:35:41,608 [walmart.purchase_manager] [MANAGER] In-stock signal for 99999000001 — scheduling purchase
+2026-05-20 21:35:41,608 [walmart.purchase_manager] [MANAGER] Quantity resolved for 99999000001: qty=3 (orderLimit=3, desired=None, cap=10)
+2026-05-20 21:35:41,608 [walmart.stock_monitor] [MONITOR] IN STOCK: [Sim Test Item] | 6ms
+2026-05-20 21:35:41,608 [walmart.proxy_manager] [PROXY] Checkout proxy acquired: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335
+2026-05-20 21:35:41,612 [walmart.session_manager] [SESSION] Monitor cookie snapshot taken — 171 cookies (has _px3: True)
+2026-05-20 21:35:41,612 [walmart.stock_monitor] [MONITOR] Stock monitoring paused
+[2026-05-20 21:35:41] [MANAGER] [MANAGER] Stock monitor paused for purchase
+2026-05-20 21:35:41,615 [walmart.purchase_manager] [MANAGER] Stock monitor paused — protecting _px3 for checkout
+2026-05-20 21:35:41,615 [walmart.purchase_manager] [MANAGER] Cookie harvester paused — protecting checkout context
+[2026-05-20 21:35:42] [MANAGER] [PURCHASE] Starting purchase attempt for 99999000001 (qty=3)
+[2026-05-20 21:35:42] [MANAGER] [PURCHASE] Already on product page — skipping navigation
+2026-05-20 21:35:42,070 [walmart.purchase_executor] [PURCHASE] Tab already on 99999000001 — skipping navigation
+2026-05-20 21:35:42,647 [walmart.purchase_executor] [PURCHASE] Page ready in 0.6s — ATC button found via: button[data-automation-id="atc"] (hasSize=True)
+[2026-05-20 21:35:42] [MANAGER] [PURCHASE] Page ready — ATC button found (0.6s)
+2026-05-20 21:35:42,663 [walmart.queue_handler] [QUEUE] Detected legacy overlay (Hold-my-spot button or text)
+[2026-05-20 21:35:42] [MANAGER] [PURCHASE] In queue — awaiting ticket state...
+2026-05-20 21:35:42,668 [walmart.queue_handler] [QUEUE] Detected queue via /qp URL: QueueTicket(state=pending, likelihood=unknown, queue_id=qa484c0ebd7014, ticket=None, next_refresh_ms=None, item_id=99999000001)
+2026-05-20 21:35:45,876 [walmart.queue_handler] [QUEUE] CDP captured ticket: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+2026-05-20 21:35:46,345 [walmart.queue_handler] [QUEUE] CDP captured ticket: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+C:\Users\elric\Desktop\testScraper\venv\Lib\site-packages\zendriver\core\connection.py:830: RuntimeWarning: coroutine 'QueueHandler._maybe_attach_cdp_listener.<locals>._on_response_received' was never awaited
+  callback(event)
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+2026-05-20 21:35:47,139 [walmart.session_manager] [HARVESTER] Startup warmup complete — Tab 1 ready for fetch() stock checks
+2026-05-20 21:35:49,041 [walmart.purchase_executor] [PURCHASE] _clear_cart: cart navigation timed out after 15s — treating as poisoned
+[2026-05-20 21:35:49] [MANAGER] PURCHASE SUCCESS: Sim Test Item — Order #test-pcid-12345
+2026-05-20 21:35:49,043 [walmart.purchase_manager] [MANAGER] Purchase success: Sim Test Item — test-pcid-12345
+2026-05-20 21:35:49,043 [walmart.session_manager] [SESSION] restore_monitor_cookies: skipping (page=False, snapshot_len=0)
+2026-05-20 21:35:49,043 [walmart.purchase_manager] [MANAGER] Cookie harvester resumed
+2026-05-20 21:35:49,043 [walmart.proxy_manager] [PROXY] Checkout proxy released: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335
+[2026-05-20 21:35:50] [MANAGER] [QUEUE] In queue — waiting for admission...
+2026-05-20 21:35:50,300 [walmart.queue_handler] [QUEUE] Starting wait loop (timeout=1800s)
+[2026-05-20 21:35:50] [MANAGER] [QUEUE] Admitted — ticket state=valid
+2026-05-20 21:35:50,304 [walmart.queue_handler] [QUEUE] Admitted: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+[2026-05-20 21:35:50] [MANAGER] [PURCHASE] Queue admitted (state=valid)
+[2026-05-20 21:35:50] [MANAGER] [PURCHASE] Already on product page — skipping navigation
+2026-05-20 21:35:50,314 [walmart.purchase_executor] [PURCHASE] Tab already on 99999000001 — skipping navigation
+2026-05-20 21:35:50,338 [walmart.purchase_executor] [PURCHASE] Page ready in 0.0s — ATC button found via: button[data-automation-id="atc"] (hasSize=True)
+[2026-05-20 21:35:50] [MANAGER] [PURCHASE] Page ready — ATC button found (0.0s)
+[2026-05-20 21:35:50] [MANAGER] [PURCHASE] Looking for Add to Cart button...
+2026-05-20 21:35:50,410 [walmart.queue_handler] [QUEUE] CDP captured ticket: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+2026-05-20 21:35:51,008 [walmart.queue_handler] [QUEUE] CDP captured ticket: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+2026-05-20 21:35:51,116 [walmart.queue_handler] [QUEUE] CDP captured ticket: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+[2026-05-20 21:35:51] [MANAGER] [PURCHASE] Clicked Add to Cart (attempt 3)
+2026-05-20 21:35:51,873 [walmart.purchase_executor] [PURCHASE] ATC clicked via CDP mouse on attempt 3 via data-automation-id="atc" at (53, 91)
+2026-05-20 21:35:52,317 [walmart.purchase_executor] [PURCHASE] No immediate ATC confirmation — proceeding to checkout
+2026-05-20 21:35:52,317 [walmart.purchase_executor] [PURCHASE] Attempting fast path checkout from ATC flyout...
+2026-05-20 21:35:52,333 [walmart.purchase_executor] [PURCHASE] ATC flyout not visible — falling back to cart page
+[2026-05-20 21:35:52] [MANAGER] [PURCHASE] Navigating to cart...
+2026-05-20 21:35:52,615 [walmart.purchase_executor] [PURCHASE] Navigating to cart from: https://www.walmart.com/qp?qpdata=%7B%22queued%22%3A%20true%2C%20%22queue%22%3A%20%22qa484c0ebd7014%22%2C%20%22url%22%3A%20%22https%3A//api.waiting-room.walmart.com/issueTicket%3Fqueue%3Dqa484c0ebd7014%22%2C%20%22customMetadata%22%3A%20%7B%22item%22%3A%20%7B%22itemID%22%3A%20%2299999000001%22%2C%20%22name%22%3A%20%22Pokemon%20TCG%20Test%20Item%22%2C%20%22imageURL%22%3A%20%22https%3A//i5.walmartimages.com/asr/test.jpeg%22%2C%20%22currentPrice%22%3A%20%22%2429.97%22%2C%20%22itemURL%22%3A%20%22/ip/99999000001%22%7D%7D%7D → https://www.walmart.com/cart
+2026-05-20 21:35:52,618 [walmart.queue_handler] [QUEUE] CDP captured ticket: QueueTicket(state=valid, likelihood=likely, queue_id=qa484c0ebd7014, ticket=2529, next_refresh_ms=1000, item_id=99999000001)
+2026-05-20 21:35:53,610 [walmart.purchase_executor] [PURCHASE] Arrived at: https://www.walmart.com/cart
+[2026-05-20 21:35:53] [MANAGER] [PURCHASE] Cart verified via __NEXT_DATA__ — 1 item(s)
+2026-05-20 21:35:53,618 [walmart.purchase_executor] [PURCHASE] Cart verified via __NEXT_DATA__ — 1 item(s)
+2026-05-20 21:35:53,618 [walmart.checkout_api] [HYBRID] Cart context ready in 1 polls: cartId=test-cart-id-001, 1 line(s), first=usItemId 99999000001 qty=1
+2026-05-20 21:35:53,618 [walmart.purchase_executor] [PURCHASE] Hybrid: bumping qty 1 → 3 via updateItems (cartId=test-cart-id-001)
+2026-05-20 21:35:53,626 [walmart.checkout_api] [HYBRID] updateItems POST ok: status=200 ms=5
+2026-05-20 21:35:53,626 [walmart.purchase_executor] [PURCHASE] Hybrid: qty committed=5 (target 3, checkoutable=True)
+2026-05-20 21:35:53,627 [walmart.purchase_executor] [PURCHASE] Cart: no Delivery tile found — may already be delivery-only
+[2026-05-20 21:35:53] [MANAGER] [PURCHASE] Clicking Checkout...
+2026-05-20 21:35:54,044 [walmart.purchase_manager] [MANAGER] Item 99999000001 still in stock but session is poisoned (cart_blocked=True, cb_open=False) — NOT re-queuing
+2026-05-20 21:35:54,048 [walmart.purchase_executor] [PURCHASE] Checkout button clicked via realistic mouse trajectory at (79, 90)
+2026-05-20 21:35:54,248 [walmart.purchase_executor] [PURCHASE] URL reached checkout: https://www.walmart.com/checkout
+[2026-05-20 21:35:54] [MANAGER] [PURCHASE] On checkout page — URL: https://www.walmart.com/checkout
+[2026-05-20 21:35:54] [MANAGER] [PURCHASE] Reviewing cart (human think-time)...
+2026-05-20 21:35:56,704 [walmart.purchase_executor] [PURCHASE] No fulfillment selector found — assuming delivery is default or step not shown
+[2026-05-20 21:35:56] [MANAGER] [PURCHASE] No fulfillment choice shown — continuing
+2026-05-20 21:35:56,708 [walmart.purchase_executor] [PURCHASE] Checking for delivery day modal after fulfillment selection...
+[2026-05-20 21:35:57] [MANAGER] [MONITOR] 0.1/s | 1 in stock | 0 out of stock
+[2026-05-20 21:35:57] [MANAGER] [PURCHASE] Fast-path: Place Order already visible — skipping step loop
+[2026-05-20 21:35:57] [MANAGER] [PURCHASE] Reviewing shipping address (human think-time)...
+2026-05-20 21:36:00,412 [walmart.pie] [PIE] key fetched: key_id=test-pie-key-id-0 phase=0 L=2048
+2026-05-20 21:36:00,419 [walmart.checkout_api] [HYBRID] PIE submit OK status=200 ms=5 token=test-card-token
+[2026-05-20 21:36:00] [MANAGER] [PURCHASE] CVV submitted via PIE (no DOM keystrokes)
+2026-05-20 21:36:00,423 [walmart.purchase_executor] [PURCHASE] PIE CVV submit OK — skipping DOM entry. token=test-card-token
+[2026-05-20 21:36:00] [MANAGER] [PURCHASE] Reviewing order summary (human think-time)...
+2026-05-20 21:36:12,493 [walmart.checkout_api] [HYBRID] Cart context ready in 1 polls: cartId=test-cart-id-001, 1 line(s), first=usItemId 99999000001 qty=1
+[2026-05-20 21:36:12] [MANAGER] [PURCHASE] Hybrid: placing order via CreateContract...
+2026-05-20 21:36:12,497 [walmart.purchase_executor] [PURCHASE] Hybrid place-order: cartId=test-cart-id-001, 1 line(s)
+2026-05-20 21:36:12,504 [walmart.checkout_api] [HYBRID] CreateContract POST ok: status=200 ms=5
+[2026-05-20 21:36:12] [MANAGER] [PURCHASE] Hybrid ORDER PLACED — pcid=test-pcid-12345 $29.97 card *1234
+2026-05-20 21:36:12,507 [walmart.purchase_executor] [PURCHASE] Hybrid SUCCESS — pcid=test-pcid-12345 status=PLACED amount=$29.97 card=*1234 ms=0
+[2026-05-20 21:36:12] [MANAGER] [PURCHASE] ORDER PLACED! ID: test-pcid-12345
+2026-05-20 21:36:12,510 [walmart.purchase_executor] [PURCHASE] SUCCESS — order ID: test-pcid-12345 at https://www.walmart.com/thankyou?pcid=test-pcid-12345
+[2026-05-20 21:36:15] [MANAGER] [MANAGER] Walmart bot stopped
+2026-05-20 21:36:15,597 [walmart.sim.server] SimServer stopped
+  ✓ pcid received: test-pcid-12345
+
+=== Scenario 3: FAST_DROP_MODE (mechanical-speed checkout) ===
+2026-05-20 21:36:15,598 [walmart.sim.server] Starting mitmdump: mitmdump -s C:\Users\elric\Desktop\testScraper\walmart\sim\mitm_addon.py --listen-host 127.0.0.1 --listen-port 54515 --set termlog_verbosity=warn --set flow_detail=0 --ssl-insecure
+2026-05-20 21:36:15,598 [walmart.sim.server] mitmdump output → C:\Users\elric\Desktop\testScraper\walmart\logs\mitm_sim_1779330975.log
+2026-05-20 21:36:16,310 [walmart.sim.server] SimServer ready on 127.0.0.1:54515
+2026-05-20 21:36:16,352 [walmart.proxy_manager] [PROXY] Loaded 16 proxies from config/proxyIps.json
+2026-05-20 21:36:16,352 [walmart.proxy_manager] [PROXY] Monitor pool: 16 | Checkout pool: 12
+[2026-05-20 21:36:16] [MANAGER] [MANAGER] Starting Walmart purchase manager...
+[2026-05-20 21:36:16] [MANAGER] [SESSION] Starting browser...
+[2026-05-20 21:36:16] [MANAGER] [SESSION] WALMART_SIM_PROXY set — routing through http://127.0.0.1:54515
+2026-05-20 21:36:16,361 [walmart.session_manager] [SESSION] Sim proxy mode: http://127.0.0.1:54515
+2026-05-20 21:36:16,361 [zendriver.core.browser] starting
+	executable :C:\Program Files\Google\Chrome\Application\chrome.exe
+
+arguments:
+--remote-allow-origins=*
+	--no-first-run
+	--no-service-autorun
+	--no-default-browser-check
+	--homepage=about:blank
+	--no-pings
+	--password-store=basic
+	--disable-infobars
+	--disable-breakpad
+	--disable-component-update
+	--disable-backgrounding-occluded-windows
+	--disable-renderer-backgrounding
+	--disable-background-networking
+	--disable-dev-shm-usage
+	--disable-features=IsolateOrigins,DisableLoadExtensionCommandLineSwitch,site-per-process
+	--disable-session-crashed-bubble
+	--disable-search-engine-choice-screen
+	--user-data-dir=C:\Users\elric\AppData\Local\Temp\e2e_walmart__ii3ue96
+	--disable-features=IsolateOrigins,site-per-process
+	--disable-session-crashed-bubble
+	--window-size=1920,1080
+	--lang=en-US
+	--disable-blink-features=AutomationControlled
+	--proxy-server=http://127.0.0.1:54515
+	--ignore-certificate-errors
+	--remote-debugging-host=127.0.0.1
+	--remote-debugging-port=54521
+	--webrtc-ip-handling-policy=disable_non_proxied_udp
+	--force-webrtc-ip-handling-policy
+	about:blank
+2026-05-20 21:36:17,372 [zendriver.core.browser] enabling autodiscover targets
+[2026-05-20 21:36:17] [MANAGER] [SESSION] WALMART_SIM_PROXY mode — skipping pre-warmup
+[2026-05-20 21:36:17] [MANAGER] [SESSION] Browser ready (sim mode)
+[2026-05-20 21:36:17] [MANAGER] [SESSION] WALMART_SIM_PROXY mode — skipping warm_session
+[2026-05-20 21:36:17] [MANAGER] [MANAGER] Returning Tab 1 to Walmart for stock monitoring
+2026-05-20 21:36:17,708 [walmart.session_manager] [SESSION] Returning Tab 1 to walmart.com for stock monitoring...
+2026-05-20 21:36:18,766 [walmart.session_manager] [SESSION] Tab 1 now on walmart.com — stock monitor ready
+[2026-05-20 21:36:18] [MANAGER] [MANAGER] Tab 2 pre-warming on product page: https://www.walmart.com/ip/99999000001
+[2026-05-20 21:36:18] [MANAGER] [SESSION] Opening checkout tab...
+[2026-05-20 21:36:19] [MANAGER] [SESSION] Checkout tab ready — pre-loaded on product page (foreground)
+2026-05-20 21:36:19,304 [walmart.stock_monitor] [MONITOR] Browser fetch loop started — 3 dispatchers, targeting ~3 checks/sec
+2026-05-20 21:36:19,304 [walmart.stock_monitor] [MONITOR] Started browser-fetch monitor (1 checks/sec/product)
+[2026-05-20 21:36:19] [MANAGER] [MONITOR] Stock monitoring active — browser fetch mode
+[2026-05-20 21:36:19] [MANAGER] [MANAGER] Walmart bot running — monitoring stock
+[2026-05-20 21:36:20] [MANAGER] [MONITOR] IN STOCK: Sim Test Item @ $29.97
+2026-05-20 21:36:20,658 [walmart.stock_monitor] [MONITOR] IN STOCK: Sim Test Item (99999000001) @ $29.97
+[2026-05-20 21:36:20] [MANAGER] [MONITOR] IN STOCK: Sim Test Item @ $29.97
+2026-05-20 21:36:20,660 [walmart.stock_monitor] [MONITOR] IN STOCK: Sim Test Item (99999000001) @ $29.97
+[2026-05-20 21:36:20] [MANAGER] [MONITOR] IN STOCK: Sim Test Item @ $29.972026-05-20 21:36:20,660 [walmart.stock_monitor] [MONITOR] IN STOCK: [Sim Test Item] | 26ms
+
+2026-05-20 21:36:20,664 [walmart.stock_monitor] [MONITOR] IN STOCK: Sim Test Item (99999000001) @ $29.97
+[2026-05-20 21:36:20] [MANAGER] In-stock signal: Sim Test Item @ $29.972026-05-20 21:36:20,664 [walmart.stock_monitor] [MONITOR] IN STOCK: [Sim Test Item] | 26ms
+
+2026-05-20 21:36:20,667 [walmart.purchase_manager] [MANAGER] In-stock signal for 99999000001 — scheduling purchase
+2026-05-20 21:36:20,667 [walmart.purchase_manager] [MANAGER] Quantity resolved for 99999000001: qty=3 (orderLimit=3, desired=None, cap=10)
+2026-05-20 21:36:20,667 [walmart.stock_monitor] [MONITOR] IN STOCK: [Sim Test Item] | 25ms
+2026-05-20 21:36:20,667 [walmart.proxy_manager] [PROXY] Checkout proxy acquired: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335
+2026-05-20 21:36:20,670 [walmart.session_manager] [SESSION] Monitor cookie snapshot taken — 171 cookies (has _px3: True)
+2026-05-20 21:36:20,671 [walmart.stock_monitor] [MONITOR] Stock monitoring paused
+[2026-05-20 21:36:20] [MANAGER] [MANAGER] Stock monitor paused for purchase
+2026-05-20 21:36:20,674 [walmart.purchase_manager] [MANAGER] Stock monitor paused — protecting _px3 for checkout
+2026-05-20 21:36:20,674 [walmart.purchase_manager] [MANAGER] Cookie harvester paused — protecting checkout context
+[2026-05-20 21:36:21] [MANAGER] [PURCHASE] Starting purchase attempt for 99999000001 (qty=3)
+[2026-05-20 21:36:21] [MANAGER] [PURCHASE] Already on product page — skipping navigation
+2026-05-20 21:36:21,238 [walmart.purchase_executor] [PURCHASE] Tab already on 99999000001 — skipping navigation
+2026-05-20 21:36:21,239 [walmart.purchase_executor] [PURCHASE] Page ready in 0.0s — ATC button found via: button[data-automation-id="atc"] (hasSize=True)
+[2026-05-20 21:36:21] [MANAGER] [PURCHASE] Page ready — ATC button found (0.0s)
+[2026-05-20 21:36:21] [MANAGER] [PURCHASE] Looking for Add to Cart button...
+[2026-05-20 21:36:21] [MANAGER] [PURCHASE] Clicked Add to Cart (attempt 1)
+2026-05-20 21:36:21,639 [walmart.purchase_executor] [PURCHASE] ATC clicked via CDP mouse on attempt 1 via data-automation-id="atc" at (52, 92)
+2026-05-20 21:36:22,075 [walmart.purchase_executor] [PURCHASE] No immediate ATC confirmation — proceeding to checkout
+2026-05-20 21:36:22,075 [walmart.purchase_executor] [PURCHASE] Attempting fast path checkout from ATC flyout...
+2026-05-20 21:36:22,076 [walmart.purchase_executor] [PURCHASE] ATC flyout not visible — falling back to cart page
+[2026-05-20 21:36:22] [MANAGER] [PURCHASE] Navigating to cart...
+2026-05-20 21:36:22,382 [walmart.purchase_executor] [PURCHASE] Navigating to cart from: https://www.walmart.com/ip/99999000001 → https://www.walmart.com/cart
+2026-05-20 21:36:23,087 [walmart.purchase_executor] [PURCHASE] Arrived at: https://www.walmart.com/cart
+[2026-05-20 21:36:23] [MANAGER] [PURCHASE] Cart verified via __NEXT_DATA__ — 1 item(s)
+2026-05-20 21:36:23,097 [walmart.purchase_executor] [PURCHASE] Cart verified via __NEXT_DATA__ — 1 item(s)
+2026-05-20 21:36:23,097 [walmart.checkout_api] [HYBRID] Cart context ready in 1 polls: cartId=test-cart-id-001, 1 line(s), first=usItemId 99999000001 qty=1
+2026-05-20 21:36:23,098 [walmart.purchase_executor] [PURCHASE] Hybrid: bumping qty 1 → 3 via updateItems (cartId=test-cart-id-001)
+2026-05-20 21:36:23,106 [walmart.checkout_api] [HYBRID] updateItems POST ok: status=200 ms=6
+2026-05-20 21:36:23,106 [walmart.purchase_executor] [PURCHASE] Hybrid: qty committed=5 (target 3, checkoutable=True)
+2026-05-20 21:36:23,107 [walmart.purchase_executor] [PURCHASE] Cart: no Delivery tile found — may already be delivery-only
+[2026-05-20 21:36:23] [MANAGER] [PURCHASE] Clicking Checkout...
+2026-05-20 21:36:23,387 [walmart.purchase_executor] [PURCHASE] Checkout button clicked via realistic mouse trajectory at (81, 89)
+2026-05-20 21:36:23,587 [walmart.purchase_executor] [PURCHASE] URL reached checkout: https://www.walmart.com/checkout
+[2026-05-20 21:36:23] [MANAGER] [PURCHASE] On checkout page — URL: https://www.walmart.com/checkout
+[2026-05-20 21:36:23] [MANAGER] [PURCHASE] Reviewing cart (human think-time)...
+2026-05-20 21:36:26,652 [walmart.session_manager] [HARVESTER] Startup warmup complete — Tab 1 ready for fetch() stock checks
+2026-05-20 21:36:27,313 [walmart.purchase_executor] [PURCHASE] No fulfillment selector found — assuming delivery is default or step not shown
+[2026-05-20 21:36:27] [MANAGER] [PURCHASE] No fulfillment choice shown — continuing
+2026-05-20 21:36:27,318 [walmart.purchase_executor] [PURCHASE] Checking for delivery day modal after fulfillment selection...
+2026-05-20 21:36:27,525 [walmart.purchase_executor] [PURCHASE] _clear_cart: cart navigation timed out after 15s — treating as poisoned
+[2026-05-20 21:36:27] [MANAGER] PURCHASE SUCCESS: Sim Test Item — Order #test-pcid-12345
+2026-05-20 21:36:27,528 [walmart.purchase_manager] [MANAGER] Purchase success: Sim Test Item — test-pcid-12345
+2026-05-20 21:36:27,528 [walmart.session_manager] [SESSION] restore_monitor_cookies: skipping (page=False, snapshot_len=0)
+2026-05-20 21:36:27,528 [walmart.purchase_manager] [MANAGER] Cookie harvester resumed
+2026-05-20 21:36:27,528 [walmart.proxy_manager] [PROXY] Checkout proxy released: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335
+[2026-05-20 21:36:28] [MANAGER] [PURCHASE] Fast-path: Place Order already visible — skipping step loop
+[2026-05-20 21:36:28] [MANAGER] [PURCHASE] Reviewing shipping address (human think-time)...
+2026-05-20 21:36:31,342 [walmart.pie] [PIE] key fetched: key_id=test-pie-key-id-0 phase=0 L=2048
+2026-05-20 21:36:31,352 [walmart.checkout_api] [HYBRID] PIE submit OK status=200 ms=9 token=test-card-token
+[2026-05-20 21:36:31] [MANAGER] [PURCHASE] CVV submitted via PIE (no DOM keystrokes)
+2026-05-20 21:36:31,357 [walmart.purchase_executor] [PURCHASE] PIE CVV submit OK — skipping DOM entry. token=test-card-token
+[2026-05-20 21:36:31] [MANAGER] [PURCHASE] Reviewing order summary (human think-time)...
+2026-05-20 21:36:32,532 [walmart.purchase_manager] [MANAGER] Item 99999000001 still in stock but session is poisoned (cart_blocked=True, cb_open=False) — NOT re-queuing
+[2026-05-20 21:36:35] [MANAGER] [MONITOR] 0.2/s | 1 in stock | 0 out of stock
+2026-05-20 21:36:44,197 [walmart.checkout_api] [HYBRID] Cart context ready in 1 polls: cartId=test-cart-id-001, 1 line(s), first=usItemId 99999000001 qty=1
+[2026-05-20 21:36:44] [MANAGER] [PURCHASE] Hybrid: placing order via CreateContract...
+2026-05-20 21:36:44,202 [walmart.purchase_executor] [PURCHASE] Hybrid place-order: cartId=test-cart-id-001, 1 line(s)
+2026-05-20 21:36:44,212 [walmart.checkout_api] [HYBRID] CreateContract POST ok: status=200 ms=9
+[2026-05-20 21:36:44] [MANAGER] [PURCHASE] Hybrid ORDER PLACED — pcid=test-pcid-12345 $29.97 card *1234
+2026-05-20 21:36:44,217 [walmart.purchase_executor] [PURCHASE] Hybrid SUCCESS — pcid=test-pcid-12345 status=PLACED amount=$29.97 card=*1234 ms=16
+[2026-05-20 21:36:44] [MANAGER] [PURCHASE] ORDER PLACED! ID: test-pcid-12345
+2026-05-20 21:36:44,222 [walmart.purchase_executor] [PURCHASE] SUCCESS — order ID: test-pcid-12345 at https://www.walmart.com/thankyou?pcid=test-pcid-12345
+[2026-05-20 21:36:47] [MANAGER] [MANAGER] Walmart bot stopped
+2026-05-20 21:36:47,368 [walmart.sim.server] SimServer stopped
+  ✓ pcid received: test-pcid-12345
+  Latency (ATC → pcid): 22975ms
+
+  ✓ non-queue: purchase completed
+  ✓ queue: purchase completed
+  ✓ fast_drop: purchase completed
+
+Results: 3 passed, 0 failed
+2026-05-20 21:36:47,369 [walmart.session_manager] [SESSION] restore_monitor_cookies: skipping (page=False, snapshot_len=0)
+2026-05-20 21:36:47,369 [walmart.purchase_manager] [MANAGER] Cookie harvester resumed
+2026-05-20 21:36:47,369 [walmart.proxy_manager] [PROXY] Checkout proxy released: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335
+2026-05-20 21:36:52,382 [walmart.purchase_manager] [MANAGER] Item 99999000001 still in stock — sleeping 173s before re-queue (anti-detection cooldown)
+[2026-05-20 21:36:52] [MANAGER] [MANAGER] Test loop cooldown — 172s before next cycle (next at 21:39:45, set WALMART_TEST_LOOP_COOLDOWN=off to disable)
+[2026-05-20 21:37:22] [MANAGER] [MANAGER] Cooldown: 142s remaining (next cycle at 21:39:45)
+[2026-05-20 21:37:52] [MANAGER] [MANAGER] Cooldown: 112s remaining (next cycle at 21:39:45)
+[2026-05-20 21:38:22] [MANAGER] [MANAGER] Cooldown: 82s remaining (next cycle at 21:39:45)
+[2026-05-20 21:38:52] [MANAGER] [MANAGER] Cooldown: 52s remaining (next cycle at 21:39:45)
+[2026-05-20 21:39:22] [MANAGER] [MANAGER] Cooldown: 22s remaining (next cycle at 21:39:45)
+2026-05-20 21:39:45,028 [walmart.purchase_manager] [MANAGER] Item 99999000001 still in stock after purchase — re-queuing
+[2026-05-20 21:39:45] [MANAGER] In-stock signal: 99999000001 @ $None
+2026-05-20 21:39:45,031 [walmart.purchase_manager] [MANAGER] In-stock signal for 99999000001 — scheduling purchase
+2026-05-20 21:39:45,032 [walmart.purchase_manager] [MANAGER] Quantity resolved for 99999000001: qty=3 (orderLimit=3, desired=None, cap=10)
+2026-05-20 21:39:45,033 [walmart.purchase_manager] [MANAGER] Purchase task raised unhandled exception: 
+Traceback (most recent call last):
+  File "C:\Users\elric\Desktop\testScraper\walmart\purchase_manager.py", line 380, in _on_done
+    f.result()
+  File "C:\Users\elric\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\_base.py", line 447, in result
+    raise CancelledError()
+concurrent.futures._base.CancelledError
+2026-05-20 21:39:45,043 [walmart.proxy_manager] [PROXY] Checkout proxy acquired: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.154.172:jw569klxgs9c@brd.superproxy.io:33335
+[2026-05-20 21:39:45] [MANAGER] [MANAGER] Browser not ready — attempting restart...
+2026-05-20 21:39:45,046 [walmart.purchase_manager] [MANAGER] Browser not ready, restarting session
+[2026-05-20 21:39:45] [MANAGER] [SESSION] Starting browser...
+2026-05-20 21:39:45,050 [zendriver.core.browser] starting
+	executable :C:\Program Files\Google\Chrome\Application\chrome.exe
+
+arguments:
+--remote-allow-origins=*
+	--no-first-run
+	--no-service-autorun
+	--no-default-browser-check
+	--homepage=about:blank
+	--no-pings
+	--password-store=basic
+	--disable-infobars
+	--disable-breakpad
+	--disable-component-update
+	--disable-backgrounding-occluded-windows
+	--disable-renderer-backgrounding
+	--disable-background-networking
+	--disable-dev-shm-usage
+	--disable-features=IsolateOrigins,DisableLoadExtensionCommandLineSwitch,site-per-process
+	--disable-session-crashed-bubble
+	--disable-search-engine-choice-screen
+	--user-data-dir=C:\Users\elric\AppData\Local\Temp\e2e_walmart__ii3ue96
+	--disable-features=IsolateOrigins,site-per-process
+	--disable-session-crashed-bubble
+	--window-size=1920,1080
+	--lang=en-US
+	--disable-blink-features=AutomationControlled
+	--remote-debugging-host=127.0.0.1
+	--remote-debugging-port=58334
+	--webrtc-ip-handling-policy=disable_non_proxied_udp
+	--force-webrtc-ip-handling-policy
+	about:blank
+2026-05-20 21:39:45,149 [walmart.session_manager] [SESSION] restore_monitor_cookies: skipping (page=False, snapshot_len=0)
+2026-05-20 21:39:45,149 [walmart.purchase_manager] [MANAGER] Cookie harvester resumed
+2026-05-20 21:39:45,149 [walmart.proxy_manager] [PROXY] Checkout proxy released: http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.98.154.172:jw569klxgs9c@brd.superproxy.io:33335
+Exception ignored in: <coroutine object WalmartPurchaseManager._run_purchase at 0x0000026DB6B23130>
+Traceback (most recent call last):
+  File "C:\Users\elric\Desktop\testScraper\walmart\purchase_manager.py", line 567, in _run_purchase
+    await asyncio.sleep(_POST_PURCHASE_COOLDOWN)
+  File "C:\Users\elric\AppData\Local\Programs\Python\Python312\Lib\asyncio\tasks.py", line 659, in sleep
+    loop = events.get_running_loop()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: no running event loop
+2026-05-20 21:39:45,161 [asyncio] Task was destroyed but it is pending!
+task: <Task pending name='Task-7868' coro=<WalmartPurchaseManager._run_purchase() done, defined at C:\Users\elric\Desktop\testScraper\walmart\purchase_manager.py:395> wait_for=<Future pending cb=[Task.task_wakeup()]> cb=[_chain_future.<locals>._call_set_state() at C:\Users\elric\AppData\Local\Programs\Python\Python312\Lib\asyncio\futures.py:394]>

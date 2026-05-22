@@ -1,177 +1,148 @@
 {
   "products": [
     {
-      "tcin": "50270379",
-      "name": "Extra Sugar-Free Polar Ice Mint Chewing Gum - 35ct",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-50270379"
-    },
-    {
       "tcin": "1011206804",
       "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Elite Trainer Box",
-      "enabled": false
-    },
-    {
-      "tcin": "95138474",
-      "name": "Pokémon Trading Card Game: Mega Charizard Y Tin",
-      "enabled": false
-    },
-    {
-      "tcin": "91619960",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Twilight Masquerade Elite Trainer Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-1011206804"
     },
     {
       "tcin": "94681790",
       "name": "Pokémon Trading Card Game: Charizard X ex Ultra-Premium Collection",
-      "enabled": false
-    },
-    {
-      "tcin": "94636866",
-      "name": "Pokémon Trading Card Game: Unova Victini Illustration Collection",
-      "enabled": false
-    },
-    {
-      "tcin": "95138464",
-      "name": "Pokémon Trading Card Game: Mega Charizard X Tin",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94681790"
     },
     {
       "tcin": "1008581387",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-1008581387"
     },
     {
       "tcin": "95163305",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95163305"
     },
     {
       "tcin": "95163306",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Feraligatr ex Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95163306"
     },
     {
       "tcin": "95225595",
       "name": "Pokémon Trading Card Game: First Partner Illustration Collection Series 1",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95225595"
     },
     {
       "tcin": "95120834",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95120834"
     },
     {
       "tcin": "95082118",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Elite Trainer Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95082118"
     },
     {
       "tcin": "95093982",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Gardevoir",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95093982"
     },
     {
       "tcin": "95093981",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Lucario",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95093981"
     },
     {
       "tcin": "95093989",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes First Partners Deluxe Pin Collection",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-95093989"
     },
     {
       "tcin": "94681776",
       "name": "Pokémon Trading Card Game: Mega Evolution Elite Trainer Box - Lucario",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94681776"
     },
     {
       "tcin": "93954446",
       "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Booster Bundle",
-      "enabled": false
-    },
-    {
-      "tcin": "91619929",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet - Surging Sparks Booster Bundle",
-      "enabled": false
-    },
-    {
-      "tcin": "91619922",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet - Surging Sparks Elite Trainer Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-93954446"
     },
     {
       "tcin": "94681784",
       "name": "Pokémon Trading Card Game: Mega Evolution Elite Trainer Box - Gardevoir",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94681784"
     },
     {
       "tcin": "94860231",
       "name": "Pokémon Trading Card Game: Mega Evolution—Phantasmal Flames Elite Trainer Box",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94860231"
     },
     {
       "tcin": "94884496",
       "name": "Pokémon Trading Card Game: Mega Evolution—Phantasmal Flames Booster Bundle",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94884496"
     },
     {
       "tcin": "94300067",
       "name": "Pokémon Trading Card Game: Scarlet & Violet—Destined Rivals Booster Bundle",
-      "enabled": false
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-94300067"
     },
     {
       "tcin": "95298172",
       "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle",
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.target.com/p/-/A-95298172"
     },
     {
       "tcin": "1010679865",
       "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Display",
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.target.com/p/-/A-1010679865"
     },
     {
       "tcin": "95267143",
       "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box",
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.target.com/p/-/A-95267143"
     },
     {
       "tcin": "94886127",
       "name": "Pokémon Trading Card Game: Mega Evolution Booster Display",
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.target.com/p/-/A-94886127"
     },
     {
       "tcin": "94681782",
       "name": "Pokémon Trading Card Game: Mega Evolution Booster Bundle",
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.target.com/p/-/A-94681782"
     },
     {
       "tcin": "94300072",
       "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Super-Premium Collection",
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.target.com/p/-/A-94300072"
     },
     {
-      "tcin": "94724987",
-      "name": "Pokémon Trading Card Game: Blooming Waters Premium Collection",
-      "enabled": false,
-      "url": "https://www.target.com/p/-/A-94724987"
-    },
-    {
-      "tcin": "1010892073",
-      "name": "Pokémon Trading Card Game: Mega Moonlit Tin - Mega Clefable",
-      "enabled": false
-    },
-    {
-      "tcin": "1010892077",
-      "name": "Pokémon Trading Card Game: Mega Moonlit Tin - Mega Gengar",
-      "enabled": false
+      "tcin": "1011467802",
+      "name": "Product 1011467802 (new TCIN - unverified)",
+      "enabled": true,
+      "url": "https://www.target.com/p/-/A-1011467802"
     }
   ]
 }
