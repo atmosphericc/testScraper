@@ -140,7 +140,11 @@ RECYCLE_COOLDOWN_S = 60                # min time between recycle attempts per s
 
 # When this many consecutive errors hit a session in TabDispatcher, the
 # dispatcher flips s.state="crashed" so the watchdog will recycle it.
-CONSECUTIVE_ERROR_RECYCLE_THRESHOLD = 5
+# Raised 5 -> 10 (Fix #4, post-5/21 incident): at 5, a transient pool-wide
+# blip (e.g. a brief Shape hiccup or network stall) cascade-recycles many
+# sessions at once, amplifying the outage. 10 absorbs short blips while
+# still catching genuinely dead sessions.
+CONSECUTIVE_ERROR_RECYCLE_THRESHOLD = 10
 
 
 def _pinned_ip(url: str) -> str:
