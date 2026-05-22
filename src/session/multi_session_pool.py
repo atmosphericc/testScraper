@@ -129,6 +129,12 @@ HARVESTER_RELEVANT_COOKIES = {
 
 DEFAULT_REFRESH_INTERVAL_PER_SESSION_S = 1800     # each session keepalive every 30 min
 SETTLE_AFTER_NAV_S = 8
+# After the homepage nav, poll for the Target cookie set every
+# COOKIE_HARVEST_POLL_S up to COOKIE_HARVEST_TIMEOUT_S before giving up — a
+# slow BD proxy can take well past SETTLE_AFTER_NAV_S to finish writing the
+# Shape/Akamai cookies, and a single fixed-delay harvest then catches nothing.
+COOKIE_HARVEST_POLL_S = 3
+COOKIE_HARVEST_TIMEOUT_S = 30
 HOMEPAGE_URL = "https://www.target.com"
 DEFAULT_FORWARDER_BASE_PORT = 22000
 
@@ -387,8 +393,17 @@ class MultiSessionPool:
             t0 = time.time()
             s.browser = await uc.start(cfg)
             s.tab = await asyncio.wait_for(s.browser.get(HOMEPAGE_URL), timeout=30.0)
-            await asyncio.sleep(SETTLE_AFTER_NAV_S)
-            await self._refresh_cookies_from_tab(s)
+            # Poll for the Target cookie set rather than trusting one fixed
+            # settle — a slow proxy can take past SETTLE_AFTER_NAV_S before
+            # Shape/Akamai finish writing _abck/bm_sz/visitorId.
+            await self._await_session_cookies(s)
+            if not s.cookies or not s.visitor_id:
+                # "ready" with no usable cookies is dead weight — pick_session
+                # skips it forever. Treat as a failed launch so the watchdog
+                # recycles it (and Fix #6 escalates if it keeps failing).
+                raise RuntimeError(
+                    f"homepage nav harvested no usable cookies "
+                    f"(cookies={len(s.cookies)}, visitor_id={'set' if s.visitor_id else 'missing'})")
             s.last_homepage_nav_at = time.time()
             s.state = "ready"
             s.consecutive_errors = 0
@@ -424,6 +439,25 @@ class MultiSessionPool:
             s.cookies = new_cookies
             s.visitor_id = new_cookies.get("visitorId", s.visitor_id)
             s.harvested_at = time.time()
+
+    async def _await_session_cookies(self, s: SessionEntry):
+        """Poll the freshly-navigated tab for the Target cookie set. A slow BD
+        proxy can take past SETTLE_AFTER_NAV_S before Shape/Akamai finish
+        writing _abck/bm_sz/visitorId; a single fixed-delay harvest then
+        catches nothing and the session goes "ready" but unpickable
+        (observed repeatedly on 31.105.153.101). Returns as soon as a usable
+        cookie set is present, or after COOKIE_HARVEST_TIMEOUT_S — the caller
+        treats a still-empty result as a failed launch."""
+        await asyncio.sleep(SETTLE_AFTER_NAV_S)
+        deadline = time.time() + COOKIE_HARVEST_TIMEOUT_S
+        while True:
+            try:
+                await self._refresh_cookies_from_tab(s)
+            except Exception as e:
+                logger.debug(f"[MULTI_SESSION] {s.id} cookie harvest poll: {e}")
+            if (s.cookies and s.visitor_id) or time.time() >= deadline:
+                return
+            await asyncio.sleep(COOKIE_HARVEST_POLL_S)
 
     # ───────── keepalive ─────────
 
