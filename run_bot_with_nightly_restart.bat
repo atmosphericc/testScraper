@@ -53,5 +53,10 @@ set "EXITCODE=%ERRORLEVEL%"
 echo [%date% %time%] app.py exited code=%EXITCODE% >> "%RUNLOG%"
 echo.
 echo app.py exited (code=%EXITCODE%). Restarting in 10s -- press Ctrl+C to stop.
-timeout /t 10 /nobreak >nul
+REM `timeout` returns instantly when stdin isn't a true console (some launch
+REM contexts) — caused a 0.27s/relaunch crash-loop on 2026-05-22 that burned
+REM through 5 relaunches in <2s and clashed on Chrome's --user-data-dir lock
+REM (STATUS_DLL_INIT_FAILED). `ping` is the reliable batch-sleep idiom:
+REM 11 pings at 1s intervals = ~10s, no console dependency.
+ping -n 11 127.0.0.1 >nul
 goto loop
