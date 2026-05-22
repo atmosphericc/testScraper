@@ -203,6 +203,10 @@ class TabDispatcher:
                                   raw=result.get("__body"))
             # 4xx / 5xx — count as a soft failure for crash threshold, but
             # let ProxyState handle the actual park/burn decision via status code.
+            # Fix #5: timestamp 4xx (Shape block/throttle class) so
+            # MultiSessionPool.pick_session can steer away from a souring /16.
+            if 400 <= status < 500:
+                s.recent_4xx.append(time.time())
             s.consecutive_errors += 1
             return BulkResult(
                 s.id, s.proxy_ip, status, ms,

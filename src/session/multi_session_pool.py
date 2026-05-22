@@ -29,8 +29,10 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -146,10 +148,32 @@ RECYCLE_COOLDOWN_S = 60                # min time between recycle attempts per s
 # still catching genuinely dead sessions.
 CONSECUTIVE_ERROR_RECYCLE_THRESHOLD = 10
 
+# Fix #5 (post-5/21): subnet-aware session pick. Each session timestamps its
+# recent 4xx (Shape block/throttle-class) responses; pick_session sums them
+# per /16 and skips any /16 with >= SUBNET_4XX_EXCLUDE_THRESHOLD inside the
+# trailing RECENT_4XX_WINDOW_S, draining a souring subnet before it cascades.
+RECENT_4XX_WINDOW_S = 300
+SUBNET_4XX_EXCLUDE_THRESHOLD = 2
+
+# Fix #6 (post-5/21): Windows orphan-Chrome cleanup. After this many
+# consecutive launch failures, kill leftover chrome.exe pinned to this
+# session's profile dir; after the larger count, also rotate the (likely
+# corrupt) profile dir.
+ORPHAN_KILL_AFTER_FAILURES = 5
+PROFILE_ROTATE_AFTER_FAILURES = 10
+
 
 def _pinned_ip(url: str) -> str:
     m = re.search(r"-ip-([\d\.]+):", url)
     return m.group(1) if m else ""
+
+
+def _subnet_16(ip: str) -> str:
+    """First two octets of an IPv4 — the /16 a BD ISP IP shares with its
+    neighbors. BD allocates ISP IPs in /16 blocks, so Shape reputation hits
+    tend to cluster by /16."""
+    parts = ip.split(".")
+    return ".".join(parts[:2]) if len(parts) >= 2 else ip
 
 
 @dataclass
@@ -173,6 +197,8 @@ class SessionEntry:
     last_homepage_nav_at: float = 0.0
     consecutive_errors: int = 0
     crash_count: int = 0
+    consecutive_launch_failures: int = 0  # Fix #6: drives orphan-kill / profile rotate
+    recent_4xx: deque = field(default_factory=deque)  # Fix #5: recent 4xx timestamps
     state: str = "starting"              # starting | ready | refreshing | crashed | recycling
 
     def to_dict(self) -> dict:
@@ -366,6 +392,7 @@ class MultiSessionPool:
             s.last_homepage_nav_at = time.time()
             s.state = "ready"
             s.consecutive_errors = 0
+            s.consecutive_launch_failures = 0
             logger.info(f"[MULTI_SESSION] {s.id} ({s.proxy_ip}) ready "
                         f"cookies={len(s.cookies)} visitor_id={s.visitor_id[:8]}... "
                         f"({time.time()-t0:.1f}s)")
@@ -374,6 +401,14 @@ class MultiSessionPool:
             await self._teardown_browser(s)
             s.state = "crashed"
             s.crash_count += 1
+            s.consecutive_launch_failures += 1
+            # Fix #6: a stuck prior Chrome holding the profile's SingletonLock
+            # makes every relaunch fail; escalate cleanup as failures pile up.
+            if (sys.platform == "win32"
+                    and s.consecutive_launch_failures >= ORPHAN_KILL_AFTER_FAILURES):
+                await self._kill_orphan_chromes_for(s)
+            if s.consecutive_launch_failures >= PROFILE_ROTATE_AFTER_FAILURES:
+                self._rotate_profile_dir(s)
 
     async def _refresh_cookies_from_tab(self, s: SessionEntry):
         """Pull current cookies off the existing tab (no nav). Caller is
@@ -475,6 +510,57 @@ class MultiSessionPool:
             s.browser = None
         s.tab = None
 
+    async def _kill_orphan_chromes_for(self, s: SessionEntry):
+        """Windows-only (Fix #6): kill any leftover chrome.exe still pinned to
+        this session's profile dir. Repeated launch failures usually mean a
+        prior Chrome didn't die and is holding the profile's SingletonLock, so
+        every relaunch fails. Scoped to this session's profile path — never
+        touches the other pool Chromes or the user's own browser. The regex
+        boundary stops profile 's1' from also matching 's10'..'s16'."""
+        if sys.platform != "win32":
+            return
+        profile = str(s.profile_dir.resolve())
+        ps = (
+            f"$p='{profile}'; "
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+            "Where-Object { $_.CommandLine -match "
+            "([regex]::Escape($p) + '($|\\s|\")') } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+            "-ErrorAction SilentlyContinue }"
+        )
+        try:
+            await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                timeout=15, capture_output=True,
+            )
+            logger.warning(f"[MULTI_SESSION] {s.id} killed orphan chrome.exe "
+                            f"holding profile {s.profile_dir.name} "
+                            f"(after {s.consecutive_launch_failures} launch failures)")
+        except Exception as e:
+            logger.warning(f"[MULTI_SESSION] {s.id} orphan-kill failed: {e}")
+
+    def _rotate_profile_dir(self, s: SessionEntry):
+        """Fix #6: after PROFILE_ROTATE_AFTER_FAILURES consecutive launch
+        failures the profile dir itself is the prime suspect (corrupt
+        SingletonLock, broken prefs, half-written cookie DB). Move it aside
+        and start fresh — cookies are re-harvestable on the next launch."""
+        old = s.profile_dir
+        try:
+            if old.exists():
+                bak = old.with_name(f"{old.name}.corrupt.{int(time.time())}")
+                old.rename(bak)
+                logger.warning(f"[MULTI_SESSION] {s.id} rotated corrupt profile "
+                               f"dir -> {bak.name}")
+        except OSError as e:
+            logger.warning(f"[MULTI_SESSION] {s.id} profile rename failed ({e}); "
+                           f"wiping in place")
+            shutil.rmtree(old, ignore_errors=True)
+        try:
+            s.profile_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning(f"[MULTI_SESSION] {s.id} profile recreate failed: {e}")
+
     # ───────── persistence ─────────
 
     def _write_jar(self):
@@ -507,8 +593,15 @@ class MultiSessionPool:
     # ───────── worker-facing API ─────────
 
     def pick_session(self) -> Optional[SessionEntry]:
-        """Pick a random ready, non-busy session. None if no session is
-        currently available (all parked / busy / refreshing / crashed)."""
+        """Pick a random ready, non-busy session, biased away from souring
+        subnets. None if no session is available (all parked / busy /
+        refreshing / crashed).
+
+        Fix #5: any /16 with >= SUBNET_4XX_EXCLUDE_THRESHOLD 4xx responses in
+        the trailing RECENT_4XX_WINDOW_S is excluded from the pick, so a
+        subnet under Shape pressure is drained before it drags the pool down.
+        If excluding souring subnets would leave nothing, fall back to the
+        full ready set — availability beats avoidance."""
         ready = [s for s in self.sessions
                  if s.state == "ready"
                  and s.tab is not None
@@ -517,7 +610,29 @@ class MultiSessionPool:
                  and s.visitor_id]
         if not ready:
             return None
-        return random.choice(ready)
+        # Tally recent 4xx per /16, pruning each session's window in place.
+        now = time.time()
+        subnet_4xx: dict[str, int] = {}
+        for s in self.sessions:
+            if not s.recent_4xx:
+                continue
+            fresh = deque(t for t in s.recent_4xx
+                          if now - t <= RECENT_4XX_WINDOW_S)
+            if len(fresh) != len(s.recent_4xx):
+                s.recent_4xx = fresh
+            if fresh:
+                net = _subnet_16(s.proxy_ip)
+                subnet_4xx[net] = subnet_4xx.get(net, 0) + len(fresh)
+        healthy = [s for s in ready
+                   if subnet_4xx.get(_subnet_16(s.proxy_ip), 0)
+                   < SUBNET_4XX_EXCLUDE_THRESHOLD]
+        if healthy and len(healthy) < len(ready):
+            soured = sorted(n for n, c in subnet_4xx.items()
+                            if c >= SUBNET_4XX_EXCLUDE_THRESHOLD)
+            logger.debug(f"[MULTI_SESSION] pick_session steering away from "
+                         f"souring /16s {soured} "
+                         f"({len(ready) - len(healthy)} session(s) excluded)")
+        return random.choice(healthy if healthy else ready)
 
     def session_count(self) -> tuple[int, int]:
         """Return (ready_sessions, total_sessions)."""
