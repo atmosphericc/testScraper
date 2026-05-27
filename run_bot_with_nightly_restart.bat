@@ -19,7 +19,11 @@ REM ===========================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-set "PYTHON=%~dp0venv\Scripts\python.exe"
+REM Project venv is .venv (dot-prefixed). A separate `venv\` dir on disk is a
+REM broken minimal install missing zendriver/curl_cffi/etc. — pointing PYTHON
+REM there was the 2026-05-22 wrapper-failure root cause (ModuleNotFoundError:
+REM No module named 'zendriver' at app.py:36, exit code 1 in <1s).
+set "PYTHON=%~dp0.venv\Scripts\python.exe"
 set "LOGDIR=%~dp0logs"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 set "RUNLOG=%LOGDIR%\bot_restart_wrapper.log"

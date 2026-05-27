@@ -163,6 +163,26 @@ try:
 except Exception:
     pass
 
+# Guard zendriver Transaction.__call__: a late/duplicate CDP response can
+# call set_result on an already-done future, raising InvalidStateError that
+# kills the listener_loop. Once the loop dies, every awaiting CDP coroutine
+# hangs forever — the 2026-05-24 deadlock (~5h of dead-air after t≈03:23,
+# bot unkillable via Ctrl+C). patch_zendriver.py applies the same fix to the
+# venv source; this in-process patch is the belt-and-suspenders so a venv
+# rebuild can't silently regress.
+try:
+    import zendriver.core.connection as _zdconn
+    _orig_tx_call = _zdconn.Transaction.__call__
+
+    def _patched_tx_call(self, **response):
+        if self.done():
+            return
+        return _orig_tx_call(self, **response)
+
+    _zdconn.Transaction.__call__ = _patched_tx_call
+except Exception:
+    pass
+
 # Import our bulletproof modules
 from src.monitoring import StockMonitor
 from src.purchasing import BulletproofPurchaseManager
@@ -3953,6 +3973,19 @@ if __name__ == '__main__':
             print("\n[SYSTEM] Force-exit on second Ctrl+C")
             os._exit(1)
         _shutdown_started['flag'] = True
+
+        # Deadman: if the cleanup path below wedges (e.g. a CDP coroutine
+        # await that never resolves because the listener_loop died — the
+        # 2026-05-24 freeze), force-exit after 15s no matter what. Daemon
+        # thread so it can't itself prevent shutdown.
+        def _deadman():
+            time.sleep(15)
+            try:
+                os.write(2, b"\n[SYSTEM] Deadman: shutdown took >15s, force-exiting\n")
+            except Exception:
+                pass
+            os._exit(2)
+        threading.Thread(target=_deadman, daemon=True, name="ShutdownDeadman").start()
 
         print("\n[SYSTEM] Shutting down gracefully... (press Ctrl+C again to force-exit)")
         add_activity_log("Application shutting down", "info", "system")
