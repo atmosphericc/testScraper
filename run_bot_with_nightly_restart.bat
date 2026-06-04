@@ -19,11 +19,14 @@ REM ===========================================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-REM Project venv is .venv (dot-prefixed). A separate `venv\` dir on disk is a
-REM broken minimal install missing zendriver/curl_cffi/etc. — pointing PYTHON
-REM there was the 2026-05-22 wrapper-failure root cause (ModuleNotFoundError:
-REM No module named 'zendriver' at app.py:36, exit code 1 in <1s).
+REM Python venv path differs per machine: some boxes use .venv (dot-prefixed),
+REM this desktop uses venv (no dot) and it has the full deps. Auto-detect
+REM whichever actually exists on disk so the wrapper runs everywhere without a
+REM per-machine edit. Pointing at the wrong/missing one was BOTH the 2026-05-22
+REM failure (venv\ was a broken stub -> ModuleNotFoundError: zendriver) AND the
+REM 2026-06-04 failure (.venv\ absent on this desktop -> guard hang on boot).
 set "PYTHON=%~dp0.venv\Scripts\python.exe"
+if not exist "%PYTHON%" set "PYTHON=%~dp0venv\Scripts\python.exe"
 set "LOGDIR=%~dp0logs"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 set "RUNLOG=%LOGDIR%\bot_restart_wrapper.log"
@@ -37,9 +40,11 @@ REM cannot silently turn an unattended live run into a no-op (zero orders).
 set "TEST_MODE=false"
 
 if not exist "%PYTHON%" (
-    echo [ERROR] venv python not found at "%PYTHON%"
-    echo Create the venv first, then re-run.
-    pause
+    echo [ERROR] venv python not found — checked .venv\Scripts and venv\Scripts
+    echo Create the venv first, then re-run. Closing in ~30s.
+    REM Bounded wait via ping (not pause/timeout): pause hangs forever on an
+    REM unattended boot, and timeout returns instantly without a real console.
+    ping -n 31 127.0.0.1 >nul
     exit /b 1
 )
 
