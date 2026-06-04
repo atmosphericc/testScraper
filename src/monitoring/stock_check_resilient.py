@@ -38,7 +38,9 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.monitoring.proxy_preflight import preflight_validate
-from src.monitoring.tab_dispatcher import TabDispatcher, BulkResult
+from src.monitoring.tab_dispatcher import (
+    TabDispatcher, BulkResult, REDSKY_BULK, REDSKY_API_KEYS,
+)
 from src.proxy.proxy_state import ProxyState
 from src.session.multi_session_pool import MultiSessionPool
 
@@ -213,6 +215,17 @@ class ResilientStockChecker:
         self._tasks.append(asyncio.create_task(self._cloaking_alarm_loop(),
                                                name="cloaking_alarm"))
         self._tasks.append(asyncio.create_task(self._stats_loop(), name="stats"))
+        # Read-only diagnostic probes (added 2026-06-03). Independent of the
+        # sweep/purchase path; they never fire purchases. Purpose: make a
+        # "missed restock" self-diagnosing (real OOS vs stale edge cache vs
+        # Shape cloak). Disable with STOCK_DIAG_PROBES=0.
+        if os.environ.get("STOCK_DIAG_PROBES", "1") not in ("0", "false", "False"):
+            self._tasks.append(asyncio.create_task(
+                self._ground_truth_probe_loop(), name="ground_truth_probe"))
+            self._tasks.append(asyncio.create_task(
+                self._canary_loop(), name="canary"))
+            logger.info("[STOCK] diagnostic probes ON (ground-truth + canary, "
+                        "read-only) — STOCK_DIAG_PROBES=0 to disable")
         logger.info(
             f"[STOCK] started: sweeps/sec={self.target_sweeps_per_sec} "
             f"behavioral_mix={self.behavioral_mix_ratio:.2f} "
@@ -544,3 +557,154 @@ class ResilientStockChecker:
                 logger.info(f"[STOCK WATCH] {s.tcin}: in_stock={s.in_stock} "
                             f"avail={s.availability_status} "
                             f"last_clean_read={age:.0f}s ago")
+
+    # ───────── read-only diagnostic probes (never fire purchases) ─────────
+    # Three independent views of stock get logged so a later log review can
+    # tell WHY the bot saw OOS during a real drop:
+    #   * sweep hot-path  — the live detector (non-cache-busted, pool identity)
+    #   * GROUND-TRUTH    — cache-busted read, SAME pool identity. If it sees
+    #                       stock the hot-path missed => stale edge cache.
+    #   * CANARY          — cache-busted read through an INDEPENDENT identity
+    #                       (host-direct, no BD proxy / no pool cookies). If it
+    #                       sees stock the pool can't => the pool is being
+    #                       served CLOAKED OOS (Shape/Akamai soft-block) — the
+    #                       one failure the pool cannot detect about itself.
+    # Both loops are observational only: they log, they never call on_in_stock.
+
+    async def _ground_truth_probe_loop(self):
+        """Every 30s: cache-busted read of the FULL TCIN list through the pool;
+        flag any TCIN the sweep had OOS but the cache-bust shows IN_STOCK
+        (= stale edge cache). LOG ONLY."""
+        INTERVAL_S = 30.0
+        cycle = 0
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=INTERVAL_S)
+                return
+            except asyncio.TimeoutError:
+                pass
+            cycle += 1
+            try:
+                if self.dispatcher is None:
+                    continue
+                result = await self.dispatcher.dispatch_verify(self.tcins)
+                if result is None:
+                    if cycle % 5 == 1:
+                        logger.info("[GROUND-TRUTH] no ready session this cycle (skip)")
+                    continue
+                if result.http_status != 200 or not result.raw:
+                    logger.warning(
+                        f"[GROUND-TRUTH] pool cache-bust read FAILED "
+                        f"http={result.http_status} — pool may be throttled/tarpitted"
+                    )
+                    continue
+                parsed = self._parse_bulk(result.raw)
+                async with self._status_lock:
+                    hot = {t: s.in_stock for t, s in self._tcin_status.items()}
+                cb_in_stock = sorted(t for t, info in parsed.items()
+                                     if info.get("in_stock"))
+                stale = []
+                for t, info in parsed.items():
+                    if info.get("in_stock") and not hot.get(t, False):
+                        stale.append(t)
+                        logger.warning(
+                            f"[GROUND-TRUTH] *** STALE-CACHE *** tcin={t} "
+                            f"hotpath=OOS cachebust=IN_STOCK "
+                            f"avail={info.get('availability_status')} "
+                            f"— sweep was served a stale edge OOS"
+                        )
+                if cb_in_stock or stale or cycle % 5 == 1:
+                    logger.info(
+                        f"[GROUND-TRUTH] pool cache-bust ok: "
+                        f"in_stock={cb_in_stock or '[]'} ({len(parsed)} TCINs)"
+                    )
+                if cycle % 10 == 1:
+                    hot_in = sorted(t for t, v in hot.items() if v)
+                    logger.info(
+                        f"[STOCK TRACE] hotpath in_stock={hot_in or '[]'} of "
+                        f"{len(hot)} configured TCINs"
+                    )
+            except Exception:
+                logger.exception("[GROUND-TRUTH] probe cycle failed (non-fatal)")
+
+    async def _canary_loop(self):
+        """Every 30s: read the FULL TCIN list through an INDEPENDENT identity
+        (host-direct, no BD proxy / no pool cookies). If the clean channel sees
+        IN_STOCK while the pool sweep sees OOS => the pool is being served
+        CLOAKED data. LOG ONLY."""
+        INTERVAL_S = 30.0
+        tcins_csv = ",".join(self.tcins)
+        cycle = 0
+        fail_streak = 0
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=INTERVAL_S)
+                return
+            except asyncio.TimeoutError:
+                pass
+            cycle += 1
+            try:
+                http_status, body = await asyncio.to_thread(self._canary_fetch, tcins_csv)
+                if http_status != 200 or not body:
+                    if fail_streak == 0 or fail_streak % 10 == 0:
+                        logger.warning(
+                            f"[CANARY] clean-channel read failed http={http_status} "
+                            f"(streak={fail_streak + 1}) — host IP may itself be "
+                            f"blocked, or RedSky key/params changed"
+                        )
+                    fail_streak += 1
+                    continue
+                if fail_streak:
+                    logger.info(f"[CANARY] clean-channel recovered after {fail_streak} fails")
+                    fail_streak = 0
+                parsed = self._parse_bulk(body)
+                async with self._status_lock:
+                    hot = {t: s.in_stock for t, s in self._tcin_status.items()}
+                clean_in_stock = sorted(t for t, info in parsed.items()
+                                        if info.get("in_stock"))
+                cloak = []
+                for t, info in parsed.items():
+                    if info.get("in_stock") and not hot.get(t, False):
+                        cloak.append(t)
+                        logger.warning(
+                            f"[CANARY] *** CLOAK/FLAG SUSPECTED *** tcin={t} "
+                            f"pool=OOS clean=IN_STOCK "
+                            f"avail={info.get('availability_status')} "
+                            f"— clean identity sees stock the BD pool does not"
+                        )
+                if clean_in_stock or cloak or cycle % 5 == 1:
+                    logger.info(
+                        f"[CANARY] clean-channel ok: in_stock={clean_in_stock or '[]'} "
+                        f"({len(parsed)} TCINs){' CLOAK!' if cloak else ''}"
+                    )
+            except Exception:
+                logger.exception("[CANARY] cycle failed (non-fatal)")
+
+    def _canary_fetch(self, tcins_csv: str):
+        """Blocking RedSky read via the host's DIRECT connection (no BD proxy,
+        no pool cookies). Runs in a worker thread (asyncio.to_thread) so it
+        never blocks the event loop. Returns (http_status, parsed_json|None)."""
+        import urllib.request
+        import urllib.error
+        import json as _json
+        import ssl as _ssl
+        key = random.choice(REDSKY_API_KEYS)
+        url = (f"{REDSKY_BULK}?key={key}&tcins={tcins_csv}"
+               f"&store_id={self.store_id}&pricing_store_id={self.store_id}"
+               f"&has_pricing_context=true&has_promotions=true"
+               f"&_={int(time.time() * 1000)}{random.randint(1000, 9999)}")
+        req = urllib.request.Request(url, headers={
+            "accept": "application/json",
+            "accept-language": "en-US,en;q=0.9",
+            "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/131.0.0.0 Safari/537.36"),
+        })
+        try:
+            with urllib.request.urlopen(
+                    req, timeout=12, context=_ssl.create_default_context()) as r:
+                return r.status, _json.load(r)
+        except urllib.error.HTTPError as e:
+            return e.code, None
+        except Exception:
+            return 0, None

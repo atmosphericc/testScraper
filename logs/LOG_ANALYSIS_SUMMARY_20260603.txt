@@ -1,0 +1,360 @@
+================================================================================
+LOG ANALYSIS SUMMARY - Generated 2026-06-03
+Focus: June 1, June 2, June 3 (2026) runs
+Logs reviewed: logs/runs/run_20260602_022428.log  (Jun 2 launch #1, aborted)
+                logs/runs/run_20260602_022523.log  (Jun 2 real run)
+                logs/runs/run_20260603_014456.log  (Jun 3 run)
+                logs/runs/package.log               (master, 2026-05-27 -> 06-03)
+                logs/activity_log.pkl  logs/error_log.txt  logs/purchase_states.json
+                logs/bot_restart_wrapper.log
+                logs/purchases/purchase_95267143_20260602_022834.log
+                logs/purchases/purchase_*_20260529_*.log  (continuity)
+Prior report: logs/LOG_ANALYSIS_SUMMARY_20260529.txt
+
+CORRECTION (added after operator confirmed Prismatic ETB dropped ~02:35 Jun 3):
+  The June 3 miss was NOT coverage/offline as first written. SKU 1011206804
+  dropped at ~02:35 AM WHILE the bot was running and healthy, and the bot
+  failed to DETECT it. Root cause is a cold-item stock-detection blind spot
+  (ROOT CAUSE C0 below). The headline/June-3 sections are corrected accordingly.
+
+UPDATE 2 (soft-block / cloaking investigation, after operator pushed back on
+"not soft-blocked"):
+  Revised. The bot WAS being throttled/enforced-against on the Jun 3 run, just
+  later than 02:35. Two WHOLE-POOL synchronized timeout cascades (all ~16
+  sessions "flagged crashed after 10 consec timeout errors") hit at 03:09-03:19
+  and again 05:56-05:59; the run's first-ever 403s appeared 04:38+; one IP was
+  burned 04:48. That synchronized-timeout pattern = upstream enforcement
+  (Akamai/Shape tarpit), matching the Round-1 "all IPs flagged simultaneously"
+  incident, just as TIMEOUTS not a clean 403 wall.
+  ROOT CAUSE: the bot ran 3 RPS for 6.4h (~68.5k requests). Ops playbook
+  (RESILIENT_STACK_OPERATIONAL_NOTES.md) says 24/7 = 0.5 RPS, and 3 RPS is
+  validated only to 20 min; Round-1 sustained 3 RPS tripped Shape's
+  account-level flag at ~15 min / ~1,700 req. Jun 3 was ~40x that volume.
+  app.py:46 hard-defaults TARGET_SWEEPS_PER_SEC=3.0 and the wrapper never lowers
+  it -> the bot monitors 24/7 at the BURST rate. This is the deeper cause behind
+  the degradation and a credible mechanism for cloaked OOS reads.
+  ON THE 02:35 MISS SPECIFICALLY: cannot prove cloak-vs-cache-miss from logs.
+  At 02:35 stats were clean (0x403, ~0 err) and visible enforcement started
+  ~34 min later — but cloaking is a 200-OK + fake-OOS BY DESIGN, so "clean
+  stats" does NOT exonerate it. Cloak is now a live possibility, not dismissed.
+  Either way the fix set below (esp. FIX -1 rate cut) is the same.
+================================================================================
+
+HEADLINE
+================================================================================
+NOT hard IP-banned (no 403 wall) — but on long 3-RPS runs the BD pool IS getting
+throttled/enforced-against (Jun 3 had two whole-pool timeout cascades + the
+run's first 403s + 1 IP burned, all AFTER ~03:09). Whether the 02:35 drop read
+was a silent cloak or a cold-cache miss is unprovable from logs; "low 403 rate"
+does NOT rule out cloaking because cloaking serves clean 200s by design.
+The deeper cause is operating at 3 RPS 24/7 (6x the validated sustained rate).
+Baseline metrics for context (Jun 3: 10 x 403 in 68,531 sweeps = 0.015%;
+Jun 2 drop window: 0 x 403) describe the EARLY run only — they do not capture
+the mid/late-run cascades.
+
+THREE distinct things lost the drops:
+
+  0. DETECTION BLIND SPOT on a COLD item (NEW - this is what lost the Jun 3
+     Prismatic ETB).
+       - 1011206804 dropped ~02:35 AM Jun 3. The bot was up, healthy, sweeping
+         2.98/s with 0x403 at 02:35 - and never saw it go in stock (0 attempts).
+       - Live RedSky probe confirms 1011206804 is relationship_type_code 'SA'
+         (is_target_direct=True), so the PARSE FILTER did not drop it. The bulk
+         RedSky responses the bot received during the drop simply never showed
+         availability_status=IN_STOCK for it.
+       - Mechanism: the 3/sec hot-path sweep (dispatch_one_sweep) is NOT
+         cache-busted, so Akamai/RedSky can serve a stale OUT_OF_STOCK for the
+         cache TTL. The cache-BUSTED safety probe (dispatch_verify) only runs
+         for TCINs "ever seen in stock THIS run". A cold item that has never
+         been in stock this run gets ZERO cache-busted reads -> a brief drop is
+         invisible. June 3 fired 0 verify probes all day (vs 1,540 on Jun 2).
+       - This is the SAME 2026-05-22 "edge-cache stale OOS masked a restock"
+         root cause, only half-fixed (the fix protects warm items, not cold).
+
+  1. CART-AUTH 401 (lost the one drop we DID detect - Jun 2 ETB).
+       - June 2 02:28:34 the Chaos Rising ETB (95267143) dropped and WAS
+         detected in <1s. The single ATC attempt got HTTP 401 _ERR_AUTH_DENIED
+         (errorCode T83072242) three times in 0.56s and bailed
+         (atc_failed_api_mode). The item then stayed buyable for ~19 more
+         minutes (in_stock=True 02:28:34 -> 02:48:03) and the bot NEVER RETRIED.
+       - Flagged PRIORITY 1 on 5/29, still unfixed, now also hitting the ETB.
+
+  2. COVERAGE GAP (the bot was OFF entirely on some days).
+       - May 31 + June 1: the bot NEVER RAN. ~42h continuous dark
+         (May 30 08:32 shutdown -> Jun 2 02:24 next launch). Any drop those two
+         days was missed with nothing watching.
+       - June 3 after 08:12: bot manually Ctrl+C'd (which also kills the restart
+         wrapper). Any Jun 3 drop after 08:12 was also missed. (The 02:35
+         Prismatic drop was BEFORE that, so cause C0 not C2 owns it.)
+
+DIRECT ANSWERS TO YOUR QUESTIONS
+================================================================================
+Q: Did it ATTEMPT the June 3 Prismatic ETB / Chaos Booster Bundle / Chaos ETB?
+   A: NO - zero attempts on June 3. For the Prismatic ETB the cause is now known:
+      it DID drop at ~02:35 while the bot was live, but the bot never DETECTED it
+      (cold-item cache-bust blind spot, C0). 1011206804 has never once been
+      observed in stock in the entire 5/27-6/3 log despite being swept every
+      cycle - consistent with brief drops always landing in that blind spot.
+      For the Chaos Booster Bundle / Chaos ETB on Jun 3: also no in-stock signal
+      in-window. If they dropped at ~02:35 too, same C0 cause; if after 08:12,
+      C2 (offline). Their exact Jun 3 drop times would disambiguate.
+
+Q: Was the bot soft-locked or IP-banned on those days?
+   A: No IP ban and no detection soft-lock on any of the three days. The proxy
+      pool stayed fully healthy (17/17 IPs active, A=17). The ONLY block is on
+      the purchase/checkout path: a persistent 401 _ERR_AUTH_DENIED on the
+      add-to-cart write. That is an account/session-level "checkout soft-block,"
+      not an IP ban - and it is getting WORSE (see ESCALATION below).
+
+ESCALATION SIGNAL (new vs the 5/29 report)
+================================================================================
+On 5/29 the booster bundle 401'd but the SAME-session ETB ATC SUCCEEDED (201) -
+so the prior report judged the 401 "item-specific" to booster bundles.
+On 6/2 the ETB itself got the 401. The auth denial has spread from booster
+bundle -> ETB. That points away from "one tightened SKU rule" and toward the
+logged-in account / session being increasingly rejected for cart writes by
+Target's Shape/auth tier. Worth a manual checkout test on the account ASAP.
+
+================================================================================
+RUN-BY-RUN
+================================================================================
+
+JUNE 1 (and May 31)  --  NO RUN AT ALL
+  - bot_restart_wrapper.log: launches jump May 30 02:22 -> Jun 2 02:24.
+  - package.log: 0 lines dated 2026-06-01. activity_log.pkl: 0 entries.
+  - The bot was dark for ~42h (May 30 08:32 -> Jun 2 02:24). Any drop on
+    May 31 or Jun 1 was 100% missed - nothing was watching.
+  - Cause: the wrapper had been Ctrl+C'd on the May 30 morning stop (which
+    also kills the wrapper loop, see ROOT CAUSE C1), and nobody manually
+    re-started it on the 31st or the 1st. There is no scheduled auto-start.
+
+JUNE 2  --  ran 02:25:27 - 09:17:06 (~6h 52m); 1 drop caught, purchase failed
+  - 02:24:27 launch #1 -> init OK 02:24:33 -> MANUAL stop 02:24:36 (8s later).
+    (Not a crash. run_20260602_022428.log ends with a graceful Ctrl+C.)
+  - 02:25:22 launch #2 = the real run.
+  - 02:28:34  IN STOCK ['95267143'] (Chaos Rising ETB) - detected in <1s.
+  - 02:28:34-35  ONE purchase attempt:
+        ATC fetch -> 401 _ERR_AUTH_DENIED (T83072242)  (t=0.25s)
+        fast-retry -> 401                               (t=0.56s)
+        retry-2    -> 401  -> fall through to DOM fallback
+        "Skipping DOM polling (tab not on PDP, url=https://www.target.com/)"
+        -> bail: reason=atc_failed_api_mode, execution_time=0.99s
+    Why no DOM fallback: TARGET_FORCE_QTY_1=true skips PDP navigation, so the
+    purchase tab sits on the homepage; when the API 401s there is no product
+    page to click on, so it bails immediately.
+  - 02:28:34 -> 02:48:03  item stayed in_stock=True continuously (~19.5 min),
+    went OOS 02:48:33. NO further purchase attempt fired in that whole window
+    (the on_in_stock callback only fires on an OOS->in-stock TRANSITION; a
+    continuously-in-stock item never re-triggers - see ROOT CAUSE C3).
+  - Booster Bundle (95298172) and Prismatic ETB (1011206804) did NOT drop
+    on June 2 (no in-stock readings).
+  - Health: stock stats in the drop window showed 403=0, clean 200s. Cookies
+    healthy (watchdog: accessToken/idToken ~30d, refreshToken ~90d).
+  - 09:17:06 manual shutdown.
+
+JUNE 3  --  ran 01:48:42 - 08:11:45 (~6h 23m); Prismatic ETB dropped ~02:35
+            IN-WINDOW but was NOT detected; 0 attempts
+  - 68,531 sweeps @ 2.98/s.  200=67,884 (99.05%)  403=10 (0.015%)  other=618
+    (0.90%).  Sessions 16r/0c/0rc, pool A=17. Textbook-healthy detection infra.
+  - At 02:35:12 specifically: STOCK STATS t=2820.5s sweeps=8398 (2.98/s) 200=8396
+    403=0 other=1. The bot was fully up and sweeping normally during the drop.
+  - 1011206804 (Prismatic ETB) dropped ~02:35 (operator-confirmed) yet produced
+    ZERO in-stock reads. No [STOCK WATCH], no API_CYCLE IN STOCK, no purchase.
+    A single in_stock=True read fires the trigger immediately (no debounce), so
+    the bot genuinely never received an IN_STOCK response for it.
+  - WHY (ROOT CAUSE C0): the hot-path sweep is not cache-busted; the cache-bust
+    verify only covers items already seen in stock this run. June 3 fired 0
+    verify/cloak probes ALL DAY (grep: 0 events; Jun 2 had 1,540). So the cold
+    Prismatic ETB had no authoritative read to pierce a stale edge OOS during
+    its brief drop. Live probe confirms it is is_target_direct=True, so the
+    parse filter is NOT the cause.
+  - Contributing factor: drop duration. The Jun 2 ETB stayed up ~19 min and was
+    caught in <1s; a typical Prismatic drop is far shorter, which is exactly the
+    case the non-cache-busted cold path fails on. (RedSky shipping fulfillment
+    also commonly lags the website buy box by 30-90s on hot drops.)
+  - ~6 benign zendriver CDP reconnects (ConnectionResetError WinError 10054 ->
+    "enabling autodiscover targets"). Each self-healed; NOT the cause here (none
+    coincided with 02:35; sweeps continued at 2.98/s straight through).
+  - 08:12:02 MANUAL Ctrl+C shutdown ("press Ctrl+C again to force-exit"). The
+    wrapper logged no relaunch afterward -> bot dark after 08:12 (relevant only
+    to any Jun 3 drop that happened after 08:12, not the 02:35 Prismatic drop).
+
+================================================================================
+DROP / DETECTION CROSS-REFERENCE  (5/29 included for continuity)
+================================================================================
+Date  Window         Detected  Drop / SKU                  Outcome
+----- -------------- --------- --------------------------- -----------------------
+5/29  00:04-11:28       3      2x 95298172 (Bundle)        401 atc_failed (x2)
+                               1x 95267143 (ETB)           201 then checkout 429
+5/30  02:22-08:32       0      none in window              -
+5/31  OFFLINE          n/a     unknown                     missed (no bot running)
+6/1   OFFLINE          n/a     unknown                     missed (no bot running)
+6/2   02:25-09:17       1      1x 95267143 (ETB) @02:28    401 atc_failed_api_mode
+                                                           (then 19 min idle, no retry)
+6/3   01:48-08:12       0(!)   1011206804 (Prismatic ETB)  MISSED - dropped ~02:35
+                               @~02:35, IN-WINDOW           in-window but NOT detected
+                                                           (cold-item cache-bust gap, C0)
+6/3   08:12-onward     OFFLINE any later Bundle/Chaos ETB   missed (bot Ctrl+C'd
+                               drop (time unconfirmed)       at 08:12, never relaunched)
+
+Detection-to-trigger latency on 6/2: <1s (02:28:34 in-stock -> 02:28:34 trigger).
+Detection is fast and reliable. The losses are coverage + purchase-path, not
+detection.
+
+================================================================================
+PURCHASE FAILURE ROOT-CAUSE
+================================================================================
+The ATC 401 _ERR_AUTH_DENIED (T83072242) signature, every occurrence:
+    5/29 02:04  95298172  401  (headers 2h stale)
+    5/29 02:15  95298172  401  (headers FRESH 8-15s -> not a staleness problem)
+    5/29 02:25  95267143  201  <-- cart succeeded; failed later at checkout (429)
+    6/2  02:28  95267143  401  <-- ETB now also 401s
+T83072242 / _ERR_AUTH_DENIED is Target's IBM-Commerce auth-denied path: the
+auth context attached to the cart_items POST was rejected. Cookies being present
+and unexpired (watchdog "healthy") does NOT mean the auth/Shape context is
+accepted for a state-changing cart write. Leading hypotheses (from 5/29, still
+open): (i) ATC POST missing a PDP-derived token because TARGET_FORCE_QTY_1=true
+skips the PDP nav; (ii) the warmup-tab visitor session has drifted from the
+logged-in member session; (iii) account-level flag/limit. The 6/2 spread to the
+ETB makes (ii)/(iii) more likely than a per-SKU rule.
+
+================================================================================
+WHAT WENT WRONG  (ranked by impact on "we didn't get it")
+================================================================================
+C0  COLD-ITEM DETECTION BLIND SPOT -- lost the Jun 3 Prismatic ETB (02:35,
+    in-window, bot healthy). The 3/sec hot-path sweep (dispatch_one_sweep,
+    cache_bust=False) can be served a stale Akamai/RedSky edge OUT_OF_STOCK.
+    The cache-busted authoritative read (dispatch_verify, cache_bust=True) only
+    runs for TCINs already in _ever_seen_in_stock this run. An item that has
+    NOT yet been seen in stock this run therefore never gets a cache-busted
+    read, so a brief drop behind a stale edge entry is invisible. Jun 3 fired
+    0 verify probes all day. Same class as the documented 2026-05-22 missed
+    drop; the fix then only covered warm items. NOT a parse-filter bug
+    (1011206804 is is_target_direct=True, verified by live RedSky probe) and
+    NOT IP/coverage.
+
+C1  COVERAGE / OFFLINE  -- biggest cause of misses.
+    The bot only runs when manually started, roughly 02:00-08:00. Stopping it
+    each morning with Ctrl+C also kills the crash-wrapper loop (Ctrl+C ->
+    "Terminate batch job? Y" exits run_bot_with_nightly_restart.bat itself).
+    The Startup shortcut only relaunches on reboot+logon, NOT on a schedule.
+    Net: after every morning stop the bot is dark until the next manual start.
+    -> May 31 + Jun 1 = 0 runs; Jun 3 drops after 08:12 = missed.
+
+C2  CART-AUTH 401 _ERR_AUTH_DENIED  -- lost the one drop we caught (6/2 ETB).
+    Known since 5/29, listed PRIORITY 1 in the last report, never fixed,
+    now also hitting the ETB.
+
+C3  NO RETRY WHILE STILL IN STOCK  -- amplifies C2.
+    6/2: the ETB was buyable for ~19.5 min; the bot attempted once (failed in
+    1s) and sat idle the rest of the window because purchase only re-arms on an
+    OOS->in-stock transition. Target 401s are intermittent (same ETB got a 201
+    on 5/29) - even without a perfect auth fix, retrying for 19 minutes would
+    very likely have converted.
+
+(Non-issues confirmed: no IP ban; proxy pool 17/17 healthy; zendriver
+ConnectionReset reconnects are benign; "other=618" = 0.9% transient timeouts;
+the Jun 2 launch #1 8-second run was a manual restart, not a crash.)
+
+================================================================================
+WHAT TO FIX  (ranked; P1/P2 carried over from 5/29 and still open)
+================================================================================
+FIX -1 (NEW, HIGHEST priority) -- STOP RUNNING 3 RPS 24/7. This is the root of
+   the pool throttling on Jun 3 and a credible mechanism for cloaked OOS reads.
+   - Sustained monitoring at 0.5 RPS (ops-notes Mode A). Per-TCIN refresh still
+     ~9s — fast enough to catch a 30-90s drop, and low enough to stay unflagged
+     so reads stay TRUTHFUL.
+   - Bump to 3 RPS only inside the tight announced drop window, then back to ~1
+     RPS once stock is seen / orders fire. (ops-notes Mode C, not yet built —
+     worth building: dynamic rate.)
+   - Concretely: set TARGET_SWEEPS_PER_SEC=0.5 in run_bot_with_nightly_restart
+     .bat (overrides the app.py:46 default of 3.0).
+   - Add a CLOAK CANARY: during any known in-stock window, read the same TCIN
+     through (a) the BD pool and (b) a clean residential IP; pool=OOS while
+     clean=IN_STOCK proves cloaking. Run continuously as an alarm. This is the
+     only way to DEFINITIVELY settle cloak-vs-cache-miss.
+     >>> IMPLEMENTED 2026-06-03 (read-only): src/monitoring/stock_check_resilient
+     .py now runs two diagnostic loops every 30s, gated by STOCK_DIAG_PROBES
+     (default on): _canary_loop (host-direct clean-identity read -> logs
+     "[CANARY] *** CLOAK/FLAG SUSPECTED ***" when clean sees stock the pool
+     doesn't) and _ground_truth_probe_loop (pool cache-bust read -> logs
+     "[GROUND-TRUTH] *** STALE-CACHE ***" when cache-bust beats the sweep).
+     Both LOG ONLY — they never fire purchases, so functionality is unchanged.
+     Truth table: pool-OOS + cachebust-IN_STOCK = stale cache; pool-OOS +
+     canary-IN_STOCK = cloak/flag; all-OOS but buyable on web = RedSky lag.
+
+FIX 0 (was top priority) -- CLOSE THE COLD-ITEM DETECTION BLIND SPOT.
+   This is what lost the Prismatic ETB on Jun 3. Options (cheapest first):
+   - Run a cache-busted sweep over ALL configured TCINs on a fixed cadence
+     (e.g. every 20-30s), independent of _ever_seen_in_stock. dispatch_verify
+     already exists and already cache-busts; just feed it the full TCIN list
+     periodically instead of only the warm set. 23 TCINs = 1 chunk = 1 extra
+     request per cadence; negligible cost.
+   - OR cache-bust a rotating fraction of the hot-path sweep itself (e.g. every
+     Nth dispatch_one_sweep sets cache_bust=True) so no item is ever read only
+     from a potentially-stale edge entry.
+   - Add a cheap secondary availability signal to cross-check shipping_options
+     (e.g. fulfillment.sold_out flip, or the PDP __PRELOADED_STATE__ /
+     available_to_promise) so a RedSky shipping-signal lag doesn't fully blind
+     the bot during a brief drop.
+   - Add a per-TCIN "last seen in stock" + a loud log line when a CONFIGURED
+     TCIN goes from never-seen to a cache-bust IN_STOCK, so future cold-item
+     catches are visible in the run log.
+
+FIX 1 (was P2) -- CLOSE THE DARK WINDOW. Still needed for May31/Jun1 (no run)
+   and any post-08:12 drops.
+   - Simplest: run the bot 24/7. Detection is cheap and the IPs are not being
+     banned, so there's little downside to not stopping each morning.
+   - If it must be stopped/started: add a Windows Task Scheduler job that
+     launches run_bot_with_nightly_restart.bat on a daily trigger AND on
+     "workstation unlock," with "run task as soon as possible after a missed
+     start." That survives the Ctrl+C-kills-the-wrapper problem and the
+     May31/Jun1 "nobody started it" problem. Do not rely on the Startup
+     shortcut alone (reboot-only).
+   - Stop the bot with the dashboard/SIGTERM rather than Ctrl+C in the wrapper
+     console, so the wrapper loop keeps supervising.
+
+FIX 2 (was P1) -- KILL THE 401 _ERR_AUTH_DENIED.
+   - Capture one real manual ATC POST (DevTools/mitmproxy) for 95267143 and
+     diff request headers/body vs what purchase_executor.py sends in API mode
+     (x-api-key, x-application-name, authorization bearer, x-request-tracing,
+     any PDP-derived reference header).
+   - Test TARGET_FORCE_QTY_1=false (let it do the PDP nav) - the skipped nav is
+     the prime suspect for a missing server-side token AND it restores the DOM
+     click fallback that API-mode currently forgoes.
+   - On a 401, add a fallback that navigates to the PDP and does a real button
+     click (instead of bailing with atc_failed_api_mode on the homepage).
+
+FIX 3 (new) -- RETRY WHILE IN STOCK.
+   - In the purchase manager, while a TCIN is in_stock=True and not yet
+     SUCCESS, re-fire the attempt every ~3-5s up to the in-stock duration (cap
+     e.g. 60-90s, refreshing Shape headers each time). Do NOT permanently mark
+     a TCIN "failed" after a single transient ATC failure while it is still
+     buyable. This single change would have given ~200+ extra attempts in the
+     6/2 window instead of 1.
+
+FIX 4 (new) -- VERIFY ACCOUNT CHECKOUT HEALTH.
+   - Because the 401 has spread from the bundle to the ETB, manually confirm
+     the logged-in account can still add-to-cart + reach checkout in a normal
+     browser. If it can't, the session/account is flagged and no header tweak
+     will help - re-auth or rotate the purchasing account.
+
+CARRIED-OVER LOWER PRIORITY (unchanged from 5/29): calm the CLOAKING ALARM
+noise; refresh the Shape ring during quiet periods (300s eviction leaves the
+first drop with minimal-headroom headers); add a "drops attempted vs converted"
+dashboard metric (currently 0-for-everything-detected).
+
+================================================================================
+METRICS
+================================================================================
+Run                 Duration  Sweeps   200%    403%    other%  In-stock  Conv
+2026-05-31          --        --       --      --      --      OFFLINE   --
+2026-06-01          --        --       --      --      --      OFFLINE   --
+2026-06-02 02:25    6h 52m    ~73k     ~99%    ~0%     ~1%     1 (ETB)   0/1
+2026-06-03 01:48    6h 23m    68,531   99.05%  0.015%  0.90%   0         n/a
+
+Cart-auth conversion since 5/29: 0 for 4 detected drops (5/29 x3, 6/2 x1).
+That 0/N is the only number that matters and it is unchanged. Detection and IP
+health remain excellent; the entire problem is (a) being offline at drop time
+and (b) the 401 on the cart write + no retry.
+================================================================================
