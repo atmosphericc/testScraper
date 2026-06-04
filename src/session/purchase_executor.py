@@ -712,9 +712,13 @@ class PurchaseExecutor:
             self._warmup_tabs[idx] = None
             return None
 
-    async def _refresh_on_tab(self, idx: int) -> bool:
+    async def _refresh_on_tab(self, idx: int, force_fresh: bool = False) -> bool:
         """Fire a /cart re-nav + dummy POST on warmup tab `idx` and wait for
-        the interceptor to record a fresh capture. Returns True on success."""
+        the interceptor to record a fresh capture. Returns True on success.
+
+        force_fresh=True always performs the /cart reload even if the tab navved
+        <90s ago — used on the ATC 401 recovery path so Target's app reloads and
+        can mint a fresh write/access token (a warm tab reuses the stale one)."""
         browser = self.session_manager.browser
         if not browser:
             return False
@@ -731,7 +735,7 @@ class PurchaseExecutor:
         last_nav = self._warmup_tab_cart_ts.get(idx, 0.0)
         cart_nav_age = (now - last_nav) if last_nav else 999
 
-        if cart_nav_age < 90:
+        if cart_nav_age < 90 and not force_fresh:
             print(f"[WARMUP#{idx}] Skipping cart re-nav (last nav {cart_nav_age:.0f}s ago, tab still warm)")
             fresh_nav = False
         else:
@@ -861,8 +865,14 @@ class PurchaseExecutor:
             self._warmup_refill_tasks.append(task)
             print(f"[WARMUP_REFILL] Spawned background refill task for tab #{idx}")
 
-    async def warm_shape_headers(self) -> bool:
+    async def warm_shape_headers(self, force_fresh: bool = False) -> bool:
         """Refresh Shape headers via cart page visit on a pool warmup tab.
+
+        force_fresh=True forces a real /cart reload (bypassing the <90s warm-tab
+        skip) so Target's own app re-initializes and gets a chance to refresh the
+        expired write/access token — the documented remedy for an ATC 401
+        (TARGET_CHECKOUT_API.md, Endpoint 1). Used by the purchase manager's
+        retry-while-in-stock loop between ATC attempts.
 
         Uses round-robin tab selection across `_warmup_pool_size` persistent
         tabs. Each tab has its own CDP interceptor and feeds the same
@@ -880,13 +890,13 @@ class PurchaseExecutor:
             idx = self._warmup_rr_idx % self._warmup_pool_size
             self._warmup_rr_idx = (self._warmup_rr_idx + 1) % self._warmup_pool_size
 
-            ok = await self._refresh_on_tab(idx)
+            ok = await self._refresh_on_tab(idx, force_fresh=force_fresh)
             if not ok and self._warmup_pool_size > 1:
                 # If the chosen tab failed, try the next one in the pool
                 # (single fallback hop) before reporting failure.
                 alt = (idx + 1) % self._warmup_pool_size
                 print(f"[WARMUP] Primary tab #{idx} failed, trying fallback #{alt}")
-                ok = await self._refresh_on_tab(alt)
+                ok = await self._refresh_on_tab(alt, force_fresh=force_fresh)
             if ok:
                 # Pool is healthy enough to keep refilling in the background.
                 self._start_background_refill()

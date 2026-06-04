@@ -1089,20 +1089,89 @@ class BulletproofPurchaseManager:
                     qty = max(1, int(max_qty or 1))
                     if qty != 1:
                         print(f"[REAL_PURCHASE_THREAD] [QTY] qty={qty} from RedSky purchase_limit (executor will skip PDP poll)")
-                    # Submit to the Worker's own loop so N workers run concurrently.
-                    if worker is not None:
-                        future = worker.run_async(
-                            target_purchase_executor.execute_purchase(tcin, quantity=qty)
-                        )
-                    else:
-                        future = target_session_manager.submit_async_task(
-                            target_purchase_executor.execute_purchase(tcin, quantity=qty)
-                        )
+                    # --- Retry-while-in-stock (deferred bug C3) ------------------
+                    # A single transient ATC failure (atc_failed_api_mode / 401 /
+                    # rate-limit / race) used to abandon the drop, even though the
+                    # item typically stays buyable for minutes (06-02 ETB stayed
+                    # in stock ~19.5 min after one failed shot, never retried).
+                    # The 401 is INTERMITTENT — 05-29 the SAME session got ATC 201
+                    # on the ETB while the bundle 401'd — so re-firing the API ATC
+                    # across a bounded window converts cases a one-shot abandons.
+                    # 100% API path — no DOM clicking, no architecture change.
+                    _retry_on = os.environ.get('TARGET_RETRY_WHILE_IN_STOCK', '1') == '1'
+                    _retry_budget_s = float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '75'))
+                    _retry_max = int(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_MAX', '24'))
+                    _retry_deadline = time.time() + _retry_budget_s
+                    # Reasons worth re-firing on. SAFETY (drop-readiness audit 2026-06-04):
+                    # retry ONLY on failures that provably occur BEFORE any place-order POST,
+                    # so a retry can never double-buy. Removed the two POST-submit reasons
+                    # 'checkout_navigation_failed' and 'lock_timeout' — a committed-but-
+                    # ambiguous order (lost/slow confirmation, or a place-order hang that
+                    # surfaces as lock_timeout) returns one of those, and re-firing would buy
+                    # a SECOND real unit. The intermittent 401 _ERR_AUTH_DENIED still lands as
+                    # 'atc_failed_api_mode' (pre-cart), so C3's whole purpose is preserved.
+                    # Replaced the dead key 'atc_button_not_ready' (the executor never returns
+                    # it) with 'button_not_found', the real pre-submit string — recovers a
+                    # DOM-fallback missed-conversion without any double-buy exposure.
+                    _transient_reasons = {
+                        'atc_failed_api_mode', 'rate_limited_429',
+                        'atc_evaluate_timeout', 'page_not_ready', 'button_not_found',
+                    }
+                    # Substrings that mean the item is genuinely gone — stop now.
+                    _terminal_tokens = ('oos', 'out_of_stock', 'sold_out', 'reservation', 'unavailable')
 
-                    # Wait for result with timeout
-                    result = future.result(timeout=150)
+                    _attempt_n = 0
+                    while True:
+                        _attempt_n += 1
+                        # Submit to the Worker's own loop so N workers run concurrently.
+                        if worker is not None:
+                            future = worker.run_async(
+                                target_purchase_executor.execute_purchase(tcin, quantity=qty)
+                            )
+                        else:
+                            future = target_session_manager.submit_async_task(
+                                target_purchase_executor.execute_purchase(tcin, quantity=qty)
+                            )
 
-                    print(f"[REAL_PURCHASE_THREAD] [OK] Purchase execution completed: {result}")
+                        # Wait for result with timeout
+                        result = future.result(timeout=150)
+
+                        print(f"[REAL_PURCHASE_THREAD] [OK] Purchase execution completed "
+                              f"(attempt {_attempt_n}): {result}")
+
+                        if not _retry_on or result.get('success'):
+                            break
+                        _reason = str(result.get('reason', '')).lower()
+                        _err = str(result.get('error', '')).lower()
+                        if any(t in _reason or t in _err for t in _terminal_tokens):
+                            print(f"[REAL_PURCHASE_THREAD] Terminal reason '{_reason}' — item gone, not retrying")
+                            break
+                        if _reason not in _transient_reasons:
+                            print(f"[REAL_PURCHASE_THREAD] Reason '{_reason}' not transient — not retrying")
+                            break
+                        if _attempt_n >= _retry_max or time.time() >= _retry_deadline:
+                            print(f"[REAL_PURCHASE_THREAD] Retry-while-in-stock budget spent "
+                                  f"(attempts={_attempt_n}, deadline_hit={time.time() >= _retry_deadline}) "
+                                  f"— finalizing as '{_reason}'")
+                            break
+                        # Transient failure, presumed still in stock. Force a REAL
+                        # warmup-tab reload so Target's app can refresh the expired
+                        # write token (the documented 401 remedy), then re-fire.
+                        print(f"[REAL_PURCHASE_THREAD] Transient ATC failure '{_reason}' "
+                              f"(attempt {_attempt_n}) — force re-warm + retry while in stock "
+                              f"(t-left={max(0.0, _retry_deadline - time.time()):.0f}s)")
+                        try:
+                            if worker is not None:
+                                worker.run_async(
+                                    target_purchase_executor.warm_shape_headers(force_fresh=True)
+                                ).result(timeout=25)
+                            else:
+                                target_session_manager.submit_async_task(
+                                    target_purchase_executor.warm_shape_headers(force_fresh=True)
+                                ).result(timeout=25)
+                        except Exception as _warm_err:
+                            print(f"[REAL_PURCHASE_THREAD] Pre-retry re-warm failed: {_warm_err}")
+                        time.sleep(random.uniform(1.5, 3.0))
 
                     # CRITICAL: Update state ATOMICALLY with lock held
                     # This prevents race condition where next cycle sees stale "attempting" status

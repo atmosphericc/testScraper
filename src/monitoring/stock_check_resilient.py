@@ -149,6 +149,17 @@ class ResilientStockChecker:
         self._verify_on_cloak = os.environ.get(
             "RESILIENT_VERIFY_ON_CLOAK", "1").strip().lower() in ("1", "true", "yes")
 
+        # C0 FIX — close the cold-item detection blind spot. The cloaking-alarm
+        # verify above only re-probes _ever_seen_in_stock TCINs, so an item that
+        # has NEVER been in stock this run (e.g. the 06-03 Prismatic ETB that
+        # dropped in-window and was never detected) gets zero cache-busted reads
+        # and a brief drop is invisible. The ground-truth probe already cache-
+        # busts the FULL list every 30s; when this flag is on, a TCIN it finds
+        # IN_STOCK while the sweep had OOS fires a real purchase instead of just
+        # logging. Default ON. Disable with RESILIENT_GROUND_TRUTH_FIRES=0.
+        self._ground_truth_fires = os.environ.get(
+            "RESILIENT_GROUND_TRUTH_FIRES", "1").strip().lower() in ("1", "true", "yes")
+
         # Stats
         self._total_dispatched = 0
         self._total_200 = 0
@@ -215,17 +226,19 @@ class ResilientStockChecker:
         self._tasks.append(asyncio.create_task(self._cloaking_alarm_loop(),
                                                name="cloaking_alarm"))
         self._tasks.append(asyncio.create_task(self._stats_loop(), name="stats"))
-        # Read-only diagnostic probes (added 2026-06-03). Independent of the
-        # sweep/purchase path; they never fire purchases. Purpose: make a
-        # "missed restock" self-diagnosing (real OOS vs stale edge cache vs
-        # Shape cloak). Disable with STOCK_DIAG_PROBES=0.
+        # Diagnostic probes (added 2026-06-03). Purpose: make a "missed restock"
+        # self-diagnosing (real OOS vs stale edge cache vs Shape cloak). The canary
+        # is read-only; the ground-truth probe ALSO fires a real purchase on a
+        # cold/stale cache-bust hit when RESILIENT_GROUND_TRUTH_FIRES=1 (default,
+        # C0 fix 2026-06-04). Disable both with STOCK_DIAG_PROBES=0.
         if os.environ.get("STOCK_DIAG_PROBES", "1") not in ("0", "false", "False"):
             self._tasks.append(asyncio.create_task(
                 self._ground_truth_probe_loop(), name="ground_truth_probe"))
             self._tasks.append(asyncio.create_task(
                 self._canary_loop(), name="canary"))
-            logger.info("[STOCK] diagnostic probes ON (ground-truth + canary, "
-                        "read-only) — STOCK_DIAG_PROBES=0 to disable")
+            logger.info("[STOCK] diagnostic probes ON (ground-truth fires purchases "
+                        "when RESILIENT_GROUND_TRUTH_FIRES=1; canary read-only) "
+                        "— STOCK_DIAG_PROBES=0 to disable")
         logger.info(
             f"[STOCK] started: sweeps/sec={self.target_sweeps_per_sec} "
             f"behavioral_mix={self.behavioral_mix_ratio:.2f} "
@@ -558,7 +571,7 @@ class ResilientStockChecker:
                             f"avail={s.availability_status} "
                             f"last_clean_read={age:.0f}s ago")
 
-    # ───────── read-only diagnostic probes (never fire purchases) ─────────
+    # ───────── diagnostic probes (ground-truth CAN fire; canary read-only) ─────────
     # Three independent views of stock get logged so a later log review can
     # tell WHY the bot saw OOS during a real drop:
     #   * sweep hot-path  — the live detector (non-cache-busted, pool identity)
@@ -569,12 +582,17 @@ class ResilientStockChecker:
     #                       sees stock the pool can't => the pool is being
     #                       served CLOAKED OOS (Shape/Akamai soft-block) — the
     #                       one failure the pool cannot detect about itself.
-    # Both loops are observational only: they log, they never call on_in_stock.
+    # The CANARY loop is observational only (logs, never calls on_in_stock). The
+    # GROUND-TRUTH loop also logs, but when RESILIENT_GROUND_TRUTH_FIRES=1 (default)
+    # it ALSO calls on_in_stock on a cold/stale cache-bust hit the sweep missed —
+    # i.e. it can start a REAL purchase (C0 fix, 2026-06-04). See _ground_truth_probe_loop.
 
     async def _ground_truth_probe_loop(self):
         """Every 30s: cache-busted read of the FULL TCIN list through the pool;
         flag any TCIN the sweep had OOS but the cache-bust shows IN_STOCK
-        (= stale edge cache). LOG ONLY."""
+        (= stale edge cache). Logs always; additionally FIRES on_in_stock for such
+        a TCIN when RESILIENT_GROUND_TRUTH_FIRES=1 (default) — the C0 cold/stale
+        catch — so this loop can start a real purchase, not just log."""
         INTERVAL_S = 30.0
         cycle = 0
         while not self._stop_event.is_set():
@@ -613,6 +631,41 @@ class ResilientStockChecker:
                             f"avail={info.get('availability_status')} "
                             f"— sweep was served a stale edge OOS"
                         )
+                # C0 FIX — act on full-list cache-bust hits the sweep missed.
+                # Covers cold items (never _ever_seen_in_stock) AND stale-cache
+                # warm items. Mirrors _verify_in_stock_candidates: update status
+                # + fire on a real OOS->in-stock transition. Dedupe is safe — we
+                # set in_stock=True so the next cycle won't re-fire, and the
+                # purchase manager only starts when status=='ready'. LOG-ONLY
+                # behavior preserved when the flag is off.
+                if stale and self._ground_truth_fires and self.on_in_stock:
+                    fire = []
+                    async with self._status_lock:
+                        for t in stale:
+                            info = parsed.get(t, {})
+                            s = self._tcin_status.get(t)
+                            if s is None:
+                                s = TcinStatus(tcin=t)
+                                self._tcin_status[t] = s
+                            was = s.in_stock
+                            s.in_stock = True
+                            s.availability_status = info.get("availability_status", s.availability_status)
+                            s.last_status_code = 200
+                            s.last_checked_at = time.time()
+                            s.title = info.get("title", s.title)
+                            s.max_qty = int(info.get("max_qty", s.max_qty or 1))
+                            self._ever_seen_in_stock.add(t)
+                            if not was:
+                                fire.append(s)
+                    for s in fire:
+                        logger.warning(
+                            f"[GROUND-TRUTH] FIRING PURCHASE (cold/stale catch): {s.tcin} "
+                            f"— full-list cache-bust IN_STOCK while sweep had OOS"
+                        )
+                        try:
+                            self.on_in_stock(s)
+                        except Exception:
+                            logger.exception("[GROUND-TRUTH] on_in_stock fire failed")
                 if cb_in_stock or stale or cycle % 5 == 1:
                     logger.info(
                         f"[GROUND-TRUTH] pool cache-bust ok: "

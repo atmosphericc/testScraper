@@ -1474,8 +1474,16 @@ class PurchaseManagerThread:
             stock_data = event_data['stock_data']
             current_time = time.time()
 
-            # Smart duplicate prevention - allow legitimate cycles but prevent rapid-fire conflicts
-            if hasattr(self, '_last_stock_update_time'):
+            # Smart duplicate prevention - allow legitimate cycles but prevent rapid-fire conflicts.
+            # EXCEPTION (drop-readiness audit 2026-06-04, C0-1): never debounce a proxy IN_STOCK
+            # fire. _on_proxy_stock_detected only publishes on a real in-stock detection (sweep
+            # OOS->in transition, cloak-verify, or the C0 ground-truth catch), and the ground-truth
+            # loop emits N single-TCIN fires back-to-back — the global 0.5s gate silently dropped
+            # all but the first, losing simultaneous-restock buys (and cold-item catches that the
+            # sweep won't re-fire). The purchase manager dedupes one-per-TCIN (_state_lock +
+            # 'attempting' guard + runtime _active_purchases), so processing every in-stock fire is
+            # money-safe; only the non-proxy dashboard/tab-fetch publishes stay debounced.
+            if event_data.get('source') != 'proxy' and hasattr(self, '_last_stock_update_time'):
                 time_since_last = current_time - self._last_stock_update_time
                 if time_since_last < 0.5:  # Short window to prevent race conditions
                     return
