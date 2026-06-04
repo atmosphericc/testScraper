@@ -11,3 +11,4 @@ DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLi
 [2026-05-29 02:24:58] [CHECKOUT_FAIL] url=https://www.target.com/cart reject_key=none
 [2026-05-29 02:25:05] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - checkout_navigation_failed
 [2026-06-02 02:28:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-06-04 10:08:46] [SYSTEM] Not logged in to Target — monitoring halted to prevent failed purchases
