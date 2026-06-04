@@ -2,11 +2,15 @@
   "95267143": {
     "status": "failed",
     "tcin": "95267143",
-    "completed_at": 1779439234.1514356,
+    "product_title": "Pok\u00e9mon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box",
+    "started_at": 1780385314.469962,
     "final_outcome": "failed",
-    "execution_time": 0,
-    "failure_reason": "lock_timeout",
-    "error_details": "Could not acquire page lock within 120 seconds"
+    "attempt_count": 1,
+    "real_purchase": true,
+    "completed_at": 1780385315.4588804,
+    "execution_time": 0.9856321811676025,
+    "failure_reason": "atc_failed_api_mode",
+    "error_details": ""
   },
   "95298172": {
     "status": "ready"
