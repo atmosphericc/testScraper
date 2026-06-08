@@ -1099,7 +1099,12 @@ class BulletproofPurchaseManager:
                     # across a bounded window converts cases a one-shot abandons.
                     # 100% API path — no DOM clicking, no architecture change.
                     _retry_on = os.environ.get('TARGET_RETRY_WHILE_IN_STOCK', '1') == '1'
-                    _retry_budget_s = float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '75'))
+                    # 110s default (06-05 tuning): sits just under the 120s force-
+                    # complete watchdog so the loop uses the full in-stock window.
+                    # Safe now that API-only retries fast-bail in ~2-3s (executor
+                    # non-PDP hoist) instead of ~28s, so 110s buys ~30+ ATC shots
+                    # against a 429/401 throttle instead of ~4.
+                    _retry_budget_s = float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110'))
                     _retry_max = int(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_MAX', '24'))
                     _retry_deadline = time.time() + _retry_budget_s
                     # Reasons worth re-firing on. SAFETY (drop-readiness audit 2026-06-04):
@@ -1113,9 +1118,16 @@ class BulletproofPurchaseManager:
                     # Replaced the dead key 'atc_button_not_ready' (the executor never returns
                     # it) with 'button_not_found', the real pre-submit string — recovers a
                     # DOM-fallback missed-conversion without any double-buy exposure.
+                    # 'cdp_wedged_pre_atc' (06-05 02:10 fix): the executor's CDP
+                    # health-check returns BEFORE the ATC POST ever fires, so it is
+                    # provably pre-submit — retrying after a browser restart cannot
+                    # double-buy. On 06-05 a tab wedged right after the 02:06 win
+                    # lost Booster Bundle #2 outright. The pre-retry step below
+                    # restarts the browser when the failure was a dead websocket.
                     _transient_reasons = {
                         'atc_failed_api_mode', 'rate_limited_429',
                         'atc_evaluate_timeout', 'page_not_ready', 'button_not_found',
+                        'cdp_wedged_pre_atc',
                     }
                     # Substrings that mean the item is genuinely gone — stop now.
                     _terminal_tokens = ('oos', 'out_of_stock', 'sold_out', 'reservation', 'unavailable')
@@ -1160,6 +1172,31 @@ class BulletproofPurchaseManager:
                         print(f"[REAL_PURCHASE_THREAD] Transient ATC failure '{_reason}' "
                               f"(attempt {_attempt_n}) — force re-warm + retry while in stock "
                               f"(t-left={max(0.0, _retry_deadline - time.time()):.0f}s)")
+                        # Dead-websocket / wedged-tab recovery (06-05 02:10 fix):
+                        # a tab wedged by the prior cycle (classically right after a
+                        # successful order) can't be re-warmed — warm_shape_headers
+                        # would just fail on the dead socket. Restart the browser
+                        # first; refresh_session() rebuilds the browser + warmup tab
+                        # and the next execute_purchase re-warms Shape itself.
+                        _needs_restart = (
+                            'cdp_wedged' in _reason
+                            or any(s in _err for s in ('websocket', 'keepalive ping timeout',
+                                                       'connection closed', '1011'))
+                        )
+                        if _needs_restart:
+                            print(f"[REAL_PURCHASE_THREAD] Wedged/dead websocket before retry — restarting browser")
+                            try:
+                                if worker is not None:
+                                    worker.run_async(
+                                        target_session_manager.refresh_session()
+                                    ).result(timeout=60)
+                                else:
+                                    target_session_manager.submit_async_task(
+                                        target_session_manager.refresh_session()
+                                    ).result(timeout=60)
+                                print(f"[REAL_PURCHASE_THREAD] Browser restarted before retry")
+                            except Exception as _rs_err:
+                                print(f"[REAL_PURCHASE_THREAD] Pre-retry browser restart failed: {_rs_err}")
                         try:
                             if worker is not None:
                                 worker.run_async(
@@ -1666,21 +1703,41 @@ class BulletproofPurchaseManager:
 
                         # Start new purchase attempt.
                         #
-                        # Hot-drop default: qty=1. RedSky-extracted purchase_limit
-                        # commonly returns 2 for Pokemon TCG, which trips two
-                        # avoidable failure modes:
-                        #  - 422/409 PURCHASE_LIMIT/MAX_QUANTITY rejections that
-                        #    we then self-heal down to qty=1 anyway (executor
-                        #    lines ~1311+), burning a Shape capture per cycle.
-                        #  - Higher order-cancellation rates post-checkout (Target
-                        #    auto-cancels qty>1 on capped TCG SKUs).
-                        # Set TARGET_FORCE_QTY_1=false to restore the legacy
-                        # purchase_limit-driven behavior.
-                        force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'true').lower() == 'true'
+                        # Quantity policy (2026-06-05, FINALIZED DEFAULT).
+                        # qty = min(ceiling, RedSky limit), ceiling default 2. Two units
+                        # of a $29.99 SKU = $59.98 > Target's $35 free-ship threshold, and
+                        # 2 is Target's standard per-order cap on TCG SKUs — so on a
+                        # limit-2 SKU this is fully within policy (no cancellation) AND
+                        # dodges shipping. This is how a single Refract/Stellar task is
+                        # configured per account (qty = item limit, capped); top bots
+                        # scale by account count, not qty depth. See docs/ANTIBOT.md:53 +
+                        # docs/DROP_DAY_PLAYBOOK.md:12.
+                        #
+                        # The ceiling is LOAD-BEARING. stock_monitor's max_qty can be
+                        # polluted by ATP (warehouse qty) when RedSky omits the
+                        # per-customer limit, so the raw value can be large (the old
+                        # reverted path clamped to [1,10] and got orders auto-cancelled).
+                        # Capping at 2 prevents that over-order; the executor re-clamps
+                        # to the same ceiling as a hard invariant. On a true limit-1 SKU
+                        # the executor's 422/400 PURCHASE_LIMIT self-heal drops 2->1.
+                        # Rollback: set TARGET_FORCE_QTY_1=true to restore qty=1.
+                        # Known residual: a limit-1 SKU whose ATC permissively accepts 2
+                        # can be cancelled post-checkout to 0 (rare; bounded by the cap).
+                        force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'false').lower() == 'true'
                         if force_qty_1:
                             max_qty = 1
                         else:
-                            max_qty = product_data.get('max_qty', 1)
+                            try:
+                                _qty_ceiling = int(os.environ.get('TARGET_QTY_CEILING', '2'))
+                            except ValueError:
+                                _qty_ceiling = 2
+                            _qty_ceiling = max(1, _qty_ceiling)
+                            _redsky_qty = max(1, int(product_data.get('max_qty', 1) or 1))
+                            max_qty = min(_qty_ceiling, _redsky_qty)
+                            if max_qty != 1:
+                                print(f"[QTY] {tcin}: targeting qty={max_qty} "
+                                      f"(min(ceiling={_qty_ceiling}, RedSky_max_qty={_redsky_qty})) "
+                                      f"— free-ship/per-order-limit policy")
                         result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'), max_qty=max_qty)
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle

@@ -1010,15 +1010,19 @@ class PurchaseExecutor:
             # We only need the PDP for one thing: scraping purchase_limit when
             # neither RedSky nor the in-memory cache supplied a qty > 1.
             #
-            # Fix #3 hard-ceiling: when TARGET_FORCE_QTY_1=true (Pokemon TCG
-            # is strict 1-per-customer on hot drops), qty is already 1 from the
-            # manager and the PDP lookup can only *raise* it back to 2. Bypass
-            # the lookup entirely — saves a nav and prevents the 422
-            # PURCHASE_LIMIT self-heal cycle that burns a Shape capture per
-            # cycle.
-            force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'true').lower() == 'true'
+            # Quantity source & PDP-nav policy (2026-06-05, FINALIZED).
+            # TARGET_FORCE_QTY_1 now defaults FALSE — the manager passes
+            # qty = min(2, RedSky limit). When it passed qty>1 we trust it and
+            # fire ATC immediately (no PDP nav). CRITICAL: the PDP purchase_limit
+            # scrape stays OFF by default (TARGET_PDP_QTY_LOOKUP=1 to enable) —
+            # a ~3s nav before the first ATC can lose a fast-selling SKU, and
+            # winning the unit matters more than dodging shipping. So the hot
+            # path is exactly as fast as the qty=1 era.
+            force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'false').lower() == 'true'
+            _pdp_qty_lookup = os.environ.get('TARGET_PDP_QTY_LOOKUP', '0').lower() in ('1', 'true')
             need_pdp_for_qty = (
-                not force_qty_1
+                _pdp_qty_lookup
+                and not force_qty_1
                 and quantity <= 1
                 and (tcin not in self._pdp_qty_cache
                      or (time.time() - self._pdp_qty_cache[tcin][1]) >= self._pdp_qty_ttl)
@@ -1028,8 +1032,8 @@ class PurchaseExecutor:
                 quantity = 1
                 print(f"[PURCHASE] qty=1 hard-ceiling (TARGET_FORCE_QTY_1=true, skipping PDP nav)")
             elif quantity > 1:
-                print(f"[PURCHASE] purchase_limit from RedSky: {quantity} (skipping PDP nav)")
-            elif not need_pdp_for_qty:
+                print(f"[PURCHASE] qty={quantity} from manager/RedSky (skipping PDP nav)")
+            elif tcin in self._pdp_qty_cache and not need_pdp_for_qty:
                 cached_qty, cached_ts = self._pdp_qty_cache[tcin]
                 age = time.time() - cached_ts
                 print(f"[PURCHASE] purchase_limit from cache: {cached_qty} (cached {age:.0f}s ago, skipping PDP nav)")
@@ -1104,6 +1108,20 @@ class PurchaseExecutor:
                     self._pdp_qty_cache[tcin] = (pdp_qty, time.time())
                 else:
                     print(f"[PURCHASE] purchase_limit not found in PDP after {pdp_lookup_elapsed:.2f}s — keeping qty={quantity}")
+
+            # Hard per-order ceiling (2026-06-05) — final invariant before ATC.
+            # Whatever the source (manager, RedSky, cache, or an enabled PDP
+            # scrape), never ask for more than Target's per-order cap; over-limit
+            # orders get auto-cancelled. Caps the unclamped PDP scrape and any
+            # ATP-polluted value. Matches the manager's TARGET_QTY_CEILING.
+            try:
+                _qty_ceiling = int(os.environ.get('TARGET_QTY_CEILING', '2'))
+            except ValueError:
+                _qty_ceiling = 2
+            _qty_ceiling = max(1, _qty_ceiling)
+            if quantity > _qty_ceiling:
+                print(f"[PURCHASE] qty {quantity} > ceiling {_qty_ceiling} — clamping (over-limit auto-cancel guard)")
+            quantity = max(1, min(quantity, _qty_ceiling))
 
             # Attempt 1: fetch-based ATC fired immediately — no need to wait for button
             # The cart API only needs valid session cookies, not full page render
@@ -1580,6 +1598,22 @@ class PurchaseExecutor:
             # Now we need the button to be ready — wait only if not already confirmed
             button_ready = True  # optimistic default; set False below if needed
             if not cart_confirmed:
+                # API-only fast-bail (06-05 03:29 lock_timeout fix). With
+                # TARGET_FORCE_QTY_1 we skip PDP nav, so the tab is on /cart or
+                # /account — there is NO product ATC button to poll for. The
+                # button-wait (~12s) + forced-click block below would burn ~14s
+                # per cycle on a guaranteed miss; the retry loop then re-fired it
+                # ~4× until the manager's 120s watchdog tripped (lock_timeout),
+                # losing the whole in-stock window. The equivalent guard already
+                # existed AFTER this block (see below) — hoisting it here makes
+                # each API-only retry ~2-3s instead of ~28s, so the manager gets
+                # many more ATC shots inside the same window. Pre-submit reason
+                # (ATC never succeeded) → safe to retry, no double-buy exposure.
+                if '/p/-/A-' not in (tab.url or ''):
+                    print(f"[PURCHASE] ATC not confirmed & not on PDP (url={tab.url}) — "
+                          f"fast-bail, skipping DOM button path (t={time.time()-start_time:.2f}s)")
+                    return {'success': False, 'tcin': tcin, 'reason': 'atc_failed_api_mode',
+                            'execution_time': time.time() - start_time}
                 # Check if button is ready (may already be since fetch took some time)
                 btn_state = await tab.evaluate("""(() => {
                     const selectors = [
