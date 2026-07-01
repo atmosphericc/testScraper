@@ -1268,7 +1268,14 @@ class BulletproofPurchaseManager:
                                 ).result(timeout=25)
                         except Exception as _warm_err:
                             print(f"[REAL_PURCHASE_THREAD] Pre-retry re-warm failed: {_warm_err}")
-                        time.sleep(random.uniform(1.5, 3.0))
+                        # 2026-06-30 research: Refract's tested Target "Error Delay" is
+                        # 3500ms and too-low delays risk proxy/IP bans
+                        # (help.refractbot.com/modules/target). Keep the inter-attempt
+                        # sleep OFF the sub-2s ban-risk floor (~3s here + ~0.7s re-warm
+                        # ≈ Refract's ~3.5s effective). Env-tunable.
+                        _atc_lo = float(os.environ.get('TARGET_ATC_RETRY_DELAY_MIN', '2.5'))
+                        _atc_hi = float(os.environ.get('TARGET_ATC_RETRY_DELAY_MAX', '3.5'))
+                        time.sleep(random.uniform(_atc_lo, _atc_hi))
 
                     # CRITICAL: Update state ATOMICALLY with lock held
                     # This prevents race condition where next cycle sees stale "attempting" status
