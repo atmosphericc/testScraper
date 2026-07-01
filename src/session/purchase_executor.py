@@ -71,6 +71,7 @@ class PurchaseExecutor:
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
         self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
         self._checkout_reject_reason: str = ''             # tgt-cart-error-key value from 424
+        self._checkout_reject_status: int = 0              # HTTP status of the rejected checkout POST (429/424/...)
         # Phase 4b — set by _api_place_order when API-mode Place Order succeeds.
         # _complete_checkout reads these instead of parsing tab.url, since
         # API mode does not navigate to /checkout/confirmation.
@@ -414,6 +415,7 @@ class PurchaseExecutor:
                             error_key = resp_headers.get('tgt-cart-error-key', '')
                             self._checkout_rejected = True
                             self._checkout_reject_reason = error_key
+                            self._checkout_reject_status = status
                             print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] 424 flagged — short-circuiting wait loop (reason={error_key})")
                             print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] headers: {dict(list(resp_headers.items())[:10])}")
                             try:
@@ -942,6 +944,7 @@ class PurchaseExecutor:
         print(f"[PURCHASE] cdp_continued_ids cleared for new purchase ({tcin}, qty={quantity})")
         self._checkout_rejected = False
         self._checkout_reject_reason = ''
+        self._checkout_reject_status = 0
         self._api_order_id = None
         self._api_confirmation_url = None
 
@@ -1879,29 +1882,48 @@ class PurchaseExecutor:
                 # Diagnose: use interceptor reason if available (faster/more accurate than page text)
                 try:
                     url_now = tab.url
-                    if self._checkout_rejected and self._checkout_reject_reason:
-                        reason = self._checkout_reject_reason
-                        if 'RESERVATION_FAILURE' in reason:
-                            print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
-                        elif 'INVENTORY_NOT_AVAILABLE' in reason or 'CART_COMPARISION_FAILURE' in reason:
+                    # ── Provably-pre-commit throttle detection (2026-06-30 drop fix) ──
+                    # SAFE to retry ONLY when we can prove no order was placed: the
+                    # checkout POST was server-REJECTED (HTTP 429/424, or a
+                    # RESERVATION_FAILURE / rate-limit error-key) OR Target showed its
+                    # "Checkout is busy — please keep trying" queue page, AND no
+                    # order_id was captured. Ambiguous post-submit states (place-order
+                    # clicked then timed-out / redirected, fetch threw) stay
+                    # non-retryable so the 2026-06-04 double-buy guard holds.
+                    _rej_up = (self._checkout_reject_reason or '').upper()
+                    _throttle_status = self._checkout_reject_status in (429, 424)
+                    _throttle_key = any(k in _rej_up for k in ('RESERVATION_FAILURE', 'RATE_LIMIT', 'THROTTL'))
+                    _oos_key = any(k in _rej_up for k in ('INVENTORY_NOT_AVAILABLE', 'CART_COMPARISION', 'OUT_OF_STOCK', 'SOLD_OUT'))
+                    _precommit_retryable = False
+                    if self._checkout_rejected and (self._checkout_reject_reason or self._checkout_reject_status):
+                        reason = self._checkout_reject_reason or f'HTTP_{self._checkout_reject_status}'
+                        if 'RESERVATION_FAILURE' in _rej_up:
+                            print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — inventory race / demand-throttle at order submission")
+                        elif 'INVENTORY_NOT_AVAILABLE' in _rej_up or 'CART_COMPARISION_FAILURE' in _rej_up:
                             print(f"[PURCHASE] DIAGNOSIS: INVENTORY_NOT_AVAILABLE — item OOS at checkout submission")
                         else:
-                            print(f"[PURCHASE] DIAGNOSIS: Checkout rejected by server — tgt-cart-error-key={reason}")
+                            print(f"[PURCHASE] DIAGNOSIS: Checkout rejected by server — status={self._checkout_reject_status} tgt-cart-error-key={reason}")
+                        _precommit_retryable = (_throttle_status or _throttle_key) and not _oos_key
                     else:
                         page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
-                        if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests']):
+                        if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests', 'please keep trying']):
                             print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
+                            _precommit_retryable = True
                         elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
                             print(f"[PURCHASE] DIAGNOSIS: Item sold out during checkout")
                         elif any(p in page_text for p in ['no longer be available', 'no longer available', "couldn't complete", 'reservation']):
                             print(f"[PURCHASE] DIAGNOSIS: RESERVATION_FAILURE — item sold out at order submission (inventory race)")
                         else:
                             print(f"[PURCHASE] DIAGNOSIS: Unknown failure — url={url_now}")
+                    # Belt-and-suspenders vs double-buy: if any order_id was captured, never retry.
+                    if self._api_order_id:
+                        _precommit_retryable = False
                     import os as _os, datetime as _dt
                     _os.makedirs('logs', exist_ok=True)
                     with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
-                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CHECKOUT_FAIL] url={url_now} reject_key={self._checkout_reject_reason or 'none'}\n")
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CHECKOUT_FAIL] url={url_now} status={self._checkout_reject_status} reject_key={self._checkout_reject_reason or 'none'} retryable={_precommit_retryable}\n")
                 except Exception as _diag_e:
+                    _precommit_retryable = False
                     import os as _os, datetime as _dt
                     try:
                         _os.makedirs('logs', exist_ok=True)
@@ -1909,17 +1931,18 @@ class PurchaseExecutor:
                             _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [CHECKOUT_FAIL] Diagnosis eval failed: {_diag_e}\n")
                     except Exception:
                         pass
-                print(f"[PURCHASE] Checkout failed, clearing cart and waiting...")
+                print(f"[PURCHASE] Checkout failed (retryable={_precommit_retryable}), clearing cart and waiting...")
                 try:
                     await tab.get("https://www.target.com/cart")
                     await self._clear_cart(tab)
-                    print(f"[PURCHASE] Cart cleared after checkout_navigation_failed, waiting for next cycle")
+                    print(f"[PURCHASE] Cart cleared after checkout failure, waiting for next cycle")
                 except Exception:
                     pass
+                _final_reason = 'checkout_busy_retryable' if _precommit_retryable else 'checkout_navigation_failed'
                 return {
                     'success': False,
                     'tcin': tcin,
-                    'reason': 'checkout_navigation_failed',
+                    'reason': _final_reason,
                     'execution_time': time.time() - start_time
                 }
 
@@ -1984,7 +2007,11 @@ class PurchaseExecutor:
                 'reason': 'order_confirmed',
                 'execution_time': execution_time,
                 'order_id': order_id,
-                'confirmation_url': confirmation_url
+                'confirmation_url': confirmation_url,
+                # Final attempted quantity (lets the racing aggregate sum real
+                # units bought across accounts). A 422/409 self-heal to qty=1 is
+                # rare and would make this overcount by 1 on a true limit-1 SKU.
+                'quantity': quantity,
             }
 
         except Exception as e:
@@ -3888,13 +3915,17 @@ class PurchaseExecutor:
             if api_result.get('reason') in ('shape_block', 'auth_expired', 'capture_flag_active',
                                             'fetch_threw'):
                 pass  # safe to fall through to DOM
-            elif api_result.get('reason') in ('oos', 'reservation_failure'):
-                # Server rejected — DOM click would also fail. Bail with the same
-                # failure signature the DOM path produces.
-                print(f"[PAYMENT] API rejection is terminal ({api_result.get('reason')}) — "
-                      f"not retrying via DOM")
+            elif api_result.get('reason') in ('oos', 'reservation_failure') \
+                    or api_result.get('status') in (429, 424):
+                # Server REJECTED the place-order POST (OOS / reservation race /
+                # 429 rate-limit / 424 demand-throttle). A DOM click would hit the
+                # same wall and burn ~40s; bail fast so the manager's retry-while-in-
+                # stock loop can re-race within the window. Non-2xx response ⇒ no
+                # order placed ⇒ provably pre-commit ⇒ no double-buy.
+                print(f"[PAYMENT] API rejection ({api_result.get('reason')}, "
+                      f"status={api_result.get('status')}) — fast-bail (no DOM retry)")
                 return False
-            # else: http_xxx or unknown — fall through and let DOM try.
+            # else: http_xxx / unknown → fall through and let DOM try.
 
         # Dismiss any "Checkout is busy right now" banner before attempting Place Order
         pre_dismissed = await self._handle_busy_modal(tab)

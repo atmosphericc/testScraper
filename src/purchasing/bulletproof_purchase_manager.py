@@ -102,6 +102,11 @@ class BulletproofPurchaseManager:
         # the rest of this class continues to use them directly.
         self.worker_pool: Optional[WorkerPool] = None
         self.worker: Optional[Worker] = None     # alias to worker_pool.primary
+        # Per-account exit-proxy forwarder (lazy; only when an account has a
+        # Bright-Data auth proxy_url). Runs on its own asyncio loop+thread.
+        self._forwarder_pool = None
+        self._forwarder_loop = None
+        self._forwarder_thread = None
         self.session_manager = None
         self.session_keepalive = None
         self.purchase_executor = None
@@ -125,6 +130,13 @@ class BulletproofPurchaseManager:
         self._active_purchases = {}  # Track active purchase threads
         self._purchase_tee: Optional['_PurchaseLogTee'] = None  # Active purchase log tee
         self._warmup_cycle_counter: int = 0
+        # Per-account Session Sentinel: periodically validates each worker is
+        # genuinely logged in and escalates (refresh -> restart -> credential
+        # re-login) if not. _account_health surfaces each account's last verdict
+        # so a dead session is caught BEFORE a drop, not during.
+        self._sentinel_cycle_counter: int = 0
+        self._account_health: Dict[str, Dict] = {}
+        self._sentinel_lock = threading.Lock()
 
         # Status callback for real-time updates
         self.status_callback = status_callback
@@ -270,10 +282,18 @@ class BulletproofPurchaseManager:
                         self.session_failure_count >= self.feature_flags['max_session_failures']):
                         self._trigger_circuit_breaker("Purchase executor session failures")
 
-            # Phase 6: build the Worker pool (size from TARGET_WORKER_POOL_SIZE,
-            # default 1). At N=1 the pool holds the legacy Worker 1 with the
-            # legacy target.json + nodriver-profile paths — no behavior change.
-            self.worker_pool = WorkerPool.from_env()
+            # Phase 6: build the Worker pool. Prefer config/target_accounts.json
+            # (one Worker per enabled account, the same file the harvester logs
+            # in) so the fleet auto-sizes 1->X with no env var; fall back to
+            # TARGET_WORKER_POOL_SIZE when that file is absent. At N=1 the pool
+            # holds the legacy Worker 1 with the legacy target.json +
+            # nodriver-profile paths — no behavior change.
+            self.worker_pool = WorkerPool.auto()
+            # Per-account exit proxy: rewrite each worker's BD-auth proxy_url into
+            # a live local forwarder address BEFORE build_all() constructs the
+            # SessionManagers (they read cfg.proxy_url at init). No-op when no
+            # account has a proxy configured (workers stay on the home IP).
+            self._setup_purchase_forwarders()
             self.worker_pool.build_all(
                 session_status_callback=session_status_callback,
                 purchase_status_callback=purchase_status_callback,
@@ -997,9 +1017,25 @@ class BulletproofPurchaseManager:
             print(f"[PURCHASE] Dashboard notified immediately: {tcin} -> attempting")
 
         # Start real purchase in background
-        def execute_real_purchase():
+        def execute_real_purchase(pinned_worker=None, state_key=None, race_agg=None):
+            # Racing (multi-account) parameters:
+            #   pinned_worker — when set, this thread buys on EXACTLY this worker
+            #     (one account) instead of the sticky acquire_for_tcin path. The
+            #     fan-out below launches one thread per ready worker so N accounts
+            #     hit ATC concurrently — each its own 429 budget, each its own
+            #     1-(or-2)-per-account unit. Distinct accounts buying their own
+            #     units is NOT a double-buy.
+            #   state_key — cross-cycle tracking key. tcin for single buys (legacy);
+            #     f"{tcin}#W{id}" per worker when racing so the N threads don't
+            #     clobber each other's _active_purchases entry.
+            #   race_agg — shared aggregator (see _start_real_purchase) that merges
+            #     the N per-worker results into one dashboard state and refcounts
+            #     the global stock-monitor suspend/resume. None for single buys.
+            state_key = state_key or tcin
+            _race_wlbl = pinned_worker.label() if pinned_worker is not None else None
             try:
-                print(f"[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for {tcin}")
+                _wlbl = _race_wlbl or 'auto'
+                print(f"[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for {tcin} ({_wlbl})")
 
                 # CRITICAL: Wait for session to be ready (don't initialize new one!)
                 if not self.session_initialized:
@@ -1027,7 +1063,7 @@ class BulletproofPurchaseManager:
                             'reason': 'session_init_timeout',
                             'error': f'Session not ready after {max_wait}s wait'
                         }
-                        self._update_purchase_result(tcin, failed_result)
+                        self._update_purchase_result(tcin, failed_result, race_agg=race_agg, worker_label=_race_wlbl)
                         return
 
                 # Session is ready, proceed with purchase using subprocess (bypasses asyncio threading issues)
@@ -1036,7 +1072,12 @@ class BulletproofPurchaseManager:
                 # Worker failed init (no live browser), fall back to primary so
                 # we never silently lose purchases on alt-worker init failure.
                 assigned_worker = None
-                if self.worker_pool is not None:
+                if pinned_worker is not None:
+                    # Racing: this thread is bound to one specific (already-ready)
+                    # account. No sticky acquire, no fallback — the fan-out only
+                    # pins workers it pre-checked via WorkerPool.ready_workers().
+                    assigned_worker = pinned_worker
+                elif self.worker_pool is not None:
                     assigned_worker = self.worker_pool.acquire_for_tcin(tcin)
                     sm = assigned_worker.session_manager
                     if not (sm and getattr(sm, 'browser', None) and getattr(sm, 'session_active', False)):
@@ -1059,9 +1100,17 @@ class BulletproofPurchaseManager:
                     target_session_manager.set_purchase_in_progress(True)
                 # Suspend proxy stock-check workers for the duration of the purchase
                 # so they don't compete with ATC for CPU and don't broadcast a
-                # parallel-request pattern Shape can fingerprint.
+                # parallel-request pattern Shape can fingerprint. When racing, only
+                # the FIRST worker to start suspends (refcounted via race_agg); the
+                # LAST to finish resumes — so the monitor isn't resumed out from
+                # under racers still mid-buy.
                 _stock_monitor = getattr(self, 'stock_monitor', None)
-                if _stock_monitor is not None and hasattr(_stock_monitor, 'set_suspended'):
+                _do_suspend = True
+                if race_agg is not None:
+                    with race_agg['lock']:
+                        race_agg['started'] += 1
+                        _do_suspend = (race_agg['started'] == 1)
+                if _do_suspend and _stock_monitor is not None and hasattr(_stock_monitor, 'set_suspended'):
                     try:
                         _stock_monitor.set_suspended(True)
                     except Exception as _sm_err:
@@ -1070,7 +1119,7 @@ class BulletproofPurchaseManager:
                 # CRITICAL: Register thread in active purchases tracking
                 # This prevents race condition where next cycle starts before state is saved
                 with self._state_lock:
-                    self._active_purchases[tcin] = {
+                    self._active_purchases[state_key] = {
                         'thread': threading.current_thread(),
                         'started_at': time.time(),
                         'status': 'executing',
@@ -1129,6 +1178,17 @@ class BulletproofPurchaseManager:
                         'atc_evaluate_timeout', 'page_not_ready', 'button_not_found',
                         'cdp_wedged_pre_atc',
                     }
+                    # 2026-06-30 drop fix — persist through Target's checkout demand-
+                    # throttle. The executor emits 'checkout_busy_retryable' ONLY when
+                    # the checkout POST was server-REJECTED (HTTP 429/424, or a
+                    # RESERVATION_FAILURE / rate-limit error-key) or the "Checkout is
+                    # busy — please keep trying" queue page was shown, AND no order_id
+                    # was captured — i.e. provably BEFORE any order commit, so
+                    # re-firing cannot double-buy. The executor clears the cart before
+                    # returning, so the re-race re-ATCs cleanly (no unit stacking).
+                    # Kill-switch: TARGET_RETRY_CHECKOUT_BUSY=0 restores one-shot.
+                    if os.environ.get('TARGET_RETRY_CHECKOUT_BUSY', '1') != '0':
+                        _transient_reasons.add('checkout_busy_retryable')
                     # Substrings that mean the item is genuinely gone — stop now.
                     _terminal_tokens = ('oos', 'out_of_stock', 'sold_out', 'reservation', 'unavailable')
 
@@ -1214,12 +1274,12 @@ class BulletproofPurchaseManager:
                     # This prevents race condition where next cycle sees stale "attempting" status
                     with self._state_lock:
                         # Mark as completing to block new cycles
-                        if tcin in self._active_purchases:
-                            self._active_purchases[tcin]['status'] = 'completing'
-                            print(f"[REAL_PURCHASE_THREAD] Marked thread as completing: {tcin}")
+                        if state_key in self._active_purchases:
+                            self._active_purchases[state_key]['status'] = 'completing'
+                            print(f"[REAL_PURCHASE_THREAD] Marked thread as completing: {state_key}")
 
                         # Update state file immediately
-                        self._update_purchase_result(tcin, result)
+                        self._update_purchase_result(tcin, result, race_agg=race_agg, worker_label=_race_wlbl)
 
                         print(f"[REAL_PURCHASE_THREAD] ✅ State updated atomically, safe for next cycle")
 
@@ -1251,7 +1311,7 @@ class BulletproofPurchaseManager:
                         'reason': 'execution_timeout',
                         'error': 'Purchase execution timed out'
                     }
-                    self._update_purchase_result(tcin, failed_result)
+                    self._update_purchase_result(tcin, failed_result, race_agg=race_agg, worker_label=_race_wlbl)
                     return
 
                 except Exception as e:
@@ -1279,7 +1339,7 @@ class BulletproofPurchaseManager:
                     'reason': 'execution_error',
                     'error': str(e)
                 }
-                self._update_purchase_result(tcin, failed_result)
+                self._update_purchase_result(tcin, failed_result, race_agg=race_agg, worker_label=_race_wlbl)
 
             finally:
                 # BUGFIX: Always clear purchase lock when purchase completes (success or failure).
@@ -1290,22 +1350,29 @@ class BulletproofPurchaseManager:
                 _sm_to_release = locals().get('target_session_manager') or self.session_manager
                 if _sm_to_release:
                     _sm_to_release.set_purchase_in_progress(False)
-                # Resume proxy stock-check workers
+                # Resume proxy stock-check workers. When racing, only the LAST
+                # worker to finish resumes (refcounted) so the monitor stays
+                # suspended while any racer is still buying.
                 _stock_monitor = getattr(self, 'stock_monitor', None)
-                if _stock_monitor is not None and hasattr(_stock_monitor, 'set_suspended'):
+                _do_resume = True
+                if race_agg is not None:
+                    with race_agg['lock']:
+                        race_agg['finished'] += 1
+                        _do_resume = (race_agg['finished'] >= race_agg['total'])
+                if _do_resume and _stock_monitor is not None and hasattr(_stock_monitor, 'set_suspended'):
                     try:
                         _stock_monitor.set_suspended(False)
                     except Exception as _sm_err:
                         print(f"[PURCHASE] [WARN] stock_monitor.set_suspended(False) failed: {_sm_err}")
 
-                # CRITICAL: Remove from active purchases tracking
-                # This signals to next cycle that thread has completed
+                # CRITICAL: Remove from active purchases tracking (per-worker key
+                # when racing). This signals to next cycle that thread has completed.
                 with self._state_lock:
-                    if tcin in self._active_purchases:
-                        print(f"[REAL_PURCHASE_THREAD] Removing {tcin} from active purchases")
-                        del self._active_purchases[tcin]
+                    if state_key in self._active_purchases:
+                        print(f"[REAL_PURCHASE_THREAD] Removing {state_key} from active purchases")
+                        del self._active_purchases[state_key]
                     else:
-                        print(f"[REAL_PURCHASE_THREAD] Note: {tcin} already removed from active purchases")
+                        print(f"[REAL_PURCHASE_THREAD] Note: {state_key} already removed from active purchases")
 
                 # Close purchase log and restore stdout
                 _tee = self._purchase_tee
@@ -1315,16 +1382,51 @@ class BulletproofPurchaseManager:
                         sys.stdout = _tee._orig
                     _tee.close()
 
-        # Start purchase thread
-        purchase_thread = threading.Thread(target=execute_real_purchase, daemon=True)
-        purchase_thread.start()
+        # ----- Dispatch: race the fleet, or single-worker (legacy) -------------
+        # RACING fires one thread per READY account concurrently at this drop.
+        # Each account = own session/loop/IP-budget, so each gets its own 429
+        # budget and buys its own up-to-limit units — the documented cure for the
+        # single-account DCO_RATE_LIMITED that killed past drops. Activates ONLY
+        # when >1 worker is actually ready (i.e. you've seeded multiple accounts),
+        # so single-account setups are byte-for-byte unchanged. Kill switch:
+        # TARGET_RACE_ALL_WORKERS=0.
+        ready_workers = self.worker_pool.ready_workers() if self.worker_pool is not None else []
+        race_on = (
+            os.environ.get('TARGET_RACE_ALL_WORKERS', '1') != '0'
+            and len(ready_workers) > 1
+        )
+
+        if race_on:
+            race_agg = {
+                'lock': threading.Lock(),
+                'total': len(ready_workers),
+                'started': 0,
+                'finished': 0,
+                'results': {},   # worker_label -> result dict
+                'units': 0,      # total units bought across accounts
+            }
+            print(f"[RACE] {tcin}: racing {len(ready_workers)} accounts → "
+                  f"{[w.label() for w in ready_workers]}")
+            for w in ready_workers:
+                sk = f"{tcin}#W{w.cfg.worker_id}"
+                threading.Thread(
+                    target=execute_real_purchase,
+                    kwargs={'pinned_worker': w, 'state_key': sk, 'race_agg': race_agg},
+                    daemon=True,
+                ).start()
+        else:
+            # Legacy single-worker path — unchanged.
+            purchase_thread = threading.Thread(target=execute_real_purchase, daemon=True)
+            purchase_thread.start()
 
         return {
             'success': True,
             'tcin': tcin,
             'duration': 60,  # Max expected duration
             'status': 'attempting',
-            'real_purchase': True
+            'real_purchase': True,
+            'racing': race_on,
+            'accounts': len(ready_workers) if race_on else 1,
         }
 
     def _start_mock_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
@@ -1370,8 +1472,18 @@ class BulletproofPurchaseManager:
             'status': 'attempting'
         }
 
-    def _update_purchase_result(self, tcin: str, result: Dict):
-        """Update purchase state with real purchase result"""
+    def _update_purchase_result(self, tcin: str, result: Dict, race_agg: Optional[Dict] = None,
+                                worker_label: Optional[str] = None):
+        """Update purchase state with real purchase result.
+
+        race_agg (set only when racing the fleet) merges this worker's result
+        into one aggregated dashboard state for the TCIN instead of overwriting —
+        so N accounts buying N units show as one "2/3 bought" record rather than
+        clobbering each other. None preserves the legacy single-worker behavior
+        exactly (the body below).
+        """
+        if race_agg is not None:
+            return self._record_race_result(tcin, result, race_agg, worker_label)
         with self._state_lock:
             states = self._load_states_unsafe()
             current_state = states.get(tcin, {})
@@ -1438,6 +1550,305 @@ class BulletproofPurchaseManager:
 
             states[tcin] = final_state
             self._save_states_unsafe(states)
+
+    # Chrome can't take inline proxy auth, and BD ISP IPs require it. Treat a
+    # proxy_url as "needs forwarder" when it carries credentials / is a BD host.
+    @staticmethod
+    def _proxy_needs_forwarder(url: str) -> bool:
+        low = url.lower()
+        return ('@' in url) or ('superproxy' in low) or ('brd.' in low)
+
+    # Local port band for the PURCHASE forwarders. Stock stack uses 22000+i;
+    # keep purchase exits on a distinct band so the two never collide.
+    PURCHASE_FORWARDER_PORT_BASE = 23000
+
+    def _setup_purchase_forwarders(self) -> None:
+        """Start a local CONNECT forwarder for each worker whose proxy_url is a
+        BD auth URL, and rewrite that worker's cfg.proxy_url to the local
+        127.0.0.1:port Chrome can use. Plain host:port proxies pass through
+        untouched; workers with no proxy_url stay on the home IP.
+
+        No-op (and no forwarder thread) when no worker needs one — so single-
+        account / no-proxy setups are completely unaffected.
+
+        Every decision is ALSO appended to logs/forwarder.log so a drop
+        post-mortem can PROVE which account exited which IP. (2026-06-30: app.py
+        stdout wasn't captured, so the forwarder bind was unverifiable after the
+        fact — we could not confirm isolation was even active.)
+        """
+        import re as _re, datetime as _dt, os as _os
+
+        def _flog(msg):
+            try:
+                _os.makedirs('logs', exist_ok=True)
+                with open('logs/forwarder.log', 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+            except Exception:
+                pass
+
+        def _exit_ip(u):
+            m = _re.search(r'-ip-([0-9.]+)[:@]', u or '')
+            return m.group(1) if m else '?'
+
+        pool = self.worker_pool
+        if pool is None:
+            return
+        needing = [w for w in pool.workers
+                   if w.cfg.proxy_url and self._proxy_needs_forwarder(w.cfg.proxy_url)]
+        # Record the full intended egress map up front (home-IP workers included).
+        _flog("=== purchase forwarder setup ===")
+        for w in pool.workers:
+            if w.cfg.proxy_url and self._proxy_needs_forwarder(w.cfg.proxy_url):
+                _flog(f"  intent: {w.label()} worker_id={w.cfg.worker_id} → BD:{_exit_ip(w.cfg.proxy_url)}")
+            else:
+                _flog(f"  intent: {w.label()} worker_id={w.cfg.worker_id} → HOME IP (no BD proxy_url)")
+        if not needing:
+            # Plain host:port proxies (if any) are already Chrome-usable; nothing to do.
+            _flog("no workers need a forwarder — all on HOME IP / plain proxy")
+            return
+
+        try:
+            from src.proxy.local_forwarder import ForwarderPool
+        except Exception as e:
+            print(f"[FORWARDER] [WARN] could not import ForwarderPool ({e}); "
+                  f"purchase browsers will use the HOME IP.")
+            _flog(f"[ERROR] ForwarderPool import FAILED ({e}) → ALL BD workers reverted to HOME IP")
+            for w in needing:
+                w.cfg.proxy_url = None
+            return
+
+        # Dedicated asyncio loop+thread so the forwarder servers keep accepting
+        # connections for the life of the manager (mirrors the Worker loop model).
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _run():
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+
+        t = threading.Thread(target=_run, daemon=True, name="PurchaseForwarderLoop")
+        t.start()
+        ready.wait()
+
+        fwd = ForwarderPool()
+        for w in needing:
+            port = self.PURCHASE_FORWARDER_PORT_BASE + w.cfg.worker_id
+            bd_url = w.cfg.proxy_url
+            try:
+                fwd.add_upstream(bd_url, port)
+                w.cfg.proxy_url = f"127.0.0.1:{port}"   # what Chrome actually uses
+                print(f"[FORWARDER] {w.label()} → 127.0.0.1:{port} (exit via account proxy)")
+            except Exception as e:
+                print(f"[FORWARDER] [WARN] {w.label()} proxy unparseable ({e}); "
+                      f"falling back to HOME IP.")
+                w.cfg.proxy_url = None
+
+        if not fwd.upstreams:
+            # Everything failed to parse — tear the loop back down, no forwarder.
+            loop.call_soon_threadsafe(loop.stop)
+            return
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(fwd.start_all(), loop)
+            fut.result(timeout=15)
+        except Exception as e:
+            print(f"[FORWARDER] [ERROR] start_all failed ({e}); reverting workers to HOME IP.")
+            for w in needing:
+                w.cfg.proxy_url = None
+            loop.call_soon_threadsafe(loop.stop)
+            return
+
+        self._forwarder_pool = fwd
+        self._forwarder_loop = loop
+        self._forwarder_thread = t
+        print(f"[FORWARDER] purchase forwarder pool live: {len(fwd.upstreams)} exit(s)")
+
+    def _shutdown_purchase_forwarders(self) -> None:
+        """Stop the purchase forwarder pool + its loop/thread. Safe if never started."""
+        fwd, loop = self._forwarder_pool, self._forwarder_loop
+        if fwd is not None and loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(fwd.stop_all(), loop).result(timeout=5)
+            except Exception:
+                pass
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+        self._forwarder_pool = None
+        self._forwarder_loop = None
+        self._forwarder_thread = None
+
+    # How often the sentinel runs, in monitoring cycles. ~2s/cycle -> 150 ≈ 5 min.
+    # Well under the 24h access-token life and the months-long refresh-token life,
+    # so a silently-logged-out account is caught and re-logged-in long before a drop.
+    SENTINEL_CYCLE_INTERVAL = int(os.environ.get('TARGET_SENTINEL_CYCLE_INTERVAL', '150'))
+
+    def _maybe_run_session_sentinel(self) -> None:
+        """Every SENTINEL_CYCLE_INTERVAL cycles, validate each worker is logged in
+        and self-heal if not. Non-blocking: each check runs on the worker's own
+        loop and records its verdict into _account_health. Skips workers mid-
+        purchase (don't disrupt an in-flight ATC) and when racing is disabled.
+        Disable entirely with TARGET_SESSION_SENTINEL=0."""
+        if os.environ.get('TARGET_SESSION_SENTINEL', '1').lower() in ('0', 'false'):
+            return
+        if self.worker_pool is None:
+            return
+        self._sentinel_cycle_counter += 1
+        if not (self._sentinel_cycle_counter == 5
+                or self._sentinel_cycle_counter % self.SENTINEL_CYCLE_INTERVAL == 0):
+            return
+
+        for w in self.worker_pool.workers:
+            sm = getattr(w, 'session_manager', None)
+            if sm is None:
+                continue
+            # Never disturb a worker that's mid-purchase.
+            if getattr(sm, 'purchase_in_progress', False):
+                continue
+            label = w.label()
+
+            def _record(fut, _label=label):
+                ok = False
+                err = None
+                try:
+                    ok = bool(fut.result())
+                except Exception as e:
+                    err = f"{type(e).__name__}: {e}"
+                with self._sentinel_lock:
+                    self._account_health[_label] = {
+                        'logged_in': ok,
+                        'checked_at': time.time(),
+                        'error': err,
+                    }
+                tag = "OK" if ok else "FAILED"
+                print(f"[SENTINEL] {_label}: logged_in={ok} ({tag})"
+                      + (f" err={err}" if err else ""))
+
+            try:
+                fut = w.run_async(sm.ensure_logged_in())
+                fut.add_done_callback(_record)
+            except Exception as e:
+                print(f"[SENTINEL] {label}: could not queue check: {e}")
+
+    def get_account_health(self) -> Dict[str, Dict]:
+        """Snapshot of each account's last Session Sentinel verdict (for the
+        dashboard / pre-drop readiness). {worker_label: {logged_in, checked_at, error}}."""
+        with self._sentinel_lock:
+            return {k: dict(v) for k, v in self._account_health.items()}
+
+    @staticmethod
+    def _decide_target_qty(redsky_max_qty) -> "tuple[int, str]":
+        """Resolve the per-account add-to-cart quantity from the RedSky hint.
+
+        Returns (qty, reason). Env knobs:
+          TARGET_FORCE_QTY_1=true   -> always 1 (hard rollback).
+          TARGET_QTY_CEILING=N      -> per-order cap (default 2; free-ship + TCG cap).
+          TARGET_QTY_OPTIMISTIC=0   -> when RedSky omits the limit, fall back to 1
+                                       instead of optimistically targeting the ceiling.
+
+        Optimistic-2 (2026-06-22): the bulk RedSky feed usually OMITS the per-
+        customer limit, so the hint defaults to 1 even on limit-2 TCG SKUs — which
+        clamped min(2,1)=1 and shipped qty=1 every drop (744/744). When the limit
+        is unreported (<=1) we target the ceiling; the executor self-heals a TRUE
+        limit-1 via its 422/409 PURCHASE_LIMIT retry (qty 2->1, keeps the unit).
+        A genuinely-reported limit is always respected (min with ceiling).
+        """
+        if os.environ.get('TARGET_FORCE_QTY_1', 'false').lower() == 'true':
+            return 1, "TARGET_FORCE_QTY_1"
+        try:
+            ceiling = int(os.environ.get('TARGET_QTY_CEILING', '2'))
+        except ValueError:
+            ceiling = 2
+        ceiling = max(1, ceiling)
+        try:
+            redsky_qty = max(1, int(redsky_max_qty or 1))
+        except (TypeError, ValueError):
+            redsky_qty = 1
+        optimistic = os.environ.get('TARGET_QTY_OPTIMISTIC', '1').lower() in ('1', 'true')
+        if redsky_qty > 1:
+            return min(ceiling, redsky_qty), f"reported per-order limit (min(ceiling={ceiling}, RedSky={redsky_qty}))"
+        if optimistic:
+            return ceiling, f"RedSky limit unreported — optimistic ceiling={ceiling} (executor 422/409 self-heals true limit-1)"
+        return 1, "RedSky limit unreported, optimistic disabled"
+
+    def _record_race_result(self, tcin: str, result: Dict, race_agg: Dict, worker_label: Optional[str]):
+        """Merge one racing worker's result into the shared aggregate and write
+        the combined TCIN state. Called once per worker (one terminal result each).
+
+        While racers are still in flight the TCIN stays 'attempting' so the
+        same-TCIN dispatch guard (status check in process loop) keeps blocking a
+        second drop dispatch. When the last worker reports, the state finalizes to
+        'purchased' (if any account bought) or 'failed', carrying units_bought,
+        a per-account breakdown, and every order number captured.
+        """
+        wl = worker_label or f"w{len(race_agg['results']) + 1}"
+        with race_agg['lock']:
+            race_agg['results'][wl] = result
+            if result.get('success'):
+                race_agg['units'] += int(result.get('quantity') or result.get('qty') or 1)
+            results_snapshot = dict(race_agg['results'])
+            units = race_agg['units']
+            total = race_agg['total']
+
+        recorded = len(results_snapshot)
+        successes = [r for r in results_snapshot.values() if r.get('success')]
+        any_success = bool(successes)
+        all_done = recorded >= total
+
+        # Collect order numbers from successful accounts (same parse as the
+        # single-worker path: result field, else ?orderId= from confirmation URL).
+        orders = []
+        for r in successes:
+            oid = r.get('order_id') or r.get('order_number')
+            if not oid:
+                cu = r.get('confirmation_url', '') or ''
+                if 'orderId=' in cu:
+                    oid = cu.split('orderId=')[1].split('&')[0]
+            if oid:
+                orders.append(oid)
+
+        breakdown = {
+            w: ('purchased' if r.get('success') else (r.get('reason') or 'failed'))
+            for w, r in results_snapshot.items()
+        }
+
+        with self._state_lock:
+            states = self._load_states_unsafe()
+            cur = states.get(tcin, {}) or {}
+            now = time.time()
+            status = ('attempting' if not all_done
+                      else ('purchased' if any_success else 'failed'))
+            final_state = {
+                **cur,
+                'status': status,
+                'tcin': tcin,
+                'real_purchase': True,
+                'race': True,
+                'race_breakdown': breakdown,
+                'units_bought': units,
+                'accounts_total': total,
+                'accounts_done': recorded,
+                'final_outcome': ('purchased' if (all_done and any_success)
+                                  else ('failed' if all_done else 'unknown')),
+            }
+            if all_done:
+                final_state['completed_at'] = now
+                if orders:
+                    final_state['order_number'] = orders[0]
+                    final_state['order_numbers'] = orders
+                if not any_success:
+                    reasons = [r.get('reason') for r in results_snapshot.values() if r.get('reason')]
+                    final_state['failure_reason'] = reasons[0] if reasons else 'all_accounts_failed'
+            states[tcin] = final_state
+            self._save_states_unsafe(states)
+            if all_done and self.status_callback:
+                self.status_callback(tcin, status, final_state)
+
+        print(f"[RACE] {tcin}: {recorded}/{total} accounts done, units_bought={units}, "
+              f"breakdown={breakdown}")
 
     def _finalize_purchase_unsafe(self, tcin: str, state: Dict, final_outcome: str, states: Dict):
         """Finalize a completed purchase (assumes caller has lock)"""
@@ -1686,6 +2097,11 @@ class BulletproofPurchaseManager:
                     elif not in_progress:
                         print(f"[WARMUP_CYCLE] {w.label()}: skipping — headers fresh ({headers_age:.0f}s old)")
 
+            # Per-account Session Sentinel — deeper than warmup: validates each
+            # account is genuinely logged in and self-heals (refresh -> restart ->
+            # credential re-login) so EVERY account is drop-ready, not just primary.
+            self._maybe_run_session_sentinel()
+
             # Process each product according to state rules (in priority order)
             for tcin in sorted_tcins:
                 product_data = stock_data[tcin]
@@ -1723,21 +2139,9 @@ class BulletproofPurchaseManager:
                         # Rollback: set TARGET_FORCE_QTY_1=true to restore qty=1.
                         # Known residual: a limit-1 SKU whose ATC permissively accepts 2
                         # can be cancelled post-checkout to 0 (rare; bounded by the cap).
-                        force_qty_1 = os.environ.get('TARGET_FORCE_QTY_1', 'false').lower() == 'true'
-                        if force_qty_1:
-                            max_qty = 1
-                        else:
-                            try:
-                                _qty_ceiling = int(os.environ.get('TARGET_QTY_CEILING', '2'))
-                            except ValueError:
-                                _qty_ceiling = 2
-                            _qty_ceiling = max(1, _qty_ceiling)
-                            _redsky_qty = max(1, int(product_data.get('max_qty', 1) or 1))
-                            max_qty = min(_qty_ceiling, _redsky_qty)
-                            if max_qty != 1:
-                                print(f"[QTY] {tcin}: targeting qty={max_qty} "
-                                      f"(min(ceiling={_qty_ceiling}, RedSky_max_qty={_redsky_qty})) "
-                                      f"— free-ship/per-order-limit policy")
+                        max_qty, _qty_reason = self._decide_target_qty(product_data.get('max_qty', 1))
+                        if max_qty != 1:
+                            print(f"[QTY] {tcin}: targeting qty={max_qty} — {_qty_reason}")
                         result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'), max_qty=max_qty)
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle
@@ -1785,6 +2189,11 @@ class BulletproofPurchaseManager:
             self.state_store.shutdown(timeout=3.0)
         except Exception as e:
             print(f"[PURCHASE] StateStore shutdown error: {e}")
+        # Tear down per-account exit-proxy forwarders (no-op if none started).
+        try:
+            self._shutdown_purchase_forwarders()
+        except Exception as e:
+            print(f"[PURCHASE] Forwarder shutdown error: {e}")
 
 def main():
     """Test the bulletproof purchase manager"""
