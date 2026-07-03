@@ -95,6 +95,31 @@ class PurchaseExecutor:
     # nodriver helper methods (replace patchright page/element API)
     # -------------------------------------------------------------------------
 
+    async def _cdp_alive_probe(self, tab, attempts: int = 3, per_timeout: float = 0.5):
+        """Distinguish a DEAD CDP websocket from a merely BUSY renderer.
+
+        `evaluate("1")` runs on the renderer main thread — right after a
+        navigation it can take >500ms on a perfectly healthy tab (observed
+        2026-07-03 smoke: probe tripped while CDP events were still flowing).
+        A single short timeout therefore false-positives and triggers a
+        pointless ~15s browser restart at drop time. A dead websocket fails
+        EVERY attempt; a busy renderer virtually always passes by the second.
+
+        Returns (alive: bool, detail: str). A raised CDP error (socket closed)
+        bails immediately — that one is never a busy-renderer artifact.
+        """
+        detail = ''
+        for i in range(max(1, attempts)):
+            try:
+                await asyncio.wait_for(tab.evaluate("1"), timeout=per_timeout)
+                return True, ''
+            except asyncio.TimeoutError:
+                detail = f'evaluate timeout {per_timeout}s (attempt {i + 1}/{attempts})'
+            except Exception as e:
+                return False, f'{type(e).__name__}: {e}'
+            await asyncio.sleep(0.15)
+        return False, detail
+
     async def _is_visible(self, element) -> bool:
         """Check if element is visible in viewport"""
         try:
@@ -221,16 +246,37 @@ class PurchaseExecutor:
         quantity: how many units to add to the cart. Sourced from RedSky's
         per-customer purchase_limit (capped to ATP). Defaults to 1.
         """
+        # Honest timeout labels (2026-07-03 post-mortem): the old single
+        # except reported EVERY 140s expiry as 'lock_timeout', even when the
+        # lock was acquired instantly and the impl hung on a dead CDP
+        # websocket. That mislabel routed wedged-browser failures into the
+        # non-retryable bucket, so the manager's restart-and-retry machinery
+        # never fired. Track whether we actually entered the impl.
+        _impl_entered = False
         try:
             async with asyncio.timeout(140):  # slightly less than thread's 150s so coroutine self-cancels cleanly
                 async with self._page_lock:
+                    _impl_entered = True
                     return await self._execute_purchase_impl(tcin, quantity=quantity)
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, TimeoutError):
+            if not _impl_entered:
+                return {
+                    'success': False,
+                    'tcin': tcin,
+                    'reason': 'lock_timeout',
+                    'error': 'Could not acquire page lock within 140 seconds'
+                }
+            # Impl hang. Deliberately NON-retryable (not in the manager's
+            # transient set): a hang could be post-submit, and re-firing a
+            # committed-but-unconfirmed order buys a second unit. The error
+            # text includes 'websocket' on purpose — the manager's post-result
+            # dead-websocket check keys on it and restarts this worker's
+            # browser, so the NEXT trigger starts on a live session.
             return {
                 'success': False,
                 'tcin': tcin,
-                'reason': 'lock_timeout',
-                'error': 'Could not acquire page lock within 120 seconds'
+                'reason': 'purchase_impl_hang',
+                'error': 'purchase impl hung >140s — CDP websocket likely dead/wedged'
             }
 
     # -------------------------------------------------------------------------
@@ -703,14 +749,21 @@ class PurchaseExecutor:
             return tab
         try:
             print(f"[WARMUP] Opening warmup tab #{idx}...")
-            tab = await browser.get("https://www.target.com/cart", new_tab=True)
+            # Bounded (2026-07-03): unbounded browser.get/interceptor awaits on
+            # a dead websocket parked warmup coroutines forever WHILE HOLDING
+            # _warmup_pool_lock / _warmup_in_progress — silencing all future
+            # warmups for the night. asyncio.TimeoutError lands in the except
+            # below, which drops the tab handle and reports failure.
+            tab = await asyncio.wait_for(
+                browser.get("https://www.target.com/cart", new_tab=True), timeout=20.0)
             print(f"[WARMUP] Warmup tab #{idx} opened, URL={tab.url}")
-            await self._setup_cdp_fetch_interceptor(tab, persistent=True)
+            await asyncio.wait_for(
+                self._setup_cdp_fetch_interceptor(tab, persistent=True), timeout=12.0)
             self._warmup_tabs[idx] = tab
             self._warmup_tab_cart_ts[idx] = time.time()
             return tab
         except Exception as e:
-            print(f"[WARMUP] Failed to open warmup tab #{idx}: {e}")
+            print(f"[WARMUP] Failed to open warmup tab #{idx}: {type(e).__name__}: {e}")
             self._warmup_tabs[idx] = None
             return None
 
@@ -744,11 +797,11 @@ class PurchaseExecutor:
             try:
                 current_url = getattr(tab, 'url', 'unknown')
                 print(f"[WARMUP#{idx}] Navigating warmup tab to cart (was at {current_url}, age={cart_nav_age:.0f}s)")
-                await tab.get("https://www.target.com/cart")
+                await asyncio.wait_for(tab.get("https://www.target.com/cart"), timeout=20.0)
                 self._warmup_tab_cart_ts[idx] = time.time()
                 fresh_nav = True
             except Exception as e:
-                print(f"[WARMUP#{idx}] Nav failed: {e} — dropping tab handle")
+                print(f"[WARMUP#{idx}] Nav failed: {type(e).__name__}: {e} — dropping tab handle")
                 self._warmup_tabs[idx] = None
                 return False
 
@@ -760,7 +813,7 @@ class PurchaseExecutor:
             _ready_deadline = time.time() + 0.4
             while time.time() < _ready_deadline:
                 try:
-                    rs = await tab.evaluate("document.readyState")
+                    rs = await asyncio.wait_for(tab.evaluate("document.readyState"), timeout=1.0)
                     if rs == "complete":
                         break
                 except Exception:
@@ -768,7 +821,7 @@ class PurchaseExecutor:
                 await asyncio.sleep(0.05)
         print(f"[WARMUP#{idx}] Firing dummy POST to trigger Shape header capture...")
         try:
-            await tab.evaluate("""
+            await asyncio.wait_for(tab.evaluate("""
                 fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
                     method: 'POST',
                     credentials: 'include',
@@ -784,9 +837,9 @@ class PurchaseExecutor:
                         shopping_context: 'DIGITAL'
                     })
                 }).catch(() => {});
-            """)
+            """), timeout=15.0)
         except Exception as e:
-            print(f"[WARMUP#{idx}] Dummy POST failed: {e} — dropping tab handle")
+            print(f"[WARMUP#{idx}] Dummy POST failed: {type(e).__name__}: {e} — dropping tab handle")
             self._warmup_tabs[idx] = None
             return False
 
@@ -952,13 +1005,38 @@ class PurchaseExecutor:
             print(f"[PURCHASE] Starting purchase for {tcin}")
             self._notify_status(tcin, 'attempting', {'start_time': datetime.now().isoformat()})
 
-            # Get existing logged-in tab from session manager
-            tab = await self.session_manager.get_page()
+            # Get existing logged-in tab from session manager.
+            # Bounded (2026-07-03): get_page is normally fast, but on a wedged
+            # browser it can stall in health-check retries. Cap it and treat a
+            # timeout as the provably-pre-ATC wedge it is, so the manager's
+            # restart-then-retry path fires while the item is still in stock.
+            try:
+                tab = await asyncio.wait_for(self.session_manager.get_page(), timeout=20.0)
+            except asyncio.TimeoutError:
+                print(f"[PURCHASE] get_page timed out >20s — browser wedged, bailing for restart (t={time.time()-start_time:.2f}s)")
+                return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
+                        'error': 'get_page timeout — websocket likely dead',
+                        'execution_time': time.time() - start_time}
             if not tab:
                 browser = self.session_manager.browser
                 if not browser or not browser.tabs:
                     raise Exception("Browser not available")
                 tab = browser.tabs[0]
+
+            # EARLY wedge probe (hoisted from the pre-ATC block below): a dead
+            # CDP websocket makes every await on this tab hang forever. On
+            # 2026-07-03 all 3 workers hung right here (in interceptor setup)
+            # for the full 120-150s budget on 6 straight triggers — the probe
+            # existed only AFTER these awaits, so it never ran. Probe FIRST
+            # (with busy-renderer retries); a real wedge bails in ~2s as a
+            # retryable pre-ATC reason and the manager restarts this worker's
+            # browser and re-fires while the item is still in stock.
+            _alive, _probe_detail = await self._cdp_alive_probe(tab)
+            if not _alive:
+                print(f"[PURCHASE] Early CDP probe failed ({_probe_detail}) — tab wedged, bailing for browser restart (t={time.time()-start_time:.2f}s)")
+                return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
+                        'error': f'early CDP probe failed: {_probe_detail} — websocket likely dead',
+                        'execution_time': time.time() - start_time}
 
             # Log auth cookie state before purchase — helps diagnose 401s.
             # Gated behind TARGET_DEBUG_AUTH=true: cdp.storage.get_cookies() is a
@@ -979,8 +1057,17 @@ class PurchaseExecutor:
                     pass
 
             # Set up CDP interceptor BEFORE navigating — always re-run to clear stale
-            # handlers from previous purchase cycles before the new navigation starts
-            await self._setup_cdp_fetch_interceptor(tab, persistent=False)
+            # handlers from previous purchase cycles before the new navigation starts.
+            # Bounded: this was the exact unbounded await where all 3 workers hung
+            # for the entire 07-03 drop (dead websockets since 23:50).
+            try:
+                await asyncio.wait_for(
+                    self._setup_cdp_fetch_interceptor(tab, persistent=False), timeout=12.0)
+            except asyncio.TimeoutError:
+                print(f"[PURCHASE] Interceptor setup timed out >12s — tab wedged, bailing for restart (t={time.time()-start_time:.2f}s)")
+                return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
+                        'error': 'interceptor setup timeout — websocket likely dead',
+                        'execution_time': time.time() - start_time}
             self._main_tab_interceptor_active = True
 
             # Detect session reuse and reset a stale tab. A tab left on
@@ -1172,22 +1259,18 @@ class PurchaseExecutor:
             # CDP health-check before firing the ATC POST. A wedged tab
             # (dead WebSocket, stalled CDP session) wastes the 8s ATC timeout
             # on a guaranteed-fail and locks the page_lock for the full
-            # duration. A 250ms probe with a trivial evaluate catches this in
-            # ~10ms when healthy. The 'websocket' keyword in the error string
-            # matches bulletproof_purchase_manager.py's existing restart-
-            # trigger (line ~1123), so the manager reuses its WebSocket-dead
+            # duration. Probe with busy-renderer retries (2026-07-03 smoke
+            # showed a single 250ms attempt false-positives right after a
+            # navigation — renderer busy, socket alive — triggering pointless
+            # browser restarts at drop time). The 'websocket' keyword in the
+            # error string matches bulletproof_purchase_manager.py's existing
+            # restart-trigger, so the manager reuses its WebSocket-dead
             # recovery path (refresh_session()) without changes here.
-            try:
-                await asyncio.wait_for(tab.evaluate("1"), timeout=0.25)
-            except asyncio.TimeoutError:
-                print(f"[PURCHASE] CDP health-check timed out >250ms — tab wedged, bailing for browser restart (t={time.time()-start_time:.2f}s)")
+            _alive, _probe_detail = await self._cdp_alive_probe(tab)
+            if not _alive:
+                print(f"[PURCHASE] CDP health-check failed ({_probe_detail}) — tab wedged, bailing for browser restart (t={time.time()-start_time:.2f}s)")
                 return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
-                        'error': 'CDP health-check timeout — websocket likely dead',
-                        'execution_time': time.time() - start_time}
-            except Exception as _hc_err:
-                print(f"[PURCHASE] CDP health-check raised {type(_hc_err).__name__}: {_hc_err} — bailing for browser restart (t={time.time()-start_time:.2f}s)")
-                return {'success': False, 'tcin': tcin, 'reason': 'cdp_wedged_pre_atc',
-                        'error': f'CDP health-check error: {_hc_err} — websocket likely dead',
+                        'error': f'CDP health-check failed: {_probe_detail} — websocket likely dead',
                         'execution_time': time.time() - start_time}
 
             print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
@@ -3908,13 +3991,33 @@ class PurchaseExecutor:
                 print(f"[PAYMENT] API place-order succeeded — order_id={self._api_order_id}")
                 return True
             print(f"[PAYMENT] API place-order failed (reason={api_result.get('reason')}, "
-                  f"status={api_result.get('status')}) — falling back to DOM click")
+                  f"status={api_result.get('status')}) — evaluating DOM fallback")
+            # ── Double-buy guard (2026-07-02, research-driven) ───────────────────
+            # NEVER DOM-retry a place-order that received NO definitive HTTP
+            # response. status==0 means either the fetch() promise REJECTED
+            # (connection dropped / read timeout — inner catch returns status:0)
+            # or tab.evaluate itself RAISED (reason 'fetch_threw:*'). In BOTH
+            # cases the POST to /web_checkouts/v1/checkout MAY HAVE COMMITTED
+            # server-side before the response was lost. Target's checkout API has
+            # no known idempotency key and Target's own help warns an order can
+            # carry "multiple authorizations and/or charges" — so a follow-up DOM
+            # click here risks a SECOND real order. A *received* non-2xx (the
+            # branches below) is provably a server rejection ⇒ no order ⇒ safe to
+            # retry; a *no-response* is NOT provable and must bail terminal
+            # (→ checkout_navigation_failed, non-retryable). A missed buy is free;
+            # a double-charge is not. Rollback: TARGET_DOM_FALLBACK_ON_NO_RESPONSE=1.
+            if api_result.get('status', 0) == 0 \
+                    and os.environ.get('TARGET_DOM_FALLBACK_ON_NO_RESPONSE', '0') != '1':
+                print(f"[PAYMENT] [DOUBLE-BUY GUARD] place-order got NO response "
+                      f"(reason={api_result.get('reason')}) — POST may have committed; "
+                      f"NOT clicking DOM Place Order. Bailing terminal.")
+                return False
             # Some failure reasons should NOT be retried via DOM — the order would
             # double-place if the API actually committed but we mis-parsed. Only
             # fall back on signals that prove the request was rejected by the server.
-            if api_result.get('reason') in ('shape_block', 'auth_expired', 'capture_flag_active',
-                                            'fetch_threw'):
-                pass  # safe to fall through to DOM
+            # (fetch_threw is handled by the no-response guard above.)
+            if api_result.get('reason') in ('shape_block', 'auth_expired', 'capture_flag_active'):
+                pass  # received server rejection (403/401) ⇒ no order ⇒ safe to fall through to DOM
             elif api_result.get('reason') in ('oos', 'reservation_failure') \
                     or api_result.get('status') in (429, 424):
                 # Server REJECTED the place-order POST (OOS / reservation race /

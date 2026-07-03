@@ -57,6 +57,67 @@ def _build_worker_configs(size: int) -> List[WorkerConfig]:
     return configs
 
 
+# Repo root: src/purchasing/worker_pool.py -> parents[2].
+import json as _json
+from pathlib import Path as _Path
+
+_ROOT = _Path(__file__).resolve().parents[2]
+ACCOUNTS_CONFIG = _ROOT / "config" / "target_accounts.json"
+
+
+def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig]:
+    """Build one WorkerConfig per ENABLED account in target_accounts.json.
+
+    Same file the harvester (harvest_accounts.py) logs in. The Nth enabled
+    account becomes Worker N. Account 1 keeps the legacy target.json /
+    nodriver-profile defaults so existing setups need zero migration; alts
+    default to target-{N}.json / nodriver-profile-{N}, matching the harvester.
+
+    Mirrors harvest_accounts.load_accounts' defaulting + collision guards so
+    the live fleet and the login farm always agree on paths. Kept self-contained
+    (no import of harvest_accounts) to keep worker_pool dependency-free.
+    """
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = _json.load(f)
+    accounts = data.get("accounts", []) if isinstance(data, dict) else []
+
+    configs: List[WorkerConfig] = []
+    seen_sessions, seen_profiles = set(), set()
+    enabled_idx = 0  # 0-based position among enabled accounts -> Worker (idx+1)
+    for raw_idx, acc in enumerate(accounts):
+        if not isinstance(acc, dict) or acc.get("enabled") is False:
+            continue
+        acc_id = str(acc.get("account_id") or f"account-{enabled_idx + 1}")
+        session_path = str(acc.get("session_path") or (
+            "target.json" if enabled_idx == 0 else f"target-{enabled_idx + 1}.json"))
+        profile_dir = str(acc.get("profile_dir") or (
+            "nodriver-profile" if enabled_idx == 0 else f"nodriver-profile-{enabled_idx + 1}"))
+
+        for key, bag, label in (
+            (session_path, seen_sessions, "session_path"),
+            (profile_dir, seen_profiles, "profile_dir"),
+        ):
+            if key in bag:
+                raise ValueError(
+                    f"Duplicate {label} '{key}' in {config_path.name} — each account must be unique.")
+            bag.add(key)
+
+        configs.append(WorkerConfig(
+            worker_id=enabled_idx + 1,
+            account_id=acc_id,
+            session_path=session_path,
+            profile_dir=profile_dir,
+            proxy_url=(str(acc.get("proxy_url") or "").strip() or None),
+            timezone=(str(acc.get("timezone") or "").strip() or None),
+            apply_fingerprint=True,  # file-driven accounts: match harvest fingerprint
+        ))
+        enabled_idx += 1
+
+    if not configs:
+        raise ValueError(f"No enabled accounts in {config_path.name}")
+    return configs
+
+
 class WorkerPool:
     """Owns the fleet of Workers used by BulletproofPurchaseManager.
 
@@ -77,6 +138,39 @@ class WorkerPool:
         if size < 1:
             size = 1
         return cls(size=size)
+
+    @classmethod
+    def from_accounts_file(cls, config_path: Optional[_Path] = None) -> "WorkerPool":
+        """Construct a pool sized by the ENABLED accounts in target_accounts.json.
+
+        This is the file-driven path: add/remove an account (or flip its
+        "enabled") and the live fleet resizes 1->X with no env var to set.
+        Raises if the file is missing or has no enabled accounts — callers that
+        want a graceful fallback should use `auto()`.
+        """
+        path = config_path or ACCOUNTS_CONFIG
+        configs = _build_worker_configs_from_accounts(path)
+        return cls(configs=configs)
+
+    @classmethod
+    def auto(cls) -> "WorkerPool":
+        """Prefer the accounts file; fall back to TARGET_WORKER_POOL_SIZE.
+
+        - target_accounts.json present + has enabled accounts  -> size = that count.
+        - file absent / empty / unreadable                     -> from_env() (legacy).
+
+        Keeps single-account setups (no accounts file) behaving exactly as before.
+        """
+        try:
+            if ACCOUNTS_CONFIG.exists():
+                pool = cls.from_accounts_file()
+                print(f"[WORKER_POOL] sized from {ACCOUNTS_CONFIG.name}: "
+                      f"{pool.size} account(s) -> {[c.account_id for c in pool._configs]}")
+                return pool
+        except Exception as e:
+            print(f"[WORKER_POOL] [WARN] {ACCOUNTS_CONFIG.name} unusable ({e}); "
+                  f"falling back to TARGET_WORKER_POOL_SIZE.")
+        return cls.from_env()
 
     def __init__(self, size: int = 1, configs: Optional[List[WorkerConfig]] = None) -> None:
         if configs is not None:
@@ -236,6 +330,17 @@ class WorkerPool:
             )
             self._sticky[tcin] = chosen
             return self._workers[chosen]
+
+    def ready_workers(self) -> List[Worker]:
+        """Workers with a live, logged-in browser session — the fleet eligible
+        to race a drop. Same readiness probe the dispatcher uses for fallback
+        (browser present + session_active). Order: worker_id (primary first)."""
+        ready: List[Worker] = []
+        for w in self._workers:
+            sm = getattr(w, "session_manager", None)
+            if sm and getattr(sm, "browser", None) and getattr(sm, "session_active", False):
+                ready.append(w)
+        return ready
 
     def release_tcin(self, tcin: str) -> None:
         """Drop the sticky mapping for `tcin`. Safe to call when no mapping exists."""

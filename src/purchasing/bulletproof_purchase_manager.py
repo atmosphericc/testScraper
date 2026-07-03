@@ -35,36 +35,76 @@ else:
     HAS_FCNTL = True
 
 class _PurchaseLogTee:
-    """Tees sys.stdout to a purchase log file so every attempt is saved regardless of console scroll."""
+    """Tees sys.stdout to a purchase log file so every attempt is saved regardless of console scroll.
+
+    2026-07-03 crash hardening: the old __getattr__ recursed on `self._orig`
+    — on a partially-built/corrupted instance the lookup of '_orig' itself
+    re-entered __getattr__ forever (990-frame RecursionError inside print()
+    during the 02:48 timeout handling, which took the whole process down).
+    This version (a) never re-enters attribute lookup (__dict__ access only),
+    (b) never stacks tee-on-tee (unwraps to the base console stream, so
+    overlapping purchase triggers can't build chains), and (c) survives a
+    closed file / dead console write without raising into callers.
+    """
     def __init__(self, original_stdout, log_path: Path):
-        self._orig = original_stdout
-        self._file = open(log_path, 'w', encoding='utf-8', buffering=1)
+        # Unwrap: if the current stdout is already a tee (overlapping
+        # triggers / missed restore), tee to its BASE stream, not to the tee.
+        base = original_stdout
+        _hops = 0
+        while isinstance(base, _PurchaseLogTee) and _hops < 8:
+            base = base.__dict__.get('_orig') or sys.__stdout__
+            _hops += 1
+        self._orig = base or sys.__stdout__
         self._lock = threading.Lock()
+        self._file = None  # set last, so a failed open leaves a usable tee
+        try:
+            self._file = open(log_path, 'w', encoding='utf-8', buffering=1)
+        except Exception:
+            self._file = None
 
     def write(self, data):
         with self._lock:
-            self._orig.write(data)
             try:
-                self._file.write(data)
+                self._orig.write(data)
+            except Exception:
+                pass
+            f = self._file
+            if f is not None:
+                try:
+                    f.write(data)
+                except Exception:
+                    pass
+
+    def flush(self):
+        try:
+            self._orig.flush()
+        except Exception:
+            pass
+        f = self._file
+        if f is not None:
+            try:
+                f.flush()
             except Exception:
                 pass
 
-    def flush(self):
-        self._orig.flush()
-        try:
-            self._file.flush()
-        except Exception:
-            pass
-
     def close(self):
-        try:
-            self._file.flush()
-            self._file.close()
-        except Exception:
-            pass
+        f = self._file
+        self._file = None
+        if f is not None:
+            try:
+                f.flush()
+                f.close()
+            except Exception:
+                pass
 
     def __getattr__(self, name):
-        return getattr(self._orig, name)
+        # Only reached for attributes NOT in __dict__. Use __dict__ directly —
+        # never `self._orig` — so a missing '_orig' raises AttributeError
+        # instead of recursing.
+        orig = self.__dict__.get('_orig')
+        if orig is None:
+            raise AttributeError(name)
+        return getattr(orig, name)
 
 
 class BulletproofPurchaseManager:
@@ -1319,6 +1359,22 @@ class BulletproofPurchaseManager:
                         'error': 'Purchase execution timed out'
                     }
                     self._update_purchase_result(tcin, failed_result, race_agg=race_agg, worker_label=_race_wlbl)
+                    # A 150s thread-level timeout means the coroutine's own 140s
+                    # guard never fired — the worker's browser/loop is wedged
+                    # (07-03 signature). Restart the browser so the NEXT trigger
+                    # starts clean; if even the restart can't be scheduled, say
+                    # so loudly — that means the worker loop itself is dead.
+                    try:
+                        print(f"[REAL_PURCHASE_THREAD] execution_timeout — restarting {_race_wlbl or 'worker'} browser for next trigger")
+                        if worker is not None:
+                            worker.run_async(target_session_manager.refresh_session()).result(timeout=90)
+                        else:
+                            target_session_manager.submit_async_task(
+                                target_session_manager.refresh_session()).result(timeout=90)
+                        print(f"[REAL_PURCHASE_THREAD] post-timeout browser restart OK")
+                    except Exception as _pt_err:
+                        print(f"[REAL_PURCHASE_THREAD] [CRITICAL] post-timeout browser restart failed: "
+                              f"{type(_pt_err).__name__}: {_pt_err} — worker loop may be dead")
                     return
 
                 except Exception as e:
@@ -1646,13 +1702,16 @@ class BulletproofPurchaseManager:
                 fwd.add_upstream(bd_url, port)
                 w.cfg.proxy_url = f"127.0.0.1:{port}"   # what Chrome actually uses
                 print(f"[FORWARDER] {w.label()} → 127.0.0.1:{port} (exit via account proxy)")
+                _flog(f"  bind OK: {w.label()} → 127.0.0.1:{port} (exit via BD:{_exit_ip(bd_url)})")
             except Exception as e:
                 print(f"[FORWARDER] [WARN] {w.label()} proxy unparseable ({e}); "
                       f"falling back to HOME IP.")
+                _flog(f"  [WARN] {w.label()} proxy unparseable ({e}) → HOME IP")
                 w.cfg.proxy_url = None
 
         if not fwd.upstreams:
             # Everything failed to parse — tear the loop back down, no forwarder.
+            _flog("[ERROR] no upstreams parseable — no forwarder pool; BD workers reverted to HOME IP")
             loop.call_soon_threadsafe(loop.stop)
             return
 
@@ -1661,6 +1720,7 @@ class BulletproofPurchaseManager:
             fut.result(timeout=15)
         except Exception as e:
             print(f"[FORWARDER] [ERROR] start_all failed ({e}); reverting workers to HOME IP.")
+            _flog(f"[ERROR] start_all FAILED ({e}) — reverting workers to HOME IP")
             for w in needing:
                 w.cfg.proxy_url = None
             loop.call_soon_threadsafe(loop.stop)
@@ -1670,6 +1730,7 @@ class BulletproofPurchaseManager:
         self._forwarder_loop = loop
         self._forwarder_thread = t
         print(f"[FORWARDER] purchase forwarder pool live: {len(fwd.upstreams)} exit(s)")
+        _flog(f"pool LIVE: {len(fwd.upstreams)} BD exit(s) active — isolation ENGAGED")
 
     def _shutdown_purchase_forwarders(self) -> None:
         """Stop the purchase forwarder pool + its loop/thread. Safe if never started."""
@@ -1735,7 +1796,15 @@ class BulletproofPurchaseManager:
                       + (f" err={err}" if err else ""))
 
             try:
-                fut = w.run_async(sm.ensure_logged_in())
+                # Bounded: ensure_logged_in's escalation ladder (refresh →
+                # restart → credential re-login) is now internally bounded,
+                # but cap the whole check anyway so a wedged step can never
+                # park a sentinel coroutine on the worker loop forever
+                # (2026-07-03: parked coroutines piled up all night with no
+                # verdicts). On timeout the check reports FAILED via _record.
+                async def _bounded_check(_sm=sm):
+                    return await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                fut = w.run_async(_bounded_check())
                 fut.add_done_callback(_record)
             except Exception as e:
                 print(f"[SENTINEL] {label}: could not queue check: {e}")

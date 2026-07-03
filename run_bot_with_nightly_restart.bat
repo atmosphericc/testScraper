@@ -16,7 +16,7 @@ REM  Usage:  double-click, or run from a cmd window in the repo root.
 REM  Stop:   press Ctrl+C, then answer Y to "Terminate batch job".
 REM ===========================================================================
 
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 REM Python venv path differs per machine: some boxes use .venv (dot-prefixed),
@@ -98,19 +98,23 @@ REM  Skipped automatically when target_accounts.json is absent (single-account
 REM  legacy setups keep using relogin.py / their existing target.json).
 REM ---------------------------------------------------------------------------
 if exist "%~dp0config\target_accounts.json" (
-    echo === ensuring all account sessions are logged in  --  %date% %time% ===
-    echo [%date% %time%] account login: relogin_one.py all >> "%RUNLOG%"
+    echo === ensuring all account sessions are logged in  --  !date! !time! ===
+    echo [!date! !time!] account login: relogin_one.py all >> "%RUNLOG%"
     REM relogin_one.py all = the PROVEN flow: per account, validate-first; only
     REM dead accounts get a full sign-out + re-login (username-first with the
     REM config email+password, KMSI, requestSubmit, 3x retry); each session saved
     REM to target.json / target-2.json / ... which the WorkerPool then consumes.
+    REM NOTE: uses !delayed! expansion — the old %ERRORLEVEL% here expanded at
+    REM PARSE time of this whole block (always 0), so failed logins were logged
+    REM as code=0 and went unnoticed.
     "%PYTHON%" relogin_one.py all
-    echo [%date% %time%] account login done code=%ERRORLEVEL% >> "%RUNLOG%"
+    echo [!date! !time!] account login done code=!ERRORLEVEL! >> "%RUNLOG%"
 ) else (
     echo [INFO] config\target_accounts.json not found — single-account legacy mode ^(relogin.py^).
 )
 
 set /a ATTEMPT=0
+set /a RELOGIN_BURSTS=0
 
 :loop
 set /a ATTEMPT+=1
@@ -123,6 +127,32 @@ set "EXITCODE=%ERRORLEVEL%"
 
 echo [%date% %time%] app.py exited code=%EXITCODE% >> "%RUNLOG%"
 echo.
+
+REM ---------------------------------------------------------------------------
+REM  Exit code 87 = app.py booted but the Target session was NOT logged in
+REM  (2026-07-03 fix: it used to idle forever as a dashboard-only zombie).
+REM  Recover the PROVEN way: re-run relogin_one.py all (home IP, validate-first)
+REM  and relaunch. Burst guard: after 3 consecutive 87-cycles, cool down 10
+REM  minutes so a genuinely-broken account can't login-storm Shape all night.
+REM ---------------------------------------------------------------------------
+if "%EXITCODE%"=="87" (
+    set /a RELOGIN_BURSTS+=1
+    echo [!date! !time!] exit 87: not-logged-in — relogin cycle !RELOGIN_BURSTS!/3 >> "%RUNLOG%"
+    if !RELOGIN_BURSTS! GEQ 4 (
+        echo [!date! !time!] 3 relogin cycles failed — cooling down 10 min before next try >> "%RUNLOG%"
+        echo Three relogin cycles failed. Cooling down 10 minutes...
+        ping -n 601 127.0.0.1 >nul
+        set /a RELOGIN_BURSTS=0
+    )
+    if exist "%~dp0config\target_accounts.json" (
+        echo [!date! !time!] account relogin: relogin_one.py all >> "%RUNLOG%"
+        "%PYTHON%" relogin_one.py all
+        echo [!date! !time!] account relogin done code=!ERRORLEVEL! >> "%RUNLOG%"
+    )
+) else (
+    set /a RELOGIN_BURSTS=0
+)
+
 echo app.py exited (code=%EXITCODE%). Restarting in 10s -- press Ctrl+C to stop.
 REM `timeout` returns instantly when stdin isn't a true console (some launch
 REM contexts) — caused a 0.27s/relaunch crash-loop on 2026-05-22 that burned

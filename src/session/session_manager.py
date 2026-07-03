@@ -11,6 +11,7 @@ import logging
 import threading
 import random
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -26,14 +27,39 @@ class SessionManager:
     """Manages persistent browser session for Target.com automation using nodriver"""
 
     def __init__(self, session_path: str = "target.json",
-                 user_data_dir: "str | Path | None" = None):
+                 user_data_dir: "str | Path | None" = None,
+                 proxy_url: "str | None" = None,
+                 account_id: "str | None" = None,
+                 timezone: "str | None" = None,
+                 apply_fingerprint: bool = False):
         """
         session_path: where to read/write the cookie+fingerprint JSON.
         user_data_dir: Chrome profile directory. Default ./nodriver-profile
             (preserves single-worker behavior). Phase 6 (worker pool) passes
             per-worker dirs like ./nodriver-profile-1, ./nodriver-profile-2.
+        proxy_url: optional Chrome --proxy-server value (e.g. 127.0.0.1:23001
+            fronting this account's Bright Data ISP IP, or a plain host:port).
+            None = exit the home IP (legacy single-account behavior). Multi-
+            account drops set this per worker so N accounts don't share one IP.
         """
         self.session_path = Path(session_path)
+        self.proxy_url = (str(proxy_url).strip() or None) if proxy_url else None
+        # Per-account device fingerprint (multi-account). When apply_fingerprint
+        # is set, initialize() re-applies the SAME deterministic CDP identity the
+        # harvester logged in under (build_identity is keyed on account_id+tz), so
+        # the purchase browser's fingerprint matches the harvested session's.
+        self.account_id = account_id
+        self.account_timezone = (str(timezone).strip() or None) if timezone else None
+        self.apply_fingerprint = bool(apply_fingerprint) and bool(account_id)
+        # Global kill-switch. The deterministic account_identity build can drift from
+        # the real installed Chrome (e.g. it spoofs Chrome 130 on a Chrome 149 host, or
+        # macOS-on-Windows) — an incoherent UA/JA3 that Target's Shape flags on BOTH the
+        # login and purchase surfaces (confirmed 2026-06-24: blocked credential logins,
+        # and untested on ATC). TARGET_APPLY_FINGERPRINT=0 falls back to the real browser
+        # identity everywhere until account_identity is pinned to the real Chrome major +
+        # host OS and the canvas/navigator tampering is dropped.
+        if os.environ.get('TARGET_APPLY_FINGERPRINT', '1').lower() in ('0', 'false', 'no'):
+            self.apply_fingerprint = False
         self.logger = logging.getLogger(__name__)
 
         # CRITICAL: User data directory - nodriver persists profile here
@@ -43,7 +69,15 @@ class SessionManager:
         # nodriver instances
         self.browser: Optional[uc.Browser] = None
         self._active_tab = None   # Main tab reference
-        self._context_lock = threading.Lock()
+        self._chrome_pid: Optional[int] = None  # this instance's Chrome PID (per-worker)
+        # asyncio.Lock, NOT threading.Lock (2026-07-03 drop root cause): get_page
+        # holds this across awaits on the worker's event loop. A threading.Lock
+        # here deadlocks the WHOLE loop — coroutine A parks on an await inside
+        # the lock, coroutine B's synchronous `with lock:` then blocks the loop
+        # thread, so A can never resume to release it. With the Session Sentinel
+        # (5-min ensure_logged_in) + keepalive + purchase all calling get_page on
+        # the same loop, this froze all 3 workers before the 07-03 drop.
+        self._context_lock = asyncio.Lock()
 
         # Session state
         self.session_active = False
@@ -175,10 +209,17 @@ class SessionManager:
             print(f"[SESSION_INIT] UNDETECTED CHROME MODE - no automation detection!")
 
             import platform as _platform
+            _browser_args = ['--window-size=1920,1080']
+            # Per-account exit IP: route this browser through its forwarder/proxy
+            # so N racing accounts don't all correlate on one home IP. Chrome
+            # takes a bare host:port here (auth is handled by the local forwarder).
+            if self.proxy_url:
+                _browser_args.append(f'--proxy-server={self.proxy_url}')
+                print(f"[SESSION_INIT] Exit proxy: --proxy-server={self.proxy_url}")
             _config = uc.Config(
                 user_data_dir=str(self.user_data_dir.resolve()),
                 headless=False,
-                browser_args=['--window-size=1920,1080'],
+                browser_args=_browser_args,
                 # sandbox=True causes "Failed to connect to browser" on macOS
                 sandbox=_platform.system() != "Darwin",
                 # Increase connection retry window — macOS Chrome startup takes ~3-4s
@@ -194,6 +235,9 @@ class SessionManager:
             # Store Chrome PID globally so shutdown can kill the whole process tree
             global _chrome_pid
             _chrome_pid = getattr(self.browser, '_process_pid', None)
+            # Per-instance copy too — the module global is last-writer-wins
+            # across N workers, so _safe_cleanup must use its OWN pid.
+            self._chrome_pid = _chrome_pid
             if _chrome_pid:
                 print(f"[SESSION_INIT] Chrome PID stored: {_chrome_pid}")
 
@@ -204,6 +248,24 @@ class SessionManager:
             else:
                 self._active_tab = await self.browser.get("about:blank")
                 print("[SESSION_INIT] Created initial tab")
+
+            # Multi-account: re-apply the per-account CDP fingerprint BEFORE any
+            # Target navigation and BEFORE the live-UA read below — so the purchase
+            # browser presents the SAME identity (UA/platform/tz/viewport/canvas)
+            # the harvester logged this account in under. build_identity is
+            # deterministic on (account_id, timezone), so it reproduces exactly
+            # what harvest_accounts applied. Gated to file-driven accounts only;
+            # legacy single-account skips this and keeps its established profile.
+            if self.apply_fingerprint and self.account_id:
+                try:
+                    from .account_identity import build_identity, apply_identity
+                    _identity = build_identity(self.account_id, timezone=self.account_timezone)
+                    _applied = await apply_identity(self._active_tab, _identity)
+                    print(f"[SESSION_INIT] Per-account identity applied for "
+                          f"{self.account_id}: {_applied} (tz={_identity.get('timezone')})")
+                except Exception as _id_err:
+                    self.logger.warning(f"[FINGERPRINT] apply_identity failed (non-fatal): {_id_err}")
+                    print(f"[SESSION_INIT] [WARN] apply_identity failed: {_id_err}")
 
             # Patch 3 (2026-04-25): Read the live UA from the running Chrome instance
             # instead of using the static pool in _load_fingerprint_data(). This ensures
@@ -345,6 +407,16 @@ class SessionManager:
 
     async def _safe_cleanup(self):
         """Safe cleanup that doesn't throw exceptions"""
+        # Capture the Chrome PID before dropping references — if stop() can't
+        # do its job (wedged CDP socket), we hard-kill the process tree so the
+        # profile dir is actually released for the relaunch. A half-dead Chrome
+        # left holding --user-data-dir makes every subsequent initialize() fail
+        # with "Failed to connect to browser" (2026-07-03 02:50 relaunch).
+        _pid = None
+        try:
+            _pid = getattr(self.browser, '_process_pid', None) or getattr(self, '_chrome_pid', None)
+        except Exception:
+            pass
         try:
             if self._cookie_watchdog_running:
                 self.logger.info("[CLEANUP] Stopping cookie watchdog...")
@@ -352,7 +424,9 @@ class SessionManager:
 
             if self.browser:
                 try:
-                    await self.browser.stop()
+                    # Bounded: browser.stop() awaits the CDP connection close,
+                    # which never resolves on a dead websocket.
+                    await asyncio.wait_for(self.browser.stop(), timeout=8.0)
                     self.logger.info("[CLEANUP] Browser stopped")
                 except Exception as e:
                     self.logger.warning(f"[CLEANUP] Error stopping browser: {e}")
@@ -361,6 +435,22 @@ class SessionManager:
 
         except Exception as e:
             self.logger.warning(f"Cleanup warning (non-fatal): {e}")
+
+        # Belt-and-braces: make sure the process tree is really gone (idempotent
+        # — taskkill on an already-dead PID just returns nonzero).
+        if _pid:
+            try:
+                import subprocess as _sp
+                if sys.platform == "win32":
+                    _sp.run(["taskkill", "/F", "/T", "/PID", str(_pid)],
+                            capture_output=True, timeout=5)
+                else:
+                    import signal as _sig
+                    os.kill(_pid, _sig.SIGKILL)
+                self.logger.info(f"[CLEANUP] Chrome process tree {_pid} hard-killed (profile released)")
+            except Exception as e:
+                self.logger.warning(f"[CLEANUP] hard-kill pid={_pid} failed: {e}")
+        self._chrome_pid = None
 
         self.session_active = False
         self._cdp_cookie_interception_active = False
@@ -592,8 +682,16 @@ class SessionManager:
             self.logger.error(f"[WATCHDOG] Failed to start cookie watchdog: {e}")
 
     async def _cookie_watchdog_loop(self):
-        """Background loop that monitors and fixes cookies every 60 seconds"""
+        """Background loop that monitors and fixes cookies every 60 seconds.
+
+        Each cycle's CDP work is bounded (45s) — on 2026-07-03 the unbounded
+        `storage.get_cookies` parked forever on a dead websocket at 23:50:11
+        ("Checking cookies..." with no verdict), silently killing the watchdog
+        for the rest of the night. Now a wedged cycle times out, and 3
+        consecutive failures escalate to refresh_session() (browser restart)
+        so the worker self-heals instead of rotting until the drop."""
         self.logger.info("[WATCHDOG] Cookie watchdog loop started")
+        consecutive_failures = 0
 
         while self._cookie_watchdog_running and self.session_active:
             try:
@@ -602,82 +700,111 @@ class SessionManager:
                 if not self._cookie_watchdog_running or not self.session_active:
                     break
 
-                self.logger.info("[WATCHDOG] Checking cookies...")
-                test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
-
-                if not self._active_tab:
-                    self.logger.warning("[WATCHDOG] No tab available, skipping check")
-                    continue
-
-                # Get current cookies via CDP
                 try:
-                    all_cookies = await self._active_tab.send(uc.cdp.storage.get_cookies())
-                    target_cookies = [
-                        {
-                            'name': str(c.name),
-                            'value': str(c.value),
-                            'expires': float(c.expires) if c.expires is not None else -1,
-                            'domain': str(getattr(c, 'domain', '')),
-                            'path': str(getattr(c, 'path', '/')),
-                            'httpOnly': bool(getattr(c, 'http_only', False)),
-                            'secure': bool(getattr(c, 'secure', False)),
-                        }
-                        for c in all_cookies
-                        if 'target.com' in str(getattr(c, 'domain', ''))
-                    ]
-                except Exception as get_err:
-                    self.logger.warning(f"[WATCHDOG] Could not get cookies: {get_err}")
-                    continue
+                    ok = await asyncio.wait_for(self._cookie_watchdog_check_once(), timeout=45.0)
+                except asyncio.TimeoutError:
+                    ok = False
+                    self.logger.error("[WATCHDOG] Cookie check TIMED OUT (>45s) — CDP websocket likely wedged")
 
-                self.logger.info(f"[WATCHDOG] Found {len(target_cookies)} Target.com cookies")
+                if ok:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    self.logger.warning(f"[WATCHDOG] Cookie check failed ({consecutive_failures} consecutive)")
+                    if consecutive_failures >= 3:
+                        self.logger.error("[WATCHDOG] 3 consecutive failures — escalating to session refresh (browser restart if needed)")
+                        print(f"[WATCHDOG] {self.account_id or 'primary'}: 3 consecutive cookie-check failures — restarting session")
+                        consecutive_failures = 0
+                        try:
+                            # Skip while a purchase is in flight — never yank the
+                            # browser out from under an active checkout.
+                            if not self.purchase_in_progress:
+                                await asyncio.wait_for(self.refresh_session(), timeout=120.0)
+                        except Exception as _esc_err:
+                            self.logger.error(f"[WATCHDOG] escalation refresh failed: {_esc_err}")
 
-                critical_cookies = ['accessToken', 'idToken', 'refreshToken', 'login-session']
-                found_cookies = {}
-                missing_cookies = []
-                session_cookies = []
-
-                for cookie_name in critical_cookies:
-                    found = False
-                    for cookie in target_cookies:
-                        c_name = cookie.get('name', '') if isinstance(cookie, dict) else str(getattr(cookie, 'name', ''))
-                        if c_name == cookie_name:
-                            found = True
-                            found_cookies[cookie_name] = cookie
-                            expires = cookie.get('expires', -1) if isinstance(cookie, dict) else getattr(cookie, 'expires', -1)
-                            if expires is None or expires == -1:
-                                session_cookies.append(cookie_name)
-                                if not test_mode:
-                                    self.logger.warning(f"[WATCHDOG] '{cookie_name}' is SESSION cookie - needs fixing!")
-                            else:
-                                days_left = (expires - time.time()) / (24 * 60 * 60)
-                                if days_left < 0:
-                                    missing_cookies.append(cookie_name)
-                                    if not test_mode:
-                                        self.logger.warning(f"[WATCHDOG] '{cookie_name}' EXPIRED {abs(days_left):.1f} days ago!")
-                                else:
-                                    self.logger.info(f"[WATCHDOG] '{cookie_name}' OK ({days_left:.1f} days left)")
-                            break
-
-                    if not found:
-                        missing_cookies.append(cookie_name)
-                        if not test_mode:
-                            self.logger.warning(f"[WATCHDOG] '{cookie_name}' MISSING!")
-
-                if session_cookies:
-                    await self._fix_session_cookies(found_cookies, session_cookies)
-
-                if missing_cookies:
-                    if not test_mode:
-                        self.logger.warning(f"[WATCHDOG] Missing critical cookies: {missing_cookies}")
-                    await self._restore_cookies_from_file(missing_cookies)
-
-                if not session_cookies and not missing_cookies:
-                    self.logger.info("[WATCHDOG] All cookies healthy!")
-
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 self.logger.error(f"[WATCHDOG] Error in watchdog loop: {e}")
 
         self.logger.info("[WATCHDOG] Cookie watchdog loop ended")
+
+    async def _cookie_watchdog_check_once(self) -> bool:
+        """One watchdog cycle: read cookies via CDP, fix session/missing ones.
+        Returns True if the CDP read succeeded (session considered alive)."""
+        self.logger.info("[WATCHDOG] Checking cookies...")
+        test_mode = os.environ.get('TEST_MODE', 'false').lower() == 'true'
+
+        if not self._active_tab:
+            self.logger.warning("[WATCHDOG] No tab available, skipping check")
+            return False
+
+        # Get current cookies via CDP
+        try:
+            all_cookies = await self._active_tab.send(uc.cdp.storage.get_cookies())
+            target_cookies = [
+                {
+                    'name': str(c.name),
+                    'value': str(c.value),
+                    'expires': float(c.expires) if c.expires is not None else -1,
+                    'domain': str(getattr(c, 'domain', '')),
+                    'path': str(getattr(c, 'path', '/')),
+                    'httpOnly': bool(getattr(c, 'http_only', False)),
+                    'secure': bool(getattr(c, 'secure', False)),
+                }
+                for c in all_cookies
+                if 'target.com' in str(getattr(c, 'domain', ''))
+            ]
+        except Exception as get_err:
+            self.logger.warning(f"[WATCHDOG] Could not get cookies: {get_err}")
+            return False
+
+        self.logger.info(f"[WATCHDOG] Found {len(target_cookies)} Target.com cookies")
+
+        critical_cookies = ['accessToken', 'idToken', 'refreshToken', 'login-session']
+        found_cookies = {}
+        missing_cookies = []
+        session_cookies = []
+
+        for cookie_name in critical_cookies:
+            found = False
+            for cookie in target_cookies:
+                c_name = cookie.get('name', '') if isinstance(cookie, dict) else str(getattr(cookie, 'name', ''))
+                if c_name == cookie_name:
+                    found = True
+                    found_cookies[cookie_name] = cookie
+                    expires = cookie.get('expires', -1) if isinstance(cookie, dict) else getattr(cookie, 'expires', -1)
+                    if expires is None or expires == -1:
+                        session_cookies.append(cookie_name)
+                        if not test_mode:
+                            self.logger.warning(f"[WATCHDOG] '{cookie_name}' is SESSION cookie - needs fixing!")
+                    else:
+                        days_left = (expires - time.time()) / (24 * 60 * 60)
+                        if days_left < 0:
+                            missing_cookies.append(cookie_name)
+                            if not test_mode:
+                                self.logger.warning(f"[WATCHDOG] '{cookie_name}' EXPIRED {abs(days_left):.1f} days ago!")
+                        else:
+                            self.logger.info(f"[WATCHDOG] '{cookie_name}' OK ({days_left:.1f} days left)")
+                    break
+
+            if not found:
+                missing_cookies.append(cookie_name)
+                if not test_mode:
+                    self.logger.warning(f"[WATCHDOG] '{cookie_name}' MISSING!")
+
+        if session_cookies:
+            await self._fix_session_cookies(found_cookies, session_cookies)
+
+        if missing_cookies:
+            if not test_mode:
+                self.logger.warning(f"[WATCHDOG] Missing critical cookies: {missing_cookies}")
+            await self._restore_cookies_from_file(missing_cookies)
+
+        if not session_cookies and not missing_cookies:
+            self.logger.info("[WATCHDOG] All cookies healthy!")
+        return True
 
     async def _fix_session_cookies(self, found_cookies: dict, session_cookie_names: list):
         """Fix session cookies by re-injecting with persistent expires"""
@@ -949,7 +1076,7 @@ class SessionManager:
 
         for attempt in range(max_attempts):
             try:
-                with self._context_lock:
+                async with self._context_lock:
                     if not self.browser or not self.session_active:
                         break
 
@@ -958,7 +1085,11 @@ class SessionManager:
                         tab = self.browser.tabs[0]
                         self._active_tab = tab
                     else:
-                        tab = await self.browser.get("about:blank")
+                        # Bounded: on a dead CDP websocket this call never
+                        # returns — an unbounded await here held the lock
+                        # forever and wedged every downstream get_page caller.
+                        tab = await asyncio.wait_for(
+                            self.browser.get("about:blank"), timeout=10.0)
                         self._active_tab = tab
 
                     # Test tab health
@@ -992,7 +1123,19 @@ class SessionManager:
             try:
                 result = await asyncio.wait_for(tab.evaluate("true"), timeout=2.0)
                 return True
+            except asyncio.TimeoutError:
+                # 2026-07-03: a dead CDP websocket times out here but tab.url
+                # (a cached property) stays truthy — the old fallback declared
+                # wedged tabs "healthy", so get_page handed dead tabs to the
+                # purchase path all night. A timeout on `evaluate("true")` on
+                # an idle tab IS the wedge signature: report unhealthy so
+                # callers escalate to a browser restart instead of hanging.
+                self.logger.warning("[TAB_HEALTH] evaluate('true') timed out >2s — tab/websocket wedged")
+                return False
             except Exception:
+                # Non-timeout CDP errors (e.g. transient nav race) — keep the
+                # lenient fallback: a tab mid-navigation can reject evaluate
+                # yet be perfectly alive.
                 if tab.url:
                     return True
                 return False
@@ -1066,7 +1209,13 @@ class SessionManager:
 
             self.logger.info("Navigating to account page to trigger auto-refresh...")
             try:
-                await tab.get("https://www.target.com/account")
+                # Bounded: unbounded tab.get parks forever on a dead websocket
+                # (2026-07-03 — every 5-min sentinel tick stacked another
+                # parked coroutine instead of detecting the wedge).
+                await asyncio.wait_for(tab.get("https://www.target.com/account"), timeout=25.0)
+            except asyncio.TimeoutError:
+                self.logger.error("[ERROR] Account nav timed out >25s — websocket wedged, refresh failed")
+                return False
             except Exception as goto_error:
                 self.logger.warning(f"Account navigation warning: {goto_error}")
 
@@ -1141,6 +1290,117 @@ class SessionManager:
             self.logger.error(f"[ERROR] Session refresh failed: {e}")
             return False
 
+    def _load_account_credentials(self, cfg_path: "Path | None" = None) -> "tuple[str, str] | None":
+        """Read this account's username/password from config/target_accounts.json
+        (keyed by self.account_id). Returns None if no file / no match / placeholder.
+        Only used as the last-resort recovery when a session is truly dead.
+        cfg_path overrides the default location (tests)."""
+        if not self.account_id:
+            return None
+        try:
+            cfg = cfg_path or (Path(__file__).resolve().parents[2] / "config" / "target_accounts.json")
+            if not cfg.exists():
+                return None
+            with open(cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for acc in (data.get("accounts", []) if isinstance(data, dict) else []):
+                if not isinstance(acc, dict):
+                    continue
+                if str(acc.get("account_id")) == str(self.account_id):
+                    u, p = acc.get("username", ""), acc.get("password", "")
+                    if u and p and p != "REPLACE_ME":
+                        return u, p
+                    return None
+        except Exception as e:
+            self.logger.warning(f"[RELOGIN] could not load credentials: {e}")
+        return None
+
+    async def _credential_relogin(self) -> bool:
+        """Last-resort recovery: re-login this account with its stored credentials
+        using the PROVEN relogin_one flow (full sign-out → username-first login with
+        requestSubmit/verified-fill/KMSI). Only fires when refresh/restart could not
+        restore the session. 2FA-off accounts log in headlessly; a genuine new-device
+        challenge returns False (needs `relogin_one.py <id> --force` present once)."""
+        creds = self._load_account_credentials()
+        if not creds:
+            self.logger.warning(f"[RELOGIN] no usable credentials for account_id={self.account_id} — cannot auto-relogin")
+            return False
+        username, password = creds
+        try:
+            tab = await self.get_page()
+            if not tab:
+                return False
+            # Import the proven flow (root-level script; no import-time side effects).
+            import sys as _sys
+            _root = str(Path(__file__).resolve().parents[2])
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            import relogin_one as _relogin
+            self.logger.info(f"[RELOGIN] credential re-login for {self.account_id} (proven flow)...")
+            await _relogin.full_signout(tab)
+            ok = await _relogin.login(tab, username, password)
+            if ok:
+                self.session_active = True
+                self.last_validation = datetime.now()
+                self.validation_failures = 0
+                await self.save_session_state()
+                self.logger.info(f"[RELOGIN] [OK] credential re-login succeeded for {self.account_id}")
+                return True
+            self.logger.error(f"[RELOGIN] credential re-login failed for {self.account_id} "
+                              f"(challenge or bad creds — may need manual enrolment)")
+            return False
+        except Exception as e:
+            self.logger.error(f"[RELOGIN] credential re-login error for {self.account_id}: {e}")
+            return False
+
+    async def validate_logged_in(self) -> bool:
+        """READ-ONLY login check — navigate /account, True iff not redirected to
+        login. No refresh, no restart, no save, no re-login. For honest status
+        reporting (the authoritative signal; the homepage account-link is not)."""
+        try:
+            tab = await self.get_page()
+            if not tab:
+                return False
+            try:
+                await asyncio.wait_for(tab.get("https://www.target.com/account"), timeout=25.0)
+            except Exception:
+                pass
+            await asyncio.sleep(2.5)
+            url = (getattr(tab, 'url', '') or '').lower()
+            if any(x in url for x in ('login', 'signin', 'sign-in', '/guest')):
+                return False
+            return '/account' in url
+        except Exception:
+            return False
+
+    async def ensure_logged_in(self) -> bool:
+        """Escalation ladder that GUARANTEES a valid logged-in session or reports
+        failure. Used by the per-account Session Sentinel:
+          1. navigation refresh (also validates we're really logged in)
+          2. browser restart (reloads persisted cookies)
+          3. credential re-login from the accounts file (true recovery)
+        Returns True iff the account ends up logged in."""
+        try:
+            if await self._trigger_token_refresh():   # validates + refreshes
+                return True
+            # A single /account redirect can be transient (the check raced a
+            # concurrent warmup navigation). Re-check once before the heavy
+            # restart — this is exactly what false-tripped 'primary' in testing.
+            await asyncio.sleep(2)
+            if await self._trigger_token_refresh():
+                self.logger.info(f"[SENTINEL] {self.account_id}: logged in on recheck (first check was transient)")
+                return True
+            self.logger.warning(f"[SENTINEL] {self.account_id}: navigation refresh failed — escalating to restart")
+            if await self.refresh_session():
+                # refresh_session may have restarted; re-validate it's truly authed
+                if await self._trigger_token_refresh():
+                    return True
+            self.logger.warning(f"[SENTINEL] {self.account_id}: restart did not restore auth — escalating to credential re-login")
+            return await self._credential_relogin()
+        except Exception as e:
+            self.logger.error(f"[SENTINEL] ensure_logged_in error for {self.account_id}: {e}")
+            return False
+
     async def save_session_state(self) -> bool:
         """Save current session state to file"""
         try:
@@ -1151,7 +1411,8 @@ class SessionManager:
             # Get all cookies via Storage.getCookies (non-deprecated CDP method)
             cookie_collection_failed = False
             try:
-                cookies_raw = await self._active_tab.send(uc.cdp.storage.get_cookies())
+                cookies_raw = await asyncio.wait_for(
+                    self._active_tab.send(uc.cdp.storage.get_cookies()), timeout=15.0)
                 all_cookies = []
                 for c in cookies_raw:
                     same_site = c.same_site.to_json() if c.same_site is not None else None

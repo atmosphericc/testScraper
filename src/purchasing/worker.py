@@ -42,11 +42,28 @@ class WorkerConfig:
     account_id: str = "primary"
     session_path: str = "target.json"
     profile_dir: str = "nodriver-profile"
+    # Per-account exit proxy for the PURCHASE browser. Starts as the value from
+    # config/target_accounts.json (may be a Bright-Data auth URL or a plain
+    # host:port, or None = home IP). BulletproofPurchaseManager rewrites a BD
+    # auth URL into a local forwarder address (127.0.0.1:port) before
+    # build_components, since Chrome can't take inline proxy auth.
+    proxy_url: Optional[str] = None
+    # IANA timezone for this account's device fingerprint (from accounts.json).
+    timezone: Optional[str] = None
+    # When True, re-apply the per-account CDP fingerprint (account_identity) on
+    # the purchase tab so it matches what the harvester logged in under. Only set
+    # for file-driven (multi-account) configs — legacy single-account leaves this
+    # False so the established primary fingerprint is never altered.
+    apply_fingerprint: bool = False
 
     def __post_init__(self) -> None:
         # Coerce paths to plain strings so downstream comparisons stay simple.
         self.session_path = str(self.session_path)
         self.profile_dir = str(self.profile_dir)
+        if self.proxy_url is not None:
+            self.proxy_url = str(self.proxy_url).strip() or None
+        if self.timezone is not None:
+            self.timezone = str(self.timezone).strip() or None
 
 
 class Worker:
@@ -88,6 +105,10 @@ class Worker:
         self.session_manager = SessionManager(
             session_path=self.cfg.session_path,
             user_data_dir=self.cfg.profile_dir,
+            proxy_url=self.cfg.proxy_url,
+            account_id=self.cfg.account_id,
+            timezone=self.cfg.timezone,
+            apply_fingerprint=self.cfg.apply_fingerprint,
         )
 
         self.session_keepalive = SessionKeepAlive(

@@ -119,6 +119,38 @@ _patch_zendriver_client_security_state()
 
 logger = logging.getLogger(__name__)
 
+# Module-level registry of every Chrome PID this pool has launched. The pool
+# runs inside a daemon thread; on Ctrl+C app.py's shutdown handler ends in
+# os._exit(), which skips daemon-thread finalizers — so the async stop()/
+# _teardown_browser() path that would normally close these Chromes never runs
+# and the N monitoring browsers leak (observed via run_bot_with_nightly_restart).
+# This registry lets the synchronous shutdown path reap them by PID. Populated
+# at launch, pruned on teardown.
+_POOL_CHROME_PIDS: set[int] = set()
+
+
+def kill_all_pool_chromes():
+    """Synchronously hard-kill every Chrome process tree this pool launched.
+    Safe to call from a signal handler / atexit (no event loop needed), which
+    is the whole point — the async teardown never runs under os._exit()."""
+    pids = list(_POOL_CHROME_PIDS)
+    if not pids:
+        return
+    for pid in pids:
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                               capture_output=True, timeout=5)
+            else:
+                import signal as _signal
+                os.killpg(os.getpgid(pid), _signal.SIGKILL)
+        except Exception as e:
+            logger.warning(f"[MULTI_SESSION] pool chrome kill failed pid={pid}: {e}")
+        finally:
+            _POOL_CHROME_PIDS.discard(pid)
+    logger.info(f"[MULTI_SESSION] killed {len(pids)} pool Chrome process tree(s) on shutdown")
+
+
 HARVESTER_RELEVANT_COOKIES = {
     "visitorId", "_px2", "_px3", "_pxvid", "_pxhd", "pxcts",
     "_abck", "bm_sz", "bm_sv", "bm_so", "bm_ni",
@@ -196,6 +228,7 @@ class SessionEntry:
     failed_refreshes: int = 0
     # ── persistent-mode fields ──
     browser: Any = None                  # uc.Browser, kept alive across requests
+    chrome_pid: Optional[int] = None     # OS PID of this session's Chrome (for shutdown reap)
     tab: Any = None                      # long-lived target.com tab on this Chrome
     busy_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     in_flight: bool = False              # cheap non-blocking check before pick
@@ -392,6 +425,11 @@ class MultiSessionPool:
         try:
             t0 = time.time()
             s.browser = await uc.start(cfg)
+            # Track the Chrome PID so the synchronous shutdown path can reap it
+            # even when os._exit() skips the async teardown (see kill_all_pool_chromes).
+            s.chrome_pid = getattr(s.browser, "_process_pid", None)
+            if s.chrome_pid:
+                _POOL_CHROME_PIDS.add(s.chrome_pid)
             s.tab = await asyncio.wait_for(s.browser.get(HOMEPAGE_URL), timeout=30.0)
             # Poll for the Target cookie set rather than trusting one fixed
             # settle — a slow proxy can take past SETTLE_AFTER_NAV_S before
@@ -542,6 +580,9 @@ class MultiSessionPool:
             except Exception:
                 pass
             s.browser = None
+        if s.chrome_pid:
+            _POOL_CHROME_PIDS.discard(s.chrome_pid)
+            s.chrome_pid = None
         s.tab = None
 
     async def _kill_orphan_chromes_for(self, s: SessionEntry):

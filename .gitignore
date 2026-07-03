@@ -29,10 +29,14 @@ wheels/
 
 # Session / profile data (user-specific, not committed)
 target.json
+# Per-account harvested sessions (target-2.json, target-3.json, ...) — live auth tokens
+target-*.json
 target_storage.json
 target_products.json
 target_profile/
 nodriver-profile/
+# Per-account Chrome profiles (nodriver-profile-2/, nodriver-profile-3/, ...)
+nodriver-profile-*/
 playwright-profile/
 chrome_user_data/
 walmart-profile*/
@@ -75,6 +79,9 @@ image.png
 # Config with credentials
 .env
 config/proxyIps.json
+# Multi-account credentials (usernames/passwords) — NEVER commit. Template is
+# config/target_accounts.example.json (committed); the real file is gitignored.
+config/target_accounts.json
 
 # Logs (intentionally tracked for post-mortem of early-morning Target drops)
 # logs/

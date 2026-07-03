@@ -3790,11 +3790,69 @@ def _release_sleep_lock():
 
 atexit.register(_release_sleep_lock)
 
+def _reap_orphan_repo_chromes():
+    """Kill Chrome processes left over from a CRASHED previous run.
+
+    2026-07-03 02:48: app.py died to an access violation; its worker Chromes
+    survived (no atexit on a hard crash) and kept holding the repo's
+    --user-data-dir profiles. The wrapper's relaunch then failed every browser
+    launch with "Failed to connect to browser", reported "not logged in", and
+    the bot idled dead through the rest of the drop window.
+
+    Only kills chrome.exe processes whose command line references THIS repo's
+    path AND a user-data-dir — the operator's personal Chrome is untouched.
+    Runs before any browser launch, so it can never kill our own Chromes.
+    Kill-switch: TARGET_BOOT_CHROME_REAP=0.
+    """
+    if os.environ.get('TARGET_BOOT_CHROME_REAP', '1').lower() in ('0', 'false', 'no'):
+        print("[BOOT_REAP] Disabled via TARGET_BOOT_CHROME_REAP=0")
+        return
+    if sys.platform != "win32":
+        return
+    import subprocess as _sp
+    from pathlib import Path
+    repo = str(Path(__file__).resolve().parent)
+    # PowerShell: find chrome.exe whose CommandLine contains the repo path and
+    # a user-data-dir switch, print PIDs (one per line).
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:TS_REPO) "
+        "-and $_.CommandLine.Contains('user-data-dir') } | "
+        "ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        env = dict(os.environ)
+        env['TS_REPO'] = repo
+        out = _sp.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=25, env=env,
+        )
+        pids = [p.strip() for p in (out.stdout or '').splitlines() if p.strip().isdigit()]
+        if not pids:
+            print("[BOOT_REAP] No orphaned repo Chrome processes found")
+            return
+        print(f"[BOOT_REAP] Found {len(pids)} orphaned repo Chrome process(es) from a previous run: {pids}")
+        for pid in pids:
+            try:
+                r = _sp.run(["taskkill", "/F", "/T", "/PID", pid],
+                            capture_output=True, timeout=10)
+                print(f"[BOOT_REAP] taskkill /F /T /PID {pid} → exit {r.returncode}")
+            except Exception as e:
+                print(f"[BOOT_REAP] taskkill {pid} failed: {e}")
+        # Give Windows a beat to release the profile-dir locks before launch.
+        time.sleep(2.0)
+    except Exception as e:
+        print(f"[BOOT_REAP] reap failed (non-fatal): {e}")
+
+
 if __name__ == '__main__':
     setup_run_logging()
     print("=" * 60)
     print("BULLETPROOF MONITORING DASHBOARD")
     print("=" * 60)
+    # Reap crashed-run Chrome orphans BEFORE anything launches a browser —
+    # otherwise the profile dirs are still locked and every launch fails.
+    _reap_orphan_repo_chromes()
     print("[FEATURES] Real-time updates, infinite purchase loops")
     print("[SAFETY] Thread-safe, atomic operations, bulletproof error handling")
     print("[REALTIME] Server-Sent Events for immediate UI updates")
@@ -3922,6 +3980,23 @@ if __name__ == '__main__':
                     "Not logged in to Target — monitoring halted to prevent failed purchases",
                     "error", "system"
                 )
+                # 2026-07-03: a bare `return` here left the Flask process alive
+                # but dead — no monitoring, no browsers — from 02:50 until the
+                # operator found it at 08:10. Under the nightly-restart wrapper
+                # the right move is to EXIT with a distinct code: the wrapper
+                # sees 87, re-runs the proven home-IP relogin (relogin_one.py
+                # all), and relaunches — self-healing instead of a zombie.
+                # Kill-switch (manual/dashboard-only runs): TARGET_EXIT_ON_LOGIN_HALT=0.
+                if os.environ.get('TARGET_EXIT_ON_LOGIN_HALT', '1').lower() not in ('0', 'false', 'no'):
+                    print("[SYSTEM] Exiting with code 87 so the restart wrapper can relogin + relaunch "
+                          "(set TARGET_EXIT_ON_LOGIN_HALT=0 to idle instead)")
+                    add_activity_log("Exiting (code 87) for wrapper relogin + relaunch", "warning", "system")
+                    try:
+                        _kill_browser_now()  # release profile dirs for relogin_one.py
+                    except Exception as _kb_err:
+                        print(f"[SYSTEM] pre-exit browser kill failed: {_kb_err}")
+                    time.sleep(3)  # let run-log tee flush
+                    os._exit(87)
                 return
 
             print("✅ LOGGED IN TO TARGET.COM — starting monitoring with REAL purchases")
@@ -3950,9 +4025,36 @@ if __name__ == '__main__':
         import subprocess as _sp, sys as _sys
         from src.session import session_manager as _sm_mod
 
+        # Reap the resilient-stack monitoring Chromes FIRST. They run in a daemon
+        # thread whose async stop() never executes under os._exit(), so without
+        # this they orphan on Ctrl+C (the run_bot_with_nightly_restart leak).
+        # Independent of the single purchase browser below — always do both.
+        try:
+            from src.session.multi_session_pool import kill_all_pool_chromes
+            kill_all_pool_chromes()
+        except Exception as _e:
+            print(f"[CLEANUP] pool chrome reap failed: {_e}")
+
+        # Kill EVERY worker's browser, not just the primary — with the
+        # multi-account fleet, workers 2..N each own a Chrome on its own
+        # profile dir; leaving them alive keeps those profiles locked for
+        # the next launch/relogin (2026-07-03 relaunch failure mode).
+        killed_any = False
+        wp = getattr(global_purchase_manager, 'worker_pool', None) if global_purchase_manager else None
+        if wp is not None:
+            for _w in getattr(wp, 'workers', []) or []:
+                _wsm = getattr(_w, 'session_manager', None)
+                if _wsm is not None:
+                    try:
+                        _wsm.close_browser_sync()
+                        killed_any = True
+                    except Exception as _e:
+                        print(f"[CLEANUP] worker browser kill failed: {_e}")
         sm = global_purchase_manager.session_manager if global_purchase_manager else None
-        if sm:
+        if sm and not killed_any:
             sm.close_browser_sync()
+            return
+        if killed_any:
             return
 
         # Fallback: module-level PID stored at browser launch
