@@ -3790,6 +3790,36 @@ def _release_sleep_lock():
 
 atexit.register(_release_sleep_lock)
 
+def _disable_console_quickedit():
+    """QuickEdit guard for unattended overnight runs.
+
+    One stray click in the console window puts Windows in text-selection mode,
+    which BLOCKS every write to stdout — every print() in every thread (worker
+    loops included) freezes until someone presses a key. That is a total bot
+    outage no in-code timeout can escape, because the block happens inside the
+    console write itself. Clear ENABLE_QUICK_EDIT_MODE on the console input
+    handle at boot. Kill-switch: TARGET_DISABLE_QUICKEDIT=0.
+    """
+    if os.environ.get('TARGET_DISABLE_QUICKEDIT', '1').lower() in ('0', 'false', 'no'):
+        return
+    if sys.platform != 'win32':
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        if handle in (0, -1):
+            return
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return  # stdin not a real console (redirected/service) — nothing to guard
+        ENABLE_QUICK_EDIT = 0x0040
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        kernel32.SetConsoleMode(handle, (mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT)
+        print("[BOOT] Console QuickEdit disabled — a stray click can no longer freeze the bot")
+    except Exception as e:
+        print(f"[BOOT] QuickEdit guard failed (non-fatal): {e}")
+
+
 def _reap_orphan_repo_chromes():
     """Kill Chrome processes left over from a CRASHED previous run.
 
@@ -3853,6 +3883,8 @@ if __name__ == '__main__':
     # Reap crashed-run Chrome orphans BEFORE anything launches a browser —
     # otherwise the profile dirs are still locked and every launch fails.
     _reap_orphan_repo_chromes()
+    # Then make the console click-proof for the unattended overnight run.
+    _disable_console_quickedit()
     print("[FEATURES] Real-time updates, infinite purchase loops")
     print("[SAFETY] Thread-safe, atomic operations, bulletproof error handling")
     print("[REALTIME] Server-Sent Events for immediate UI updates")

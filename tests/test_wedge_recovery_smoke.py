@@ -168,6 +168,83 @@ def test_wedged_purchase_bails_fast_retryable():
     assert "'cdp_wedged_pre_atc'" in src, "manager no longer knows the retryable wedge reason"
 
 
+# ---- 4b. warmup pool survives a mid-drop browser restart -------------------- #
+class FastTab:
+    url = "https://www.target.com/cart"
+
+    async def evaluate(self, *a, **k):
+        return "complete"
+
+    async def get(self, *a, **k):
+        return None
+
+    async def send(self, *a, **k):
+        return None
+
+    def add_handler(self, *a, **k):
+        return None
+
+
+class FakeBrowser:
+    def __init__(self):
+        self.opened = 0
+        self.tabs = [FastTab()]
+
+    async def get(self, *a, **k):
+        self.opened += 1
+        return FastTab()
+
+
+def test_warmup_pool_resets_on_browser_change():
+    sm = FakeSM(FastTab())
+    browser_a, browser_b = FakeBrowser(), FakeBrowser()
+    sm.browser = browser_a
+    pe = PurchaseExecutor(session_manager=sm)
+
+    async def _noop_interceptor(tab, persistent=False):
+        return None
+    pe._setup_cdp_fetch_interceptor = _noop_interceptor
+
+    async def scenario():
+        tab1 = await pe._ensure_warmup_tab(0)
+        assert tab1 is not None and browser_a.opened == 1
+        # Same browser → handle reused, no new tab.
+        tab1_again = await pe._ensure_warmup_tab(0)
+        assert tab1_again is tab1 and browser_a.opened == 1
+        # Browser restarted (refresh_session) → stale handles must be dropped.
+        sm.browser = browser_b
+        tab2 = await pe._ensure_warmup_tab(0)
+        assert tab2 is not None and tab2 is not tab1, "stale dead-Chrome tab handle reused"
+        assert browser_b.opened == 1, "no fresh tab opened on the new browser"
+        assert pe._warmup_browser_ref is browser_b
+    asyncio.run(scenario())
+
+
+def test_warmup_stuck_flag_ttl():
+    pe = PurchaseExecutor(session_manager=FakeSM(FastTab()))
+    calls = {"n": 0}
+
+    async def fake_refresh(idx, force_fresh=False):
+        calls["n"] += 1
+        pe._cached_cart_headers = {"X": "y"}
+        pe._cached_cart_headers_ts = time.time()
+        return True
+    pe._refresh_on_tab = fake_refresh
+
+    async def scenario():
+        # Fresh in-progress flag → warm skips (no refresh call).
+        pe._warmup_in_progress = True
+        pe._warmup_in_progress_ts = time.time()
+        await pe.warm_shape_headers()
+        assert calls["n"] == 0, "warm ran despite a fresh in-progress flag"
+        # Stale flag (>60s, orphaned coroutine) → warm reclaims and proceeds.
+        pe._warmup_in_progress_ts = time.time() - 61
+        ok = await pe.warm_shape_headers()
+        assert ok and calls["n"] == 1, "stale in-progress flag was not reclaimed"
+        assert pe._warmup_in_progress is False
+    asyncio.run(scenario())
+
+
 # ---- 5. honest execute_purchase labels -------------------------------------- #
 def test_lock_timeout_only_when_lock_contended():
     # Verify the label split exists: _impl_entered gating in execute_purchase.
@@ -187,6 +264,8 @@ if __name__ == "__main__":
     check("test_context_lock_is_asyncio", test_context_lock_is_asyncio)
     check("test_tab_health_timeout_is_unhealthy", test_tab_health_timeout_is_unhealthy)
     check("test_wedged_purchase_bails_fast_retryable", test_wedged_purchase_bails_fast_retryable)
+    check("test_warmup_pool_resets_on_browser_change", test_warmup_pool_resets_on_browser_change)
+    check("test_warmup_stuck_flag_ttl", test_warmup_stuck_flag_ttl)
     check("test_lock_timeout_only_when_lock_contended", test_lock_timeout_only_when_lock_contended)
     print()
     if FAIL:

@@ -65,6 +65,10 @@ class PurchaseExecutor:
         self._warmup_refill_tasks: list = []                # list of asyncio.Task
         self._warmup_pool_size: int = max(1, int(os.environ.get('TARGET_WARMUP_TAB_COUNT', '2')))
         self._warmup_in_progress: bool = False              # prevent concurrent warmups
+        self._warmup_in_progress_ts: float = 0.0            # when the flag was set (stuck-flag TTL)
+        # Browser object the warmup tabs were opened on. After refresh_session
+        # restarts Chrome, stale handles must be dropped (2026-07-05 hardening).
+        self._warmup_browser_ref = None
         self._warmup_rr_idx: int = 0                        # round-robin selector
         self._warmup_pool_lock = asyncio.Lock()            # serialize pool growth
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
@@ -741,6 +745,16 @@ class PurchaseExecutor:
         browser = self.session_manager.browser
         if not browser:
             return None
+        # Browser identity changed (refresh_session restarted Chrome mid-drop):
+        # every cached tab handle belongs to the KILLED process. Reusing one
+        # burns a 20s nav timeout per handle on the recovery path — reset the
+        # pool so fresh tabs open on the new browser immediately.
+        if self._warmup_browser_ref is not browser:
+            if self._warmup_browser_ref is not None:
+                print("[WARMUP] Browser changed since tabs were opened — resetting warmup tab pool")
+            self._warmup_tabs = [None] * max(len(self._warmup_tabs), self._warmup_pool_size)
+            self._warmup_tab_cart_ts.clear()
+            self._warmup_browser_ref = browser
         # Grow the list if needed (length may be < idx+1 on first call).
         while len(self._warmup_tabs) <= idx:
             self._warmup_tabs.append(None)
@@ -937,8 +951,16 @@ class PurchaseExecutor:
         pool index) that keep the ring topped up between purchases.
         """
         if self._warmup_in_progress:
-            return bool(self._cached_cart_headers)
+            # Stuck-flag TTL (2026-07-05 hardening): a foreground warmup whose
+            # .result() timed out at the caller keeps RUNNING as an orphan
+            # coroutine holding this flag. All awaits inside are bounded now,
+            # so >60s of "in progress" means the flag is stale — steal it
+            # rather than silently skipping warmups for the rest of the drop.
+            if time.time() - self._warmup_in_progress_ts < 60.0:
+                return bool(self._cached_cart_headers)
+            print("[WARMUP] in-progress flag stale (>60s) — reclaiming")
         self._warmup_in_progress = True
+        self._warmup_in_progress_ts = time.time()
         try:
             # Round-robin selection. First-touch on an index lazily opens the
             # tab; subsequent calls reuse it.
