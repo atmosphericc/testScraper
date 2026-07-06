@@ -121,6 +121,12 @@ class Worker:
             status_callback=purchase_status_callback,
         )
 
+        # Drop-guard wiring (2026-07-05): give the SessionManager's self-heal
+        # paths (cookie-watchdog escalation, refresh_session restarts) the
+        # executor's page lock, so a browser restart can never yank the tab
+        # out from under an in-flight ATC/checkout on this worker.
+        self.session_manager._drop_guard_lock = self.purchase_executor._page_lock
+
         self._built = True
 
     @property

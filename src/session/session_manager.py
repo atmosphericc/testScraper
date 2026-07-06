@@ -88,6 +88,16 @@ class SessionManager:
         # Purchase lock to prevent validation during active purchases
         self.purchase_in_progress = False
         self._purchase_lock = threading.Lock()
+        # Drop-guard (2026-07-05): the PurchaseExecutor's _page_lock, wired in
+        # by Worker.build_components. Self-heal paths acquire it before
+        # restarting the browser so they can never kill Chrome under an
+        # in-flight ATC/checkout. None in single-piece setups (tests, tools).
+        self._drop_guard_lock = None
+        # Serialize refresh_session: the manager retry-path, watchdog
+        # escalation, and sentinel can all request a restart around the same
+        # failure — two concurrent initialize() calls on one profile dir spawn
+        # two Chromes and both fail to connect.
+        self._refresh_lock = asyncio.Lock()
 
         # Configuration
         self.max_validation_failures = 3
@@ -716,10 +726,15 @@ class SessionManager:
                         print(f"[WATCHDOG] {self.account_id or 'primary'}: 3 consecutive cookie-check failures — restarting session")
                         consecutive_failures = 0
                         try:
-                            # Skip while a purchase is in flight — never yank the
-                            # browser out from under an active checkout.
+                            # Cheap skip while a purchase is in flight; the
+                            # refresh itself also takes the drop-guard (the
+                            # executor's page lock), so even a purchase that
+                            # STARTS right after this check is safe — the
+                            # restart waits for it rather than killing Chrome
+                            # under an active checkout. 300s bound covers a
+                            # full purchase (<=150s) + restart (~60s).
                             if not self.purchase_in_progress:
-                                await asyncio.wait_for(self.refresh_session(), timeout=120.0)
+                                await asyncio.wait_for(self.refresh_session(), timeout=300.0)
                         except Exception as _esc_err:
                             self.logger.error(f"[WATCHDOG] escalation refresh failed: {_esc_err}")
 
@@ -1263,8 +1278,23 @@ class SessionManager:
             self.logger.error(f"[ERROR] Token refresh failed: {e}")
             return False
 
-    async def refresh_session(self) -> bool:
-        """Refresh session - tries navigation refresh first, browser restart as last resort"""
+    async def refresh_session(self, guard: bool = True) -> bool:
+        """Refresh session - navigation refresh first, browser restart as last resort.
+
+        guard=True (default) acquires the drop-guard (the executor's page
+        lock) before touching the browser, so a restart can never kill Chrome
+        under an in-flight purchase. Pass guard=False ONLY when the caller
+        already holds that lock (the sentinel's ensure_logged_in path) —
+        asyncio.Lock is not reentrant and re-acquiring would deadlock."""
+        _guard_lock = self._drop_guard_lock if guard else None
+        if _guard_lock is not None:
+            async with _guard_lock:
+                async with self._refresh_lock:
+                    return await self._refresh_session_impl()
+        async with self._refresh_lock:
+            return await self._refresh_session_impl()
+
+    async def _refresh_session_impl(self) -> bool:
         try:
             self.logger.info("[RETRY] Refreshing session...")
 
@@ -1391,7 +1421,9 @@ class SessionManager:
                 self.logger.info(f"[SENTINEL] {self.account_id}: logged in on recheck (first check was transient)")
                 return True
             self.logger.warning(f"[SENTINEL] {self.account_id}: navigation refresh failed — escalating to restart")
-            if await self.refresh_session():
+            # guard=False: the sentinel wrapper already holds the executor's
+            # page lock (drop-guard); re-acquiring it here would deadlock.
+            if await self.refresh_session(guard=False):
                 # refresh_session may have restarted; re-validate it's truly authed
                 if await self._trigger_token_refresh():
                     return True

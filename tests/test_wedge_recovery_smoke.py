@@ -245,6 +245,35 @@ def test_warmup_stuck_flag_ttl():
     asyncio.run(scenario())
 
 
+# ---- 4c. drop-guard: browser restart waits for in-flight purchase ----------- #
+def test_refresh_waits_for_drop_guard():
+    with tempfile.TemporaryDirectory() as d:
+        sm = SessionManager(session_path=str(Path(d) / "t.json"),
+                            user_data_dir=str(Path(d) / "prof"))
+        order = []
+
+        async def fake_impl():
+            order.append("refresh")
+            return True
+        sm._refresh_session_impl = fake_impl
+        guard = asyncio.Lock()
+        sm._drop_guard_lock = guard
+
+        async def scenario():
+            # Simulate an in-flight purchase holding the page lock.
+            async with guard:
+                task = asyncio.get_running_loop().create_task(sm.refresh_session())
+                await asyncio.sleep(0.25)
+                assert order == [], "restart ran while a purchase held the page lock"
+                order.append("purchase_done")
+            assert await asyncio.wait_for(task, 5) is True
+            assert order == ["purchase_done", "refresh"], order
+            # guard=False path (caller already holds the lock — sentinel ladder)
+            async with guard:
+                assert await asyncio.wait_for(sm.refresh_session(guard=False), 5) is True
+        asyncio.run(scenario())
+
+
 # ---- 5. honest execute_purchase labels -------------------------------------- #
 def test_lock_timeout_only_when_lock_contended():
     # Verify the label split exists: _impl_entered gating in execute_purchase.
@@ -266,6 +295,7 @@ if __name__ == "__main__":
     check("test_wedged_purchase_bails_fast_retryable", test_wedged_purchase_bails_fast_retryable)
     check("test_warmup_pool_resets_on_browser_change", test_warmup_pool_resets_on_browser_change)
     check("test_warmup_stuck_flag_ttl", test_warmup_stuck_flag_ttl)
+    check("test_refresh_waits_for_drop_guard", test_refresh_waits_for_drop_guard)
     check("test_lock_timeout_only_when_lock_contended", test_lock_timeout_only_when_lock_contended)
     print()
     if FAIL:

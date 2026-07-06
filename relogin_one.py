@@ -458,5 +458,38 @@ async def main():
     return 0 if n_ok == len(results) else 1
 
 
+def _arm_deadman():
+    """Global deadman: hard-exit if the whole run overstays its welcome.
+
+    The nightly wrapper runs this script SYNCHRONOUSLY before launching (and
+    when relaunching) app.py. Several navigations in the login flow are
+    unbounded CDP awaits — a dead websocket or a hung Shape challenge would
+    park this process forever, and the bot would never come up that night
+    (2026-07-05 readiness audit). Normal 3-account runs take 40-120s; the
+    default 600s ceiling is generous. Exit code 86 marks the timeout so the
+    wrapper log shows what happened. Override: RELOGIN_DEADMAN_S (0 disables).
+    """
+    try:
+        budget = float(os.environ.get("RELOGIN_DEADMAN_S", "600"))
+    except ValueError:
+        budget = 600.0
+    if budget <= 0:
+        return
+    import threading
+
+    def _bang():
+        try:
+            sys.stderr.write(f"\n[DEADMAN] relogin_one.py exceeded {budget:.0f}s — force-exiting (code 86)\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(86)
+
+    t = threading.Timer(budget, _bang)
+    t.daemon = True
+    t.start()
+
+
 if __name__ == "__main__":
+    _arm_deadman()
     raise SystemExit(asyncio.run(main()))

@@ -1782,7 +1782,13 @@ class BulletproofPurchaseManager:
                 ok = False
                 err = None
                 try:
-                    ok = bool(fut.result())
+                    _res = fut.result()
+                    if _res == 'skip':
+                        # Purchase was using the tab — keep the previous
+                        # verdict rather than recording a phantom failure.
+                        print(f"[SENTINEL] {_label}: skipped (purchase in progress)")
+                        return
+                    ok = bool(_res)
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"
                 with self._sentinel_lock:
@@ -1802,8 +1808,26 @@ class BulletproofPurchaseManager:
                 # park a sentinel coroutine on the worker loop forever
                 # (2026-07-03: parked coroutines piled up all night with no
                 # verdicts). On timeout the check reports FAILED via _record.
-                async def _bounded_check(_sm=sm):
-                    return await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                #
+                # Drop-guard (2026-07-05): hold the executor's page lock for
+                # the whole check so ensure_logged_in can never navigate the
+                # tab (or restart the browser) under an in-flight ATC. The
+                # mid-purchase skip above is queue-time only — a purchase
+                # dispatched a moment later would otherwise collide. A drop
+                # arriving DURING a check simply waits on the lock (~5-10s
+                # healthy path; and if the ladder is mid-restart, waiting for
+                # a live browser is exactly what the purchase needs).
+                async def _bounded_check(_sm=sm, _pe=getattr(w, 'purchase_executor', None)):
+                    if getattr(_sm, 'purchase_in_progress', False):
+                        return 'skip'
+                    _lock = getattr(_pe, '_page_lock', None) if _pe is not None else None
+                    if _lock is None:
+                        return await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                    async with asyncio.timeout(300):
+                        async with _lock:
+                            if getattr(_sm, 'purchase_in_progress', False):
+                                return 'skip'
+                            return await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
                 fut = w.run_async(_bounded_check())
                 fut.add_done_callback(_record)
             except Exception as e:
