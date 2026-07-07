@@ -98,6 +98,8 @@ class SessionManager:
         # failure — two concurrent initialize() calls on one profile dir spawn
         # two Chromes and both fail to connect.
         self._refresh_lock = asyncio.Lock()
+        self._watchdog_task_obj = None   # the watchdog's own asyncio.Task (self-cancel guard)
+        self._escalation_task = None     # detached recovery task (single-flight)
 
         # Configuration
         self.max_validation_failures = 3
@@ -220,6 +222,21 @@ class SessionManager:
 
             import platform as _platform
             _browser_args = ['--window-size=1920,1080']
+            # Anti-idle flags (2026-07-06): on two consecutive overnight runs
+            # every purchase Chrome's CDP went dead around midnight while the
+            # browsers sat idle/backgrounded (07-03 23:50, 07-06 00:21) —
+            # consistent with Chrome/Windows suspending backgrounded renderers
+            # and timers. These flags keep background tabs/timers alive. They
+            # are Chrome-internal scheduling switches with no JS-visible
+            # fingerprint surface. Kill-switch: TARGET_ANTI_IDLE_FLAGS=0.
+            if os.environ.get('TARGET_ANTI_IDLE_FLAGS', '1').lower() not in ('0', 'false', 'no'):
+                _browser_args += [
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding',
+                    '--disable-features=HighEfficiencyModeAvailable,BatterySaverModeAvailable',
+                ]
+                print("[SESSION_INIT] Anti-idle flags ON (background throttling disabled)")
             # Per-account exit IP: route this browser through its forwarder/proxy
             # so N racing accounts don't all correlate on one home IP. Chrome
             # takes a bare host:port here (auth is handled by the local forwarder).
@@ -702,6 +719,12 @@ class SessionManager:
         so the worker self-heals instead of rotting until the drop."""
         self.logger.info("[WATCHDOG] Cookie watchdog loop started")
         consecutive_failures = 0
+        # Identity marker so _stop_cookie_watchdog can recognize (and refuse
+        # to cancel) a stop request issued from inside this very coroutine.
+        try:
+            self._watchdog_task_obj = asyncio.current_task()
+        except Exception:
+            self._watchdog_task_obj = None
 
         while self._cookie_watchdog_running and self.session_active:
             try:
@@ -725,18 +748,14 @@ class SessionManager:
                         self.logger.error("[WATCHDOG] 3 consecutive failures — escalating to session refresh (browser restart if needed)")
                         print(f"[WATCHDOG] {self.account_id or 'primary'}: 3 consecutive cookie-check failures — restarting session")
                         consecutive_failures = 0
-                        try:
-                            # Cheap skip while a purchase is in flight; the
-                            # refresh itself also takes the drop-guard (the
-                            # executor's page lock), so even a purchase that
-                            # STARTS right after this check is safe — the
-                            # restart waits for it rather than killing Chrome
-                            # under an active checkout. 300s bound covers a
-                            # full purchase (<=150s) + restart (~60s).
-                            if not self.purchase_in_progress:
-                                await asyncio.wait_for(self.refresh_session(), timeout=300.0)
-                        except Exception as _esc_err:
-                            self.logger.error(f"[WATCHDOG] escalation refresh failed: {_esc_err}")
+                        # DETACHED task (2026-07-06 incident): running the
+                        # refresh inline here dies to self-cancellation —
+                        # _safe_cleanup stops the watchdog, i.e. THIS task.
+                        # A detached task survives that and retries; the
+                        # refresh takes the drop-guard internally so it can
+                        # never restart Chrome under an in-flight purchase.
+                        if not self.purchase_in_progress:
+                            self._spawn_escalation_refresh("cookie-watchdog 3-strike")
 
             except asyncio.CancelledError:
                 break
@@ -744,6 +763,41 @@ class SessionManager:
                 self.logger.error(f"[WATCHDOG] Error in watchdog loop: {e}")
 
         self.logger.info("[WATCHDOG] Cookie watchdog loop ended")
+
+    def _spawn_escalation_refresh(self, why: str):
+        """Fire-and-forget session recovery on this SM's own loop.
+
+        Detached from the watchdog task on purpose: _safe_cleanup (inside
+        refresh_session) stops the watchdog, and an inline escalation would be
+        cancelling itself (2026-07-06: all 3 workers' recoveries died one
+        await before the Chrome restart). Retries up to 3× with a 60s gap;
+        single-flight — a second trigger while one is running is a no-op.
+        refresh_session is internally serialized and drop-guarded."""
+        t = getattr(self, '_escalation_task', None)
+        if t is not None and not t.done():
+            self.logger.info(f"[ESCALATE] refresh already in flight — skipping duplicate ({why})")
+            return
+
+        async def _escalate():
+            for attempt in range(1, 4):
+                ok = False
+                try:
+                    ok = await asyncio.wait_for(self.refresh_session(), timeout=300.0)
+                except Exception as e:
+                    self.logger.error(f"[ESCALATE] refresh attempt {attempt}/3 error: {type(e).__name__}: {e}")
+                if ok:
+                    self.logger.info(f"[ESCALATE] session recovered on attempt {attempt} ({why})")
+                    print(f"[ESCALATE] {self.account_id or 'primary'}: session RECOVERED ({why}, attempt {attempt})")
+                    return
+                print(f"[ESCALATE] {self.account_id or 'primary'}: refresh attempt {attempt}/3 failed ({why})")
+                await asyncio.sleep(60)
+            self.logger.critical(f"[ESCALATE] session NOT recovered after 3 attempts ({why})")
+            print(f"[ESCALATE] {self.account_id or 'primary'}: FAILED to recover session after 3 attempts ({why}) — sentinel will keep retrying")
+
+        try:
+            self._escalation_task = asyncio.get_running_loop().create_task(_escalate())
+        except RuntimeError:
+            self.logger.error("[ESCALATE] no running loop — cannot spawn escalation")
 
     async def _cookie_watchdog_check_once(self) -> bool:
         """One watchdog cycle: read cookies via CDP, fix session/missing ones.
@@ -925,13 +979,31 @@ class SessionManager:
             self.logger.error(f"[WATCHDOG] Error restoring cookies from file: {e}")
 
     def _stop_cookie_watchdog(self):
-        """Stop the cookie watchdog"""
+        """Stop the cookie watchdog.
+
+        2026-07-06 incident guard: NEVER cancel the watchdog task from WITHIN
+        the watchdog coroutine itself. The 3-strike escalation used to call
+        refresh_session -> _safe_cleanup -> here, and the cancel() killed the
+        very task performing the recovery — one await before the browser
+        restart. All 3 workers' watchdogs died that way at 00:26 and the bot
+        ran browserless-warmup for 19 hours. The loop exits on its own via
+        the running flag, so skipping the cancel for self is always safe."""
         self._cookie_watchdog_running = False
-        if self._cookie_watchdog_task:
+        fut = self._cookie_watchdog_task
+        if fut:
+            _is_self = False
             try:
-                self._cookie_watchdog_task.cancel()
+                _cur = asyncio.current_task()
+                _is_self = _cur is not None and _cur is getattr(self, '_watchdog_task_obj', None)
             except Exception:
-                pass
+                _is_self = False
+            if _is_self:
+                self.logger.info("[WATCHDOG] stop requested from within watchdog — flag cleared, no self-cancel")
+            else:
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
         self.logger.info("[WATCHDOG] Cookie watchdog stopped")
 
     async def human_click(self, tab, selector: str, timeout: int = 5000) -> bool:

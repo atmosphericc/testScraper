@@ -175,6 +175,8 @@ class BulletproofPurchaseManager:
         # re-login) if not. _account_health surfaces each account's last verdict
         # so a dead session is caught BEFORE a drop, not during.
         self._sentinel_cycle_counter: int = 0
+        self._sentinel_timer_thread = None   # wall-clock sentinel driver (resilient stack)
+        self._sentinel_stop = None           # its stop event
         self._account_health: Dict[str, Dict] = {}
         self._sentinel_lock = threading.Lock()
 
@@ -497,6 +499,13 @@ class BulletproofPurchaseManager:
             if failed_workers:
                 print(f"[SESSION] ⚠️  {len(failed_workers)} worker(s) failed: {failed_workers}")
             print("[SESSION] ═══════════════════════════════════════════════")
+            # Timer-based Session Sentinel (2026-07-06). The cycle-based hook
+            # in process_stock_data NEVER runs in the resilient stack — that
+            # path is event-driven and only fires on stock updates, so the
+            # sentinel was dead code in prod (zero [SENTINEL] lines across
+            # entire overnight runs). Start a real timer now that all worker
+            # loops exist.
+            self._start_sentinel_timer()
             return True
 
         except Exception as e:
@@ -1754,19 +1763,65 @@ class BulletproofPurchaseManager:
     # so a silently-logged-out account is caught and re-logged-in long before a drop.
     SENTINEL_CYCLE_INTERVAL = int(os.environ.get('TARGET_SENTINEL_CYCLE_INTERVAL', '150'))
 
+    def _start_sentinel_timer(self) -> None:
+        """Run the Session Sentinel on a wall-clock timer, independent of the
+        stock pipeline. The old hook lived in process_stock_data, which the
+        resilient stack only calls ON STOCK EVENTS — so on a quiet night the
+        sentinel never ran at all (2026-07-06: browsers wedged at 00:21, no
+        sentinel check ever fired, purchase fleet dead for 19h). Daemon
+        thread: initial delay TARGET_SENTINEL_INITIAL_DELAY_S (default 90s,
+        lets boot warmups settle), then every TARGET_SENTINEL_INTERVAL_S
+        (default 300s). Idempotent; disabled by TARGET_SESSION_SENTINEL=0."""
+        if os.environ.get('TARGET_SESSION_SENTINEL', '1').lower() in ('0', 'false'):
+            print("[SENTINEL] disabled via TARGET_SESSION_SENTINEL=0 — timer not started")
+            return
+        if getattr(self, '_sentinel_timer_thread', None) is not None \
+                and self._sentinel_timer_thread.is_alive():
+            return
+        self._sentinel_stop = threading.Event()
+        initial_delay = float(os.environ.get('TARGET_SENTINEL_INITIAL_DELAY_S', '90'))
+        interval = float(os.environ.get('TARGET_SENTINEL_INTERVAL_S', '300'))
+
+        def _loop():
+            if self._sentinel_stop.wait(initial_delay):
+                return
+            print(f"[SENTINEL] timer active — checking every account every {interval:.0f}s")
+            while not self._sentinel_stop.is_set():
+                try:
+                    self._run_session_sentinel_once()
+                except Exception as e:
+                    print(f"[SENTINEL] timer tick error: {type(e).__name__}: {e}")
+                if self._sentinel_stop.wait(interval):
+                    return
+
+        self._sentinel_timer_thread = threading.Thread(
+            target=_loop, daemon=True, name="SessionSentinelTimer")
+        self._sentinel_timer_thread.start()
+        print(f"[SENTINEL] timer thread started (first check in {initial_delay:.0f}s, then every {interval:.0f}s)")
+
     def _maybe_run_session_sentinel(self) -> None:
-        """Every SENTINEL_CYCLE_INTERVAL cycles, validate each worker is logged in
-        and self-heal if not. Non-blocking: each check runs on the worker's own
-        loop and records its verdict into _account_health. Skips workers mid-
-        purchase (don't disrupt an in-flight ATC) and when racing is disabled.
-        Disable entirely with TARGET_SESSION_SENTINEL=0."""
+        """Cycle-based sentinel hook (legacy path via process_stock_data).
+        No-op when the timer thread owns the schedule — process_stock_data
+        only runs on stock events in the resilient stack, so the timer is the
+        real driver; this stays for legacy/monitor-loop setups only."""
         if os.environ.get('TARGET_SESSION_SENTINEL', '1').lower() in ('0', 'false'):
             return
         if self.worker_pool is None:
             return
+        if getattr(self, '_sentinel_timer_thread', None) is not None \
+                and self._sentinel_timer_thread.is_alive():
+            return
         self._sentinel_cycle_counter += 1
         if not (self._sentinel_cycle_counter == 5
                 or self._sentinel_cycle_counter % self.SENTINEL_CYCLE_INTERVAL == 0):
+            return
+        self._run_session_sentinel_once()
+
+    def _run_session_sentinel_once(self) -> None:
+        """Queue one bounded login-check (with self-heal ladder) per worker on
+        its own loop and record verdicts into _account_health. Never touches a
+        worker mid-purchase (queue-time skip + page-lock guard inside)."""
+        if self.worker_pool is None:
             return
 
         for w in self.worker_pool.workers:
@@ -2285,6 +2340,12 @@ class BulletproofPurchaseManager:
         consistent), then calls this to drain pending writes and stop the
         background thread.
         """
+        try:
+            _st = getattr(self, '_sentinel_stop', None)
+            if _st is not None:
+                _st.set()
+        except Exception:
+            pass
         try:
             self.state_store.shutdown(timeout=3.0)
         except Exception as e:

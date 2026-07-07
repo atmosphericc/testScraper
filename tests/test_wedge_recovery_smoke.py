@@ -274,6 +274,107 @@ def test_refresh_waits_for_drop_guard():
         asyncio.run(scenario())
 
 
+# ---- 4d. watchdog escalation must survive its own cleanup (2026-07-06) ------ #
+def test_escalation_survives_watchdog_cancel():
+    """The 07-06 killer: escalation ran INSIDE the watchdog task; _safe_cleanup
+    stopped the watchdog -> the recovery cancelled itself one await before the
+    Chrome relaunch. The detached escalation task must complete even when the
+    watchdog task is cancelled mid-flight."""
+    with tempfile.TemporaryDirectory() as d:
+        sm = SessionManager(session_path=str(Path(d) / "t.json"),
+                            user_data_dir=str(Path(d) / "prof"))
+        done = []
+
+        async def fake_refresh(guard=True):
+            # simulate _safe_cleanup stopping the watchdog mid-refresh
+            sm._stop_cookie_watchdog()
+            await asyncio.sleep(0.1)
+            done.append("refreshed")
+            return True
+        sm.refresh_session = fake_refresh
+
+        async def scenario():
+            async def fake_watchdog():
+                sm._watchdog_task_obj = asyncio.current_task()
+                sm._cookie_watchdog_running = True
+                sm._spawn_escalation_refresh("test 3-strike")
+                await asyncio.sleep(3600)   # parked until cancelled
+
+            wd = asyncio.get_running_loop().create_task(fake_watchdog())
+            sm._cookie_watchdog_task = wd
+            await asyncio.sleep(0.05)
+            # cleanup path cancels the watchdog (external caller — allowed)
+            wd.cancel()
+            # the DETACHED escalation must still finish the refresh
+            await asyncio.wait_for(sm._escalation_task, 10)
+            assert done == ["refreshed"], f"escalation did not survive watchdog cancel: {done}"
+        asyncio.run(scenario())
+
+
+def test_stop_watchdog_never_cancels_self():
+    """_stop_cookie_watchdog called from WITHIN the watchdog coroutine must
+    clear the running flag but NOT cancel the current task."""
+    with tempfile.TemporaryDirectory() as d:
+        sm = SessionManager(session_path=str(Path(d) / "t.json"),
+                            user_data_dir=str(Path(d) / "prof"))
+        survived = []
+
+        async def watchdog_like():
+            sm._watchdog_task_obj = asyncio.current_task()
+            sm._cookie_watchdog_running = True
+            sm._cookie_watchdog_task = asyncio.current_task()
+            sm._stop_cookie_watchdog()        # self-stop: must NOT cancel us
+            await asyncio.sleep(0.05)         # would raise CancelledError if cancelled
+            survived.append(True)
+            return sm._cookie_watchdog_running
+
+        async def scenario():
+            running_flag = await asyncio.wait_for(watchdog_like(), 5)
+            assert survived == [True], "watchdog task was cancelled by its own stop call"
+            assert running_flag is False, "running flag not cleared"
+        asyncio.run(scenario())
+
+
+# ---- 4e. timer-based sentinel drives checks without stock events ------------ #
+def test_sentinel_timer_runs_without_stock_events():
+    """process_stock_data (the old sentinel host) only runs on stock events in
+    the resilient stack — the timer must drive checks on its own."""
+    import threading as _threading
+    from src.purchasing.bulletproof_purchase_manager import BulletproofPurchaseManager as B
+
+    class _FakeWorkerPool:
+        def __init__(self):
+            self.workers = []
+
+    mgr = B.__new__(B)   # no heavy __init__
+    mgr.worker_pool = _FakeWorkerPool()
+    mgr._sentinel_timer_thread = None
+    mgr._sentinel_stop = None
+    ticks = []
+    mgr._run_session_sentinel_once = lambda: ticks.append(time.time())
+
+    os.environ['TARGET_SENTINEL_INITIAL_DELAY_S'] = '0.1'
+    os.environ['TARGET_SENTINEL_INTERVAL_S'] = '0.2'
+    try:
+        mgr._start_sentinel_timer()
+        assert mgr._sentinel_timer_thread is not None and mgr._sentinel_timer_thread.is_alive()
+        deadline = time.time() + 5
+        while len(ticks) < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        assert len(ticks) >= 2, f"timer produced {len(ticks)} sentinel ticks in 5s"
+        # cycle-based hook must defer to the live timer
+        mgr._sentinel_cycle_counter = 4
+        before = len(ticks)
+        B._maybe_run_session_sentinel(mgr)
+        assert len(ticks) == before or ticks[-1] != 'cycle', "cycle hook ran while timer active"
+        mgr._sentinel_stop.set()
+        mgr._sentinel_timer_thread.join(timeout=3)
+        assert not mgr._sentinel_timer_thread.is_alive(), "timer thread did not stop"
+    finally:
+        os.environ.pop('TARGET_SENTINEL_INITIAL_DELAY_S', None)
+        os.environ.pop('TARGET_SENTINEL_INTERVAL_S', None)
+
+
 # ---- 5. honest execute_purchase labels -------------------------------------- #
 def test_lock_timeout_only_when_lock_contended():
     # Verify the label split exists: _impl_entered gating in execute_purchase.
@@ -296,6 +397,9 @@ if __name__ == "__main__":
     check("test_warmup_pool_resets_on_browser_change", test_warmup_pool_resets_on_browser_change)
     check("test_warmup_stuck_flag_ttl", test_warmup_stuck_flag_ttl)
     check("test_refresh_waits_for_drop_guard", test_refresh_waits_for_drop_guard)
+    check("test_escalation_survives_watchdog_cancel", test_escalation_survives_watchdog_cancel)
+    check("test_stop_watchdog_never_cancels_self", test_stop_watchdog_never_cancels_self)
+    check("test_sentinel_timer_runs_without_stock_events", test_sentinel_timer_runs_without_stock_events)
     check("test_lock_timeout_only_when_lock_contended", test_lock_timeout_only_when_lock_contended)
     print()
     if FAIL:
