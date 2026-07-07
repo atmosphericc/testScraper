@@ -71,6 +71,11 @@ class PurchaseExecutor:
         self._warmup_browser_ref = None
         self._warmup_rr_idx: int = 0                        # round-robin selector
         self._warmup_pool_lock = asyncio.Lock()            # serialize pool growth
+        # Rate-gate for the background write-auth self-repair (2026-07-07):
+        # the refill loop's dummy POST doubles as a write-token heartbeat —
+        # on 401 it triggers a token repair, but at most once per 5 min so a
+        # truly dead session doesn't get hammered every 60-90s refill tick.
+        self._last_bg_token_repair_ts: float = 0.0
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
         self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
@@ -834,28 +839,68 @@ class PurchaseExecutor:
                     pass
                 await asyncio.sleep(0.05)
         print(f"[WARMUP#{idx}] Firing dummy POST to trigger Shape header capture...")
+        _dummy_status = -1
         try:
-            await asyncio.wait_for(tab.evaluate("""
-                fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
-                    method: 'POST',
-                    credentials: 'include',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'Origin': 'https://www.target.com',
-                    },
-                    body: JSON.stringify({
-                        cart_item: {tcin: '81926151', quantity: 1, item_channel_id: '10'},
-                        cart_type: 'REGULAR',
-                        channel_id: '10',
-                        shopping_context: 'DIGITAL'
-                    })
-                }).catch(() => {});
-            """), timeout=15.0)
+            # Await the response status (2026-07-07): this POST exercises the
+            # exact auth path a real ATC uses, so its status is a free
+            # write-token heartbeat. All night on 07-07 it silently returned
+            # 401 every 60-90s while the sentinel's DOM check said logged in.
+            _dummy_res = await asyncio.wait_for(tab.evaluate("""(async () => {
+                try {
+                    const resp = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'Origin': 'https://www.target.com',
+                        },
+                        body: JSON.stringify({
+                            cart_item: {tcin: '81926151', quantity: 1, item_channel_id: '10'},
+                            cart_type: 'REGULAR',
+                            channel_id: '10',
+                            shopping_context: 'DIGITAL'
+                        })
+                    });
+                    return resp.status;
+                } catch(e) { return 0; }
+            })()""", await_promise=True), timeout=15.0)
+            try:
+                _dummy_status = int(_dummy_res)
+            except (TypeError, ValueError):
+                _dummy_status = -1
         except Exception as e:
             print(f"[WARMUP#{idx}] Dummy POST failed: {type(e).__name__}: {e} — dropping tab handle")
             self._warmup_tabs[idx] = None
             return False
+
+        if _dummy_status == 401:
+            print(f"[WARMUP#{idx}] WRITE-AUTH DEAD — dummy POST returned 401 "
+                  f"(carts writes will fail until the member token re-mints)")
+            _sm = self.session_manager
+            if (not getattr(_sm, 'purchase_in_progress', False)
+                    and time.time() - self._last_bg_token_repair_ts > 300.0):
+                self._last_bg_token_repair_ts = time.time()
+                try:
+                    _repaired = await asyncio.wait_for(
+                        _sm.ensure_fresh_access_token(tab=tab, allow_nav=True, force=True),
+                        timeout=40.0)
+                    print(f"[WARMUP#{idx}] background token repair: "
+                          f"{'OK — fresh member token' if _repaired else 'FAILED (sentinel ladder will escalate)'}")
+                    if _repaired:
+                        # Tab navigated to homepage during the nav rung — put it
+                        # back on /cart so the next capture cycle stays warm.
+                        try:
+                            await asyncio.wait_for(tab.get("https://www.target.com/cart"), timeout=20.0)
+                            self._warmup_tab_cart_ts[idx] = time.time()
+                        except Exception:
+                            pass
+                except Exception as _tr_err:
+                    print(f"[WARMUP#{idx}] background token repair errored: {_tr_err}")
+        elif _dummy_status not in (-1, 0):
+            # 201 = dummy actually added (harmless test TCIN), 400/404/422 =
+            # authenticated-but-rejected payload — all prove write-auth alive.
+            print(f"[WARMUP#{idx}] dummy POST status {_dummy_status} — write-auth alive")
 
         # Capture window: 1.5s (interceptor fires in 100-300ms when it's going
         # to fire at all; the rest is wasted on broken-Shape JS / dead tabs).
@@ -1410,6 +1455,24 @@ class PurchaseExecutor:
                 # actually has a PDP loaded.
                 print(f"[PURCHASE] ATC fetch 401 auth denied — refreshing Shape headers and retrying (t={time.time()-start_time:.2f}s)")
                 await self._fix_auth_cookie_domains(tab)
+                # 2026-07-07 post-mortem: this 401 is (nearly always) a dead
+                # WRITE token — expired / guest-scope / desynced accessToken
+                # JWT — NOT stale Shape headers. Three restock windows died to
+                # 2h of straight 401s while Shape captures were seconds old.
+                # Repair the token the way the real site does (its own
+                # token_refresh endpoint; ~0.5s, no nav) BEFORE burning the
+                # retry on identical cookies. Server just proved the current
+                # token dead → force=True (skip the exp-claim health check).
+                try:
+                    _tok_ok = await asyncio.wait_for(
+                        self.session_manager.ensure_fresh_access_token(
+                            tab=tab, allow_nav=False, force=True),
+                        timeout=10.0)
+                    print(f"[PURCHASE] access-token repair (endpoint rung): "
+                          f"{'OK — fresh member token' if _tok_ok else 'no fresh mint'} "
+                          f"(t={time.time()-start_time:.2f}s)")
+                except Exception as _tok_err:
+                    print(f"[PURCHASE] access-token repair errored: {_tok_err}")
                 try:
                     await self.warm_shape_headers()
                 except Exception as warm_err:
@@ -1465,6 +1528,22 @@ class PurchaseExecutor:
                     _jitter = 0.2 + (time.time() % 0.2)  # 0.2-0.4s
                     print(f"[PURCHASE] ATC fast-retry still 401 — sleeping {_jitter:.2f}s before second attempt (t={time.time()-start_time:.2f}s)")
                     await asyncio.sleep(_jitter)
+                    # Two 401s in a row → the endpoint rung didn't take. Allow
+                    # the nav rung: delete the dead token cookies + full page
+                    # load so Target's edge MUST mint a fresh member token
+                    # (2026-07-07). ~3-6s bounded — one reload that revives
+                    # every later attempt in the window beats another
+                    # guaranteed-401 retry on identical cookies.
+                    try:
+                        _tok_ok2 = await asyncio.wait_for(
+                            self.session_manager.ensure_fresh_access_token(
+                                tab=tab, allow_nav=True, force=True),
+                            timeout=40.0)
+                        print(f"[PURCHASE] access-token repair (nav rung): "
+                              f"{'OK — fresh member token' if _tok_ok2 else 'FAILED'} "
+                              f"(t={time.time()-start_time:.2f}s)")
+                    except Exception as _tok_err2:
+                        print(f"[PURCHASE] access-token repair (nav rung) errored: {_tok_err2}")
                     # Try the ring first — the failed retry-1's request was
                     # itself observed by the interceptor and pushed a fresh
                     # capture. Skip the explicit warmup round-trip in that
@@ -2970,7 +3049,17 @@ class PurchaseExecutor:
                 # via warmup tab (single dummy POST) and retry the DELETE once.
                 # Cheaper than the DOM-clear fallback (saves 5-15s per affected cycle).
                 if status == 401:
-                    print(f"[CLEAR_CART_API] DELETE {cid[:8]}… 401 — refreshing Shape headers and retrying once")
+                    print(f"[CLEAR_CART_API] DELETE {cid[:8]}… 401 — repairing write token + Shape headers, retrying once")
+                    # 2026-07-07: same dead-write-token failure mode as ATC —
+                    # repair the member token first (endpoint rung, no nav),
+                    # or the checkout-busy re-race dies here on cart-clear.
+                    try:
+                        await asyncio.wait_for(
+                            self.session_manager.ensure_fresh_access_token(
+                                tab=tab, allow_nav=False, force=True),
+                            timeout=10.0)
+                    except Exception as _tok_err:
+                        print(f"[CLEAR_CART_API] token repair errored: {_tok_err}")
                     try:
                         await self.warm_shape_headers()
                     except Exception as warm_err:

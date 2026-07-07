@@ -6,6 +6,7 @@ Uses nodriver (undetected Chrome) for stealth automation.
 
 import json
 import time
+import base64
 import asyncio
 import logging
 import threading
@@ -100,6 +101,19 @@ class SessionManager:
         self._refresh_lock = asyncio.Lock()
         self._watchdog_task_obj = None   # the watchdog's own asyncio.Task (self-cancel guard)
         self._escalation_task = None     # detached recovery task (single-flight)
+
+        # Access-token keep-fresh (2026-07-07 post-mortem): carts.target.com
+        # WRITES (ATC / checkout / cart-clear) need a live MEMBER accessToken
+        # JWT. The 07-07 restocks were lost to 2h of ATC 401 _ERR_AUTH_DENIED
+        # on accounts whose /account page still looked logged in — nothing in
+        # the stack refreshed the token (bot fetches bypass the site JS that
+        # owns refresh-on-401). These track token repairs and rate-gate the
+        # DESTRUCTIVE credential relogin (full_signout wipes the jar; when the
+        # follow-up login is Shape-blocked the account is left signed out —
+        # 'business' burned in exactly that loop every 5-min tick on 07-07).
+        self._last_token_repair_ts = 0.0
+        self._relogin_attempt_times: list = []
+        self._relogin_capped_alerted = False
 
         # Configuration
         self.max_validation_failures = 3
@@ -1285,6 +1299,221 @@ class SessionManager:
             self.logger.warning(f"Popup dismissal error (non-fatal): {e}")
             return False
 
+    # ------------------------------------------------------------------
+    # Access-token keep-fresh (2026-07-07 drop post-mortem)
+    #
+    # carts.target.com writes authenticate via the accessToken cookie (a
+    # JWT; ~4h TTL, `eid` claim present only on member tokens). Target's
+    # SPA refreshes it via its own HTTP client when IT sees a 401 — but
+    # every bot request is a raw page-context fetch that bypasses that
+    # layer, so the app never learns the token died and never refreshes.
+    # Meanwhile /account keeps rendering from login-session, so DOM checks
+    # (the old sentinel) pass all night while every ATC 401s. These
+    # helpers detect the real write-token state and re-mint it the two
+    # ways the site itself does.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_jwt_claims(token_value: str) -> Dict[str, Any]:
+        """Best-effort decode of a JWT payload (no signature check). {} on junk."""
+        try:
+            parts = str(token_value).split('.')
+            if len(parts) < 2:
+                return {}
+            pad = parts[1] + '=' * (-len(parts[1]) % 4)
+            return json.loads(base64.urlsafe_b64decode(pad))
+        except Exception:
+            return {}
+
+    async def get_access_token_status(self, tab=None) -> Dict[str, Any]:
+        """Read the live accessToken cookie from the browser jar.
+        Returns {present, member, eid, ttl_s, iat}. member=False covers
+        missing, expired-claim-less AND guest-scope tokens (no `eid`) — a
+        guest token renders the site header fine while every carts WRITE
+        401s, which is exactly the blind spot that lost the 07-07 drops."""
+        out = {'present': False, 'member': False, 'eid': None, 'ttl_s': -1.0, 'iat': None}
+        try:
+            tab = tab or await self.get_page()
+            if not tab:
+                return out
+            cookies = await asyncio.wait_for(
+                tab.send(uc.cdp.storage.get_cookies()), timeout=10.0)
+            tok = None
+            for c in cookies:
+                if c.name == 'accessToken' and 'target.com' in (c.domain or ''):
+                    tok = c.value
+                    break
+            if not tok:
+                return out
+            out['present'] = True
+            claims = self._decode_jwt_claims(tok)
+            out['eid'] = claims.get('eid')
+            out['iat'] = claims.get('iat')
+            exp = claims.get('exp')
+            if isinstance(exp, (int, float)):
+                out['ttl_s'] = float(exp) - time.time()
+            out['member'] = bool(out['eid'])
+            return out
+        except Exception as e:
+            self.logger.warning(f"[TOKEN] status read failed: {e}")
+            return out
+
+    async def refresh_access_token(self, tab=None, allow_nav: bool = True) -> bool:
+        """Mint a fresh MEMBER accessToken using the flows the real site uses.
+
+        Rung 1 — fire the SPA's own refresh endpoint from page context
+        (authenticates via refreshToken/login-session cookies; ~0.5s, no
+        nav). Fired as a CORS *simple request* (no custom headers → no
+        preflight) so Set-Cookie applies even when the response body is
+        CORS-opaque; success is verified by re-reading the cookie jar,
+        never the response.
+        Rung 2 (allow_nav) — delete the dead accessToken/idToken cookies
+        and do a full page load: Target's edge mints a new token for any
+        valid login-session that presents none. Endpoint-agnostic, so it
+        keeps working if the gsp URL drifts. refreshToken/login-session
+        are NEVER touched, so this can't log the account out.
+
+        Returns True iff the jar ends up holding a freshly-minted member
+        token. Logs which rung repaired (watch relogin/run logs the first
+        night to see which rung the live site actually honors)."""
+        try:
+            tab = tab or await self.get_page()
+            if not tab:
+                return False
+
+            async def _fresh_member_token() -> bool:
+                st = await self.get_access_token_status(tab)
+                if not (st['member'] and st['ttl_s'] > 600):
+                    return False
+                # 'fresh mint' = iat within the last few minutes (a stale-but-
+                # unexpired token that the server just 401'd must not pass).
+                return st['iat'] is None or (time.time() - float(st['iat'])) < 300
+
+            refresh_url = os.environ.get(
+                'TARGET_TOKEN_REFRESH_URL',
+                'https://gsp.target.com/gsp/token_refresh?client_id=ecom-web-1.0.0')
+            try:
+                await asyncio.wait_for(tab.evaluate(
+                    f"""(async () => {{
+                        try {{ await fetch({json.dumps(refresh_url)},
+                            {{method:'POST', credentials:'include'}}); }} catch(_e) {{}}
+                        return true;
+                    }})()""", await_promise=True), timeout=8.0)
+            except Exception as e:
+                self.logger.warning(f"[TOKEN] refresh endpoint fetch errored: {e}")
+            await asyncio.sleep(0.5)
+            if await _fresh_member_token():
+                self._last_token_repair_ts = time.time()
+                self.logger.info(f"[TOKEN] {self.account_id or 'session'}: fresh member token "
+                                 f"minted via token_refresh endpoint")
+                return True
+
+            if not allow_nav:
+                return False
+
+            # Rung 2: forced edge re-mint. Deleting only the token cookies is
+            # safe — login-session/refreshToken stay, and today's alternative
+            # (full browser restart re-injecting the same dead token from
+            # disk) provably never repaired anything on 07-07.
+            try:
+                for _name in ('accessToken', 'idToken'):
+                    for _dom in ('.target.com', 'www.target.com', 'target.com'):
+                        try:
+                            await tab.send(uc.cdp.network.delete_cookies(name=_name, domain=_dom))
+                        except Exception:
+                            pass
+                await asyncio.wait_for(tab.get('https://www.target.com/'), timeout=25.0)
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                self.logger.warning(f"[TOKEN] delete+reload rung failed: {e}")
+            if await _fresh_member_token():
+                self._last_token_repair_ts = time.time()
+                self.logger.info(f"[TOKEN] {self.account_id or 'session'}: fresh member token "
+                                 f"minted via cookie-delete + page reload")
+                try:
+                    await self.save_session_state()
+                except Exception:
+                    pass
+                return True
+            st = await self.get_access_token_status(tab)
+            self.logger.error(
+                f"[TOKEN] {self.account_id or 'session'}: could NOT mint a member token "
+                f"(present={st['present']} member={st['member']} ttl={st['ttl_s']:.0f}s) — "
+                f"login-session likely dead")
+            return False
+        except Exception as e:
+            self.logger.error(f"[TOKEN] refresh_access_token error: {e}")
+            return False
+
+    async def ensure_fresh_access_token(self, tab=None, allow_nav: bool = True,
+                                        min_ttl_s: "float | None" = None,
+                                        force: bool = False) -> bool:
+        """True iff the jar holds a member accessToken with ≥min_ttl_s left,
+        minting a fresh one when it doesn't. force=True skips the health
+        check and repairs unconditionally — for the ATC-401 path, where the
+        server just PROVED the current token is dead regardless of its exp
+        claim. Kill-switch TARGET_TOKEN_KEEPFRESH=0 → always False (callers
+        fall through to their pre-2026-07-07 behavior)."""
+        if os.environ.get('TARGET_TOKEN_KEEPFRESH', '1').lower() in ('0', 'false', 'no'):
+            return False
+        if min_ttl_s is None:
+            min_ttl_s = float(os.environ.get('TARGET_TOKEN_MIN_TTL_S', '1800'))
+        try:
+            tab = tab or await self.get_page()
+            if not tab:
+                return False
+            if not force:
+                st = await self.get_access_token_status(tab)
+                if st['member'] and st['ttl_s'] >= float(min_ttl_s):
+                    return True
+                self.logger.warning(
+                    f"[TOKEN] {self.account_id or 'session'}: token unhealthy "
+                    f"(present={st['present']} member={st['member']} ttl={st['ttl_s']:.0f}s "
+                    f"< min {float(min_ttl_s):.0f}s) — repairing")
+            return await self.refresh_access_token(tab, allow_nav=allow_nav)
+        except Exception as e:
+            self.logger.error(f"[TOKEN] ensure_fresh_access_token error: {e}")
+            return False
+
+    def _credential_relogin_allowed(self) -> bool:
+        """Rate-gate the DESTRUCTIVE last-resort relogin. full_signout wipes
+        the cookie jar; when the follow-up login is Shape-blocked ('password
+        did NOT advance') the account is left signed OUT — on 07-07 'business'
+        looped signout→blocked-login every 5-min sentinel tick from 08:27 on.
+        Cap: TARGET_RELOGIN_MAX_PER_6H tries (default 2) with a
+        TARGET_RELOGIN_COOLDOWN_S gap (default 1200s). When capped, alert
+        once and leave the jar alone — the wrapper/nightly relogin (fresh
+        focused browser, proven flow) is the real fixer."""
+        now = time.time()
+        self._relogin_attempt_times = [t for t in self._relogin_attempt_times
+                                       if now - t < 6 * 3600.0]
+        cooldown_s = float(os.environ.get('TARGET_RELOGIN_COOLDOWN_S', '1200'))
+        max_per_window = int(os.environ.get('TARGET_RELOGIN_MAX_PER_6H', '2'))
+        if self._relogin_attempt_times and (now - self._relogin_attempt_times[-1]) < cooldown_s:
+            self.logger.warning(f"[RELOGIN] {self.account_id}: in {cooldown_s:.0f}s cooldown — "
+                                f"skipping destructive relogin this tick")
+            return False
+        if len(self._relogin_attempt_times) >= max_per_window:
+            if not self._relogin_capped_alerted:
+                self._relogin_capped_alerted = True
+                self._alert_critical(
+                    f"{self.account_id}: credential relogin CAPPED "
+                    f"({max_per_window} tries in 6h, all failed) — leaving cookies alone; "
+                    f"account needs the wrapper/nightly relogin or a manual login")
+            return False
+        self._relogin_attempt_times.append(now)
+        return True
+
+    def _alert_critical(self, msg: str) -> None:
+        """logger + logs/error_log.txt — the operator's morning-scan surface."""
+        self.logger.error(f"[AUTH_CRITICAL] {msg}")
+        try:
+            os.makedirs('logs', exist_ok=True)
+            with open('logs/error_log.txt', 'a', encoding='utf-8') as f:
+                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [AUTH_CRITICAL] {msg}\n")
+        except Exception:
+            pass
+
     async def _trigger_token_refresh(self) -> bool:
         """Trigger Target's auto-refresh flow by navigating to account page"""
         try:
@@ -1478,29 +1707,72 @@ class SessionManager:
     async def ensure_logged_in(self) -> bool:
         """Escalation ladder that GUARANTEES a valid logged-in session or reports
         failure. Used by the per-account Session Sentinel:
+          0. member write-token check + repair (2026-07-07: THE check that
+             matters — /account DOM kept passing all night while every ATC
+             401'd on a dead token; this rung keeps the token hot 24/7 so a
+             drop never starts with cold auth)
           1. navigation refresh (also validates we're really logged in)
           2. browser restart (reloads persisted cookies)
-          3. credential re-login from the accounts file (true recovery)
-        Returns True iff the account ends up logged in."""
+          3. credential re-login from the accounts file (true recovery;
+             DESTRUCTIVE, rate-capped)
+        Returns True iff the account ends up logged in with a live member token."""
         try:
-            if await self._trigger_token_refresh():   # validates + refreshes
-                return True
-            # A single /account redirect can be transient (the check raced a
-            # concurrent warmup navigation). Re-check once before the heavy
-            # restart — this is exactly what false-tripped 'primary' in testing.
-            await asyncio.sleep(2)
-            if await self._trigger_token_refresh():
-                self.logger.info(f"[SENTINEL] {self.account_id}: logged in on recheck (first check was transient)")
-                return True
+            _keepfresh_on = os.environ.get('TARGET_TOKEN_KEEPFRESH', '1').lower() \
+                not in ('0', 'false', 'no')
+            if _keepfresh_on:
+                if await self.ensure_fresh_access_token():
+                    self.last_validation = datetime.now()
+                    self.validation_failures = 0
+                    # Keep the crash-recovery snapshot warm (the old ladder
+                    # saved cookies every healthy tick via the /account nav).
+                    try:
+                        await self.save_session_state()
+                    except Exception:
+                        pass
+                    return True
+                # Transient CDP hiccups happen (check raced a warmup nav) —
+                # one recheck before walking the heavy ladder.
+                await asyncio.sleep(2)
+                if await self.ensure_fresh_access_token():
+                    self.logger.info(f"[SENTINEL] {self.account_id}: token healthy on recheck "
+                                     f"(first check was transient)")
+                    return True
+                self.logger.warning(f"[SENTINEL] {self.account_id}: token repair failed — "
+                                    f"escalating to navigation refresh")
+                if await self._trigger_token_refresh():
+                    # Nav says logged in — but a member token must ALSO mint,
+                    # or ATC still 401s (the 07-07 blind spot).
+                    if await self.ensure_fresh_access_token():
+                        return True
+            else:
+                if await self._trigger_token_refresh():   # validates + refreshes
+                    return True
+                # A single /account redirect can be transient (the check raced a
+                # concurrent warmup navigation). Re-check once before the heavy
+                # restart — this is exactly what false-tripped 'primary' in testing.
+                await asyncio.sleep(2)
+                if await self._trigger_token_refresh():
+                    self.logger.info(f"[SENTINEL] {self.account_id}: logged in on recheck (first check was transient)")
+                    return True
             self.logger.warning(f"[SENTINEL] {self.account_id}: navigation refresh failed — escalating to restart")
             # guard=False: the sentinel wrapper already holds the executor's
             # page lock (drop-guard); re-acquiring it here would deadlock.
             if await self.refresh_session(guard=False):
                 # refresh_session may have restarted; re-validate it's truly authed
                 if await self._trigger_token_refresh():
-                    return True
+                    if not _keepfresh_on:
+                        return True
+                    if await self.ensure_fresh_access_token():
+                        return True
             self.logger.warning(f"[SENTINEL] {self.account_id}: restart did not restore auth — escalating to credential re-login")
-            return await self._credential_relogin()
+            if not self._credential_relogin_allowed():
+                return False
+            ok = await self._credential_relogin()
+            if ok:
+                # Healthy again — reset the destructive-relogin budget.
+                self._relogin_attempt_times.clear()
+                self._relogin_capped_alerted = False
+            return ok
         except Exception as e:
             self.logger.error(f"[SENTINEL] ensure_logged_in error for {self.account_id}: {e}")
             return False
