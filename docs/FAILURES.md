@@ -75,6 +75,29 @@ guest token minted at 08:27:56 = the signout loop; `primary`/`alt-1` tokens carr
 4h TTLs that expired mid-window; sentinel passed throughout). Medium-high on rung 1
 (gsp endpoint from training knowledge — rung 2 is endpoint-agnostic and covers it;
 first night's `[TOKEN]` log lines will show which rung the live site honors).
-**Outcome**: pending first live night. Watch for: `[TOKEN] … fresh member token minted`,
-`dummy POST status 4xx — write-auth alive`, no `[AUTH_CRITICAL]`, and at drop time
-ATC statuses that are 201/429 (throttle race) instead of 401 walls.
+**Outcome**: FIX VALIDATED LIVE (2026-07-07 PM, through the real BD-proxy app.py path):
+- `[WARMUP] dummy POST status 424 — write-auth alive` and `WRITE-AUTH DEAD — dummy POST
+  returned 401` both fire correctly (heartbeat works).
+- `[TOKEN] primary: fresh member token minted via cookie-delete + /account reload` — the
+  exact repair that did NOT happen at 03:17 this morning now fires through the proxy. ✅
+- primary + business steady-state `[SENTINEL] logged_in=True`; boot → `monitoring active`.
+- Hardening from the live run: deleting `idToken` alongside `accessToken` made the reload
+  re-mint a GUEST token — now delete ONLY `accessToken`; poll the jar for the async SPA
+  mint (≤8s) instead of a fixed sleep; nav to auth-gated /account.
+
+**Follow-up gap found (NOT yet fixed) — mid-run guest-downgrade can't self-heal on the
+proxy path**: an account whose login-session has aged/degraded re-mints a GUEST token
+(member=False) instead of a member one; `_is_fresh_member` correctly rejects it, the
+sentinel escalates nav→restart→credential-relogin, but the in-app credential relogin runs
+through the worker's **BD proxy** and Shape-blocks (`[RELOGIN] … failed`), so the account
+stays guest. Observed on alt-1 (validate-first re-harvested 2.5h earlier); primary+business
+(fresh `--force` full logins ~20min earlier) minted member fine. Distinguisher looks like
+**full fresh login vs stale re-harvest**, not IP. Mitigation in place for tonight: all 3
+accounts `--force` full-relogged-in so they START from robust member sessions; keep-fresh
+maintains them. Real fixes to schedule: (1) route the sentinel's rung-3 credential relogin
+through the HOME IP (RELOGIN_SKIP_PROXY) like the nightly wrapper's proven flow, so a
+degraded account self-heals mid-run; (2) investigate why a re-harvested login-session
+re-mints guest while a full-login one re-mints member (session-robustness / TTL of member
+mint capability). Until (1) lands, the guarantee rests on fresh full logins at boot — which
+the nightly wrapper's `relogin_one.py all` provides (dead/guest accounts get a full login;
+member accounts get re-harvested).
