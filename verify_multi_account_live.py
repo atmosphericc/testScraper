@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 import time
+import asyncio
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -75,6 +76,52 @@ def main() -> int:
         except Exception as e:
             print(f"        {label}: logged_in={ok} | (status detail failed: {e})")
 
+    # [2.5] WRITE-AUTH — the 2026-07-07 gap. A logged-in /account page proves
+    # NOTHING about carts WRITES: those need a live MEMBER accessToken JWT
+    # (guest/expired tokens 401 every ATC while the DOM check passes). Check
+    # the live token, repair it through the new keep-fresh rungs if stale,
+    # then fire the same dummy cart POST the warmup uses — any status but 401
+    # (400/404/422 = authenticated-but-rejected payload) proves write-auth.
+    print("\n[2.5] WRITE-AUTH per account (accessToken JWT + carts write probe)...")
+    write_auth = {}
+    for w in pool.workers:
+        label = w.label()
+        sm = w.session_manager
+        try:
+            async def _write_auth(_sm=sm):
+                tab = await _sm.get_page()
+                st = await _sm.get_access_token_status(tab)
+                repaired = None
+                if not (st.get('member') and st.get('ttl_s', -1) >= 1800):
+                    repaired = await _sm.ensure_fresh_access_token(tab=tab, allow_nav=True)
+                    st = await _sm.get_access_token_status(tab)
+                probe = await asyncio.wait_for(tab.evaluate("""(async () => {
+                    try {
+                        const resp = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+                            method: 'POST', credentials: 'include',
+                            headers: {'Content-Type':'application/json','Accept':'application/json','Origin':'https://www.target.com'},
+                            body: JSON.stringify({cart_item:{tcin:'81926151',quantity:1,item_channel_id:'10'},
+                                                  cart_type:'REGULAR',channel_id:'10',shopping_context:'DIGITAL'})
+                        });
+                        return resp.status;
+                    } catch(e) { return 0; }
+                })()""", await_promise=True), timeout=15.0)
+                try:
+                    probe = int(probe)
+                except (TypeError, ValueError):
+                    probe = 0
+                return st, repaired, probe
+            st, repaired, probe = w.run_async(_write_auth()).result(timeout=150)
+            ok = bool(st.get('member')) and st.get('ttl_s', -1) > 600 and probe != 401
+            write_auth[label] = ok
+            ttl_m = st.get('ttl_s', -1) / 60.0
+            print(f"        {label}: member={st.get('member')} token_ttl={ttl_m:.0f}m "
+                  f"repaired={repaired if repaired is not None else 'not-needed'} "
+                  f"write_probe={probe} -> {'✅ WRITE-AUTH OK' if ok else '❌ WRITE-AUTH DEAD'}")
+        except Exception as e:
+            write_auth[label] = False
+            print(f"        {label}: WRITE-AUTH CHECK FAILED {type(e).__name__}: {e}")
+
     # [3/3] EGRESS IP — prove each account exits its OWN proxy IP (the 429 throttle-key
     # measurement docs/MULTI_ACCOUNT.md:180 asks for). Fetches Bright Data's own IP echo
     # THROUGH each account's browser, so the reported IP is that browser's real exit.
@@ -118,10 +165,12 @@ def main() -> int:
     for w in pool.workers:
         label = w.label()
         ok = results.get(label, False)
-        all_ok = all_ok and ok
-        print(f"  {label:22s}: {'✅ LOGGED IN' if ok else '❌ NOT LOGGED IN'}")
+        wa = write_auth.get(label, False)
+        all_ok = all_ok and ok and wa
+        print(f"  {label:22s}: {'✅ LOGGED IN' if ok else '❌ NOT LOGGED IN'} | "
+              f"{'✅ WRITE-AUTH' if wa else '❌ WRITE-AUTH DEAD'}")
     print("=" * 64)
-    print("ALL ACCOUNTS READY ✅" if all_ok else "SOME ACCOUNTS NEED ATTENTION ❌ (run: python harvest_accounts.py --manual --account <id>)")
+    print("ALL ACCOUNTS READY ✅" if all_ok else "SOME ACCOUNTS NEED ATTENTION ❌ (run: python relogin_one.py <id>)")
 
     try:
         pool.shutdown()

@@ -1381,13 +1381,28 @@ class SessionManager:
             if not tab:
                 return False
 
-            async def _fresh_member_token() -> bool:
-                st = await self.get_access_token_status(tab)
+            def _is_fresh_member(st: Dict[str, Any]) -> bool:
                 if not (st['member'] and st['ttl_s'] > 600):
                     return False
                 # 'fresh mint' = iat within the last few minutes (a stale-but-
                 # unexpired token that the server just 401'd must not pass).
                 return st['iat'] is None or (time.time() - float(st['iat'])) < 300
+
+            async def _fresh_member_token() -> bool:
+                return _is_fresh_member(await self.get_access_token_status(tab))
+
+            async def _poll_fresh_member(deadline_s: float) -> bool:
+                """The SPA mints the accessToken via an async XHR after the
+                page loads — proven by relogin's validate-first path minting a
+                fresh token on a plain nav (2026-07-07). A fixed sleep raced
+                it; poll the jar instead so we catch the mint the instant it
+                lands (typically 0.5-3s) without over-waiting."""
+                _end = time.time() + deadline_s
+                while time.time() < _end:
+                    if await _fresh_member_token():
+                        return True
+                    await asyncio.sleep(0.4)
+                return False
 
             refresh_url = os.environ.get(
                 'TARGET_TOKEN_REFRESH_URL',
@@ -1401,8 +1416,7 @@ class SessionManager:
                     }})()""", await_promise=True), timeout=8.0)
             except Exception as e:
                 self.logger.warning(f"[TOKEN] refresh endpoint fetch errored: {e}")
-            await asyncio.sleep(0.5)
-            if await _fresh_member_token():
+            if await _poll_fresh_member(2.0):
                 self._last_token_repair_ts = time.time()
                 self.logger.info(f"[TOKEN] {self.account_id or 'session'}: fresh member token "
                                  f"minted via token_refresh endpoint")
@@ -1415,21 +1429,31 @@ class SessionManager:
             # safe — login-session/refreshToken stay, and today's alternative
             # (full browser restart re-injecting the same dead token from
             # disk) provably never repaired anything on 07-07.
+            minted = False
             try:
-                for _name in ('accessToken', 'idToken'):
-                    for _dom in ('.target.com', 'www.target.com', 'target.com'):
-                        try:
-                            await tab.send(uc.cdp.network.delete_cookies(name=_name, domain=_dom))
-                        except Exception:
-                            pass
-                await asyncio.wait_for(tab.get('https://www.target.com/'), timeout=25.0)
-                await asyncio.sleep(1.5)
+                # Delete ONLY the dead accessToken — NOT idToken. 2026-07-07
+                # live test: deleting idToken too made the reload re-mint a
+                # GUEST token (member=False) instead of refreshing the member
+                # session. idToken/refreshToken/login-session are the member
+                # identity the mint keys off; leave them intact.
+                for _dom in ('.target.com', 'www.target.com', 'target.com'):
+                    try:
+                        await tab.send(uc.cdp.network.delete_cookies(name='accessToken', domain=_dom))
+                    except Exception:
+                        pass
+                # Navigate to the AUTH-GATED /account page: the SPA cannot
+                # render it without a member accessToken, so it's forced to
+                # mint one (a plain homepage load may lazy-defer the mint).
+                # This is the exact surface relogin's validate-first uses when
+                # it re-harvests a fresh token from a live login-session.
+                await asyncio.wait_for(tab.get('https://www.target.com/account'), timeout=25.0)
+                minted = await _poll_fresh_member(8.0)
             except Exception as e:
                 self.logger.warning(f"[TOKEN] delete+reload rung failed: {e}")
-            if await _fresh_member_token():
+            if minted or await _fresh_member_token():
                 self._last_token_repair_ts = time.time()
                 self.logger.info(f"[TOKEN] {self.account_id or 'session'}: fresh member token "
-                                 f"minted via cookie-delete + page reload")
+                                 f"minted via cookie-delete + /account reload")
                 try:
                     await self.save_session_state()
                 except Exception:
@@ -1439,7 +1463,7 @@ class SessionManager:
             self.logger.error(
                 f"[TOKEN] {self.account_id or 'session'}: could NOT mint a member token "
                 f"(present={st['present']} member={st['member']} ttl={st['ttl_s']:.0f}s) — "
-                f"login-session likely dead")
+                f"login-session likely dead (needs credential relogin)")
             return False
         except Exception as e:
             self.logger.error(f"[TOKEN] refresh_access_token error: {e}")
