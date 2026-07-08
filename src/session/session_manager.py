@@ -1670,22 +1670,22 @@ class SessionManager:
             self.logger.warning(f"[RELOGIN] could not load credentials: {e}")
         return None
 
-    async def _credential_relogin(self) -> bool:
-        """Last-resort recovery: re-login this account with its stored credentials
-        using the PROVEN relogin_one flow (full sign-out → username-first login with
-        requestSubmit/verified-fill/KMSI). Only fires when refresh/restart could not
-        restore the session. 2FA-off accounts log in headlessly; a genuine new-device
-        challenge returns False (needs `relogin_one.py <id> --force` present once)."""
-        creds = self._load_account_credentials()
-        if not creds:
-            self.logger.warning(f"[RELOGIN] no usable credentials for account_id={self.account_id} — cannot auto-relogin")
-            return False
-        username, password = creds
+    async def _relaunch_browser(self) -> bool:
+        """Tear down + relaunch this account's browser with the CURRENT
+        self.proxy_url. Serialized on _refresh_lock so it can't race the
+        manager retry-path / watchdog restarts. Returns initialize()'s verdict."""
+        async with self._refresh_lock:
+            await self._safe_cleanup()
+            await asyncio.sleep(1.5)
+            return await self.initialize()
+
+    async def _run_proven_login(self, username: str, password: str) -> bool:
+        """Full sign-out + proven credential login on the CURRENT browser/tab
+        (whatever exit IP it's on). Saves the session on success."""
         try:
             tab = await self.get_page()
             if not tab:
                 return False
-            # Import the proven flow (root-level script; no import-time side effects).
             import sys as _sys
             _root = str(Path(__file__).resolve().parents[2])
             if _root not in _sys.path:
@@ -1707,6 +1707,67 @@ class SessionManager:
         except Exception as e:
             self.logger.error(f"[RELOGIN] credential re-login error for {self.account_id}: {e}")
             return False
+
+    async def _credential_relogin(self) -> bool:
+        """Last-resort recovery: re-login this account with its stored credentials
+        using the PROVEN relogin_one flow (full sign-out → username-first login with
+        requestSubmit/verified-fill/KMSI).
+
+        2026-07-08 mid-run self-heal: if this account exits a BD PROXY, the login
+        MUST run on the HOME IP. Target's Shape blocks credential logins from the
+        ISP proxy exit — every proxied sentinel relogin that night failed
+        "password did NOT advance", while the identical creds logged in fine on
+        the home IP (the nightly wrapper's proven path). So when an account
+        guest-downgrades mid-run and the cheap re-mint can't recover it, toggle
+        the proxy OFF, relaunch on the home IP, run the proven login, then
+        REATTACH the proxy so purchases still exit the account's BD IP — and
+        confirm a member token mints from the fresh login-session. Without this,
+        a degraded account stays dead until the next nightly boot (2026-07-08:
+        alt-1 looped guest→failed-relogin every sentinel tick on the proxy).
+        Kill-switch TARGET_SENTINEL_HOMEIP_RELOGIN=0 → legacy in-place behavior."""
+        creds = self._load_account_credentials()
+        if not creds:
+            self.logger.warning(f"[RELOGIN] no usable credentials for account_id={self.account_id} — cannot auto-relogin")
+            return False
+        username, password = creds
+
+        homeip = (self.proxy_url is not None
+                  and os.environ.get('TARGET_SENTINEL_HOMEIP_RELOGIN', '1').lower()
+                  not in ('0', 'false', 'no'))
+        if not homeip:
+            # No proxy (already home IP) or kill-switched → in-place login.
+            return await self._run_proven_login(username, password)
+
+        saved_proxy = self.proxy_url
+        ok = False
+        try:
+            self.logger.warning(f"[RELOGIN] {self.account_id}: proxy exit — relaunching on HOME IP "
+                                f"for the login (Shape blocks BD-IP credential logins)")
+            self.proxy_url = None
+            if not await self._relaunch_browser():
+                self.logger.error(f"[RELOGIN] {self.account_id}: HOME-IP relaunch failed")
+            else:
+                ok = await self._run_proven_login(username, password)
+        finally:
+            # ALWAYS reattach the purchase proxy — even if the login failed — so
+            # the account can never get stranded exiting the home IP at drop time.
+            self.proxy_url = saved_proxy
+            try:
+                if not await self._relaunch_browser():
+                    self.logger.error(f"[RELOGIN] {self.account_id}: proxy REATTACH relaunch failed "
+                                      f"(browser may need a manual restart)")
+            except Exception as _re:
+                self.logger.error(f"[RELOGIN] {self.account_id}: proxy reattach error: {_re}")
+
+        if not ok:
+            return False
+        # Fresh home-IP login-session should now mint a MEMBER token on the
+        # proxy browser. Verify — the whole point is member write-auth, not just
+        # a rendered /account page.
+        minted = await self.ensure_fresh_access_token(allow_nav=True, force=True)
+        self.logger.info(f"[RELOGIN] {self.account_id}: post-relogin member token "
+                         f"{'MINTED ✅' if minted else 'NOT minted ❌'}")
+        return minted
 
     async def validate_logged_in(self) -> bool:
         """READ-ONLY login check — navigate /account, True iff not redirected to
