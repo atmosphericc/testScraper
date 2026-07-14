@@ -105,6 +105,23 @@ if not exist "%PYTHON%" (
 )
 
 REM ---------------------------------------------------------------------------
+REM  Personal-Chrome Target sign-out (2026-07-13). The operator's own Target
+REM  login IS the bot's `primary` account, so a normal browsing session signed
+REM  into target.com is a SECOND live session on that account — Target rotates
+REM  the member token out from under the bot's session (the 07-10 guest-churn:
+REM  every account holding a GUEST token at fire time). Confirmed 07-13: the
+REM  personal Chrome held 48 target.com cookies incl. a live refreshToken.
+REM  "Remember to sign out before the drop" failed three sessions running, so
+REM  the bot heals it: close Chrome, delete ONLY target.com cookies, reopen
+REM  Chrome with the tabs restored. Runs BEFORE the account logins so the bot's
+REM  sessions end up the only live ones. Kill-switch: set CHROME_SIGNOUT_SKIP=1.
+REM  Never fatal — a stale personal session degrades a drop, it can't break the bot.
+REM ---------------------------------------------------------------------------
+echo === signing personal Chrome out of Target  --  !date! !time! ===
+"%PYTHON%" chrome_target_signout.py
+echo [!date! !time!] chrome target sign-out done code=!ERRORLEVEL! >> "%RUNLOG%"
+
+REM ---------------------------------------------------------------------------
 REM  Multi-account session refresh — run ONCE, before the restart loop.
 REM
 REM  Brings every enabled account in config\target_accounts.json to a
