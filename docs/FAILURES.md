@@ -31,6 +31,45 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-07-13 PM] - Host froze AGAIN on the new GPU driver — full 60-day hardware triage - HOST
+**Symptom**: 17.4 min after the deliberate 23:04 reboot (NVIDIA 610.74 freshly active, light
+load), the machine hard-stopped at **23:23:49** — ~34 s after a Kernel-Power 566
+`SessionUnlock` transition, with zero precursor events (no nvlddmkm, WHEA, disk, thermal).
+Kernel-Power 41 with `BugcheckCode=0`, no dump. The GPU-driver update is thereby
+**empirically disproven as the fix** for host instability.
+**Root Cause (triage verdict, read-only 60-day sweep)**: 36 dirty shutdowns in 60 days
+(≈0.6/day), split 14× bugcheck 0x116 `nvlddmkm` (all param3 `0xC000009A` reset-failure,
+05-21→07-13, on the OLD driver) + 22× no-bugcheck hard stops. Uptime-before-crash is
+**memoryless** (17 min→6.4 d, median 19.5 h — no thermal/creep clustering); 7 crashes hit
+01:00–08:30 at near-idle; 3 documented deaths began the same second as an idle→active
+session/input transition. Zero WHEA machine-checks in 60 days — the hardware dies silently.
+Ranked hypotheses:
+1. **Degraded 13900K (Raptor Lake Vmin-shift defect) — HIGH (~60%).** CPU has run its whole
+   life on microcode **0x11F** (BIOS 1.90, 2023-10-25, MSI MPG Z790 CARBON WIFI) — predates
+   every Intel mitigation (0x125/0x129/0x12B/0x12F), on MSI's unlimited power defaults +
+   "Ultimate Performance" plan. Textbook symptoms: recurring 0x116-at-idle, random no-dump
+   freezes, transition-triggered deaths, silent (no MCE) escalation.
+2. **4-DIMM DDR5 XMP beyond IMC spec — MED-HIGH (~50% contributing).** 4×16 GB Corsair
+   CMT32GX5M2B5600C36 (two mixed 2×16 kits) at 5600 MT/s 1.25 V vs Intel's validated
+   DDR5-4400 for 2DPC on a 13900K. Memoryless crash pattern = classic unstable-RAM print.
+3. PSU/power transient — LOW-MED (~15-20%). 4. RTX 4090 itself — LOW (~10%; 17 crashes have
+   no GPU precursor at all). 5. Thermals — VERY LOW. 6. Board/storage — VERY LOW.
+**Fix Applied**: none possible in software. **Owner action checklist (discriminating order)**:
+(1) **BIOS 1.90 → latest** (carries 0x12B/0x12F microcode + Intel Default limits — mandatory,
+stops further CPU damage); (2) **disable XMP** (JEDEC ~4400) and observe ≥1 week — crashes
+stop ⇒ RAM OC was the trigger, continue ⇒ CPU; (3) MemTest86 overnight ≥4 passes (XMP on,
+then off if erroring); (4) if still crashing on new BIOS + JEDEC → **RMA the 13900K** (Intel
+extended RPL warranty to 5 yr; interim: Intel Default profile / cap boost ~5.5 GHz);
+(5) PSU pass (reseat 12VHPWR/EPS, swap-test) only if 1-4 don't resolve; (6) hygiene:
+Voicemod `vgm.exe` crashed 60×/60 d, MSI Center ships the low-trust NTIOLib driver.
+**Ops implication**: 5 of 5 unattended no-dump crashes FROZE (6-12 h dead until human reset)
+— auto-logon/Startup-lnk cannot cover a hard freeze; until the hardware is fixed, any
+unattended window can silently end a run. ~34 crashes/60 d corrected to exactly 36.
+**Confidence**: high on the evidence (event-log census), medium on ranking (1 vs 2 needs the
+XMP-off discriminator week)
+**Outcome**: OPEN — top drop-night risk. Same-night context: the bot side is fully green
+(auto-start chain validated twice this night; saved cards verified 3/3 — see commit a3273969).
+
 ### [2026-07-13] - Host GPU BSOD killed a healthy overnight run (9 h blind window) - Target
 **Symptom**: Overnight wrapper run (started 07-12 23:40) monitored cleanly for 11.4 h —
 122,556 sweeps @ 2.98/s, 98.7% HTTP 200, 403=12, `in_stock=[]` on all 498 ground-truth
@@ -57,8 +96,10 @@ logon → Startup-lnk revives the bot with zero humans (every other link is now 
 tee (`run_20260712_234004.log`) froze at 11 KB at boot while package.log captured the whole
 night.
 **Confidence**: high (WER bugcheck 1001 + Kernel-Power 41 + package.log timeline all agree)
-**Outcome**: OPEN until the NVIDIA driver is updated — host stability is currently the top
-drop-night risk. The bot itself was validated end-to-end by the recovery boot.
+**Outcome**: CLOSED as a driver issue 2026-07-13 PM — driver updated to 610.74 same day, but
+the machine froze again 17 min into the first post-update boot. Superseded by the
+[2026-07-13 PM] hardware-triage entry above: the 0x116s were a symptom (14 identical since
+05-21), the suspected root is CPU/RAM, not the driver. Bot-side validation stands.
 
 ### [2026-07-10] - ATC-401 root cause RESOLVED (write-auth, not Shape) + pre-drop launch - Target
 **Context**: Pre-drop investigation via live experiments (`scratchpad/diag_shape_vs_token.py`
