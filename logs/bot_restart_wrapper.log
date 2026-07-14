@@ -27,3 +27,87 @@
 [Wed 06/03/2026  1:44:55.72] launch #1 app.py 
 [Thu 06/04/2026  0:45:51.25] launch #1 app.py 
 [Thu 06/04/2026 10:08:39.08] launch #1 app.py 
+[Thu 06/04/2026 23:26:54.46] launch #1 app.py 
+[Mon 06/08/2026  0:56:30.35] launch #1 app.py 
+[Mon 06/08/2026 23:33:40.29] launch #1 app.py 
+[Wed 06/10/2026  0:28:18.36] launch #1 app.py 
+[Wed 06/10/2026 22:27:26.92] launch #1 app.py 
+[Thu 06/11/2026 23:47:21.06] launch #1 app.py 
+[Mon 06/15/2026 23:07:42.52] launch #1 app.py 
+[Mon 06/15/2026 23:07:56.59] app.py exited code=1 
+[Mon 06/15/2026 23:09:22.82] launch #1 app.py 
+[Tue 06/16/2026 17:30:33.05] app.py exited code=1 
+[Tue 06/16/2026 17:30:43.16] launch #2 app.py 
+[Tue 06/16/2026 17:30:46.10] app.py exited code=1 
+[Tue 06/16/2026 17:30:46.37] launch #3 app.py 
+[Tue 06/16/2026 17:30:46.63] app.py exited code=-1073741510 
+[Tue 06/16/2026 17:30:46.90] launch #4 app.py 
+[Tue 06/16/2026 17:30:47.20] app.py exited code=-1073741510 
+[Tue 06/16/2026 23:32:42.48] launch #1 app.py 
+[Wed 06/17/2026 23:53:56.01] launch #1 app.py 
+[Thu 06/18/2026 23:37:19.89] launch #1 app.py 
+[Mon 06/22/2026 23:46:57.40] account login: relogin_one.py all 
+[Mon 06/22/2026 23:46:57.40] account login done code=0 
+[Mon 06/22/2026 23:47:22.10] launch #1 app.py 
+[Wed 06/24/2026 23:34:45.35] account login: relogin_one.py all 
+[Wed 06/24/2026 23:34:45.35] account login done code=0 
+[Wed 06/24/2026 23:38:04.01] launch #1 app.py 
+[Wed 06/24/2026 23:47:55.54] account login: relogin_one.py all 
+[Wed 06/24/2026 23:47:55.54] account login done code=0 
+[Wed 06/24/2026 23:48:35.55] launch #1 app.py 
+[Thu 06/25/2026 23:18:49.52] account login: relogin_one.py all 
+[Thu 06/25/2026 23:18:49.52] account login done code=0 
+[Thu 06/25/2026 23:20:01.19] launch #1 app.py 
+[Fri 06/26/2026 23:07:59.34] account login: relogin_one.py all 
+[Fri 06/26/2026 23:07:59.34] account login done code=0 
+[Fri 06/26/2026 23:08:39.57] launch #1 app.py 
+[Mon 06/29/2026 23:40:13.15] account login: relogin_one.py all 
+[Mon 06/29/2026 23:40:13.15] account login done code=0 
+[Mon 06/29/2026 23:40:52.37] launch #1 app.py 
+[Wed 07/01/2026  0:32:05.21] account login: relogin_one.py all 
+[Wed 07/01/2026  0:32:05.21] account login done code=0 
+[Wed 07/01/2026  0:33:15.49] launch #1 app.py 
+[Wed 07/01/2026 22:48:26.83] account login: relogin_one.py all 
+[Wed 07/01/2026 22:48:26.83] account login done code=0 
+[Wed 07/01/2026 22:49:05.53] launch #1 app.py 
+[Thu 07/02/2026 23:28:28.51] account login: relogin_one.py all 
+[Thu 07/02/2026 23:28:28.51] account login done code=0 
+[Thu 07/02/2026 23:29:08.08] launch #1 app.py 
+[Fri 07/03/2026  2:48:37.91] app.py exited code=-1073741819 
+[Fri 07/03/2026  2:48:48.07] launch #2 app.py 
+[Sun 07/05/2026 23:08:33.29] account login: relogin_one.py all 
+[Sun 07/05/2026 23:09:12.26] account login done code=0 
+[Sun 07/05/2026 23:09:12.27] launch #1 app.py 
+[Mon 07/06/2026 22:25:20.12] account login: relogin_one.py all 
+[Mon 07/06/2026 22:25:57.18] account login done code=0 
+[Mon 07/06/2026 22:25:57.19] launch #1 app.py 
+[Wed 07/08/2026  0:30:57.45] account login: relogin_one.py all 
+[Wed 07/08/2026  0:31:39.23] account login done code=0 
+[Wed 07/08/2026  0:31:39.24] launch #1 app.py 
+[Wed 07/08/2026  1:12:01.30] account login: relogin_one.py all 
+[Wed 07/08/2026  1:12:40.40] account login done code=0 
+[Wed 07/08/2026  1:12:40.40] launch #1 app.py 
+[Wed 07/08/2026  1:53:37.01] account login: relogin_one.py all 
+[Wed 07/08/2026  1:54:14.85] account login done code=0 
+[Wed 07/08/2026  1:54:14.85] launch #1 app.py 
+[Thu 07/09/2026  0:22:03.29] account login: relogin_one.py all 
+[Thu 07/09/2026  0:23:13.76] account login done code=0 
+[Thu 07/09/2026  0:23:13.77] launch #1 app.py 
+[Fri 07/10/2026  1:28:43.24] account login: relogin_one.py all 
+[Fri 07/10/2026  1:29:21.61] account login done code=0 
+[Fri 07/10/2026  1:29:21.62] launch #1 app.py 
+[Fri 07/10/2026  1:45:13.84] account login: relogin_one.py all 
+[Fri 07/10/2026  1:45:51.79] account login done code=0 
+[Fri 07/10/2026  1:45:51.80] launch #1 app.py 
+[Sun 07/12/2026 15:37:50.94] account login: relogin_one.py all 
+[Sun 07/12/2026 15:38:30.55] account login done code=0 
+[Sun 07/12/2026 15:38:30.56] launch #1 app.py 
+[Sun 07/12/2026 23:39:22.99] account login: relogin_one.py all 
+[Sun 07/12/2026 23:40:03.55] account login done code=0 
+[Sun 07/12/2026 23:40:03.55] launch #1 app.py 
+[Mon 07/13/2026 20:16:53.58] account login: relogin_one.py all 
+[Mon 07/13/2026 20:17:30.16] account login done code=0 
+[Mon 07/13/2026 20:17:30.17] launch #1 app.py 
+[Mon 07/13/2026 20:17:36.43] app.py exited code=1 
+[Mon 07/13/2026 20:17:36.70] launch #2 app.py 
+[Mon 07/13/2026 20:17:37.56] app.py exited code=-1073741510 

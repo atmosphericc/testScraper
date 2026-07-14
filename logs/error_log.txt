@@ -12,3 +12,177 @@ DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLi
 [2026-05-29 02:25:05] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - checkout_navigation_failed
 [2026-06-02 02:28:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
 [2026-06-04 10:08:46] [SYSTEM] Not logged in to Target — monitoring halted to prevent failed purchases
+[2026-06-05 02:10:42] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - cdp_wedged_pre_atc
+[2026-06-05 02:33:31] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
+[2026-06-05 02:34:22] [PURCHASE] Purchase failed: 95267143 - lock_timeout
+[2026-06-05 02:48:11] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Display - rate_limited_429
+[2026-06-05 03:29:55] [SCREENSHOT] atc_button_not_ready — url=https://www.target.com/account — saved: logs/screenshots/debug_atc_button_not_ready_20260605_032955.png
+[2026-06-05 03:29:55] [ATC_READY] Button not ready after 12.387064218521118s — url=https://www.target.com/account
+DOM: <div id="__next"><button type="button" aria-hidden="true" id="staticShellLink" tabindex="-1" class="styles_ndsLink__GUaai h-display-flex"></button><div data-test="skipLinks" id="skipLinks"><a class="sc-a5fadc1d-0 kCAjyz h-sr-only h-sr-only-focusable" data-command="content" href="#content">skip to main content</a><a class="sc-a5fadc1d-0 kCAjyz h-sr-only h-sr-only-focusable" data-command="footer" href="#footerHeader">skip to footer</a></div><div class="sc-d3088906-0 hHKJHz"><div class="l-container-fixed styles_utilityHeaderContainer__k6A7s"><div class="styles_flexColumnLeft__myhIR"><div class="styles_styledZipPlaceholder___SQW1 "><button class="styles_btn__1hjpW styles_styledZipCodeButton__tAL1k  " type="button" aria-expanded="false" aria-label="Ship to location: 60056" data-test="@web/ZipCodeButton/StyledZipCodeButton" id="zip-code-id-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center"><div class="styles_geoLocationIconWrapper__VjQD2 "><svg viewBox="0 0 24 24" height="15" width="15"><use href="/icons-illustrations/v2/location.svg#location" xlink:href="/icons-illustrations/v2/location.svg#location"></use></svg></div><span class="styles_styledNameSpan__tzkJR  " data-test="@web/ZipCodeButton/ZipCodeNumber">Ship to 60056</span></div></button></div><div class="h-text-grayLight"><button class="styles_btn__1hjpW styles_base__CPnMk styles_md__QaqTQ styles_storeNameButton__zWVs4  " type="button" aria-expanded="false" aria-label="Store: Skokie IL" data-test="@web/StoreName/Button" id="web-store-id-msg-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center" data-test="@web/StoreName/StoreName"><div class="styles_myStoreIconWrapper__wRU2R "><svg viewBox="0 0 24 24" height="16" width="16"><use href="/icons-illustrations/v2/store.svg#store" xlink:href="/icons-illustrations/v2/store.svg#store"></use></svg></div><div class="styles_ndsTruncate__0rtO0" style="--truncate-lines: 2;"><span class="styles_styledStoreNameSpan__l8eeV ">Skokie IL</s
+
+[2026-06-05 03:31:41] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - None
+[2026-06-05 03:32:01] [PURCHASE] Purchase failed: 95298172 - lock_timeout
+[2026-06-09 02:04:21] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - rate_limited_429
+[2026-06-09 02:16:34] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-06-09 02:18:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-06-09 02:20:41] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-06-09 02:22:48] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-06-09 03:04:04] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Lucario - rate_limited_429
+[2026-06-09 03:17:07] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box - rate_limited_429
+[2026-06-12 03:05:08] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Pitch Black Elite Trainer Box - rate_limited_429
+[2026-06-12 03:56:59] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Pitch Black Booster Display - rate_limited_429
+[2026-06-12 04:24:06] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Scarlet & Violet—Temporal Forces Elite Trainer Box Walking Wake - rate_limited_429
+[2026-06-12 04:34:23] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Pitch Black Booster Bundle - rate_limited_429
+[2026-06-19 02:08:12] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution— Ascended Heroes Elite Trainer Box - rate_limited_429
+[2026-06-19 02:57:33] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - rate_limited_429
+[2026-06-19 03:16:10] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - rate_limited_429
+[2026-06-30 02:07:54] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - None
+[2026-06-30 02:08:05] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - None
+[2026-06-30 02:08:06] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - rate_limited_429
+[2026-06-30 02:20:57] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - None
+[2026-06-30 02:21:08] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - None
+[2026-06-30 02:21:08] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-06-30 02:27:44] [CHECKOUT_FAIL] url=https://www.target.com/checkout reject_key=RESERVATION_FAILURE
+[2026-06-30 02:29:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
+[2026-06-30 02:29:45] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
+[2026-06-30 02:29:45] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - checkout_navigation_failed
+[2026-06-30 02:36:45] [SCREENSHOT] cart_signal_timeout — url=https://www.target.com/ — saved: logs/screenshots/debug_cart_signal_timeout_20260630_023644.png
+[2026-06-30 02:36:45] [CART_SIGNAL] No cart signal within 1.5s — url=https://www.target.com/
+DOM: <link rel="preload" as="image" href="https://target.scene7.com/is/image/Target/GUEST_cf7968c3-2944-476c-b4f3-ebe318e9fdad?wid=800"><link rel="preload" as="image" href="https://target.scene7.com/is/image/Target/GUEST_d0850e10-ed79-4102-ab4a-5577ea15239c?wid=800"><div id="__next"><button type="button" aria-hidden="true" id="staticShellLink" tabindex="-1" class="styles_ndsLink__GUaai h-display-flex"></button><div data-test="skipLinks" id="skipLinks"><a class="sc-a5fadc1d-0 huQUNW h-sr-only h-sr-only-focusable" data-command="content" href="#content">skip to main content</a><a class="sc-a5fadc1d-0 huQUNW h-sr-only h-sr-only-focusable" data-command="footer" href="#footerHeader">skip to footer</a></div><div><div class="styles_utilityHeaderWrapper__onONw"><div class="l-container-fixed styles_utilityHeaderContainer__k6A7s"><div class="styles_flexColumnLeft__myhIR"><div class="styles_styledZipPlaceholder___SQW1 "><button class="styles_btn__1hjpW styles_styledZipCodeButton__tAL1k  " type="button" aria-expanded="false" aria-label="Ship to location: 60047" data-test="@web/ZipCodeButton/StyledZipCodeButton" id="zip-code-id-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center"><div class="styles_geoLocationIconWrapper__VjQD2 "><svg viewBox="0 0 24 24" height="15" width="15"><use href="/icons-illustrations/v2/location.svg#location" xlink:href="/icons-illustrations/v2/location.svg#location"></use></svg></div><span class="styles_styledNameSpan__tzkJR  " data-test="@web/ZipCodeButton/ZipCodeNumber">Ship to 60047</span></div></button></div><div class="h-text-grayLight"><button class="styles_btn__1hjpW styles_base__CPnMk styles_md__QaqTQ styles_storeNameButton__zWVs4  " type="button" aria-expanded="false" aria-label="Store: Skokie IL" data-test="@web/StoreName/Button" id="web-store-id-msg-btn"><div class="h-text-sm h-text-white h-display-flex h-flex-align-center" data-test="@web/StoreName/StoreName"><div class="styles_myStoreIconWrapper__wRU2R "><svg viewBox="0 0 2
+
+[2026-06-30 02:38:39] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
+[2026-06-30 02:38:50] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
+[2026-06-30 02:38:50] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-06-30 02:42:50] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - None
+[2026-06-30 02:43:20] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - rate_limited_429
+[2026-06-30 03:10:26] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - None
+[2026-06-30 03:10:55] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - rate_limited_429
+[2026-06-30 03:39:01] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution— Ascended Heroes Elite Trainer Box - None
+[2026-06-30 03:39:30] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution— Ascended Heroes Elite Trainer Box - rate_limited_429
+[2026-07-03 02:17:22] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - None
+[2026-07-03 02:17:41] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - lock_timeout
+[2026-07-03 02:21:55] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - None
+[2026-07-03 02:22:14] [PURCHASE] Purchase failed: Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2 - lock_timeout
+[2026-07-03 02:27:13] [PURCHASE] Purchase failed: Pokémon SV 8.5 Prismatic Evolutions Super Premium Collection - None
+[2026-07-03 02:27:32] [PURCHASE] Purchase failed: Pokémon SV 8.5 Prismatic Evolutions Super Premium Collection - lock_timeout
+[2026-07-03 02:31:27] [PURCHASE] Purchase failed: Pokémon SV 8.5 Prismatic Evolutions Super Premium Collection - None
+[2026-07-03 02:31:47] [PURCHASE] Purchase failed: Pokémon SV 8.5 Prismatic Evolutions Super Premium Collection - lock_timeout
+[2026-07-03 02:38:43] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Greninja ex Premium Collection - None
+[2026-07-03 02:39:13] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Greninja ex Premium Collection - execution_timeout
+[2026-07-03 02:48:06] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - None
+[2026-07-03 02:48:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - execution_timeout
+[2026-07-03 02:48:35] [PURCHASE_THREAD] Real purchase failed for 95120834: RecursionError: maximum recursion depth exceeded
+Traceback (most recent call last):
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 1209, in execute_real_purchase
+    result = future.result(timeout=150)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\elric\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\_base.py", line 458, in result
+    raise TimeoutError()
+TimeoutError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 1321, in execute_real_purchase
+    self._update_purchase_result(tcin, failed_result, race_agg=race_agg, worker_label=_race_wlbl)
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 1493, in _update_purchase_result
+    return self._record_race_result(tcin, result, race_agg, worker_label)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 1862, in _record_race_result
+    print(f"[RACE] {tcin}: {recorded}/{total} accounts done, units_bought={units}, "
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 45, in write
+    with self._lock:
+         ^^^^^^^^^^
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 67, in __getattr__
+    return getattr(self._orig, name)
+                   ^^^^^^^^^^
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 67, in __getattr__
+    return getattr(self._orig, name)
+                   ^^^^^^^^^^
+  File "C:\Users\elric\Desktop\testScraper\src\purchasing\bulletproof_purchase_manager.py", line 67, in __getattr__
+    return getattr(self._orig, name)
+                   ^^^^^^^^^^
+  [Previous line repeated 990 more times]
+RecursionError: maximum recursion depth exceeded
+
+[2026-07-03 02:48:35] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - execution_timeout
+[2026-07-03 02:50:18] [SYSTEM] Browser session timeout - check Playwright/Patchright installation
+[2026-07-03 02:50:18] [SYSTEM] Not logged in to Target — monitoring halted to prevent failed purchases
+[2026-07-07 02:05:45] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - None
+[2026-07-07 02:06:07] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 02:10:44] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 02:12:46] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 02:14:48] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 02:18:54] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 03:17:27] [CHECKOUT_FAIL] url=https://www.target.com/checkout status=429 reject_key=RESERVATION_FAILURE retryable=True
+[2026-07-07 03:19:11] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Greninja ex Premium Collection - atc_failed_api_mode
+[2026-07-07 03:21:15] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Greninja ex Premium Collection - atc_failed_api_mode
+[2026-07-07 03:24:21] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Greninja ex Premium Collection - atc_failed_api_mode
+[2026-07-07 03:27:08] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - rate_limited_429
+[2026-07-07 03:50:53] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 03:53:00] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-07 04:16:44] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Greninja ex Premium Collection - atc_failed_api_mode
+[2026-07-09 00:58:24] [AUTH_CRITICAL] business: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 00:59:13] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 01:00:04] [AUTH_CRITICAL] primary: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 01:58:35] [AUTH_CRITICAL] business: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 02:02:22] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 02:09:41] [AUTH_CRITICAL] primary: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 03:03:47] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 03:09:08] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 03:12:50] [AUTH_CRITICAL] primary: TOKEN CHURN — 9 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 04:12:41] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 9 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 04:12:57] [AUTH_CRITICAL] primary: TOKEN CHURN — 9 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 04:14:04] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 05:13:41] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 05:14:13] [AUTH_CRITICAL] business: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 05:21:40] [AUTH_CRITICAL] primary: TOKEN CHURN — 9 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 06:14:26] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 06:26:07] [AUTH_CRITICAL] primary: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 06:29:10] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 07:16:41] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 07:32:24] [AUTH_CRITICAL] primary: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 07:40:49] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-09 08:20:08] [AUTH_CRITICAL] business: TOKEN CHURN — 6 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 02:06:27] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 02:08:47] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 02:09:06] [AUTH_CRITICAL] primary: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 02:11:33] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 02:13:39] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 02:18:52] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 02:19:58] [AUTH_CRITICAL] business: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 02:22:00] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 02:31:17] [CHECKOUT_FAIL] url=https://www.target.com/checkout status=429 reject_key=RESERVATION_FAILURE retryable=True
+[2026-07-10 02:32:59] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-07-10 02:36:03] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-07-10 02:38:06] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-07-10 02:40:07] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-07-10 02:44:36] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - rate_limited_429
+[2026-07-10 02:52:19] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - atc_failed_api_mode
+[2026-07-10 03:03:50] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 03:06:17] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 03:08:32] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box - atc_failed_api_mode
+[2026-07-10 03:08:47] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 6 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 03:16:21] [AUTH_CRITICAL] primary: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 03:20:02] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-07-10 03:22:16] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle - atc_failed_api_mode
+[2026-07-10 03:23:18] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 03:27:40] [PURCHASE] Purchase failed: Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle - rate_limited_429
+[2026-07-10 04:11:36] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 04:28:33] [AUTH_CRITICAL] primary: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 04:29:57] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 05:13:44] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 05:31:01] [AUTH_CRITICAL] business: TOKEN CHURN — 9 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 05:34:21] [AUTH_CRITICAL] primary: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 06:15:52] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 06:32:18] [AUTH_CRITICAL] business: TOKEN CHURN — 9 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 06:39:39] [AUTH_CRITICAL] primary: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 07:19:54] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 07:35:29] [AUTH_CRITICAL] business: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 07:43:25] [AUTH_CRITICAL] primary: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 08:29:46] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 8 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 08:35:31] [AUTH_CRITICAL] business: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-10 08:56:49] [AUTH_CRITICAL] primary: TOKEN CHURN — 7 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-12 19:56:00] [AUTH_CRITICAL] primary: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-12 19:56:21] [AUTH_CRITICAL] business: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.
+[2026-07-12 19:57:24] [AUTH_CRITICAL] alt-1: TOKEN CHURN — 4 write-auth repairs in the last hour (fresh member tokens keep getting invalidated within minutes). Suspect a second live session on this account (another browser/profile logged in) or an account-level flag — self-repair keeps recovering, but the account starts every drop window cold.

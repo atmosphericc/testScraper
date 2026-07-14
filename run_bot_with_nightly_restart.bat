@@ -51,9 +51,18 @@ REM  from config/target_accounts.json (proxy_url). Trade-off: with the spoof off
 REM  all accounts share the real device fingerprint + log in from the home IP,
 REM  so per-account isolation now rests on profile + session + purchase-IP +
 REM  card/address. Rollback (re-enable spoof): delete these three SET lines.
-set RELOGIN_SKIP_FINGERPRINT=1
+REM  2026-07-12: account_identity rebuilt COHERENT (real Chrome 150 + Windows), so
+REM  per-account fingerprints are now SAFE and ON — validated: alt-1/primary/business
+REM  all logged in clean on the HOME IP with the coherent FP. Distinct coherent devices
+REM  are the strongest un-linker for multi-accounting (F5 research: device canvas/WebGL
+REM  fingerprint is the top cross-account linker, survives IP rotation + cache clear).
+REM  LOGIN stays on the HOME IP (RELOGIN_SKIP_PROXY=1): BD-IP login is Shape-blocked
+REM  ("password did NOT advance") regardless of fingerprint — re-confirmed 2026-07-12.
+REM  Purchase still exits each account's own BD IP. Rollback to shared-real-identity:
+REM  set RELOGIN_SKIP_FINGERPRINT=1 and TARGET_APPLY_FINGERPRINT=0.
+set RELOGIN_SKIP_FINGERPRINT=0
 set RELOGIN_SKIP_PROXY=1
-set TARGET_APPLY_FINGERPRINT=0
+set TARGET_APPLY_FINGERPRINT=1
 
 REM Force REAL-PURCHASE mode. app.py places real orders unless TEST_MODE=true;
 REM pinned to false here so a stray TEST_MODE=true left in the environment
@@ -70,6 +79,21 @@ REM  not the attempt count. Pre-ATC 429s are provably pre-submit — cannot doub
 REM  Wall A (checkout "busy" / RESERVATION_FAILURE) is handled by the new
 REM  checkout_busy_retryable path; kill-switch: set TARGET_RETRY_CHECKOUT_BUSY=0.
 set TARGET_RETRY_WHILE_IN_STOCK_MAX=40
+
+REM ---------------------------------------------------------------------------
+REM  Token keep-fresh ON (2026-07-12, CORRECTED). The F5 research overturned the
+REM  earlier "harvesting causes a Shape block" theory: our inline fetch() re-signs
+REM  Shape per request, so we PASS Shape (424, never a 403 block) — the ATC 401 is
+REM  the WRITE-AUTH/member-token layer, not Shape. Token freshness is THE #1 lever.
+REM  Keep-fresh keeps a MEMBER token hot 24/7 (the sentinel's rung-0 member-token
+REM  check every ~5 min), so the bot is drop-ready no matter WHEN it is started
+REM  (fixes the "started hours before the drop -> 4h token expired -> 401" gap).
+REM  It is member-aware: if it can only mint a GUEST token (degraded login-session)
+REM  it escalates the ladder to a credential relogin. The 07-10 guest-churn was a
+REM  concurrent live session (personal Chrome logged into an account) evicting the
+REM  token faster than the relogin cap — OPERATIONAL fix: sign out / close any
+REM  personal-browser Target tabs before the drop. Kill-switch: set to 0.
+set TARGET_TOKEN_KEEPFRESH=1
 
 if not exist "%PYTHON%" (
     echo [ERROR] venv python not found — checked .venv\Scripts and venv\Scripts

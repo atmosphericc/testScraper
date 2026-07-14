@@ -1,142 +1,101 @@
 {
   "products": [
     {
-      "tcin": "1011206804",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Elite Trainer Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-1011206804"
+      "tcin": "1012055696",
+      "name": "Product 1012055696",
+      "enabled": true
     },
     {
-      "tcin": "94681790",
-      "name": "Pokémon Trading Card Game: Charizard X ex Ultra-Premium Collection",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681790"
-    },
-    {
-      "tcin": "1008581387",
-      "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-1008581387"
-    },
-    {
-      "tcin": "95163305",
-      "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95163305"
-    },
-    {
-      "tcin": "95163306",
-      "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Feraligatr ex Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95163306"
-    },
-    {
-      "tcin": "95225595",
-      "name": "Pokémon Trading Card Game: First Partner Illustration Collection Series 1",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95225595"
+      "tcin": "95267143",
+      "name": "Product 95267143",
+      "enabled": true
     },
     {
       "tcin": "95120834",
-      "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95120834"
+      "name": "Product 95120834",
+      "enabled": true
     },
     {
       "tcin": "95082118",
-      "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Elite Trainer Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95082118"
+      "name": "Product 95082118",
+      "enabled": true
     },
     {
-      "tcin": "95093982",
-      "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Gardevoir",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95093982"
+      "tcin": "93803457",
+      "name": "Product 93803457",
+      "enabled": true
     },
     {
-      "tcin": "95093981",
-      "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Lucario",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95093981"
+      "tcin": "1011209279",
+      "name": "Product 1011209279",
+      "enabled": true
     },
     {
-      "tcin": "95093989",
-      "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes First Partners Deluxe Pin Collection",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95093989"
+      "tcin": "1011209273",
+      "name": "Product 1011209273",
+      "enabled": true
     },
     {
-      "tcin": "94681776",
-      "name": "Pokémon Trading Card Game: Mega Evolution Elite Trainer Box - Lucario",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681776"
+      "tcin": "94681782",
+      "name": "Product 94681782",
+      "enabled": true
     },
     {
-      "tcin": "93954446",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Booster Bundle",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-93954446"
+      "tcin": "94681790",
+      "name": "Product 94681790",
+      "enabled": true
     },
     {
-      "tcin": "94681784",
-      "name": "Pokémon Trading Card Game: Mega Evolution Elite Trainer Box - Gardevoir",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681784"
-    },
-    {
-      "tcin": "94860231",
-      "name": "Pokémon Trading Card Game: Mega Evolution—Phantasmal Flames Elite Trainer Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94860231"
-    },
-    {
-      "tcin": "94884496",
-      "name": "Pokémon Trading Card Game: Mega Evolution—Phantasmal Flames Booster Bundle",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94884496"
-    },
-    {
-      "tcin": "94300067",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Destined Rivals Booster Bundle",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94300067"
+      "tcin": "1011467802",
+      "name": "Product 1011467802",
+      "enabled": true
     },
     {
       "tcin": "95298172",
-      "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle",
+      "name": "Pok\u00c3\u00a9mon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle",
       "enabled": true,
       "url": "https://www.target.com/p/-/A-95298172"
     },
     {
       "tcin": "1010679865",
-      "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Booster Display",
+      "name": "Pok\u00c3\u00a9mon Trading Card Game: Mega Evolution Chaos Rising Booster Display",
       "enabled": true,
       "url": "https://www.target.com/p/-/A-1010679865"
     },
     {
-      "tcin": "95267143",
-      "name": "Pokémon Trading Card Game: Mega Evolution Chaos Rising Elite Trainer Box",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95267143"
+      "tcin": "1008581387",
+      "name": "Product 1008581387",
+      "enabled": true
     },
     {
-      "tcin": "94886127",
-      "name": "Pokémon Trading Card Game: Mega Evolution Booster Display",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94886127"
+      "tcin": "95163306",
+      "name": "Product 95163306",
+      "enabled": true
     },
     {
-      "tcin": "94681782",
-      "name": "Pokémon Trading Card Game: Mega Evolution Booster Bundle",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94681782"
+      "tcin": "95163305",
+      "name": "Product 95163305",
+      "enabled": true
     },
     {
-      "tcin": "94300072",
-      "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Super-Premium Collection",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-94300072"
+      "tcin": "94860231",
+      "name": "Product 94860231",
+      "enabled": true
+    },
+    {
+      "tcin": "1011483414",
+      "name": "Product 1011483414",
+      "enabled": true
+    },
+    {
+      "tcin": "1011483413",
+      "name": "Product 1011483413",
+      "enabled": true
+    },
+    {
+      "tcin": "1011483406",
+      "name": "Product 1011483406",
+      "enabled": true
     }
   ]
 }

@@ -76,6 +76,15 @@ class PurchaseExecutor:
         # on 401 it triggers a token repair, but at most once per 5 min so a
         # truly dead session doesn't get hammered every 60-90s refill tick.
         self._last_bg_token_repair_ts: float = 0.0
+        # Token-churn alarm (2026-07-08): on the first keep-fresh night,
+        # business/alt-1 had freshly-minted member tokens invalidated by
+        # Target within minutes, all night (~8 repairs/h each) — and the bot
+        # silently self-repaired forever with no operator signal. Legit TTL
+        # refresh is ~0.3/h; >=4 repairs in an hour means something is
+        # rotating this account's tokens out from under us (a second live
+        # browser session on the same account, or an account-level flag).
+        self._bg_token_repair_times: Deque[float] = deque(maxlen=32)
+        self._churn_alerted_ts: float = 0.0
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
         self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
@@ -874,18 +883,33 @@ class PurchaseExecutor:
             self._warmup_tabs[idx] = None
             return False
 
+        _acct = getattr(self.session_manager, 'account_id', None) or 'session'
         if _dummy_status == 401:
-            print(f"[WARMUP#{idx}] WRITE-AUTH DEAD — dummy POST returned 401 "
+            print(f"[WARMUP#{idx}/{_acct}] WRITE-AUTH DEAD — dummy POST returned 401 "
                   f"(carts writes will fail until the member token re-mints)")
             _sm = self.session_manager
             if (not getattr(_sm, 'purchase_in_progress', False)
                     and time.time() - self._last_bg_token_repair_ts > 300.0):
                 self._last_bg_token_repair_ts = time.time()
+                _now = time.time()
+                self._bg_token_repair_times.append(_now)
+                _hour = [t for t in self._bg_token_repair_times if _now - t < 3600.0]
+                if len(_hour) >= 4 and _now - self._churn_alerted_ts > 3600.0:
+                    self._churn_alerted_ts = _now
+                    try:
+                        _sm._alert_critical(
+                            f"{_acct}: TOKEN CHURN — {len(_hour)} write-auth repairs in the "
+                            f"last hour (fresh member tokens keep getting invalidated within "
+                            f"minutes). Suspect a second live session on this account (another "
+                            f"browser/profile logged in) or an account-level flag — self-repair "
+                            f"keeps recovering, but the account starts every drop window cold.")
+                    except Exception:
+                        pass
                 try:
                     _repaired = await asyncio.wait_for(
                         _sm.ensure_fresh_access_token(tab=tab, allow_nav=True, force=True),
                         timeout=40.0)
-                    print(f"[WARMUP#{idx}] background token repair: "
+                    print(f"[WARMUP#{idx}/{_acct}] background token repair: "
                           f"{'OK — fresh member token' if _repaired else 'FAILED (sentinel ladder will escalate)'}")
                     if _repaired:
                         # Tab navigated to homepage during the nav rung — put it
@@ -896,11 +920,11 @@ class PurchaseExecutor:
                         except Exception:
                             pass
                 except Exception as _tr_err:
-                    print(f"[WARMUP#{idx}] background token repair errored: {_tr_err}")
+                    print(f"[WARMUP#{idx}/{_acct}] background token repair errored: {_tr_err}")
         elif _dummy_status not in (-1, 0):
             # 201 = dummy actually added (harmless test TCIN), 400/404/422 =
             # authenticated-but-rejected payload — all prove write-auth alive.
-            print(f"[WARMUP#{idx}] dummy POST status {_dummy_status} — write-auth alive")
+            print(f"[WARMUP#{idx}/{_acct}] dummy POST status {_dummy_status} — write-auth alive")
 
         # Capture window: 1.5s (interceptor fires in 100-300ms when it's going
         # to fire at all; the rest is wasted on broken-Shape JS / dead tabs).
@@ -2559,6 +2583,10 @@ class PurchaseExecutor:
         """
         try:
             t_cvv = time.time()
+            # Per-account CVV (accounts have DISTINCT saved cards). A single shared
+            # CVV fails at the payment step for every card whose CVV differs. Falls
+            # back to the module default only when config has no valid per-account cvv.
+            _cvv = self.session_manager._load_account_cvv() or CARD_CVV
             result = await tab.evaluate(f"""
 (async () => {{
     const inputSelectors = [
@@ -2595,7 +2623,7 @@ class PurchaseExecutor:
     // focus first so the field is "touched", then fill, then blur to trigger validation
     cvvEl.dispatchEvent(new FocusEvent('focus', {{ bubbles: true }}));
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    nativeSetter.call(cvvEl, '{CARD_CVV}');
+    nativeSetter.call(cvvEl, '{_cvv}');
     cvvEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
     cvvEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
     cvvEl.dispatchEvent(new FocusEvent('blur', {{ bubbles: true }}));
@@ -2612,7 +2640,7 @@ class PurchaseExecutor:
     }}
 
     // Verify fill actually stuck before trying to confirm
-    if (cvvEl.value !== '{CARD_CVV}') return 'fill_failed (input:' + foundSel + ')';
+    if (cvvEl.value !== '{_cvv}') return 'fill_failed (input:' + foundSel + ')';
 
     // 3. Poll up to 500ms for confirm button to enable, then click
     const deadline = Date.now() + 500;

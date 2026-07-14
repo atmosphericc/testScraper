@@ -689,6 +689,7 @@ class ResilientStockChecker:
         tcins_csv = ",".join(self.tcins)
         cycle = 0
         fail_streak = 0
+        fail_403_streak = 0
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=INTERVAL_S)
@@ -699,6 +700,22 @@ class ResilientStockChecker:
             try:
                 http_status, body = await asyncio.to_thread(self._canary_fetch, tcins_csv)
                 if http_status != 200 or not body:
+                    # A solid 403 wall is NOT evidence the host IP is blocked:
+                    # _canary_fetch is raw urllib (OpenSSL JA3 + Chrome UA), the
+                    # exact mismatch Shape flags — the 2026-05-14 proxy audit
+                    # proved this transport 403s even from clean IPs. It ran
+                    # 403=100% across the 07-06 and 07-08 overnights while the
+                    # browser-native pool read the same endpoint at ~99% 200.
+                    # Zero signal + a misleading alarm -> retire it for the run.
+                    fail_403_streak = fail_403_streak + 1 if http_status == 403 else 0
+                    if fail_403_streak >= 20:
+                        logger.warning(
+                            "[CANARY] 20 consecutive 403s — raw-urllib TLS is "
+                            "Shape-flagged (known false positive, 2026-05-14 audit); "
+                            "canary disabled for this run. A trustworthy clean-channel "
+                            "canary needs a browser-native host-direct read."
+                        )
+                        return
                     if fail_streak == 0 or fail_streak % 10 == 0:
                         logger.warning(
                             f"[CANARY] clean-channel read failed http={http_status} "
@@ -707,6 +724,7 @@ class ResilientStockChecker:
                         )
                     fail_streak += 1
                     continue
+                fail_403_streak = 0
                 if fail_streak:
                     logger.info(f"[CANARY] clean-channel recovered after {fail_streak} fails")
                     fail_streak = 0

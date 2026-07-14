@@ -1670,6 +1670,27 @@ class SessionManager:
             self.logger.warning(f"[RELOGIN] could not load credentials: {e}")
         return None
 
+    def _load_account_cvv(self, cfg_path: "Path | None" = None) -> "str | None":
+        """Read this account's card CVV from config/target_accounts.json (keyed by
+        self.account_id). Returns None (→ caller uses the module default) if no file /
+        no match / placeholder / not a 3-4 digit number. REQUIRED once accounts have
+        DISTINCT saved cards: a single shared CVV fails payment for every differing card."""
+        if not self.account_id:
+            return None
+        try:
+            cfg = cfg_path or (Path(__file__).resolve().parents[2] / "config" / "target_accounts.json")
+            if not cfg.exists():
+                return None
+            with open(cfg, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for acc in (data.get("accounts", []) if isinstance(data, dict) else []):
+                if isinstance(acc, dict) and str(acc.get("account_id")) == str(self.account_id):
+                    v = str(acc.get("cvv", "")).strip()
+                    return v if (v.isdigit() and 3 <= len(v) <= 4) else None
+        except Exception as e:
+            self.logger.warning(f"[CVV] could not load account cvv: {e}")
+        return None
+
     async def _relaunch_browser(self) -> bool:
         """Tear down + relaunch this account's browser with the CURRENT
         self.proxy_url. Serialized on _refresh_lock so it can't race the

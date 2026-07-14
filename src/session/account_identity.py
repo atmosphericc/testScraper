@@ -39,14 +39,18 @@ import hashlib
 import random as _random
 from typing import Any, Dict, List, Optional
 
-# Realistic desktop Chrome builds. Keep these within a couple majors of the real
-# installed Chrome on the host (see WHY above).
-_CHROME_BUILDS: List[str] = ["131.0.0.0", "130.0.0.0", "132.0.0.0"]
+# Realistic desktop Chrome builds. MUST track the real installed Chrome major on
+# the host — a UA claiming a different major than the real JA3/TLS handshake is
+# itself the Shape detection vector that BLOCKED logins on 2026-06-24 (the module
+# was pinned to 130-132 while the host ran 149/150). Real host Chrome = 150.0.7871.101
+# (verified 2026-07-12). Keep every build at the real major; vary only the patch.
+_CHROME_BUILDS: List[str] = ["150.0.7871.101", "150.0.7871.94", "150.0.7871.119"]
 
 # (UA platform token, navigator.platform, UA-CH platform, UA-CH platformVersion)
+# Windows-only: the host is Windows 11, and "macOS-on-Windows" is an incoherent
+# fingerprint Shape flags (2026-06-24). Win11 reports UA-CH platformVersion "15.0.0".
 _PLATFORMS = [
     ("Windows NT 10.0; Win64; x64", "Win32", "Windows", "15.0.0"),
-    ("Macintosh; Intel Mac OS X 10_15_7", "MacIntel", "macOS", "14.5.0"),
 ]
 
 _VIEWPORTS: List[Dict[str, int]] = [
