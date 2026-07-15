@@ -21,6 +21,15 @@ See `memory/session_2026_07_14_overnight_churn_postmortem.md` for the full analy
 
 ---
 
+## T-45 min — 30-second sanity check (no browser, no side effects)
+```
+venv/Scripts/python.exe check_session_readiness.py
+```
+Decodes the persisted session jars and confirms each account holds a healthy
+**MEMBER** login-session (so it will start hot at boot). Want all three ✅.
+If one shows `login-session DEAD` or `GUEST`, plan to recover it below. This does
+NOT prove the live token survives to the drop — that's the write-auth check next.
+
 ## T-30 min — clear competing sessions (kills churn sources you control)
 ```
 venv/Scripts/python.exe chrome_target_signout.py          # Chrome + Edge + Brave
@@ -78,6 +87,12 @@ account is going cold — it's the expected rebuild behavior, not a new bug.
 - Per-account race outcomes: `grep "\[RACE\].*3/3 accounts done" logs/runs/run_<ts>.log`.
 
 ---
+
+## Tools at a glance
+- `check_session_readiness.py` — zero-browser persisted-session check (30s, anytime).
+- `verify_multi_account_live.py` — live write-auth + egress-IP probe (launches browsers).
+- `diagnose_token_churn.py [--close]` — find competing local browser sessions.
+- `chrome_target_signout.py` — clear personal Target sessions (Chrome+Edge+Brave).
 
 ## Kill switches / knobs (in `run_bot_with_nightly_restart.bat` or env)
 - `CHROME_SIGNOUT_SKIP=1` — skip the personal-browser signout guard.
