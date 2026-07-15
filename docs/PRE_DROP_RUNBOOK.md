@@ -41,15 +41,21 @@ So on drop night: **just start the bat and watch the startup output.** You want:
 A `TOKEN CHURN`/`AUTH_CRITICAL` alarm on a rebuild before the drop is expected
 behavior, not a new bug.
 
-## Only two things are NOT automated (both quick, both optional)
+## The one thing that's NOT automated
 - **Sign `elricomon` out of the Target app on your phone** — the one churn source
   the bat can't reach. Minor (idle phone session churns little), free insurance.
-- **Live write-auth confirmation** (optional belt-and-suspenders): `verify_multi_account_live.py`
-  launches the account browsers and fires a real carts-write probe (§2.5 → **✅
-  WRITE-AUTH OK**) + egress-IP check (§3 → each on its **own BD IP**). Use it only
-  if you want live proof beyond the persisted-session echo. Don't run it *while the
-  bot is up* (double browser launch). **Never** trigger a manual relogin mid-drop —
-  it's destructive and can leave an account signed out; recover pre-drop only.
+
+## Do you need `verify_multi_account_live.py`? — No, if you're starting the bot
+`app.py` runs the **same** live carts-write probe at startup (that IS the
+`write-auth ×3` / `WRITE-AUTH DEAD` log line) and repeats it every ~5 min via
+`TARGET_TOKEN_KEEPFRESH`, and reports `pool LIVE 3 BD exits` (egress proof). So
+starting the bot already does everything verify does — verify is just a one-shot
+snapshot of the same checks. **Run it only when you want a health check WITHOUT
+starting the bot**, or to re-confirm exit IPs after a proxy change. Don't run it
+while the bot is up (it launches the account browsers a second time).
+
+**Never** trigger a manual relogin mid-drop — it's destructive and can leave an
+account signed out; recover pre-drop only.
 
 ---
 
