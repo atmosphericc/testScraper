@@ -1,35 +1,44 @@
 #!/usr/bin/env python3
-"""Sign the PERSONAL Chrome out of Target before the bot's accounts mint tokens.
+"""Sign the PERSONAL browsers out of Target before the bot's accounts mint tokens.
 
 WHY THIS EXISTS
 ---------------
-The primary bot account is the operator's own Microsoft/Target login, so any
-normal browsing session logged into target.com in the personal Chrome is a
-SECOND live session on the same account. Target rotates the member token out
-from under the bot's session — that is the 2026-07-10 "token churn" that left
-every account holding a GUEST token at fire time (see docs/FAILURES.md). It was
-confirmed on 2026-07-13: the personal Chrome `Default` profile held 48
-target.com cookies including a live `refreshToken`.
+Any normal browsing session logged into target.com on this machine is a SECOND
+live session on one of the bot's accounts. Target rotates the member token out
+from under the bot's session — that is the "token churn" that leaves every
+account holding a GUEST token at fire time (see docs/FAILURES.md). Confirmed
+2026-07-13: the personal Chrome `Default` profile held 48 target.com cookies
+incl. a live `refreshToken`.
 
-The operator was told "just sign out before each drop" three sessions running
-and it kept coming back, so the bot now heals it itself at startup.
+2026-07-14 overnight post-mortem widened the scope: business & alt-1 held DEAD
+write-auth at every drop wave and the run's own alarm fired "[AUTH_CRITICAL]
+TOKEN CHURN — suspect a second live session." The old guard only cleaned Google
+Chrome — but this is a Win11 box whose DEFAULT browser is Microsoft Edge (auto-
+signed into the operator's Microsoft account = the `primary` bot account), and
+Edge was never touched. So the guard now sweeps EVERY Chromium browser present:
+Chrome, Edge, and Brave.
 
 WHAT IT DOES
 ------------
-1. Closes Chrome (gracefully; force only if it will not go). Chrome keeps an
-   EXCLUSIVE lock on its cookie DB — plain copy, .NET share-mode read and even
-   elevated `robocopy /B` all fail — so the DB simply cannot be read or edited
-   while Chrome runs. Closing it is the only option.
-2. Deletes every cookie whose host is target.com, from every personal profile.
-   Nothing else is touched: other sites, passwords, history, tabs all survive.
-3. Reopens Chrome with --restore-last-session if it was running, so the
-   operator gets their tabs back.
+1. For each installed Chromium browser: closes it (gracefully; force only if it
+   won't go). The browser keeps an EXCLUSIVE lock on its cookie DB — it cannot
+   be read or edited while running — so closing is the only option.
+2. Deletes every cookie whose host is target.com, from every personal profile of
+   that browser. Nothing else is touched: other sites, passwords, history, tabs
+   all survive.
+3. Reopens each browser it closed, with --restore-last-session, so the operator
+   gets their tabs back.
 
-The bot's OWN Chromes (nodriver-profile*) live in a different user-data dir and
-are never touched by this.
+The bot's OWN Chromes (zendriver/nodriver `nodriver-profile*`) live in a
+different user-data dir and are never matched by the Default/Profile-N filter.
+
+To SEE which browser/profile/account is signed in without changing anything, run
+the read-only companion:  diagnose_token_churn.py  (use --close for a definitive
+read while browsers are open).
 
 Run:  venv/Scripts/python.exe chrome_target_signout.py
 Env:  CHROME_SIGNOUT_SKIP=1   -> no-op (kill switch)
+      TARGET_SIGNOUT_BROWSERS=chrome,edge  -> restrict the sweep (default: all)
 Exit: 0 on success/no-op, 1 on failure (the wrapper does NOT abort on failure —
       a stale personal session degrades the drop, it does not break the bot).
 """
@@ -44,45 +53,63 @@ from pathlib import Path
 
 AUTH_COOKIES = {"accessToken", "idToken", "refreshToken", "login-session"}
 
-CHROME_EXES = [
-    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-    Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-]
+_LA = Path(os.environ.get("LOCALAPPDATA", ""))
+_PF = Path(r"C:\Program Files")
+_PF86 = Path(r"C:\Program Files (x86)")
+
+# name -> (user-data dir, process image name, [candidate exe install paths]).
+# Every Chromium browser whose personal Target session would churn the bot.
+BROWSERS: dict[str, tuple[Path, str, list[Path]]] = {
+    "chrome": (
+        _LA / "Google" / "Chrome" / "User Data", "chrome.exe",
+        [_PF / r"Google\Chrome\Application\chrome.exe",
+         _PF86 / r"Google\Chrome\Application\chrome.exe"],
+    ),
+    "edge": (
+        _LA / "Microsoft" / "Edge" / "User Data", "msedge.exe",
+        [_PF / r"Microsoft\Edge\Application\msedge.exe",
+         _PF86 / r"Microsoft\Edge\Application\msedge.exe"],
+    ),
+    "brave": (
+        _LA / "BraveSoftware" / "Brave-Browser" / "User Data", "brave.exe",
+        [_PF / r"BraveSoftware\Brave-Browser\Application\brave.exe",
+         _PF86 / r"BraveSoftware\Brave-Browser\Application\brave.exe"],
+    ),
+}
 
 
-def chrome_running() -> bool:
-    out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"],
+def running(image: str) -> bool:
+    out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"],
                          capture_output=True, text=True).stdout
-    return "chrome.exe" in out.lower()
+    return image.lower() in out.lower()
 
 
-def close_chrome(timeout_s: float = 12.0) -> bool:
+def close_browser(image: str, timeout_s: float = 12.0) -> bool:
     """Graceful close first (tabs saved), force only if it refuses to exit."""
-    subprocess.run(["taskkill", "/IM", "chrome.exe"],
-                   capture_output=True, text=True)          # WM_CLOSE, no /F
+    subprocess.run(["taskkill", "/IM", image],
+                   capture_output=True, text=True)              # WM_CLOSE, no /F
     deadline = time.time() + timeout_s
-    while chrome_running() and time.time() < deadline:
+    while running(image) and time.time() < deadline:
         time.sleep(0.5)
-    if chrome_running():
+    if running(image):
         # Background helpers (--no-startup-window) never take WM_CLOSE.
-        subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"],
+        subprocess.run(["taskkill", "/F", "/IM", image],
                        capture_output=True, text=True)
         time.sleep(2.0)
-    return not chrome_running()
+    return not running(image)
 
 
-def reopen_chrome() -> None:
-    exe = next((p for p in CHROME_EXES if p.exists()), None)
+def reopen_browser(name: str, exes: list[Path]) -> None:
+    exe = next((p for p in exes if p.exists()), None)
     if not exe:
-        print("[CHROME-SIGNOUT] chrome.exe not found — reopen it yourself")
+        print(f"[SIGNOUT] {name}: exe not found — reopen it yourself")
         return
     subprocess.Popen([str(exe), "--restore-last-session"],
                      creationflags=subprocess.DETACHED_PROCESS)
-    print("[CHROME-SIGNOUT] Chrome reopened (--restore-last-session)")
+    print(f"[SIGNOUT] {name}: reopened (--restore-last-session)")
 
 
-def profiles() -> list[Path]:
-    root = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+def profiles(root: Path) -> list[Path]:
     if not root.exists():
         return []
     return sorted(p for p in root.iterdir()
@@ -96,7 +123,7 @@ def cookie_db(profile: Path) -> Path | None:
     return None
 
 
-def purge(profile: Path) -> int:
+def purge(name: str, profile: Path) -> int:
     db = cookie_db(profile)
     if db is None:
         return 0
@@ -105,53 +132,79 @@ def purge(profile: Path) -> int:
         rows = con.execute(
             "SELECT name FROM cookies WHERE host_key LIKE '%target.com%'").fetchall()
         if not rows:
-            print(f"[CHROME-SIGNOUT] {profile.name}: clean (no target.com cookies)")
+            print(f"[SIGNOUT] {name}/{profile.name}: clean (no target.com cookies)")
             return 0
         auth = sorted(AUTH_COOKIES & {n for (n,) in rows})
         state = f"SIGNED IN (auth: {auth})" if auth else "not signed in"
         cur = con.execute("DELETE FROM cookies WHERE host_key LIKE '%target.com%'")
         con.commit()
-        print(f"[CHROME-SIGNOUT] {profile.name}: {len(rows)} target.com cookies — "
+        print(f"[SIGNOUT] {name}/{profile.name}: {len(rows)} target.com cookies — "
               f"{state} -> deleted {cur.rowcount}")
         return cur.rowcount
     finally:
         con.close()
 
 
-def main() -> int:
-    if os.environ.get("CHROME_SIGNOUT_SKIP") == "1":
-        print("[CHROME-SIGNOUT] skipped (CHROME_SIGNOUT_SKIP=1)")
-        return 0
-
-    profs = profiles()
+def sweep_browser(name: str) -> int:
+    """Close (if running), purge every profile, reopen. Returns cookies deleted.
+    Raises on hard failure so main() can report exit 1."""
+    root, image, exes = BROWSERS[name]
+    profs = profiles(root)
     if not profs:
-        print("[CHROME-SIGNOUT] no personal Chrome profiles found — nothing to do")
-        return 0
+        return 0  # browser not installed / no personal profiles
 
-    was_running = chrome_running()
-    if was_running and not close_chrome():
-        print("[CHROME-SIGNOUT] FAILED to close Chrome — cookie DB stays locked. "
-              "Sign out of Target in Chrome manually before the drop.")
-        return 1
+    was_running = running(image)
+    if was_running and not close_browser(image):
+        print(f"[SIGNOUT] FAILED to close {name} — cookie DB stays locked. "
+              f"Sign out of Target in {name} manually before the drop.")
+        raise RuntimeError(f"{name} would not close")
 
     total = 0
     try:
         for p in profs:
-            total += purge(p)
-    except Exception as e:
-        print(f"[CHROME-SIGNOUT] FAILED: {e!r}")
+            total += purge(name, p)
+    finally:
         if was_running:
-            reopen_chrome()
+            reopen_browser(name, exes)
+    return total
+
+
+def main() -> int:
+    if os.environ.get("CHROME_SIGNOUT_SKIP") == "1":
+        print("[SIGNOUT] skipped (CHROME_SIGNOUT_SKIP=1)")
+        return 0
+
+    only = os.environ.get("TARGET_SIGNOUT_BROWSERS", "").strip().lower()
+    wanted = [b.strip() for b in only.split(",") if b.strip()] if only else list(BROWSERS)
+    unknown = [b for b in wanted if b not in BROWSERS]
+    if unknown:
+        print(f"[SIGNOUT] ignoring unknown browser(s) in TARGET_SIGNOUT_BROWSERS: {unknown}")
+    wanted = [b for b in wanted if b in BROWSERS]
+
+    installed = [b for b in wanted if profiles(BROWSERS[b][0])]
+    if not installed:
+        print("[SIGNOUT] no personal Chromium profiles found — nothing to do")
+        return 0
+
+    total, failed = 0, []
+    for name in installed:
+        try:
+            total += sweep_browser(name)
+        except Exception as e:
+            print(f"[SIGNOUT] {name}: FAILED: {e!r}")
+            failed.append(name)
+
+    if failed:
+        print(f"[SIGNOUT] DONE WITH ERRORS — {total} cookie(s) removed; "
+              f"could not clean: {', '.join(failed)}. Sign those out manually.")
         return 1
-
-    if was_running:
-        reopen_chrome()
-
     if total:
-        print(f"[CHROME-SIGNOUT] DONE — removed {total} target.com cookie(s). "
-              f"The bot's accounts now hold the only live Target session.")
+        print(f"[SIGNOUT] DONE — removed {total} target.com cookie(s) across "
+              f"{', '.join(installed)}. The bot's accounts now hold the only live "
+              f"Target session.")
     else:
-        print("[CHROME-SIGNOUT] DONE — personal Chrome was already signed out of Target.")
+        print(f"[SIGNOUT] DONE — personal browsers ({', '.join(installed)}) were "
+              f"already signed out of Target.")
     return 0
 
 
