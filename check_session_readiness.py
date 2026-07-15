@@ -23,9 +23,18 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Run cleanly from the .bat (cmd console is cp1252/cp437; the ✅/⚠ glyphs would
+# otherwise raise UnicodeEncodeError and exit non-zero). errors='replace' keeps
+# the ASCII verdict text intact even where the glyphs can't render.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 ROOT = Path(__file__).resolve().parent
 NOW = time.time()

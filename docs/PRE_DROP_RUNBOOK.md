@@ -21,53 +21,35 @@ See `memory/session_2026_07_14_overnight_churn_postmortem.md` for the full analy
 
 ---
 
-## T-45 min — 30-second sanity check (no browser, no side effects)
-```
-venv/Scripts/python.exe check_session_readiness.py
-```
-Decodes the persisted session jars and confirms each account holds a healthy
-**MEMBER** login-session (so it will start hot at boot). Want all three ✅.
-If one shows `login-session DEAD` or `GUEST`, plan to recover it below. This does
-NOT prove the live token survives to the drop — that's the write-auth check next.
+## The launcher does the runbook for you
+`run_bot_with_nightly_restart.bat` already automates the whole pre-drop sequence,
+in order, every time you start it — **no separate commands needed**:
+1. **Sign personal browsers out of Target** — `chrome_target_signout.py` (Chrome+Edge+Brave).
+2. **Log in all accounts** — `relogin_one.py all` (validate-first; relogins only dead ones).
+3. **Drop-readiness echo** — `check_session_readiness.py` prints a per-account
+   MEMBER verdict so a cold/guest account is visible immediately (non-blocking).
+4. **Hold tokens hot 24/7** — `TARGET_TOKEN_KEEPFRESH=1`; the sentinel re-checks
+   write-auth every ~5 min, so it's drop-ready whenever you started it.
+5. **Self-heal** — a not-logged-in boot (exit 87) re-runs the account login.
 
-## T-30 min — clear competing sessions (kills churn sources you control)
-```
-venv/Scripts/python.exe chrome_target_signout.py          # Chrome + Edge + Brave
-venv/Scripts/python.exe diagnose_token_churn.py --close   # confirm: no local session
-```
-- The guard runs at every boot too, but run it now to be sure.
-- **Sign `elricomon` OUT of the Target app on your phone** (and any other device).
-  A second live session anywhere rotates that account's token out from under the bot.
-- `diagnose_token_churn.py --close` should end with **"No local browser holds a
-  Target session."** If it names one, that browser/profile is a leak — sign out there.
-
-## T-15 min — verify write-auth (the check that actually matters)
-```
-venv/Scripts/python.exe verify_multi_account_live.py
-```
-Read section **[2.5] WRITE-AUTH per account**. You want, for all three:
-- `member=True`, `token_ttl` > ~10m, `write_probe` ≠ 401 → **✅ WRITE-AUTH OK**
-
-And section **[3/3] EGRESS IP** — each account must exit its **own BD ISP IP**
-(never the home IP; a home-IP purchase ate a 24× instant-429 storm on 06-30).
-
-**If any account shows ❌ WRITE-AUTH DEAD:** it will 401 every ATC at the drop.
-Recover it *now*, unhurried (a relogin is destructive and rate-capped — do it here,
-never mid-drop):
-- restart the bot so its boot relogin re-mints, **or** run the nightly wrapper's
-  login, **or** sign that account in manually in its own bot Chrome.
-- then re-run `verify_multi_account_live.py` and confirm it flips to ✅.
-- Do this as close to the expected drop as you can — the rebuilds re-churn in
-  ~30–70 min, so verifying late = starting hotter.
-
-## T-0 — start the bot and watch the boot
-Start `run_bot_with_nightly_restart.bat`. In `logs/runs/run_<ts>.log` confirm:
-- `[RELOGIN]` … 3/3 accounts logged in, member token MINTED ✅
-- pool **LIVE** with 3 BD exits, **write-auth ×3**, `[SENTINEL] timer thread started`
+So on drop night: **just start the bat and watch the startup output.** You want:
+- `=== drop-readiness check ===` → **all three ✅ MEMBER**
+- `[RELOGIN]` 3/3 logged in, member token MINTED ✅
+- pool **LIVE** 3 BD exits, **write-auth ×3**, `[SENTINEL] timer thread started`
 - first `STOCK STATS` clean (200s, **0 403s**)
 
-If a `TOKEN CHURN`/`AUTH_CRITICAL` alarm fires for an account before the drop, that
-account is going cold — it's the expected rebuild behavior, not a new bug.
+A `TOKEN CHURN`/`AUTH_CRITICAL` alarm on a rebuild before the drop is expected
+behavior, not a new bug.
+
+## Only two things are NOT automated (both quick, both optional)
+- **Sign `elricomon` out of the Target app on your phone** — the one churn source
+  the bat can't reach. Minor (idle phone session churns little), free insurance.
+- **Live write-auth confirmation** (optional belt-and-suspenders): `verify_multi_account_live.py`
+  launches the account browsers and fires a real carts-write probe (§2.5 → **✅
+  WRITE-AUTH OK**) + egress-IP check (§3 → each on its **own BD IP**). Use it only
+  if you want live proof beyond the persisted-session echo. Don't run it *while the
+  bot is up* (double browser launch). **Never** trigger a manual relogin mid-drop —
+  it's destructive and can leave an account signed out; recover pre-drop only.
 
 ---
 

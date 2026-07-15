@@ -154,6 +154,21 @@ if exist "%~dp0config\target_accounts.json" (
     echo [INFO] config\target_accounts.json not found — single-account legacy mode ^(relogin.py^).
 )
 
+REM ---------------------------------------------------------------------------
+REM  Drop-readiness echo (2026-07-14). After the sign-out + account logins above,
+REM  print a per-account MEMBER-session verdict so a cold/guest account is VISIBLE
+REM  at startup instead of discovered mid-drop. Reads the freshly-harvested
+REM  target*.json jars — zero browser, ~2s, read-only. INFORMATIONAL ONLY: never
+REM  blocks the launch (app.py + TARGET_TOKEN_KEEPFRESH keep healing 24/7). This
+REM  is the whole pre-drop check baked in, so no separate command is needed.
+REM  Kill-switch: set DROP_READINESS_SKIP=1.
+REM ---------------------------------------------------------------------------
+if not "%DROP_READINESS_SKIP%"=="1" (
+    echo === drop-readiness check  --  !date! !time! ===
+    "%PYTHON%" check_session_readiness.py
+    echo [!date! !time!] drop-readiness check done code=!ERRORLEVEL! >> "%RUNLOG%"
+)
+
 set /a ATTEMPT=0
 set /a RELOGIN_BURSTS=0
 
