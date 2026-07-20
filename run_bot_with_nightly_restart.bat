@@ -81,6 +81,18 @@ REM  checkout_busy_retryable path; kill-switch: set TARGET_RETRY_CHECKOUT_BUSY=0
 set TARGET_RETRY_WHILE_IN_STOCK_MAX=40
 
 REM ---------------------------------------------------------------------------
+REM  In-place checkout re-shoot (2026-07-17 drop fix). That drop went 0-for: the
+REM  ATC succeeded 3x (HTTP 201, item in cart) but every checkout POST was 429
+REM  FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION (10 that night vs 3 on the 07-14 win).
+REM  On a checkout 429/424 the item is still in the cart and NO order committed, so
+REM  the executor now re-fires the place-order POST IN PLACE N times (fresh Shape +
+REM  ~3s spacing) before clearing the cart and re-racing the ATC wall, which wasted
+REM  the rare 201. Double-buy-safe: re-shoots ONLY while status stays 429/424 and
+REM  stops the instant an order_id lands. Validated: tests/test_checkout_inplace_reshoot.py
+REM  (8/8, no browser). Kill-switch: set TARGET_CHECKOUT_INPLACE_RETRY_N=0.
+set TARGET_CHECKOUT_INPLACE_RETRY_N=4
+
+REM ---------------------------------------------------------------------------
 REM  Token keep-fresh ON (2026-07-12, CORRECTED). The F5 research overturned the
 REM  earlier "harvesting causes a Shape block" theory: our inline fetch() re-signs
 REM  Shape per request, so we PASS Shape (424, never a 403 block) — the ATC 401 is

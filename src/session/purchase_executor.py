@@ -22,6 +22,30 @@ from .session_manager import SessionManager
 
 CARD_CVV = '229'
 
+# The warmup heartbeat's dummy cart-write. Module-level so the 401-confirmation
+# re-probe fires a byte-identical request instead of a near-copy that could
+# drift away from the real ATC's auth path.
+_WARMUP_DUMMY_POST_JS = """(async () => {
+    try {
+        const resp = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Origin': 'https://www.target.com',
+            },
+            body: JSON.stringify({
+                cart_item: {tcin: '81926151', quantity: 1, item_channel_id: '10'},
+                cart_type: 'REGULAR',
+                channel_id: '10',
+                shopping_context: 'DIGITAL'
+            })
+        });
+        return resp.status;
+    } catch(e) { return 0; }
+})()"""
+
 
 class PurchaseExecutor:
     """Executes real purchases using persistent session and buy_bot logic"""
@@ -795,6 +819,65 @@ class PurchaseExecutor:
             self._warmup_tabs[idx] = None
             return None
 
+    async def _confirm_write_auth_401(self, tab, idx: int, acct: str) -> int:
+        """Re-probe after a heartbeat 401. Returns the final status: 401 only
+        if write-auth is really dead, else the status of the probe that proved
+        it alive.
+
+        A single 401 on a carts POST does NOT prove the member token died.
+        Target burns the Shape rotating-token set per request (see
+        `_shape_capture_ring`), so a POST that races the cart page's own XHRs
+        for that set 401s with a perfectly healthy token. That's the same
+        intermittent 401 the ATC path has retried through since 05-29
+        (TARGET_RETRY_WHILE_IN_STOCK). This heartbeat was the only caller
+        acting on a *speculative* 401 with no purchase in flight: the sentinel
+        ladder reads the JWT itself (member + ttl>=1800, no force), and the
+        ATC-path force=True repairs fire only after a real 401 blocked a real
+        buy, with the retry loop behind them.
+
+        Measured on the 2026-07-15 20.7h run: 18% of heartbeat POSTs 401'd, at
+        the same rate on all 3 accounts, around the clock — and 351 of 351
+        401s we never repaired were 'write-auth alive' again on the very next
+        probe, with no re-mint in between, which a dead token cannot do. That
+        one-sample verdict drove ~370 destructive cookie-delete re-mints and
+        25 false TOKEN CHURN alerts per night, each blaming a second live
+        session that never existed.
+
+        At p≈0.18/probe, 3 consecutive false 401s is ~0.6% vs 18%.
+        TARGET_WRITE_AUTH_CONFIRM_N=1 restores the old behavior.
+        """
+        try:
+            need = int(os.environ.get('TARGET_WRITE_AUTH_CONFIRM_N', '3'))
+        except (TypeError, ValueError):
+            need = 3
+        if need <= 1:
+            return 401
+        for attempt in range(2, need + 1):
+            # Let the page settle so the re-probe gets its own Shape token set
+            # rather than racing the same burned one that just 401'd.
+            await asyncio.sleep(0.6)
+            try:
+                res = await asyncio.wait_for(
+                    tab.evaluate(_WARMUP_DUMMY_POST_JS, await_promise=True), timeout=15.0)
+                status = int(res)
+            except (TypeError, ValueError):
+                status = -1
+            except Exception as e:
+                # Can't confirm — treat as unproven and leave the token alone.
+                print(f"[WARMUP#{idx}/{acct}] write-auth re-probe {attempt}/{need} "
+                      f"errored ({type(e).__name__}) — not repairing on an unconfirmed 401")
+                return -1
+            if status not in (401, 0, -1):
+                print(f"[WARMUP#{idx}/{acct}] transient 401 — re-probe {attempt}/{need} "
+                      f"returned {status}, write-auth alive (no repair needed)")
+                return status
+            if status in (0, -1):
+                print(f"[WARMUP#{idx}/{acct}] write-auth re-probe {attempt}/{need} "
+                      f"inconclusive (status={status}) — not repairing on an unconfirmed 401")
+                return -1
+        print(f"[WARMUP#{idx}/{acct}] write-auth 401 CONFIRMED on {need} consecutive probes")
+        return 401
+
     async def _refresh_on_tab(self, idx: int, force_fresh: bool = False) -> bool:
         """Fire a /cart re-nav + dummy POST on warmup tab `idx` and wait for
         the interceptor to record a fresh capture. Returns True on success.
@@ -854,26 +937,8 @@ class PurchaseExecutor:
             # exact auth path a real ATC uses, so its status is a free
             # write-token heartbeat. All night on 07-07 it silently returned
             # 401 every 60-90s while the sentinel's DOM check said logged in.
-            _dummy_res = await asyncio.wait_for(tab.evaluate("""(async () => {
-                try {
-                    const resp = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
-                        method: 'POST',
-                        credentials: 'include',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Accept': 'application/json',
-                            'Origin': 'https://www.target.com',
-                        },
-                        body: JSON.stringify({
-                            cart_item: {tcin: '81926151', quantity: 1, item_channel_id: '10'},
-                            cart_type: 'REGULAR',
-                            channel_id: '10',
-                            shopping_context: 'DIGITAL'
-                        })
-                    });
-                    return resp.status;
-                } catch(e) { return 0; }
-            })()""", await_promise=True), timeout=15.0)
+            _dummy_res = await asyncio.wait_for(
+                tab.evaluate(_WARMUP_DUMMY_POST_JS, await_promise=True), timeout=15.0)
             try:
                 _dummy_status = int(_dummy_res)
             except (TypeError, ValueError):
@@ -884,10 +949,27 @@ class PurchaseExecutor:
             return False
 
         _acct = getattr(self.session_manager, 'account_id', None) or 'session'
+        _sm = self.session_manager
+        if _dummy_status == 401:
+            # Only pay for the confirmation re-probe when a confirmed 401 would
+            # actually trigger a repair. warm_shape_headers() runs on the LIVE
+            # ATC retry path (bulletproof_purchase_manager pre-retry re-warm,
+            # capped at .result(timeout=25); also before ATC retry and
+            # place-order), and mid-purchase the repair is skipped anyway — so
+            # re-probing there would burn drop latency for an action we will
+            # not take. Same for the 300s throttle.
+            _would_repair = (not getattr(_sm, 'purchase_in_progress', False)
+                             and time.time() - self._last_bg_token_repair_ts > 300.0)
+            if _would_repair:
+                _dummy_status = await self._confirm_write_auth_401(tab, idx, _acct)
+            else:
+                print(f"[WARMUP#{idx}/{_acct}] heartbeat 401 — NOT repairing "
+                      f"(purchase in progress or inside the 300s throttle); left "
+                      f"unconfirmed, and one 401 is normal Shape token-burn")
+                _dummy_status = -1
         if _dummy_status == 401:
             print(f"[WARMUP#{idx}/{_acct}] WRITE-AUTH DEAD — dummy POST returned 401 "
                   f"(carts writes will fail until the member token re-mints)")
-            _sm = self.session_manager
             if (not getattr(_sm, 'purchase_in_progress', False)
                     and time.time() - self._last_bg_token_repair_ts > 300.0):
                 self._last_bg_token_repair_ts = time.time()
@@ -899,10 +981,12 @@ class PurchaseExecutor:
                     try:
                         _sm._alert_critical(
                             f"{_acct}: TOKEN CHURN — {len(_hour)} write-auth repairs in the "
-                            f"last hour (fresh member tokens keep getting invalidated within "
-                            f"minutes). Suspect a second live session on this account (another "
-                            f"browser/profile logged in) or an account-level flag — self-repair "
-                            f"keeps recovering, but the account starts every drop window cold.")
+                            f"last hour, each CONFIRMED by consecutive 401s (a fresh member "
+                            f"token is genuinely being invalidated within minutes). Self-repair "
+                            f"keeps recovering, but the account starts every drop window cold. "
+                            f"Check for a second live session on this account before assuming "
+                            f"an account-level flag — but verify it, don't assume: an "
+                            f"unconfirmed single 401 is normal Shape token-burn, not churn.")
                     except Exception:
                         pass
                 try:
@@ -4131,6 +4215,55 @@ class PurchaseExecutor:
                 return True
             print(f"[PAYMENT] API place-order failed (reason={api_result.get('reason')}, "
                   f"status={api_result.get('status')}) — evaluating DOM fallback")
+            # ── In-place checkout re-shoot on a PRE-COMMIT throttle (2026-07-17) ──
+            # 07-17 drop went 0-for: the ATC succeeded 3× (201) but every checkout
+            # POST was 429 FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION (10 that night vs 3
+            # on the 07-14 win, which caught a clean-200 gap). On rejection the
+            # executor cleared the cart and the manager re-raced through the ATC 429
+            # wall — throwing away the hard-won 201, so 3 ATC 201s bought only 3
+            # checkout shots (all 429). HTTP 429/424 is a DEFINITIVE server rejection
+            # (item still in cart, no order committed), so re-fire the place-order
+            # POST IN PLACE a few times with fresh Shape + Error-Delay spacing to
+            # catch a throttle gap before falling back to the cart-clear re-race.
+            # Double-buy-safe: loops ONLY while status stays 429/424, stops the
+            # instant an order_id lands, and hands any other status (incl. a
+            # no-response 0) straight back to the existing guards below unchanged.
+            # Kill-switch: TARGET_CHECKOUT_INPLACE_RETRY_N=0 restores one-shot.
+            _reshoot_n = int(os.environ.get('TARGET_CHECKOUT_INPLACE_RETRY_N', '4'))
+            if (_reshoot_n > 0 and not self.test_mode
+                    and api_result.get('status') in (429, 424)):
+                _rs_lo = float(os.environ.get('TARGET_CHECKOUT_INPLACE_DELAY_MIN', '2.5'))
+                _rs_hi = float(os.environ.get('TARGET_CHECKOUT_INPLACE_DELAY_MAX', '3.5'))
+                for _rs in range(1, _reshoot_n + 1):
+                    _rs_d = random.uniform(_rs_lo, _rs_hi)
+                    print(f"[PAYMENT] Checkout throttled (status={api_result.get('status')}, "
+                          f"reason={api_result.get('reason')}) — in-place re-shoot "
+                          f"{_rs}/{_reshoot_n} (cart intact), re-warm + wait {_rs_d:.1f}s")
+                    try:
+                        await self.warm_shape_headers(force_fresh=True)
+                    except Exception as _rs_we:
+                        print(f"[PAYMENT] in-place re-shoot warm failed: {_rs_we}")
+                    await asyncio.sleep(_rs_d)
+                    # F5 can bounce us off checkout — a re-fire then targets the wrong
+                    # context; stop and let the manager re-race cleanly instead.
+                    if 'checkout' not in (tab.url or '').lower():
+                        print(f"[PAYMENT] in-place re-shoot: off checkout (url={tab.url}) — stopping")
+                        break
+                    api_result = await self._api_place_order(tab)
+                    if api_result.get('success'):
+                        self._api_order_id = api_result.get('order_id')
+                        self._api_confirmation_url = api_result.get('confirmation_url')
+                        print(f"[PAYMENT] In-place re-shoot SUCCEEDED on shot {_rs} — "
+                              f"order_id={self._api_order_id}")
+                        return True
+                    # Continue ONLY while it stays a definitive pre-commit throttle;
+                    # anything else (oos / reservation / 401 / no-response 0) defers
+                    # to the existing branches below so their guards apply verbatim.
+                    if api_result.get('status') not in (429, 424):
+                        print(f"[PAYMENT] In-place re-shoot: status now "
+                              f"{api_result.get('status')} (reason={api_result.get('reason')}) "
+                              f"— stopping, deferring to fallback logic")
+                        break
             # ── Double-buy guard (2026-07-02, research-driven) ───────────────────
             # NEVER DOM-retry a place-order that received NO definitive HTTP
             # response. status==0 means either the fetch() promise REJECTED
