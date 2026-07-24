@@ -111,14 +111,43 @@ class PurchaseExecutor:
         self._churn_alerted_ts: float = 0.0
         self._main_tab_interceptor_active: bool = False     # avoid double setup on main tab
         self._cdp_continued_ids: set = set()               # dedup across accumulated handlers
+        self._cdp_dedup_hits: int = 0                      # 07-23 leak guard: dedup hits that were continued anyway
         self._checkout_rejected: bool = False              # set by interceptor on 424 checkout response
         self._checkout_reject_reason: str = ''             # tgt-cart-error-key value from 424
         self._checkout_reject_status: int = 0              # HTTP status of the rejected checkout POST (429/424/...)
+        # 2026-07-21 — sticky for the life of this executor once Target answers a
+        # place-order POST with 400 tgt-cart-error-key=MISSING_CREDIT_CARD_CVV.
+        # That challenge is per-card/per-risk-session, not per-attempt: once it
+        # fires it keeps firing, so every later API shot is a guaranteed 400 that
+        # burns ~1.0s of the reservation window. When set, the payment dispatcher
+        # skips the API fast path and goes straight to the DOM click, whose CVV
+        # modal handler satisfies the challenge in ~0.08s.
+        # Seeded from disk so the very first place-order after a nightly restart
+        # already knows to go DOM-first — otherwise the biggest restock of the
+        # night pays the 1.0s doomed-API tax that lost every shot on 07-20→21.
+        self._cvv_required: bool = self._load_cvv_challenge_flag()
+        # 2026-07-23 — purchase-scoped (reset per purchase, unlike the
+        # attempt-scoped cvv_handled inside _place_order's click loop): did a
+        # CVV modal appear at any point during THIS purchase? Confirming an
+        # order with this still False is proof Target no longer challenges the
+        # card, so the latch can auto-clear and re-enable the API fast lane.
+        self._cvv_modal_seen: bool = False
         # Phase 4b — set by _api_place_order when API-mode Place Order succeeds.
         # _complete_checkout reads these instead of parsing tab.url, since
         # API mode does not navigate to /checkout/confirmation.
         self._api_order_id: Optional[str] = None
         self._api_confirmation_url: Optional[str] = None
+        # 2026-07-21 — set when _api_fast_lane already committed the order. The
+        # checkout-nav + payment phase then short-circuits, so we can never fire
+        # a second place-order POST against a cart that is already an order.
+        self._fastlane_placed: bool = False
+        # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a rolling per-account
+        # limiter on the checkout POST, and the 07-21 log is unambiguous about how
+        # it behaves: it never once appeared on the FIRST shot of a wave, and once
+        # tripped it answered every one of the next 5-6 shots (0-for-~20 across the
+        # night). The in-place re-shoot loop was feeding the very limiter that was
+        # blocking it. Back off for a cooldown instead.
+        self._fast_selling_until: float = 0.0
         # Per-TCIN cache for PDP-extracted purchase_limit. Bulk RedSky often
         # omits maximum_order_quantity; without this cache every repeat
         # purchase pays a 0.05-0.65s PDP poll. Entries expire after 30 min.
@@ -474,6 +503,30 @@ class PurchaseExecutor:
             is_response = event.response_status_code is not None or getattr(event, 'response_error_reason', None) is not None
             dedup_key = req_id + (':resp' if is_response else ':req')
             if dedup_key in self._cdp_continued_ids:
+                # 2026-07-23 wedge-leak guard. A dedup hit is NOT always an event
+                # we already continued: CDP re-pauses every REDIRECT hop under
+                # the SAME request id, and the interception-job ids of the two
+                # warmup tabs collide in this shared set — so returning here
+                # left those requests paused FOREVER. Leaked pauses accumulate
+                # from Chrome launch until the whole browser wedges (~70-75 min
+                # per-Chrome clock, 22 sentinel destroys on 07-21→22 alone; see
+                # docs/FAILURES.md). Skipping the duplicate PROCESSING is still
+                # right (no double cache/ring pushes) — but the request must be
+                # released. continue_request on an already-continued id just
+                # errors and is swallowed, so this is double-buy-safe: it can
+                # only release a paused request, never re-send one.
+                # Kill-switch (exact pre-07-23 drop-without-continue behavior):
+                # set TARGET_CDP_DEDUP_CONTINUE=0
+                self._cdp_dedup_hits = getattr(self, '_cdp_dedup_hits', 0) + 1
+                if self._cdp_dedup_hits <= 5 or self._cdp_dedup_hits % 50 == 0:
+                    print(f"[INTERCEPTOR:{label}] dedup hit #{self._cdp_dedup_hits} "
+                          f"(req_id={req_id}{':resp' if is_response else ':req'}) — "
+                          f"continuing anyway so the request can't stay paused")
+                if os.environ.get('TARGET_CDP_DEDUP_CONTINUE', '1') != '0':
+                    try:
+                        await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
+                    except Exception:
+                        pass  # already continued/fulfilled — expected for true duplicates
                 return
             self._cdp_continued_ids.add(dedup_key)
 
@@ -635,11 +688,20 @@ class PurchaseExecutor:
                         if os.environ.get('TARGET_API_CAPTURE_CHECKOUT_STEPS', 'false').lower() == 'true':
                             is_cart_put = method == 'PUT' and 'web_checkouts/v1/cart' in url
                             is_fulfillments_get = method == 'GET' and 'cart_fulfillments' in url
-                            if is_cart_put or is_fulfillments_get:
-                                tag = 'CART_PUT' if is_cart_put else 'FULFILLMENTS_GET'
+                            # 2026-07-21 — Endpoint 8 (CVV submit). Target's own JS
+                            # fires this PUT right after the CVV modal is confirmed,
+                            # and the place-order POST only succeeds afterwards. This
+                            # is the request we must replicate to put CVV on the API
+                            # fast path; capturing its real body is the prerequisite.
+                            is_cvv_put = (method == 'PUT'
+                                          and 'checkout_payments/v1/payment_instructions' in url)
+                            if is_cart_put or is_fulfillments_get or is_cvv_put:
+                                tag = ('CART_PUT' if is_cart_put
+                                       else 'CVV_PAYMENT_INSTRUCTION_PUT' if is_cvv_put
+                                       else 'FULFILLMENTS_GET')
                                 try:
                                     post_data = ''
-                                    if is_cart_put:
+                                    if is_cart_put or is_cvv_put:
                                         post_data = getattr(event.request, 'post_data', '') or ''
                                         if hasattr(event.request, 'has_post_data') and event.request.has_post_data and not post_data:
                                             try:
@@ -658,10 +720,10 @@ class PurchaseExecutor:
                                                 _f.write(f"  {h_name}: <redacted, {len(h_val)} chars>\n")
                                             else:
                                                 _f.write(f"  {h_name}: {h_val}\n")
-                                        if is_cart_put:
+                                        if is_cart_put or is_cvv_put:
                                             _f.write(f"body:\n{post_data}\n")
                                     print(f"[INTERCEPTOR:{label}] [{tag}_CAPTURE] logged ({len(headers)} headers"
-                                          + (f", {len(post_data)} body chars" if is_cart_put else "") + ")")
+                                          + (f", {len(post_data)} body chars" if (is_cart_put or is_cvv_put) else "") + ")")
                                 except Exception as cap_err:
                                     print(f"[INTERCEPTOR:{label}] [{tag}_CAPTURE] failed: {cap_err}")
                     else:
@@ -901,7 +963,36 @@ class PurchaseExecutor:
         last_nav = self._warmup_tab_cart_ts.get(idx, 0.0)
         cart_nav_age = (now - last_nav) if last_nav else 999
 
-        if cart_nav_age < 90 and not force_fresh:
+        # ── Don't mutate the cart while a purchase is live (2026-07-21) ──────
+        # Loading /cart makes Target's own page JS fire
+        # `PUT /web_checkouts/v1/cart?...&field_groups=ADDRESSES...` on THIS
+        # account's cart. Target documents "credit card or CVV re-entry will be
+        # required if a shipping address is updated during checkout" — and on
+        # 07-20→21 a warmup /cart nav landed inside the checkout window on the
+        # same session, immediately before every 400 MISSING_CREDIT_CARD_CVV.
+        # A second concurrent cart write from a background tab is also simply
+        # not something a real shopper does. Skipping only the NAVIGATION is
+        # safe: the tab is already on /cart with Shape JS initialized, and the
+        # dummy POST below still fires and still refills the Shape ring — this
+        # is the exact same path the routine `cart_nav_age < 90` skip already
+        # takes many times an hour. force_fresh is deliberately still honoured:
+        # that is the ATC-401 recovery reload that must re-mint a write token.
+        # HYPOTHESIS pending confirmation from the cart-PUT body capture
+        # (TARGET_API_CAPTURE_CHECKOUT_STEPS). Kill-switch:
+        # TARGET_WARMUP_PAUSE_DURING_PURCHASE=0
+        _purchase_live = False
+        if (not force_fresh
+                and os.environ.get('TARGET_WARMUP_PAUSE_DURING_PURCHASE', '1') == '1'):
+            try:
+                _purchase_live = bool(self.session_manager.is_purchase_in_progress())
+            except Exception:
+                _purchase_live = False
+
+        if _purchase_live:
+            print(f"[WARMUP#{idx}] Purchase in flight — skipping /cart re-nav to avoid a "
+                  f"concurrent cart/address write (CVV-challenge guard); dummy POST still fires")
+            fresh_nav = False
+        elif cart_nav_age < 90 and not force_fresh:
             print(f"[WARMUP#{idx}] Skipping cart re-nav (last nav {cart_nav_age:.0f}s ago, tab still warm)")
             fresh_nav = False
         else:
@@ -1175,6 +1266,12 @@ class PurchaseExecutor:
         self._checkout_reject_status = 0
         self._api_order_id = None
         self._api_confirmation_url = None
+        # MUST reset per purchase: a stale True would make the next attempt skip
+        # the checkout+payment phases and report a phantom success.
+        self._fastlane_placed = False
+        # MUST reset per purchase: a stale True from an earlier purchase would
+        # block the auto-unlatch even when this purchase saw no CVV modal.
+        self._cvv_modal_seen = False
 
         try:
             print(f"[PURCHASE] Starting purchase for {tcin}")
@@ -1448,10 +1545,32 @@ class PurchaseExecutor:
                         'error': f'CDP health-check failed: {_probe_detail} — websocket likely dead',
                         'execution_time': time.time() - start_time}
 
-            print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
-            try:
-                atc_result = await asyncio.wait_for(
-                    tab.evaluate(f"""(async () => {{
+            # ── FAST LANE (2026-07-21) ────────────────────────────────────────
+            # Collapse ATC → pre_checkout → place-order into one in-browser fetch
+            # chain and skip the /checkout/start navigation entirely. The 07-21
+            # log measured 2.4-5.0s of nav+DOM-poll dead time between a 201 ATC
+            # and the first place-order POST, and Target answered clean first
+            # shots with RESERVATION_FAILURE — we were losing the reservation in
+            # dead time. See _api_fast_lane for the full evidence.
+            #
+            # Skipped when the CVV challenge is latched: that shot is a guaranteed
+            # 400 and would spend budget against Target's FAST_SELLING limiter for
+            # nothing (the DOM-first path from the same post-mortem handles it).
+            _fl = None
+            if (os.environ.get('TARGET_FAST_LANE', '1') == '1'
+                    and not self.test_mode
+                    and os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
+                    and not self._cvv_required
+                    and not self._fast_selling_cooling_down()):
+                _fl = await self._api_fast_lane(tab, tcin, quantity, extra_headers_js)
+                atc_result = _fl.get('atc') or {}
+                _verdict, _terminal = self._apply_fast_lane_result(_fl, tcin, start_time)
+                if _verdict == 'terminal':
+                    return _terminal
+
+            if _fl is None:
+                print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
+            _atc_js = f"""(async () => {{
                         try {{
                             const cachedHeaders = {extra_headers_js};
                             const resp = await fetch(
@@ -1501,13 +1620,17 @@ class PurchaseExecutor:
                         }} catch(e) {{
                             return {{status: 0, body: String(e)}};
                         }}
-                    }})()""", await_promise=True),
-                    timeout=8.0
-                )
-            except asyncio.TimeoutError:
-                print(f"[PURCHASE] ATC fetch evaluate timed out after 8s — CDP wedged, aborting purchase")
-                return {'success': False, 'tcin': tcin, 'reason': 'atc_evaluate_timeout',
-                        'execution_time': time.time() - start_time}
+                    }})()"""
+            if _fl is None:
+                try:
+                    atc_result = await asyncio.wait_for(
+                        tab.evaluate(_atc_js, await_promise=True),
+                        timeout=8.0
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[PURCHASE] ATC fetch evaluate timed out after 8s — CDP wedged, aborting purchase")
+                    return {'success': False, 'tcin': tcin, 'reason': 'atc_evaluate_timeout',
+                            'execution_time': time.time() - start_time}
 
             atc_status = atc_result.get('status', 0) if isinstance(atc_result, dict) else atc_result
             atc_body = atc_result.get('body', '') if isinstance(atc_result, dict) else ''
@@ -2072,13 +2195,35 @@ class PurchaseExecutor:
             checkout_result = False
             t_nav_start = time.time()
 
+            # ── Fast lane already committed the order ─────────────────────────
+            # Nothing left to do on the wire: skip pre_checkout, the
+            # /checkout/start nav and the whole payment phase. Falling through
+            # would fire a SECOND place-order POST against a cart that is now an
+            # order. The success block below reads self._api_order_id, which the
+            # fast lane already set.
+            if self._fastlane_placed:
+                print(f"[PURCHASE] Fast lane already placed the order "
+                      f"(order_id={self._api_order_id}) — skipping checkout nav "
+                      f"and payment phase entirely")
+                print(f"[CHECKOUT_TRANSITION] ATC → order committed via fast lane "
+                      f"(t={time.time()-start_time:.1f}s)")
+                # Fall through to the shared success block below. `_api_skip`
+                # below is recomputed as `test_mode or _fastlane_placed`, which
+                # sets _co_state/landed_url and skips the nav; the payment phase
+                # is skipped by its own _fastlane_placed guard.
+                checkout_result = True
+
             # Fire pre_checkout as fire-and-forget — mirrors exactly what Target's cart page
             # JS does: fires the fetch then immediately redirects without awaiting the response.
             # The HTTP request is already in-flight before navigation starts so the server
             # receives and processes it. By the time Place Order fires (~1.5s later),
             # pre_checkout has long since completed server-side (~200-300ms).
-            try:
-                await tab.evaluate(f"""(() => {{
+            # Skipped when the fast lane ran: it already AWAITED its own
+            # pre_checkout inside the fetch chain (that await is exactly what
+            # makes dropping the nav safe) and has committed the order.
+            if not self._fastlane_placed:
+                try:
+                    await tab.evaluate(f"""(() => {{
                     const shapeHeaders = {extra_headers_js};
                     fetch(
                         'https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES',
@@ -2098,17 +2243,19 @@ class PurchaseExecutor:
                         }}
                     ).catch(() => {{}});
                 }})()""", await_promise=False)
-                print(f"[PURCHASE] pre_checkout fired (fire-and-forget) (t+{time.time()-t_nav_start:.3f}s)")
-            except Exception as e:
-                print(f"[PURCHASE] pre_checkout fire failed: {e}")
+                    print(f"[PURCHASE] pre_checkout fired (fire-and-forget) (t+{time.time()-t_nav_start:.3f}s)")
+                except Exception as e:
+                    print(f"[PURCHASE] pre_checkout fire failed: {e}")
 
             # API-mode shortcut: skip the /checkout/start page nav only in
-            # TEST_MODE where _place_order returns synthetic success. PROD
-            # must still nav so the cart hydrates server-side before the API
-            # place-order POST fires — skipping in PROD races pre_checkout
-            # and triggers HTTP 424 CART_COMPARISION_FAILURE_ERROR (observed
-            # 2026-05-07 23:16, all 3 cycles failed).
-            _api_skip = self.test_mode
+            # TEST_MODE where _place_order returns synthetic success, or when the
+            # fast lane already placed the order. PROD's *legacy* path must still
+            # nav so the cart hydrates server-side before the API place-order POST
+            # fires — skipping the nav there races the fire-and-forget pre_checkout
+            # above and triggers HTTP 424 CART_COMPARISION_FAILURE_ERROR (observed
+            # 2026-05-07 23:16, all 3 cycles failed). The fast lane is immune to
+            # that race because it awaits pre_checkout before posting.
+            _api_skip = self.test_mode or self._fastlane_placed
             if _api_skip:
                 _co_state = 'place_order'
                 landed_url = '<api_mode_no_nav>'
@@ -2165,10 +2312,17 @@ class PurchaseExecutor:
                 # run it when we're actually on a checkout page DOM (legacy path).
                 if not _api_skip:
                     await self._handle_delivery_options(tab)
-                print(f"[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t={time.time()-start_time:.1f}s, co_state={_co_state})")
-                payment_result = await self._complete_payment(tab, initial_state=_co_state)
-                if not payment_result:
-                    checkout_result = False
+                if self._fastlane_placed:
+                    # Order already committed by the fast lane. _complete_payment
+                    # would fire another place-order POST against a cart that is
+                    # now an order — the one path that could double-buy here.
+                    print(f"[PURCHASE] Payment phase skipped — fast lane already "
+                          f"committed order {self._api_order_id}")
+                else:
+                    print(f"[CHECKOUT_TRANSITION] ATC → Checkout → Payment phase starting (t={time.time()-start_time:.1f}s, co_state={_co_state})")
+                    payment_result = await self._complete_payment(tab, initial_state=_co_state)
+                    if not payment_result:
+                        checkout_result = False
 
             if not checkout_result:
                 # Diagnose: use interceptor reason if available (faster/more accurate than page text)
@@ -2198,7 +2352,8 @@ class PurchaseExecutor:
                         _precommit_retryable = (_throttle_status or _throttle_key) and not _oos_key
                     else:
                         page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
-                        if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests', 'please keep trying']):
+                        if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests', 'please keep trying',
+                                                        'high-demand item', 'causing a delay', 'managing high traffic']):
                             print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
                             _precommit_retryable = True
                         elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
@@ -3829,6 +3984,69 @@ class PurchaseExecutor:
             print(f"[STEP] _handle_step_radio error: {e}")
             return 'error'
 
+    def _cvv_flag_path(self) -> str:
+        """Per-account marker file recording that Target challenges this card's CVV."""
+        acct = getattr(self.session_manager, 'account_id', None) or 'default'
+        return os.path.join('state', f'cvv_challenge_{acct}.flag')
+
+    def _load_cvv_challenge_flag(self) -> bool:
+        """True if this account hit MISSING_CREDIT_CARD_CVV on a previous run.
+
+        Env override TARGET_CVV_REQUIRED=1/0 wins over the file, so the flag can be
+        forced on before a known drop or cleared without touching disk.
+        """
+        _env = os.environ.get('TARGET_CVV_REQUIRED', '').strip()
+        if _env in ('1', 'true', 'True'):
+            return True
+        if _env in ('0', 'false', 'False'):
+            return False
+        try:
+            return os.path.exists(self._cvv_flag_path())
+        except Exception:
+            return False
+
+    def _persist_cvv_challenge_flag(self) -> None:
+        """Record the CVV challenge so the next run starts DOM-first. Best-effort."""
+        try:
+            os.makedirs('state', exist_ok=True)
+            with open(self._cvv_flag_path(), 'w', encoding='utf-8') as f:
+                f.write(datetime.now().isoformat())
+        except Exception as e:
+            print(f"[API_PLACE_ORDER] cvv flag persist failed (non-fatal): {e}")
+
+    def _clear_cvv_challenge_flag(self) -> None:
+        """Un-latch the CVV challenge (memory + disk). Best-effort on disk."""
+        self._cvv_required = False
+        try:
+            if os.path.exists(self._cvv_flag_path()):
+                os.remove(self._cvv_flag_path())
+        except Exception as e:
+            print(f"[PAYMENT] cvv flag remove failed (non-fatal, memory latch cleared): {e}")
+
+    def _maybe_unlatch_cvv(self) -> None:
+        """Auto-clear the CVV latch when an order just CONFIRMED via the DOM
+        path and no CVV modal appeared at any point during the purchase.
+
+        2026-07-23 — while latched the API place-order is skipped entirely, so
+        the latch could never observe Target dropping the challenge: it would
+        keep the fast lane disabled forever (manual TARGET_CVV_REQUIRED=0 was
+        the only exit). A confirmed order with no modal is definitive — if the
+        card still required CVV, the order could not have completed without
+        the modal. Wrong-unlatch cost is bounded and self-healing: the next
+        wave's API shot pays ~0.9s for a 400, re-latches, and goes DOM-first
+        again. Kill-switch: TARGET_CVV_AUTO_UNLATCH=0 (latch only clears
+        manually, pre-07-23 behavior)."""
+        if not self._cvv_required:
+            return
+        if getattr(self, '_cvv_modal_seen', False):
+            return
+        if os.environ.get('TARGET_CVV_AUTO_UNLATCH', '1') == '0':
+            return
+        self._clear_cvv_challenge_flag()
+        print("[PAYMENT] Order confirmed with NO CVV modal while latched — Target "
+              "has stopped challenging this card. Un-latching cvv_required; the "
+              "API fast lane is re-enabled from the next purchase.")
+
     async def _handle_busy_modal(self, tab) -> bool:
         """Detect and dismiss Target's 'busier than expected' cart error modal.
 
@@ -3839,7 +4057,11 @@ class PurchaseExecutor:
         try:
             result = await tab.evaluate("""(() => {
                 const BUSY_PHRASES = ['busier', 'temporary issue', "can't view", 'try again soon',
-                                      'busy right now', 'limiting how many guests', 'please keep trying'];
+                                      'busy right now', 'limiting how many guests', 'please keep trying',
+                                      // 2026-07-24: "High-demand item in your cart" modal variant —
+                                      // skeleton /checkout + this copy went Unknown-failure → cart cleared
+                                      // while the item stayed in stock ~18 min.
+                                      'high-demand item', 'causing a delay', 'managing high traffic'];
                 const isBusy = text => BUSY_PHRASES.some(p => text.includes(p));
 
                 // --- Check 1: modal/dialog overlays ---
@@ -3969,6 +4191,313 @@ class PurchaseExecutor:
         except Exception as e:
             print(f"[PAYMENT] Stock error modal check error: {e}")
             return False
+
+    def _note_fast_selling_throttle(self) -> None:
+        """Start a back-off after Target's fast-selling limiter rejects a shot.
+
+        07-21 evidence (run_20260720_231634.log): FAST_SELLING never answered the
+        first checkout POST of a wave, and every re-shoot fired into it was also
+        rejected — 0-for-~20. Two minutes later (wave 6) the limiter had cleared
+        on its own. Re-shooting is strictly counter-productive; waiting is not.
+        Kill-switch: TARGET_FAST_SELLING_COOLDOWN_S=0 disables the back-off.
+        """
+        _cd = float(os.environ.get('TARGET_FAST_SELLING_COOLDOWN_S', '45'))
+        if _cd <= 0:
+            return
+        self._fast_selling_until = time.time() + _cd
+        print(f"[THROTTLE] FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION — holding checkout "
+              f"POSTs for {_cd:.0f}s (re-shooting into this limiter went 0-for-~20 on 07-21)")
+
+    def _fast_selling_cooling_down(self) -> bool:
+        """True while the fast-selling back-off window is still open."""
+        _left = self._fast_selling_until - time.time()
+        if _left > 0:
+            print(f"[THROTTLE] FAST_SELLING cooldown active ({_left:.0f}s left) — "
+                  f"not spending a checkout POST")
+            return True
+        return False
+
+    def _apply_fast_lane_result(self, fl: Dict[str, Any], tcin: str,
+                                start_time: float):
+        """Interpret an _api_fast_lane result. Returns (verdict, terminal_result).
+
+        verdict is 'placed' (order committed — caller short-circuits the checkout
+        and payment phases), 'terminal' (caller must return terminal_result
+        immediately) or 'fallthrough' (caller continues into the legacy nav+DOM
+        path against the cart the chain already filled).
+        """
+        po = fl.get('po') or {}
+        status = po.get('status', 0)
+
+        if po.get('fired') and status == 0:
+            # ── DOUBLE-BUY GUARD ──────────────────────────────────────────────
+            # The place-order POST left the browser but no response came back, so
+            # it MAY have committed server-side. Target's checkout API has no
+            # idempotency key. Never retry — bail terminal, exactly like the
+            # _api_place_order no-response guard. A missed buy is free; a
+            # double-charge is not.
+            print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got NO response "
+                  f"(skip={fl.get('skip')}) — POST may have committed. "
+                  f"Bailing terminal, NOT retrying.")
+            return 'terminal', {
+                'success': False, 'tcin': tcin,
+                'reason': 'checkout_navigation_failed',
+                'error': 'fast-lane place-order got no response',
+                'execution_time': time.time() - start_time,
+            }
+
+        if status in (200, 201):
+            # ORDER PLACED. Parse the validated shape
+            # {"orders":[{"order_id":..,"reference_id":..}]}. On any parse miss
+            # still treat it as SUCCESS with a synthetic id — a 2xx here means
+            # Target committed the order, and reporting failure would let the
+            # manager re-race and double-buy.
+            body = po.get('body', '') or ''
+            oid = None
+            try:
+                payload = json.loads(body)
+                orders = payload.get('orders') if isinstance(payload, dict) else None
+                if isinstance(orders, list) and orders and isinstance(orders[0], dict):
+                    for k in ('order_id', 'orderId', 'order_number', 'id'):
+                        if isinstance(orders[0].get(k), str) and orders[0][k]:
+                            oid = orders[0][k]
+                            break
+            except Exception:
+                pass
+            if not oid:
+                m = re.search(r'"order_id"\s*:\s*"([^"]+)"', body)
+                oid = m.group(1) if m else f"UNPARSED-{int(time.time())}"
+                print(f"[FAST_LANE] order_id not parsed from body — using {oid!r}. "
+                      f"Body head: {body[:200]!r}")
+            self._api_order_id = oid
+            self._api_confirmation_url = (
+                f"https://www.target.com/checkout/confirmation?orderId={oid}")
+            self._fastlane_placed = True
+            print(f"[FAST_LANE] *** ORDER PLACED *** HTTP {status} at "
+                  f"t={time.time()-start_time:.2f}s — order_id={oid}")
+            return 'placed', None
+
+        if po.get('fired'):
+            # Definitive server rejection ⇒ provably no order committed ⇒ safe to
+            # fall through to the legacy nav+DOM recovery, which runs unchanged
+            # against the cart this chain already filled. No second ATC fires.
+            hdr = ((self._checkout_reject_reason or '').upper()
+                   if self._checkout_reject_status == status else '')
+            body_up = (po.get('body', '') or '').upper()
+            print(f"[FAST_LANE] place-order rejected: HTTP {status} "
+                  f"key={hdr or '(none)'} — falling back to nav+DOM path "
+                  f"(t={time.time()-start_time:.2f}s)")
+            if 'MISSING_CREDIT_CARD_CVV' in hdr and not self._cvv_required:
+                self._cvv_required = True
+                self._persist_cvv_challenge_flag()
+                print("[FAST_LANE] MISSING_CREDIT_CARD_CVV — latching cvv_required=True; "
+                      "later attempts go straight to the DOM CVV path.")
+            if ('FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION' in hdr
+                    or 'FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION' in body_up):
+                self._note_fast_selling_throttle()
+            return 'fallthrough', None
+
+        # Chain stopped before the place-order POST (bad ATC / un-hydrated cart /
+        # foreign cart item). Nothing was committed; the legacy path takes over.
+        print(f"[FAST_LANE] chain stopped before place-order (skip={fl.get('skip')}) "
+              f"— legacy path continues")
+        return 'fallthrough', None
+
+    async def _api_fast_lane(self, tab, tcin: str, quantity: int,
+                             extra_headers_js: str) -> Dict[str, Any]:
+        """ATC → pre_checkout → place-order as ONE in-browser fetch chain.
+
+        ── Why (2026-07-21 post-mortem, run_20260720_231634.log) ────────────────
+        The 07-20→21 drop lost 5 checkout-reaching waves and the log shows why:
+        on wave 2 the ATC returned 201 at t=0.92s but the first place-order POST
+        did not leave until t=3.4s, and Target answered it 429 RESERVATION_FAILURE
+        on an otherwise clean shot. The 2.5s in between was pure page-navigation
+        overhead — `tab.get('/checkout/start')` (1.45s) plus the DOM poll for the
+        Place Order button (0.87s). We were losing the inventory reservation in
+        dead time, on every single wave (ATC→shot #1 measured 2.4s / 2.8s / 3.0s /
+        3.3s / 3.6s / 3.9s / 4.1s / 5.0s / 10.1s).
+
+        The nav was never load-bearing for the API place-order — it existed only
+        so the cart hydrates server-side first. That hydration IS `pre_checkout`,
+        which the old code fired *fire-and-forget* right before navigating. The
+        2026-05-07 attempt to drop the nav failed with 424
+        CART_COMPARISION_FAILURE_ERROR precisely because it raced that un-awaited
+        pre_checkout. Awaiting it removes the race by construction, so the nav has
+        nothing left to do.
+
+        All three requests run inside a single `tab.evaluate`, so there is no CDP
+        round-trip between them: ~0.35s ATC + ~0.30s pre_checkout + ~0.20s
+        place-order ≈ 0.85s from trigger to committed order.
+
+        Returns {atc:{status,body,cart_items}, pre:{...}, po:{status,body,fired},
+        skip:<str>} — the caller re-uses `atc` verbatim as the ATC result, so when
+        any stage short-circuits the legacy nav+DOM path runs exactly as before
+        against the cart this call already populated. Never fires a second ATC.
+
+        Kill-switch: TARGET_FAST_LANE=0 restores the 2026-07-21 behaviour.
+        """
+        atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
+                   '?field_groups=CART,CART_ITEMS,SUMMARY')
+        pre_url = ('https://carts.target.com/web_checkouts/v1/pre_checkout'
+                   '?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,'
+                   'PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES')
+        po_url = ('https://carts.target.com/web_checkouts/v1/checkout'
+                  '?cart_type=REGULAR'
+                  '&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS'
+                  '%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY'
+                  '&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14')
+
+        js = f"""(async () => {{
+            const H = {extra_headers_js};
+            const mk = (ref) => Object.assign({{}}, H, {{
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Origin': 'https://www.target.com',
+                'Referer': ref,
+                'x-application-name': 'web',
+            }});
+            const out = {{
+                atc: {{status: 0, body: '', cart_items: []}},
+                pre: {{status: 0, n: 0, tcins: [], pi: []}},
+                po:  {{status: 0, body: '', fired: false}},
+                skip: ''
+            }};
+
+            // ── 1. Add to cart ────────────────────────────────────────────────
+            try {{
+                const r = await fetch('{atc_url}', {{
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/p/-/A-{tcin}'),
+                    body: JSON.stringify({{
+                        cart_item: {{
+                            tcin: '{tcin}', quantity: {quantity},
+                            item_channel_id: '10',
+                            fulfillment_type: 'SHIPPING',
+                            fulfillment_type_code: '02'
+                        }},
+                        cart_type: 'REGULAR', channel_id: '10',
+                        shopping_context: 'DIGITAL'
+                    }})
+                }});
+                const t = await r.text();
+                out.atc.status = r.status;
+                out.atc.body = t.slice(0, 500);
+                try {{
+                    const p = JSON.parse(t);
+                    if (p && p.tcin && p.cart_item_id) {{
+                        out.atc.cart_items = [{{tcin: p.tcin, quantity: p.quantity}}];
+                    }} else if (p && Array.isArray(p.cart_items)) {{
+                        out.atc.cart_items = p.cart_items.map(
+                            it => ({{tcin: it && it.tcin, quantity: it && it.quantity}}));
+                    }}
+                }} catch(_) {{}}
+            }} catch(e) {{
+                out.atc.status = 0; out.atc.body = String(e);
+                out.skip = 'atc_threw'; return out;
+            }}
+            if (out.atc.status !== 201 && out.atc.status !== 200) {{
+                out.skip = 'atc_' + out.atc.status; return out;
+            }}
+
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──
+            try {{
+                const r2 = await fetch('{pre_url}', {{
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/cart'),
+                    body: JSON.stringify({{cart_type: 'REGULAR'}})
+                }});
+                const t2 = await r2.text();
+                out.pre.status = r2.status;
+                try {{
+                    const p2 = JSON.parse(t2);
+                    const items = (p2 && p2.cart_items) || [];
+                    out.pre.n = items.length;
+                    out.pre.tcins = items.map(i => i && i.tcin);
+                    // Payment-instruction shape — intel for putting the CVV
+                    // challenge on the API fast path (Endpoint 8). Small fields
+                    // only; the full pre_checkout body is ~19KB and must not
+                    // cross the CDP boundary on the hot path.
+                    const pis = (p2 && p2.payment_instructions) || [];
+                    out.pre.pi = pis.slice(0, 3).map(pi => ({{
+                        id: pi && (pi.payment_instruction_id || pi.id),
+                        type: pi && pi.payment_type,
+                        cvv: pi && (pi.cvv_required !== undefined ? pi.cvv_required
+                             : pi.requires_cvv !== undefined ? pi.requires_cvv : null)
+                    }}));
+                }} catch(_) {{}}
+            }} catch(e) {{
+                out.pre.status = 0;
+            }}
+            if (out.pre.status !== 200 && out.pre.status !== 201) {{
+                // Un-hydrated cart ⇒ a place-order now would 424
+                // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
+                // to the nav path, which hydrates by loading the page.
+                out.skip = 'pre_' + out.pre.status; return out;
+            }}
+            // Cart-contents guard: place-order buys the WHOLE cart. If anything
+            // that is not our TCIN leaked in from a prior failed attempt, do not
+            // fire — let the legacy path run its cart-state checks first.
+            if (out.pre.tcins.some(t => t && t !== '{tcin}')) {{
+                out.skip = 'foreign_cart_item'; return out;
+            }}
+
+            // ── 3. Place order ────────────────────────────────────────────────
+            // `fired` is set BEFORE the await: if the fetch throws or the
+            // evaluate is torn down, the POST may still have committed
+            // server-side and the caller must treat it as non-retryable.
+            out.po.fired = true;
+            try {{
+                const r3 = await fetch('{po_url}', {{
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/checkout'),
+                    body: JSON.stringify({{cart_type: 'REGULAR', channel_id: '10'}})
+                }});
+                const t3 = await r3.text();
+                out.po.status = r3.status;
+                out.po.body = t3.slice(0, 2000);
+            }} catch(e) {{
+                out.po.status = 0; out.po.body = String(e);
+            }}
+            return out;
+        }})()"""
+
+        t0 = time.time()
+        print(f"[FAST_LANE] Firing ATC→pre_checkout→place-order chain "
+              f"(tcin={tcin}, qty={quantity})")
+        try:
+            res = await asyncio.wait_for(
+                tab.evaluate(js, await_promise=True), timeout=12.0)
+        except asyncio.TimeoutError:
+            # Cannot prove the place-order POST did not commit ⇒ terminal.
+            print("[FAST_LANE] evaluate timed out after 12s — place-order state "
+                  "UNKNOWN, treating as no-response (non-retryable)")
+            return {'atc': {'status': 0, 'body': '', 'cart_items': []},
+                    'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
+                    'skip': 'evaluate_timeout', 'elapsed': time.time() - t0}
+        except Exception as e:
+            print(f"[FAST_LANE] evaluate raised: {e} — place-order state UNKNOWN")
+            return {'atc': {'status': 0, 'body': '', 'cart_items': []},
+                    'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
+                    'skip': f'evaluate_threw:{e}', 'elapsed': time.time() - t0}
+
+        if not isinstance(res, dict):
+            print(f"[FAST_LANE] unexpected result type {type(res)} — treating as unknown")
+            return {'atc': {'status': 0, 'body': '', 'cart_items': []},
+                    'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
+                    'skip': 'bad_result', 'elapsed': time.time() - t0}
+
+        res['elapsed'] = time.time() - t0
+        _atc = res.get('atc') or {}
+        _pre = res.get('pre') or {}
+        _po = res.get('po') or {}
+        print(f"[FAST_LANE] chain done in {res['elapsed']:.2f}s — "
+              f"atc={_atc.get('status')} pre={_pre.get('status')} "
+              f"po={_po.get('status')} skip={res.get('skip') or 'none'}")
+        if _pre.get('pi'):
+            # One-line intel record: the payment-instruction id + any cvv flag is
+            # the prerequisite for moving the CVV challenge onto the API path.
+            print(f"[FAST_LANE] payment_instructions: {_pre.get('pi')}")
+        return res
 
     async def _api_place_order(self, tab) -> Dict[str, Any]:
         """Phase 4b — fire the Place Order POST directly via fetch (API mode).
@@ -4114,6 +4643,31 @@ class PurchaseExecutor:
                 reason = 'reservation_failure'
             else:
                 reason = f'http_{status}'
+            # 2026-07-21 — the rejection detail lives in the `tgt-cart-error-key`
+            # RESPONSE HEADER, not the body (the CVV 400 body is empty/opaque), so
+            # body-only classification mislabels it `http_400` and drops it into the
+            # slow DOM path with no idea why. The interceptor already captured the
+            # header into _checkout_reject_reason — consult it before giving up.
+            # Staleness guard: _checkout_reject_* is reset once per purchase, not
+            # per place-order shot, so the in-place re-shoot loop can leave the
+            # previous shot's key sitting there. Only trust it when the status the
+            # interceptor recorded matches the status THIS fetch just got.
+            _hdr_key = ((self._checkout_reject_reason or '').upper()
+                        if self._checkout_reject_status == status else '')
+            if _hdr_key and reason.startswith('http_'):
+                if 'MISSING_CREDIT_CARD_CVV' in _hdr_key:
+                    reason = 'cvv_required'
+                elif 'RESERVATION_FAILURE' in _hdr_key:
+                    reason = 'reservation_failure'
+                elif 'INVENTORY_NOT_AVAILABLE' in _hdr_key or 'OUT_OF_STOCK' in _hdr_key:
+                    reason = 'oos'
+            if reason == 'cvv_required' and not self._cvv_required:
+                # Latch for the rest of this drop window so later attempts skip the
+                # doomed API shot entirely and go straight to the DOM CVV path.
+                self._cvv_required = True
+                self._persist_cvv_challenge_flag()
+                print("[API_PLACE_ORDER] MISSING_CREDIT_CARD_CVV — Target is challenging the "
+                      "saved card. Latching cvv_required=True; subsequent shots go DOM-first.")
             return {'success': False, 'status': status, 'body': body[:500],
                     'reason': reason, 'order_id': None, 'confirmation_url': None}
 
@@ -4202,6 +4756,22 @@ class PurchaseExecutor:
             os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
             or self.test_mode
         )
+        # ── CVV challenge short-circuit (2026-07-21) ─────────────────────────
+        # 07-20→21 overnight went 0-for-9 with 9 clean ATC 201s. Every single
+        # place-order POST that reached Target was answered 400
+        # MISSING_CREDIT_CARD_CVV, and 5-for-5 the follow-up DOM recovery then
+        # got 424 RESERVATION_FAILURE — the inventory reservation died during the
+        # ~1.0s the doomed API shot cost us. The API body ({cart_type, channel_id})
+        # carries no CVV and there is no known field to put one in, so once the
+        # challenge is latched the API path can NEVER win; skipping straight to
+        # the DOM click (whose CVV modal handler submits in ~0.08s) hands that
+        # second back to the reservation window. Kill-switch:
+        # TARGET_CVV_DOM_FIRST=0 restores always-try-API behaviour.
+        if (_api_flag and self._cvv_required and not self.test_mode
+                and os.environ.get('TARGET_CVV_DOM_FIRST', '1') == '1'):
+            print("[PAYMENT] cvv_required latched — skipping API place-order "
+                  "(guaranteed 400) and going DOM-first to save the reservation window")
+            _api_flag = False
         print(f"[PAYMENT] Phase 4b dispatch check: test_mode={self.test_mode}, "
               f"api_path={_api_flag} → {'API path' if _api_flag else 'DOM path'}")
         if _api_flag:
@@ -4230,6 +4800,27 @@ class PurchaseExecutor:
             # no-response 0) straight back to the existing guards below unchanged.
             # Kill-switch: TARGET_CHECKOUT_INPLACE_RETRY_N=0 restores one-shot.
             _reshoot_n = int(os.environ.get('TARGET_CHECKOUT_INPLACE_RETRY_N', '4'))
+
+            def _is_fast_selling(_res) -> bool:
+                """True when Target's fast-selling limiter rejected this shot."""
+                _k = ((self._checkout_reject_reason or '').upper()
+                      if self._checkout_reject_status == _res.get('status') else '')
+                return ('FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION' in _k
+                        or 'FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION'
+                        in (_res.get('body', '') or '').upper())
+
+            # ── 2026-07-21: never re-shoot into the fast-selling limiter ────────
+            # The 07-17 fix added this loop because FAST_SELLING killed that drop.
+            # The 07-21 log then measured what re-shooting actually achieves:
+            # FAST_SELLING answered 0 of ~20 re-shoots across the night, and never
+            # once appeared on the FIRST shot of a wave — the loop was feeding the
+            # limiter that was blocking it. Two minutes of quiet cleared it (wave 6
+            # got a non-throttled first shot). So on FAST_SELLING: back off and let
+            # the manager re-race later. Every other 429/424 keeps the 07-17
+            # behaviour, which is what that fix was actually validated against.
+            if _is_fast_selling(api_result):
+                self._note_fast_selling_throttle()
+                _reshoot_n = 0
             if (_reshoot_n > 0 and not self.test_mode
                     and api_result.get('status') in (429, 424)):
                 _rs_lo = float(os.environ.get('TARGET_CHECKOUT_INPLACE_DELAY_MIN', '2.5'))
@@ -4264,6 +4855,12 @@ class PurchaseExecutor:
                               f"{api_result.get('status')} (reason={api_result.get('reason')}) "
                               f"— stopping, deferring to fallback logic")
                         break
+                    if _is_fast_selling(api_result):
+                        print(f"[PAYMENT] In-place re-shoot {_rs}/{_reshoot_n} hit the "
+                              f"fast-selling limiter — stopping (0-for-~20 on 07-21) "
+                              f"and backing off")
+                        self._note_fast_selling_throttle()
+                        break
             # ── Double-buy guard (2026-07-02, research-driven) ───────────────────
             # NEVER DOM-retry a place-order that received NO definitive HTTP
             # response. status==0 means either the fetch() promise REJECTED
@@ -4288,8 +4885,13 @@ class PurchaseExecutor:
             # double-place if the API actually committed but we mis-parsed. Only
             # fall back on signals that prove the request was rejected by the server.
             # (fetch_threw is handled by the no-response guard above.)
-            if api_result.get('reason') in ('shape_block', 'auth_expired', 'capture_flag_active'):
-                pass  # received server rejection (403/401) ⇒ no order ⇒ safe to fall through to DOM
+            if api_result.get('reason') in ('shape_block', 'auth_expired',
+                                            'capture_flag_active', 'cvv_required'):
+                # Received server rejection (403/401/400-CVV) ⇒ provably no order
+                # committed ⇒ safe to fall through to DOM. cvv_required MUST reach
+                # the DOM path: the modal handler there is the only thing that can
+                # actually answer the challenge.
+                pass
             elif api_result.get('reason') in ('oos', 'reservation_failure') \
                     or api_result.get('status') in (429, 424):
                 # Server REJECTED the place-order POST (OOS / reservation race /
@@ -4343,10 +4945,31 @@ class PurchaseExecutor:
                 url = tab.url
                 if 'order-confirmation' in url.lower() or 'thank' in url.lower() or 'confirmation' in url.lower():
                     print(f"[PAYMENT] Reached confirmation page (t+{time.time()-t_click:.3f}s from click) url={url}")
+                    self._maybe_unlatch_cvv()
                     return True
+                # ── Dead-reservation bail (2026-07-21) ───────────────────────
+                # Checked BEFORE the CVV branch: that branch `continue`s until a
+                # modal appears, so a reservation that dies while no CVV modal is
+                # showing would otherwise sit here until the 12s timeout.
+                # RESERVATION_FAILURE renders as Target's generic "we're limiting
+                # how many guests"/busy copy, so _handle_busy_modal claims it and
+                # we re-click Place Order into a reservation the server has already
+                # torn down. On 07-20→21 that burned 15 re-clicks × ~1.5s across the
+                # night, all guaranteed losers, while the item was still buyable via
+                # a fresh ATC. A 424/RESERVATION_FAILURE on the wire is definitive:
+                # stop clicking and hand control back so the manager can re-race ATC
+                # inside the stock window. Kill-switch: TARGET_RESERVATION_BAIL=0.
+                if (self._checkout_rejected
+                        and 'RESERVATION_FAILURE' in (self._checkout_reject_reason or '').upper()
+                        and os.environ.get('TARGET_RESERVATION_BAIL', '1') == '1'):
+                    print(f"[PAYMENT] RESERVATION_FAILURE on the wire "
+                          f"(t+{time.time()-t_click:.3f}s) — reservation is dead, no amount of "
+                          f"re-clicking recovers it. Bailing to let the manager re-race ATC.")
+                    return False
                 if not cvv_handled:
                     cvv_handled = await self._handle_cvv_modal(tab)
                     if cvv_handled:
+                        self._cvv_modal_seen = True
                         print(f"[PAYMENT] CVV submitted (t+{time.time()-t_click:.3f}s from click) — waiting for confirmation...")
                     # Don't run busy/stock checks until CVV is handled — saves round trips
                     await asyncio.sleep(0.05)
@@ -4400,9 +5023,11 @@ class PurchaseExecutor:
                 # Only treat as success if URL or page content confirms the order
                 if any(p in url.lower() for p in ['order-confirmation', 'confirmation', 'thank']):
                     print(f"[PAYMENT] Order confirmed via URL: {url}")
+                    self._maybe_unlatch_cvv()
                     return True
                 if any(p in page_text for p in ['order confirmation', 'thank you', 'your order', 'order number']):
                     print("[PAYMENT] Order confirmed via page content")
+                    self._maybe_unlatch_cvv()
                     return True
                 print(f"[PAYMENT] Redirected to {url} without confirmation — treating as failure")
                 return False

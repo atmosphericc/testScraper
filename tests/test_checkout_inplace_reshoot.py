@@ -43,7 +43,7 @@ def _R(status, reason="", success=False, order_id=None):
             "order_id": order_id, "confirmation_url": None, "body": ""}
 
 
-def _make_executor(seq, url_mutate=None):
+def _make_executor(seq, url_mutate=None, cvv_required=False):
     """seq = list of _api_place_order return dicts (last entry repeats).
     url_mutate = optional {api_call_index(1-based): new_url} to simulate an F5
     redirect mid-loop. Returns (executor, counters)."""
@@ -51,6 +51,10 @@ def _make_executor(seq, url_mutate=None):
     ex.test_mode = False
     ex._api_order_id = None
     ex._api_confirmation_url = None
+    ex._cvv_required = cvv_required
+    ex._checkout_rejected = False
+    ex._checkout_reject_reason = ""
+    ex._checkout_reject_status = 0
     c = {"api": 0}
 
     async def fake_api(tab):
@@ -75,9 +79,10 @@ def _make_executor(seq, url_mutate=None):
     return ex, c
 
 
-def _run(seq, n="4", url_mutate=None, url="https://www.target.com/checkout/start"):
+def _run(seq, n="4", url_mutate=None, url="https://www.target.com/checkout/start",
+         cvv_required=False):
     os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = n
-    ex, c = _make_executor(seq, url_mutate=url_mutate)
+    ex, c = _make_executor(seq, url_mutate=url_mutate, cvv_required=cvv_required)
     r = asyncio.run(ex._place_order(_FakeTab(url)))
     return r, c["api"], ex._api_order_id
 
@@ -124,6 +129,136 @@ def test_off_checkout_redirect_stops_reshoot():
     r, api, _ = _run([_R(429, "http_429")],
                      url_mutate={2: "https://www.target.com/account"})
     assert r is False and api == 2
+
+
+# ── CVV challenge short-circuit (2026-07-21 regression) ─────────────────────
+# 07-20→21 went 0-for-9 with 9 clean ATC 201s: every place-order POST came back
+# 400 MISSING_CREDIT_CARD_CVV, and 5-for-5 the DOM recovery then hit 424
+# RESERVATION_FAILURE because the doomed API shot burned ~1.0s of the window.
+
+def test_cvv_latched_skips_api_entirely():
+    # With the latch set, _place_order must NOT spend a shot on the API path —
+    # it goes straight to DOM (which here finds no button and returns False).
+    os.environ["TARGET_CVV_DOM_FIRST"] = "1"
+    r, api, _ = _run([_R(200, "ok", True, "OID-X")], cvv_required=True)
+    assert api == 0, f"expected 0 API calls when cvv latched, got {api}"
+    assert r is False  # fake_find returns no button → DOM path can't complete
+
+
+def test_cvv_kill_switch_restores_api_attempt():
+    # TARGET_CVV_DOM_FIRST=0 must restore the old always-try-API behaviour.
+    os.environ["TARGET_CVV_DOM_FIRST"] = "0"
+    try:
+        r, api, oid = _run([_R(200, "ok", True, "OID-Y")], cvv_required=True)
+        assert api == 1 and r is True and oid == "OID-Y"
+    finally:
+        os.environ["TARGET_CVV_DOM_FIRST"] = "1"
+
+
+def test_no_cvv_latch_still_uses_api():
+    # Default path is unchanged when the challenge has never fired.
+    os.environ["TARGET_CVV_DOM_FIRST"] = "1"
+    r, api, oid = _run([_R(200, "ok", True, "OID-Z")], cvv_required=False)
+    assert api == 1 and r is True and oid == "OID-Z"
+
+
+def test_cvv_400_falls_through_to_dom_not_fastbail():
+    # A 400 cvv_required must reach the DOM path (the only thing that can answer
+    # the challenge) — it must NOT be swallowed by the 429/424 fast-bail branch.
+    os.environ["TARGET_CVV_DOM_FIRST"] = "1"
+    r, api, _ = _run([_R(400, "cvv_required")])
+    # 400 is not a throttle status, so no re-shoots: exactly one API call, then DOM.
+    assert api == 1, f"expected 1 API call, got {api}"
+    assert r is False  # DOM stub has no button
+
+
+def test_cvv_400_does_not_trigger_reshoot_loop():
+    # Guard against a future edit adding 400 to the re-shoot status set: the
+    # re-shoot loop is for pre-commit throttles only.
+    os.environ["TARGET_CVV_DOM_FIRST"] = "1"
+    _, api, _ = _run([_R(400, "cvv_required")], n="4")
+    assert api == 1
+
+
+# ── Dead-reservation bail (2026-07-21 regression) ───────────────────────────
+# RESERVATION_FAILURE renders as Target's generic "busy" copy, so the DOM loop
+# used to re-click Place Order into a reservation the server had already torn
+# down (15 wasted re-clicks x ~1.5s on 07-20->21).
+
+def _make_dom_executor(reject_reason="", busy=True):
+    """Executor whose API path is disabled and whose DOM Place Order button
+    exists, so the post-click wait loop actually runs. Counts Place Order clicks."""
+    ex = object.__new__(PurchaseExecutor)
+    ex.test_mode = False
+    ex._api_order_id = None
+    ex._api_confirmation_url = None
+    ex._cvv_required = True          # force DOM-first, skip API entirely
+    ex._checkout_rejected = bool(reject_reason)
+    ex._checkout_reject_reason = reject_reason
+    ex._checkout_reject_status = 424 if reject_reason else 0
+    c = {"clicks": 0, "busy": 0}
+
+    async def fake_find(tab):
+        return (object(), '[data-test="placeOrderButton"]')
+
+    async def fake_scroll(btn):
+        return None
+
+    async def fake_click(btn):
+        c["clicks"] += 1
+
+    async def fake_cvv(tab):
+        return True                  # CVV answered immediately
+
+    async def fake_busy(tab):
+        # _place_order dismisses a busy banner ONCE before the first click; only
+        # calls made after a click can drive the wasteful re-click loop.
+        if c["clicks"] > 0:
+            c["busy"] += 1
+        return busy                  # Target's generic busy copy is showing
+
+    async def fake_stock(tab):
+        return False
+
+    async def fake_shot(tab, path):
+        return None
+
+    ex._find_place_order_button = fake_find
+    ex._scroll_into_view = fake_scroll
+    ex._dispatch_click = fake_click
+    ex._handle_cvv_modal = fake_cvv
+    ex._handle_busy_modal = fake_busy
+    ex._handle_stock_error_modal = fake_stock
+    ex._screenshot = fake_shot
+    return ex, c
+
+
+def test_reservation_failure_bails_without_reclicking():
+    os.environ["TARGET_RESERVATION_BAIL"] = "1"
+    ex, c = _make_dom_executor(reject_reason="RESERVATION_FAILURE")
+    r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout")))
+    assert r is False
+    assert c["clicks"] == 1, f"expected exactly 1 click then bail, got {c['clicks']}"
+    assert c["busy"] == 0, "must bail before the post-click busy handler claims it"
+
+
+def test_reservation_bail_kill_switch_restores_reclicks():
+    os.environ["TARGET_RESERVATION_BAIL"] = "0"
+    try:
+        ex, c = _make_dom_executor(reject_reason="RESERVATION_FAILURE")
+        asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout")))
+        assert c["clicks"] == 3, f"pre-07-21 behavior is 3 clicks, got {c['clicks']}"
+    finally:
+        os.environ["TARGET_RESERVATION_BAIL"] = "1"
+
+
+def test_no_reservation_failure_leaves_busy_retry_intact():
+    # Unrelated busy banner (no RESERVATION_FAILURE on the wire) must still use
+    # the original retry-the-click path.
+    os.environ["TARGET_RESERVATION_BAIL"] = "1"
+    ex, c = _make_dom_executor(reject_reason="")
+    asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout")))
+    assert c["clicks"] == 3, f"expected the 3-attempt busy retry, got {c['clicks']}"
 
 
 if __name__ == "__main__":

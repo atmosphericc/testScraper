@@ -1193,8 +1193,19 @@ class SessionManager:
                             self.browser.get("about:blank"), timeout=10.0)
                         self._active_tab = tab
 
-                    # Test tab health
-                    if tab and await self._test_tab_health(tab):
+                    # Test tab health. The LAST attempt gets a longer probe
+                    # budget (2026-07-20): the warmup tabs run persistent CDP
+                    # Fetch interceptors, so a warmup /cart nav floods the one
+                    # CDP websocket and an idle tabs[0] `evaluate("true")`
+                    # queues behind it for >2s. That is BACKPRESSURE, not a
+                    # wedge — but it read as a wedge and cost 23 destructive
+                    # Chrome restarts overnight on 07-19 (~28s of blocked
+                    # purchases each, since the sentinel holds the executor
+                    # page lock for the whole ladder). A dead websocket still
+                    # fails the slow probe too, so a real wedge escalates as
+                    # before — just ~4s later.
+                    _slow = (attempt == max_attempts - 1)
+                    if tab and await self._test_tab_health(tab, slow_reprobe=_slow):
                         return tab
 
             except Exception as e:
@@ -1216,8 +1227,13 @@ class SessionManager:
         except Exception:
             return False
 
-    async def _test_tab_health(self, tab) -> bool:
-        """Test if tab is healthy"""
+    async def _test_tab_health(self, tab, slow_reprobe: bool = False) -> bool:
+        """Test if tab is healthy.
+
+        slow_reprobe=True re-runs the probe once with a longer budget before
+        declaring the tab wedged — see get_page for why (CDP backpressure from
+        the warmup interceptors). Kill-switch: TARGET_TAB_HEALTH_SLOW_RETRY_S=0
+        restores the exact pre-2026-07-20 single-2s-probe behavior."""
         try:
             if not tab:
                 return False
@@ -1231,6 +1247,26 @@ class SessionManager:
                 # purchase path all night. A timeout on `evaluate("true")` on
                 # an idle tab IS the wedge signature: report unhealthy so
                 # callers escalate to a browser restart instead of hanging.
+                #
+                # 2026-07-20: ...unless the websocket is merely BUSY. Give the
+                # final attempt one slower probe. This still requires a real
+                # `evaluate` round-trip to succeed, so a dead socket can never
+                # be declared healthy — it only buys a backpressured one time.
+                _slow_s = float(os.environ.get('TARGET_TAB_HEALTH_SLOW_RETRY_S', '6.0'))
+                if slow_reprobe and _slow_s > 0:
+                    try:
+                        await asyncio.wait_for(tab.evaluate("true"), timeout=_slow_s)
+                        self.logger.warning(
+                            f"[TAB_HEALTH] recovered on slow re-probe (<{_slow_s:.0f}s) — "
+                            f"CDP backpressure, NOT a wedge (no restart needed)")
+                        return True
+                    except asyncio.TimeoutError:
+                        self.logger.warning(
+                            f"[TAB_HEALTH] evaluate('true') timed out >2s AND >{_slow_s:.0f}s "
+                            f"on re-probe — tab/websocket genuinely wedged")
+                        return False
+                    except Exception:
+                        return bool(getattr(tab, 'url', None))
                 self.logger.warning("[TAB_HEALTH] evaluate('true') timed out >2s — tab/websocket wedged")
                 return False
             except Exception:

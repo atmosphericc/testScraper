@@ -91,6 +91,135 @@ REM  the rare 201. Double-buy-safe: re-shoots ONLY while status stays 429/424 an
 REM  stops the instant an order_id lands. Validated: tests/test_checkout_inplace_reshoot.py
 REM  (8/8, no browser). Kill-switch: set TARGET_CHECKOUT_INPLACE_RETRY_N=0.
 set TARGET_CHECKOUT_INPLACE_RETRY_N=4
+REM ---------------------------------------------------------------------------
+REM  CHECKOUT FAST LANE (2026-07-21 post-mortem, run_20260720_231634.log).
+REM  THE measurement that explains 0-for-9: on wave 2 the ATC returned HTTP 201
+REM  at t=0.92s, but the first place-order POST did not leave until t=3.4s -- and
+REM  Target answered that clean first shot 429 RESERVATION_FAILURE. The 2.5s in
+REM  between was tab.get("/checkout/start") (1.45s) plus the DOM poll for the
+REM  Place Order button (0.87s). Pure dead time, and the inventory reservation
+REM  died inside it. Every wave paid it: ATC->shot#1 measured 2.4 / 2.8 / 3.0 /
+REM  3.3 / 3.6 / 3.9 / 4.1 / 5.0 / 10.1 seconds.
+REM  The nav was never load-bearing -- it existed so the cart hydrates
+REM  server-side first, and that hydration IS pre_checkout, which the old code
+REM  fired FIRE-AND-FORGET just before navigating. (The 2026-05-07 attempt to
+REM  drop the nav failed with 424 CART_COMPARISION_FAILURE_ERROR precisely
+REM  because it raced that un-awaited pre_checkout.)
+REM  The executor now runs ATC -> AWAIT pre_checkout -> place-order as ONE
+REM  in-browser fetch chain, no navigation and no CDP round-trip between steps:
+REM  ~0.85s from trigger to committed order instead of ~3.4s.
+REM  Safety: a 2xx is treated as a committed order and never re-shot; a
+REM  fired-but-no-response POST bails terminal (never retried); and the chain
+REM  refuses to fire the place-order POST at all unless the ATC returned 201,
+REM  pre_checkout returned 2xx, and every cart item is our TCIN. Skipped
+REM  entirely while the CVV latch is on (that shot is a guaranteed 400).
+REM  Validated: tests	est_fast_lane_checkout.py (37/37, incl. the chain's real
+REM  JS run under node with a stubbed fetch). Requires TARGET_API_PLACE_ORDER,
+REM  which app.py already defaults to true.
+REM  Kill-switch (exact pre-07-21 nav behavior): set TARGET_FAST_LANE=0
+set TARGET_FAST_LANE=1
+
+REM  Do not re-shoot into Target's fast-selling limiter. The 07-17 fix above
+REM  added the in-place re-shoot loop because FAST_SELLING killed that drop; the
+REM  07-21 log then measured what re-shooting actually achieves. FAST_SELLING_
+REM  ITEM_RATE_LIMIT_EXCEPTION answered 0 of ~20 re-shoots that night, and never
+REM  once appeared on the FIRST checkout POST of a wave -- it only ever showed up
+REM  from shot #2 onward. The loop was feeding the very limiter blocking it.
+REM  Two minutes of quiet cleared it on its own (wave 6 got a clean first shot).
+REM  So on FAST_SELLING the executor now backs off for this many seconds instead
+REM  of re-shooting; every other 429/424 keeps the 07-17 behavior unchanged.
+REM  Kill-switch (never back off, pre-07-21): set TARGET_FAST_SELLING_COOLDOWN_S=0
+set TARGET_FAST_SELLING_COOLDOWN_S=45
+
+REM ---------------------------------------------------------------------------
+REM  CDP-backpressure guard (2026-07-20). Overnight 07-19 the session sentinel
+REM  destroyed and relaunched a HEALTHY Chrome 23 times (9 primary / 8 business /
+REM  6 alt-1). Cause: the warmup tabs run persistent CDP Fetch interceptors, so a
+REM  warmup /cart nav floods the single CDP websocket and the idle main-tab probe
+REM  `evaluate("true")` queues past its 2s budget -- read as "websocket wedged".
+REM  Each false wedge cost ~28s of BLOCKED PURCHASES (the sentinel holds the
+REM  executor page lock for its whole ladder) plus the warm Shape header cache.
+REM  get_page now re-probes ONCE with a longer budget on its final attempt: a
+REM  busy socket answers, a dead one still fails both probes and escalates as
+REM  before (~4s later). Validated: tests/test_wedge_recovery_smoke.py (17/17).
+REM  Kill-switch (exact pre-07-20 behavior): set TARGET_TAB_HEALTH_SLOW_RETRY_S=0
+set TARGET_TAB_HEALTH_SLOW_RETRY_S=6.0
+
+REM  CDP paused-request LEAK guard (2026-07-23). The 07-21->22 run re-scoped the
+REM  07-20 "false wedge" verdict: the wedges are REAL and on a rigid clock --
+REM  every Chrome's CDP went dead ~70-75 min after ITS OWN launch (primary
+REM  01:04 / 02:19 / 03:34 / 04:49 / 06:04 / 07:19, alt-1+business 5 min behind;
+REM  22 sentinel destroys, each 3-6 min of blocked purchases on that account,
+REM  and the 6s slow re-probe saved 0 of 80 because the socket stays dead for
+REM  2.5+ min). Root-cause candidate shipped: the fetch interceptor's dedup
+REM  early-return dropped re-paused events (redirect hops re-pause under the
+REM  SAME request id; the two warmup tabs' interception-job ids also collide in
+REM  the shared dedup set) WITHOUT Fetch.continueRequest -- each one a request
+REM  paused forever, accumulating from launch until the browser wedges. The
+REM  handler now continues dedup-hit events too (release-only, double-buy-safe)
+REM  and logs "dedup hit #N" so tomorrow's log confirms or refutes the theory:
+REM  counter climbing + wedges gone = confirmed; counter ~0 + wedges persist =
+REM  look elsewhere. Validated: tests\test_cdp_dedup_leak_guard.py (7/7).
+REM  Kill-switch (exact pre-07-23 drop-without-continue): set TARGET_CDP_DEDUP_CONTINUE=0
+set TARGET_CDP_DEDUP_CONTINUE=1
+
+REM ---------------------------------------------------------------------------
+REM  CVV challenge handling (2026-07-21 drop fix). 07-20->21 went 0-for-9 with
+REM  NINE clean ATC 201s -- the best add-to-cart night on record (07-14, the only
+REM  win, got 2). Every place-order POST that reached Target came back 400
+REM  tgt-cart-error-key=MISSING_CREDIT_CARD_CVV: Target now challenges the saved
+REM  card, and our API body ({cart_type, channel_id}) carries no CVV, so the fast
+REM  path is a GUARANTEED loss. Worse, 5-for-5 the DOM recovery that followed hit
+REM  424 RESERVATION_FAILURE -- the ~1.0s the doomed API shot burned was enough to
+REM  lose the reservation. The executor now latches the challenge (persisted to
+REM  state\cvv_challenge_<account>.flag so it survives this restart wrapper) and
+REM  goes DOM-first, where the CVV modal handler answers in ~0.08s.
+REM  Kill-switch (always try API first, pre-07-21 behavior): TARGET_CVV_DOM_FIRST=0
+REM  Force the latch on before a known drop:                 TARGET_CVV_REQUIRED=1
+set TARGET_CVV_DOM_FIRST=1
+
+REM  CVV latch AUTO-UNLATCH (2026-07-23). While latched the API place-order is
+REM  skipped entirely, so the latch could never see Target DROP the challenge --
+REM  it would keep the fast lane disabled on every future drop until someone
+REM  remembered to set TARGET_CVV_REQUIRED=0. Definitive un-latch signal: an
+REM  order CONFIRMS via the DOM path and no CVV modal appeared at any point in
+REM  that purchase (if CVV were still required the order could not complete
+REM  without the modal). Wrong-unlatch cost is bounded + self-healing: the next
+REM  wave's API shot pays ~0.9s for a 400 and re-latches. Validated:
+REM  tests\test_cvv_auto_unlatch.py. Kill-switch: set TARGET_CVV_AUTO_UNLATCH=0
+set TARGET_CVV_AUTO_UNLATCH=1
+
+REM  A RESERVATION_FAILURE renders as Target's generic "busy" copy, so the DOM
+REM  loop used to claim it and re-click Place Order into a reservation the server
+REM  had already torn down (15 wasted re-clicks x ~1.5s on 07-20->21). Now it
+REM  bails immediately so the manager can re-race ATC inside the stock window.
+REM  Kill-switch: set TARGET_RESERVATION_BAIL=0
+set TARGET_RESERVATION_BAIL=1
+
+REM  ROOT-CAUSE CANDIDATE for the CVV challenge (2026-07-21, HYPOTHESIS).
+REM  Target's own help article says CVV re-entry is required when "a shipping
+REM  address is updated during checkout". Loading /cart makes Target's page JS
+REM  fire PUT /web_checkouts/v1/cart?...field_groups=ADDRESSES... against this
+REM  account's cart -- and on 07-20->21 a background warmup /cart nav landed
+REM  inside the checkout window, on the same session, immediately before every
+REM  400 MISSING_CREDIT_CARD_CVV. A second concurrent cart write from a
+REM  background tab is also not something a real shopper does. Warmup tabs now
+REM  skip only the NAVIGATION while a purchase is live; the dummy POST still
+REM  fires so the Shape ring keeps refilling (same path the routine <90s
+REM  warm-tab skip already takes hourly), and force_fresh (ATC-401 recovery
+REM  reload) still navigates. Confirm/refute via the cart-PUT body in
+REM  logs\api_capture.log. Validated: tests\test_warmup_cart_nav_guard.py (5/5).
+REM  Kill-switch: set TARGET_WARMUP_PAUSE_DURING_PURCHASE=0
+set TARGET_WARMUP_PAUSE_DURING_PURCHASE=1
+
+REM  Passive capture of Target's OWN CVV submit (PUT checkout_payments/v1/
+REM  payment_instructions/<id>) -- the request the DOM path fires after the CVV
+REM  modal is confirmed. Pass-through only, never aborts, writes to
+REM  logs\api_capture.log and only during a real checkout, so it is cheap. This
+REM  is the prerequisite for moving CVV onto the API fast path (Endpoint 8 in
+REM  docs/RETAILERS/TARGET_CHECKOUT_API.md, deferred since 05-06 because the
+REM  challenge had never fired). Turn OFF once the body shape is captured.
+set TARGET_API_CAPTURE_CHECKOUT_STEPS=true
 
 REM ---------------------------------------------------------------------------
 REM  Token keep-fresh ON (2026-07-12, CORRECTED). The F5 research overturned the

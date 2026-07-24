@@ -26,8 +26,11 @@ WHAT IT DOES
 2. Deletes every cookie whose host is target.com, from every personal profile of
    that browser. Nothing else is touched: other sites, passwords, history, tabs
    all survive.
-3. Reopens each browser it closed, with --restore-last-session, so the operator
-   gets their tabs back.
+3. Reopens each browser that HAD A VISIBLE WINDOW, with --restore-last-session,
+   so the operator gets their tabs back. A browser that was only alive as
+   background processes (Edge "startup boost", Chrome "continue running
+   background apps" — no window) is purged and left closed, so the sweep no
+   longer pops a blank window for a browser you never had open.
 
 The bot's OWN Chromes (zendriver/nodriver `nodriver-profile*`) live in a
 different user-data dir and are never matched by the Default/Profile-N filter.
@@ -82,6 +85,32 @@ def running(image: str) -> bool:
     out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"],
                          capture_output=True, text=True).stdout
     return image.lower() in out.lower()
+
+
+def has_visible_window(image: str) -> bool:
+    """True if some process for this image owns a visible top-level window.
+
+    Win11 keeps browser processes alive with NO window — Edge "startup boost"
+    and Chrome's "continue running background apps when closed". Those show up
+    in tasklist (so running() is True) but the user has nothing open. We use
+    MainWindowHandle to tell a real window from a background-only process, and
+    only reopen the former — otherwise the sweep spawns a blank new-tab window
+    for a browser the operator never had open. MUST be called BEFORE closing
+    the browser (closing destroys the window this looks for).
+
+    Detection failure falls back to True (reopen): never leave a browser the
+    operator had open closed just because the probe broke.
+    """
+    name = image[:-4] if image.lower().endswith(".exe") else image
+    ps = (f"if (Get-Process -Name '{name}' -ErrorAction SilentlyContinue | "
+          f"Where-Object {{ $_.MainWindowHandle -ne 0 }}) {{ 'YES' }} else {{ 'NO' }}")
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+            capture_output=True, text=True, timeout=15).stdout
+        return "YES" in out.upper()
+    except Exception:
+        return True
 
 
 def close_browser(image: str, timeout_s: float = 12.0) -> bool:
@@ -154,6 +183,11 @@ def sweep_browser(name: str) -> int:
         return 0  # browser not installed / no personal profiles
 
     was_running = running(image)
+    # Decide reopen from a REAL window, not just a live process. Snapshot now,
+    # BEFORE close_browser() destroys the window we're probing for. A browser
+    # that was only background processes (no window) is purged and left closed
+    # instead of reopened as a blank new-tab window.
+    had_window = was_running and has_visible_window(image)
     if was_running and not close_browser(image):
         print(f"[SIGNOUT] FAILED to close {name} — cookie DB stays locked. "
               f"Sign out of Target in {name} manually before the drop.")
@@ -164,8 +198,11 @@ def sweep_browser(name: str) -> int:
         for p in profs:
             total += purge(name, p)
     finally:
-        if was_running:
+        if had_window:
             reopen_browser(name, exes)
+        elif was_running:
+            print(f"[SIGNOUT] {name}: was background-only (no window) — "
+                  f"purged, not reopened")
     return total
 
 

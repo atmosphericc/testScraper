@@ -124,7 +124,40 @@ The existing ATC fetch at `src/session/purchase_executor.py:704-739` is the work
 
 ---
 
-## Endpoint 8 — CVV Submit POST 🟡 NOT FIRED IN 2026-05-06 CAPTURE
+## Endpoint 8 — CVV Submit PUT 🟢 URL + SEQUENCE CONFIRMED 2026-07-21 (body still missing)
+
+**Method/URL (confirmed):** `PUT https://carts.target.com/checkout_payments/v1/payment_instructions/<payment_instruction_id>`
+— same host as everything else, so the existing `*carts.target.com*` CDP interception
+pattern already catches it. `<payment_instruction_id>` is a UUID (observed:
+`cb546a01-84da…`, `44c47dd1-79dc…`, `d4e591d1-84e8…` — it differs per cart) and is
+carried in the **pre_checkout response's `payment_instructions[]`**, which
+`_api_fast_lane` now extracts, so the fast path can build this URL without an extra GET.
+
+**Headers:** 10 total, **only 1 Shape X-header** (vs 7 on place-order) — this is a
+low-security mutation, so the full Shape token set is not required. Preceded by a CORS
+`OPTIONS` preflight to the same URL.
+
+**Confirmed firing sequence** (`logs/purchases/purchase_95267143_20260721_032616.log`):
+```
+API place-order POST            -> 400 tgt-cart-error-key: MISSING_CREDIT_CARD_CVV
+DOM click Place Order
+OPTIONS .../payment_instructions/<id>        <- preflight
+CVV modal filled + Confirm clicked (0.022s)
+PUT     .../payment_instructions/<id>        <- THIS endpoint
+POST    /web_checkouts/v1/checkout           <- only now can the order succeed
+```
+
+**Still missing: the request body.** That run had `TARGET_API_CAPTURE_CHECKOUT_STEPS`
+off, so the interceptor logged the PUT but not its `post_data`. The flag is now on and
+the `is_cvv_put` capture branch is armed, so the next time the CVV modal fires the body
+lands in `logs/api_capture.log`. **Do not guess this body** — a wrong PUT could corrupt
+the cart's payment instruction. Once captured, insert the PUT between steps 2 and 3 of
+`_api_fast_lane` and the fast lane works on a CVV-challenged card (today it deliberately
+skips itself when the CVV latch is on, which is the fix's biggest remaining gap).
+
+### Historical note — why this sat unknown until 07-21
+
+## ~~Endpoint 8 — CVV Submit POST~~ 🟡 NOT FIRED IN 2026-05-06 CAPTURE
 
 - **Status:** Did NOT fire during the 2026-05-06 PROD capture run on the gum SKU. The Place Order POST body (Endpoint 7 above) does NOT include CVV. Possible interpretations:
   1. The user's saved card on this account does not require CVV re-prompt for low-risk purchases — Endpoint 8 is conditional, not always-fires.
@@ -162,7 +195,11 @@ These remain DOM in `purchase_executor.py:_handle_*_modal`.
 
 ## Implementation phasing (per main plan)
 
-- **Phase 3 (still open, optional):** Endpoint 2 expansion — use the pre_checkout response to short-circuit the `/checkout/start` navigation. If response carries enough state (placeOrder URL, summary), `await tab.get(...)` becomes optional. Estimated saving: 1-2s per attempt. **Status:** not started; Phase 4b live-validation removed the prior blocker (Endpoint 7 was unknown). Pure perf optimization — bot already works without it.
+- **Phase 3 ✅ IMPLEMENTED 2026-07-21 — `_api_fast_lane`:** Endpoint 2 expansion — the `/checkout/start` navigation is gone from the hot path. Endpoints 1 → 2 → 7 now run as a **single `tab.evaluate` fetch chain** (`TARGET_FAST_LANE=1`, default on), so there is no CDP round-trip between steps either. Measured saving is far bigger than the 1-2s estimated here: the 07-20→21 log shows `CHECKOUT_TRANSITION` (ATC-201 → place-order POST) at **2.4-5.0s**, essentially all of it `tab.get('/checkout/start')` plus the DOM poll for the Place Order button. The chain is ~0.85s. That gap was *losing drops*, not just costing time — clean CVV-free first shots came back `429 RESERVATION_FAILURE` because the reservation died inside the nav (see `docs/FAILURES.md` 2026-07-21 PM).
+  - **The 2026-05-07 blocker is resolved, not bypassed.** Dropping the nav then produced `424 CART_COMPARISION_FAILURE_ERROR` on all 3 cycles because it raced the **fire-and-forget** pre_checkout. The fast lane **awaits** pre_checkout inside the chain, so the race cannot occur; if pre_checkout returns non-2xx the chain refuses to fire Endpoint 7 at all and hands back to the legacy nav path.
+  - **Cart-contents guard (new):** Endpoint 7 buys the *whole cart*, so the chain aborts before firing if pre_checkout's `cart_items[]` contains any TCIN that is not the one being bought. The pre-07-21 path only logged a warning.
+  - **Intel side-effect:** the chain returns `payment_instructions[].{id,type,cvv_required}` from the pre_checkout response — the prerequisite for Endpoint 8 below, obtainable without a dedicated capture run.
+  - Validated: `tests/test_fast_lane_checkout.py` (37/37), which runs the real chain JS under node with a stubbed `fetch` and asserts the exact URL sequence.
 - **Phase 4a:** ~~Endpoints 4 (delivery) and 5 (cart PUT for shipping S&C) — replace `_handle_delivery_options` and the shipping/payment S&C clicks.~~ **Closed without code change (2026-05-06).** Capture confirmed both endpoints fire only on cold-cart paths the warmed-up bot does not take. The hot path already lands in `place_order` state on first checkout entry — there is no DOM delivery step or S&C click to replace. See Endpoints 4 + 5 above for full reasoning. Reopens only if a future cart configuration starts triggering S&C on the hot path.
 - **Phase 4b ✅ LIVE-VALIDATED (2026-05-06):** Endpoints 7 + 8. Endpoint 7 (`_api_place_order`) wired behind `TARGET_API_PLACE_ORDER=true`. Real production OBSERVE run completed: HTTP 200, 0.92s, order_id parsed correctly from `orders[0].order_id`, real order placed (`69341e41-49a9-11f1-8a23-dd806c72f8cb`). End-to-end checkout reduced from ~12-15s (DOM) to **7.34s**. DOM fallback on non-terminal failures (Shape block / 401 / unknown HTTP); terminal rejections (OOS / RESERVATION_FAILURE) bail without DOM retry. Endpoint 8 deferred — saved-card path on the gum SKU never fired CVV modal; conditional DOM fallback at `_handle_cvv_modal` covers the rare case.
 - **Phase 4c ✅ LIVE-VALIDATED (2026-05-06, single-item):** Endpoint 6 (cart clear DELETE) — 5 TEST_MODE cycles, all 200 first try (commit `2b941af1`). Multi-item / SFL-only paths still untested live. Low priority.

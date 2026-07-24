@@ -31,6 +31,275 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-07-24] - First fast-lane conversions (4 orders / 8 units); alt-1 0-for on a latched DOM chain; NEW "High-demand item" modal unrecognized - TARGET
+**Symptom**: `logs/runs/run_20260723_235455.log` (07-23 23:54 → 07-24 09:48, 8
+restock windows). The fast lane went **4-for-4 on place-order whenever ATC
+201'd**: 02:24 W2/business + W1/primary Greninja (1011209273) qty2 each at
+3.13s/3.59s, 03:47 W1 Pitch Black ETB (1011483406) qty2 at 3.50s, 03:58 W1
+Greninja qty2 at 2.72s — all pure API, no nav. alt-1 went 0-for-the-night: its
+02:04:50 fast-lane place-order got `400 MISSING_CREDIT_CARD_CVV` (the ONLY CVV
+rejection all night — the challenge is **account-scoped to alt-1**, primary and
+business placed 4 clean orders) → latched → every later shot went DOM-first →
+dead-ended 3-for-3 (>140s impl hang 02:05-02:07; skeleton /checkout 02:24; /cart
+nav status=0 03:18). At 02:24:33 the skeleton /checkout showed a NEW throttle
+modal — **"High-demand item in your cart / …causing a delay. We're managing high
+traffic right now. Please try again."**
+(`logs/checkout_no_place_order_20260724_022433.png`) — matched by NEITHER
+busy-phrase list → `DIAGNOSIS: Unknown failure` → `checkout_navigation_failed`
+(terminal) → cart cleared 32s in, while the item stayed in stock ~18 more
+minutes. Plausibly a missed third Greninja order.
+
+**Root Cause**: (1) both busy/demand-throttle phrase lists predate this modal
+variant; (2) the CVV latch had no realistic exit while latched — the 07-23
+auto-unlatch requires a DOM-confirmed order, which the throttled DOM path never
+produces (chicken-and-egg).
+
+**Fix Applied**: added `'high-demand item'` / `'causing a delay'` /
+`'managing high traffic'` to BOTH lists (JS `BUSY_PHRASES` in
+`_handle_busy_modal` and the page-text diagnosis list,
+`src/session/purchase_executor.py`) so this page state classifies
+`checkout_busy_retryable` — pre-submit only; the `_api_order_id`
+belt-and-suspenders still blocks any post-submit retry. Deleted
+`state/cvv_challenge_alt-1.flag` so alt-1 rejoins the fast lane next run; if
+Target still challenges the card, the header classifier re-latches after one
+~0.4s 400 (bounded cost). Tests: new
+`tests/test_high_demand_modal_phrases.py` 3/3 (extracts both source lists,
+asserts the observed 07-24 modal copy AND the classic 06-30 busy copy match);
+full executor cluster green 105/105.
+**Confidence**: high on both.
+**Outcome**: pending next restock.
+
+### [2026-07-23] - Chromes wedge on a rigid ~70-75 min per-launch clock; the 07-20 "false wedge" verdict was wrong - TARGET
+**Symptom**: `logs/runs/run_20260721_235217.log` (07-21 23:52 → 07-22 07:49, zero
+restocks): 22 sentinel restart escalations. Primary's CDP went dead at 01:04 / 02:19 /
+03:34 / 04:49 / 06:04 / 07:19 — **exactly 75 min apart** — with alt-1+business
+following ~5 min behind each time. Onset is visible ~2 min before each escalation
+(WATCHDOG cookie check TIMED OUT >45s at 02:17:41, then every 2s/6s TAB_HEALTH probe
+fails for 2.5+ min until the restart). Re-basing each episode on the account's own
+last (re)launch shows every Chrome wedges ~70-75 min after **its own launch** — the
+clocks are per-Chrome and reset on relaunch. The 07-19 night's 23 destroys fit the
+same ~70-min rate.
+
+**What this overturns**: the 07-20 entry called these *false* wedges (transient CDP
+backpressure) and shipped the 6s slow re-probe. That fix saved **0 of 80** double
+timeouts this run (destroy count unchanged, 22 vs 23) because the socket is genuinely
+dead for minutes, not busy for seconds. Cost per episode: 3-6 min during which that
+account cannot buy a restock — and alt-1+business wedge *together* (their launch
+clocks are synchronized), so 2 of 3 accounts go dark simultaneously every ~75 min.
+
+**Root Cause** (candidate, instrumented to confirm): the fetch interceptor's dedup
+early-return in `purchase_executor.py _on_request_paused` dropped events whose
+(request_id, stage) key was already in the shared `_cdp_continued_ids` set —
+**without sending Fetch.continueRequest**. Two ways a live request hits that path:
+(1) CDP re-pauses every redirect hop under the SAME request id; (2) the warmup tabs'
+`interception-job-N` ids collide across tabs in the shared set. Each hit = a request
+paused forever inside Chrome. Leaked pauses accumulate from launch at the page's
+natural request rate → fixed time-to-wedge, matching the rigid per-launch clock.
+
+**Fix Applied**: dedup-hit events are still `continue_request`-ed (processing stays
+suppressed — no double Shape cache/ring pushes; release-only, double-buy-safe since
+continueRequest can only release a paused request, never re-send one) and counted:
+watch for `[INTERCEPTOR:*] dedup hit #N` in the next overnight log. Counter climbing
+AND wedges gone = confirmed. Counter ~0 AND wedges persist = theory dead, look
+elsewhere (next suspects: unthrottled /cart pages leaking renderer memory under the
+anti-idle flags). Kill-switch `TARGET_CDP_DEDUP_CONTINUE=0`.
+Tests: `tests/test_cdp_dedup_leak_guard.py` 7/7; all five prior suites still green
+(37/37, 16/16, 9/9, 5/5, 17/17).
+**Confidence**: high that the leak is real and the fix is safe; medium that it is
+THE wedge cause (instrumentation decides).
+**Outcome** (2026-07-24 overnight, `run_20260723_235455.log`): instrumentation
+answered — dedup counters CLIMBED (#100+ on one account, #50+ on two others, 19
+logged milestones) **and the wedge clock persisted**: 20 `escalating to restart`
+hard kills on the same ~70-75 min per-launch cadence, each one a genuine >6s
+re-probe failure, plus 2 `purchase_impl_hang` (>140s) during live stock windows.
+The leak was real and is now plugged, but it was NOT the wedge cause. Per the
+decision tree above: next suspect = unthrottled /cart warmup pages leaking
+renderer memory under the anti-idle flags.
+
+### [2026-07-21 PM] - CORRECTION to the entry below: timing WAS the problem, and FAST_SELLING was self-inflicted - TARGET
+**Symptom**: Same run (`logs/runs/run_20260720_231634.log`). Re-read of the raw log
+overturns two conclusions in the 07-21 AM entry below.
+
+**Correction 1 — the checkout POSTs were ordered, and the order is the story.**
+Reconstructing every checkout POST in sequence per wave:
+
+| Wave | #1 | #2 | #3+ |
+|---|---|---|---|
+| W2 1011483413 | RESERVATION_FAILURE | FAST_SELLING | FAST_SELLING ×4 |
+| W5 95267143 | MISSING_CREDIT_CARD_CVV | RESERVATION_FAILURE ×3 | FAST_SELLING ×5 |
+| W6 95267143 | MISSING_CREDIT_CARD_CVV | RESERVATION_FAILURE | — |
+| W8 1011483413 | MISSING_CREDIT_CARD_CVV | RESERVATION_FAILURE | FAST_SELLING ×6 |
+| W9 95267143 | MISSING_CREDIT_CARD_CVV | RESERVATION_FAILURE | http_400 |
+
+`FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` **never once answered the first shot of a
+wave.** It is not an external wall we need more accounts to get around — it is our own
+retry storm. It answered 0 of ~20 re-shoots, and two minutes of quiet cleared it (W6 at
+03:28 got a non-throttled first shot after W5 at 03:26 tripped it). The 07-17 in-place
+re-shoot loop was feeding the limiter that was blocking it. **This retires "top lever =
+more accounts/IPs" as the read on FAST_SELLING.**
+
+**Correction 2 — timing was the problem.** The AM entry measured detection→place-order
+(~3.0s) and called it fast enough. The number that matters is **ATC-201 → first
+place-order POST**, and W2 settles it with no CVV involved anywhere:
+
+```
+15895  ATC fetch status: 201 (t=0.92s)
+15901  pre_checkout fired (fire-and-forget)
+15920  Checkout nav done (t+1.452s)          <-- tab.get("/checkout/start")
+15927  Checkout page ready (place_order) in 0.87s   <-- DOM poll
+15931  CHECKOUT_TRANSITION t=3.3s
+15938  API_PLACE_ORDER Firing checkout POST
+15964  HTTP 429 RESERVATION_FAILURE
+```
+
+A clean, CVV-free first shot lost the reservation because **2.5 seconds of pure page
+navigation sat between a successful ATC and the place-order POST**. Every wave paid it:
+`CHECKOUT_TRANSITION` measured 2.4 / 2.8 / 3.0 / 3.3 / 3.6 / 3.9 / 4.1 / 5.0 / 10.1s.
+
+**Root Cause**: The `/checkout/start` navigation was never load-bearing for the API
+place-order. It existed so the cart hydrates server-side first — and that hydration *is*
+`pre_checkout`, which the code fired **fire-and-forget** immediately before navigating.
+The 2026-05-07 attempt to drop the nav failed with `424 CART_COMPARISION_FAILURE_ERROR`
+only because it raced that un-awaited pre_checkout. Awaiting it removes the race by
+construction, which leaves the nav with nothing to do.
+
+**Fix Applied**:
+- **`_api_fast_lane`** (`src/session/purchase_executor.py`) — ATC → **awaited**
+  pre_checkout → place-order as ONE `tab.evaluate` fetch chain. No navigation, no CDP
+  round-trip between steps: **~0.85s** trigger→committed order vs ~3.4s. Flag
+  `TARGET_FAST_LANE=1` (default on; `=0` restores the old nav path exactly).
+- Double-buy safety: a 2xx is a committed order (never re-shot, never reported as
+  failure even if the body won't parse); a fired-but-no-response POST bails terminal and
+  non-retryable; `_fastlane_placed` short-circuits the checkout+payment phases so no
+  second place-order POST can fire; the flag resets per purchase.
+- The chain refuses to fire the place-order POST unless ATC returned 201, pre_checkout
+  returned 2xx, **and every cart item is our TCIN** (place-order buys the whole cart —
+  this guard is new, the old path only logged a warning).
+- On `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION`: stop re-shooting and back off
+  `TARGET_FAST_SELLING_COOLDOWN_S=45`. Other 429/424 keep the 07-17 behaviour.
+- Fast lane is skipped while the CVV latch is on (that shot is a guaranteed 400) and
+  during the fast-selling cooldown.
+- The chain also returns `pre.payment_instructions` id/type/cvv flags — the prerequisite
+  for moving CVV onto the API path (Endpoint 8) without waiting for a capture run.
+
+**Verification**: `tests/test_fast_lane_checkout.py` 37/37 — including six tests that
+extract the executor's **real** fetch-chain JS and run it under node with a stubbed
+`fetch`, asserting the exact sequence of URLs requested (proving no place-order POST
+fires on a bad ATC, an un-hydrated cart, or a foreign cart item). Pre-existing suites
+still green: `test_checkout_inplace_reshoot` 16/16, `test_cvv_challenge_classify` 9/9,
+`test_warmup_cart_nav_guard` 5/5, `test_wedge_recovery_smoke` 17/17.
+
+**Outcome**: NOT yet validated on a live drop.
+
+> **⚠ SELF-CORRECTION — the funnel A/B that re-ranks this entry.** After shipping the
+> above I ran the comparison I should have run first: the full funnel of the 07-14 WIN
+> night against this one, same code.
+>
+> | | 07-14 **WIN** | 07-21 **LOSS** |
+> |---|---|---|
+> | ATC fetches fired | 532 | 497 |
+> | ATC 201 (carts) | **2** | **9** |
+> | ATC 401 `_ERR_AUTH_DENIED` | 291 | 294 |
+> | ATC 429 DCO_RATE_LIMITED | 235 | 193 |
+> | place-order shots | 3 | 19 |
+> | place-order **HTTP 200** | **1** | **0** |
+> | CVV 400s | **0** | **4** |
+> | `CHECKOUT_TRANSITION` ATC→shot | **3.4s** | 3.3s |
+>
+> This kills three theories, including one of mine:
+> 1. The **~98% ATC failure rate is the normal steady state**, not a regression — the
+>    401/429 counts are near-identical on the night we won. Not the bottleneck.
+> 2. **Carts were never the constraint.** This night won 4.5× more carts than the
+>    winning night and converted none.
+> 3. **3.4s ATC→place-order WON on 07-14**, so the nav latency this entry blames is
+>    survivable and is *not* proven causal. The fast lane is a genuine improvement
+>    (more shots inside whatever window exists, and a 75% smaller window for a
+>    background `/cart` ADDRESSES write to land in) but it is a **secondary** fix.
+>
+> The one variable that actually changed is the CVV challenge — see the entry below,
+> whose core finding stands. **And the fast lane skips itself while the CVV latch is
+> on, so on a CVV-challenged drop it does nothing.** Highest-value next work is
+> Endpoint 8 (CVV on the API path), which needs one real cheap-item checkout to
+> capture the `PUT payment_instructions/{id}` body.
+
+---
+
+### [2026-07-21] - 0-for-9 on NINE clean ATC 201s — Target began challenging the saved card's CVV - TARGET
+> **Superseded in part by the 2026-07-21 PM entry above**: "Timing was never the
+> problem" is wrong (ATC→shot#1 was 2.4-5.0s of page-nav dead time), and the
+> FAST_SELLING tally below counts a self-inflicted retry storm, not 16 independent walls.
+**Symptom**: Overnight 07-20→21 the bot detected **9/9 restocks** across 5 TCINs
+(02:53–04:48) and fired a purchase within seconds of every one. Add-to-cart was the
+**best of any night on record — 9 × HTTP 201** (the 07-14 night that actually converted
+got only 2). Zero units bought. `logs/purchases/purchase_*_20260721_*.log`.
+
+**Root Cause**: Every place-order POST that reached Target was rejected, and the
+dominant new rejection was `HTTP 400` with **`tgt-cart-error-key: MISSING_CREDIT_CARD_CVV`**.
+Three compounding defects:
+1. **The API place-order body carries no CVV.** `_api_place_order` posts only
+   `{cart_type:'REGULAR', channel_id:'10'}`. Once Target challenges the card, that shot
+   is a *guaranteed* 400 — the fast path can never win.
+2. **The rejection was invisible to the classifier.** The error key lives in the
+   *response header*, but classification only read the *body* (which is empty here), so
+   it was labelled generic `http_400` and dropped into the slow DOM path blind.
+3. **The wasted ~1.0s killed the reservation.** 5-for-5, the DOM recovery that followed
+   a CVV 400 then got `424 RESERVATION_FAILURE`. Worse, RESERVATION_FAILURE renders as
+   Target's generic "busy" copy, so `_handle_busy_modal` claimed it and re-clicked Place
+   Order into a dead reservation (15 wasted re-clicks × ~1.5s across the night).
+
+Error-key tally for the night: 16 `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` (429),
+8 `RESERVATION_FAILURE` (424), 5 `MISSING_CREDIT_CARD_CVV` (400). The CVV key is
+**escalating** — 1 log on 06-30, 07-07 and 07-17 each, then **4 logs on 07-21**.
+
+**Decisive comparison** — same account (primary), same TCIN (95267143), same code path:
+
+| | 07-14 (the win) | 07-21 (0-for-9) |
+|---|---|---|
+| ATC | 201 @ t=0.45s | 201 @ t=0.83s |
+| Place-order | **HTTP 200 → order placed** | **HTTP 400 MISSING_CREDIT_CARD_CVV** |
+
+Timing was never the problem: place-order fired at **t≈3.0s** from detection. The bot
+was fast enough; it spent its one good shot on a request Target was always going to refuse.
+
+**Fix Applied**:
+- Classify from the `tgt-cart-error-key` **header** (with a staleness guard — the field
+  is reset per-purchase, not per-shot, and the in-place re-shoot loop reuses it) →
+  new `cvv_required` reason. `src/session/purchase_executor.py`
+- Latch `_cvv_required` on first challenge and **persist** it to
+  `state/cvv_challenge_<account>.flag`, so the first place-order after the nightly
+  restart already skips the doomed API shot. Env override `TARGET_CVV_REQUIRED=1/0`.
+- When latched, skip the API shot and go **DOM-first** — the CVV modal handler answers
+  in ~0.08s. Kill-switch `TARGET_CVV_DOM_FIRST=0`.
+- Bail immediately on a wire-level `RESERVATION_FAILURE` instead of re-clicking Place
+  Order into a dead reservation, so the manager can re-race ATC inside the stock window.
+  Checked *before* the CVV branch (which `continue`s). Kill-switch `TARGET_RESERVATION_BAIL=0`.
+- **Root-cause candidate (HYPOTHESIS, not yet confirmed):** Target's help article states
+  CVV re-entry is required when *"a shipping address is updated during checkout"*. Loading
+  `/cart` makes Target's own JS fire `PUT /web_checkouts/v1/cart?...&field_groups=ADDRESSES...`
+  on this account's cart — and a **background warmup `/cart` nav landed inside the checkout
+  window, on the same session, immediately before every CVV 400**. Warmup tabs now skip only
+  the *navigation* while a purchase is live (the dummy POST still fires, so the Shape ring
+  keeps refilling; `force_fresh` ATC-401 recovery still navigates).
+  Kill-switch `TARGET_WARMUP_PAUSE_DURING_PURCHASE=0`.
+- Enabled passive capture of Target's own CVV submit
+  (`PUT /checkout_payments/v1/payment_instructions/{id}`) and the cart PUT body via
+  `TARGET_API_CAPTURE_CHECKOUT_STEPS=true` → `logs/api_capture.log`. This both **confirms
+  or refutes the address hypothesis** and yields the body shape needed to move CVV onto
+  the API fast path (Endpoint 8, deferred since 05-06 because the challenge never fired).
+
+**Confidence**: **high** on the diagnosis (the error key is explicit in the logs and the
+07-14 vs 07-21 A/B is clean). **high** on the CVV latch / reservation-bail fixes.
+**medium-low** on the warmup-nav *root cause* — it fits both the documented trigger and the
+log ordering, but is unconfirmed until the captured cart-PUT body is inspected.
+
+**Outcome**: Fixes shipped + tested (`tests/test_checkout_inplace_reshoot.py` 16/16,
+`tests/test_cvv_challenge_classify.py` 9/9, `tests/test_warmup_cart_nav_guard.py` 5/5).
+**Not yet validated against a live drop.**
+**Root Fix Still Needed**: (a) confirm/refute the address-write hypothesis from the
+captured cart PUT body; (b) if CVV persists, fold the CVV PUT into the pre-checkout
+warmup so place-order never 400s; (c) `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` (16×,
+the largest single bucket) remains unsolved — top lever is still more accounts/IPs.
+
 ### [2026-07-13 PM] - Host froze AGAIN on the new GPU driver — full 60-day hardware triage - HOST
 **Symptom**: 17.4 min after the deliberate 23:04 reboot (NVIDIA 610.74 freshly active, light
 load), the machine hard-stopped at **23:23:49** — ~34 s after a Kernel-Power 566

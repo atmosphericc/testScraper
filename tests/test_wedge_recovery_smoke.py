@@ -143,6 +143,63 @@ def test_tab_health_timeout_is_unhealthy():
         assert took < 10, f"health check took {took:.1f}s — not bounded"
 
 
+# ---- 3b. slow re-probe: backpressure != wedge (2026-07-20) ------------------ #
+class BusyTab:
+    """Alive but BACKPRESSURED: the first 2s probe misses, a slower one lands.
+
+    This is the 07-19 overnight signature — a warmup /cart nav floods the CDP
+    websocket via its persistent Fetch interceptor, so an idle tabs[0] probe
+    queues. 23 live Chromes were destroyed for this.
+    """
+    url = "https://www.target.com/"
+
+    def __init__(self, delay=3.0):
+        self.delay = delay
+        self.calls = 0
+
+    async def evaluate(self, *a, **k):
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        return True
+
+
+def test_backpressured_tab_survives_slow_reprobe():
+    """A busy-but-alive tab must NOT trigger a browser restart."""
+    with tempfile.TemporaryDirectory() as d:
+        sm = SessionManager(session_path=str(Path(d) / "t.json"),
+                            user_data_dir=str(Path(d) / "prof"))
+        tab = BusyTab(delay=3.0)
+        # Non-final attempt keeps the strict 2s behavior...
+        assert asyncio.run(sm._test_tab_health(tab)) is False
+        # ...the final attempt re-probes slowly and finds it alive.
+        assert asyncio.run(sm._test_tab_health(tab, slow_reprobe=True)) is True
+
+
+def test_dead_socket_still_unhealthy_under_slow_reprobe():
+    """The slow re-probe must NOT resurrect a genuinely wedged socket."""
+    with tempfile.TemporaryDirectory() as d:
+        sm = SessionManager(session_path=str(Path(d) / "t.json"),
+                            user_data_dir=str(Path(d) / "prof"))
+        t0 = time.time()
+        healthy = asyncio.run(sm._test_tab_health(WedgedTab(), slow_reprobe=True))
+        took = time.time() - t0
+        assert healthy is False, "dead socket declared healthy by the slow re-probe"
+        assert took < 15, f"slow re-probe unbounded ({took:.1f}s)"
+
+
+def test_slow_reprobe_killswitch_restores_legacy():
+    """TARGET_TAB_HEALTH_SLOW_RETRY_S=0 → exact pre-07-20 behavior."""
+    with tempfile.TemporaryDirectory() as d:
+        sm = SessionManager(session_path=str(Path(d) / "t.json"),
+                            user_data_dir=str(Path(d) / "prof"))
+        os.environ['TARGET_TAB_HEALTH_SLOW_RETRY_S'] = '0'
+        try:
+            assert asyncio.run(
+                sm._test_tab_health(BusyTab(delay=3.0), slow_reprobe=True)) is False
+        finally:
+            os.environ.pop('TARGET_TAB_HEALTH_SLOW_RETRY_S', None)
+
+
 # ---- 4. wedged purchase bails fast and retryable ---------------------------- #
 class FakeSM:
     browser = None
@@ -393,6 +450,9 @@ if __name__ == "__main__":
     check("test_tee_write_survives_dead_console", test_tee_write_survives_dead_console)
     check("test_context_lock_is_asyncio", test_context_lock_is_asyncio)
     check("test_tab_health_timeout_is_unhealthy", test_tab_health_timeout_is_unhealthy)
+    check("test_backpressured_tab_survives_slow_reprobe", test_backpressured_tab_survives_slow_reprobe)
+    check("test_dead_socket_still_unhealthy_under_slow_reprobe", test_dead_socket_still_unhealthy_under_slow_reprobe)
+    check("test_slow_reprobe_killswitch_restores_legacy", test_slow_reprobe_killswitch_restores_legacy)
     check("test_wedged_purchase_bails_fast_retryable", test_wedged_purchase_bails_fast_retryable)
     check("test_warmup_pool_resets_on_browser_change", test_warmup_pool_resets_on_browser_change)
     check("test_warmup_stuck_flag_ttl", test_warmup_stuck_flag_ttl)
