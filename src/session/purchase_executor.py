@@ -1553,14 +1553,16 @@ class PurchaseExecutor:
             # shots with RESERVATION_FAILURE — we were losing the reservation in
             # dead time. See _api_fast_lane for the full evidence.
             #
-            # Skipped when the CVV challenge is latched: that shot is a guaranteed
-            # 400 and would spend budget against Target's FAST_SELLING limiter for
-            # nothing (the DOM-first path from the same post-mortem handles it).
+            # CVV latch: with CVV digits available the lane now answers the
+            # challenge itself (Endpoint 8 PUT, captured 07-24 + 07-28), so the
+            # latch only disables the lane when no CVV is configured — the old
+            # behaviour cost alt-1 two whole nights of DOM-only racing. Without
+            # digits the shot is a guaranteed 400 and the DOM-first path handles it.
             _fl = None
             if (os.environ.get('TARGET_FAST_LANE', '1') == '1'
                     and not self.test_mode
                     and os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
-                    and not self._cvv_required
+                    and (not self._cvv_required or self._fast_lane_cvv())
                     and not self._fast_selling_cooling_down()):
                 _fl = await self._api_fast_lane(tab, tcin, quantity, extra_headers_js)
                 atc_result = _fl.get('atc') or {}
@@ -4217,6 +4219,47 @@ class PurchaseExecutor:
             return True
         return False
 
+    def _fast_lane_cvv(self) -> str:
+        """Validated CVV digits for the in-lane CVV PUT ('' = unavailable/disabled).
+
+        Same source chain as the DOM modal handler: per-account value from
+        config/target_accounts.json, module default as fallback. Only embedded in
+        the chain JS after the \\d{3,4} check below, so no escaping is needed.
+        Kill-switch: TARGET_FAST_LANE_CVV=0 removes the CVV step entirely (the
+        latch then disables the lane exactly as pre-07-28).
+        """
+        if os.environ.get('TARGET_FAST_LANE_CVV', '1') != '1':
+            return ''
+        try:
+            v = str(self.session_manager._load_account_cvv() or CARD_CVV or '').strip()
+        except Exception:
+            v = str(CARD_CVV or '').strip()
+        return v if re.fullmatch(r'\d{3,4}', v) else ''
+
+    async def _hold_cart_for_fast_selling(self, where: str) -> bool:
+        """Sleep out the fast-selling cooldown IN PLACE with the won cart intact.
+
+        2026-07-28: all 4 hard-won carts were cleared after FAST_SELLING (or
+        post-FS) rejections and the re-race then went 0-for-~250 against the ATC
+        401/429 wall — the cart is strictly more valuable than the re-race. 07-21
+        already proved the limiter clears after a quiet window (wave 6 got a clean
+        first shot ~2 min later). So: keep the cart, sit out the cooldown here,
+        and let the caller's re-shoot fire into the reopened window. Capped well
+        under the manager's 140s coroutine guard. Returns True if a hold happened.
+        Kill-switch: TARGET_FAST_SELLING_HOLD_CART=0 restores clear+re-race.
+        """
+        if os.environ.get('TARGET_FAST_SELLING_HOLD_CART', '1') != '1' or self.test_mode:
+            return False
+        _left = getattr(self, '_fast_selling_until', 0.0) - time.time()
+        if _left <= 0:
+            return False
+        _hold = min(_left, float(os.environ.get('TARGET_FAST_SELLING_HOLD_MAX_S', '75')))
+        print(f"[PAYMENT] FAST_SELLING cooldown ({_left:.0f}s left) — HOLDING the won "
+              f"cart in place for {_hold:.0f}s ({where}) instead of clearing "
+              f"(07-28: cleared carts → 0-for-~250 ATC re-race)")
+        await asyncio.sleep(_hold)
+        return True
+
     def _apply_fast_lane_result(self, fl: Dict[str, Any], tcin: str,
                                 start_time: float):
         """Interpret an _api_fast_lane result. Returns (verdict, terminal_result).
@@ -4275,6 +4318,20 @@ class PurchaseExecutor:
             self._fastlane_placed = True
             print(f"[FAST_LANE] *** ORDER PLACED *** HTTP {status} at "
                   f"t={time.time()-start_time:.2f}s — order_id={oid}")
+            _cvv_info = fl.get('cvv') or {}
+            if _cvv_info.get('reshot'):
+                # First shot 400'd on the CVV challenge and the in-lane PUT
+                # answered it. Latch so future chains pre-PUT instead of paying
+                # a 400 round-trip every wave.
+                if not self._cvv_required:
+                    self._cvv_required = True
+                    self._persist_cvv_challenge_flag()
+                print(f"[FAST_LANE] CVV challenge answered IN-LANE "
+                      f"(put={_cvv_info.get('put')}, first shot 400 → re-shoot won) "
+                      f"— latching so the next chain pre-PUTs")
+            elif _cvv_info.get('first'):
+                print(f"[FAST_LANE] latched account stayed in-lane via pre-PUT CVV "
+                      f"(put={_cvv_info.get('put')})")
             return 'placed', None
 
         if po.get('fired'):
@@ -4287,11 +4344,17 @@ class PurchaseExecutor:
             print(f"[FAST_LANE] place-order rejected: HTTP {status} "
                   f"key={hdr or '(none)'} — falling back to nav+DOM path "
                   f"(t={time.time()-start_time:.2f}s)")
+            _cvv_info = fl.get('cvv') or {}
+            if _cvv_info.get('reshot') or (_cvv_info.get('first')
+                                           and _cvv_info.get('put', -1) != -1):
+                print(f"[FAST_LANE] cvv step ran (put={_cvv_info.get('put')} "
+                      f"first={_cvv_info.get('first')} reshot={_cvv_info.get('reshot')} "
+                      f"po1={_cvv_info.get('po1')}) — still rejected")
             if 'MISSING_CREDIT_CARD_CVV' in hdr and not self._cvv_required:
                 self._cvv_required = True
                 self._persist_cvv_challenge_flag()
                 print("[FAST_LANE] MISSING_CREDIT_CARD_CVV — latching cvv_required=True; "
-                      "later attempts go straight to the DOM CVV path.")
+                      "later attempts pre-PUT the CVV in-lane (DOM path if no CVV configured).")
             if ('FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION' in hdr
                     or 'FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION' in body_up):
                 self._note_fast_selling_throttle()
@@ -4347,6 +4410,13 @@ class PurchaseExecutor:
                   '%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY'
                   '&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14')
 
+        # ── CVV step inputs (Endpoint 8, 2026-07-28) ─────────────────────────
+        # _cvv_digits is '' or \d{3,4} (validated) — safe to embed as a JS
+        # literal. cvv_first: a latched account pre-PUTs before the first shot;
+        # an unlatched account only PUTs reactively on a place-order 400.
+        _cvv_digits = self._fast_lane_cvv()
+        _cvv_first = 'true' if (self._cvv_required and _cvv_digits) else 'false'
+
         js = f"""(async () => {{
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{
@@ -4357,9 +4427,10 @@ class PurchaseExecutor:
                 'x-application-name': 'web',
             }});
             const out = {{
-                atc: {{status: 0, body: '', cart_items: []}},
-                pre: {{status: 0, n: 0, tcins: [], pi: []}},
+                atc: {{status: 0, body: '', cart_items: [], cart_id: ''}},
+                pre: {{status: 0, n: 0, tcins: [], pi: [], cart_id: ''}},
                 po:  {{status: 0, body: '', fired: false}},
+                cvv: {{put: -1, first: {_cvv_first}, reshot: false, po1: 0}},
                 skip: ''
             }};
 
@@ -4384,6 +4455,7 @@ class PurchaseExecutor:
                 out.atc.body = t.slice(0, 500);
                 try {{
                     const p = JSON.parse(t);
+                    if (p && p.cart_id) out.atc.cart_id = p.cart_id;
                     if (p && p.tcin && p.cart_item_id) {{
                         out.atc.cart_items = [{{tcin: p.tcin, quantity: p.quantity}}];
                     }} else if (p && Array.isArray(p.cart_items)) {{
@@ -4410,6 +4482,7 @@ class PurchaseExecutor:
                 out.pre.status = r2.status;
                 try {{
                     const p2 = JSON.parse(t2);
+                    if (p2 && p2.cart_id) out.pre.cart_id = p2.cart_id;
                     const items = (p2 && p2.cart_items) || [];
                     out.pre.n = items.length;
                     out.pre.tcins = items.map(i => i && i.tcin);
@@ -4441,6 +4514,42 @@ class PurchaseExecutor:
                 out.skip = 'foreign_cart_item'; return out;
             }}
 
+            // ── 2.5 CVV PUT (Endpoint 8 — captured 07-24 + 07-28, identical) ──
+            // Exactly what the checkout page's CVV modal fires. The real-browser
+            // capture shows NO Shape X-headers on this endpoint, so none are
+            // sent — mimic the page, don't improve on it.
+            const CVV = '{_cvv_digits}';
+            const cvvPut = async () => {{
+                const pi0 = out.pre.pi && out.pre.pi[0];
+                const piId = pi0 && pi0.id;
+                if (!CVV || !piId) return -1;
+                try {{
+                    const rc = await fetch(
+                        'https://carts.target.com/checkout_payments/v1/payment_instructions/'
+                        + piId + '?key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14',
+                        {{
+                            method: 'PUT', credentials: 'include',
+                            headers: {{
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'x-application-name': 'web'
+                            }},
+                            body: JSON.stringify({{
+                                card_details: {{cvv: CVV}},
+                                cart_id: out.pre.cart_id || out.atc.cart_id || undefined,
+                                payment_type: 'CARD',
+                                wallet_mode: 'NONE'
+                            }})
+                        }});
+                    await rc.text();
+                    return rc.status;
+                }} catch(e) {{ return 0; }}
+            }};
+            if (out.cvv.first) {{
+                out.cvv.put = await cvvPut();
+            }}
+
             // ── 3. Place order ────────────────────────────────────────────────
             // `fired` is set BEFORE the await: if the fetch throws or the
             // evaluate is torn down, the POST may still have committed
@@ -4457,6 +4566,32 @@ class PurchaseExecutor:
                 out.po.body = t3.slice(0, 2000);
             }} catch(e) {{
                 out.po.status = 0; out.po.body = String(e);
+            }}
+
+            // ── 3b. In-lane CVV recovery (2026-07-28) ─────────────────────────
+            // CORS hides tgt-cart-error-key from page JS, but a 400 at
+            // place-order has only ever been MISSING_CREDIT_CARD_CVV (07-21 ×4,
+            // 07-28 ×1). One PUT + one re-shoot, only when no PUT ran yet this
+            // chain. A received 400 is a definitive rejection ⇒ no order
+            // committed ⇒ the re-fire is double-buy-safe.
+            if (out.po.status === 400 && CVV && out.cvv.put === -1) {{
+                out.cvv.po1 = out.po.status;
+                out.cvv.put = await cvvPut();
+                if (out.cvv.put >= 200 && out.cvv.put < 300) {{
+                    out.cvv.reshot = true;
+                    try {{
+                        const r4 = await fetch('{po_url}', {{
+                            method: 'POST', credentials: 'include',
+                            headers: mk('https://www.target.com/checkout'),
+                            body: JSON.stringify({{cart_type: 'REGULAR', channel_id: '10'}})
+                        }});
+                        const t4 = await r4.text();
+                        out.po.status = r4.status;
+                        out.po.body = t4.slice(0, 2000);
+                    }} catch(e) {{
+                        out.po.status = 0; out.po.body = String(e);
+                    }}
+                }}
             }}
             return out;
         }})()"""
@@ -4490,9 +4625,14 @@ class PurchaseExecutor:
         _atc = res.get('atc') or {}
         _pre = res.get('pre') or {}
         _po = res.get('po') or {}
+        _cv = res.get('cvv') or {}
+        _cv_note = ''
+        if _cv.get('first') or _cv.get('put', -1) != -1:
+            _cv_note = (f" cvv=put:{_cv.get('put')},first:{_cv.get('first')},"
+                        f"reshot:{_cv.get('reshot')}")
         print(f"[FAST_LANE] chain done in {res['elapsed']:.2f}s — "
               f"atc={_atc.get('status')} pre={_pre.get('status')} "
-              f"po={_po.get('status')} skip={res.get('skip') or 'none'}")
+              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_cv_note}")
         if _pre.get('pi'):
             # One-line intel record: the payment-instruction id + any cvv flag is
             # the prerequisite for moving the CVV challenge onto the API path.
@@ -4777,6 +4917,10 @@ class PurchaseExecutor:
         if _api_flag:
             label = 'TEST_MODE compose-and-abort' if self.test_mode else 'TARGET_API_PLACE_ORDER=true'
             print(f"[PAYMENT] {label} — attempting API place-order")
+            # 2026-07-28: if a fast-selling cooldown is running, don't waste this
+            # shot feeding the limiter (and don't clear the cart either) — sit it
+            # out here with the cart intact, then fire into the reopened window.
+            await self._hold_cart_for_fast_selling('pre-shot')
             api_result = await self._api_place_order(tab)
             if api_result.get('success'):
                 self._api_order_id = api_result.get('order_id')
@@ -4820,7 +4964,15 @@ class PurchaseExecutor:
             # behaviour, which is what that fix was actually validated against.
             if _is_fast_selling(api_result):
                 self._note_fast_selling_throttle()
-                _reshoot_n = 0
+                # 2026-07-28: hold the won cart through the cooldown and let the
+                # re-shoot loop below fire into the reopened window. Only when
+                # the hold is disabled (or test mode) do we keep the 07-21
+                # zero-re-shoot behaviour that led to clear+re-race — that night
+                # the re-race went 0-for-~250 against the ATC wall while 4 won
+                # carts were thrown away. A second FS rejection still stops the
+                # loop and falls back to clear+re-race (bounded: one hold).
+                if not await self._hold_cart_for_fast_selling('post-rejection'):
+                    _reshoot_n = 0
             if (_reshoot_n > 0 and not self.test_mode
                     and api_result.get('status') in (429, 424)):
                 _rs_lo = float(os.environ.get('TARGET_CHECKOUT_INPLACE_DELAY_MIN', '2.5'))

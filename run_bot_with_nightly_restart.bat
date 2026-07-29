@@ -119,6 +119,19 @@ REM  which app.py already defaults to true.
 REM  Kill-switch (exact pre-07-21 nav behavior): set TARGET_FAST_LANE=0
 set TARGET_FAST_LANE=1
 
+REM  In-lane CVV (Endpoint 8, 2026-07-28). The 07-28 drop lost a won cart to
+REM  400 MISSING_CREDIT_CARD_CVV on alt-1 (3rd night in a row for that account)
+REM  while the DOM CVV modal's own network call was captured live on BOTH 07-24
+REM  and 07-28 -- byte-identical: PUT /checkout_payments/v1/payment_instructions/
+REM  {id} with {"card_details":{"cvv":..},"cart_id":..,"payment_type":"CARD",
+REM  "wallet_mode":"NONE"} and no Shape headers. The fast lane now fires that
+REM  PUT itself: latched accounts pre-PUT before the first shot (the lane is no
+REM  longer disabled by the latch), unlatched accounts recover a po=400 with
+REM  PUT + one re-shoot in the same chain. CVV comes from the per-account
+REM  "cvv" field in config\target_accounts.json (all 3 verified present).
+REM  Kill-switch (pre-07-28: latch disables the lane): set TARGET_FAST_LANE_CVV=0
+set TARGET_FAST_LANE_CVV=1
+
 REM  Do not re-shoot into Target's fast-selling limiter. The 07-17 fix above
 REM  added the in-place re-shoot loop because FAST_SELLING killed that drop; the
 REM  07-21 log then measured what re-shooting actually achieves. FAST_SELLING_
@@ -130,6 +143,18 @@ REM  So on FAST_SELLING the executor now backs off for this many seconds instead
 REM  of re-shooting; every other 429/424 keeps the 07-17 behavior unchanged.
 REM  Kill-switch (never back off, pre-07-21): set TARGET_FAST_SELLING_COOLDOWN_S=0
 set TARGET_FAST_SELLING_COOLDOWN_S=45
+
+REM  HOLD the won cart through that cooldown (2026-07-28). That drop won 4 carts
+REM  and cleared every one after a FAST_SELLING/post-FS rejection, then re-raced
+REM  the ATC wall 0-for-~250. The cart is strictly more valuable than a re-race:
+REM  the executor now sits out the cooldown IN PLACE (cart intact, on /checkout)
+REM  and lets the in-place re-shoot loop fire into the reopened window. A second
+REM  FS rejection still stops it (one hold, bounded); capped by HOLD_MAX_S well
+REM  under the manager's 140s coroutine guard.
+REM  Validated: tests	est_checkout_inplace_reshoot.py + test_fast_lane_checkout.py.
+REM  Kill-switch (07-21 clear+re-race): set TARGET_FAST_SELLING_HOLD_CART=0
+set TARGET_FAST_SELLING_HOLD_CART=1
+set TARGET_FAST_SELLING_HOLD_MAX_S=75
 
 REM ---------------------------------------------------------------------------
 REM  CDP-backpressure guard (2026-07-20). Overnight 07-19 the session sentinel

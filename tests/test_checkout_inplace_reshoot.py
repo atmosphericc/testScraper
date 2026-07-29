@@ -261,6 +261,56 @@ def test_no_reservation_failure_leaves_busy_retry_intact():
     assert c["clicks"] == 3, f"expected the 3-attempt busy retry, got {c['clicks']}"
 
 
+def test_fast_selling_hold_keeps_cart_and_reshoots():
+    """2026-07-28 fix: FS rejection → hold through the cooldown IN PLACE (cart
+    intact) → the existing re-shoot loop fires into the reopened window. That
+    night the old zero-re-shoot path cleared 4 won carts into a 0-for-~250 ATC
+    re-race."""
+    os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "0.1"
+    try:
+        os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+        ex, c = _make_executor([_R(429, "http_429"), _R(200, "ok", True, "OID-H")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        assert r is True and c["api"] == 2 and ex._api_order_id == "OID-H", \
+            f"r={r} api={c['api']} oid={ex._api_order_id}"
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
+
+
+def test_fast_selling_second_hit_stops_after_one_hold():
+    """A second FS rejection after the hold must stop (bounded: ONE hold) and
+    defer to the old clear+re-race — no infinite hold loop."""
+    os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "0.1"
+    try:
+        os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+        ex, c = _make_executor([_R(429, "http_429")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        # initial shot FS → one hold → re-shoot #1 FS again → loop stops → bail
+        assert r is False and c["api"] == 2, f"r={r} api={c['api']}"
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
+
+
+def test_fast_selling_hold_kill_switch_restores_bail():
+    """TARGET_FAST_SELLING_HOLD_CART=0 restores the 07-21 zero-re-shoot bail."""
+    os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "5"
+    os.environ["TARGET_FAST_SELLING_HOLD_CART"] = "0"
+    try:
+        os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+        ex, c = _make_executor([_R(429, "http_429")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        assert r is False and c["api"] == 1, f"r={r} api={c['api']}"
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_CART", None)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

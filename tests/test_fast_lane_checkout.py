@@ -103,14 +103,20 @@ JS_HARNESS = r"""
 const scenario = %s;
 const calls = [];
 globalThis.fetch = async (url, opts) => {
-  calls.push({url: String(url).split('?')[0], method: opts && opts.method});
+  calls.push({url: String(url).split('?')[0], method: opts && opts.method,
+              body: (opts && opts.body) || null,
+              hdr: (opts && opts.headers) ? Object.keys(opts.headers) : []});
   let rule = null;
   for (const r of scenario) {
     if (String(url).includes(r.match)) { rule = r; break; }
   }
   if (!rule) throw new Error('no stub rule for ' + url);
-  if (rule.throw) throw new Error(rule.throw);
-  return { status: rule.status, text: async () => rule.body || '' };
+  // Optional per-call sequencing: rule.seq = [{status,body},...] consumed in
+  // order (last repeats) — lets one URL answer differently across re-shoots.
+  rule._n = (rule._n || 0) + 1;
+  const eff = rule.seq ? rule.seq[Math.min(rule._n - 1, rule.seq.length - 1)] : rule;
+  if (eff.throw) throw new Error(eff.throw);
+  return { status: eff.status, text: async () => eff.body || '' };
 };
 (async () => {
   const out = await (%s);
@@ -119,9 +125,9 @@ globalThis.fetch = async (url, opts) => {
 """
 
 
-def run_js(scenario):
+def run_js(scenario, cvv_required=False):
     """Run the executor's real fast-lane JS under Node with stubbed fetch."""
-    ex = _bare_executor()
+    ex = _bare_executor(cvv_required=cvv_required)
     tab = _CapturingTab(result={})
     asyncio.get_event_loop().run_until_complete(
         ex._api_fast_lane(tab, TCIN, 2, json.dumps({"X-GyJwza5Z-a": "tok"})))
@@ -236,6 +242,106 @@ def test_js_atc_throw_does_not_mark_fired():
     ])
     check("js_atc_throw_po_not_fired", r["out"]["po"]["fired"] is False, str(r["out"]["po"]))
     check("js_atc_throw_skip_label", r["out"]["skip"] == "atc_threw", r["out"]["skip"])
+
+
+# ─────────── Part 1b: the in-lane CVV step (Endpoint 8, 2026-07-28) ──────────
+# Captured live on 07-24 AND 07-28 (byte-identical shape): the checkout page's
+# CVV modal answers MISSING_CREDIT_CARD_CVV with
+#   PUT /checkout_payments/v1/payment_instructions/{id}?key=...
+#   {"card_details":{"cvv":"..."},"cart_id":"...","payment_type":"CARD",
+#    "wallet_mode":"NONE"}          (NO Shape X-headers on the real request)
+# and the next place-order stops 400ing. The bare executor has no
+# session_manager, so the chain embeds the module-default CVV ('229').
+
+CVVPUT = "payment_instructions/"
+
+_PRE_OK_CVV = json.dumps({"cart_id": "CART-77",
+                          "cart_items": [{"tcin": TCIN, "quantity": 2}],
+                          "payment_instructions": [
+                              {"payment_instruction_id": "PI-1",
+                               "payment_type": "CARD"}]})
+_ATC_OK_CVV = json.dumps({"tcin": TCIN, "cart_item_id": "CI-1", "quantity": 2,
+                          "cart_id": "CART-77"})
+
+
+def test_js_cvv_400_put_then_reshoot_wins():
+    """The 07-28 loss replayed to a win: po 400 → CVV PUT → re-shoot → 200."""
+    r = run_js([
+        {"match": ATC, "status": 201, "body": _ATC_OK_CVV},
+        {"match": PRE, "status": 200, "body": _PRE_OK_CVV},
+        {"match": CVVPUT, "status": 200, "body": "{}"},
+        {"match": PO, "seq": [
+            {"status": 400, "body": ""},
+            {"status": 200,
+             "body": json.dumps({"orders": [{"order_id": "OID-CVV"}]})}]},
+    ])
+    out = r["out"]
+    check("cvv_recovery_call_order",
+          urls(r) == ["cart_items", "pre_checkout", "checkout", "PI-1", "checkout"],
+          str(urls(r)))
+    check("cvv_recovery_final_po_200",
+          out["po"]["status"] == 200 and out["po"]["fired"] is True, str(out["po"]))
+    check("cvv_recovery_reports_reshot",
+          out["cvv"]["reshot"] is True and out["cvv"]["po1"] == 400, str(out["cvv"]))
+    put_call = [c for c in r["calls"] if CVVPUT in c["url"]][0]
+    body = json.loads(put_call["body"])
+    check("cvv_put_body_matches_capture",
+          body == {"card_details": {"cvv": "229"}, "cart_id": "CART-77",
+                   "payment_type": "CARD", "wallet_mode": "NONE"}, str(body))
+    check("cvv_put_is_PUT_without_shape_headers",
+          put_call["method"] == "PUT"
+          and not any(h.startswith("X-GyJwza5Z") for h in put_call["hdr"]),
+          str(put_call))
+
+
+def test_js_latched_account_pre_puts_before_po():
+    """Latched account stays IN-LANE: PUT fires between pre_checkout and po."""
+    r = run_js([
+        {"match": ATC, "status": 201, "body": _ATC_OK_CVV},
+        {"match": PRE, "status": 200, "body": _PRE_OK_CVV},
+        {"match": CVVPUT, "status": 200, "body": "{}"},
+        {"match": PO, "status": 200,
+         "body": json.dumps({"orders": [{"order_id": "OID-L"}]})},
+    ], cvv_required=True)
+    out = r["out"]
+    check("latched_pre_put_call_order",
+          urls(r) == ["cart_items", "pre_checkout", "PI-1", "checkout"],
+          str(urls(r)))
+    check("latched_pre_put_reported",
+          out["cvv"]["first"] is True and out["cvv"]["put"] == 200
+          and out["cvv"]["reshot"] is False, str(out["cvv"]))
+    check("latched_po_200", out["po"]["status"] == 200, str(out["po"]))
+
+
+def test_js_cvv_put_failure_no_reshoot():
+    """A failed PUT must NOT re-shoot — the 400 falls through to the DOM path."""
+    r = run_js([
+        {"match": ATC, "status": 201, "body": _ATC_OK_CVV},
+        {"match": PRE, "status": 200, "body": _PRE_OK_CVV},
+        {"match": CVVPUT, "status": 500, "body": ""},
+        {"match": PO, "status": 400, "body": ""},
+    ])
+    out = r["out"]
+    check("cvv_put_fail_call_order",
+          urls(r) == ["cart_items", "pre_checkout", "checkout", "PI-1"],
+          str(urls(r)))
+    check("cvv_put_fail_po_stays_400",
+          out["po"]["status"] == 400 and out["cvv"]["reshot"] is False,
+          f"po={out['po']['status']} cvv={out['cvv']}")
+
+
+def test_js_po_429_does_not_trigger_cvv_put():
+    """The CVV recovery keys on 400 ONLY — a 429 must not spend a PUT."""
+    r = run_js([
+        {"match": ATC, "status": 201, "body": _ATC_OK_CVV},
+        {"match": PRE, "status": 200, "body": _PRE_OK_CVV},
+        {"match": CVVPUT, "status": 200, "body": "{}"},
+        {"match": PO, "status": 429, "body": ""},
+    ])
+    check("po_429_no_cvv_put",
+          urls(r) == ["cart_items", "pre_checkout", "checkout"], str(urls(r)))
+    check("po_429_cvv_untouched", r["out"]["cvv"]["put"] == -1,
+          str(r["out"]["cvv"]))
 
 
 # ──────────────── Part 2: Python-side result handling ───────────────────────
@@ -359,6 +465,80 @@ def test_fast_selling_cooldown_can_be_disabled():
         os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
 
 
+def test_fast_lane_cvv_source_and_validation():
+    ex = _bare_executor()
+    # bare instance has no session_manager → module default CARD_CVV ('229')
+    check("cvv_falls_back_to_module_default", ex._fast_lane_cvv() == "229",
+          repr(ex._fast_lane_cvv()))
+
+    class _SM:
+        def _load_account_cvv(self):
+            return "814"
+
+    ex.session_manager = _SM()
+    check("cvv_prefers_account_value", ex._fast_lane_cvv() == "814",
+          repr(ex._fast_lane_cvv()))
+
+    class _SMBad:
+        def _load_account_cvv(self):
+            return "12ab"
+
+    ex.session_manager = _SMBad()
+    check("cvv_rejects_non_digits", ex._fast_lane_cvv() == "",
+          repr(ex._fast_lane_cvv()))
+    os.environ["TARGET_FAST_LANE_CVV"] = "0"
+    try:
+        ex.session_manager = _SM()
+        check("cvv_kill_switch_returns_empty", ex._fast_lane_cvv() == "",
+              repr(ex._fast_lane_cvv()))
+    finally:
+        os.environ.pop("TARGET_FAST_LANE_CVV", None)
+
+
+def test_placed_via_cvv_reshoot_latches_for_pre_put():
+    """An in-lane CVV recovery win must latch so the NEXT chain pre-PUTs."""
+    ex = _bare_executor()
+    persisted = []
+    ex._persist_cvv_challenge_flag = lambda: persisted.append(1)
+    fl = _fl(200, json.dumps({"orders": [{"order_id": "OID-9"}]}))
+    fl["cvv"] = {"put": 200, "first": False, "reshot": True, "po1": 400}
+    verdict, _ = ex._apply_fast_lane_result(fl, TCIN, 0.0)
+    check("cvv_reshoot_win_placed", verdict == "placed", verdict)
+    check("cvv_reshoot_win_latches",
+          ex._cvv_required is True and len(persisted) == 1,
+          f"cvv_required={ex._cvv_required} persisted={len(persisted)}")
+
+
+def test_hold_cart_for_fast_selling():
+    import time as _t
+    loop = asyncio.get_event_loop()
+    ex = _bare_executor()
+    ex._fast_selling_until = 0.0
+    check("hold_no_cooldown_returns_false",
+          loop.run_until_complete(ex._hold_cart_for_fast_selling("t")) is False)
+    ex._fast_selling_until = _t.time() + 0.05
+    t0 = _t.time()
+    r = loop.run_until_complete(ex._hold_cart_for_fast_selling("t"))
+    check("hold_active_cooldown_sleeps_and_returns_true",
+          r is True and _t.time() - t0 >= 0.04, f"r={r} dt={_t.time()-t0:.3f}")
+    os.environ["TARGET_FAST_SELLING_HOLD_CART"] = "0"
+    try:
+        ex._fast_selling_until = _t.time() + 5
+        check("hold_kill_switch_returns_false",
+              loop.run_until_complete(ex._hold_cart_for_fast_selling("t")) is False)
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_CART", None)
+    os.environ["TARGET_FAST_SELLING_HOLD_MAX_S"] = "0.05"
+    try:
+        ex._fast_selling_until = _t.time() + 60
+        t0 = _t.time()
+        r = loop.run_until_complete(ex._hold_cart_for_fast_selling("t"))
+        check("hold_respects_cap", r is True and _t.time() - t0 < 2.0,
+              f"dt={_t.time()-t0:.2f}")
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_MAX_S", None)
+
+
 def main():
     if not NODE:
         print("[SKIP] node not found — JS chain tests skipped")
@@ -369,6 +549,10 @@ def main():
         test_js_foreign_cart_item_never_reaches_place_order()
         test_js_place_order_throw_is_reported_as_fired()
         test_js_atc_throw_does_not_mark_fired()
+        test_js_cvv_400_put_then_reshoot_wins()
+        test_js_latched_account_pre_puts_before_po()
+        test_js_cvv_put_failure_no_reshoot()
+        test_js_po_429_does_not_trigger_cvv_put()
 
     test_success_marks_placed_and_parses_order_id()
     test_success_with_unparseable_body_still_succeeds()
@@ -380,6 +564,9 @@ def main():
     test_evaluate_timeout_reports_fired()
     test_evaluate_raise_reports_fired()
     test_fast_selling_cooldown_can_be_disabled()
+    test_fast_lane_cvv_source_and_validation()
+    test_placed_via_cvv_reshoot_latches_for_pre_put()
+    test_hold_cart_for_fast_selling()
 
     print(f"\n=== {len(PASSED)}/{len(PASSED) + len(FAILED)} passed ===")
     if FAILED:
