@@ -240,11 +240,49 @@ set TARGET_WARMUP_PAUSE_DURING_PURCHASE=1
 REM  Passive capture of Target's OWN CVV submit (PUT checkout_payments/v1/
 REM  payment_instructions/<id>) -- the request the DOM path fires after the CVV
 REM  modal is confirmed. Pass-through only, never aborts, writes to
-REM  logs\api_capture.log and only during a real checkout, so it is cheap. This
-REM  is the prerequisite for moving CVV onto the API fast path (Endpoint 8 in
-REM  docs/RETAILERS/TARGET_CHECKOUT_API.md, deferred since 05-06 because the
-REM  challenge had never fired). Turn OFF once the body shape is captured.
-set TARGET_API_CAPTURE_CHECKOUT_STEPS=true
+REM  logs\api_capture.log. 2026-08-02: TURNED OFF -- the CVV PUT body was
+REM  captured on 07-24, 07-28 and 5x on 07-31 (Endpoint 8 shipped AND
+REM  live-validated: two alt-1 orders on 07-31 via in-lane pre-PUT cvv put=200),
+REM  and the "only during a real checkout" premise proved wrong: warmup-tab
+REM  /cart activity logged 10,840 CART_PUTs 24/7 (~11.5MB since 07-21).
+REM  Re-enable (true) only to re-capture if Target changes the CVV endpoint.
+set TARGET_API_CAPTURE_CHECKOUT_STEPS=false
+
+REM ---------------------------------------------------------------------------
+REM  2026-08-02 post-drop-audit fixes (07-31 = 7 orders/14 units; the audit of
+REM  the losses + the 68h run shipped five flag-gated guards, all default-ON in
+REM  code -- set here explicitly so this file stays the operator's changelog).
+REM  1) Evicted-cart fast-bail: after 424 RESERVATION_FAILURE Target empties
+REM     the cart server-side (items -> Saved for later); place-orders then 400
+REM     with NO tgt-cart-error-key and the page says "no items in your cart" /
+REM     "your cart is empty". Late 07-31 waves burned 15-25s each re-clicking
+REM     that corpse. Now: terminal bail on the wire signature + a 1/s page-copy
+REM     probe, so the manager re-races a FRESH ATC. Kill: TARGET_EMPTY_CART_BAIL=0
+set TARGET_EMPTY_CART_BAIL=1
+REM  2) Re-shoot re-nav: the 03:44 FS hold kept the won cart 45s, but the SPA
+REM     bounced the tab to /cart mid-hold and the re-shoot loop aborted with
+REM     ZERO post-hold shots. Now: ONE bounded re-nav to /checkout first.
+REM     Kill: TARGET_RESHOOT_RENAV=0
+set TARGET_RESHOOT_RENAV=1
+REM  3) Level re-arm: resilient mode publishes stock events on OOS->IS flips
+REM     ONLY, so a failed wave never re-raced while stock persisted (the two
+REM     ~22-min street-date windows got 17-18 min of live stock with zero
+REM     shots). Now: failed-but-still-stocked TCINs re-publish every 20s
+REM     ('failed' states only -- purchased repeats still need a real flip).
+REM     Kill: TARGET_LEVEL_REARM_S=0
+set TARGET_LEVEL_REARM_S=20
+REM  4) Dead-session park: with a dead login-session + relogin capped, the
+REM     sentinel ladder restarted that account's Chrome every 5 min forever
+REM     (576 restarts on 08-02) and hammered Target's login surface. Now: park
+REM     the heavy rungs 30 min; the cheap token check keeps watching and any
+REM     recovery (e.g. manual login) self-clears the park.
+REM     Kill: TARGET_SENTINEL_DEAD_SESSION_BACKOFF_S=0
+set TARGET_SENTINEL_DEAD_SESSION_BACKOFF_S=1800
+REM  5) Cloak-verify backoff: post-drop the cloaking alarm fired every 30s for
+REM     62.5h (~67k extra origin fetches) re-confirming the same all-OOS. Now:
+REM     confirmed all-OOS widens the origin re-verify 60->300s; any hit or
+REM     probe failure restores the sharp 30s. Kill: TARGET_CLOAK_VERIFY_BACKOFF=0
+set TARGET_CLOAK_VERIFY_BACKOFF=1
 
 REM ---------------------------------------------------------------------------
 REM  Token keep-fresh ON (2026-07-12, CORRECTED). The F5 research overturned the

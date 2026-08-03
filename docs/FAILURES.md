@@ -31,6 +31,73 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-07-31] - BEST NIGHT EVER (7 orders / 14 units) but late-window losses to server-side cart eviction + FS-hold abort; Endpoint 8 live-validated - TARGET
+**Symptom**: 07-30→31 street-date drop (`logs/runs/package.log.2`, purchase logs
+02:29-05:32). Fast lane converted 7-for-7 whenever the first place-order POST
+was a 200 (all qty=2, 2.3-3.7s: 1011483406 ×2 W2, 95298172 ×2 W3/alt-1,
+1011209273 W1, One Piece 95120836+95120832 W1). alt-1 — 0-for-3-nights on the
+CVV challenge — converted TWICE via the in-lane pre-PUT CVV (`put=200`):
+**Endpoint 8 is production-proven**. Losses: (a) street-date pair
+95274164/95274160 lost to ATC walls (429-heavy early, then episodic
+Shape-layer ATC-401 lockouts — 3 consecutive 401 `_ERR_AUTH_DENIED` on every
+account incl. 100/100 at 03:11 and 57/57 at 05:30, while member tokens minted
+fine); (b) late window 04:55-05:13: after each `424 RESERVATION_FAILURE`
+Target EMPTIED the cart server-side (items → Saved-for-later), follow-up
+place-order POSTs 400'd with NO `tgt-cart-error-key`, the checkout page
+rendered "There are no items in your cart right now." (matched by NEITHER
+phrase list) and the SPA bounced tabs to /cart — each attempt burned a DOM
+click + 12s wait + screenshots (`place_order_timeout_20260731_*.png`);
+(c) the 03:44 FS hold preserved the won cart 45s but the SPA bounced the tab
+to /cart mid-hold, so the re-shoot loop's URL guard aborted 1/4 with ZERO
+post-hold shots and the cart was cleared anyway; (d) the two ~22-min
+street-date windows got ONE race + tail flickers each — resilient mode has no
+periodic 'stock_updated' publisher, so a failed wave never re-races until the
+next OOS→in-stock flip (17-18 min of live stock, zero shots). Also: FS
+answered a first-shot POST at 04:55 on a TCIN the same account had bought 3
+min earlier — the 07-21 "FS never answers shot #1" rule has a same-account
+repeat-purchase exception.
+**Root Cause**: (1) no evicted-cart detection on wire (400-no-key) or page
+copy; (2) re-shoot URL guard treats an SPA bounce as terminal; (3) edge-only
+stock publishing under USE_RESILIENT_STACK=1.
+**Fix Applied**: evicted-cart fast-bail (`TARGET_EMPTY_CART_BAIL`, 4 sites in
+`purchase_executor.py` + retryable DIAGNOSIS), one bounded re-nav to /checkout
+in the re-shoot loop (`TARGET_RESHOOT_RENAV`), level re-arm publisher for
+failed-but-still-stocked TCINs (`TARGET_LEVEL_REARM_S`, app.py). Tests:
+test_empty_cart_bail_smoke (12), test_level_rearm_smoke (8).
+**Confidence**: high (all three mechanisms log-proven)
+**Outcome**: shipped 2026-08-02, unvalidated live. Watch next drop for
+`[LEVEL_REARM]` re-races and `cart EVICTED` bails.
+
+### [2026-08-02] - All 3 login-sessions died mid-68h-run; credential relogin Shape-burned (~0/25); auth ladder churned 576 Chrome restarts/day - TARGET
+**Symptom**: post-drop audit of the same 68h run (07-31 00:49 → 08-02 20:37).
+Login-session lifetimes ~32-46h (bat comment says "lasts days"): business died
+07-31 10:17 (recovered once 16:27), alt-1 died 08-01 09:11 permanently,
+primary 08-01 20:38 permanently, business again 08-02 14:26 — **from 08-02
+14:26 to shutdown ZERO purchase-capable accounts** (all GUEST-only mints).
+`relogin.log`: ~25 in-run credential relogins failed since 07-31 — "username
+did NOT advance" ~80%, "STILL HAS SESSION → username field NOT found" ~20%,
+one "password did NOT advance" — the classic Shape login-denial signature on
+the HOME IP that historically passed (last clean logins 07-29). With relogin
+capped, the sentinel ladder still ran nav-refresh → Chrome RESTART →
+capped-no-op every 5 min per dead account: 113/258/576 restarts on
+07-31/08-01/08-02 + 818 asyncio ConnectionResetError noise. The cloaking
+alarm also fired every 30s for 62.5h post-drop (~67k extra origin fetches).
+Detection layer stayed flawless throughout (0.122% 403, no missed restock).
+**Root Cause**: (1) scripted login is Shape-denied — most consistent with
+login-surface burn from drop-night volume + ladder hammering (25 attempts,
+2 days, same device/IP); (2) ladder has no dead-session backoff; (3) alarm
+has no confirmed-OOS backoff.
+**Fix Applied**: dead-session park (`TARGET_SENTINEL_DEAD_SESSION_BACKOFF_S`,
+default 1800s — parked accounts run only the rung-0 token check and self-clear
+on recovery; test_dead_session_park_smoke 9/9); cloak-verify backoff 60→300s
+on confirmed all-OOS (`TARGET_CLOAK_VERIFY_BACKOFF`). Relogin itself NOT
+fixed (needs live login-page work).
+**Confidence**: high on the churn fixes; medium on the burn theory
+**Outcome**: **OPEN — before the next drop the operator must recover all 3
+sessions manually: `set RELOGIN_DEADMAN_S=0` then
+`python relogin_one.py all --manual` (hand-login per profile, saves jars),
+then `python check_session_readiness.py` for 3/3 MEMBER.**
+
 ### [2026-07-24] - First fast-lane conversions (4 orders / 8 units); alt-1 0-for on a latched DOM chain; NEW "High-demand item" modal unrecognized - TARGET
 **Symptom**: `logs/runs/run_20260723_235455.log` (07-23 23:54 → 07-24 09:48, 8
 restock windows). The fast lane went **4-for-4 on place-order whenever ATC

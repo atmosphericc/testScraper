@@ -114,6 +114,9 @@ class SessionManager:
         self._last_token_repair_ts = 0.0
         self._relogin_attempt_times: list = []
         self._relogin_capped_alerted = False
+        # Dead-session park (2026-08-02): while set, ensure_logged_in skips the
+        # nav/restart/relogin rungs and only runs the cheap rung-0 token check.
+        self._dead_session_parked_until = 0.0
 
         # Configuration
         self.max_validation_failures = 3
@@ -1859,6 +1862,36 @@ class SessionManager:
              DESTRUCTIVE, rate-capped)
         Returns True iff the account ends up logged in with a live member token."""
         try:
+            # ── Dead-session park (2026-08-02, 07-31→08-02 post-drop audit) ──
+            # With a dead login-session and the destructive relogin capped, the
+            # full ladder still ran EVERY 5-min tick: nav refresh → Chrome
+            # RESTART → capped-relogin no-op. 08-02 alone burned 576 restarts
+            # achieving nothing, and the constant signout/login-page traffic
+            # feeds the very Shape login-burn blocking the relogin ("username
+            # did NOT advance" ~0/25 since 07-31). While parked, only the cheap
+            # rung-0 token check runs; any recovery (e.g. a manual login into
+            # the profile) clears the park on the next tick automatically.
+            # Kill-switch: TARGET_SENTINEL_DEAD_SESSION_BACKOFF_S=0.
+            _park_s = float(os.environ.get(
+                'TARGET_SENTINEL_DEAD_SESSION_BACKOFF_S', '1800'))
+            if _park_s > 0 and time.time() < self._dead_session_parked_until:
+                if await self.ensure_fresh_access_token():
+                    self.logger.info(
+                        f"[SENTINEL] {self.account_id}: member token healthy again "
+                        f"— clearing dead-session park")
+                    self._dead_session_parked_until = 0.0
+                    self.last_validation = datetime.now()
+                    self.validation_failures = 0
+                    try:
+                        await self.save_session_state()
+                    except Exception:
+                        pass
+                    return True
+                self.logger.info(
+                    f"[SENTINEL] {self.account_id}: dead-session park active "
+                    f"({self._dead_session_parked_until - time.time():.0f}s left) — "
+                    f"skipping nav/restart/relogin ladder this tick")
+                return False
             _keepfresh_on = os.environ.get('TARGET_TOKEN_KEEPFRESH', '1').lower() \
                 not in ('0', 'false', 'no')
             if _keepfresh_on:
@@ -1908,12 +1941,25 @@ class SessionManager:
                         return True
             self.logger.warning(f"[SENTINEL] {self.account_id}: restart did not restore auth — escalating to credential re-login")
             if not self._credential_relogin_allowed():
+                if _park_s > 0:
+                    self._dead_session_parked_until = time.time() + _park_s
+                    self.logger.warning(
+                        f"[SENTINEL] {self.account_id}: relogin capped/cooling — "
+                        f"parking the heavy ladder for {_park_s:.0f}s "
+                        f"(rung-0 token check keeps watching for recovery)")
                 return False
             ok = await self._credential_relogin()
             if ok:
                 # Healthy again — reset the destructive-relogin budget.
                 self._relogin_attempt_times.clear()
                 self._relogin_capped_alerted = False
+                self._dead_session_parked_until = 0.0
+            elif _park_s > 0:
+                self._dead_session_parked_until = time.time() + _park_s
+                self.logger.warning(
+                    f"[SENTINEL] {self.account_id}: credential relogin FAILED — "
+                    f"parking the heavy ladder for {_park_s:.0f}s to stop the "
+                    f"restart churn + login hammering")
             return ok
         except Exception as e:
             self.logger.error(f"[SENTINEL] ensure_logged_in error for {self.account_id}: {e}")

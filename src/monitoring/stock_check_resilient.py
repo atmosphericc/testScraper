@@ -455,6 +455,17 @@ class ResilientStockChecker:
         which requires us to have observed at least one in_stock transition."""
         OOS_THRESHOLD = 2
         oos_streak = 0
+        # 2026-08-02 (07-31→08-02 audit): _ever_seen_in_stock stays truthy for
+        # the rest of the run after any restock, so post-drop this alarm fired
+        # EVERY 30s cycle for 62.5h (~7.5k alarms, ~67k extra origin cache-bust
+        # fetches) re-confirming the same all-OOS. A verify that SUCCEEDS with
+        # zero hits now backs the next verify off 60s → 120s → 240s → cap 300s;
+        # any in-stock observation (sweep or verify hit) or a FAILED probe
+        # restores the sharp 30s cadence. Cold catches stay covered while
+        # backed off by the ground-truth cache-bust loop (~2.5 min cycle).
+        # Kill-switch: TARGET_CLOAK_VERIFY_BACKOFF=0.
+        _verify_backoff_s = 0.0
+        _next_verify_ts = 0.0
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=30.0)
@@ -476,18 +487,39 @@ class ResilientStockChecker:
             if all_oos:
                 oos_streak += 1
                 if oos_streak >= OOS_THRESHOLD:
+                    _backoff_on = os.environ.get(
+                        'TARGET_CLOAK_VERIFY_BACKOFF', '1') == '1'
+                    if _backoff_on and time.time() < _next_verify_ts:
+                        continue
                     logger.warning(
                         f"[STOCK] CLOAKING ALARM: all {len(statuses)} TCINs reported OOS "
                         f"for {oos_streak} cycles, but {len(self._ever_seen_in_stock)} "
                         f"of them were in_stock earlier this run — verifying via origin fetch."
                     )
                     if self._verify_on_cloak:
+                        hits = None
                         try:
-                            await self._verify_in_stock_candidates()
+                            hits = await self._verify_in_stock_candidates()
                         except Exception:
                             logger.exception("[STOCK] verify-on-cloak failed")
+                        if _backoff_on:
+                            if hits is not None and not hits:
+                                # Successful probe, zero hits: all-OOS CONFIRMED
+                                # at origin — widen the re-verify interval.
+                                _verify_backoff_s = min(
+                                    300.0, max(60.0, _verify_backoff_s * 2))
+                                _next_verify_ts = time.time() + _verify_backoff_s
+                                logger.info(
+                                    f"[STOCK] cloak-verify confirmed all-OOS — "
+                                    f"next origin verify in {_verify_backoff_s:.0f}s")
+                            else:
+                                # Real hit or probe failure: stay sharp.
+                                _verify_backoff_s = 0.0
+                                _next_verify_ts = 0.0
             else:
                 oos_streak = 0
+                _verify_backoff_s = 0.0
+                _next_verify_ts = 0.0
 
     async def _verify_in_stock_candidates(self):
         """Cloaking-alarm response. The sweep path reports all-OOS, but the
@@ -497,7 +529,7 @@ class ResilientStockChecker:
         origin fetch; on a real hit, fire on_in_stock so the purchase still
         launches even though the cached sweep path missed it."""
         if self.dispatcher is None or not self._ever_seen_in_stock:
-            return
+            return None
         candidates = sorted(self._ever_seen_in_stock)
         result = await self.dispatcher.dispatch_verify(candidates)
         if result is None or result.http_status != 200 or not result.raw:
@@ -505,7 +537,7 @@ class ResilientStockChecker:
                 f"[STOCK] VERIFY: origin probe for {candidates} returned no "
                 f"usable data (http={getattr(result, 'http_status', '?')})"
             )
-            return
+            return None
         parsed = self._parse_bulk(result.raw)
         hits = []
         async with self._status_lock:
@@ -537,6 +569,10 @@ class ResilientStockChecker:
                     self.on_in_stock(s)
                 except Exception:
                     logger.exception("[STOCK] on_in_stock (verify) failed")
+        # 2026-08-02: the alarm loop backs off its verify cadence on a
+        # CONFIRMED all-OOS (successful probe, zero hits) — return the hit
+        # list so it can tell confirmation apart from probe failure (None).
+        return hits
 
     async def _stats_loop(self):
         """Heartbeat: log pool + dispatch stats every 30s."""
@@ -617,6 +653,16 @@ class ResilientStockChecker:
                     )
                     continue
                 parsed = self._parse_bulk(result.raw)
+                # 2026-07-30: name the configured TCINs RedSky returns nothing for
+                # (pre-release/unpublished or typo'd) — they are INVISIBLE to both
+                # the sweep and this cache-bust read, so a drop on them can never
+                # trigger. Same cadence as the "ok" line below (every 5th cycle).
+                missing = sorted(set(map(str, self.tcins)) - set(map(str, parsed)))
+                if missing and cycle % 5 == 1:
+                    logger.warning(
+                        f"[GROUND-TRUTH] {len(missing)} configured TCIN(s) absent "
+                        f"from RedSky bulk response — invisible to detection: {missing}"
+                    )
                 async with self._status_lock:
                     hot = {t: s.in_stock for t, s in self._tcin_status.items()}
                 cb_in_stock = sorted(t for t, info in parsed.items()

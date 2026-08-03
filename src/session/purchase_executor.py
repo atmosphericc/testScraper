@@ -2354,8 +2354,19 @@ class PurchaseExecutor:
                         _precommit_retryable = (_throttle_status or _throttle_key) and not _oos_key
                     else:
                         page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
-                        if any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests', 'please keep trying',
-                                                        'high-demand item', 'causing a delay', 'managing high traffic']):
+                        if (any(p in page_text for p in ['no items in your cart', 'your cart is empty'])
+                                and os.environ.get('TARGET_EMPTY_CART_BAIL', '1') == '1'):
+                            # 2026-07-31: post-RESERVATION eviction — Target emptied
+                            # the cart server-side (items → Saved for later). Every
+                            # POST we fired was a received rejection (or nothing
+                            # fired), so no order committed: safe to re-race a fresh
+                            # ATC while the item is still live. The order-id
+                            # belt-and-suspenders below still forces non-retryable
+                            # if any order id was captured.
+                            print(f"[PURCHASE] DIAGNOSIS: CART EVICTED server-side (empty-cart copy on page) — reservation died; re-race needs a fresh ATC")
+                            _precommit_retryable = True
+                        elif any(p in page_text for p in ['busier', 'temporary issue', "can't view", 'busy right now', 'limiting how many guests', 'please keep trying',
+                                                          'high-demand item', 'causing a delay', 'managing high traffic']):
                             print(f"[PURCHASE] DIAGNOSIS: F5/Target rate-limit block (busy error on page)")
                             _precommit_retryable = True
                         elif any(p in page_text for p in ['out of stock', 'unavailable', 'sold out', 'not available']):
@@ -4049,6 +4060,26 @@ class PurchaseExecutor:
               "has stopped challenging this card. Un-latching cvv_required; the "
               "API fast lane is re-enabled from the next purchase.")
 
+    async def _cart_evicted_on_page(self, tab) -> bool:
+        """True when the page itself declares the cart empty/evicted.
+
+        2026-07-31 late window: after a RESERVATION_FAILURE Target empties the
+        cart server-side — /checkout renders "There are no items in your cart
+        right now." (matched by NEITHER the busy nor the OOS phrase list, so
+        the wait loop used to spin its full 12s) and the SPA often bounces the
+        tab to /cart ("Your cart is empty", items moved to Saved for later —
+        see place_order_timeout_20260731_045638.png). Both states are terminal
+        for this attempt: only a fresh ATC can rebuild the cart, so waiting or
+        re-clicking is pure loss. Kill-switch: TARGET_EMPTY_CART_BAIL=0.
+        """
+        try:
+            txt = (await tab.evaluate(
+                "(document.body && document.body.innerText || '').slice(0, 4000)"
+            ) or '').lower()
+        except Exception:
+            return False
+        return ('no items in your cart' in txt) or ('your cart is empty' in txt)
+
     async def _handle_busy_modal(self, tab) -> bool:
         """Detect and dismiss Target's 'busier than expected' cart error modal.
 
@@ -4977,6 +5008,7 @@ class PurchaseExecutor:
                     and api_result.get('status') in (429, 424)):
                 _rs_lo = float(os.environ.get('TARGET_CHECKOUT_INPLACE_DELAY_MIN', '2.5'))
                 _rs_hi = float(os.environ.get('TARGET_CHECKOUT_INPLACE_DELAY_MAX', '3.5'))
+                _renav_done = False
                 for _rs in range(1, _reshoot_n + 1):
                     _rs_d = random.uniform(_rs_lo, _rs_hi)
                     print(f"[PAYMENT] Checkout throttled (status={api_result.get('status')}, "
@@ -4988,10 +5020,27 @@ class PurchaseExecutor:
                         print(f"[PAYMENT] in-place re-shoot warm failed: {_rs_we}")
                     await asyncio.sleep(_rs_d)
                     # F5 can bounce us off checkout — a re-fire then targets the wrong
-                    # context; stop and let the manager re-race cleanly instead.
+                    # context. 07-31 03:44 (95274164): Target's SPA bounced the tab
+                    # to /cart DURING the 45s FS hold, so this guard aborted the loop
+                    # at 1/4 with ZERO post-hold shots and the held cart was cleared
+                    # anyway — the exact outcome the hold exists to avoid. Recover
+                    # with ONE re-nav back to /checkout (the cart can still be live
+                    # server-side); if the tab is still off checkout after that,
+                    # stop as before. Kill-switch: TARGET_RESHOOT_RENAV=0.
                     if 'checkout' not in (tab.url or '').lower():
-                        print(f"[PAYMENT] in-place re-shoot: off checkout (url={tab.url}) — stopping")
-                        break
+                        if (not _renav_done
+                                and os.environ.get('TARGET_RESHOOT_RENAV', '1') == '1'):
+                            _renav_done = True
+                            print(f"[PAYMENT] in-place re-shoot: tab drifted off checkout "
+                                  f"(url={tab.url}) — one re-nav to /checkout to save the held cart")
+                            try:
+                                await tab.get("https://www.target.com/checkout")
+                                await asyncio.sleep(1.0)
+                            except Exception as _rn_e:
+                                print(f"[PAYMENT] in-place re-shoot: re-nav failed: {_rn_e}")
+                        if 'checkout' not in (tab.url or '').lower():
+                            print(f"[PAYMENT] in-place re-shoot: off checkout (url={tab.url}) — stopping")
+                            break
                     api_result = await self._api_place_order(tab)
                     if api_result.get('success'):
                         self._api_order_id = api_result.get('order_id')
@@ -5054,6 +5103,25 @@ class PurchaseExecutor:
                 print(f"[PAYMENT] API rejection ({api_result.get('reason')}, "
                       f"status={api_result.get('status')}) — fast-bail (no DOM retry)")
                 return False
+            elif (api_result.get('status') == 400
+                    and not (self._checkout_reject_reason or '').strip()
+                    and os.environ.get('TARGET_EMPTY_CART_BAIL', '1') == '1'):
+                # ── Dead-cart fast-bail (2026-08-02, 07-31 late-window forensics) ──
+                # A place-order 400 with NO tgt-cart-error-key (empty body) is the
+                # post-eviction signature: RESERVATION_FAILURE kills the reservation,
+                # Target empties the cart server-side seconds later (items bumped to
+                # Saved-for-later), and every later checkout POST 400s key-less
+                # against the corpse. On 07-31 (04:55/05:00/05:12 waves) this cost
+                # 15-25s per attempt: a DOM click at the dead cart, the 12s
+                # confirmation wait, then a /cart bounce. A RECEIVED 400 is a server
+                # rejection ⇒ provably no order ⇒ safe to bail terminal so the
+                # manager can re-race a FRESH ATC while the item is still live.
+                # A 400 WITH an error key (e.g. MISSING_CREDIT_CARD_CVV) never takes
+                # this branch. Kill-switch: TARGET_EMPTY_CART_BAIL=0.
+                print(f"[PAYMENT] place-order 400 with no cart-error-key — cart evicted "
+                      f"server-side (post-RESERVATION empty-cart signature). Fast-bail, "
+                      f"no DOM retry; only a fresh ATC can rebuild the cart.")
+                return False
             # else: http_xxx / unknown → fall through and let DOM try.
 
         # Dismiss any "Checkout is busy right now" banner before attempting Place Order
@@ -5067,6 +5135,14 @@ class PurchaseExecutor:
             place_order_button, found_selector = await self._find_place_order_button(tab)
             if not place_order_button:
                 print("[PAYMENT] Place Order not found or still disabled")
+                # Name the cause when it's the evicted cart (07-31: the button
+                # vanishes because the SPA re-rendered an emptied checkout or
+                # bounced to /cart) so forensics don't read as "unknown".
+                if (os.environ.get('TARGET_EMPTY_CART_BAIL', '1') == '1'
+                        and await self._cart_evicted_on_page(tab)):
+                    print(f"[PAYMENT] no Place Order button because the cart is EVICTED "
+                          f"(empty-cart copy on {tab.url}) — terminal for this attempt")
+                    return False
                 try:
                     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
                     await self._screenshot(tab, f"logs/checkout_no_place_order_{ts}.png")
@@ -5093,6 +5169,7 @@ class PurchaseExecutor:
             print("[PAYMENT] Waiting for confirmation, CVV modal, or busy modal...")
             start = time.time()
             cvv_handled = False
+            _last_evict_probe = 0.0
             while time.time() - start < 12.0:
                 url = tab.url
                 if 'order-confirmation' in url.lower() or 'thank' in url.lower() or 'confirmation' in url.lower():
@@ -5118,6 +5195,22 @@ class PurchaseExecutor:
                           f"(t+{time.time()-t_click:.3f}s) — reservation is dead, no amount of "
                           f"re-clicking recovers it. Bailing to let the manager re-race ATC.")
                     return False
+                # ── Evicted-cart bail (2026-08-02, 07-31 late-window forensics) ──
+                # Placed HERE (like the reservation bail) because the CVV branch
+                # below `continue`s every iteration until a modal appears — on a
+                # dead cart no modal ever comes, so checks after it never run.
+                # Probed ~1/s: the page copy ("no items in your cart" on checkout,
+                # "your cart is empty" after the SPA bounces to /cart) is the
+                # definitive eviction signal; waiting the full 12s at it cost
+                # every late-window 07-31 attempt 11+ dead seconds.
+                if (os.environ.get('TARGET_EMPTY_CART_BAIL', '1') == '1'
+                        and time.time() - _last_evict_probe >= 1.0):
+                    _last_evict_probe = time.time()
+                    if await self._cart_evicted_on_page(tab):
+                        print(f"[PAYMENT] cart EVICTED server-side (empty-cart copy on "
+                              f"{tab.url}) at t+{time.time()-t_click:.1f}s — bailing; "
+                              f"only a fresh ATC can rebuild the cart.")
+                        return False
                 if not cvv_handled:
                     cvv_handled = await self._handle_cvv_modal(tab)
                     if cvv_handled:

@@ -1017,8 +1017,101 @@ class StockMonitorThread:
         self.running = True
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.thread.start()
+        # ── Level re-arm during persistent in-stock (2026-08-02, 07-31 audit) ──
+        # Resilient mode has NO periodic 'stock_updated' publisher: _check_stock
+        # returns None (tab-fetch skipped) and _on_proxy_stock_detected fires on
+        # transitions only. A wave that ends 'failed' while the item STAYS in
+        # stock therefore never re-races until the next OOS→in-stock flip. On
+        # 07-31 the street-date ETBs (95274164/95274160) each sat in stock ~22
+        # min and got one race + tail flickers — 17-18 min of live stock with
+        # zero shots. This loop re-publishes failed-but-still-stocked TCINs so
+        # the existing reset→process machinery re-races them.
+        # Kill-switch: TARGET_LEVEL_REARM_S=0.
+        try:
+            _rearm_s = float(os.environ.get('TARGET_LEVEL_REARM_S', '20'))
+        except ValueError:
+            _rearm_s = 20.0
+        if (self._use_resilient and _rearm_s > 0
+                and getattr(self.stock_monitor, '_resilient_checker', None) is not None):
+            threading.Thread(target=self._level_rearm_loop, args=(_rearm_s,),
+                             daemon=True, name='level-rearm').start()
+            print(f"[LEVEL_REARM] armed — failed waves re-race every {_rearm_s:.0f}s "
+                  f"while stock persists (TARGET_LEVEL_REARM_S=0 disables)")
         # Log from a separate thread to avoid deadlock
         threading.Thread(target=lambda: add_activity_log("Stock monitor thread started", "success", "system"), daemon=True).start()
+
+    @staticmethod
+    def _build_level_rearm_map(status_snapshot, states, now, stale_after_s=90.0):
+        """Pure filter for the level re-arm publisher (unit-tested).
+
+        From the resilient checker's {tcin: TcinStatus} snapshot, keep only
+        TCINs that are (a) in stock, (b) freshly swept (sweeps still alive —
+        never re-arm off a dead checker's last snapshot), and (c) in purchase
+        state 'failed'. 'purchased' is deliberately excluded: repeat purchases
+        keep requiring a real OOS→in-stock flip, exactly the pre-existing
+        semantics; 'attempting'/'queued' are live waves; 'ready' TCINs get
+        their wave from the normal edge publisher the moment stock flips.
+        Returns a stock_data dict in the _adapter shape _handle_stock_update
+        already consumes.
+        """
+        rearm = {}
+        for tcin, s in status_snapshot.items():
+            try:
+                if not getattr(s, 'in_stock', False):
+                    continue
+                last = getattr(s, 'last_checked_at', 0) or 0
+                if not last or (now - last) > stale_after_s:
+                    continue
+                if states.get(str(tcin), {}).get('status') != 'failed':
+                    continue
+                rearm[str(tcin)] = {
+                    'title': getattr(s, 'title', None) or f'Product {tcin}',
+                    'in_stock': True,
+                    'last_checked': datetime.fromtimestamp(last).isoformat(),
+                    'status_detail': getattr(s, 'availability_status', None),
+                }
+            except Exception:
+                continue
+        return rearm
+
+    def _level_rearm_loop(self, interval_s):
+        """Re-publish failed-but-still-stocked TCINs every interval_s seconds.
+
+        Money-safety is the manager's EXISTING machinery, unchanged: STEP 1's
+        stock-aware reset applies the tiered 3.5s/10s error gate before a
+        'failed' state goes back to 'ready'; process_stock_data launches only
+        the TCINs named in the event, keeps one-purchase-at-a-time
+        serialization, and dedupes via the 'attempting' guard. Effective
+        re-race cadence is therefore ~wave-length, not interval_s.
+        """
+        while self.running:
+            time.sleep(interval_s)
+            if not self.running:
+                return
+            try:
+                checker = getattr(self.stock_monitor, '_resilient_checker', None)
+                pm = self._purchase_manager
+                if checker is None or pm is None:
+                    continue
+                try:
+                    snapshot = dict(getattr(checker, '_tcin_status', {}) or {})
+                except RuntimeError:
+                    continue  # checker mutated the dict mid-copy — next tick
+                if not snapshot:
+                    continue
+                rearm = self._build_level_rearm_map(
+                    snapshot, pm.get_all_states(), time.time())
+                if not rearm:
+                    continue
+                print(f"[LEVEL_REARM] stock still live for failed wave(s) "
+                      f"{sorted(rearm)} — re-publishing for re-race")
+                self.event_bus.publish('stock_updated', {
+                    'stock_data': rearm,
+                    'timestamp': time.time(),
+                    'source': 'level_rearm',
+                })
+            except Exception as e:
+                print(f"[LEVEL_REARM] tick failed: {e}")
 
     def stop(self):
         """Stop the stock monitoring thread"""
