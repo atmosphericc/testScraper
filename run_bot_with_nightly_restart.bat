@@ -283,6 +283,21 @@ REM     62.5h (~67k extra origin fetches) re-confirming the same all-OOS. Now:
 REM     confirmed all-OOS widens the origin re-verify 60->300s; any hit or
 REM     probe failure restores the sharp 30s. Kill: TARGET_CLOAK_VERIFY_BACKOFF=0
 set TARGET_CLOAK_VERIFY_BACKOFF=1
+REM ---------------------------------------------------------------------------
+REM  2026-08-04 restock audit fixes (commit e718a71d). 4 orders/8 units, ALL on
+REM  business; primary+alt-1 won ZERO carts on ~1,800 ATC attempts.
+REM  6) Organic ATC fallback: 2,566 ATC 401s vs 22 201s while those accounts
+REM     minted ~850 MEMBER tokens each and their warmup dummy POSTs (plain
+REM     fetch, NO injected headers) passed ~92%%. Shape locks the REPLAYED-header
+REM     dispatch per identity; page-signed fetches stay exempt. After every
+REM     injected shot returns a RECEIVED 401 (provably no add), fire one ATC
+REM     from the warmup tab unsigned by us. Kill: TARGET_ATC_NATIVE_FALLBACK=0
+set TARGET_ATC_NATIVE_FALLBACK=1
+REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
+REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
+REM     next drop. Now the jar is snapshotted pre-signout and restored when the
+REM     login fails. Kill: TARGET_RELOGIN_RESTORE_ON_FAIL=0
+set TARGET_RELOGIN_RESTORE_ON_FAIL=1
 
 REM ---------------------------------------------------------------------------
 REM  Token keep-fresh ON (2026-07-12, CORRECTED). The F5 research overturned the
