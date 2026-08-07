@@ -410,6 +410,41 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
                 pass
 
 
+def _bot_is_running() -> bool:
+    """True when a live app.py process is detected on this box.
+
+    Used by the live-bot guard below. Deliberately fails OPEN: any detection
+    error (no PowerShell, odd locale, permissions) returns False so a genuine
+    recovery relogin is never blocked by the guard itself.
+    """
+    try:
+        import subprocess
+        # Emit ONE line per process ("<pid>\t<command line>") with any embedded
+        # newlines flattened. A raw CommandLine dump splits multi-line commands
+        # across output lines, which would evaluate the exclusions below against
+        # the wrong fragment (a `python -c` script merely containing the text
+        # "app.py" then reads as a live bot).
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name like '%python%'\" | "
+             "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine -replace "
+             "'[\\r\\n]+',' ')\" }"],
+            capture_output=True, text=True, timeout=15).stdout or ""
+    except Exception:
+        return False
+    me = str(os.getpid())
+    for line in out.splitlines():
+        pid, _, cmd = line.partition("\t")
+        if not cmd or pid.strip() == me:
+            continue
+        low = cmd.lower()
+        # Substring match also catches test_app.py / unified_app.py — those drive
+        # the same Chrome profiles, so a relogin is equally destructive there.
+        if "app.py" in low and "relogin_one" not in low:
+            return True
+    return False
+
+
 async def main():
     args = sys.argv[1:]
     if not args:
@@ -436,6 +471,22 @@ async def main():
                 ", ".join(f"{a['account_id']}({_mask(a['username'])})" for a in selected))
     if dry:
         log("PLAN", "dry run — no browser launched."); return 0
+
+    # ── Live-bot guard (2026-08-04) ──────────────────────────────────────────
+    # 20:24 on 08-04 a relogin ran against the STILL-RUNNING bot: the signout
+    # cleared cookies+storage on a profile Chrome held locked, the login then
+    # died at "username field NOT found", and primary's target.json was left
+    # rewritten at 24KB (vs 56-57KB for the untouched accounts) — a destroyed
+    # session going into the next drop window. A relogin can never safely share
+    # a profile with a live app.py, so refuse instead of corrupting it.
+    # Fails OPEN (any detection error => proceed) so this can't block a real
+    # recovery. Override: --allow-while-running.
+    if "--allow-while-running" not in args and _bot_is_running():
+        log("PLAN", "REFUSING: app.py is already running — a relogin would clear "
+                    "cookies on a profile the live bot holds locked and can leave "
+                    "the saved session destroyed (08-04 incident). Stop the bot "
+                    "first, or re-run with --allow-while-running if you are sure.")
+        return 2
 
     results = {}
     for idx, acc in enumerate(selected):

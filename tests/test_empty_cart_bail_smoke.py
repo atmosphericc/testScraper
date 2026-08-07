@@ -109,6 +109,23 @@ def test_reshoot_renav_contract():
     check("renav_targets_checkout", 'tab.get("https://www.target.com/checkout")' in SRC)
 
 
+def test_diagnosis_classifies_keyless_400_retryable():
+    # 2026-08-04: the bail returned False expecting a fresh-ATC re-race, but the
+    # DIAGNOSIS chain classified the key-less 400 as HTTP_400 → non-retryable →
+    # 'checkout_navigation_failed' → the manager stopped re-racing while stock
+    # was live. Pin: the DIAGNOSIS chain recognises the evicted signature
+    # (status 400 AND empty tgt-cart-error-key AND the kill-switch) and flips
+    # _precommit_retryable=True BEFORE the order-id belt-and-suspenders.
+    m = re.search(
+        r"_checkout_reject_status == 400\s*\n\s*and not \(self\._checkout_reject_reason or ''\)\.strip\(\)"
+        r"\s*\n\s*and os\.environ\.get\('TARGET_EMPTY_CART_BAIL', '1'\) == '1'\)[\s\S]{0,400}?"
+        r"_precommit_retryable = True[\s\S]{0,3000}?if self\._api_order_id:",
+        SRC)
+    check("diagnosis_keyless_400_retryable_before_orderid_guard", m is not None)
+    check("diagnosis_prints_evicted_signature",
+          "key-less 400 = evicted-cart signature" in SRC)
+
+
 if __name__ == '__main__':
     test_checkout_empty_banner_detected()
     test_cart_page_empty_detected()
@@ -118,5 +135,6 @@ if __name__ == '__main__':
     test_phrases_in_sync_helper_vs_diagnosis()
     test_wire_bail_excludes_keyed_400()
     test_reshoot_renav_contract()
+    test_diagnosis_classifies_keyless_400_retryable()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

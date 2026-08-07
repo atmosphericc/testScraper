@@ -1752,8 +1752,47 @@ class SessionManager:
                 _sys.path.insert(0, _root)
             import relogin_one as _relogin
             self.logger.info(f"[RELOGIN] credential re-login for {self.account_id} (proven flow)...")
+            # ── Non-destructive escalation (2026-08-04) ──────────────────────
+            # full_signout() clears cookies+storage BEFORE the login is proven.
+            # When the scripted login is Shape-burned (it has been ~0-for-25 —
+            # 08-04 20:24 it died at "username field NOT found"), that trade
+            # turns a DEGRADED-but-present session into NO session: primary's
+            # target.json was left rewritten at 24KB vs 56-57KB for the
+            # untouched accounts, i.e. signed out going into the next drop.
+            # Snapshot the jar first and put it back if the login fails, so a
+            # failed self-heal is a no-op instead of a session kill. The
+            # success path is untouched. Kill-switch:
+            # TARGET_RELOGIN_RESTORE_ON_FAIL=0.
+            _bak = None
+            if os.environ.get('TARGET_RELOGIN_RESTORE_ON_FAIL', '1') == '1':
+                try:
+                    if self.session_path.exists():
+                        import shutil as _shutil
+                        _bak = self.session_path.with_suffix(
+                            self.session_path.suffix + '.presignout')
+                        _shutil.copy2(str(self.session_path), str(_bak))
+                except Exception as _bak_err:
+                    _bak = None
+                    self.logger.warning(f"[RELOGIN] pre-signout snapshot failed for "
+                                        f"{self.account_id}: {_bak_err}")
             await _relogin.full_signout(tab)
             ok = await _relogin.login(tab, username, password)
+            if not ok and _bak is not None:
+                try:
+                    import shutil as _shutil
+                    _shutil.copy2(str(_bak), str(self.session_path))
+                    self.logger.warning(
+                        f"[RELOGIN] {self.account_id}: login FAILED — restored the "
+                        f"pre-signout session jar (a failed escalation must not "
+                        f"leave the account signed out). Hand-login still needed.")
+                except Exception as _res_err:
+                    self.logger.error(f"[RELOGIN] {self.account_id}: could not restore "
+                                      f"the pre-signout jar: {_res_err}")
+            if ok and _bak is not None:
+                try:
+                    _bak.unlink()
+                except Exception:
+                    pass
             if ok:
                 self.session_active = True
                 self.last_validation = datetime.now()

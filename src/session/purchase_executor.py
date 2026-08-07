@@ -1797,6 +1797,23 @@ class PurchaseExecutor:
                         skip_signal_wait = True
                     else:
                         print(f"[PURCHASE] ATC retry-2 returned {fast_status2} — falling through to DOM polling fallback")
+                        # ── Organic-dispatch fallback on the Shape 401 lockout (2026-08-04) ──
+                        # Reaching here with fast_status2==401 means EVERY injected-header
+                        # ATC this execution (initial, fast-retry, retry-2 — plus the fast
+                        # lane's chain when it ran) was a RECEIVED 401 while two token
+                        # repairs minted fresh member tokens: the replay-lockout signature
+                        # that kept primary+alt-1 at 0 carts for 9h on 08-04 while their
+                        # un-injected warmup POSTs kept passing. One organic shot from the
+                        # warmup tab; received 401s added nothing, so no double-add.
+                        if fast_status2 == 401:
+                            _nat_status = await self._native_atc_fallback(tcin, quantity)
+                            if _nat_status in (200, 201):
+                                print(f"[PURCHASE] Organic ATC fallback succeeded ({_nat_status}) — "
+                                      f"cart won on the native path (t={time.time()-start_time:.2f}s)")
+                                atc_status = _nat_status
+                                atc_body = ''
+                                cart_confirmed = True
+                                skip_signal_wait = True
                 else:
                     print(f"[PURCHASE] ATC fast-retry returned {fast_status} — falling through to DOM polling fallback")
                 token_fresh = False
@@ -2352,6 +2369,23 @@ class PurchaseExecutor:
                         else:
                             print(f"[PURCHASE] DIAGNOSIS: Checkout rejected by server — status={self._checkout_reject_status} tgt-cart-error-key={reason}")
                         _precommit_retryable = (_throttle_status or _throttle_key) and not _oos_key
+                        # ── Evicted-cart 400 composes with the 08-02 fast-bail (2026-08-04) ──
+                        # The dead-cart bail (place-order 400 with NO tgt-cart-error-key)
+                        # returns False expecting a fresh-ATC re-race, but this classifier
+                        # only saw HTTP_400 → non-retryable → the worker quit the race while
+                        # stock was still live (08-04: business quit 95s before stock death
+                        # with an ATC that was passing 6-for-6). A RECEIVED key-less 400 is
+                        # the post-eviction signature: provably a server rejection ⇒ no order
+                        # committed ⇒ same pre-commit safety class as the 429/424 throttle
+                        # above. The order-id belt-and-suspenders below still forces
+                        # non-retryable if any order id was captured.
+                        if (not _precommit_retryable
+                                and self._checkout_reject_status == 400
+                                and not (self._checkout_reject_reason or '').strip()
+                                and os.environ.get('TARGET_EMPTY_CART_BAIL', '1') == '1'):
+                            print(f"[PURCHASE] DIAGNOSIS: key-less 400 = evicted-cart signature — "
+                                  f"pre-commit rejection, retryable (fresh ATC re-race)")
+                            _precommit_retryable = True
                     else:
                         page_text = (await tab.evaluate("(document.body && document.body.innerText || '').toLowerCase()"))
                         if (any(p in page_text for p in ['no items in your cart', 'your cart is empty'])
@@ -4290,6 +4324,69 @@ class PurchaseExecutor:
               f"(07-28: cleared carts → 0-for-~250 ATC re-race)")
         await asyncio.sleep(_hold)
         return True
+
+    async def _native_atc_fallback(self, tcin: str, quantity: int) -> int:
+        """Organic ATC from a warmup tab when the injected-header dispatch is
+        Shape-locked.
+
+        2026-08-04: 2 of 3 accounts got a RECEIVED 401 on EVERY injected-header
+        ATC for 9+ hours (~900 shots each) while fresh member tokens minted
+        fine — yet the SAME accounts' warmup-tab dummy POSTs (plain fetch, NO
+        injected headers) passed at ~92% all night. The /cart page's Shape VM
+        signs page-context fetches organically; the ring-replayed headers are
+        what the per-identity lockout keys on. So: fire the REAL cart_items
+        POST from the warmup tab with no injected headers and let the live VM
+        sign it.
+
+        Only called after every injected attempt in the current execution
+        returned a RECEIVED 401 — a received 401 provably added nothing, so
+        this cannot double-add. Returns the HTTP status (0 = skipped/failed).
+        Kill-switch: TARGET_ATC_NATIVE_FALLBACK=0.
+        """
+        if os.environ.get('TARGET_ATC_NATIVE_FALLBACK', '1') != '1':
+            return 0
+        tab = None
+        for _t in self._warmup_tabs:
+            if _t is not None:
+                tab = _t
+                break
+        if tab is None:
+            print(f"[NATIVE_ATC] no live warmup tab — skipping organic fallback")
+            return 0
+        if not re.fullmatch(r'\d{6,12}', str(tcin or '')):
+            return 0
+        _qty = max(1, min(int(quantity or 1), 3))
+        _js = """(async () => {
+            try {
+                const resp = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'Origin': 'https://www.target.com',
+                    },
+                    body: JSON.stringify({
+                        cart_item: {tcin: '%s', quantity: %d, item_channel_id: '10',
+                                    fulfillment_type: 'SHIPPING', fulfillment_type_code: '02'},
+                        cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'
+                    })
+                });
+                return resp.status;
+            } catch(e) { return 0; }
+        })()""" % (tcin, _qty)
+        try:
+            _res = await asyncio.wait_for(
+                tab.evaluate(_js, await_promise=True), timeout=8.0)
+            _status = int(_res)
+        except (TypeError, ValueError):
+            print(f"[NATIVE_ATC] warmup-tab organic ATC returned a non-numeric status")
+            return 0
+        except Exception as _e:
+            print(f"[NATIVE_ATC] warmup-tab organic ATC failed: {type(_e).__name__}: {_e}")
+            return 0
+        print(f"[NATIVE_ATC] warmup-tab organic ATC (no injected headers) → status {_status}")
+        return _status
 
     def _apply_fast_lane_result(self, fl: Dict[str, Any], tcin: str,
                                 start_time: float):

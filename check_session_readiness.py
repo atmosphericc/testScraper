@@ -9,7 +9,9 @@ Chrome, no network, no side effects — so you can spot-check readiness anytime.
 
 What it tells you (from persisted state):
   - login-session TTL  → can this account mint a MEMBER token at bot startup?
-    (login-session dead ⇒ startup must do a credential relogin first)
+    (login-session MISSING/expired ⇒ startup must do a credential relogin first;
+     "session-typed" (expires=-1, fresh from a real login) is healthy — the boot
+     watchdog promotes it to a 30d persistent cookie via CDP)
   - refreshToken TTL   → longer-lived session anchor
   - accessToken type   → was the account MEMBER (sut=R + eid) or GUEST when saved?
 
@@ -119,6 +121,12 @@ def main() -> int:
             return to_unix(c.get("expires")) if c else 0.0
 
         ls, rt = cexp("login-session"), cexp("refreshToken")
+        # login-session often arrives as a browser-session cookie (expires=-1, no
+        # client TTL) straight after a real login — that is NOT dead: the session
+        # watchdog promotes it to a 30d persistent cookie at boot
+        # (session_manager._fix_session_cookies). Only missing or past-dated = dead.
+        ls_cookie = cks.get("login-session")
+        ls_session_typed = bool(ls_cookie) and ls <= 0
         at = cks.get("accessToken")
         claims = jwt_claims(at["value"]) if at else {}
         eid = bool(claims.get("eid") or claims.get("sub"))
@@ -126,8 +134,11 @@ def main() -> int:
         is_member = eid and str(sut).upper() in ("R", "M", "MEMBER")
 
         # Verdict: login-session is what lets startup mint a member token.
-        if ls <= 0:
-            verdict = "❌ login-session DEAD — startup needs a credential relogin first"
+        if not ls_cookie:
+            verdict = "❌ login-session MISSING — startup needs a credential relogin first"
+            all_green = False
+        elif 0 < ls < NOW:
+            verdict = "❌ login-session EXPIRED — startup needs a credential relogin first"
             all_green = False
         elif not at:
             verdict = "⚠  no accessToken saved — will re-mint at startup (usually fine)"
@@ -137,8 +148,9 @@ def main() -> int:
         else:
             verdict = "✅ healthy MEMBER session — will start hot"
 
+        ls_s = "session-typed (promoted to 30d at boot)" if ls_session_typed else ttl(ls)
         print(f"\n{acct:10} saved {saved_s}")
-        print(f"           login-session={ttl(ls)}   refreshToken={ttl(rt)}   "
+        print(f"           login-session={ls_s}   refreshToken={ttl(rt)}   "
               f"accessToken={'MEMBER' if is_member else 'guest/none'} (sut={sut})")
         print(f"           {verdict}")
 
