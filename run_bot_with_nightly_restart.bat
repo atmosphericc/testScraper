@@ -286,13 +286,18 @@ set TARGET_CLOAK_VERIFY_BACKOFF=1
 REM ---------------------------------------------------------------------------
 REM  2026-08-04 restock audit fixes (commit e718a71d). 4 orders/8 units, ALL on
 REM  business; primary+alt-1 won ZERO carts on ~1,800 ATC attempts.
-REM  6) Organic ATC fallback: 2,566 ATC 401s vs 22 201s while those accounts
-REM     minted ~850 MEMBER tokens each and their warmup dummy POSTs (plain
-REM     fetch, NO injected headers) passed ~92%%. Shape locks the REPLAYED-header
-REM     dispatch per identity; page-signed fetches stay exempt. After every
-REM     injected shot returns a RECEIVED 401 (provably no add), fire one ATC
-REM     from the warmup tab unsigned by us. Kill: TARGET_ATC_NATIVE_FALLBACK=0
-set TARGET_ATC_NATIVE_FALLBACK=1
+REM  6) Organic ATC fallback: DISABLED 2026-08-07 -- premise FALSIFIED on its first
+REM     live test. The 08-04 theory was "Shape locks the REPLAYED-header dispatch
+REM     per identity; page-signed fetches stay exempt." The 08-06->07 restock went
+REM     0-for-3-accounts (0 carts on ~2,960 ATC), and this fallback fired 1,468x
+REM     returning 401/429 EVERY time (zero 2xx) -- the organic page-signed add is
+REM     NOT exempt. The warmup dummy POST's 424 only proves the token is valid: it
+REM     uses a bogus tcin (81926151), so it never tests a real contested add. The
+REM     real gate is per-identity anti-bot/demand on the hot SKU (429 early,
+REM     hardening to 401 _ERR_AUTH_DENIED late), hitting injected AND organic adds
+REM     alike; the fallback only added failed-add load on the contested SKU.
+REM     Re-enable (=1) only if a future test shows organic adds actually pass.
+set TARGET_ATC_NATIVE_FALLBACK=0
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

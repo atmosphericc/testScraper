@@ -4329,6 +4329,14 @@ class PurchaseExecutor:
         """Organic ATC from a warmup tab when the injected-header dispatch is
         Shape-locked.
 
+        ⚠ 2026-08-07: PREMISE FALSIFIED, default-OFF (TARGET_ATC_NATIVE_FALLBACK=0
+        in the wrapper). On its first live test (08-06→07 restock) this fired 1,468×
+        and returned 401/429 EVERY time (0×2xx): the organic page-signed add is NOT
+        exempt from the gate. The warmup dummy POST's 424 only proves the token is
+        valid — it uses a bogus tcin so it never exercises a real contested add. The
+        real gate is per-identity anti-bot/demand on the hot SKU, hitting injected
+        AND organic adds alike. Left in place, kill-switch-gated, for reference only.
+
         2026-08-04: 2 of 3 accounts got a RECEIVED 401 on EVERY injected-header
         ATC for 9+ hours (~900 shots each) while fresh member tokens minted
         fine — yet the SAME accounts' warmup-tab dummy POSTs (plain fetch, NO

@@ -18,14 +18,17 @@
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.198.34:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.143.27:jw569klxgs9c@brd.superproxy.io:33335"
   ],
-  "_comment_purchase": "Account purchase exits (NOT swept): primary=31.105.133.83, business=31.98.158.87, alt-1=92.112.18.99 \u2014 see config/target_accounts.json.",
-  "_comment_reserve": "Spare clean IPs \u2014 manually move into 'proxies' if an active one burns. 6 entries.",
+  "_comment_purchase": "Account purchase exits (NOT swept): primary=168.158.160.228, business=31.98.158.87, alt-1=168.158.32.64 \u2014 see config/target_accounts.json. 2026-08-07: primary+alt-1 rotated off 31.105.133.83/92.112.18.99 (0 carts on 08-04 + 08-06->07, per-identity ATC gate; lever #1 of the 08-07 post-mortem).",
+  "_comment_reserve": "Spare clean IPs \u2014 manually move into 'proxies' if an active one burns. 4 entries (2 consumed 2026-08-07 by the purchase-exit rotation).",
   "reserve_proxies": [
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.160.228:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.32.64:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.63.137:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.111.240:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.219.76:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.74.45:jw569klxgs9c@brd.superproxy.io:33335"
+  ],
+  "_comment_cooling": "Ex-purchase exits rotated out 2026-08-07 after two straight 0-cart nights (08-04, 08-06->07) under the per-identity ATC gate. NOT read by any code. Do NOT move into 'proxies' or back into purchase duty without a fresh standing check — suspected Shape/demand standing damage, not connectivity failure (both passed all connectivity preflights).",
+  "cooling_purchase_exits": [
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.133.83:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-92.112.18.99:jw569klxgs9c@brd.superproxy.io:33335"
   ]
 }
