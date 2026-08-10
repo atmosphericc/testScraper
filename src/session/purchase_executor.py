@@ -161,6 +161,27 @@ class PurchaseExecutor:
         # product. Map: tcin -> unix ts when cooldown ends.
         self._tcin_throttle_until: Dict[str, float] = {}
         self._tcin_throttle_cooldown_s: float = 90.0
+        # ── ATC gate-wall circuit breaker (2026-08-09) ──────────────────────
+        # On a hot/contested SKU, F5 Shape "Device ID+" denies the ADD on an
+        # accumulated per-DEVICE bot score, surfacing as a wall of 401
+        # _ERR_AUTH_DENIED / 429 DCO_RATE_LIMITED with ZERO 2xx (08-06->07
+        # restock: ~2,960 adds across 3 identities, 0 carts). Per the repo's own
+        # Shape doc (docs/RETAILERS/target.md, "Device ID+"), continuing to
+        # hammer during this state ACCELERATES the block — and Device ID+ is
+        # hardware-anchored, so all 3 identities on this one machine share the
+        # score. The retry-while-in-stock loop otherwise fires up to
+        # TARGET_RETRY_WHILE_IN_STOCK_MAX adds/window into that wall. This
+        # breaker counts CONSECUTIVE gate-denials per TCIN (this executor
+        # instance == one identity) and, past the streak limit, arms the
+        # EXISTING per-TCIN throttle above so subsequent adds bail fast —
+        # cutting a ~40-shot storm down to ~1 probe / cooldown. FAIL-SAFE: any
+        # successful add resets the streak, so a winning night never trips it
+        # (arming needs a high streak AND a live gate-denial; a stale streak is
+        # inert while adds succeed). Kill-switch: TARGET_ATC_GATE_BREAKER=0.
+        self._atc_gate_breaker_on: bool = os.environ.get('TARGET_ATC_GATE_BREAKER', '1') != '0'
+        self._atc_gate_streak_limit: int = int(os.environ.get('TARGET_ATC_GATE_STREAK_LIMIT', '8'))
+        self._atc_gate_cooldown_s: float = float(os.environ.get('TARGET_ATC_GATE_COOLDOWN_S', '120'))
+        self._tcin_denial_streak: Dict[str, int] = {}  # tcin -> consecutive ATC gate-denials
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -328,7 +349,11 @@ class PurchaseExecutor:
             async with asyncio.timeout(140):  # slightly less than thread's 150s so coroutine self-cancels cleanly
                 async with self._page_lock:
                     _impl_entered = True
-                    return await self._execute_purchase_impl(tcin, quantity=quantity)
+                    _impl_result = await self._execute_purchase_impl(tcin, quantity=quantity)
+                    # Single chokepoint: feed every path's final outcome to the
+                    # ATC gate-wall circuit breaker (sync, cannot raise).
+                    self._note_atc_gate_outcome(tcin, _impl_result)
+                    return _impl_result
         except (asyncio.TimeoutError, TimeoutError):
             if not _impl_entered:
                 return {
@@ -349,6 +374,57 @@ class PurchaseExecutor:
                 'reason': 'purchase_impl_hang',
                 'error': 'purchase impl hung >140s — CDP websocket likely dead/wedged'
             }
+
+    def _note_atc_gate_outcome(self, tcin: str, result: Dict[str, Any]) -> None:
+        """Feed one purchase outcome into the ATC gate-wall circuit breaker.
+
+        Counts CONSECUTIVE Shape gate-denials per TCIN (atc_failed_api_mode /
+        rate_limited_429 — the 401 _ERR_AUTH_DENIED / 429 DCO_RATE_LIMITED wall)
+        and, past self._atc_gate_streak_limit, arms the EXISTING per-TCIN
+        throttle (_tcin_throttle_until) so subsequent adds bail fast at the top
+        of _execute_purchase_impl and the manager's retry loop breaks on the
+        already-handled 'tcin_throttled_cooldown' reason. See __init__ for the
+        full rationale.
+
+        FAIL-SAFE by construction: arming requires a high streak AND a live
+        gate-denial, and ANY success resets the streak to 0 — so a night that is
+        actually winning (2xx interspersed) never trips, and a stale high streak
+        is inert while adds succeed. Only the two clean gate reasons increment;
+        pre-ATC bails (wedge/timeout/our own throttle) and post-ATC checkout
+        failures leave the streak untouched. No-op unless TARGET_ATC_GATE_BREAKER
+        is on. MUST NOT raise into the purchase path — everything is wrapped.
+        """
+        if not getattr(self, '_atc_gate_breaker_on', False):
+            return
+        try:
+            if result.get('success'):
+                if self._tcin_denial_streak.get(tcin):
+                    self._tcin_denial_streak[tcin] = 0
+                    print(f"[ATC_GATE_BREAKER] {tcin}: add succeeded — streak reset, full aggression restored")
+                return
+            if result.get('reason') not in ('atc_failed_api_mode', 'rate_limited_429'):
+                return  # not a clean gate-denial signal — leave the streak unchanged
+            streak = self._tcin_denial_streak.get(tcin, 0) + 1
+            self._tcin_denial_streak[tcin] = streak
+            if streak >= self._atc_gate_streak_limit and time.time() >= self._tcin_throttle_until.get(tcin, 0.0):
+                self._tcin_throttle_until[tcin] = time.time() + self._atc_gate_cooldown_s
+                msg = (f"[ATC_GATE_BREAKER] {tcin}: {streak} consecutive ATC gate-denials "
+                       f"(401/429 wall, 0 carts) — arming {self._atc_gate_cooldown_s:.0f}s throttle to stop "
+                       f"cooking the Device ID+ score. A single successful add resets this instantly.")
+                print(msg)
+                try:
+                    import datetime as _dt
+                    os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                except Exception:
+                    pass
+        except Exception as _gate_err:
+            # The breaker must never break a purchase.
+            try:
+                print(f"[ATC_GATE_BREAKER] non-fatal error (ignored): {_gate_err}")
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # Page-level helpers (migrated from patchright)

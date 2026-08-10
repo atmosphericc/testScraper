@@ -79,6 +79,22 @@ REM  not the attempt count. Pre-ATC 429s are provably pre-submit — cannot doub
 REM  Wall A (checkout "busy" / RESERVATION_FAILURE) is handled by the new
 REM  checkout_busy_retryable path; kill-switch: set TARGET_RETRY_CHECKOUT_BUSY=0.
 set TARGET_RETRY_WHILE_IN_STOCK_MAX=40
+REM ---------------------------------------------------------------------------
+REM  ATC gate-wall circuit breaker (2026-08-09, run_20260806_234205.log audit).
+REM  The 08-06->07 restock went 0-for-0: all 3 identities hit a Shape Device ID+
+REM  wall at add-to-cart (~2,960 adds, 0 carts; 429 DCO_RATE_LIMITED hardening to
+REM  401 _ERR_AUTH_DENIED as the night wore on). Device ID+ is hardware-anchored
+REM  (docs/RETAILERS/target.md) so all 3 identities on this one machine share the
+REM  score, and continuing to hammer ACCELERATES the block. This breaker counts
+REM  CONSECUTIVE gate-denials per identity+TCIN and, past STREAK_LIMIT, arms the
+REM  existing per-TCIN throttle so the retry loop stops storming the wall
+REM  (~40 shots/window -> ~1 probe/COOLDOWN). FAIL-SAFE: any successful add resets
+REM  it instantly, so a winning night never trips (07-31 7/7, 08-04 4/8 both had
+REM  2xx). Costs nothing on a 0-for night. Validated: tests/test_atc_gate_breaker.py.
+REM  Kill-switch: set TARGET_ATC_GATE_BREAKER=0. Tune: STREAK_LIMIT / COOLDOWN_S.
+set TARGET_ATC_GATE_BREAKER=1
+set TARGET_ATC_GATE_STREAK_LIMIT=8
+set TARGET_ATC_GATE_COOLDOWN_S=120
 
 REM ---------------------------------------------------------------------------
 REM  In-place checkout re-shoot (2026-07-17 drop fix). That drop went 0-for: the
