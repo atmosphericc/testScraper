@@ -67,6 +67,16 @@ account signed out; recover pre-drop only.
   that already bought — correct, it can't exceed its per-account limit.
 - **Watch for:** `rate_limited_429` on the *hottest* item (Target demand-throttle,
   separate from auth) — nothing to do live; it's an IP/account-spread problem.
+- **New (2026-08-09) — the ATC gate breaker.** On a hot SKU the whole ATC wall can
+  turn into a per-identity Shape "Device ID+" lockout (0×2xx; 429 hardening to 401
+  `_ERR_AUTH_DENIED`). Hammering that wall *accelerates* the device-score block
+  (docs/RETAILERS/target.md, "Device ID+"), so after 8 straight gate-denials on one
+  item the bot arms the per-TCIN throttle — you'll see `[ATC_GATE_BREAKER] … arming
+  …s throttle` then `tcin_throttled_cooldown` bails on that item for ~120s.
+  **This is INTENDED**: it throttles a doomed storm down to ~1 probe/120s to stop
+  cooking the shared device score (all 3 identities live on this one machine). The
+  instant any add returns 2xx it resets to full aggression, so it never suppresses
+  a winning wave. Nothing to do live. Kill-switch: `TARGET_ATC_GATE_BREAKER=0`.
 - **Do NOT** trigger a manual relogin mid-drop — it wipes the cookie jar and can
   leave the account signed OUT if the login is Shape-blocked. Recover pre-drop only.
 
@@ -86,4 +96,6 @@ account signed out; recover pre-drop only.
 - `CHROME_SIGNOUT_SKIP=1` — skip the personal-browser signout guard.
 - `TARGET_SIGNOUT_BROWSERS=chrome,edge` — restrict which browsers the guard sweeps.
 - `RELOGIN_SKIP_PROXY=1` (set) — logins run on the HOME IP (BD-IP login is Shape-blocked).
-- `TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S=110` / `..._MAX=24` — per-wave retry persistence.
+- `TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S=110` / `..._MAX=40` — per-wave retry persistence.
+- `TARGET_ATC_GATE_BREAKER=1` (set) — per-identity ATC gate-wall breaker (see "During
+  the drop"). `=0` disables. Tune: `TARGET_ATC_GATE_STREAK_LIMIT=8`, `TARGET_ATC_GATE_COOLDOWN_S=120`.
