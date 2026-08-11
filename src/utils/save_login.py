@@ -5,12 +5,38 @@ import json
 from datetime import datetime
 
 STORAGE_PATH = os.environ.get("TARGET_SESSION_PATH", "target.json")
+PROFILE_DIR = os.environ.get("TARGET_PROFILE_DIR", "./nodriver-profile")
+ACCOUNT_ID = os.environ.get("TARGET_ACCOUNT_ID", "primary")
+TIMEZONE = os.environ.get("TARGET_TIMEZONE") or None
 
 async def save_login():
-    browser = await uc.start(
-        user_data_dir="./nodriver-profile",
+    # fingerprint-chromium (flag-gated): log in on the SAME engine-level device the
+    # purchase browser will spend this cookie on, so Shape sees one coherent device
+    # across login + purchase. No-op (system Chrome, real profile) when off.
+    _fp_exec, _fp_args = (None, [])
+    _profile = PROFILE_DIR
+    try:
+        import sys as _sys
+        from pathlib import Path as _P
+        _sys.path.insert(0, str(_P(__file__).resolve().parents[2]))
+        from src.session.fp_chromium import login_overrides as _ov, login_profile_dir as _pd
+        _fp_exec, _fp_args = _ov(ACCOUNT_ID, TIMEZONE)
+        _profile = _pd(PROFILE_DIR)
+    except Exception as _e:
+        print(f"[save_login] fp-chromium lookup skipped: {_e}")
+
+    _cfg = uc.Config(
+        user_data_dir=_profile,
         headless=False,
+        browser_args=list(_fp_args),
     )
+    if _fp_exec:
+        _cfg.browser_executable_path = _fp_exec
+        print(f"[save_login] fingerprint-chromium ACTIVE for {ACCOUNT_ID}: "
+              f"exec={_fp_exec} profile={_profile} args={_fp_args}")
+    else:
+        print(f"[save_login] system Chrome, profile={_profile}")
+    browser = await uc.start(_cfg)
 
     tab = browser.tabs[0] if browser.tabs else await browser.get("about:blank")
 

@@ -295,8 +295,22 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
 
     import zendriver as uc
     identity = build_identity(acc_id, timezone=acc["timezone"] or None)
-    profile_dir = ROOT / acc["profile_dir"]; profile_dir.mkdir(parents=True, exist_ok=True)
+    # fingerprint-chromium (flag-gated): log in on the SAME engine-level device the
+    # purchase browser spends this session on — else the cookie is minted on the
+    # system-Chrome device H and spent on the fp device P, the exact cross-device
+    # signal fp-chromium removes (2026-08-11 review). No-op when TARGET_FP_CHROMIUM off.
+    try:
+        from src.session.fp_chromium import login_overrides as _fp_ov, login_profile_dir as _fp_pd
+        _fp_exec, _fp_args = _fp_ov(acc_id, acc.get("timezone") or None)
+        _prof_name = _fp_pd(acc["profile_dir"])
+    except Exception as _fp_e:
+        _fp_exec, _fp_args, _prof_name = None, [], acc["profile_dir"]
+        log("FP", f"{acc_id}: fp-chromium lookup skipped ({_fp_e})")
+    profile_dir = ROOT / _prof_name; profile_dir.mkdir(parents=True, exist_ok=True)
     browser_args = ["--window-size=1920,1080"]
+    if _fp_exec:
+        browser_args += _fp_args
+        log("FP", f"{acc_id}: fingerprint-chromium ACTIVE exec={_fp_exec} profile={profile_dir.name} args={_fp_args}")
 
     # Per-account exit IP: if proxy_url is set, LOGIN exits the SAME IP the purchase
     # path uses (coherence — cookies minted on the IP they're used from). BD auth
@@ -330,10 +344,13 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
             browser_args.append(f"--proxy-server={proxy_url}")
             log("PROXY", f"{acc_id}: login+purchase exit via {proxy_url}")
 
-    browser = await uc.start(uc.Config(
+    _cfg = uc.Config(
         user_data_dir=str(profile_dir.resolve()), headless=False, browser_args=browser_args,
         sandbox=platform.system() != "Darwin",
-        browser_connection_timeout=1.0, browser_connection_max_tries=30))
+        browser_connection_timeout=1.0, browser_connection_max_tries=30)
+    if _fp_exec:
+        _cfg.browser_executable_path = _fp_exec
+    browser = await uc.start(_cfg)
     try:
         tab = browser.tabs[0] if browser.tabs else await browser.get("about:blank")
         # Fingerprint spoofing can BACKFIRE on Target's Shape-protected login when the
@@ -341,7 +358,9 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
         # vs a much newer Chrome = an incoherent UA/JA3 that Shape flags -> generic
         # "Something went wrong" block). RELOGIN_SKIP_FINGERPRINT=1 logs in with the real
         # browser identity (diagnostic + fallback for the new-account enrollment case).
-        if os.environ.get("RELOGIN_SKIP_FINGERPRINT", "").lower() in ("1", "true", "yes"):
+        if _fp_exec:
+            log("INIT", f"{acc_id}: JS identity SKIPPED — fingerprint-chromium engine-level device active")
+        elif os.environ.get("RELOGIN_SKIP_FINGERPRINT", "").lower() in ("1", "true", "yes"):
             log("INIT", f"{acc_id}: fingerprint SKIPPED (RELOGIN_SKIP_FINGERPRINT=1) — using real browser identity")
         else:
             await apply_identity(tab, identity)
@@ -516,14 +535,36 @@ def _arm_deadman():
     when relaunching) app.py. Several navigations in the login flow are
     unbounded CDP awaits — a dead websocket or a hung Shape challenge would
     park this process forever, and the bot would never come up that night
-    (2026-07-05 readiness audit). Normal 3-account runs take 40-120s; the
-    default 600s ceiling is generous. Exit code 86 marks the timeout so the
-    wrapper log shows what happened. Override: RELOGIN_DEADMAN_S (0 disables).
+    (2026-07-05 readiness audit). Exit code 86 marks the timeout so the wrapper
+    log shows what happened.
+
+    Logins run SEQUENTIALLY (with a 4-8s stagger), so the budget must SCALE with
+    enabled-account count — a fixed 600s ceiling sized for 3 accounts would
+    force-exit a larger fleet before app.py comes up (2026-08-11 pre-scale
+    review). budget = max(600, BASE + PER*N). An explicit RELOGIN_DEADMAN_S
+    overrides the scaling entirely (0 disables); BASE/PER are tunable via
+    RELOGIN_DEADMAN_BASE_S / RELOGIN_DEADMAN_PER_ACCT_S.
     """
+    explicit = os.environ.get("RELOGIN_DEADMAN_S")
+    if explicit is not None:
+        try:
+            budget = float(explicit)
+        except ValueError:
+            budget = 600.0
+        why = f"explicit RELOGIN_DEADMAN_S={explicit}"
+    else:
+        try:
+            n = len(load_accounts(DEFAULT_CONFIG))
+        except Exception:
+            n = 3
+        base = float(os.environ.get("RELOGIN_DEADMAN_BASE_S", "120"))
+        per = float(os.environ.get("RELOGIN_DEADMAN_PER_ACCT_S", "90"))
+        budget = max(600.0, base + per * n)
+        why = f"scaled max(600, {base:.0f}+{per:.0f}*{n})"
     try:
-        budget = float(os.environ.get("RELOGIN_DEADMAN_S", "600"))
-    except ValueError:
-        budget = 600.0
+        log("PLAN", f"[DEADMAN] armed {budget:.0f}s ({why})")
+    except Exception:
+        pass
     if budget <= 0:
         return
     import threading

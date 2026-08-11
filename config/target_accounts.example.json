@@ -1,63 +1,70 @@
 {
   "_README": [
     "Copy this file to config/target_accounts.json (which is gitignored) and fill in",
-    "real credentials. One object per owned Target account. harvest_accounts.py reads",
-    "this file to log each account in and write its session to `session_path`, which",
-    "the existing WorkerPool then consumes (set TARGET_WORKER_POOL_SIZE=<N accounts>).",
+    "real credentials. One object per owned Target account. relogin_one.py / harvest_accounts.py",
+    "read this file to log each account in and write its session to `session_path`, which",
+    "the existing WorkerPool then consumes (fleet auto-sizes to the enabled-account count).",
     "",
     "Field reference:",
     "  account_id   - free-form label; also seeds this account's stable device fingerprint.",
     "  username     - Target login email.",
     "  password     - Target login password. (2FA is assumed OFF per current setup.)",
-    "  session_path - where harvested cookies are written. Account 1 should keep the",
-    "                 legacy 'target.json'; alts use 'target-2.json', 'target-3.json', ...",
-    "                 to match WorkerPool._build_worker_configs().",
-    "  profile_dir  - this account's dedicated Chrome user-data dir. Account 1 keeps",
-    "                 'nodriver-profile'; alts use 'nodriver-profile-2', ... (also matches",
-    "                 WorkerPool). Each account MUST have its own profile (cookies +",
-    "                 fingerprint isolation).",
-    "  proxy_url    - OPTIONAL. Per-account exit IP. Leave empty for home IP (Refract",
-    "                 guidance: <=10 tasks often need no proxy). Bright Data ISP URLs need",
-    "                 the local forwarder (src/proxy/local_forwarder.py) — see docs/MULTI_ACCOUNT.md.",
+    "  cvv          - REQUIRED. This account's saved-card CVV (3-4 digits). Each account has a",
+    "                 DISTINCT card, so this MUST be set per account: with no valid cvv the bot",
+    "                 refuses to guess and checkout fails (it will NOT silently reuse another",
+    "                 account's code). Keep cards + billing addresses distinct per account.",
+    "  session_path - where harvested cookies are written. The 1st ENABLED account keeps the",
+    "                 legacy 'target.json'; the Nth enabled account uses 'target-{N}.json'.",
+    "                 Numbering is by ENABLED position (matches WorkerPool). RECOMMENDED: set",
+    "                 this explicitly on every account so disabling one never shifts the rest.",
+    "  profile_dir  - this account's dedicated Chrome user-data dir. 1st enabled = 'nodriver-profile';",
+    "                 Nth enabled = 'nodriver-profile-{N}'. Each account MUST have its own profile.",
+    "                 RECOMMENDED: set explicitly (same reason as session_path).",
+    "  proxy_url    - OPTIONAL. Per-account exit IP; MUST be unique per account (two accounts on",
+    "                 one BD IP correlate + share the single-IP 429). Leave empty for home IP.",
+    "                 Bright Data ISP URLs need the local forwarder (src/proxy/local_forwarder.py).",
     "  timezone     - OPTIONAL. IANA tz to pin the fingerprint to the proxy's geo",
     "                 (e.g. 'America/Chicago'). Empty = derived deterministically from account_id.",
-    "  enabled      - set false to skip this account without deleting it.",
-    "  notes        - free text for your own bookkeeping (card/address jigging, etc).",
-    "                 NOT read by any code."
+    "  enabled      - set false to skip this account. If you disable one, set session_path/profile_dir",
+    "                 explicitly on the others so their default numbering does not shift.",
+    "  notes        - free text for your own bookkeeping (card/address jigging, etc). NOT read by code."
   ],
   "accounts": [
     {
       "account_id": "primary",
       "username": "you@example.com",
       "password": "REPLACE_ME",
+      "cvv": "000",
       "session_path": "target.json",
       "profile_dir": "nodriver-profile",
       "proxy_url": "",
       "timezone": "",
       "enabled": true,
-      "notes": "Existing working account. Keep on legacy paths for zero migration."
+      "notes": "Existing working account. Keep on legacy paths for zero migration. Distinct card."
     },
     {
       "account_id": "alt-1",
       "username": "alt1@example.com",
       "password": "REPLACE_ME",
+      "cvv": "000",
       "session_path": "target-2.json",
       "profile_dir": "nodriver-profile-2",
       "proxy_url": "",
       "timezone": "",
       "enabled": true,
-      "notes": "Second account. Distinct virtual card + jigged address."
+      "notes": "Second account. Distinct virtual card + jigged address + unique proxy_url."
     },
     {
       "account_id": "alt-2",
       "username": "alt2@example.com",
       "password": "REPLACE_ME",
+      "cvv": "000",
       "session_path": "target-3.json",
       "profile_dir": "nodriver-profile-3",
       "proxy_url": "",
       "timezone": "",
       "enabled": true,
-      "notes": "Third account."
+      "notes": "Third account. Distinct card + unique proxy_url."
     }
   ]
 }

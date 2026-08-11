@@ -2945,10 +2945,9 @@ class PurchaseExecutor:
         """
         try:
             t_cvv = time.time()
-            # Per-account CVV (accounts have DISTINCT saved cards). A single shared
-            # CVV fails at the payment step for every card whose CVV differs. Falls
-            # back to the module default only when config has no valid per-account cvv.
-            _cvv = self.session_manager._load_account_cvv() or CARD_CVV
+            # Per-account CVV (accounts have DISTINCT saved cards). Never bleeds the
+            # shared CARD_CVV default onto a named account — see _resolve_cvv.
+            _cvv = self._resolve_cvv()
             result = await tab.evaluate(f"""
 (async () => {{
     const inputSelectors = [
@@ -4372,10 +4371,35 @@ class PurchaseExecutor:
         if os.environ.get('TARGET_FAST_LANE_CVV', '1') != '1':
             return ''
         try:
-            v = str(self.session_manager._load_account_cvv() or CARD_CVV or '').strip()
+            v = str(self._resolve_cvv() or '').strip()
         except Exception:
-            v = str(CARD_CVV or '').strip()
+            v = ''
         return v if re.fullmatch(r'\d{3,4}', v) else ''
+
+    def _resolve_cvv(self) -> str:
+        """Per-account CVV with NO shared-default bleed (2026-08-11 pre-scale review).
+
+        When this executor is bound to a NAMED account, refuse to fall back to the
+        module CARD_CVV: that would submit account #1's code on a DIFFERENT card ->
+        400 MISSING_CREDIT_CARD_CVV on every shot + card fraud-lock risk, silently.
+        Legacy single-account (no account_id) keeps CARD_CVV. Always logs the
+        resolution so a future checkout failure is traceable.
+        """
+        acct = getattr(self.session_manager, 'account_id', None)
+        cvv = self.session_manager._load_account_cvv()
+        if cvv:
+            return cvv
+        if acct:
+            msg = (f"[CVV] account '{acct}' has NO valid per-account cvv in "
+                   f"config/target_accounts.json — REFUSING the shared CARD_CVV default "
+                   f"(would submit the wrong card code). Set a distinct 'cvv' for it.")
+            print(f"[CVV][ERROR] {msg}")
+            try:
+                self.logger.error(msg)
+            except Exception:
+                pass
+            return ''
+        return CARD_CVV or ''
 
     async def _hold_cart_for_fast_selling(self, where: str) -> bool:
         """Sleep out the fast-selling cooldown IN PLACE with the won cart intact.

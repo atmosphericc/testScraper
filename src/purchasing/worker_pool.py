@@ -82,7 +82,7 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
     accounts = data.get("accounts", []) if isinstance(data, dict) else []
 
     configs: List[WorkerConfig] = []
-    seen_sessions, seen_profiles = set(), set()
+    seen_ids, seen_sessions, seen_profiles, seen_proxies = set(), set(), set(), set()
     enabled_idx = 0  # 0-based position among enabled accounts -> Worker (idx+1)
     for raw_idx, acc in enumerate(accounts):
         if not isinstance(acc, dict) or acc.get("enabled") is False:
@@ -92,11 +92,21 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
             "target.json" if enabled_idx == 0 else f"target-{enabled_idx + 1}.json"))
         profile_dir = str(acc.get("profile_dir") or (
             "nodriver-profile" if enabled_idx == 0 else f"nodriver-profile-{enabled_idx + 1}"))
+        proxy_url = (str(acc.get("proxy_url") or "").strip() or None)
 
+        # Uniqueness guards (2026-08-11 review): a duplicate account_id yields two
+        # workers with the SAME fingerprint seed / fp-chromium device / credential+CVV
+        # lookup (two "isolated" accounts that are one device); a duplicate proxy_url
+        # puts two accounts behind ONE BD IP → they correlate + share the single-IP
+        # 429. proxy_url is skipped when None (home-IP is a legit shared value).
         for key, bag, label in (
+            (acc_id, seen_ids, "account_id"),
             (session_path, seen_sessions, "session_path"),
             (profile_dir, seen_profiles, "profile_dir"),
+            (proxy_url, seen_proxies, "proxy_url"),
         ):
+            if label == "proxy_url" and not key:
+                continue
             if key in bag:
                 raise ValueError(
                     f"Duplicate {label} '{key}' in {config_path.name} — each account must be unique.")
@@ -107,7 +117,7 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
             account_id=acc_id,
             session_path=session_path,
             profile_dir=profile_dir,
-            proxy_url=(str(acc.get("proxy_url") or "").strip() or None),
+            proxy_url=proxy_url,
             timezone=(str(acc.get("timezone") or "").strip() or None),
             apply_fingerprint=True,  # file-driven accounts: match harvest fingerprint
         ))

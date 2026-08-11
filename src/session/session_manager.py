@@ -65,6 +65,15 @@ class SessionManager:
 
         # CRITICAL: User data directory - nodriver persists profile here
         self.user_data_dir = Path(user_data_dir) if user_data_dir else Path("./nodriver-profile")
+        # fingerprint-chromium (flag-gated): when TARGET_FP_CHROMIUM is on AND a
+        # binary is present, purchase on a sibling '-fp' profile so the 148 build
+        # never opens the real Chrome-150 profile (a downgrade could reset prefs /
+        # disturb the live login-session). No-op — path unchanged — when off.
+        try:
+            from .fp_chromium import profile_dir as _fp_profile_dir
+            self.user_data_dir = Path(_fp_profile_dir(str(self.user_data_dir)))
+        except Exception:
+            pass
         self.user_data_dir.mkdir(exist_ok=True)
 
         # nodriver instances
@@ -260,6 +269,24 @@ class SessionManager:
             if self.proxy_url:
                 _browser_args.append(f'--proxy-server={self.proxy_url}')
                 print(f"[SESSION_INIT] Exit proxy: --proxy-server={self.proxy_url}")
+            # fingerprint-chromium (flag-gated): engine-level per-account device.
+            # (None, []) when off -> identical launch to before. When on, launch
+            # this account's purchase browser FROM the fingerprint-chromium exe
+            # with its deterministic --fingerprint seed, so canvas/WebGL/audio are
+            # spoofed below the JS layer and the accounts present distinct devices.
+            _fp_exec, _fp_args = (None, [])
+            try:
+                from .fp_chromium import launch_overrides as _fp_overrides
+                _fp_exec, _fp_args = _fp_overrides(self.account_id, self.account_timezone)
+            except Exception as _fp_err:
+                self.logger.warning(f"[FP_CHROMIUM] override lookup failed (non-fatal): {_fp_err}")
+            if _fp_exec:
+                _browser_args += _fp_args
+                print(f"[SESSION_INIT] fingerprint-chromium ACTIVE exec={_fp_exec}")
+                print(f"[SESSION_INIT] fingerprint-chromium args={_fp_args}")
+                self.logger.info(
+                    f"[FP_CHROMIUM] account={self.account_id} exec={_fp_exec} "
+                    f"args={_fp_args} profile={self.user_data_dir}")
             _config = uc.Config(
                 user_data_dir=str(self.user_data_dir.resolve()),
                 headless=False,
@@ -271,6 +298,9 @@ class SessionManager:
                 browser_connection_timeout=1.0,
                 browser_connection_max_tries=30,
             )
+            if _fp_exec:
+                # Launch the fingerprint-chromium binary instead of system Chrome.
+                _config.browser_executable_path = _fp_exec
             self.browser = await uc.start(_config)
 
             self.logger.info("[OK] nodriver browser launched successfully")
@@ -300,7 +330,7 @@ class SessionManager:
             # deterministic on (account_id, timezone), so it reproduces exactly
             # what harvest_accounts applied. Gated to file-driven accounts only;
             # legacy single-account skips this and keeps its established profile.
-            if self.apply_fingerprint and self.account_id:
+            if self.apply_fingerprint and self.account_id and not _fp_exec:
                 try:
                     from .account_identity import build_identity, apply_identity
                     _identity = build_identity(self.account_id, timezone=self.account_timezone)
@@ -310,6 +340,14 @@ class SessionManager:
                 except Exception as _id_err:
                     self.logger.warning(f"[FINGERPRINT] apply_identity failed (non-fatal): {_id_err}")
                     print(f"[SESSION_INIT] [WARN] apply_identity failed: {_id_err}")
+            elif _fp_exec:
+                # fingerprint-chromium already provides a coherent engine-level
+                # identity; layering the JS apply_identity hooks on top would only
+                # re-introduce the detectable getImageData tamper. Skip it.
+                print(f"[SESSION_INIT] JS apply_identity SKIPPED — fingerprint-chromium "
+                      f"engine-level identity active for {self.account_id}")
+                self.logger.info(
+                    f"[FP_CHROMIUM] JS spoof suppressed (engine-level active) for {self.account_id}")
 
             # Patch 3 (2026-04-25): Read the live UA from the running Chrome instance
             # instead of using the static pool in _load_fingerprint_data(). This ensures

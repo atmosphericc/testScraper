@@ -75,25 +75,39 @@ def load_accounts(config_path: Path) -> List[Dict[str, Any]]:
 
     accounts = data.get("accounts", []) if isinstance(data, dict) else []
     cleaned: List[Dict[str, Any]] = []
-    seen_ids, seen_sessions, seen_profiles = set(), set(), set()
-    for i, acc in enumerate(accounts):
+    seen_ids, seen_sessions, seen_profiles, seen_proxies = set(), set(), set(), set()
+    # enabled_idx: position among ENABLED accounts. Default paths MUST be numbered
+    # by this, not the raw enumerate index — otherwise disabling a MIDDLE account
+    # makes this login farm derive target-{N}.json while worker_pool (which counts
+    # enabled-only) derives target-{N-1}.json, silently logging that account into a
+    # different file than the purchase worker reads → it races the drop LOGGED OUT
+    # (2026-08-11 pre-scale review). Keep this in lockstep with
+    # worker_pool._build_worker_configs_from_accounts.
+    enabled_idx = 0
+    for acc in accounts:
         if not isinstance(acc, dict):
             continue
         if acc.get("enabled") is False:
             continue
-        acc_id = str(acc.get("account_id") or f"account-{i + 1}")
-        session_path = str(acc.get("session_path") or (f"target.json" if i == 0 else f"target-{i + 1}.json"))
-        profile_dir = str(acc.get("profile_dir") or ("nodriver-profile" if i == 0 else f"nodriver-profile-{i + 1}"))
+        acc_id = str(acc.get("account_id") or f"account-{enabled_idx + 1}")
+        session_path = str(acc.get("session_path") or ("target.json" if enabled_idx == 0 else f"target-{enabled_idx + 1}.json"))
+        profile_dir = str(acc.get("profile_dir") or ("nodriver-profile" if enabled_idx == 0 else f"nodriver-profile-{enabled_idx + 1}"))
+        proxy_url = (acc.get("proxy_url") or "").strip()
 
-        # Collision guard — two accounts sharing a session file or profile dir
-        # would cross-pollinate cookies and silently corrupt both.
+        # Collision guard — two accounts sharing a session file, profile dir, or exit
+        # proxy would cross-pollinate cookies / correlate on one BD IP (single-IP 429,
+        # 2026-06-19) and silently corrupt both. proxy_url is skipped when empty
+        # (home-IP accounts legitimately share "no proxy").
         for key, bag, label in (
             (acc_id, seen_ids, "account_id"),
             (session_path, seen_sessions, "session_path"),
             (profile_dir, seen_profiles, "profile_dir"),
+            (proxy_url, seen_proxies, "proxy_url"),
         ):
+            if label == "proxy_url" and not key:
+                continue
             if key in bag:
-                raise ValueError(f"Duplicate {label} '{key}' in {config_path.name} — each must be unique.")
+                raise ValueError(f"Duplicate {label} '{key}' in {config_path.name} — each account must be unique.")
             bag.add(key)
 
         cleaned.append({
@@ -102,10 +116,11 @@ def load_accounts(config_path: Path) -> List[Dict[str, Any]]:
             "password": acc.get("password", ""),
             "session_path": session_path,
             "profile_dir": profile_dir,
-            "proxy_url": (acc.get("proxy_url") or "").strip(),
+            "proxy_url": proxy_url,
             "timezone": (acc.get("timezone") or "").strip(),
             "notes": acc.get("notes", ""),
         })
+        enabled_idx += 1
     return cleaned
 
 
@@ -585,7 +600,16 @@ async def _harvest_one(acc: Dict[str, Any], mode: str, chrome_proxy: Optional[st
 
     acc_id = acc["account_id"]
     session_path = ROOT / acc["session_path"]
-    profile_dir = ROOT / acc["profile_dir"]
+    # fingerprint-chromium (flag-gated): harvest on the SAME engine-level device the
+    # purchase path spends the session on (login/purchase device coherence). No-op off.
+    try:
+        from src.session.fp_chromium import login_overrides as _fp_ov, login_profile_dir as _fp_pd
+        _fp_exec, _fp_args = _fp_ov(acc_id, acc.get("timezone") or None)
+        _prof_name = _fp_pd(acc["profile_dir"])
+    except Exception as _fp_e:
+        _fp_exec, _fp_args, _prof_name = None, [], acc["profile_dir"]
+        print(f"    [FP] fp-chromium lookup skipped: {_fp_e}")
+    profile_dir = ROOT / _prof_name
     profile_dir.mkdir(parents=True, exist_ok=True)
     identity = build_identity(acc_id, timezone=acc["timezone"] or None)
 
@@ -594,6 +618,9 @@ async def _harvest_one(acc: Dict[str, Any], mode: str, chrome_proxy: Optional[st
           f"vp={identity['viewport']['width']}x{identity['viewport']['height']}")
 
     browser_args = ["--window-size=1920,1080"]
+    if _fp_exec:
+        browser_args += _fp_args
+        print(f"    [FP] fingerprint-chromium ACTIVE exec={_fp_exec} profile={profile_dir.name}")
     # Prefer the forwarder-backed local address (BD IP); else a plain proxy; else home.
     proxy_arg = f"--proxy-server={chrome_proxy}" if chrome_proxy else _resolve_proxy_arg(acc["proxy_url"])
     if proxy_arg:
@@ -611,12 +638,18 @@ async def _harvest_one(acc: Dict[str, Any], mode: str, chrome_proxy: Optional[st
             browser_connection_timeout=1.0,
             browser_connection_max_tries=30,
         )
+        if _fp_exec:
+            cfg.browser_executable_path = _fp_exec
         browser = await uc.start(cfg)
         tab = browser.tabs[0] if browser.tabs else await browser.get("about:blank")
 
-        # Apply the per-account fingerprint BEFORE any Target navigation.
-        applied = await apply_identity(tab, identity)
-        print(f"    identity applied: {applied}")
+        # Apply the per-account fingerprint BEFORE any Target navigation — UNLESS
+        # fingerprint-chromium is active (engine-level identity; skip the JS hook).
+        if _fp_exec:
+            print(f"    JS identity SKIPPED — fingerprint-chromium engine-level device active")
+        else:
+            applied = await apply_identity(tab, identity)
+            print(f"    identity applied: {applied}")
 
         # Tier 1 — silent refresh: are we already logged in (persistent profile)?
         await tab.get("https://www.target.com")

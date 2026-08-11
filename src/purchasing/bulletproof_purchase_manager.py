@@ -63,24 +63,45 @@ class _PurchaseLogTee:
             self._file = None
 
     def write(self, data):
-        with self._lock:
-            try:
-                self._orig.write(data)
-            except Exception:
-                pass
-            f = self._file
+        # A stdout tee must NEVER raise into print()/logging. On a torn-down or
+        # partially-built instance ('_lock'/'_orig'/'_file' missing from __dict__
+        # — overlapping purchase triggers, or interpreter teardown while a
+        # purchase thread is still printing) reading them as attributes would
+        # trip __getattr__ -> AttributeError, which took the whole process down
+        # TWICE on 2026-08-11 (both crashes: cleanup print -> write -> `with
+        # self._lock:` -> AttributeError('_lock')). Read via __dict__ so a miss
+        # degrades to a best-effort write instead of raising. Same philosophy as
+        # the 2026-07-03 __getattr__ recursion hardening below.
+        d = self.__dict__
+        lock = d.get('_lock')
+        if lock is not None:
+            lock.acquire()
+        try:
+            orig = d.get('_orig')
+            if orig is not None:
+                try:
+                    orig.write(data)
+                except Exception:
+                    pass
+            f = d.get('_file')
             if f is not None:
                 try:
                     f.write(data)
                 except Exception:
                     pass
+        finally:
+            if lock is not None:
+                lock.release()
 
     def flush(self):
-        try:
-            self._orig.flush()
-        except Exception:
-            pass
-        f = self._file
+        d = self.__dict__
+        orig = d.get('_orig')
+        if orig is not None:
+            try:
+                orig.flush()
+            except Exception:
+                pass
+        f = d.get('_file')
         if f is not None:
             try:
                 f.flush()
@@ -88,7 +109,7 @@ class _PurchaseLogTee:
                 pass
 
     def close(self):
-        f = self._file
+        f = self.__dict__.get('_file')
         self._file = None
         if f is not None:
             try:
@@ -2269,7 +2290,27 @@ class BulletproofPurchaseManager:
                     if current_status == 'ready':
                         # BUG FIX #1: Only start if no active purchase
                         if active_purchase:
-                            print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
+                            if active_purchase != tcin:
+                                # Diagnostic (2026-08-11 review): a DISTINCT hot SKU is
+                                # being skipped because another purchase holds the whole
+                                # fleet. Quantifies the missed-SKU cost of single-purchase
+                                # dispatch on a multi-TCIN drop. Multi-SKU concurrency was
+                                # deliberately NOT shipped here: doing it safely needs
+                                # SYNCHRONOUS worker reservation — the _active_purchases
+                                # registration happens inside each spawned thread and lags
+                                # within a cycle, so a naive per-TCIN gate would assign one
+                                # worker to two SKUs (worse than this). If this fires often
+                                # on real drops, build the reservation-based version and
+                                # validate it on a multi-SKU night.
+                                try:
+                                    _nready = len(self.worker_pool.ready_workers()) if self.worker_pool else 1
+                                except Exception:
+                                    _nready = 1
+                                print(f"[MULTI_SKU_MISS] {tcin} in-stock but SKIPPED — "
+                                      f"'{active_purchase}' holds the fleet ({_nready} ready worker(s)); "
+                                      f"distinct hot SKU not pursued this cycle.")
+                            else:
+                                print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
                             continue
 
                         # Start new purchase attempt.
