@@ -1,100 +1,28 @@
 {
   "products": [
     {
+      "tcin": "95274160",
+      "name": "Product 95274160",
+      "enabled": true
+    },
+    {
+      "tcin": "95274164",
+      "name": "Product 95274164",
+      "enabled": true
+    },
+    {
+      "tcin": "1011960739",
+      "name": "Product 1011960739",
+      "enabled": true
+    },
+    {
       "tcin": "1012055696",
       "name": "Product 1012055696",
       "enabled": true
     },
     {
-      "tcin": "95267143",
-      "name": "Product 95267143",
-      "enabled": true
-    },
-    {
-      "tcin": "95120834",
-      "name": "Product 95120834",
-      "enabled": true
-    },
-    {
-      "tcin": "95082118",
-      "name": "Product 95082118",
-      "enabled": true
-    },
-    {
-      "tcin": "93803457",
-      "name": "Product 93803457",
-      "enabled": true
-    },
-    {
-      "tcin": "1011209279",
-      "name": "Product 1011209279",
-      "enabled": true
-    },
-    {
-      "tcin": "1011209273",
-      "name": "Product 1011209273",
-      "enabled": true
-    },
-    {
-      "tcin": "94681782",
-      "name": "Product 94681782",
-      "enabled": true
-    },
-    {
-      "tcin": "94681790",
-      "name": "Product 94681790",
-      "enabled": true
-    },
-    {
-      "tcin": "1011467802",
-      "name": "Product 1011467802",
-      "enabled": true
-    },
-    {
-      "tcin": "95298172",
-      "name": "Pok\u00c3\u00a9mon Trading Card Game: Mega Evolution Chaos Rising Booster Bundle",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-95298172"
-    },
-    {
-      "tcin": "1010679865",
-      "name": "Pok\u00c3\u00a9mon Trading Card Game: Mega Evolution Chaos Rising Booster Display",
-      "enabled": true,
-      "url": "https://www.target.com/p/-/A-1010679865"
-    },
-    {
-      "tcin": "1008581387",
-      "name": "Product 1008581387",
-      "enabled": true
-    },
-    {
-      "tcin": "95163306",
-      "name": "Product 95163306",
-      "enabled": true
-    },
-    {
-      "tcin": "95163305",
-      "name": "Product 95163305",
-      "enabled": true
-    },
-    {
-      "tcin": "94860231",
-      "name": "Product 94860231",
-      "enabled": true
-    },
-    {
-      "tcin": "1011483414",
-      "name": "Product 1011483414",
-      "enabled": true
-    },
-    {
-      "tcin": "1011483413",
-      "name": "Product 1011483413",
-      "enabled": true
-    },
-    {
-      "tcin": "1011483406",
-      "name": "Product 1011483406",
+      "tcin": "1011206804",
+      "name": "Product 1011206804",
       "enabled": true
     }
   ]
