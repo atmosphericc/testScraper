@@ -84,6 +84,80 @@ def test_concurrent_writes_during_teardown():
     print(f"[OK] 6x2000 concurrent writes through a torn-down tee: 0 raises")
 
 
+def test_close_waits_for_inflight_write():
+    """The 08-14 crash contract: close() must serialize behind an in-flight
+    write() (unlocked close during a buffered write = 0xC0000005 in
+    python312.dll — killed app.py 4x during the 08-14 restock)."""
+    tee, _orig, _lp = _make("tee_close_race.log")
+
+    write_entered = threading.Event()
+    release_write = threading.Event()
+
+    class _SlowFile:
+        def write(self, data):
+            write_entered.set()
+            release_write.wait(timeout=5)
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    tee.__dict__["_file"] = _SlowFile()
+
+    writer = threading.Thread(target=lambda: tee.write("x"))
+    writer.start()
+    assert write_entered.wait(timeout=5), "writer never entered _file.write"
+
+    close_done = threading.Event()
+    closer = threading.Thread(target=lambda: (tee.close(), close_done.set()))
+    closer.start()
+    # While the write holds the lock, close() must NOT complete.
+    assert not close_done.wait(timeout=0.3), "close() ran DURING an in-flight write"
+    release_write.set()
+    writer.join(timeout=5)
+    closer.join(timeout=5)
+    assert close_done.is_set(), "close() deadlocked after the write released"
+    print("[OK] close() serializes behind an in-flight write")
+
+
+def test_concurrent_write_flush_close_storm():
+    """Real-file storm in the instant-bail shape: writers + flushers hammering
+    while close() lands mid-flight. Must finish with zero raises, no deadlock,
+    and a closed file."""
+    tee, _orig, _lp = _make("tee_storm.log")
+    errors = []
+
+    def hammer_write():
+        for _ in range(3000):
+            try:
+                tee.write("y")
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+    def hammer_flush():
+        for _ in range(1500):
+            try:
+                tee.flush()
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+    threads = [threading.Thread(target=hammer_write) for _ in range(4)]
+    threads += [threading.Thread(target=hammer_flush) for _ in range(2)]
+    for t in threads:
+        t.start()
+    tee.close()          # land the close in the middle of the storm
+    tee.close()          # idempotent second close must also be safe
+    for t in threads:
+        t.join(timeout=10)
+    assert not any(t.is_alive() for t in threads), "storm deadlocked"
+    assert not errors, f"raised under write/flush/close storm: {errors[:3]}"
+    assert tee.__dict__.get("_file") is None
+    tee.write("post-close writes go console-only, no raise\n")
+    print("[OK] 4xW+2xF storm with mid-flight close: 0 raises, no deadlock")
+
+
 if __name__ == "__main__":
     n = 0
     for name, fn in sorted(globals().items()):

@@ -27,6 +27,16 @@ if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
+# Native-crash forensics (2026-08-14): the 08-11/08-14 drop-night kills were
+# access violations (0xC0000005) that leave no Python traceback — only a
+# Windows Event 1000 naming python312.dll. faulthandler prints every thread's
+# stack to stderr on a native fault; the restart wrapper redirects stderr into
+# logs/runs/run_*.log, so the next such crash names its exact Python lines.
+# Kill-switch: TARGET_FAULTHANDLER=0.
+if os.environ.get('TARGET_FAULTHANDLER', '1') != '0':
+    import faulthandler
+    faulthandler.enable(all_threads=True)
+
 # CRITICAL: apply zendriver CDP patches BEFORE anything else imports zendriver.
 # The purchase Chrome launches during global_purchase_manager init, which is
 # well before src.session.multi_session_pool gets imported by the stock stack.

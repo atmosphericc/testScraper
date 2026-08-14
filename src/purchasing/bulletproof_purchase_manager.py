@@ -94,29 +94,56 @@ class _PurchaseLogTee:
                 lock.release()
 
     def flush(self):
+        # Serialized with write()/close() via _lock — see close() for why.
         d = self.__dict__
-        orig = d.get('_orig')
-        if orig is not None:
-            try:
-                orig.flush()
-            except Exception:
-                pass
-        f = d.get('_file')
-        if f is not None:
-            try:
-                f.flush()
-            except Exception:
-                pass
+        lock = d.get('_lock')
+        if lock is not None:
+            lock.acquire()
+        try:
+            orig = d.get('_orig')
+            if orig is not None:
+                try:
+                    orig.flush()
+                except Exception:
+                    pass
+            f = d.get('_file')
+            if f is not None:
+                try:
+                    f.flush()
+                except Exception:
+                    pass
+        finally:
+            if lock is not None:
+                lock.release()
 
     def close(self):
-        f = self.__dict__.get('_file')
-        self._file = None
-        if f is not None:
-            try:
-                f.flush()
-                f.close()
-            except Exception:
-                pass
+        # 2026-08-14: close()/flush() used to skip _lock. On the gate breaker's
+        # instant-bail races (3 threads, whole race ~5ms) the first finisher
+        # closed this file WHILE other racers were mid-write() into it.
+        # TextIOWrapper.close() frees C-level buffers and its flush syscall
+        # drops the GIL, so the concurrent write touches freed memory — an
+        # access violation in python312.dll that the GIL cannot prevent and
+        # except: cannot catch. That killed app.py 4x during the 08-14 restock
+        # and 2x on 08-11 (Windows Event 1000, c0000005; every kill timestamp-
+        # matches a purchase log's final write). The 08-11 __dict__ hardening
+        # only fixed the Python-level AttributeError, not this C-level race —
+        # only serializing close against write closes it.
+        d = self.__dict__
+        lock = d.get('_lock')
+        if lock is not None:
+            lock.acquire()
+        try:
+            f = d.get('_file')
+            self._file = None
+            if f is not None:
+                try:
+                    f.flush()
+                    f.close()
+                except Exception:
+                    pass
+        finally:
+            if lock is not None:
+                lock.release()
 
     def __getattr__(self, name):
         # Only reached for attributes NOT in __dict__. Use __dict__ directly —
@@ -1467,13 +1494,21 @@ class BulletproofPurchaseManager:
                     else:
                         print(f"[REAL_PURCHASE_THREAD] Note: {state_key} already removed from active purchases")
 
-                # Close purchase log and restore stdout
-                _tee = self._purchase_tee
-                if _tee is not None:
-                    self._purchase_tee = None
-                    if sys.stdout is _tee:
-                        sys.stdout = _tee._orig
-                    _tee.close()
+                # Close purchase log and restore stdout — LAST racer only.
+                # (2026-08-14) The FIRST finisher used to run this while the
+                # other racers were still printing through the tee: their log
+                # tails were truncated ("2/3 accounts done" then nothing) and,
+                # on instant-bail races, the close ran concurrently with their
+                # writes — the C-level close-during-write crash documented in
+                # _PurchaseLogTee.close(). _do_resume (computed above) is
+                # already "am I the last one out" and is True when not racing.
+                if _do_resume:
+                    _tee = self._purchase_tee
+                    if _tee is not None:
+                        self._purchase_tee = None
+                        if sys.stdout is _tee:
+                            sys.stdout = _tee._orig
+                        _tee.close()
 
         # ----- Dispatch: race the fleet, or single-worker (legacy) -------------
         # RACING fires one thread per READY account concurrently at this drop.
