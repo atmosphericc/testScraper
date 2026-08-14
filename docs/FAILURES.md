@@ -31,6 +31,46 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-08-14] - 0-for on the 30th Anniversary restock: purchase-path native crash (tee close-during-write) + total ATC 429 wall - TARGET
+**Symptom**: Huge rolling Pokémon 30th Anniversary restock (windows 02:06,
+02:12, 03:17, 03:35, 03:40, 04:10, 04:42 — all 1010892xxx). 0 orders. app.py
+died 4x with 0xC0000005 (02:07:56, 02:13:12, 03:36:29, 03:41:27 — Windows
+Event 1000, python312.dll), each timestamp-matching a purchase log's final
+write, each mid-purchase, costing ~4-5 min of blind reboot per kill and
+killing 4 in-flight retry loops. Every fired ATC was gate-denied: ~130 shots
+across 7 windows = 429 DCO_RATE_LIMITED ("high demand item") with sprinkled
+401 _ERR_AUTH_DENIED, zero 2xx, all 3 accounts, while warmup dummy-POSTs
+stayed 424 (write-auth alive). fp-chromium WAS live (3 distinct seeds,
+JS spoof correctly skipped). Community reports say the drop was scuffed/buggy
+Target-side.
+**Root Cause**: (crash) `_PurchaseLogTee.close()/flush()` skipped `_lock`; on
+the gate breaker's instant-bail races (3 racers, whole race ~5ms) the FIRST
+finisher closed the buffered log file while other racers were mid-`write()`.
+TextIOWrapper.close() frees C buffers and its flush syscall drops the GIL —
+concurrent write touches freed memory → access violation no `except:` can
+catch. Same mechanism killed 08-11's two "tee" crashes; the 08-11 `__dict__`
+hardening fixed only the Python-level AttributeError symptom. (0-for) the
+ATC demand/device gate denied every add on an ultra-hot scuffed drop —
+NOT a token failure, NOT a crash consequence (the walls were total even in
+windows we covered fully).
+**Fix Applied**: `f51ec80f` — close()/flush() serialize on the write lock;
+tee close + stdout restore moved to the LAST racer (`_do_resume` refcount),
+which also un-truncates racer log tails; `faulthandler.enable()` in app.py
+(kill-switch `TARGET_FAULTHANDLER=0`) so any future native fault prints all
+thread stacks into `logs/runs/run_*.log`. Tests: tee 6/6 (2 new), breaker
+40/40, race dispatch 4/4, wedge 17/17, level-rearm 8/8.
+**Confidence**: high (crash mechanism + fix); medium (0-for attribution —
+scuffed drop makes fp-chromium verdict INCONCLUSIVE; gate stayed soft-429
+all night vs 08-07's hardening to pure 401, consistent with breaker+fp
+reducing device-score burn but conversion unproven)
+**Outcome**: Crash class closed; next normal-quality restock is the real
+fp-chromium conversion test. Breaker verified working as designed (armed at
+8-streak per identity, ~1 probe/120s). NOTE 08-14 12:14 `AUTH_CRITICAL`:
+primary's session died post-drop, scripted relogin capped — hand-login
+required before next window.
+
+---
+
 ### [2026-07-31] - BEST NIGHT EVER (7 orders / 14 units) but late-window losses to server-side cart eviction + FS-hold abort; Endpoint 8 live-validated - TARGET
 **Symptom**: 07-30→31 street-date drop (`logs/runs/package.log.2`, purchase logs
 02:29-05:32). Fast lane converted 7-for-7 whenever the first place-order POST
