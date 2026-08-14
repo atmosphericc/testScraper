@@ -71,6 +71,17 @@ class _CapturingTab:
         return self._result
 
 
+class _StubSessionManager:
+    """Legacy single-account shape for _resolve_cvv (2026-08-11 named-account
+    guard): no account_id and no per-account cvv, so resolution falls through
+    to the module CARD_CVV default ('229') — the premise the CVV tests below
+    were written against."""
+    account_id = None
+
+    def _load_account_cvv(self):
+        return ''
+
+
 def _bare_executor(cvv_required=False):
     ex = object.__new__(PurchaseExecutor)      # bypass heavy __init__
     ex.test_mode = False
@@ -83,6 +94,7 @@ def _bare_executor(cvv_required=False):
     ex._checkout_reject_status = 0
     ex._fast_selling_until = 0.0
     ex._persist_cvv_challenge_flag = lambda: None
+    ex.session_manager = _StubSessionManager()
     return ex
 
 

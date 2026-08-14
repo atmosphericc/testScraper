@@ -182,6 +182,19 @@ class PurchaseExecutor:
         self._atc_gate_streak_limit: int = int(os.environ.get('TARGET_ATC_GATE_STREAK_LIMIT', '8'))
         self._atc_gate_cooldown_s: float = float(os.environ.get('TARGET_ATC_GATE_COOLDOWN_S', '120'))
         self._tcin_denial_streak: Dict[str, int] = {}  # tcin -> consecutive ATC gate-denials
+        # ── Cart hold check (2026-08-14) ────────────────────────────────────
+        # Community-documented on the 30th Anniversary preorder drops: the add
+        # sometimes LANDS server-side while the response reports the
+        # high-demand denial (429 DCO_RATE_LIMITED), and retail users recover
+        # by reloading /cart until the item appears. After a gate-denied ATC,
+        # read the cart once (Endpoint 6 GET — a READ, not the Shape-scored
+        # add write, so it spends no Device ID+ budget) and, if our TCIN is
+        # already in cart_items, proceed straight to checkout instead of
+        # bailing. Rate-limited per executor so a 20-shot wave costs a handful
+        # of reads, not 20. Kill-switch: TARGET_CART_HOLD_CHECK=0.
+        self._cart_hold_check_on: bool = os.environ.get('TARGET_CART_HOLD_CHECK', '1') != '0'
+        self._cart_hold_check_interval_s: float = float(os.environ.get('TARGET_CART_HOLD_CHECK_INTERVAL_S', '4'))
+        self._last_cart_hold_check_ts: float = 0.0
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -1751,9 +1764,16 @@ class PurchaseExecutor:
                 # neither recovers a 429. Returning here lets the purchase
                 # manager flip state to 'failed' and the next stock cycle
                 # re-attempts after the 3.5s Error Delay with a fresh capture.
-                return {'success': False, 'tcin': tcin, 'reason': 'rate_limited_429',
-                        'error': f'ATC rate-limited ({atc_status})',
-                        'execution_time': time.time() - start_time}
+                # 2026-08-14 exception: unless the denied add silently LANDED
+                # (cart hold — see _check_cart_hold), in which case skip the
+                # bail and ride the normal cart_confirmed path to checkout.
+                if await self._check_cart_hold(tab, tcin, atc_status):
+                    cart_confirmed = True
+                    skip_signal_wait = True
+                else:
+                    return {'success': False, 'tcin': tcin, 'reason': 'rate_limited_429',
+                            'error': f'ATC rate-limited ({atc_status})',
+                            'execution_time': time.time() - start_time}
             elif atc_status == 401:
                 # Auth denied — most likely Shape rotating tokens were consumed
                 # (cycles back-to-back rapidly burn the token cache). FAST PATH:
@@ -1893,6 +1913,14 @@ class PurchaseExecutor:
                 else:
                     print(f"[PURCHASE] ATC fast-retry returned {fast_status} — falling through to DOM polling fallback")
                 token_fresh = False
+                # 2026-08-14: retries exhausted without a 2xx — before the DOM
+                # fallback, check whether any of this execution's denied adds
+                # silently landed in the cart (cart hold). If so, convert this
+                # execution into the cart_confirmed path instead of grinding
+                # through DOM polling toward a fast-bail.
+                if not cart_confirmed and await self._check_cart_hold(tab, tcin, atc_status):
+                    cart_confirmed = True
+                    skip_signal_wait = True
                 # Skip legacy DOM-polling block when:
                 #  - fast-retry already won (cart_confirmed=True), OR
                 #  - we're not on a PDP (no ATC button to poll for; common in API-only mode
@@ -3347,6 +3375,50 @@ class PurchaseExecutor:
         except Exception as e:
             self.logger.error(f"Cart verification error: {e}")
             return False
+
+    async def _check_cart_hold(self, tab, tcin: str, deny_status: int) -> bool:
+        """After a gate-denied ATC, check whether the add silently LANDED.
+
+        Community-documented on hot preorder drops (30th Anniversary, 08-14):
+        Target sometimes holds the item in the cart while the add response
+        reports the high-demand denial; retail users recover by reloading
+        /cart until it appears. This is the API version of that reload: one
+        Endpoint 6 GET (docs/RETAILERS/TARGET_CHECKOUT_API.md — ground truth
+        on cart contents, a read outside the Shape-scored add namespace).
+
+        Returns True ONLY when the cart provably contains this TCIN. Every
+        other outcome (flag off, inside the rate-limit interval, timeout,
+        non-200, parse miss, evaluate error) returns False so callers bail
+        exactly as they did before this check existed.
+        """
+        if not self._cart_hold_check_on:
+            return False
+        now = time.time()
+        if now - self._last_cart_hold_check_ts < self._cart_hold_check_interval_s:
+            return False
+        self._last_cart_hold_check_ts = now
+        try:
+            res = await asyncio.wait_for(tab.evaluate("""(async () => {
+                try {
+                    const r = await fetch(
+                        'https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CART,CART_ITEMS',
+                        {credentials: 'include', headers: {'Accept': 'application/json'}}
+                    );
+                    if (!r.ok) return {ok: false, status: r.status};
+                    const d = await r.json();
+                    const tcins = (d.cart_items || [])
+                        .map(i => String(i.tcin || (i.item && i.item.tcin) || ''))
+                        .filter(Boolean);
+                    return {ok: true, tcins: tcins};
+                } catch(e) { return {ok: false, error: String(e)}; }
+            })()""", await_promise=True), timeout=2.5)
+            if isinstance(res, dict) and res.get('ok') and str(tcin) in (res.get('tcins') or []):
+                print(f"[CART_HOLD] {tcin}: ATC denied ({deny_status}) but the item IS in the cart "
+                      f"(silent hold) — proceeding to checkout instead of bailing")
+                return True
+        except Exception as _hold_err:
+            print(f"[CART_HOLD] check failed (non-fatal): {_hold_err}")
+        return False
 
     async def _api_clear_cart(self, tab) -> Optional[bool]:
         """Phase 4c: clear regular cart items via direct DELETE fetches.
