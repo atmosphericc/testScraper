@@ -30,8 +30,11 @@ if hasattr(sys.stdout, 'reconfigure'):
 # Native-crash forensics (2026-08-14): the 08-11/08-14 drop-night kills were
 # access violations (0xC0000005) that leave no Python traceback — only a
 # Windows Event 1000 naming python312.dll. faulthandler prints every thread's
-# stack to stderr on a native fault; the restart wrapper redirects stderr into
-# logs/runs/run_*.log, so the next such crash names its exact Python lines.
+# stack on a native fault. This early enable() binds fd 2 (the console) and
+# only covers boot-phase crashes; setup_run_logging() re-binds it to
+# logs/runs/run_<ts>.log once that file opens (the wrapper does NOT redirect
+# stderr, and the _Tee swap is Python-level — invisible to faulthandler's raw
+# fd writes), so the next such crash names its exact Python lines on disk.
 # Kill-switch: TARGET_FAULTHANDLER=0.
 if os.environ.get('TARGET_FAULTHANDLER', '1') != '0':
     import faulthandler
@@ -117,6 +120,18 @@ def setup_run_logging():
 
     sys.stdout = _Tee(sys.stdout, run_fh)
     sys.stderr = _Tee(sys.stderr, run_fh)
+
+    # Re-bind faulthandler to the run log (2026-08-16). The module-top enable()
+    # captured fd 2 = the console, and a native-fault dump bypasses the _Tee
+    # (raw fd writes) — so a 0xC0000005 stack would die with the console
+    # window. Proven with a live AV repro; see FAILURES.md. run_fh stays open
+    # for the process lifetime, which faulthandler requires.
+    if os.environ.get('TARGET_FAULTHANDLER', '1') != '0':
+        try:
+            import faulthandler
+            faulthandler.enable(file=run_fh, all_threads=True)
+        except Exception as e:
+            sys.stderr.write(f"[LOG] faulthandler rebind failed: {e}\n")
 
     from logging.handlers import RotatingFileHandler
     pkg_log_path = os.path.join(log_dir, 'package.log')

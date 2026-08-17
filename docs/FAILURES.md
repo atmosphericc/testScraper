@@ -31,6 +31,34 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-08-16] - faulthandler dumps would MISS the run log (fd bound to console) - TARGET
+**Symptom**: None yet — caught in the 08-16 pre-restock logging audit before
+it could bite. The f51ec80f forensics (`faulthandler.enable()` at app.py top)
+claimed "the restart wrapper redirects stderr into logs/runs/run_*.log"; the
+wrapper does NOT redirect anything (`"%PYTHON%" app.py`, bare), and the run
+log is an in-process Python-level `_Tee` swap of `sys.stdout/stderr`.
+**Root Cause**: faulthandler captures the raw file DESCRIPTOR (fd 2 = the
+console) at `enable()` time and writes dumps with raw fd syscalls — the
+Python-level `_Tee` is invisible to it. On the next 0xC0000005 the all-thread
+stack dump would print only to the console window, which dies with the crash/
+restart — i.e. the exact forensics added for the next native crash would be
+lost. Proven with a live AV repro (`faulthandler._sigsegv()` child mimicking
+app.py's enable→tee sequence): dump absent from the tee'd log, present only
+on captured console stderr; with the rebind, dump lands in the log file.
+**Fix Applied**: `setup_run_logging()` re-binds faulthandler to the run file
+right after the `_Tee` swap: `faulthandler.enable(file=run_fh,
+all_threads=True)` (same `TARGET_FAULTHANDLER=0` kill-switch; `run_fh` lives
+for the process lifetime, which faulthandler requires). Top-of-module
+enable() stays as boot-phase coverage; its comment corrected. Trade-off:
+after rebind the dump goes to the file, not the console — correct priority,
+the console dies with the crash anyway.
+**Confidence**: high (mechanism proven both ways with a real AV child)
+**Outcome**: Next native crash names its exact Python lines in
+`logs/runs/run_<ts>.log`. Pre-Tuesday audit otherwise ALL GREEN (preflight
+29/29, egress 3/3, 12 suites, states clean, no blind TCINs).
+
+---
+
 ### [2026-08-14] - 0-for on the 30th Anniversary restock: purchase-path native crash (tee close-during-write) + total ATC 429 wall - TARGET
 **Symptom**: Huge rolling Pokémon 30th Anniversary restock (windows 02:06,
 02:12, 03:17, 03:35, 03:40, 04:10, 04:42 — all 1010892xxx). 0 orders. app.py
