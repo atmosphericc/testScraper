@@ -42,7 +42,8 @@ Cookie freshness:
   (homepage nav) must NOT fire on a queueing session because that would
   navigate away from /qp and discard the ticket. The resilient stack's
   pool keepalive needs to know "this session is in queue, skip it".
-  (Not yet wired — see TODO at end of file.)
+  This IS wired: SessionEntry.in_queue is set here for the wait duration and
+  checked by MultiSessionPool._heartbeat_one (skip) + dispatch eligibility.
 """
 
 import asyncio
@@ -54,6 +55,7 @@ from typing import Optional, Callable
 from urllib.parse import unquote
 
 from .config import QUEUE_POLL_INTERVAL, QUEUE_TIMEOUT
+from . import queue_events
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +323,22 @@ class QueueHandler:
         self._last_ticket: Optional[QueueTicket] = None
         self._unlikely_streak = 0
         self._cdp_handler_attached = False
+        # Attribution for the structured event/capture logs. session_id is the
+        # racing session's id when present (resilient SessionEntry.id); item_id
+        # is set by the caller via set_context() before detect_and_wait so each
+        # queue event names which SKU + session it belongs to.
+        self._item_id: Optional[str] = None
+        self._session_id: Optional[str] = getattr(session, "id", None)
+
+    def set_context(self, item_id: Optional[str] = None,
+                    session_id: Optional[str] = None) -> None:
+        """Tag this handler's events with a SKU (and optionally a session id)
+        so the queue_events log/capture attribute every line correctly. Safe
+        to call right before detect_and_wait; both args are optional."""
+        if item_id is not None:
+            self._item_id = item_id
+        if session_id is not None:
+            self._session_id = session_id
 
     # ── public API ───────────────────────────────────────────────────────
 
@@ -337,6 +355,17 @@ class QueueHandler:
             url = ""
 
         if is_queue_url(url):
+            # RAW CAPTURE: the /qp redirect URL (+ its embedded qpdata) is the
+            # queue-entry artifact — records the real queue id + ticket-API URL.
+            queue_events.capture(
+                "qp_redirect", url=url,
+                body=unquote(extract_qpdata_from_url(url) or ""),
+                item_id=self._item_id, session_id=self._session_id,
+            )
+            queue_events.event(
+                "queue_entered", item_id=self._item_id,
+                session_id=self._session_id,
+            )
             qp = extract_qpdata_from_url(url)
             if qp:
                 ticket = parse_qpdata(qp)
@@ -381,6 +410,10 @@ class QueueHandler:
             self._session.in_queue = True
             logger.debug("[QUEUE] session.in_queue=True (keepalive will skip)")
 
+        queue_events.event(
+            "wait_start", item_id=self._item_id, session_id=self._session_id,
+            timeout_s=timeout, in_queue_guard=self._session_has_in_queue,
+        )
         try:
             return await self._detect_and_wait_inner(timeout, max_unlikely_streak)
         finally:
@@ -422,11 +455,20 @@ class QueueHandler:
                 if t.state == QueueState.VALID:
                     self._status_cb("[QUEUE] Admitted — ticket state=valid")
                     logger.info("[QUEUE] Admitted: %s", t)
+                    queue_events.event(
+                        "admitted", via="ticket_state",
+                        item_id=self._item_id, session_id=self._session_id,
+                        ticket_num=t.ticket, queue_id=t.queue_id,
+                    )
                     return t
 
                 if t.state == QueueState.EXPIRED:
                     self._status_cb("[QUEUE] Ticket EXPIRED — must re-enter")
                     logger.warning("[QUEUE] Ticket expired: %s", t)
+                    queue_events.event(
+                        "expired", item_id=self._item_id,
+                        session_id=self._session_id, ticket_num=t.ticket,
+                    )
                     return t
 
                 # Track unlikely streak for early bail
@@ -440,6 +482,11 @@ class QueueHandler:
                         logger.warning(
                             "[QUEUE] Early bail on unlikely streak=%d: %s",
                             self._unlikely_streak, t,
+                        )
+                        queue_events.event(
+                            "bail", reason="unlikely_streak",
+                            streak=self._unlikely_streak,
+                            item_id=self._item_id, session_id=self._session_id,
                         )
                         return t
                 else:
@@ -467,6 +514,10 @@ class QueueHandler:
             if url and not is_queue_url(url):
                 self._status_cb("[QUEUE] Page navigated away from /qp — admitted")
                 logger.info("[QUEUE] URL navigated to %s, treating as admitted", url[:80])
+                queue_events.event(
+                    "admitted", via="url_redirect", url=url[:120],
+                    item_id=self._item_id, session_id=self._session_id,
+                )
                 return QueueTicket(state=QueueState.VALID)
 
             await asyncio.sleep(check_interval)
@@ -474,6 +525,11 @@ class QueueHandler:
         # Hit timeout
         self._status_cb(f"[QUEUE] Timed out after {timeout:.0f}s")
         logger.warning("[QUEUE] Timeout — last ticket: %s", self._last_ticket)
+        queue_events.event(
+            "timeout", timeout_s=timeout,
+            item_id=self._item_id, session_id=self._session_id,
+            last_state=(self._last_ticket.state if self._last_ticket else None),
+        )
         return self._last_ticket   # may be None or a stale pending ticket
 
     # ── CDP listener for ticket API responses ────────────────────────────
@@ -520,6 +576,13 @@ class QueueHandler:
                         raw_body = body_event
                     if not raw_body:
                         return
+                    # RAW CAPTURE: store the verbatim ticket API body BEFORE
+                    # parsing — this is the artifact that confirms the real
+                    # ticket shape our parser only assumes today.
+                    queue_events.capture(
+                        "ticket_api", url=url, body=raw_body,
+                        item_id=self._item_id, session_id=self._session_id,
+                    )
                     try:
                         body_json = json.loads(raw_body)
                     except (json.JSONDecodeError, TypeError):
@@ -527,10 +590,21 @@ class QueueHandler:
                     parsed = parse_ticket_response(body_json)
                     if parsed is None:
                         return
+                    prev = self._last_ticket
                     self._last_ticket = parsed
                     logger.info(
                         "[QUEUE] CDP captured ticket: %s",
                         parsed,
+                    )
+                    # EVENT LOG: one line per ticket update, with the fields
+                    # that reconstruct the wait (state, position, likelihood).
+                    queue_events.event(
+                        "ticket",
+                        item_id=self._item_id, session_id=self._session_id,
+                        state=parsed.state, likelihood=parsed.likelihood,
+                        ticket_num=parsed.ticket, queue_id=parsed.queue_id,
+                        next_refresh_ms=parsed.next_refresh_ms,
+                        changed=(prev is None or prev.state != parsed.state),
                     )
                 except Exception as e:
                     logger.debug("[QUEUE] CDP handler raised: %s", e)

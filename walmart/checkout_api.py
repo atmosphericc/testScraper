@@ -929,6 +929,21 @@ class WalmartHybridCheckout:
             logger.warning("[HYBRID] %s POST returned non-dict: %r", op_name, res)
             return None
 
+        # RAW CAPTURE (WALMART_QUEUE_CAPTURE=1): record the full checkout POST —
+        # request URL (carries the live persisted-query hash), payload, and the
+        # verbatim response. This is what yields the REAL rotating GraphQL hashes
+        # to refresh checkout_api.py's constants + the APQ fallback bodies.
+        # Import is local + guarded so checkout never depends on the logger.
+        try:
+            from walmart import queue_events
+            queue_events.capture(
+                "checkout", url=url, body=res.get("text"),
+                op=op_name, status=res.get("status"), ms=res.get("ms"),
+                request_payload=payload,
+            )
+        except Exception:
+            pass
+
         status = res.get("status")
         ms = res.get("ms")
         ok = res.get("ok")
