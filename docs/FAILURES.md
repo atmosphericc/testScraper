@@ -31,6 +31,49 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-08-18] - 0-for on the 30th Anniversary restock: total ATC denial wall (85% global demand lottery) + LEVEL_REARM deadlock after emergency reset - TARGET
+**Symptom**: Rolling 30th-anniv restock (~10 in-stock windows 01:30–05:00,
+1010892xxx + 1011209279). 0 orders. The bot itself ran FLAWLESSLY — zero
+process crashes (first crash-free hot drop; the f51ec80f tee fix held), fresh
+hand-logins 2.5h pre-window, boot relogin VERIFY-only 3/3, fp-chromium live
+on all 3 accounts, breaker + cart-hold + faulthandler all active. Yet 189
+real ATC shots = 0×2xx: 160 empty-body 429 (edge/Shape-layer drop BEFORE the
+carts app answers), 1 DCO_RATE_LIMITED 429, 28 hard 401 _ERR_AUTH_DENIED.
+pre_checkout/place-order never fired once. Separately, 1011209279 sat ~8 min
+in live stock with ZERO shots after 04:40:17.
+**Root Cause**: (0-for) NOT a bot bug. Community intel (r/PokemonDeals, TYPA
+live feed) confirms the wave was real and humans DID convert, but even humans
+saw ~99% ATC denial — the dominant empty-body 429 is a GLOBAL demand lottery
+at the edge; the minority 401 share is OUR per-identity hardening (rises with
+per-TCIN hammering depth, resets on fresh TCINs — classic Device ID+
+tracking). Our breaker throttles shots to protect the 15% problem while
+sacrificing tickets in the 85% lottery. (deadlock) The manager's emergency
+reset ("IN STOCK but still has completed status - reset failed!",
+bulletproof_purchase_manager.py:2398) flipped a continuously-in-stock
+'failed' item to bare 'ready' AND consumed the driving event; app.py's level
+re-arm is failed-only and the edge publisher needs an OOS→IS flip that never
+comes for continuously-in-stock items → orphaned mid-window.
+**Fix Applied**: (deadlock) emergency reset now stamps a `rearm_hint_ts`
+breadcrumb; `_build_level_rearm_map` re-arms in-stock 'ready' items carrying
+a fresh hint (TTL = stale_after_s, 90s), riding the same money-safe
+machinery as 'failed' re-arms. Kill-switch `TARGET_REARM_AFTER_EMERGENCY_RESET=0`
+(stops stamping → branch inert). test_level_rearm_smoke 12/12 (+5).
+(observability) `_check_cart_hold` was silent-on-miss — a zero-[CART_HOLD]
+night couldn't distinguish "ran + empty" / "read also walled" / "never ran".
+Miss now logged (200-with-TCIN-absent vs non-200 read), kill-switch
+`TARGET_CART_HOLD_VERBOSE=0`. test_cart_hold_check 17/17. Breaker
+aggressiveness (streak 8 / cooldown 120s vs looser) left as an operator
+decision — flags `TARGET_ATC_GATE_STREAK_LIMIT` / `TARGET_ATC_GATE_COOLDOWN_S`.
+**Confidence**: high on the audit (6-agent forensic census, totals reconcile
+3 ways); high on the deadlock fix mechanism; the lottery-vs-hardening split
+is inference from status/body signatures + community reports (medium).
+**Outcome**: Deadlock can't orphan a mid-window TCIN again; next drop's
+cart-hold audit will be conclusive. Strategy question (ticket count into the
+global lottery vs identity protection) still open — 3 breaker-era hot-SKU
+drops = 0 wins, all pre-breaker regular-SKU drops converted.
+
+---
+
 ### [2026-08-16] - faulthandler dumps would MISS the run log (fd bound to console) - TARGET
 **Symptom**: None yet — caught in the 08-16 pre-restock logging audit before
 it could bite. The f51ec80f forensics (`faulthandler.enable()` at app.py top)

@@ -2396,8 +2396,22 @@ class BulletproofPurchaseManager:
                         # 'interrupted' means the app was killed mid-purchase — always safe to retry.
                         # 'failed'/'purchased' here means the reset cycle hasn't run yet.
                         print(f"[PURCHASE_ERROR] {tcin} is IN STOCK but still has completed status '{current_status}' - reset failed!")
-                        # Emergency force reset
-                        states[tcin] = {'status': 'ready'}
+                        # Emergency force reset.
+                        #
+                        # 2026-08-18 deadlock fix: in resilient mode the ONLY
+                        # drivers of a re-race are the OOS→IS stock edge (never
+                        # fires for a continuously-in-stock item) and the level
+                        # re-arm loop (failed-only). Flipping to bare 'ready'
+                        # here consumed the driving event AND hid the item from
+                        # both drivers → 1011209279 idled ~8 min mid-window on
+                        # 08-18. Stamp a breadcrumb so _build_level_rearm_map
+                        # re-publishes this 'ready' item next tick, riding the
+                        # same money-safe machinery every other re-arm uses.
+                        # Kill-switch: TARGET_REARM_AFTER_EMERGENCY_RESET=0.
+                        _new_state = {'status': 'ready'}
+                        if os.environ.get('TARGET_REARM_AFTER_EMERGENCY_RESET', '1') != '0':
+                            _new_state['rearm_hint_ts'] = time.time()
+                        states[tcin] = _new_state
                         self._save_states_unsafe(states)
                         print(f"[PURCHASE_EMERGENCY] Emergency reset {tcin} to ready and will retry purchase next cycle")
                     else:

@@ -115,6 +115,37 @@ def test_int_tcin_key_normalized():
     check("int_tcin_key_normalized", set(m) == {'95274164'})
 
 
+def test_emergency_reset_breadcrumb_included():
+    # 2026-08-18 deadlock fix: an emergency-reset 'ready' item carrying a fresh
+    # 'rearm_hint_ts' must be re-armed (else a continuously-in-stock TCIN
+    # orphans after its stuck-state force-reset).
+    m = build({'111': _S('111', title='ETB')},
+              {'111': {'status': 'ready', 'rearm_hint_ts': NOW - 1}}, NOW)
+    check("emergency_reset_breadcrumb_included", set(m) == {'111'})
+
+
+def test_stale_breadcrumb_excluded():
+    # A hint older than stale_after_s (e.g. the item went OOS and came back
+    # much later) must NOT re-arm off the old breadcrumb.
+    m = build({'111': _S('111')},
+              {'111': {'status': 'ready', 'rearm_hint_ts': NOW - 91}}, NOW)
+    check("stale_breadcrumb_excluded", m == {})
+
+
+def test_ready_without_breadcrumb_excluded():
+    # Plain 'ready' (fresh, never emergency-reset) stays owned by the edge
+    # publisher — no breadcrumb, no level re-arm.
+    m = build({'111': _S('111')}, {'111': {'status': 'ready'}}, NOW)
+    check("ready_without_breadcrumb_excluded", m == {})
+
+
+def test_bad_breadcrumb_value_excluded():
+    # A non-numeric hint must be treated as no-hint (skipped), not crash.
+    m = build({'111': _S('111')},
+              {'111': {'status': 'ready', 'rearm_hint_ts': 'nope'}}, NOW)
+    check("bad_breadcrumb_value_excluded", m == {})
+
+
 if __name__ == '__main__':
     test_failed_fresh_in_stock_included()
     test_title_fallback()
@@ -123,5 +154,9 @@ if __name__ == '__main__':
     test_stale_snapshot_excluded()
     test_broken_entry_skipped()
     test_int_tcin_key_normalized()
+    test_emergency_reset_breadcrumb_included()
+    test_stale_breadcrumb_excluded()
+    test_ready_without_breadcrumb_excluded()
+    test_bad_breadcrumb_value_excluded()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

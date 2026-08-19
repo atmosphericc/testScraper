@@ -1076,6 +1076,20 @@ class StockMonitorThread:
         keep requiring a real OOS→in-stock flip, exactly the pre-existing
         semantics; 'attempting'/'queued' are live waves; 'ready' TCINs get
         their wave from the normal edge publisher the moment stock flips.
+
+        2026-08-18 (30th-anniv restock deadlock): ALSO re-arm an in-stock
+        'ready' TCIN that carries a fresh 'rearm_hint_ts' breadcrumb. The
+        manager's emergency reset (bulletproof_purchase_manager
+        "IN STOCK but still has completed status - reset failed!") flips a
+        continuously-in-stock 'failed' item to bare 'ready' while consuming the
+        driving event; the failed-only filter then hid it, and with no OOS→IS
+        edge ever coming it sat idle (1011209279 idled ~8 min mid-window on
+        08-18). The breadcrumb (TTL = stale_after_s) makes that reset item
+        re-race exactly like a 'failed' one, through the same money-safe
+        stock-aware-reset + dispatch machinery. Kill-switch lives at the stamp
+        site (TARGET_REARM_AFTER_EMERGENCY_RESET=0 stops stamping → no hints →
+        this branch is inert).
+
         Returns a stock_data dict in the _adapter shape _handle_stock_update
         already consumes.
         """
@@ -1087,8 +1101,20 @@ class StockMonitorThread:
                 last = getattr(s, 'last_checked_at', 0) or 0
                 if not last or (now - last) > stale_after_s:
                     continue
-                if states.get(str(tcin), {}).get('status') != 'failed':
-                    continue
+                _st = states.get(str(tcin), {})
+                _status = _st.get('status')
+                if _status != 'failed':
+                    # Emergency-reset breadcrumb: a fresh 'ready' item that was
+                    # just force-reset off a stuck completed state. Anything
+                    # else stays excluded (pre-existing semantics).
+                    if _status == 'ready' and _st.get('rearm_hint_ts'):
+                        try:
+                            if (now - float(_st.get('rearm_hint_ts') or 0)) > stale_after_s:
+                                continue
+                        except (TypeError, ValueError):
+                            continue
+                    else:
+                        continue
                 rearm[str(tcin)] = {
                     'title': getattr(s, 'title', None) or f'Product {tcin}',
                     'in_stock': True,

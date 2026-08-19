@@ -195,6 +195,9 @@ class PurchaseExecutor:
         self._cart_hold_check_on: bool = os.environ.get('TARGET_CART_HOLD_CHECK', '1') != '0'
         self._cart_hold_check_interval_s: float = float(os.environ.get('TARGET_CART_HOLD_CHECK_INTERVAL_S', '4'))
         self._last_cart_hold_check_ts: float = 0.0
+        # Log cart-hold MISSES (not just hits) so the lever is falsifiable in a
+        # post-drop audit — see _check_cart_hold. Kill-switch: =0.
+        self._cart_hold_verbose: bool = os.environ.get('TARGET_CART_HOLD_VERBOSE', '1') != '0'
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -3416,6 +3419,20 @@ class PurchaseExecutor:
                 print(f"[CART_HOLD] {tcin}: ATC denied ({deny_status}) but the item IS in the cart "
                       f"(silent hold) — proceeding to checkout instead of bailing")
                 return True
+            # 2026-08-18 observability: the check is otherwise SILENT-on-miss,
+            # which made it unfalsifiable in the 08-18 audit (zero [CART_HOLD]
+            # lines could mean "ran + empty cart", "read GET also 429-walled",
+            # or "never ran"). Log the miss so the next drop distinguishes them:
+            # a 200 with our TCIN absent vs a non-200 read (the wall extending to
+            # reads). One line per real check, already ≤1/4s per executor.
+            # Kill-switch: TARGET_CART_HOLD_VERBOSE=0.
+            if self._cart_hold_verbose and isinstance(res, dict):
+                if res.get('ok'):
+                    print(f"[CART_HOLD] {tcin}: miss — cart read OK ({deny_status} deny), "
+                          f"tcins in cart={res.get('tcins') or []}")
+                else:
+                    print(f"[CART_HOLD] {tcin}: miss — cart read NOT ok ({deny_status} deny), "
+                          f"status={res.get('status')} err={res.get('error')}")
         except Exception as _hold_err:
             print(f"[CART_HOLD] check failed (non-fatal): {_hold_err}")
         return False
