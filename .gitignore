@@ -115,6 +115,13 @@ package-lock.json
 walmart/logs/patches.log
 # Live queue capture JSONL files (regenerated per run, large)
 walmart/logs/live_capture_*.jsonl
+# Queue observability harness output (walmart/queue_events.py) — per-run,
+# may contain auth tokens / ticket data from a real drop. Never commit.
+logs/queue_events_*.jsonl
+logs/queue_capture_*.jsonl
+# Nightly-restart wrapper + capture-dryrun run logs
+logs/walmart_bot_restart_wrapper.log
+logs/walmart_app_*.log
 # Per-run debugging artifacts (screenshots + activity log dumps)
 walmart/logs/*.png
 walmart/logs/activity_log*.pkl

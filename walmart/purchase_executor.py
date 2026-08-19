@@ -3108,6 +3108,18 @@ class WalmartPurchaseExecutor:
 
         logger.warning("[PURCHASE] /blocked detected — URL: %s", current_url)
         self._status_cb("[PURCHASE] Bot challenge detected — attempting solve...")
+        # EVENT LOG: the PerimeterX /blocked wall is the dominant drop-night
+        # failure (the "456 Access Denied at ATC" the research flagged). Record
+        # every occurrence so the post-drop analysis quantifies how often we hit
+        # it and on which session/URL.
+        try:
+            from walmart import queue_events
+            queue_events.event("px_blocked", url=current_url[:120],
+                               session_id=getattr(self._session, "id", None))
+            queue_events.capture("error", url=current_url, body="px_blocked_redirect",
+                                 kind="px_blocked")
+        except Exception:
+            pass
 
         # Use session manager's challenge solver if available (it has press-and-hold logic)
         if self._session and hasattr(self._session, '_handle_blocked_page_on'):

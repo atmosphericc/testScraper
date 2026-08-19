@@ -49,6 +49,8 @@ import os
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from walmart import queue_events
+
 if TYPE_CHECKING:
     from src.stack.multi_session_pool import SessionEntry
     from src.stack.resilient_checker import ResilientChecker
@@ -175,6 +177,9 @@ async def _race_one_session(
     take down the whole race.
     """
     from walmart.queue_handler import QueueHandler, QueueState
+    from walmart import queue_events
+
+    item_id = item_url.rstrip("/").split("/")[-1]
 
     def _log(msg):
         logger.info("[QUEUE_RACE %s] %s", entry.id, msg)
@@ -182,9 +187,11 @@ async def _race_one_session(
     try:
         await entry.tab.get(item_url)
         handler = QueueHandler(entry.tab, _log, session=entry)
+        handler.set_context(item_id=item_id, session_id=entry.id)
         ticket = await handler.detect()
         if ticket is None:
             _log("no queue interstitial detected after PDP nav")
+            queue_events.event("race_no_queue", item_id=item_id, session_id=entry.id)
             return None
 
         final = await handler.detect_and_wait()
@@ -196,16 +203,25 @@ async def _race_one_session(
                 winner_holder["entry"] = entry
                 admitted_event.set()
                 _log(f"ADMITTED (winner): {final}")
+                queue_events.event("race_won", item_id=item_id, session_id=entry.id,
+                                   proxy_ip=getattr(entry, "proxy_ip", None))
             else:
                 _log(f"admitted but another session won first: {final}")
+                queue_events.event("race_admitted_late", item_id=item_id,
+                                   session_id=entry.id)
             return None
         _log(f"non-VALID terminal: {final}")
+        queue_events.event("race_lost", item_id=item_id, session_id=entry.id,
+                           final_state=(final.state if final else None))
         return None
     except asyncio.CancelledError:
         _log("cancelled (another session won, or race timed out)")
+        queue_events.event("race_cancelled", item_id=item_id, session_id=entry.id)
         raise
     except Exception as e:
         logger.warning("[QUEUE_RACE %s] race_one error: %s", entry.id, e)
+        queue_events.event("race_error", item_id=item_id, session_id=entry.id,
+                           error=str(e))
         return None
 
 
@@ -243,6 +259,11 @@ async def _run_race(
     logger.warning(
         "[QUEUE_RACE] %s entered queue — racing %d session(s) "
         "(timeout=%.0fs)", item_id, len(eligible), timeout_s,
+    )
+    queue_events.event(
+        "race_start", item_id=item_id, racers=len(eligible),
+        timeout_s=timeout_s,
+        session_ids=[getattr(s, "id", None) for s in eligible],
     )
 
     tasks = [
@@ -308,8 +329,15 @@ async def _run_race(
             "[QUEUE_RACE %s] purchase result: success=%s order=%s error=%s",
             winner.id, result.success, result.order_id, result.error,
         )
+        queue_events.event(
+            "purchase_result", item_id=item_id, session_id=winner.id,
+            success=result.success, order_id=result.order_id,
+            error=result.error,
+        )
     except Exception as e:
         logger.exception("[QUEUE_RACE %s] purchase raised: %s", winner.id, e)
+        queue_events.event("purchase_error", item_id=item_id,
+                           session_id=winner.id, error=str(e))
     finally:
         # Winner returns to pool's idle rotation. Caller hasn't cleaned
         # up cart/checkout state; that's the executor's concern.
