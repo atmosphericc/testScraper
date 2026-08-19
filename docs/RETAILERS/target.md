@@ -366,6 +366,50 @@ All cookies must be on `.target.com` (root domain) to be sent to `carts.target.c
 - Fresh Shape tokens per attempt — don't cache ATC cookies across purchase attempts
 - ISP proxies strongly preferred over residential during drops
 
+### Hot-SKU ATC Wall — mechanism + community workarounds (researched 2026-08-18)
+Verified against the 08-14/08-18 30th-anniv restocks (189 shots, 0×2xx on 08-18)
+plus community/web research (LordOfRestocks trick, Hidden AIO docs, r/PokemonDeals):
+- **The ATC "high demand" denial is a SOFT denial at the carts app** (429
+  DCO_RATE_LIMITED): the add sometimes LANDS server-side despite the error body —
+  the entire community trick is "spam ATC until the cart badge says One In Cart,
+  then paste target.com/checkout directly and mash Place Order until it takes"
+  (humans report 50–100+ Place Order mashes). Our `_check_cart_hold`
+  (907ca21f) automates exactly this conversion. NOTE: the **empty-body 429**
+  variant (08-18 dominant, 85%) is dropped at the EDGE before the carts app —
+  those can NOT silently land; only DCO-body denials can.
+- **"Bots skip the add-to-cart entirely" is FALSE** — checkout is cart-scoped;
+  no vendor/first-hand source describes an empty-cart checkout. The "skip" in
+  community retellings = skipping the cart PAGE (direct /checkout URL), which
+  our fast lane already does via API.
+- **No pre-window carting exists**: an add fired while the item is unsellable
+  returns 424 DEPENDENT_SERVICE_ERROR / INVENTORY_UNAVAILABLE (observed 10×
+  in our logs); no STREET_DATE error key has ever appeared. Inventory is
+  enforced at add time. Pre-stationing adds only feeds the Device ID+ score.
+- **Mobile-app channel** (api.target.com, Shape native MOBILE SDK, not the web
+  JS VM) is the community's preferred surface for landing the add — a separate,
+  less-saturated scoring surface. A browser cannot mint mobile-SDK sensors.
+  OPEN experiment: `digital_checkouts/v1/cart_items` (namespace seen in our own
+  Endpoint-4 capture) may be a parallel add surface — test whether it accepts
+  web Shape headers on a calm SKU before investing further.
+- **Registry/lists "move to cart", subscriptions, Buy-it-again**: all resolve to
+  the same contested `cart_items` add; no pre-reservation. Partner basket-transfer
+  API (`commerce_partners/v1/cart_items`) bypasses Shape but requires a signed
+  partner OAuth relationship — dead ends, do not re-chase.
+- **Preorder (street-date) windows use the identical `cart_items` POST**;
+  sellability keys off RedSky `availability_status` (PRE_ORDER_UNSELLABLE →
+  PRE_ORDER_SELLABLE), not the street_date timestamp. The resilient stack
+  already maps PRE_ORDER_SELLABLE to in_stock=True (live-proven 08-18
+  1010892076). Hot street-dated TCINs are often publish-gated (absent from
+  RedSky entirely) until on-sale. Preorder opens (~3 AM ET, hours-long windows)
+  are far less contested than day-of restocks — being fast at the flip there is
+  the highest-value window. Next true test: **Sept 16, 2026, 3 AM ET** 30th
+  Celebration preorders, items published one at a time.
+- **Win-shape calibration (all logged history)**: every first-201 ever landed at
+  t=0.39–3.69s after window-open; only 3 persistence wins exist (61×/21×/68×
+  429 before a 201, all through SOFT-429 walls, ~95–105s in). ZERO wins have
+  ever come through a hard-401 wall — once 401s dominate, that identity+TCIN is
+  done for the window.
+
 ### Known Automation Notes (from existing codebase)
 - `src/session/purchase_executor.py` uses CDP header interception to inject auth — do not modify
 - `CARD_CVV` is hardcoded in purchase_executor.py — off-limits file, pending externalization to `.env` as `TARGET_CVV`
