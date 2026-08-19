@@ -94,9 +94,25 @@ REM  (~40 shots/window -> ~1 probe/COOLDOWN). FAIL-SAFE: any successful add rese
 REM  it instantly, so a winning night never trips (07-31 7/7, 08-04 4/8 both had
 REM  2xx). Costs nothing on a 0-for night. Validated: tests/test_atc_gate_breaker.py.
 REM  Kill-switch: set TARGET_ATC_GATE_BREAKER=0. Tune: STREAK_LIMIT / COOLDOWN_S.
+REM
+REM  2026-08-18 LOOSENED (streak 8->20, cooldown 120->45s; user decision after
+REM  the 3rd straight breaker-era hot-SKU 0-for). Rationale: every hot-SKU drop
+REM  since the breaker shipped 08-09 (08-11/08-14/08-18) went 0-for, while every
+REM  pre-breaker win did a full storm. The forensic reframe (see FAILURES.md
+REM  08-18 + docs/RETAILERS/target.md "Hot-SKU ATC Wall"): the 85% dominant wall
+REM  is a GLOBAL edge demand-lottery that hits humans too -- against it, SHOT
+REM  COUNT is the only lever; the breaker was sacrificing tickets to protect the
+REM  minority 15% hard-401 identity-hardening. Decisive datum: our ONLY 3
+REM  non-first-shot wins (07-14/07-21/07-31) needed 21/21/24 consecutive ATC
+REM  attempts before the 201 -- the streak-8 cutoff structurally PREVENTS that
+REM  exact persistence pattern. And fp-chromium (08-11) split this desktop into
+REM  3 distinct devices, so the "shared device score" the breaker guarded is
+REM  largely obsolete. 20/45 still brakes a 2,960-add runaway (~3-4x more tickets,
+REM  not unlimited). FAIL-SAFE unchanged: any 2xx add resets the streak instantly.
+REM  Rollback to the protective config: STREAK_LIMIT=8, COOLDOWN_S=120.
 set TARGET_ATC_GATE_BREAKER=1
-set TARGET_ATC_GATE_STREAK_LIMIT=8
-set TARGET_ATC_GATE_COOLDOWN_S=120
+set TARGET_ATC_GATE_STREAK_LIMIT=20
+set TARGET_ATC_GATE_COOLDOWN_S=45
 
 REM ---------------------------------------------------------------------------
 REM  In-place checkout re-shoot (2026-07-17 drop fix). That drop went 0-for: the
