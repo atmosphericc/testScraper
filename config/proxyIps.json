@@ -1,12 +1,6 @@
 {
   "_comment_active": "USED BY APP \u2014 16 sweep IPs from the 25-IP zone (BD downgraded 50->25 on 2026-07-08). Chrome count == len(this list). The 3 account PURCHASE IPs are held out of this list on purpose (isolation).",
   "proxies": [
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-72.56.171.184:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.141.141:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.93.225:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.212.250:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.222.246:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.227.219:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.228.245:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.148.70:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.153.101:jw569klxgs9c@brd.superproxy.io:33335",
@@ -16,7 +10,13 @@
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.171.7:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.183.245:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.198.34:jw569klxgs9c@brd.superproxy.io:33335",
-    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.143.27:jw569klxgs9c@brd.superproxy.io:33335"
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.143.27:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-72.56.171.184:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-168.158.141.141:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.93.225:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.212.250:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.222.246:jw569klxgs9c@brd.superproxy.io:33335",
+    "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.227.219:jw569klxgs9c@brd.superproxy.io:33335"
   ],
   "_comment_purchase": "Account purchase exits (NOT swept): primary=168.158.160.228, business=31.98.158.87, alt-1=168.158.32.64 \u2014 see config/target_accounts.json. 2026-08-07: primary+alt-1 rotated off 31.105.133.83/92.112.18.99 (0 carts on 08-04 + 08-06->07, per-identity ATC gate; lever #1 of the 08-07 post-mortem).",
   "_comment_reserve": "Spare clean IPs \u2014 manually move into 'proxies' if an active one burns. 4 entries (2 consumed 2026-08-07 by the purchase-exit rotation).",
