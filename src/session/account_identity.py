@@ -42,9 +42,16 @@ from typing import Any, Dict, List, Optional
 # Realistic desktop Chrome builds. MUST track the real installed Chrome major on
 # the host — a UA claiming a different major than the real JA3/TLS handshake is
 # itself the Shape detection vector that BLOCKED logins on 2026-06-24 (the module
-# was pinned to 130-132 while the host ran 149/150). Real host Chrome = 150.0.7871.101
-# (verified 2026-07-12). Keep every build at the real major; vary only the patch.
-_CHROME_BUILDS: List[str] = ["150.0.7871.101", "150.0.7871.94", "150.0.7871.119"]
+# was pinned to 130-132 while the host ran 149/150).
+# 2026-08-22: the host auto-updated 150 -> 151.0.7922.173 on 2026-08-20 (the day
+# before the 08-21 drop), so every login + the business real-Chrome purchase arm
+# spent 08-21 presenting a Chrome/150 UA on a 151 engine — the exact UA-vs-engine
+# incoherence this list exists to prevent. Bumped to the real installed build.
+# Verify after each Chrome auto-update: this string must equal the ProductVersion
+# of C:\Program Files\Google\Chrome\Application\chrome.exe. fp-chromium accounts
+# (primary/alt-1) suppress this JS spoof and present their own 148 engine UA, so
+# this only governs the login browsers and the business (real-Chrome) purchase arm.
+_CHROME_BUILDS: List[str] = ["151.0.7922.173"]
 
 # (UA platform token, navigator.platform, UA-CH platform, UA-CH platformVersion)
 # Windows-only: the host is Windows 11, and "macOS-on-Windows" is an incoherent

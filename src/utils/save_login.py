@@ -21,7 +21,7 @@ async def save_login():
         _sys.path.insert(0, str(_P(__file__).resolve().parents[2]))
         from src.session.fp_chromium import login_overrides as _ov, login_profile_dir as _pd
         _fp_exec, _fp_args = _ov(ACCOUNT_ID, TIMEZONE)
-        _profile = _pd(PROFILE_DIR)
+        _profile = _pd(PROFILE_DIR, ACCOUNT_ID)  # ACCOUNT_ID: honour TARGET_FP_CHROMIUM_SKIP
     except Exception as _e:
         print(f"[save_login] fp-chromium lookup skipped: {_e}")
 

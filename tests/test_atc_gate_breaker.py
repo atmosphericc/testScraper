@@ -177,6 +177,108 @@ def test_never_raises_on_malformed():
             print(f"    raised: {e}")
 
 
+def _edge(reason="rate_limited_429", kind="edge"):
+    return {"success": False, "tcin": "T", "reason": reason, "gate_kind": kind}
+
+
+def test_edge_429_neutral_by_default():
+    """2026-08-21: an EMPTY-body 429 (gate_kind='edge', the edge demand lottery)
+    neither counts nor resets; only carts-service denials (401 / DCO-body 429)
+    build the streak. 08-21 armed on 53/62 edge-429s and cut the only window."""
+    ex = _breaker(limit=3)
+    for _ in range(10):
+        ex._note_atc_gate_outcome("T", _edge())
+    check("edge_429_x10_never_arms", not _armed(ex) and ex._tcin_denial_streak.get("T", 0) == 0)
+    # interleaved: 2 real denials, many edge, 1 real -> arms exactly on the 3rd REAL
+    ex._note_atc_gate_outcome("T", _denial())
+    ex._note_atc_gate_outcome("T", _edge())
+    ex._note_atc_gate_outcome("T", _denial())
+    for _ in range(5):
+        ex._note_atc_gate_outcome("T", _edge())
+    check("edge_does_not_reset_real_streak", ex._tcin_denial_streak.get("T") == 2 and not _armed(ex))
+    ex._note_atc_gate_outcome("T", _edge("rate_limited_429", "dco"))
+    check("dco_body_429_counts", ex._tcin_denial_streak.get("T") == 3 and _armed(ex))
+    # legacy result dicts without gate_kind (the ladder's 401 path, older code) still count
+    ex2 = _breaker(limit=2)
+    ex2._note_atc_gate_outcome("T", _denial("rate_limited_429"))
+    ex2._note_atc_gate_outcome("T", _denial("atc_failed_api_mode"))
+    check("no_gate_kind_still_counts", _armed(ex2))
+
+
+def test_edge_429_counts_when_opted_in():
+    ex = _breaker(limit=3)
+    ex._atc_gate_count_edge_429 = True  # TARGET_ATC_GATE_COUNT_EDGE_429=1
+    for _ in range(3):
+        ex._note_atc_gate_outcome("T", _edge())
+    check("opt_in_restores_08_09_counting", _armed(ex))
+
+
+def test_streak_ttl_decay():
+    ex = _breaker(limit=3)
+    ex._atc_gate_streak_ttl_s = 600.0
+    ex._note_atc_gate_outcome("T", _denial())
+    ex._note_atc_gate_outcome("T", _denial())
+    check("two_recent_denials_streak_2", ex._tcin_denial_streak["T"] == 2)
+    ex._tcin_denial_last_ts["T"] = time.time() - 601  # an earlier window
+    ex._note_atc_gate_outcome("T", _denial())
+    check("stale_streak_restarts_at_1_not_3", ex._tcin_denial_streak["T"] == 1 and not _armed(ex))
+    ex._note_atc_gate_outcome("T", _denial())
+    ex._note_atc_gate_outcome("T", _denial())
+    check("fresh_streak_still_arms_at_limit", _armed(ex))
+    # TTL 0 = never decays (the 08-09..08-20 behaviour)
+    ex3 = _breaker(limit=2)
+    ex3._atc_gate_streak_ttl_s = 0.0
+    ex3._note_atc_gate_outcome("T", _denial())
+    ex3._tcin_denial_last_ts["T"] = time.time() - 99999
+    ex3._note_atc_gate_outcome("T", _denial())
+    check("ttl_zero_never_decays", _armed(ex3))
+    # attribute-less executor (older pickles / tests) must not raise
+    ex4 = _breaker(limit=2)
+    for a in ("_atc_gate_streak_ttl_s", "_tcin_denial_last_ts", "_atc_gate_count_edge_429"):
+        if hasattr(ex4, a):
+            delattr(ex4, a)
+    try:
+        ex4._note_atc_gate_outcome("T", _denial()); ex4._note_atc_gate_outcome("T", _denial())
+        check("missing_new_attrs_safe", _armed(ex4))
+    except Exception as e:  # pragma: no cover
+        check("missing_new_attrs_safe", False); print(f"    raised: {e}")
+
+
+def test_source_contract_2026_08_21():
+    check("init_wires_count_edge_flag", "TARGET_ATC_GATE_COUNT_EDGE_429" in SRC and "_atc_gate_count_edge_429" in SRC)
+    check("init_wires_streak_ttl", "TARGET_ATC_GATE_STREAK_TTL_S" in SRC and "_tcin_denial_last_ts" in SRC)
+    check("count_edge_default_off", "os.environ.get('TARGET_ATC_GATE_COUNT_EDGE_429', '0') == '1'" in SRC)
+    # the 429 bail tags the result so the breaker can tell edge from DCO
+    check("429_bail_carries_gate_kind",
+          re.search(r"'reason': 'rate_limited_429',\s*'gate_kind': 'dco' if \(atc_body or ''\)\.strip\(\) else 'edge'", SRC) is not None)
+    # ATC-401 ladder short-circuit sits BEFORE the legacy ladder branch and is flag-gated
+    m = re.search(r"elif atc_status == 401 and not getattr\(self, '_atc_401_ladder_on', False\):[\s\S]{0,1500}?"
+                  r"'reason': 'atc_failed_api_mode',\s*'gate_kind': 'auth401'[\s\S]{0,400}?elif atc_status == 401:", SRC)
+    check("401_ladder_short_circuit_precedes_ladder", m is not None)
+    check("401_ladder_flag_default_off", "os.environ.get('TARGET_ATC_401_LADDER', '0') == '1'" in SRC)
+    check("401_short_circuit_keeps_cart_hold_read",
+          re.search(r"ladder OFF[\s\S]{0,600}?await self\._check_cart_hold\(tab, tcin, atc_status\)", SRC) is not None)
+    # identity tag on the ATC result lines (per-account audit)
+    check("ident_tag_on_chain_done", re.search(r"\[FAST_LANE\] chain done in[\s\S]{0,400}?ident=\{self\._ident_tag\(\)\}", SRC) is not None)
+    check("ident_tag_on_atc_status_lines", SRC.count("ident={self._ident_tag()}") >= 4)
+    # manager: inter-retry re-warm no longer forces the /cart reload by default
+    MSRC = (ROOT / "src" / "purchasing" / "bulletproof_purchase_manager.py").read_text(encoding="utf-8")
+    check("manager_rewarm_flag_default_off", "os.environ.get('TARGET_RETRY_FORCE_REWARM', '0') == '1'" in MSRC)
+    check("manager_rewarm_uses_flag", MSRC.count("warm_shape_headers(force_fresh=_rewarm_force)") == 2
+          and "warm_shape_headers(force_fresh=True)" not in MSRC)
+    # 2026-08-22: dead-token mid-window repair (07-07 safety net for the ladder-OFF path)
+    check("dead_token_flag_default_on",
+          "os.environ.get('TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR', '1') != '0'" in SRC
+          and "_atc_dead_token_midwindow_repair" in SRC)
+    # both warmup-heartbeat repair guards consult the flag (so a CONFIRMED dead
+    # write-auth can repair mid-window, still 300s-throttled)
+    check("dead_token_guard_relaxes_both_gates",
+          SRC.count("getattr(self, '_atc_dead_token_midwindow_repair', True)") >= 2)
+    # ...and it is still gated on the 300s throttle in both places
+    check("dead_token_repair_still_throttled",
+          SRC.count("self._last_bg_token_repair_ts > 300.0") >= 2)
+
+
 def test_source_contract():
     check("init_wires_kill_switch",
           "TARGET_ATC_GATE_BREAKER" in SRC and "_atc_gate_breaker_on" in SRC)
@@ -203,5 +305,9 @@ if __name__ == '__main__':
     test_per_tcin_isolation()
     test_never_raises_on_malformed()
     test_source_contract()
+    test_edge_429_neutral_by_default()
+    test_edge_429_counts_when_opted_in()
+    test_streak_ttl_decay()
+    test_source_contract_2026_08_21()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

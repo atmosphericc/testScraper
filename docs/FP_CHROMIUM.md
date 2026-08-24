@@ -30,6 +30,9 @@ permanent, no concurrency cap.
 | `TARGET_FP_CHROMIUM=1` | Master switch. The **PURCHASE** browsers launch from fingerprint-chromium (per-account `-fp` profile + seed). Login is unaffected. |
 | `TARGET_FP_CHROMIUM_LOGIN=1` | Opt-in (needs the master too) to ALSO run the **login** tools under fingerprint-chromium. OFF by default — see the warning below. |
 | `TARGET_FP_CHROMIUM_PATH=<chrome.exe>` | Optional. Explicit binary path; else `~/fp-chromium/win` is probed. |
+| `TARGET_FP_CHROMIUM_SKIP=business` | (2026-08-21) csv of account ids that run **real Chrome on their real profile** (the pre-08-11 winning configuration) while the master switch keeps the others on fp-chromium — the A/B control arm. Empty = all on fp. |
+| `TARGET_FP_SEED_SALT=<str>` | (2026-08-21) mixed into the seed → a different, still-deterministic engine-level device per account for that salt (set it to the run date for a fresh device nightly). Empty = the static 08-11 seeds, bit-identical. NOTE: the `-fp` profile + imported jar still carry persistent ids (visitorId, `3YCzT93n`, PX/TMX), so a salt alone is a *partial* new device. |
+| `TARGET_FP_CHROMIUM_ACCOUNTS=a,b` | Optional allowlist (SKIP wins over it). |
 
 When `TARGET_FP_CHROMIUM` is unset/0 **nothing changes** — same system Chrome, same
 profiles, same JS spoof. This is the rollback contract.
@@ -72,7 +75,7 @@ spoof is auto-skipped (engine-level replaces it).
 ## What you'll see in the logs (grep `FP_CHROMIUM`)
 - `[FP_CHROMIUM] account=primary exec=...chrome.exe args=[--fingerprint=1693239552, ...] profile=...nodriver-profile-fp`
 - `[FP_CHROMIUM] JS spoof suppressed (engine-level active) for primary`
-- Per-account seeds (stable): primary `1693239552`, business `2122075987`, alt-1 `1509568654`.
+- Per-account seeds (stable while `TARGET_FP_SEED_SALT` is empty): primary `1693239552`, business `2122075987`, alt-1 `1509568654`. A skipped identity logs no `FP_CHROMIUM` launch line and its profile has no `-fp` suffix.
 
 ## Rollback
 - **Instant:** remove `TARGET_FP_CHROMIUM` from the bat (or set `=0`). Everything reverts

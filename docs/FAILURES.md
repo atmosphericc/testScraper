@@ -31,6 +31,120 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-08-21] - 0-for on the First Partner Illustration Collection drop: the breaker armed on the EDGE LOTTERY and cut the only window; the 401 wall was never the differentiator - TARGET
+**Symptom**: run_20260820_225041.log (bat launched 22:50 after hand-logins
+22:22-22:33; user stopped 17:41). Two armed TCINs went live: 1011960739
+03:12:48-03:25:32 (12.7 min) and 1011209279 04:13:54-04:18:34. 0 orders,
+0×2xx on 151 chain shots (90 empty-body 429, 61 hard 401 _ERR_AUTH_DENIED
+T83072242, 1 DCO-body 429) + 103 in-ladder retries (0×2xx). Detect→first
+shot 0.8 s (fine). Breaker armed on all 3 identities at 03:14:39 (streak 20
+in ~2 min); from 03:15 to 03:24 the fleet fired ~3 shots/min (1 per identity
+per ~60 s, not 45 — quantized to the 20 s LEVEL_REARM tick) and every probe
+from 03:19 on was a 401. business's login-session died 10:32 (6 h after the
+last window; 4 sentinel credential relogins failed under fp-chromium on the
+home IP; capped 11:42) — irrelevant to the 0-for, hand-login required.
+Bot ran clean: 15 tracebacks are all asyncio WinError 10054 noise.
+**Root Cause**: (a) The prior theory ("401 = cooked Device ID+, hopeless")
+is falsified by the winning-night logs: 07-31 (9 orders, 1,014 shots) was
+63% hard-401 and 08-04 (4 orders, 1,676 shots) was 76% — MORE 401-heavy
+than tonight's 40% — and every win landed INSIDE a 401 wall, in the same
+minute as 401s on the other identities. (b) Every 201 ever won came within
+~2 min of an in-stock EDGE; 10/11 winners were shot #1 of their race. Windows
+whose first 60 s were dominated by EMPTY-body 429 have NEVER converted on any
+night (winning nights included — 07-31's 1011209279/1012055696/95274164
+windows had that shape and 0-for'd while regular SKUs converted). Tonight's
+only long window opened 30×429e / 2×401 = the never-converting shape, and
+every SKU armed since 08-07 has been a hyper-hyped one. (c) The breaker then
+made it worse: the streak that armed was 53/62 empty-body 429s — the global
+edge lottery the 08-18 analysis itself says shot count is the only lever
+against — not the carts-service denial the breaker was written for. It cut
+~85% of window-1 shots (151 vs 1,014/1,676 on winning nights; at the
+winning-night 0.7-1.9% per-shot 201 rate, 151 shots is a coin-flip for 0).
+(d) Waste multipliers, present on winning nights too but contradicting the
+"stop hammering" premise: the 401 repair ladder fires 2 more ATC writes + a
+token_refresh + an /account page load per 401 and blocks the identity median
+2.6 s / p90 7.3 s / max 9.3 s (0/85 mints, 0/103 in-ladder retries converted;
+the same token READ the cart 200 after every 401, bogus-TCIN adds 424'd all
+night → it is not a dead write token); the manager's inter-retry
+`warm_shape_headers(force_fresh=True)` bypassed the purchase-time /cart
+guard and fired a /cart load + cart PUT (ADDRESSES, the CVV re-entry trigger)
++ dummy POST between EVERY retry (03:13: 26 navs / 27 PUTs for 30 shots).
+(e) Environment deltas vs the 9-order night, the only things that changed:
+fp-chromium on all 3 (08-11), rotated primary/alt-1 exits (08-07), the
+breaker (08-09/08-18), post-denial CART_HOLD reads (08-14). The ATC request
+itself (headers, qty, fast lane, budget, cadence) is byte-identical.
+**Fix Applied** (all flag-gated, defaults = new behaviour):
+1. Breaker counts only carts-service denials: the 429 bail now carries
+   `gate_kind` ('edge' = empty body, 'dco' = DCO body); `_note_atc_gate_outcome`
+   treats 'edge' as neutral unless `TARGET_ATC_GATE_COUNT_EDGE_429=1`. Streak
+   decays after `TARGET_ATC_GATE_STREAK_TTL_S` (600; 0 = never) so a same-SKU
+   restock hours later is not one-denial-then-armed.
+2. ATC-401 repair ladder OFF (`TARGET_ATC_401_LADDER=1` restores): a 401 runs
+   the cart-hold READ then bails to the Error-Delay re-shoot immediately.
+3. Inter-retry re-warm is non-forced (`TARGET_RETRY_FORCE_REWARM=1` restores
+   the /cart reload + PUT); the dummy POST still refills the Shape ring.
+4. `ident=<account>` appended to the `[FAST_LANE] chain done` / `ATC fetch`
+   lines — per-identity ATC composition was unauditable from the run log.
+5. fp-chromium A/B levers: `TARGET_FP_CHROMIUM_SKIP=<ids>` keeps named
+   identities on real Chrome + their real profile (the 07-24..08-04 winning
+   config) as the control arm; `TARGET_FP_SEED_SALT` rotates the engine-level
+   device per salt (empty = bit-identical 08-11 seeds). Bat: SKIP=business,
+   salt empty (one variable per identity). preflight_fp_drop.py now prints the
+   per-identity plan and checks the new flags. tests: test_atc_gate_breaker
+   +4 (edge-neutral, opt-in, TTL, source contract), test_fp_chromium +2 sections.
+**Confidence**: high on the audit (3-agent forensic census with line refs
+across 3 nights; totals reconcile: 254 main-tab POSTs = 90+61+61+42); high on
+fixes 1-4 as removals of proven-useless work; medium on the A/B (one live
+edge decides it — judge by per-identity composition, not orders alone).
+**Outcome**: Pending the next live edge. If a regular SKU is armed it should
+convert as before; on a hyped SKU the bot now keeps the full ~27 shots/min
+through the window. Still open: the sentinel's in-run credential relogin
+relaunches under fp-chromium on the home IP (failed 4/4 today) — hand-logins
+remain mandatory; and whether the 429e-dominated edge on hyped SKUs is
+beatable at all from this setup.
+**Verification (2026-08-22, 7-agent adversarial + online-research workflow)**:
+The direction of all 5 fixes held up. Online corroboration (5 independent bot
+codebases — ZynBot/Destiny AIO/AndAIO + Refract + a 2017 Habr thread): HTTP 401
+`{errorCode:T83072242, errorKey:_ERR_AUTH_DENIED}` is a Shape SIGNATURE
+rejection ("Shape Block"), not an expired login / dead write token / qty limit;
+the universal handling is "burn the Shape header set, get a fresh one, retry on
+a fixed error delay" — nobody refreshes the OAuth token, re-scopes cookies, or
+navs /account on a 401. That directly validates C2 (ladder off) and C3 (no
+/cart reload between retries; the human playbook is "skip the cart page, spam
+/checkout"). Empty-body 429 = a high-demand throttle everyone hits ("80% blocks
+on a restock is normal" — Refract), validating C1's edge-neutral default.
+Follow-up fixes applied from the review (flag-gated, tests green 64/64 breaker,
+55/55 fp, 37/1 preflight):
+  6. **Chrome major 150→151** (account_identity.py `_CHROME_BUILDS`): the host
+     auto-updated to Chrome 151.0.7922.173 on 08-20, so every 08-21 login AND
+     the business real-Chrome purchase arm presented a Chrome/150 UA on a 151
+     engine — the exact UA-vs-engine incoherence that Shape-blocked logins on
+     06-24, live during the drop. preflight now FAILs on any such drift
+     (`account_identity UA major != installed Chrome`). Re-run hand_login_all.bat
+     so jars are minted under 151.
+  7. **Dead-token mid-window repair** (`TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=1`
+     default): with the ladder off, a genuinely dead write token (the 07-07
+     mode) had no in-window repair. The warmup heartbeat's existing
+     confirmed-dead repair (dummy POST 401 → re-probe 401 →
+     ensure_fresh_access_token on the SEPARATE warmup tab) is now allowed during
+     a window too, still 300s-throttled and still requiring a CONFIRMED dead
+     write-auth — so it is INERT on the 08-21 pattern (heartbeat 424 all night)
+     and only fires on a real dead token.
+  8. C2 comment corrected to cite the dummy-POST 424 heartbeat (not the
+     read-only cart GET 200) as the write-auth liveness proof.
+  9. login_profile_dir now receives account_id at all 3 login sites (latent:
+     only bit if login-fp were enabled with SKIP).
+Explicitly NOT changed (judgment calls, documented): the FAST_SELLING in-place
+re-shoot still force-warms /cart (proven-converting on 08-04, out of scope);
+business kept as the real-Chrome control though it is the noisiest signal
+(needs a hand-login anyway; the Chrome-151 fix makes the control coherent).
+Open recommendation for the next audit: capture the `Tgt-Cart-Error-Key`
+RESPONSE header on ATC 429s via the CDP interceptor (page JS can't read it —
+CORS) so empty-429 "high-demand vs bot-block" is decidable, not inferred; and
+judge the fp A/B only on a REGULAR-SKU night (hyped-SKU nights are a null test).
+
+---
+
 ### [2026-08-18] - 0-for on the 30th Anniversary restock: total ATC denial wall (85% global demand lottery) + LEVEL_REARM deadlock after emergency reset - TARGET
 **Symptom**: Rolling 30th-anniv restock (~10 in-stock windows 01:30–05:00,
 1010892xxx + 1011209279). 0 orders. The bot itself ran FLAWLESSLY — zero

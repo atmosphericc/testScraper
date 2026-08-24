@@ -43,6 +43,18 @@ logger = logging.getLogger(__name__)
 
 _ENV_ENABLE = "TARGET_FP_CHROMIUM"
 _ENV_PATH = "TARGET_FP_CHROMIUM_PATH"
+# 2026-08-21 A/B levers (both no-ops when unset — see the 08-21 post-mortem):
+#   TARGET_FP_SEED_SALT=<str>      mixed into the seed -> a different, still-deterministic
+#                                   engine-level device per account for that salt (e.g.
+#                                   the run date = a fresh device nightly). '' = the static
+#                                   08-11 seeds, bit-identical.
+#   TARGET_FP_CHROMIUM_SKIP=a,b     account ids that run REAL Chrome + the real profile
+#                                   (the pre-08-11 winning configuration) while the master
+#                                   switch keeps the others on fp-chromium = the control arm.
+#   TARGET_FP_CHROMIUM_ACCOUNTS=a,b optional allowlist (SKIP wins over it).
+_ENV_SEED_SALT = "TARGET_FP_SEED_SALT"
+_ENV_SKIP = "TARGET_FP_CHROMIUM_SKIP"
+_ENV_ONLY = "TARGET_FP_CHROMIUM_ACCOUNTS"
 _TRUTHY = {"1", "true", "yes", "on"}
 
 # Where to probe for chrome.exe when TARGET_FP_CHROMIUM_PATH is unset. Matches the
@@ -78,6 +90,34 @@ def is_enabled() -> bool:
     return _truthy(os.environ.get(_ENV_ENABLE))
 
 
+def _csv_env(name: str) -> set:
+    return {x.strip().lower() for x in (os.environ.get(name) or "").split(",") if x.strip()}
+
+
+def is_enabled_for(account_id: Optional[str]) -> bool:
+    """Master switch AND this identity is not opted out (2026-08-21 A/B control).
+
+    Unknown/empty account_id -> master switch only, so callers without an id keep
+    today's behaviour. ``TARGET_FP_CHROMIUM_SKIP`` (csv) names identities that stay
+    on real Chrome + the real profile; ``TARGET_FP_CHROMIUM_ACCOUNTS`` (csv) is an
+    optional allowlist. SKIP wins. Matching is case-insensitive and trimmed.
+    """
+    if not is_enabled():
+        return False
+    aid = (account_id or "").strip().lower()
+    if not aid:
+        return True
+    if aid in _csv_env(_ENV_SKIP):
+        return False
+    only = _csv_env(_ENV_ONLY)
+    return (aid in only) if only else True
+
+
+def seed_salt() -> str:
+    """Per-run salt mixed into the seed. Empty (default) = the static 08-11 seeds."""
+    return (os.environ.get(_ENV_SEED_SALT) or "").strip()
+
+
 def _find_exe() -> Optional[str]:
     # 1) Explicit path wins — accept either the exe itself or a dir containing it.
     p = (os.environ.get(_ENV_PATH) or "").strip()
@@ -110,13 +150,21 @@ def executable_path() -> Optional[str]:
     return _resolved_exe
 
 
-def fingerprint_seed(account_id: str) -> int:
-    """Deterministic 31-bit ``--fingerprint`` seed for an account.
+def fingerprint_seed(account_id: str, salt: Optional[str] = None) -> int:
+    """Deterministic 31-bit ``--fingerprint`` seed for (account, salt).
 
     Stable across runs (like ``account_identity``): the same account always maps
     to the same engine-level device, and distinct accounts get distinct seeds.
+    ``salt=None`` reads ``TARGET_FP_SEED_SALT``. With an empty salt the hash
+    material is byte-identical to the 2026-08-11 implementation
+    (primary=1693239552, business=2122075987, alt-1=1509568654). A non-empty salt
+    (e.g. the run date) yields a different, still-deterministic device per account.
     """
-    h = hashlib.sha256(("fp-chromium:" + (account_id or "default")).encode("utf-8")).hexdigest()
+    s = seed_salt() if salt is None else str(salt).strip()
+    material = "fp-chromium:" + (account_id or "default")
+    if s:
+        material += "|salt=" + s
+    h = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return (int(h[:8], 16) & 0x7FFFFFFF) or 1
 
 
@@ -148,7 +196,7 @@ def launch_overrides(account_id: str, timezone: Optional[str] = None
     enabled AND a binary is present, else ``(None, [])`` — callers then launch the
     system Chrome exactly as before.
     """
-    if not is_enabled():
+    if not is_enabled_for(account_id):
         return None, []
     exe = executable_path()
     if not exe:
@@ -161,16 +209,18 @@ def launch_overrides(account_id: str, timezone: Optional[str] = None
     return exe, build_args(account_id, timezone)
 
 
-def profile_dir(base: str) -> str:
+def profile_dir(base: str, account_id: Optional[str] = None) -> str:
     """Return a sibling ``-fp`` profile dir when fingerprint-chromium is active.
 
     The 148 build must never open the real Chrome-150 profiles: a version
     downgrade can reset prefs and, worst case, disturb the live login-session.
     A dedicated ``-fp`` profile is also a clean, history-free device — better for
-    un-linking. Unchanged (returns ``base``) whenever fp-chromium is off/absent.
+    un-linking. Unchanged (returns ``base``) whenever fp-chromium is off/absent,
+    or when ``account_id`` is opted out via ``TARGET_FP_CHROMIUM_SKIP`` (that
+    identity then runs real Chrome on its real profile — the A/B control).
     """
     base = str(base)
-    if not is_enabled() or not executable_path():
+    if not is_enabled_for(account_id) or not executable_path():
         return base
     return base if base.endswith("-fp") else base + "-fp"
 
@@ -195,7 +245,7 @@ def login_enabled() -> bool:
 def login_overrides(account_id: str, timezone: Optional[str] = None
                     ) -> Tuple[Optional[str], List[str]]:
     """launch_overrides, but ONLY when login-fp is opted in (see login_enabled)."""
-    if not login_enabled():
+    if not login_enabled() or not is_enabled_for(account_id):
         return None, []
     exe = executable_path()
     if not exe:
@@ -203,10 +253,10 @@ def login_overrides(account_id: str, timezone: Optional[str] = None
     return exe, build_args(account_id, timezone)
 
 
-def login_profile_dir(base: str) -> str:
+def login_profile_dir(base: str, account_id: Optional[str] = None) -> str:
     """profile_dir, but ONLY when login-fp is opted in (see login_enabled)."""
     base = str(base)
-    if not login_enabled() or not executable_path():
+    if not login_enabled() or not is_enabled_for(account_id) or not executable_path():
         return base
     return base if base.endswith("-fp") else base + "-fp"
 
@@ -216,7 +266,9 @@ def describe() -> str:
     if not is_enabled():
         return "fp-chromium: OFF (TARGET_FP_CHROMIUM unset)"
     exe = executable_path()
-    return f"fp-chromium: ON exe={exe or 'MISSING — set TARGET_FP_CHROMIUM_PATH'}"
+    return (f"fp-chromium: ON exe={exe or 'MISSING — set TARGET_FP_CHROMIUM_PATH'} "
+            f"salt={seed_salt() or '(none: static seeds)'} "
+            f"skip={sorted(_csv_env(_ENV_SKIP)) or '-'} only={sorted(_csv_env(_ENV_ONLY)) or '-'}")
 
 
 if __name__ == "__main__":
@@ -228,5 +280,6 @@ if __name__ == "__main__":
     print("fp_chromium self-check OK")
     print(f"  {describe()}")
     for a in ids:
-        print(f"  {a:8s} seed={seeds[a]:>10d}  args={build_args(a, 'America/Chicago')}")
-        print(f"           profile('nodriver-profile') -> {profile_dir('nodriver-profile')}")
+        print(f"  {a:8s} seed={seeds[a]:>10d}  fp={'ON' if is_enabled_for(a) else 'OFF (control)'}  "
+              f"args={build_args(a, 'America/Chicago')}")
+        print(f"           profile('nodriver-profile') -> {profile_dir('nodriver-profile', a)}")

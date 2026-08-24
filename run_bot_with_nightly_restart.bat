@@ -65,6 +65,20 @@ set RELOGIN_SKIP_PROXY=1
 set TARGET_APPLY_FINGERPRINT=1
 REM fp-chromium: engine-level distinct device per account on the PURCHASE side only (login stays real Chrome via RELOGIN_SKIP_PROXY). Kill-switch: delete this line.
 set TARGET_FP_CHROMIUM=1
+REM  2026-08-21 A/B (post-mortem in docs/FAILURES.md 08-21): every win in history
+REM  (07-24/07-28/07-31/08-04) was on REAL Chrome + the real profile; every drop
+REM  since fp-chromium shipped 08-11 went 0-for. Keep ONE identity on the proven
+REM  real-Chrome config as the control while the other two stay on fp-chromium.
+REM  business = control (the only 4-for-4 real-Chrome night, 08-04; it needs a
+REM  hand-login anyway). Judge the night by per-identity ATC composition (grep
+REM  "ident=" on the chain-done / ATC fetch lines), not by orders alone.
+REM  Rollback to all-fp: set TARGET_FP_CHROMIUM_SKIP=   (empty). Full revert to the
+REM  pre-08-11 winning config for ALL three: set TARGET_FP_CHROMIUM=0.
+set TARGET_FP_CHROMIUM_SKIP=business
+REM  Optional: rotate the fp-chromium device nightly by mixing a salt into the
+REM  seed (e.g. set TARGET_FP_SEED_SALT=%DATE:~-4%%DATE:~4,2%%DATE:~7,2%). Left
+REM  EMPTY on purpose so the A/B changes ONE variable (browser) per identity.
+set TARGET_FP_SEED_SALT=
 
 REM Force REAL-PURCHASE mode. app.py places real orders unless TEST_MODE=true;
 REM pinned to false here so a stray TEST_MODE=true left in the environment
@@ -113,6 +127,17 @@ REM  Rollback to the protective config: STREAK_LIMIT=8, COOLDOWN_S=120.
 set TARGET_ATC_GATE_BREAKER=1
 set TARGET_ATC_GATE_STREAK_LIMIT=20
 set TARGET_ATC_GATE_COOLDOWN_S=45
+REM  2026-08-21 post-mortem: the breaker armed at 03:14:39 on a streak that was
+REM  53/62 EMPTY-body 429s (the edge demand lottery that hits humans too), cut
+REM  the only 12.7-min window from ~27 shots/min to ~3, and every probe after
+REM  03:19 was a 401 anyway. Winning nights were 63-76% hard-401 and converted
+REM  INSIDE those walls (10/11 winners = shot #1 of a fresh race). So only
+REM  carts-service denials (401 / DCO-body 429) count now; an empty-body 429 is
+REM  neutral. The streak also decays after STREAK_TTL_S so a same-SKU restock
+REM  hours later is not one-denial-then-armed. Rollback to 08-09..08-20 counting:
+REM  set TARGET_ATC_GATE_COUNT_EDGE_429=1 ; no decay: TARGET_ATC_GATE_STREAK_TTL_S=0
+set TARGET_ATC_GATE_COUNT_EDGE_429=0
+set TARGET_ATC_GATE_STREAK_TTL_S=600
 
 REM ---------------------------------------------------------------------------
 REM  In-place checkout re-shoot (2026-07-17 drop fix). That drop went 0-for: the
@@ -332,6 +357,27 @@ REM     hardening to 401 _ERR_AUTH_DENIED late), hitting injected AND organic ad
 REM     alike; the fallback only added failed-add load on the contested SKU.
 REM     Re-enable (=1) only if a future test shows organic adds actually pass.
 set TARGET_ATC_NATIVE_FALLBACK=0
+REM  8) 2026-08-21: ATC-401 repair ladder OFF. On a hot-SKU 401 the ladder fired
+REM     2 more ATC writes + a token_refresh mint + an /account page load and
+REM     blocked the identity 2.6-9.3s per 401 (08-21: 0/85 mints and 0/103
+REM     in-ladder retries converted; the same token READ the cart fine after
+REM     every 401). Bail straight to the Error-Delay re-shoot instead (cart-hold
+REM     read still runs). Restore the ladder: set TARGET_ATC_401_LADDER=1
+set TARGET_ATC_401_LADDER=0
+REM     8b) 2026-08-22 safety net for 8): with the ladder off, a GENUINELY dead
+REM     write token (07-07 mode) had no in-window repair. The warmup heartbeat's
+REM     confirmed-dead repair (dummy POST 401 -> re-probe 401 -> token re-mint on
+REM     the SEPARATE warmup tab) now runs during a window too, 300s-throttled and
+REM     CONFIRMED-dead-only, so it is inert on a normal Shape-burn 401 (heartbeat
+REM     424). Kill-switch: set TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=0
+set TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=1
+REM  9) 2026-08-21: the inter-retry re-warm no longer FORCES a /cart reload: with
+REM     force_fresh=True it bypassed the purchase-time /cart guard and fired a
+REM     /cart page load + a cart PUT (ADDRESSES = the CVV re-entry trigger) +
+REM     a dummy POST between EVERY retry (03:13: 26 navs / 27 PUTs for 30 real
+REM     shots). The guard now applies; the dummy POST still refills the Shape
+REM     ring. Restore the forced reload: set TARGET_RETRY_FORCE_REWARM=1
+set TARGET_RETRY_FORCE_REWARM=0
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

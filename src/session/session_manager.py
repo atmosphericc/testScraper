@@ -71,7 +71,9 @@ class SessionManager:
         # disturb the live login-session). No-op — path unchanged — when off.
         try:
             from .fp_chromium import profile_dir as _fp_profile_dir
-            self.user_data_dir = Path(_fp_profile_dir(str(self.user_data_dir)))
+            # account_id lets TARGET_FP_CHROMIUM_SKIP keep ONE identity on its real
+            # profile + real Chrome (2026-08-21 A/B control); None = old behaviour.
+            self.user_data_dir = Path(_fp_profile_dir(str(self.user_data_dir), self.account_id))
         except Exception:
             pass
         self.user_data_dir.mkdir(exist_ok=True)

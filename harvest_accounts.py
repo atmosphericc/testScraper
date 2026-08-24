@@ -605,7 +605,7 @@ async def _harvest_one(acc: Dict[str, Any], mode: str, chrome_proxy: Optional[st
     try:
         from src.session.fp_chromium import login_overrides as _fp_ov, login_profile_dir as _fp_pd
         _fp_exec, _fp_args = _fp_ov(acc_id, acc.get("timezone") or None)
-        _prof_name = _fp_pd(acc["profile_dir"])
+        _prof_name = _fp_pd(acc["profile_dir"], acc_id)  # acc_id: honour TARGET_FP_CHROMIUM_SKIP
     except Exception as _fp_e:
         _fp_exec, _fp_args, _prof_name = None, [], acc["profile_dir"]
         print(f"    [FP] fp-chromium lookup skipped: {_fp_e}")

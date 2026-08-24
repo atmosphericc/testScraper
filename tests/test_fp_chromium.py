@@ -35,6 +35,10 @@ def check(cond: bool, label: str) -> None:
 def _clear_env() -> None:
     os.environ.pop("TARGET_FP_CHROMIUM", None)
     os.environ.pop("TARGET_FP_CHROMIUM_PATH", None)
+    # 2026-08-21 A/B levers
+    os.environ.pop("TARGET_FP_SEED_SALT", None)
+    os.environ.pop("TARGET_FP_CHROMIUM_SKIP", None)
+    os.environ.pop("TARGET_FP_CHROMIUM_ACCOUNTS", None)
     fp.reset_cache()
 
 
@@ -109,6 +113,61 @@ def main() -> int:
     for v in ("0", "false", "no", "off", ""):
         _clear_env(); os.environ["TARGET_FP_CHROMIUM"] = v; fp.reset_cache()
         check(fp.is_enabled() is False, f"is_enabled False for {v!r}")
+
+    print("[8] 2026-08-21: seed salt — empty salt is bit-identical to the 08-11 seeds")
+    _clear_env()
+    pinned = {"primary": 1693239552, "business": 2122075987, "alt-1": 1509568654}
+    check(all(fp.fingerprint_seed(a) == s for a, s in pinned.items()), "unsalted seeds == the documented 08-11 constants")
+    check(fp.fingerprint_seed("primary", "") == fp.fingerprint_seed("primary"), "explicit empty salt == no salt")
+    check(fp.fingerprint_seed("primary", "   ") == fp.fingerprint_seed("primary"), "whitespace-only salt == no salt")
+    os.environ["TARGET_FP_SEED_SALT"] = "20260822"
+    salted = {a: fp.fingerprint_seed(a) for a in pinned}
+    check(all(salted[a] != pinned[a] for a in pinned), "env salt changes every account's seed")
+    check(len(set(salted.values())) == 3, "salted seeds stay distinct across accounts")
+    check(all(1 <= v < 2 ** 31 for v in salted.values()), "salted seeds stay in [1, 2^31)")
+    check({a: fp.fingerprint_seed(a) for a in pinned} == salted, "same salt twice -> same seeds (deterministic)")
+    os.environ["TARGET_FP_SEED_SALT"] = "20260823"
+    check(all(fp.fingerprint_seed(a) != salted[a] for a in pinned), "a different salt -> different seeds")
+    check(fp.fingerprint_seed("primary", "20260822") == salted["primary"], "explicit salt arg overrides the env")
+    os.environ["TARGET_FP_CHROMIUM"] = "1"
+    os.environ["TARGET_FP_CHROMIUM_PATH"] = str(fake_exe)
+    fp.reset_cache()
+    _, sargs = fp.launch_overrides("primary", "America/Chicago")
+    check(f"--fingerprint={fp.fingerprint_seed('primary')}" in sargs
+          and f"--fingerprint={pinned['primary']}" not in sargs, "launch args carry the SALTED seed")
+    check("salt=20260823" in fp.describe(), "describe() shows the salt")
+
+    print("[9] 2026-08-21: per-identity control (TARGET_FP_CHROMIUM_SKIP / _ACCOUNTS)")
+    _clear_env()
+    os.environ["TARGET_FP_CHROMIUM"] = "1"
+    os.environ["TARGET_FP_CHROMIUM_PATH"] = str(fake_exe)
+    os.environ["TARGET_FP_CHROMIUM_SKIP"] = " Business , "
+    fp.reset_cache()
+    check(fp.is_enabled_for("business") is False and fp.is_enabled_for("primary") is True, "SKIP is case-insensitive + trimmed")
+    check(fp.launch_overrides("business", "America/Chicago") == (None, []), "skipped identity launches system Chrome")
+    check(fp.launch_overrides("alt-1", "America/Chicago")[0] == str(fake_exe.resolve()), "other identities still launch fp-chromium")
+    check(fp.profile_dir("nodriver-profile-2", "business") == "nodriver-profile-2", "skipped identity keeps its REAL profile")
+    check(fp.profile_dir("nodriver-profile", "primary") == "nodriver-profile-fp", "fp identity still gets the -fp profile")
+    check(fp.profile_dir("nodriver-profile") == "nodriver-profile-fp", "no account_id -> old behaviour (-fp)")
+    check(fp.is_enabled_for(None) is True and fp.is_enabled_for("") is True, "empty/None id -> master switch only")
+    check("skip=['business']" in fp.describe(), "describe() shows the skip list")
+    os.environ["TARGET_FP_CHROMIUM_SKIP"] = ""
+    check(fp.is_enabled_for("business") is True, "empty SKIP == today's all-on behaviour")
+    os.environ["TARGET_FP_CHROMIUM_ACCOUNTS"] = "business,alt-1"
+    check(fp.is_enabled_for("primary") is False and fp.is_enabled_for("business") is True, "ACCOUNTS allowlist excludes the unlisted")
+    os.environ["TARGET_FP_CHROMIUM_SKIP"] = "business"
+    check(fp.is_enabled_for("business") is False, "SKIP wins over ACCOUNTS")
+    os.environ["TARGET_FP_CHROMIUM"] = "0"
+    check(fp.is_enabled_for("alt-1") is False, "master OFF -> nobody fp")
+    _clear_env()
+    os.environ["TARGET_FP_CHROMIUM"] = "1"
+    os.environ["TARGET_FP_CHROMIUM_PATH"] = str(fake_exe)
+    os.environ["TARGET_FP_CHROMIUM_LOGIN"] = "1"
+    os.environ["TARGET_FP_CHROMIUM_SKIP"] = "business"
+    fp.reset_cache()
+    check(fp.login_overrides("business", "America/Chicago") == (None, []) and fp.login_profile_dir("nodriver-profile-2", "business") == "nodriver-profile-2",
+          "login-fp also respects SKIP")
+    os.environ.pop("TARGET_FP_CHROMIUM_LOGIN", None)
 
     _clear_env()
     shutil.rmtree(tmpdir, ignore_errors=True)

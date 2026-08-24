@@ -182,6 +182,54 @@ class PurchaseExecutor:
         self._atc_gate_streak_limit: int = int(os.environ.get('TARGET_ATC_GATE_STREAK_LIMIT', '8'))
         self._atc_gate_cooldown_s: float = float(os.environ.get('TARGET_ATC_GATE_COOLDOWN_S', '120'))
         self._tcin_denial_streak: Dict[str, int] = {}  # tcin -> consecutive ATC gate-denials
+        # 2026-08-21 post-mortem (FAILURES.md): the breaker armed at 03:14:39 on a
+        # streak that was 53/62 EMPTY-body 429s — the edge demand lottery that hits
+        # humans too (08-18), NOT the carts-service Device ID+ denial this breaker
+        # was written for — and cut the only 12.7-min window of the night from ~27
+        # shots/min to ~3. Winning nights (07-31: 1,014 shots / 08-04: 1,676) were
+        # 63-76% hard-401 and still converted INSIDE those walls. So by default only
+        # carts-service denials count (401 _ERR_AUTH_DENIED, DCO-body 429); an
+        # empty-body 429 is neutral. TARGET_ATC_GATE_COUNT_EDGE_429=1 restores the
+        # 08-09..08-20 counting. The streak also decays: a denial older than
+        # TARGET_ATC_GATE_STREAK_TTL_S (0 = never, the old behaviour) restarts the
+        # count, so a same-SKU restock hours later is not one-denial-then-armed.
+        self._atc_gate_count_edge_429: bool = os.environ.get('TARGET_ATC_GATE_COUNT_EDGE_429', '0') == '1'
+        self._atc_gate_streak_ttl_s: float = float(os.environ.get('TARGET_ATC_GATE_STREAK_TTL_S', '600'))
+        self._tcin_denial_last_ts: Dict[str, float] = {}  # tcin -> ts of the last counted denial
+        # ── ATC-401 repair ladder (2026-08-21: OFF by default) ───────────────
+        # On a hot-SKU 401 the ladder (cookie re-scope -> token_refresh endpoint
+        # -> Shape re-warm -> fast-retry -> /account nav mint -> retry-2) fires 2
+        # more ATC writes + 1 token mint + 1 page load and blocks the identity a
+        # median 2.6s / p90 7.3s / max 9.3s per 401. 08-21: 0/85 token repairs and
+        # 0/103 in-ladder retries converted; the write-auth heartbeat (bogus-TCIN
+        # dummy POST) returned 424 "alive" all night, i.e. the hot-SKU 401 is a
+        # Shape SIGNATURE rejection, not a dead write token (07-16: a single 401 is
+        # normal Shape token-burn; corroborated 2026-08-22 by 5 independent bot
+        # codebases + Refract, which all read T83072242/_ERR_AUTH_DENIED as a
+        # "Shape block" and retry with a fresh sensor, never a token refresh). NB a
+        # GET /cart 200 does NOT prove write-auth (read-only auth); only the dummy
+        # POST 424 does. Winning nights: 3 in-ladder 201s out of 1,934 (0.15%) vs
+        # 0.7-1.9% for a fresh shot -- the identity's time is worth more as fresh
+        # shots. OFF = bail to the manager's Error-Delay re-shoot immediately
+        # (cart-hold read still runs). TARGET_ATC_401_LADDER=1 restores the ladder.
+        # The genuine dead-token mode (07-07) is covered separately by the warmup
+        # heartbeat's confirmed-dead repair, now allowed mid-window -- see
+        # _atc_dead_token_midwindow_repair.
+        self._atc_401_ladder_on: bool = os.environ.get('TARGET_ATC_401_LADDER', '0') == '1'
+        # ── Dead write-token repair mid-window (2026-08-22) ──────────────────
+        # With the 401 ladder OFF the ATC path no longer mints a token, so a
+        # GENUINELY dead write token (07-07: a member token server-invalidated
+        # mid-window) would have no in-window repair -- the warmup heartbeat's
+        # existing confirmed-dead repair (dummy POST 401 -> re-probe 401 ->
+        # ensure_fresh_access_token on the SEPARATE warmup tab) was gated off while
+        # purchase_in_progress. This flag lets that repair run during a window too,
+        # still throttled to once / 300s and still requiring a CONFIRMED dead
+        # write-auth (two consecutive 401 dummy POSTs) -- so it is INERT on the
+        # 08-21 pattern (heartbeat 424 all night) and only fires on a real dead
+        # token. It touches only the warmup tab (/account nav), never the purchase
+        # cart. Kill-switch: TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=0.
+        self._atc_dead_token_midwindow_repair: bool = (
+            os.environ.get('TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR', '1') != '0')
         # ── Cart hold check (2026-08-14) ────────────────────────────────────
         # Community-documented on the 30th Anniversary preorder drops: the add
         # sometimes LANDS server-side while the response reports the
@@ -420,8 +468,26 @@ class PurchaseExecutor:
                 return
             if result.get('reason') not in ('atc_failed_api_mode', 'rate_limited_429'):
                 return  # not a clean gate-denial signal — leave the streak unchanged
+            # 2026-08-21: an EMPTY-body 429 is the edge demand lottery (dropped
+            # before the carts service; hits humans too), not a Device ID+ denial.
+            # Neutral — neither counts nor resets — unless the operator opts the
+            # old counting back in with TARGET_ATC_GATE_COUNT_EDGE_429=1.
+            if (result.get('gate_kind') == 'edge'
+                    and not getattr(self, '_atc_gate_count_edge_429', False)):
+                return
+            _now = time.time()
+            _last_map = getattr(self, '_tcin_denial_last_ts', None)
+            if _last_map is None:
+                _last_map = self._tcin_denial_last_ts = {}
+            _ttl = float(getattr(self, '_atc_gate_streak_ttl_s', 0.0) or 0.0)
+            if (_ttl > 0 and self._tcin_denial_streak.get(tcin)
+                    and (_now - _last_map.get(tcin, _now)) > _ttl):
+                # Stale streak from an earlier window (e.g. a same-SKU restock
+                # hours later) — restart the count instead of arming on 1 denial.
+                self._tcin_denial_streak[tcin] = 0
             streak = self._tcin_denial_streak.get(tcin, 0) + 1
             self._tcin_denial_streak[tcin] = streak
+            _last_map[tcin] = _now
             if streak >= self._atc_gate_streak_limit and time.time() >= self._tcin_throttle_until.get(tcin, 0.0):
                 self._tcin_throttle_until[tcin] = time.time() + self._atc_gate_cooldown_s
                 msg = (f"[ATC_GATE_BREAKER] {tcin}: {streak} consecutive ATC gate-denials "
@@ -441,6 +507,14 @@ class PurchaseExecutor:
                 print(f"[ATC_GATE_BREAKER] non-fatal error (ignored): {_gate_err}")
             except Exception:
                 pass
+
+    def _ident_tag(self) -> str:
+        """This executor's account id for log lines (2026-08-21: the ATC result
+        lines carried no identity, so per-account composition was unauditable)."""
+        try:
+            return getattr(self.session_manager, 'account_id', None) or 'session'
+        except Exception:
+            return 'session'
 
     # -------------------------------------------------------------------------
     # Page-level helpers (migrated from patchright)
@@ -1141,19 +1215,27 @@ class PurchaseExecutor:
             # place-order), and mid-purchase the repair is skipped anyway — so
             # re-probing there would burn drop latency for an action we will
             # not take. Same for the 300s throttle.
-            _would_repair = (not getattr(_sm, 'purchase_in_progress', False)
+            # 2026-08-22: allow the confirmed-dead repair DURING a purchase window
+            # too (07-07 dead-token safety net for the ladder-OFF path). Still
+            # 300s-throttled and still gated on a CONFIRMED dead write-auth, so it
+            # is inert on the normal Shape-burn 401 (heartbeat 424). Kill-switch
+            # TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=0 restores the old
+            # purchase-in-progress suppression.
+            _midwin_ok = getattr(self, '_atc_dead_token_midwindow_repair', True)
+            _would_repair = ((_midwin_ok or not getattr(_sm, 'purchase_in_progress', False))
                              and time.time() - self._last_bg_token_repair_ts > 300.0)
             if _would_repair:
                 _dummy_status = await self._confirm_write_auth_401(tab, idx, _acct)
             else:
                 print(f"[WARMUP#{idx}/{_acct}] heartbeat 401 — NOT repairing "
-                      f"(purchase in progress or inside the 300s throttle); left "
-                      f"unconfirmed, and one 401 is normal Shape token-burn")
+                      f"(inside the 300s throttle{'' if _midwin_ok else ' or purchase in progress'}); "
+                      f"left unconfirmed, and one 401 is normal Shape token-burn")
                 _dummy_status = -1
         if _dummy_status == 401:
             print(f"[WARMUP#{idx}/{_acct}] WRITE-AUTH DEAD — dummy POST returned 401 "
                   f"(carts writes will fail until the member token re-mints)")
-            if (not getattr(_sm, 'purchase_in_progress', False)
+            if ((getattr(self, '_atc_dead_token_midwindow_repair', True)
+                 or not getattr(_sm, 'purchase_in_progress', False))
                     and time.time() - self._last_bg_token_repair_ts > 300.0):
                 self._last_bg_token_repair_ts = time.time()
                 _now = time.time()
@@ -1749,9 +1831,9 @@ class PurchaseExecutor:
                 # button-click fallback can't recover it and burns ~10s per cycle.
                 # Bail fast so the manager's 3.5s Error Delay re-tries on the next
                 # stock cycle with a fresh Shape capture.
-                print(f"[PURCHASE] ATC fetch: rate-limited ({atc_status}) body={atc_body[:120]!r} — bailing for Error Delay retry (t={time.time()-start_time:.2f}s)")
+                print(f"[PURCHASE] ATC fetch: rate-limited ({atc_status}) body={atc_body[:120]!r} — bailing for Error Delay retry (t={time.time()-start_time:.2f}s) ident={self._ident_tag()}")
             elif atc_status not in (200, 201):
-                print(f"[PURCHASE] ATC fetch status: {atc_status} body={atc_body!r} (t={time.time()-start_time:.2f}s)")
+                print(f"[PURCHASE] ATC fetch status: {atc_status} body={atc_body!r} (t={time.time()-start_time:.2f}s) ident={self._ident_tag()}")
             else:
                 print(f"[PURCHASE] ATC fetch status: {atc_status} (t={time.time()-start_time:.2f}s)")
 
@@ -1774,8 +1856,30 @@ class PurchaseExecutor:
                     cart_confirmed = True
                     skip_signal_wait = True
                 else:
+                    # gate_kind feeds the breaker (2026-08-21): 'edge' = empty body
+                    # (dropped before the carts service, the global demand lottery),
+                    # 'dco' = a carts-service DCO_RATE_LIMITED body.
                     return {'success': False, 'tcin': tcin, 'reason': 'rate_limited_429',
+                            'gate_kind': 'dco' if (atc_body or '').strip() else 'edge',
                             'error': f'ATC rate-limited ({atc_status})',
+                            'execution_time': time.time() - start_time}
+            elif atc_status == 401 and not getattr(self, '_atc_401_ladder_on', False):
+                # 2026-08-21: ladder OFF (default). The repair ladder below never
+                # converted a hot-SKU 401 (0/85 mints, 0/103 in-ladder retries on
+                # 08-21) and blocked the identity 2.6-9.3s per 401 while the same
+                # token read the cart fine. Bail straight to the manager's
+                # Error-Delay re-shoot; only the cart-hold READ runs first (the
+                # denied add occasionally lands server-side — 08-14).
+                print(f"[PURCHASE] ATC fetch 401 auth denied — ladder OFF (TARGET_ATC_401_LADDER=0): "
+                      f"no token repair / in-ladder retries, bailing for Error Delay re-shoot "
+                      f"(t={time.time()-start_time:.2f}s) ident={self._ident_tag()}")
+                if await self._check_cart_hold(tab, tcin, atc_status):
+                    cart_confirmed = True
+                    skip_signal_wait = True
+                else:
+                    return {'success': False, 'tcin': tcin, 'reason': 'atc_failed_api_mode',
+                            'gate_kind': 'auth401',
+                            'error': 'ATC 401 _ERR_AUTH_DENIED (repair ladder off)',
                             'execution_time': time.time() - start_time}
             elif atc_status == 401:
                 # Auth denied — most likely Shape rotating tokens were consumed
@@ -4957,7 +5061,8 @@ class PurchaseExecutor:
                         f"reshot:{_cv.get('reshot')}")
         print(f"[FAST_LANE] chain done in {res['elapsed']:.2f}s — "
               f"atc={_atc.get('status')} pre={_pre.get('status')} "
-              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_cv_note}")
+              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_cv_note}"
+              f" ident={self._ident_tag()}")
         if _pre.get('pi'):
             # One-line intel record: the payment-instruction id + any cvv flag is
             # the prerequisite for moving the CVV challenge onto the API path.

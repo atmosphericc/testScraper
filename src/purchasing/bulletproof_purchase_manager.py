@@ -1354,14 +1354,24 @@ class BulletproofPurchaseManager:
                                 print(f"[REAL_PURCHASE_THREAD] Browser restarted before retry")
                             except Exception as _rs_err:
                                 print(f"[REAL_PURCHASE_THREAD] Pre-retry browser restart failed: {_rs_err}")
+                        # 2026-08-21: force_fresh=True bypassed the executor's
+                        # purchase-time /cart guard, so EVERY retry fired a /cart
+                        # page load + a cart PUT (ADDRESSES — the documented CVV
+                        # re-entry trigger) + a dummy POST on the identity (03:13:
+                        # 26 navs / 27 PUTs for 30 real shots). The captured Shape
+                        # headers it refreshes are re-signed in-page anyway (07-10),
+                        # so default to a NON-forced warm (guard applies; the dummy
+                        # POST still refills the ring). TARGET_RETRY_FORCE_REWARM=1
+                        # restores the forced /cart reload.
+                        _rewarm_force = os.environ.get('TARGET_RETRY_FORCE_REWARM', '0') == '1'
                         try:
                             if worker is not None:
                                 worker.run_async(
-                                    target_purchase_executor.warm_shape_headers(force_fresh=True)
+                                    target_purchase_executor.warm_shape_headers(force_fresh=_rewarm_force)
                                 ).result(timeout=25)
                             else:
                                 target_session_manager.submit_async_task(
-                                    target_purchase_executor.warm_shape_headers(force_fresh=True)
+                                    target_purchase_executor.warm_shape_headers(force_fresh=_rewarm_force)
                                 ).result(timeout=25)
                         except Exception as _warm_err:
                             print(f"[REAL_PURCHASE_THREAD] Pre-retry re-warm failed: {_warm_err}")
