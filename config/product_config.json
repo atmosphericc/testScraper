@@ -1,16 +1,6 @@
 {
   "products": [
     {
-      "tcin": "95274160",
-      "name": "Product 95274160",
-      "enabled": true
-    },
-    {
-      "tcin": "95274164",
-      "name": "Product 95274164",
-      "enabled": true
-    },
-    {
       "tcin": "1011960739",
       "name": "Product 1011960739",
       "enabled": true
@@ -33,6 +23,46 @@
     {
       "tcin": "1010892076",
       "name": "Product 1010892076",
+      "enabled": true
+    },
+    {
+      "tcin": "1010892069",
+      "name": "Product 1010892069",
+      "enabled": true
+    },
+    {
+      "tcin": "1010892067",
+      "name": "Product 1010892067",
+      "enabled": true
+    },
+    {
+      "tcin": "1010892068",
+      "name": "Product 1010892068",
+      "enabled": true
+    },
+    {
+      "tcin": "1010892065",
+      "name": "Product 1010892065",
+      "enabled": true
+    },
+    {
+      "tcin": "1012644665",
+      "name": "Product 1012644665",
+      "enabled": true
+    },
+    {
+      "tcin": "1012644666",
+      "name": "Product 1012644666",
+      "enabled": true
+    },
+    {
+      "tcin": "1012644667",
+      "name": "Product 1012644667",
+      "enabled": true
+    },
+    {
+      "tcin": "95290385",
+      "name": "Product 95290385",
       "enabled": true
     }
   ]
