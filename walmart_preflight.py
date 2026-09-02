@@ -59,11 +59,30 @@ def check_credentials():
     env = _load_env_file()
     missing = [k for k in ("WALMART_EMAIL", "WALMART_PASSWORD")
                if not env.get(k)]
+    # .env.example ships placeholder values. A non-empty-but-placeholder cred
+    # is worse than an empty one: the old check reported GO and the operator
+    # launched into a guaranteed login failure on drop night. Treat the known
+    # placeholders (and the obvious your@/yourpassword/changeme family) as unset.
+    _PLACEHOLDERS = {
+        "your@email.com", "yourpassword", "your@email", "changeme",
+        "email@example.com", "user@example.com", "password",
+    }
+    def _is_placeholder(v: str) -> bool:
+        v = (v or "").strip().lower()
+        return (v in _PLACEHOLDERS or v.startswith("your@")
+                or v.startswith("your_") or v.startswith("youremail"))
+    placeholder = [k for k in ("WALMART_EMAIL", "WALMART_PASSWORD")
+                   if env.get(k) and _is_placeholder(env[k])]
     if missing:
         check(STOP, "Account credentials",
               f"{', '.join(missing)} not set in .env",
               "Put a real Walmart account's email + password in .env. The bot "
               "cannot log in or buy without them.")
+    elif placeholder:
+        check(STOP, "Account credentials",
+              f"{', '.join(placeholder)} still holds the .env.example placeholder value",
+              "Replace the placeholder(s) in .env with your REAL Walmart account "
+              "email + password. The bot cannot log in with the template values.")
     else:
         check(GO, "Account credentials",
               f"email={env['WALMART_EMAIL'][:3]}***  password set")
@@ -79,10 +98,16 @@ def check_credentials():
 
 
 def check_master_login():
-    cookies = ROOT / "walmart-profile-login" / "Default" / "Cookies"
-    if not cookies.exists():
+    # Modern Chrome stores the cookie DB at Default/Network/Cookies; only very
+    # old profiles used Default/Cookies. Check both so a fresh walmart_relogin.py
+    # login isn't falsely reported as "never logged in" (Network/ is the real one
+    # this build writes — confirmed 2026-08-19).
+    login_root = ROOT / "walmart-profile-login" / "Default"
+    candidates = [login_root / "Network" / "Cookies", login_root / "Cookies"]
+    cookies = next((c for c in candidates if c.exists()), None)
+    if cookies is None:
         check(STOP, "Master Walmart login",
-              "no walmart-profile-login/Default/Cookies — never logged in",
+              "no walmart-profile-login/Default/{Network/,}Cookies — never logged in",
               "Run: python walmart_relogin.py  (log in by hand once).")
         return
     age_days = (time.time() - cookies.stat().st_mtime) / 86400

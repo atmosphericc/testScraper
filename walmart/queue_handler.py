@@ -267,6 +267,35 @@ def extract_qpdata_from_url(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# When Walmart releases you from the queue it navigates the tab to the item's
+# product page (/ip/…) — or straight to /cart or /checkout. A bounce to the
+# BARE homepage (walmart.com/) or to /blocked is NOT admission: it's the queue
+# rejecting/evicting a session it doesn't trust. Treating that bounce as
+# admission was the root cause of the 2026-08-19 drop 0-for — every "admitted"
+# fired with url=https://www.walmart.com/, so the bot left the queue after ~3s
+# and ran add-to-cart on the PerimeterX challenge page ("ATC button not found").
+_ADMISSION_PATH_RE = re.compile(r"walmart\.com/(ip|cart|checkout)(/|\?|$)", re.I)
+_HOMEPAGE_RE = re.compile(r"^https?://(www\.)?walmart\.com/?(\?.*)?(#.*)?$", re.I)
+
+
+def is_admission_url(url: str) -> bool:
+    """True only when leaving /qp for a GENUINE post-admission destination —
+    the product page, cart, or checkout. A homepage/blocked bounce is not."""
+    if not url or is_queue_url(url) or "/blocked" in url:
+        return False
+    return bool(_ADMISSION_PATH_RE.search(url))
+
+
+def is_bounce_url(url: str) -> bool:
+    """True when the tab bounced to the bare homepage or /blocked — the queue
+    rejected/evicted the session (NOT an admission)."""
+    if not url:
+        return False
+    if "/blocked" in url:
+        return True
+    return bool(_HOMEPAGE_RE.match(url))
+
+
 # ── handler ──────────────────────────────────────────────────────────────
 
 
@@ -512,10 +541,34 @@ class QueueHandler:
             # JS reflects the live state of the tab after redirects/SPA navs.
             url = url_js or url_attr
             if url and not is_queue_url(url):
-                self._status_cb("[QUEUE] Page navigated away from /qp — admitted")
-                logger.info("[QUEUE] URL navigated to %s, treating as admitted", url[:80])
+                if is_admission_url(url):
+                    self._status_cb("[QUEUE] Navigated to product/cart/checkout — admitted")
+                    logger.info("[QUEUE] URL -> %s — genuine admission", url[:80])
+                    queue_events.event(
+                        "admitted", via="url_redirect", url=url[:120],
+                        item_id=self._item_id, session_id=self._session_id,
+                    )
+                    return QueueTicket(state=QueueState.VALID)
+                if is_bounce_url(url):
+                    # Homepage / /blocked bounce = the queue kicked a flagged
+                    # session. NOT admission (the 2026-08-19 false-admit bug).
+                    # Return EXPIRED so the caller re-enters or bails cleanly
+                    # instead of running ATC on a non-buyable page — or hanging
+                    # the race until its 30-min timeout.
+                    self._status_cb("[QUEUE] Bounced to homepage/blocked — queue rejected, not admitted")
+                    logger.warning("[QUEUE] URL bounced to %s — treating as eviction, not admission", url[:80])
+                    queue_events.event(
+                        "bounce", url=url[:120],
+                        item_id=self._item_id, session_id=self._session_id,
+                    )
+                    return QueueTicket(state=QueueState.EXPIRED, raw={"bounce_url": url})
+                # Off /qp but neither a clear admission target nor a homepage
+                # bounce (e.g. an A/B-variant path). Keep the prior optimistic
+                # behavior so a real admission to an unusual URL isn't missed.
+                self._status_cb("[QUEUE] Left /qp for an unclassified URL — treating as admitted")
+                logger.info("[QUEUE] URL -> %s (unclassified) — admitting", url[:80])
                 queue_events.event(
-                    "admitted", via="url_redirect", url=url[:120],
+                    "admitted", via="url_redirect_unclassified", url=url[:120],
                     item_id=self._item_id, session_id=self._session_id,
                 )
                 return QueueTicket(state=QueueState.VALID)

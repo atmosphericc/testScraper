@@ -1,76 +1,36 @@
 {
   "products": [
     {
-      "item_id": "320424995",
-      "name": "Capture-run throwaway",
+      "item_id": "20497167347",
+      "name": "Pokemon TCG Mega Evolution Ascended Heroes Tin (ME2.5, 1P D7)",
       "enabled": true,
       "max_price": null,
       "priority": 1,
-      "url": "https://www.walmart.com/ip/x/320424995"
+      "url": "https://www.walmart.com/ip/POKEMON-ME2-5-ASCENDED-HEROES-D7-TOY-TIN/20497167347"
     },
     {
-      "item_id": "15042474261",
-      "name": "Pokemon TCG Scarlet & Violet 9 Journey Together Booster Bundle",
-      "enabled": false,
+      "item_id": "19965460207",
+      "name": "Pokemon TCG Destined Rivals Elite Trainer Box (SV10, 1P D7)",
+      "enabled": true,
       "max_price": null,
       "priority": 2,
-      "url": "https://www.walmart.com/ip/x/15042474261"
+      "url": "https://www.walmart.com/ip/POKEMON-SV10-DESTINED-RIVALS-D7-ELITE-TRAINER-BOX/19965460207"
     },
     {
-      "item_id": "19012610850",
-      "name": "Pokemon TCG Mega Evolution Ascended Heroes First Partners Deluxe Pin Collection",
-      "enabled": false,
+      "item_id": "20413908978",
+      "name": "Pokemon TCG First Partner Illustration Collection Series 3 ($14.99)",
+      "enabled": true,
       "max_price": null,
       "priority": 3,
-      "url": "https://www.walmart.com/ip/x/19012610850"
+      "url": "https://www.walmart.com/ip/x/20413908978"
     },
     {
-      "item_id": "13816151308",
-      "name": "Pokemon TCG Prismatic Evolutions Elite Trainer Box (ETB)",
-      "enabled": false,
+      "item_id": "19952559023",
+      "name": "Pokemon TCG First Partner Illustration Collection Series 2 ($14.99)",
+      "enabled": true,
       "max_price": null,
       "priority": 4,
-      "url": "https://www.walmart.com/ip/x/13816151308"
-    },
-    {
-      "item_id": "19402160990",
-      "name": "Pokemon TCG Mega Evolution Perfect Order Elite Trainer Box",
-      "enabled": false,
-      "max_price": null,
-      "priority": 5,
-      "url": "https://www.walmart.com/ip/x/19402160990"
-    },
-    {
-      "item_id": "19380764160",
-      "name": "Pokemon TCG Mega Evolution Perfect Order Booster Bundle",
-      "enabled": false,
-      "max_price": null,
-      "priority": 6,
-      "url": "https://www.walmart.com/ip/x/19380764160"
-    },
-    {
-      "item_id": "19283656289",
-      "name": "Pokemon TCG First Partner Illustration Collection Series 1",
-      "enabled": false,
-      "max_price": null,
-      "priority": 7,
-      "url": "https://www.walmart.com/ip/x/19283656289"
-    },
-    {
-      "item_id": "19009204107",
-      "name": "Pokemon TCG Mega Evolution 2.5 Ascended Heroes Premium Poster Collection",
-      "enabled": false,
-      "max_price": null,
-      "priority": 8,
-      "url": "https://www.walmart.com/ip/x/19009204107"
-    },
-    {
-      "item_id": "17823811037",
-      "name": "Pokemon Trading Card Games Charizard X Ex Ultra Premium Collection",
-      "enabled": false,
-      "max_price": null,
-      "priority": 9,
-      "url": "https://www.walmart.com/ip/x/17823811037"
+      "url": "https://www.walmart.com/ip/POKEMON-FIRST-PARTNER-BOOSTER-COLLECTION/19952559023"
     }
   ]
 }
