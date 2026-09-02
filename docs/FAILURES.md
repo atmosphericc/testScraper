@@ -31,6 +31,274 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-08-28] - Fri drop 0-for across 14 windows: unwinnable 401 wall behind the edge limiter, PLUS ~980 shots forfeited to the breaker and ~1.1s/cycle of self-inflicted retry waste - TARGET
+**Symptom**: run_20260827_224501.log (bat 08-27 22:45 -> user stop 17:01).
+Six TCINs released one at a time 02:03-04:44 in a fixed ~19-26 min sequence,
+then replayed in 30-115 s backfills = 14 in-stock windows, 3,830 in-stock
+seconds. 2,680 fast-lane shots (business 927 / primary 881 / alt-1 868),
+ZERO 2xx. Census ([ATC_RESP] live): 2,248x empty-body 429
+ERR_A2C_TCIN_RATE_LIMITED (84%), 429x 401 _ERR_AUTH_DENIED T83072242, 3x
+FAST_SELLING/DCO (business). Hotpath led ground truth 14/14; lock->first
+response 0.17-0.69 s. W05 (1011960739) had 21.6 min of continuous in-stock
+evidence and got 58 shots in its last 18 min.
+**Root Cause** (Phase-2 multi-agent audit 08-31, finders F2/F4/F6/F7/F9 +
+adversarial skeptics on H1/H3/H4/H5; transcripts in session e99fcf14 wf_00f7556c):
+TWO GATES IN SERIES, and both were shut for us:
+1. CONFIRMED: empty-429 = a GLOBAL per-TCIN edge limiter ahead of Shape
+   (shot #1 of the night 429'd on all 3 identities within 70-115 ms on
+   never-POSTed TCINs while the same browsers' calm-TCIN dummy passed in the
+   same second; 0x429 in 48,716 dummy POSTs across 4 nights; 429 returns
+   ~80-120 ms FASTER than 401 and carries an error key while the 401 carries
+   none). On REGULAR SKUs it ate 94-96% of shots all window; on HOT SKUs it
+   was binding only the first 2-5 min, then went quiet as crowd traffic fell.
+2. The 401 behind it is a TCIN-scoped Shape-score gate (not a dead token,
+   not velocity): **P(401 | shot passed the limiter) = 100% on 08-28** —
+   429/429 passed shots died, every identity, every TCIN, every velocity
+   bucket, from shot #1, after 17 min at 1 shot/min, and after 50-66 min of
+   rest. The hot-vs-regular "401 share" split (54-73% vs 5-8%) is the
+   limiter's pass rate in disguise, NOT differential Shape strictness.
+   Measure P(401|not 429) in every future audit.
+WHAT SEPARATES WINNING NIGHTS (F2, decisive): the Shape verdict on
+WAVE-FIRST shots (first shot per identity on a TCIN after a >=15 s own
+pause). 07-31: wave-first-3 limiter-passers converted 32.6% (REG) / 9.1%
+(HOT) vs 0.9% / 0.0% for later re-POSTs; 08-04: 4.7% vs 0.3%; 08-28: 0/74
+(P ~ 3e-11 vs 07-31). Every order ever = shot #1-3 of a fresh wave,
+including two 07-31 201s on attempt #1 of fresh waves AFTER 100+ own shots
+on the TCIN. Night-level wave-first pass collapse 28% -> 5% -> 0%
+(07-31 -> 08-04 -> 08-28) is the real gap; re-POSTs into a 401 are ~1% EV.
+IDENTITY SPLIT (new): on the contested gate, business (real Chrome 151 +
+31.98.158.87) passed 9/146 (6.2%) vs the fp-chromium pair 0/318 (Fisher
+p=2.5e-5) pooled over 08-26+08-28 — confounded with IP range (31.98.x vs
+168.158.x), NOT proof the engine is the cause. The calm-TCIN dummy 401 rate
+(~20%) is identical across all three and says NOTHING about contested
+readiness.
+SELF-INFLICTED (all verified vs refuted):
+- CONFIRMED: breaker loop (arm streak 20 -> 45 s cooldown -> 20 s
+  LEVEL_REARM tick -> 'tcin_throttled_cooldown' non-transient bail kills the
+  wave -> 1 escaping shot/identity/60 s -> 401 re-arms; streak resets ONLY
+  on a 2xx and the TTL clock refreshes on every counted denial, so it can
+  never decay under the loop). W05 48.3 -> 3.2 shots/min for 1,082 s (~821
+  forgone), W06 ~90-111, W07 opened pre-armed on W06's carried streak (4
+  shots in 59 s, ~46). REFUTED premise: nothing was protected — 245 arms in
+  9 runs, 0 ever followed by a 2xx; post-arm probes at 3/min stayed 401 for
+  18 min; hot-SKU 401 re-forms in ~45-95 s at ANY cadence (W12/W13 fresh
+  streaks armed +92-105 s in); calm-TCIN heartbeat 401 flat pre/post-arm.
+- CONFIRMED: per-retry dummy-POST warm (fires even with FORCE_REWARM=0;
+  2,811 in-flight warms, ~3,000 dummy POSTs during races) + its ~20% 401s
+  triggering the 0.6 s/probe confirm re-probe + 17/17 FALSE "confirmed dead"
+  mid-race repairs (4-13 s stall each) = ~1.0-1.15 s of a 3.2-3.6 s cycle.
+  The ring never dropped below 4 unused captures (each real shot refills
+  it); injected headers are re-signed in-page (07-10). ~+40-45% tickets from
+  removal, and LESS cookie burn (Refract: more cookies = more flags).
+- CONFIRMED: cart-hold GET after EMPTY-body 429s — 1,526 GETs / 0 hits / 21
+  runs; 1,049 followed edge-429s that are dropped before the carts app and
+  cannot silently land. 0.19 s median each.
+- CONFIRMED: shot-#1 TTL refresh (headers_age>60) — 4 firings, all taxing a
+  wave's shot #1 by 0.2-2.05 s (one opened a lazy warmup tab mid-race).
+- REFUTED: "FAST_SELLING 45-s cooldown idled business" — the cooldown is
+  wired to place-order paths only; 0 [THROTTLE] lines all night; the 3 DCO
+  shots retried at normal cadence.
+- REFUTED: "2,228 s of inter-wave dead gaps / ~1,894 shots" — a
+  double-counting artifact (breaker dead-air recounted per [RACE] line).
+  Real: 16 in-stock boundaries, ~154 s, ~130-160 shots (median lag 11.6 s
+  from the 20 s poll). Real but minor.
+- Minor: W06 lost ~68 s to a cloaked-OOS hotpath flap that dropped the TCIN
+  from the LEVEL_REARM map while ground truth said in stock (no
+  last-in-stock grace in _build_level_rearm_map — known residual).
+**Fix Applied** (2026-08-31, all flag-gated, armed in
+run_bot_with_nightly_restart.bat, pinned by tests/test_0828_phase2_fixes.py
+70/70 + 16 adjacent suites green):
+- TARGET_ATC_GATE_BREAKER=0 (bat + code default flip in purchase_executor)
+  ~= +980 shots on an 08-28 night.
+- TARGET_RETRY_WARM=0 (manager): skip the awaited per-retry warm; forced
+  re-warm, 60-90 s background refill, and sentinel keep-fresh unchanged
+  (07-07 dead-token net intact). ~+40% tickets, ~25% less cookie burn.
+- TARGET_CART_HOLD_SKIP_EDGE=1: skip the hold GET on empty-body 429s only;
+  DCO/401 keep it (silent lands documented there).
+- TARGET_SHOT_TTL_REFRESH=0: no proactive warm on the critical path; fire
+  from the ring/cache (<90 s use_cached gate still applies).
+- TARGET_ATC_DCO_AS_EDGE_CADENCE=1: ATC-level DCO rides the edge cadence.
+- TARGET_LEVEL_REARM_S=3 (was 20): boundary ~1.5-6.5 s, ~+130-160 shots.
+- TARGET_401_PULSE=1 STREAK=3 SLEEP 15-25 s (the doctrine bet, from F2):
+  after 3 consecutive carts-401s an identity pauses 15-25 s IN PLACE OF one
+  cadence sleep so its next shot re-enters wave-first (32.6% vs 0.9%).
+  Edge-429s neither count nor reset the streak, so an edge-lottery window
+  keeps FULL ticket cadence — the 08-18/08-21 ticket doctrine is unchanged
+  where it applies.
+- TARGET_ATC_REFERRER_PDP=1: fetch `referrer` INIT option carries the real
+  PDP URL (the headers-object Referer is a forbidden name and never reached
+  the wire; real adds carry the full PDP URL).
+**Confidence**: high on the causal model and waste fixes (adversarially
+verified, cross-night); medium on the pulse (mechanism proven on 07-31/08-04
+data, not yet live-tested).
+**Outcome**: pending next drop. NEXT LEVERS (not shipped): (1) the
+contested-gate identity split is IP-range-confounded — test moving
+primary/alt-1 to a 31.98-like exit or home IP before blaming fp-chromium;
+(2) F9's banked-Shape-header experiment (4-arm in-Chrome A/B via
+Fetch.continueRequest header rewrite on an elevated-level TCIN while OOS —
+design in the Phase-2 dossier) decides whether the winners' bank mechanism
+is viable on our identities; (3) sensor payload: our shots never carry
+X-GyJwza5Z-a0 (idle-tab behavioral payload) while real ATCs do — PDP-parked
+tab + real pointer events is the leading candidate for the hot-TCIN wall;
+(4) capture ONE real DevTools ATC click and byte-match URL/key=/%2C/body.
+
+---
+
+### [2026-08-26] - 0-for on the 02:51 FPIC-S3 restock: bot mechanically flawless, lost the empty-429 lottery; census verdict = lottery windows are 0-for-1,865 tickets all-time - TARGET
+**Symptom**: run_20260825_224317.log (user launch 22:43 after the 08-25
+login-gate fix; ran 21 h to a clean 19:46 stop). 1011960739 (First Partner
+IC-Series 3, hyped) flipped IN_STOCK 02:51:22, OOS by ~02:52:38 (~60-75 s
+productive window; the only in-stock event of the run). Detect->shot#1 0.8 s.
+85 fast-lane chains (business 30 / primary 28 / alt-1 27, ~4 s cadence each),
+budget spent to the 110 s deadline, ZERO 2xx. Composition: 53x empty-body 429
+(62%), 26x hard 401 _ERR_AUTH_DENIED T83072242 (30%), 6x DCO_RATE_LIMITED
+(business only). First ~8 shots/identity almost all empty-429; every
+identity's tail went all-401 -- and the tail correlates with the ~02:52:38
+sell-out (post-OOS shots, ~8-10/identity, t-left<~34 s = wasted), not with
+shot spacing. No fp-chromium vs real-Chrome asymmetry (business drew 401s
+too; fp A/B still unjudged -- hyped-SKU night). All 08-21 fixes behaved
+live: breaker never armed, 401 bail ~0.4 s, warmup nav guard held,
+cart-hold reads ran.
+**Root Cause**: Not a bug. This is the known hyped-SKU empty-429 edge
+lottery, executed to spec. The 2026-08-26 cross-log census (all
+FAST_LANE-instrumented drops since 07-24) is decisive: LOTTERY windows
+(empty-429 >=50%) = 19 windows / 1,865 tickets / 4 ATC-2xx / **0 orders**
+(P(order|ticket) 95% UB = 0.0016); REGULAR windows (401-dominated) = 27
+windows / 4,914 tickets / 33 ATC-2xx / **15 orders** (P=0.0031). ~85% of all
+ATC-2xx land within the first 3 attempts; every confirmed order but one was
+attempt #1 of a fresh edge. 1011960739 lifetime: 0-for-~2,948 shots.
+Conclusion: wins come from being FIRST on a 401-dominated REGULAR-SKU edge
+(the bot already is, 0.8 s); raw ticket volume on a hyped lottery SKU has
+never converted for us.
+**Fix Applied** (2026-08-26, flag-gated, adversarially verified,
+tests/test_edge429_cadence.py + full regression green):
+1. Adaptive edge-lottery cadence: `TARGET_ATC_EDGE429_RETRY_DELAY_MIN/MAX`
+   (default 2.0/3.0 s, floor-clamped) applies ONLY when the last attempt's
+   gate_kind=='edge' (empty-body 429); 401/DCO keep 2.5/3.5. ~+50% tickets
+   in a lottery window. HONEST LABEL: census EV of those extra tickets ~= 0
+   on hyped SKUs -- a doctrine bet, not an evidenced converter. Rollback:
+   set both EDGE knobs to 2.5/3.5.
+2. `Tgt-Cart-Error-Key` capture on ATC POST responses (the 08-21 open item):
+   CDP response-stage pattern on web_checkouts/v1/cart_items, log-only
+   `[ATC_RESP] status= tgt-cart-error-key= x-request-id=` line;
+   continue-exactly-once per the 07-23 leak rule, response continued BEFORE
+   any logging so the hot path (incl. a winning 201) is never held.
+   Kill-switch: TARGET_ATC_RESPONSE_HEADER_CAPTURE=0. Next lottery window
+   finally decides demand-throttle vs identity-block.
+Also: 08-25 login-gate + TCIN-visibility fixes live-validated over the 21 h
+run (banner hourly, state file, zero new-code tracebacks).
+**Confidence**: high (every number machine-extracted from the logs; census
+scripts in the workflow scratchpad).
+**Outcome**: Open operational items: (a) alt-1 login-session DIED 08-26
+afternoon (TOKEN CHURN 12:21 -> relogin capped 12:30 -> GUEST jar) -- needs
+a hand-login before the next window; (b) recorded, not changed: the wave
+kept firing ~36 s past the 02:52:38 sell-out (retry-while-in-stock does not
+re-check mid-wave) -- revisit only with care (05-22 stale-cache lesson);
+(c) the REAL lever per the census is SKU regime: regular SKUs convert,
+hyped lottery SKUs never have -- arming mix is an operator decision.
+
+### [2026-08-25] - 0-for because NO Target restock happened (operator-confirmed); audit found a latent gap: the 4 TCINs armed for 08-24 were unpublished on Target (invisible to RedSky all night) - TARGET
+**Symptom**: run_20260824_231920.log (bat launch #1 23:19:20 after hand-logins
+23:14-23:16 — business + alt-1 credential logins, primary already in; the bat
+relogin at 23:18 found 3/3 already logged in; check_session_readiness 3/3
+MEMBER; clean user shutdown 07:40:38, 8h21m). 0 orders, and nothing to
+post-mortem on the ATC side: zero `FAST_LANE` / `ATC fetch` / `chain done`
+lines — the purchase manager never fired. Every `[STOCK TRACE] hotpath
+in_stock=[] of 13 configured TCINs` (99×) and every `[GROUND-TRUTH] pool
+cache-bust ok: in_stock=[] (9 TCINs)` (197×) was empty. Monitor was healthy:
+88,886 sweeps @ 2.97/s, 200=87,751 (98.7%), 403=22, other=1,102 (1.2%; 08-21
+baseline 1.05%); pool 16/16 ready; 7 ground-truth read failures (http=0);
+canary 403 = the known raw-urllib false positive (same on 08-21). Accounts
+healthy: sentinel logged_in=True all night, 13 `WRITE-AUTH DEAD` (401)
+heartbeat events all self-repaired via cookie-delete + /account reload,
+warmup 424 heartbeat alive throughout. THE line (verbatim, note the em dash; grep
+`absent from RedSky` to find it): `[GROUND-TRUTH] 4 configured TCIN(s)
+absent from RedSky bulk response — invisible to detection: [1012644665,
+1012644666, 1012644667, 95290385]` every 2.5 min all night (197×) — as a
+logger.warning nobody read. Note the ground-truth read says
+"9 TCINs" while 13 are configured: that 13-9 gap IS the finding.
+**Root Cause**: No Target restock occurred that night — the operator confirmed
+this after the fact (2026-08-25). The 0-for is therefore fully explained by
+"nothing dropped"; the bot behaved correctly. What the audit found is a LATENT
+gap that would have cost the NEXT drop, not this one: the four absent TCINs are exactly the four NEW catalog
+entries in 2932805a (committed 23:18:08; `config/product_catalog.json`
+`date_added` 23:10:22-23:12:28 via configureProducts.py; verify:
+`git show 2932805a -- config/product_catalog.json | grep date_added`) — the
+same commit also re-armed 1010892065/67/68/69, which RedSky did resolve. The
+four new ones landed as name-less `Product <tcin>` entries (never resolved by
+RedSky). Off-host
+verification 2026-08-25 ~08:00: RedSky `pdp_client_v1` returns HTTP 404 (no
+product) for all four, while the control TCIN 1011960739 returns a full
+payload (First Partner Illustration Collection Series 3, $17.99, street date
+2026-08-07) — the four are unpublished on Target (or mistyped), not blocked.
+Had a drop happened on those TCINs it could never have been detected; the 9
+visible TCINs never flipped because nothing dropped. External context: restockd.app listed a POSSIBLE Target
+release Tue 2026-08-25 12 AM PT / 3 AM ET ("Chaos Rising, Pitch Black, One
+Piece & more") with the note "this drop might be pushed to Friday"
+(2026-08-28, 12 AM PT / 3 AM ET); Mega Evolution-Chaos Rising itself released
+2026-05-22, so that would be a restock. No monitored TCIN flipped in our
+window (which covered 2-3 AM CT). Process failure: the 2026-07-30 patch
+already logged the absent-TCIN warning; the operator step "read that line at
+boot" failed silently — a warning-level log line every 2.5 min in an 8-hour
+run is invisible.
+Also observed (recorded, not fixed): the business identity (real Chrome 151,
+nodriver-profile-2, the fp A/B control) wedged on the known ~75-min
+per-Chrome CDP clock at 00:26, 01:36, 02:51, 04:06, 05:21, 06:31 — sentinel
+escalated to browser restart, `Session restored after browser restart` ~48 s
+later each time; the two fp-chromium identities (primary, alt-1) never
+wedged. Coverage gap: the bot was NOT running 21:21-23:19 on 08-24 (the 21:21
+auto-launch died to a KeyboardInterrupt in `_reap_orphan_repo_chromes`).
+Host Chrome auto-updated to 151.0.7922.174; `account_identity._CHROME_BUILDS`
+bumped to match (same major; preflight passes either way).
+**Fix Applied** (2026-08-25, flag-gated, purchase path untouched): make the
+condition LOUD and visible pre-drop.
+1. Checker: on first detection of a configured-but-absent TCIN it prints a
+   `[TCIN-VISIBILITY]` banner + logger.error + `on_alert` → dashboard activity
+   feed (level error → also `logs/error_log.txt`), and re-alerts hourly while
+   it stays invisible (`RESILIENT_TCIN_INVISIBLE_REALERT_S=3600`). When Target
+   publishes a previously-invisible TCIN it logs `NOW VISIBLE` + a success
+   feed entry. The existing every-5th-cycle logger.warning stays regardless.
+   Hardened after adversarial review: "invisible" is debounced via sweep
+   sightings (absent from the cache-bust read AND unseen by ANY 200 response
+   for >`RESILIENT_TCIN_INVISIBLE_GRACE_S`=90 s), a 200 that parses to 0
+   TCINs counts as a failed read, alerts are TTL-gated in BOTH directions,
+   10 consecutive failed ground-truth reads (~5 min) raise a
+   `[TCIN-VISIBILITY] UNKNOWN` alert so silence is never read as
+   all-visible, and the state file is written on the first successful read.
+   Round-3 hardening: a blind run is marked in the state file (`verified=false`
+   + `gt_fail_streak` / `verification_failed_since_unix`; readers say UNKNOWN /
+   WARN instead of trusting stale lists), the visibility bookkeeping runs AFTER
+   the C0 cold/stale fire loop (it can never delay a purchase trigger), a
+   recovered read logs `[TCIN-VISIBILITY] verification RESUMED after N
+   consecutive failed ground-truth reads` and re-arms the UNKNOWN gate, and
+   the pre-drop scripts warn up front when >30 TCINs are enabled (RedSky
+   caps the unchunked ground-truth read at 30/req; the sweep chunks at 28).
+2. Checker writes `state/tcin_visibility.json` (schema + reader API in
+   `src/monitoring/tcin_visibility.py`: configured / visible / invisible /
+   last_seen_unix per TCIN; `RESILIENT_TCIN_VISIBILITY_STATE=1`) — on change,
+   at least every 2.5 min (every 5th ground-truth cycle) and on the first
+   successful read; `updated_at_unix` is the freshness key (stale after 24 h).
+3. Readers: `check_session_readiness.py` (runs inside
+   run_bot_with_nightly_restart.bat and hand_login_all.bat) and
+   `preflight_fp_drop.py` ([8b]) read that file and WARN about
+   enabled-but-invisible TCINs (and flag TCINs added since the last run as
+   unchecked).
+Flags: `RESILIENT_TCIN_VISIBILITY_ALERT=0` / `RESILIENT_TCIN_VISIBILITY_STATE=0`
+restore the old behaviour; `RESILIENT_TCIN_INVISIBLE_REALERT_S` (default 3600)
+is a TTL (floor 60 s), `RESILIENT_TCIN_INVISIBLE_GRACE_S` (default 90) the
+debounce (floor 30 s).
+**Confidence**: high (no edge + invisible TCINs are both directly
+log-evidenced; the "unpublished" verdict is corroborated off-host).
+**Outcome**: Fix shipped (uncommitted at time of writing) + docs; operator
+action for the next window: verify the four TCINs at the source
+(configureProducts.py entries were name-less `Product <tcin>` = never
+resolved by RedSky), keep them armed only if they are real upcoming SKUs
+(they auto-appear when Target publishes them and the bot now shouts
+`NOW VISIBLE`), re-run hand_login_all.bat before the next window (jars from
+08-24 23:14 will be >24h old), and watch for the `[TCIN-VISIBILITY]` banner
+in the same second as the first `[STOCK STATS] t=30.0s` line (30 s after `[MULTI_SESSION] started -- N/N sessions ready`, ~3-4 min after launch; 08-24: launch 23:19:20 -> pool ready 23:22:33 -> STATS + banner 23:23:03).
+No banner is the GOOD case (it prints only when something is invisible) -- confirm it positively: the `[GROUND-TRUTH] pool cache-bust ok: in_stock=[] (N TCINs)` line in that same second must show N == the number of armed TCINs (08-24 showed `(9 TCINs)` for 13 armed = THE finding). If that line is missing too, look for `[GROUND-TRUTH] pool cache-bust read FAILED` / `no ready session` lines; after ~5 min of failed reads the bot prints `[TCIN-VISIBILITY] UNKNOWN -- N consecutive ground-truth reads failed` and stamps the state file `verified=false`.
+
 ### [2026-08-21] - 0-for on the First Partner Illustration Collection drop: the breaker armed on the EDGE LOTTERY and cut the only window; the 401 wall was never the differentiator - TARGET
 **Symptom**: run_20260820_225041.log (bat launched 22:50 after hand-logins
 22:22-22:33; user stopped 17:41). Two armed TCINs went live: 1011960739

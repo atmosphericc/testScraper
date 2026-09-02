@@ -1289,6 +1289,30 @@ class BulletproofPurchaseManager:
                     # Substrings that mean the item is genuinely gone — stop now.
                     _terminal_tokens = ('oos', 'out_of_stock', 'sold_out', 'reservation', 'unavailable')
 
+                    # 2026-08-31 wave-first pulse (08-28 Phase-2 finding F2). On
+                    # winning nights, limiter-passing shots fired as the FIRST
+                    # shot after a >=15s per-identity pause on the TCIN
+                    # converted 32.6% (regular) / 9.1% (hot) vs 0.9% / 0.0% for
+                    # later re-POSTs in the same wave — every order ever was
+                    # shot #1-3 of a fresh wave, incl. two 07-31 201s landed on
+                    # attempt 1 of a fresh wave deep in the window. A carts 401
+                    # is NOT reset by slowing down or resting the identity
+                    # (velocity-flat), but IS reset by the per-TCIN pause. So:
+                    # after TARGET_401_PULSE_STREAK consecutive carts-401s
+                    # (gate_kind auth401; edge-429s neither count nor reset —
+                    # they carry no Shape verdict; a DCO resets, it proves auth
+                    # passed) sleep 15-25s INSTEAD of the 2.5-3.5s cadence so
+                    # the next shot re-enters as wave-first. Edge-lottery
+                    # windows (429-dominant) almost never accumulate the streak
+                    # and keep full ticket cadence — the doctrine there is
+                    # unchanged. Kill-switch: TARGET_401_PULSE=0 (default).
+                    _pulse_on = os.environ.get('TARGET_401_PULSE', '0') == '1'
+                    _pulse_streak_n = max(1, int(os.environ.get('TARGET_401_PULSE_STREAK', '3')))
+                    _pulse_lo = float(os.environ.get('TARGET_401_PULSE_SLEEP_MIN', '15'))
+                    _pulse_hi = float(os.environ.get('TARGET_401_PULSE_SLEEP_MAX', '25'))
+                    _pulse_hi = max(_pulse_hi, _pulse_lo)
+                    _consec_401 = 0
+
                     _attempt_n = 0
                     while True:
                         _attempt_n += 1
@@ -1364,17 +1388,34 @@ class BulletproofPurchaseManager:
                         # POST still refills the ring). TARGET_RETRY_FORCE_REWARM=1
                         # restores the forced /cart reload.
                         _rewarm_force = os.environ.get('TARGET_RETRY_FORCE_REWARM', '0') == '1'
-                        try:
-                            if worker is not None:
-                                worker.run_async(
-                                    target_purchase_executor.warm_shape_headers(force_fresh=_rewarm_force)
-                                ).result(timeout=25)
-                            else:
-                                target_session_manager.submit_async_task(
-                                    target_purchase_executor.warm_shape_headers(force_fresh=_rewarm_force)
-                                ).result(timeout=25)
-                        except Exception as _warm_err:
-                            print(f"[REAL_PURCHASE_THREAD] Pre-retry re-warm failed: {_warm_err}")
+                        # 2026-08-31 (08-28 Phase-2 audit): the awaited non-forced
+                        # warm still fires a warmup-tab dummy cart_items POST per
+                        # retry (2,811 on 08-28) plus, on its ~20% 401s, the
+                        # 0.6s-per-probe confirm re-probe — mean ~1.0-1.15s of a
+                        # 3.2-3.6s cycle — and it buys nothing on this path: each
+                        # real shot's own capture refills the Shape ring (never
+                        # <4 unused entries all night) and injected headers are
+                        # re-signed in-page anyway (07-10). It is also our
+                        # largest self-inflicted cookie burn on the identity
+                        # (Refract: more cookies = more flags). TARGET_RETRY_WARM=0
+                        # skips it (forced re-warm still runs); the 60-90s
+                        # background refill + sentinel keep the 07-07 dead-token
+                        # net. Default 1 = exact prior behaviour; the bat sets 0.
+                        _retry_warm_on = _rewarm_force or os.environ.get('TARGET_RETRY_WARM', '1') != '0'
+                        if _retry_warm_on:
+                            try:
+                                if worker is not None:
+                                    worker.run_async(
+                                        target_purchase_executor.warm_shape_headers(force_fresh=_rewarm_force)
+                                    ).result(timeout=25)
+                                else:
+                                    target_session_manager.submit_async_task(
+                                        target_purchase_executor.warm_shape_headers(force_fresh=_rewarm_force)
+                                    ).result(timeout=25)
+                            except Exception as _warm_err:
+                                print(f"[REAL_PURCHASE_THREAD] Pre-retry re-warm failed: {_warm_err}")
+                        else:
+                            print("[RETRY_WARM] skipped (TARGET_RETRY_WARM=0) — ring refilled by the shot's own capture")
                         # 2026-06-30 research: Refract's tested Target "Error Delay" is
                         # 3500ms and too-low delays risk proxy/IP bans
                         # (help.refractbot.com/modules/target). Keep the inter-attempt
@@ -1382,7 +1423,63 @@ class BulletproofPurchaseManager:
                         # ≈ Refract's ~3.5s effective). Env-tunable.
                         _atc_lo = float(os.environ.get('TARGET_ATC_RETRY_DELAY_MIN', '2.5'))
                         _atc_hi = float(os.environ.get('TARGET_ATC_RETRY_DELAY_MAX', '3.5'))
-                        time.sleep(random.uniform(_atc_lo, _atc_hi))
+                        # 2026-08-26 adaptive edge-lottery cadence. On the 08-26
+                        # 1011960739 (hyped) drop the bot fired 85 fast-lane shots
+                        # / 0x2xx into a ~60-75s in-stock window at ~4s/identity,
+                        # so only ~20 productive shots/identity landed before the
+                        # ~02:52:38 sell-out (the ~8-10 later shots/id fired
+                        # post-OOS = wasted). House doctrine (08-18/08-21,
+                        # user-endorsed): an EMPTY-body 429 is the GLOBAL edge
+                        # demand-lottery (hits humans too) and TICKET COUNT is the
+                        # only lever there. So ONLY when the just-failed attempt
+                        # was edge-gated (gate_kind=='edge') do we tighten the
+                        # per-identity cadence to pack more tickets into the live
+                        # window. 401 / DCO / anything-else keep the proven-safe
+                        # 2.5/3.5 (Shape-scoped denials must NOT be sped up; the
+                        # reset-layer 10s shape gate is untouched). Online research
+                        # (help.refractbot.com/modules/target; guides.stellaraio)
+                        # puts the tested-safe band at 1000-4000ms with an explicit
+                        # ~1s per-IP proxy/ban floor and endorses ~2000ms as the
+                        # safe tightening move, so the edge default 2.0/3.0 stays
+                        # >=2x that floor. ROLLBACK: set the EDGE knobs = 2.5/3.5
+                        # (== no behaviour change).
+                        _gk = str((result or {}).get('gate_kind', ''))
+                        # 2026-08-31: an ATC-LEVEL DCO/FAST_SELLING 429 is the same
+                        # demand-throttle class as the edge lottery (zyn maps all
+                        # three 429 keys to one error) and proves auth passed —
+                        # optionally give it the edge cadence too. The checkout-
+                        # level FAST_SELLING cooldown/hold is untouched.
+                        _dco_as_edge = os.environ.get('TARGET_ATC_DCO_AS_EDGE_CADENCE', '0') == '1'
+                        if str((result or {}).get('gate_kind', '')) == 'edge' or (_dco_as_edge and _gk == 'dco'):
+                            _edge_lo = float(os.environ.get('TARGET_ATC_EDGE429_RETRY_DELAY_MIN', '2.0'))
+                            _edge_hi = float(os.environ.get('TARGET_ATC_EDGE429_RETRY_DELAY_MAX', '3.0'))
+                            # Hard clamp: MIN>=1.0 (the documented ~1s per-IP ban
+                            # floor — help.refractbot.com), MAX>=MIN. Guards env
+                            # overrides; defaults 2.0/3.0 sit >=2x the floor.
+                            _edge_lo = max(1.0, _edge_lo)
+                            _edge_hi = max(_edge_hi, _edge_lo)
+                            _std_lo, _std_hi = _atc_lo, _atc_hi
+                            _atc_lo, _atc_hi = _edge_lo, _edge_hi
+                            if (_edge_lo, _edge_hi) != (_std_lo, _std_hi):
+                                print(f"[RETRY_CADENCE] edge-429 lottery cadence "
+                                      f"{_edge_lo:.1f}-{_edge_hi:.1f}s (std {_std_lo:.1f}-{_std_hi:.1f}s)")
+                        # Wave-first pulse bookkeeping (knobs + evidence above the
+                        # loop): consecutive carts-401s trigger a 15-25s pause in
+                        # place of ONE cadence sleep; edge-429s neither count nor
+                        # reset (no Shape verdict in them), everything else resets.
+                        if _gk == 'auth401':
+                            _consec_401 += 1
+                        elif _gk != 'edge':
+                            _consec_401 = 0
+                        if _pulse_on and _consec_401 >= _pulse_streak_n:
+                            _pulse_s = min(random.uniform(_pulse_lo, _pulse_hi),
+                                           max(0.0, _retry_deadline - time.time()) + 1.0)
+                            print(f"[PULSE401] {_consec_401} consecutive carts-401s on {tcin} — "
+                                  f"wave-first reset pause {_pulse_s:.1f}s ident={_race_wlbl or 'auto'}")
+                            _consec_401 = 0
+                            time.sleep(_pulse_s)
+                        else:
+                            time.sleep(random.uniform(_atc_lo, _atc_hi))
 
                     # CRITICAL: Update state ATOMICALLY with lock held
                     # This prevents race condition where next cycle sees stale "attempting" status

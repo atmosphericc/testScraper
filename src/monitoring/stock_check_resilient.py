@@ -34,6 +34,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -41,6 +42,7 @@ from src.monitoring.proxy_preflight import preflight_validate
 from src.monitoring.tab_dispatcher import (
     TabDispatcher, BulkResult, REDSKY_BULK, REDSKY_API_KEYS,
 )
+from src.monitoring.tcin_visibility import STATE_FILENAME, write_state_atomic
 from src.proxy.proxy_state import ProxyState
 from src.session.multi_session_pool import MultiSessionPool
 
@@ -101,6 +103,7 @@ class ResilientStockChecker:
         preflight_tcin: str = "50270379",
         behavioral_mix_ratio: float = DEFAULT_BEHAVIORAL_MIX_RATIO,
         harvest_via_local_ip: bool = False,
+        on_alert: Optional[Callable[[str, str, str], None]] = None,
     ):
         self.proxy_urls = list(proxy_urls)
         self.tcins = list(tcins)
@@ -113,6 +116,7 @@ class ResilientStockChecker:
         self.first_local_port = first_local_port
         self.behavioral_mix_ratio = max(0.0, min(0.5, float(behavioral_mix_ratio)))
         self.harvest_via_local_ip = harvest_via_local_ip
+        self.on_alert = on_alert
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = state_dir
@@ -159,6 +163,53 @@ class ResilientStockChecker:
         # logging. Default ON. Disable with RESILIENT_GROUND_TRUTH_FIRES=0.
         self._ground_truth_fires = os.environ.get(
             "RESILIENT_GROUND_TRUTH_FIRES", "1").strip().lower() in ("1", "true", "yes")
+
+        # TCIN-VISIBILITY (2026-08-25) -- make "configured but absent from RedSky"
+        # LOUD. On the 08-24 overnight run 4 of 13 armed TCINs were absent from
+        # every bulk response (unpublished on Target), so a drop on them could
+        # never have been detected; the only trace was the every-5th-cycle
+        # logger.warning in _ground_truth_probe_loop that nobody read. Now the
+        # ground-truth read feeds _note_tcin_visibility: a console banner +
+        # logger.error + on_alert callback on first sighting of an invisible
+        # TCIN (re-alert every RESILIENT_TCIN_INVISIBLE_REALERT_S while it stays
+        # invisible), a NOW VISIBLE line when Target publishes it mid-run, and
+        # state/tcin_visibility.json for pre-drop readiness scripts. Purchase
+        # behaviour is untouched. RESILIENT_TCIN_VISIBILITY_ALERT=0 restores the
+        # old (warning-only) behaviour; RESILIENT_TCIN_VISIBILITY_STATE=0 never
+        # writes the state file.
+        self._last_seen_at: dict[str, float] = {}
+        self._invisible_prev: set[str] = set()
+        self._invisible_alerted_at: dict[str, float] = {}
+        # 2026-08-25 review hardening: (a) a TCIN counts as INVISIBLE only if it
+        # is absent from the cache-bust read AND no 200 response (sweep or
+        # ground-truth) has shown it within GRACE_S -- so a partial/odd 200 body
+        # cannot fake "every TCIN unpublished" (an unpublished TCIN is never seen
+        # at all); (b) alerts are TTL-gated per TCIN in BOTH directions, so a
+        # flapping TCIN is bounded to <=2 alerts per REALERT_S; (c) the state
+        # file is written on the first successful read so the readiness echo has
+        # data within one ground-truth cycle of boot; (d) after GT_FAIL_ALERT_N
+        # consecutive failed ground-truth reads the feature announces itself
+        # BLIND instead of staying silent (silence must never read as all-visible).
+        try:
+            self._tcin_vis_grace_s = max(30.0, float(os.environ.get(
+                "RESILIENT_TCIN_INVISIBLE_GRACE_S", "90")))
+        except ValueError:
+            self._tcin_vis_grace_s = 90.0
+        self._visible_again_at: dict[str, float] = {}
+        self._tcin_vis_written = False
+        self._gt_fail_streak = 0
+        self._gt_fail_since: Optional[float] = None
+        self._gt_fail_alert_n = 10          # 10 x 30 s = 5 min of failed reads
+        self._vis_unknown_alerted_at = 0.0
+        self._tcin_vis_alert = os.environ.get(
+            "RESILIENT_TCIN_VISIBILITY_ALERT", "1").strip().lower() in ("1", "true", "yes")
+        try:
+            self._tcin_vis_realert_s = max(
+                60.0, float(os.environ.get("RESILIENT_TCIN_INVISIBLE_REALERT_S", "3600")))
+        except (TypeError, ValueError):
+            self._tcin_vis_realert_s = 3600.0
+        self._tcin_vis_state = os.environ.get(
+            "RESILIENT_TCIN_VISIBILITY_STATE", "1").strip().lower() in ("1", "true", "yes")
 
         # Stats
         self._total_dispatched = 0
@@ -389,8 +440,10 @@ class ResilientStockChecker:
         parsed = self._parse_bulk(result.raw)
 
         in_stock_transitions = []
+        now = time.time()
         async with self._status_lock:
             for tcin, info in parsed.items():
+                self._last_seen_at[str(tcin)] = now   # TCIN-VISIBILITY (2026-08-25)
                 s = self._tcin_status.get(tcin)
                 if s is None:
                     s = TcinStatus(tcin=tcin)
@@ -645,12 +698,14 @@ class ResilientStockChecker:
                 if result is None:
                     if cycle % 5 == 1:
                         logger.info("[GROUND-TRUTH] no ready session this cycle (skip)")
+                    self._note_ground_truth_failure("no ready session")
                     continue
                 if result.http_status != 200 or not result.raw:
                     logger.warning(
                         f"[GROUND-TRUTH] pool cache-bust read FAILED "
                         f"http={result.http_status} — pool may be throttled/tarpitted"
                     )
+                    self._note_ground_truth_failure(f"http={result.http_status}")
                     continue
                 parsed = self._parse_bulk(result.raw)
                 # 2026-07-30: name the configured TCINs RedSky returns nothing for
@@ -712,6 +767,34 @@ class ResilientStockChecker:
                             self.on_in_stock(s)
                         except Exception:
                             logger.exception("[GROUND-TRUTH] on_in_stock fire failed")
+                # TCIN-VISIBILITY (2026-08-25): placed AFTER the C0 fire loop so
+                # its bookkeeping (one small JSON write) can never delay a real
+                # purchase trigger. The cache-bust read counts as a sighting;
+                # any absence is made LOUD (banner/alert/state file). Never
+                # raises, never touches on_in_stock or purchase state.
+                _vis_now = time.time()
+                if parsed:
+                    _resumed = self._gt_fail_streak >= self._gt_fail_alert_n
+                    if _resumed:
+                        logger.warning(
+                            f"[TCIN-VISIBILITY] verification RESUMED after "
+                            f"{self._gt_fail_streak} consecutive failed ground-truth reads"
+                        )
+                    self._gt_fail_streak = 0
+                    self._gt_fail_since = None
+                    self._vis_unknown_alerted_at = 0.0   # next blind period alerts at once
+                    for _t in parsed:
+                        self._last_seen_at[str(_t)] = _vis_now
+                    # a RESUMED cycle force-writes so the verified=false marker is
+                    # replaced at once, not up to 4 cycles later (round-3 review)
+                    self._note_tcin_visibility(missing, _vis_now,
+                                               force_write=(cycle % 5 == 1) or _resumed)
+                else:
+                    # A 200 whose body parsed to NOTHING is a failed read, not
+                    # "every TCIN unpublished" (2026-08-25 review): skip the
+                    # visibility update this cycle (the stale/fire logic above
+                    # was a no-op on the empty parse).
+                    self._note_ground_truth_failure("http=200 but 0 TCINs parsed")
                 if cb_in_stock or stale or cycle % 5 == 1:
                     logger.info(
                         f"[GROUND-TRUTH] pool cache-bust ok: "
@@ -725,6 +808,177 @@ class ResilientStockChecker:
                     )
             except Exception:
                 logger.exception("[GROUND-TRUTH] probe cycle failed (non-fatal)")
+
+    def _note_ground_truth_failure(self, reason: str) -> None:
+        """TCIN-VISIBILITY (2026-08-25 review): the visibility verdict can only
+        be computed from a SUCCESSFUL ground-truth read. Count consecutive
+        failures and, past GT_FAIL_ALERT_N (~5 min), say so once per REALERT_S
+        so silence is never mistaken for "all TCINs visible" (e.g. >30 armed
+        TCINs -> unchunked verify read 400s every cycle; pool never ready).
+        Sync, never raises, never touches purchase state."""
+        try:
+            self._gt_fail_streak += 1
+            now = time.time()
+            if self._gt_fail_since is None:
+                self._gt_fail_since = now
+            if self._gt_fail_streak < self._gt_fail_alert_n:
+                return
+            if (now - self._vis_unknown_alerted_at) < self._tcin_vis_realert_s:
+                return
+            self._vis_unknown_alerted_at = now
+            # Persist the blind state FIRST, and independently of the ALERT flag
+            # (round-3 review): a run that never verifies must not let the next
+            # pre-drop echo read the previous run's verdict as current, even
+            # when the operator silenced the banner. Readers treat
+            # verified=false as UNKNOWN.
+            if self._tcin_vis_state:
+                self._write_visibility_state(now, verified=False)
+            if not self._tcin_vis_alert:
+                return
+            message = (
+                f"[TCIN-VISIBILITY] UNKNOWN -- {self._gt_fail_streak} consecutive ground-truth "
+                f"reads failed (last: {reason}); TCIN visibility is NOT being verified. "
+                f"If this persists, the invisible-TCIN check is blind for this run "
+                f"(>30 configured TCINs, throttled pool, or no ready session)."
+            )
+            logger.error(message)
+            if self.on_alert:
+                try:
+                    self.on_alert("tcin_visibility_unknown", "warning", message)
+                except Exception:
+                    logger.debug("[TCIN-VISIBILITY] on_alert raised (ignored)", exc_info=True)
+            self._safe_print(message)
+        except Exception:
+            logger.exception("[TCIN-VISIBILITY] non-fatal (failure note)")
+
+    @staticmethod
+    def _safe_print(*lines: str) -> None:
+        """print() that cannot raise into the ground-truth loop (a closed/broken
+        stdout -- the 08-14 tee close-race class -- must not block bookkeeping)."""
+        for line in lines:
+            try:
+                print(line)
+            except Exception:
+                pass
+
+    def _write_visibility_state(self, now: float, verified: bool) -> bool:
+        """Build + atomically write <state_dir>/tcin_visibility.json (schema 1).
+        verified=False marks a run whose ground-truth reads are failing: the
+        lists are the last known ones and readers must report UNKNOWN."""
+        configured = sorted(map(str, self.tcins))
+        invisible = sorted(self._invisible_prev)
+        payload = {
+            "schema": 1,
+            "updated_at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
+            "updated_at_unix": float(now),
+            "run_started_at_unix": self._start_time,
+            "configured": configured,
+            "visible": [t for t in configured if t not in self._invisible_prev],
+            "invisible": invisible,
+            "last_seen_unix": {t: self._last_seen_at.get(t) for t in configured},
+            "verified": bool(verified),
+            "gt_fail_streak": int(self._gt_fail_streak),
+            "verification_failed_since_unix": self._gt_fail_since if not verified else None,
+        }
+        return write_state_atomic(self.state_dir / STATE_FILENAME, payload)
+
+    def _note_tcin_visibility(self, missing: list[str], now: float,
+                              force_write: bool = False) -> dict:
+        """TCIN-VISIBILITY (2026-08-25): record which configured TCINs are
+        INVISIBLE to RedSky. `missing` = TCINs absent from the latest full-list
+        cache-bust read; a TCIN is INVISIBLE only if it is absent AND has not
+        been seen by ANY 200 response (sweep or ground-truth) within
+        RESILIENT_TCIN_INVISIBLE_GRACE_S (default 90 s) -- an unpublished TCIN is
+        never seen, while a partial/odd body must not flag TCINs the sweep saw a
+        second ago. Alerts (banner + logger.error + on_alert) are TTL-gated per
+        TCIN (RESILIENT_TCIN_INVISIBLE_REALERT_S) in both directions (flap-proof);
+        NOW VISIBLE fires only for a TCIN that had an invisible alert. Writes
+        <state_dir>/tcin_visibility.json on change, on force_write, and on the
+        first successful read. Sync, never raises, never touches on_in_stock /
+        purchase state."""
+        newly_missing: set[str] = set()
+        became_visible: set[str] = set()
+        due: list[str] = []
+        vis_due: list[str] = []
+        invisible: list[str] = []
+        changed = False
+        try:
+            configured = sorted(map(str, self.tcins))
+            absent = set(map(str, missing))
+            invisible_set: set[str] = set()
+            for t in configured:
+                if t in absent:
+                    seen = self._last_seen_at.get(t)
+                    if seen is None or (now - seen) > self._tcin_vis_grace_s:
+                        invisible_set.add(t)
+            invisible = sorted(invisible_set)
+            visible = [t for t in configured if t not in invisible_set]
+            newly_missing = invisible_set - self._invisible_prev
+            became_visible = self._invisible_prev - invisible_set
+            # First-ever sighting fires at once (default 0.0); a re-flap inside
+            # the TTL stays quiet. _invisible_alerted_at is never popped.
+            due = [t for t in invisible
+                   if (now - self._invisible_alerted_at.get(t, 0.0)) >= self._tcin_vis_realert_s]
+
+            if self._tcin_vis_alert and due:
+                message = (
+                    f"[TCIN-VISIBILITY] {len(invisible)} of {len(configured)} configured TCIN(s) "
+                    f"are INVISIBLE to RedSky (absent from the bulk response) -- a drop on them "
+                    f"CANNOT be detected until Target publishes them: {invisible}. Verify each "
+                    f"number at the source (typo => never fires; unpublished => auto-appears "
+                    f"mid-run and this bot will log NOW VISIBLE)."
+                )
+                for t in invisible:            # stamp BEFORE any I/O (review)
+                    self._invisible_alerted_at[t] = now
+                bang = "!" * 70
+                logger.error(message)
+                if self.on_alert:
+                    try:
+                        self.on_alert("tcin_invisible", "error", message)
+                    except Exception:
+                        logger.debug("[TCIN-VISIBILITY] on_alert raised (ignored)", exc_info=True)
+                self._safe_print(
+                    bang, message,
+                    f"[TCIN-VISIBILITY] state: {self.state_dir / STATE_FILENAME} -- "
+                    "pre-drop check: venv\\Scripts\\python.exe check_session_readiness.py",
+                    bang)
+
+            # NOW VISIBLE: only for TCINs that actually had an invisible alert,
+            # TTL-gated on the success side too (bounded even if it flaps).
+            vis_due = [t for t in sorted(became_visible)
+                       if t in self._invisible_alerted_at
+                       and (now - self._visible_again_at.get(t, 0.0)) >= self._tcin_vis_realert_s]
+            if self._tcin_vis_alert and vis_due:
+                message = (
+                    f"[TCIN-VISIBILITY] NOW VISIBLE in RedSky: {vis_due} -- "
+                    f"Target published it; detection is live for it from this cycle."
+                )
+                for t in vis_due:              # stamp BEFORE any I/O (review)
+                    self._visible_again_at[t] = now
+                logger.warning(message)
+                if self.on_alert:
+                    try:
+                        self.on_alert("tcin_visible_again", "success", message)
+                    except Exception:
+                        logger.debug("[TCIN-VISIBILITY] on_alert raised (ignored)", exc_info=True)
+                self._safe_print(message)
+
+            self._invisible_prev = invisible_set
+            changed = bool(newly_missing or became_visible)
+
+            if self._tcin_vis_state and (changed or force_write or not self._tcin_vis_written):
+                if self._write_visibility_state(now, verified=True):
+                    self._tcin_vis_written = True
+        except Exception:
+            logger.exception("[TCIN-VISIBILITY] non-fatal")
+        return {
+            "newly_missing": sorted(newly_missing),
+            "became_visible": sorted(became_visible),
+            "invisible": list(invisible),
+            "alerted": list(due) if (self._tcin_vis_alert and due) else [],
+            "visible_alerted": list(vis_due) if (self._tcin_vis_alert and vis_due) else [],
+            "changed": changed,
+        }
 
     async def _canary_loop(self):
         """Every 30s: read the FULL TCIN list through an INDEPENDENT identity

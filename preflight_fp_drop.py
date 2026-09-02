@@ -229,6 +229,88 @@ for a in enabled:
     except Exception as e:
         warn(f"{aid}: {sp.name} unreadable ({e}) — LOG IN to refresh")
 
+# ---- 8b. TCIN visibility from the last bot run ------------------------------
+# 2026-08-25: 08-24 went 0-for with 4/13 armed TCINs ABSENT from RedSky all night
+# (unpublished on Target => a drop on them could never be detected); the checker
+# only logger.warning'd it. Surface that state here. Never fail(): TCINs that are
+# unpublished by design (street-date siblings) are legitimate.
+print("\n[8b] TCIN visibility (last bot run)")
+# Real timing (run_20260824_231920.log): the stats loop and the ground-truth loop
+# start together with a 30 s first wait, so the banner / state write lands in the
+# SAME SECOND as the first '[STOCK STATS] t=30.0s' line.
+_BANNER_TIMING = ("in the same second as the first [STOCK STATS] t=30.0s line (30 s after "
+                  "'[MULTI_SESSION] started -- N/N sessions ready', ~3-4 min after launch; "
+                  "08-24: launch 23:19:20 -> pool ready 23:22:33 -> STATS + banner 23:23:03)")
+# Round 3: dispatch_verify sends the FULL enabled list unchunked; RedSky caps the
+# endpoint at 30/req -> above 30 the read fails every cycle (the sweep chunks at
+# 28 and is unaffected).
+_MAX_VERIFY_TCINS = 30
+try:
+    import time as _time
+    from src.monitoring.tcin_visibility import load_state, summarize, format_invisible_warning
+    _enabled_tcins = None
+    try:
+        _pc = json.load(open(ROOT / 'config' / 'product_config.json', encoding='utf-8'))
+        _enabled_tcins = [str(x.get('tcin')).strip() for x in _pc.get('products', [])
+                          if isinstance(x, dict) and x.get('tcin') and x.get('enabled', True)]
+    except Exception as e:
+        # Config unreadable => the enabled set is unknown; an empty list would make
+        # every state look "all visible", so skip the ok/warn evaluation entirely.
+        warn(f"could not read config/product_config.json ({e}) -- TCIN visibility UNKNOWN, "
+             f"check skipped this run")
+    _too_many = _enabled_tcins is not None and len(_enabled_tcins) > _MAX_VERIFY_TCINS
+    if _too_many:
+        warn(f"{len(_enabled_tcins)} enabled TCINs > {_MAX_VERIFY_TCINS} -- the ground-truth read "
+             f"is unchunked and RedSky caps the endpoint at 30/req, so it will fail every cycle and "
+             f"TCIN visibility will be UNKNOWN all run; disable some before launch (the sweep "
+             f"chunks at 28 and is unaffected)")
+    _vis = load_state(ROOT / 'state') if _enabled_tcins is not None else None
+    if _enabled_tcins is None:
+        pass
+    elif not _enabled_tcins:
+        # before the no-state branch (round-3 review): "nothing armed" must show
+        warn("no enabled TCINs in config/product_config.json -- nothing is armed; TCIN visibility UNKNOWN")
+    elif _vis is None:
+        warn("no visibility state yet -- the checker writes state/tcin_visibility.json on its "
+             "first successful ground-truth read")
+        warn(f"read the [TCIN-VISIBILITY] banner {_BANNER_TIMING}")
+    else:
+        _vs = summarize(_vis, _enabled_tcins, _time.time())
+        _age = (f"{_vs.age_s/60:.0f}m" if _vs.age_s < 3600 else
+                f"{_vs.age_s/3600:.1f}h" if _vs.age_s < 86400 else f"{_vs.age_s/86400:.1f}d")
+        if _vs.stale:
+            warn(f"visibility state is STALE ({_age} old, >24h) -- re-check {_BANNER_TIMING}")
+        _unverified = not _vs.verified
+        if _unverified:
+            # Round 3: verified=false = 10+ consecutive failed ground-truth reads when the
+            # state was last written; the lists are last KNOWN, never a PASS.
+            from datetime import datetime as _dt
+            try:
+                _since = (_dt.fromtimestamp(float(_vs.verification_failed_since_unix))
+                          .strftime("%Y-%m-%d %H:%M:%S")
+                          if _vs.verification_failed_since_unix else "?")
+            except Exception:
+                _since = "?"
+            warn(f"the last run could NOT verify visibility ({_vs.gt_fail_streak} consecutive failed "
+                 f"ground-truth reads since {_since}; {_age} old) -- treat every enabled TCIN as unverified")
+        if _vs.invisible_enabled:
+            warn(f"{len(_vs.invisible_enabled)} enabled TCIN(s) INVISIBLE to RedSky in the last run "
+                 f"({_age} ago): {sorted(_vs.invisible_enabled)} -- a drop on these can NOT be detected; "
+                 f"verify at the source (target.com/p/-/A-<tcin>) and drop/replace them if unpublished")
+        elif _enabled_tcins and not _unverified and not _too_many:
+            ok(f"{len(_vs.visible)}/{len(_vs.configured)} configured TCIN(s) visible to RedSky in the last run "
+               f"({_age} ago); no enabled TCIN invisible")
+        if _unverified or _vs.invisible_enabled:
+            for _line in format_invisible_warning(_vs):
+                print(f"         {_line}")
+        if _vs.unchecked_enabled:
+            warn(f"{len(_vs.unchecked_enabled)} enabled TCIN(s) added since that run, not yet checked: "
+                 f"{sorted(_vs.unchecked_enabled)} -- confirm the [TCIN-VISIBILITY] banner {_BANNER_TIMING}")
+except ImportError as e:
+    warn(f"TCIN visibility reader unavailable ({e})")
+except Exception as e:
+    warn(f"TCIN visibility check skipped: {e}")
+
 # ---- 9. Logging coverage (informational) -----------------------------------
 print("\n[9] Logging coverage — where to look on drop night")
 for m in [
@@ -248,8 +330,9 @@ if FAILS:
     print("STATUS: NOT READY — fix the [FAIL] item(s) above before dropping.")
     code = 1
 elif WARNS:
-    print("STATUS: READY (with warnings). The warnings are typically 'log in to refresh")
-    print("        sessions' — run hand_login_all.bat, then re-run this preflight for all-green.")
+    print("STATUS: READY (with warnings). Login-related warnings -> run hand_login_all.bat and")
+    print("        re-run. [8b] TCIN-visibility warnings are NOT login-related: fix the config")
+    print("        (drop/replace invisible TCINs, keep <=30 enabled) BEFORE launching.")
     code = 2
 else:
     print("STATUS: ALL GREEN — code, config, flags, binary, and decoupling verified.")

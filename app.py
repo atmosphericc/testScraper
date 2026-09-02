@@ -1007,6 +1007,7 @@ class StockMonitorThread:
                 self._proxy_workers = self.stock_monitor.start_resilient_monitoring(
                     self._on_proxy_stock_detected,
                     target_sweeps_per_sec=sweeps,
+                    on_alert=self._on_resilient_alert,
                 )
                 if self._proxy_workers:
                     print(f"[RESILIENT] browser-native stack engaged "
@@ -1036,6 +1037,14 @@ class StockMonitorThread:
             ).start()
         self.running = False
         self.thread = None
+
+    def _on_resilient_alert(self, kind, level, message):
+        """2026-08-25: surface checker alerts (invisible TCINs) on the dashboard feed + error_log.txt."""
+        try:
+            add_activity_log(message, level if level in ("error", "success", "warning", "info") else "warning",
+                             "tcin_visibility", console=False)
+        except Exception:
+            pass
 
     def start(self):
         """Start the stock monitoring thread"""
@@ -3964,6 +3973,37 @@ def _disable_console_quickedit():
         print(f"[BOOT] QuickEdit guard failed (non-fatal): {e}")
 
 
+async def _probe_target_login(tab, timeout_s=10.0, homepage="https://www.target.com"):
+    """Return True iff the live tab shows the authenticated 'Hi,' greeting.
+
+    2026-08-25 fix: ALWAYS land on the homepage before probing. sm._active_tab is
+    frequently a warmup /cart tab, which shows no 'Hi,' greeting — and /cart IS
+    target.com, so the old `if 'target.com' not in url` guard SKIPPED the nav and
+    the 4s find() timed out against the cart page. That false 'not logged in'
+    exited app.py with code 87, and the nightly wrapper relaunched into the same
+    false negative — a crash-loop that ran the relogin 4x and degraded primary +
+    alt-1 to GUEST tokens (2026-08-25 22:25–22:29). Navigating to the homepage
+    first + a longer, tunable timeout (TARGET_LOGIN_CHECK_TIMEOUT_S, default 10s)
+    fixes it. A genuinely logged-out session still shows no greeting on the
+    homepage, so find() still raises/returns falsy -> False (protection intact).
+    """
+    try:
+        await asyncio.wait_for(tab.get(homepage), timeout=20.0)
+        await asyncio.sleep(2)
+    except Exception as nav_err:
+        print(f"[LOGIN_CHECK] homepage nav failed ({nav_err}) — probing current page")
+    try:
+        hi_elem = await tab.find("Hi,", best_match=True, timeout=timeout_s)
+        if hi_elem:
+            print("[LOGIN_CHECK] 'Hi,' greeting found — logged in")
+            return True
+        print("[LOGIN_CHECK] 'Hi,' greeting NOT found — not logged in (run relogin.py)")
+        return False
+    except Exception as probe_err:
+        print(f"[LOGIN_CHECK] probe error: {probe_err} — assuming not logged in")
+        return False
+
+
 def _reap_orphan_repo_chromes():
     """Kill Chrome processes left over from a CRASHED previous run.
 
@@ -4104,19 +4144,13 @@ if __name__ == '__main__':
                     print("[LOGIN_CHECK] no active tab on session_manager")
                     return False
                 try:
-                    current_url = getattr(tab, 'url', '') or ''
-                    if 'target.com' not in current_url:
-                        await tab.get("https://www.target.com")
-                        await asyncio.sleep(2)
-                    hi_elem = await tab.find("Hi,", best_match=True, timeout=4)
-                    if hi_elem:
-                        print("[LOGIN_CHECK] 'Hi,' greeting found — logged in")
-                        return True
-                    print("[LOGIN_CHECK] 'Hi,' greeting NOT found — not logged in (run relogin.py)")
-                    return False
-                except Exception as probe_err:
-                    print(f"[LOGIN_CHECK] probe error: {probe_err} — assuming not logged in")
-                    return False
+                    _to = float(os.environ.get("TARGET_LOGIN_CHECK_TIMEOUT_S", "10"))
+                except (TypeError, ValueError):
+                    _to = 10.0
+                # 2026-08-25: delegate to the module-level helper, which ALWAYS
+                # navigates to the homepage first (the /cart false-negative that
+                # crash-looped the boot) and honours the tunable timeout.
+                return await _probe_target_login(tab, timeout_s=_to)
 
             is_logged_in = False
             login_check_error = None

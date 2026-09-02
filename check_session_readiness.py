@@ -92,6 +92,165 @@ def ttl(exp: float) -> str:
     return f"{d/3600:.1f}h" if d < 86400 else f"{d/86400:.1f}d"
 
 
+# 2026-08-25: filled by tcin_visibility_report() so the VERDICT block can print a
+# one-line status without re-reading state. Keys: status ("unknown" | "warning" |
+# "partial" | "ok"), reason, invisible, unchecked, stale, age, n_enabled.
+_VIS: dict = {"status": "unknown", "reason": "not evaluated"}
+
+# Real timing from run_20260824_231920.log: the stats loop and the ground-truth
+# loop start together with a 30 s first wait, so the banner (the only thing that
+# prints it / writes the state) fires in the SAME SECOND as the first
+# '[STOCK STATS] t=30.0s' line -- 30 s after the pool-ready line, ~3-4 min after
+# launch (08-24: launch 23:19:20 -> pool ready 23:22:33 -> STATS + banner 23:23:03).
+_BANNER_TIMING = ("in the same second as the first [STOCK STATS] t=30.0s line (30 s after "
+                  "'[MULTI_SESSION] started -- N/N sessions ready', ~3-4 min after launch; "
+                  "08-24: launch 23:19:20 -> pool ready 23:22:33 -> STATS + banner 23:23:03)")
+
+# 2026-08-25 round 3: dispatch_verify sends the FULL enabled list unchunked and
+# RedSky caps product_summary_with_fulfillment_v1 at 30/req (client chunk = 28), so
+# above this the ground-truth read fails every cycle and visibility is UNKNOWN.
+_MAX_VERIFY_TCINS = 30   # RedSky caps the endpoint at 30/req; the ground-truth read is unchunked
+
+
+def _fmt_local(unix: float | None) -> str:
+    """Local wall-clock for a unix stamp, or '?' when missing/unparseable."""
+    try:
+        return datetime.fromtimestamp(float(unix)).strftime("%Y-%m-%d %H:%M:%S") if unix else "?"
+    except Exception:
+        return "?"
+
+
+def _too_many_tcins_reason(n: int) -> str:
+    return (f"{n} enabled TCINs > {_MAX_VERIFY_TCINS} -- the ground-truth read is unchunked and "
+            f"RedSky caps the endpoint at 30/req, so it will fail every cycle and TCIN visibility "
+            f"will be UNKNOWN all run; disable some before launch (the sweep chunks at 28 and is "
+            f"unaffected)")
+
+
+def _fmt_age(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 3600:
+        return f"{seconds/60:.0f}m"
+    if seconds < 86400:
+        return f"{seconds/3600:.1f}h"
+    return f"{seconds/86400:.1f}d"
+
+
+_CFG_ERR = ""
+
+
+def _enabled_tcins() -> list[str] | None:
+    """Enabled TCINs from config/product_config.json, or None when the config
+    cannot be read (never [] -- an empty list would read as a false OK)."""
+    global _CFG_ERR
+    _CFG_ERR = ""
+    try:
+        with open(ROOT / "config" / "product_config.json", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return [str(p.get("tcin")).strip() for p in cfg.get("products", [])
+                if isinstance(p, dict) and p.get("tcin") and p.get("enabled", True)]
+    except Exception as e:
+        _CFG_ERR = f"{type(e).__name__}: {e}"
+        return None
+
+
+def _vis_unknown(reason: str) -> str:
+    global _VIS
+    _VIS = {"status": "unknown", "reason": reason}
+    return "unknown"
+
+
+def tcin_visibility_report() -> str:
+    """2026-08-25: surface TCINs that were configured but ABSENT from RedSky on
+    the last bot run (unpublished on Target => invisible to detection; 08-24 went
+    0-for with 4 of 13 armed TCINs in that state and nobody saw the warning).
+    READ-ONLY: reads state/tcin_visibility.json written by the checker.
+    Returns a status string:
+      "unknown" -- no state yet / reader unavailable / config unreadable
+      "warning" -- at least one enabled TCIN was INVISIBLE in the last run
+      "partial" -- nothing invisible, but enabled TCIN(s) were never checked by
+                   that run (added since) and/or the state is STALE (>24h)
+      "ok"      -- state fresh and every enabled TCIN was configured AND visible
+    Never affects the exit code (unpublished TCINs are legitimate).
+    """
+    global _VIS
+    print("\n" + "-" * 78)
+    try:
+        from src.monitoring.tcin_visibility import load_state, summarize, format_invisible_warning
+    except ImportError as e:
+        print(f"TCIN visibility: reader unavailable ({e})")
+        return _vis_unknown(f"reader unavailable ({e})")
+    enabled = _enabled_tcins()
+    if enabled is None:
+        print(f"TCIN visibility: could not read config/product_config.json ({_CFG_ERR}) "
+              f"-- visibility UNKNOWN")
+        return _vis_unknown(f"could not read config/product_config.json ({_CFG_ERR})")
+    if len(enabled) > _MAX_VERIFY_TCINS:
+        reason = _too_many_tcins_reason(len(enabled))
+        print(f"TCIN visibility: {reason}")
+        return _vis_unknown(reason)
+    if not enabled:
+        # Before the stale/invisible ladder (round-3 review): "nothing armed" must
+        # never be reported as merely PARTIAL/STALE.
+        print("TCIN visibility: no enabled TCINs in config/product_config.json -- nothing is armed")
+        return _vis_unknown("no enabled TCINs in config/product_config.json")
+    try:
+        state = load_state(ROOT / "state")
+    except Exception as e:
+        print(f"TCIN visibility: reader unavailable ({e})")
+        return _vis_unknown(f"reader unavailable ({e})")
+    if state is None:
+        print("TCIN visibility: no state yet -- the checker writes state/tcin_visibility.json on "
+              "its first successful ground-truth read;")
+        print(f"  read the [TCIN-VISIBILITY] banner {_BANNER_TIMING}")
+        return _vis_unknown("no state from a prior bot run yet (see above)")
+    try:
+        summary = summarize(state, enabled, NOW)
+    except Exception as e:
+        print(f"TCIN visibility: reader unavailable ({e})")
+        return _vis_unknown(f"reader unavailable ({e})")
+    stale_s = ", STALE" if summary.stale else ""
+    age = _fmt_age(summary.age_s)
+    if summary.verified:
+        print(f"TCIN visibility (from the last bot run, {age} ago{stale_s}): "
+              f"{len(summary.visible)}/{len(summary.configured)} configured TCIN(s) visible to RedSky")
+    else:
+        # never lead with an all-clear count for a run that could not verify
+        print(f"TCIN visibility (from the last bot run, {age} ago{stale_s}): UNVERIFIED -- "
+              f"last-known {len(summary.visible)}/{len(summary.configured)} visible, "
+              f"NOT a fresh verdict")
+    # format_invisible_warning already emits the "NOT monitored (added since)" line
+    # for unchecked_enabled -- do not print it a second time here.
+    for line in format_invisible_warning(summary):
+        print(f"  {line}")
+    if summary.stale:
+        print(f"  [TCIN-VISIBILITY] STALE: re-check {_BANNER_TIMING}")
+    if not summary.verified:
+        # Round 3: the checker writes verified=false once 10 consecutive ground-truth
+        # reads fail (>30 TCINs, throttled pool, no ready session). The lists above are
+        # the last KNOWN state, not a verdict -> UNKNOWN, never OK/PARTIAL.
+        reason = (f"the last run could NOT verify visibility ({summary.gt_fail_streak} consecutive "
+                  f"failed ground-truth reads since "
+                  f"{_fmt_local(summary.verification_failed_since_unix)}; {age} old) "
+                  f"-- treat every enabled TCIN as unverified")
+        print(f"  {reason}")
+        return _vis_unknown(reason)
+    invisible = sorted(summary.invisible_enabled)
+    visible_set = set(summary.visible)
+    # "unchecked" = never monitored by that run, plus the defensive case of an
+    # enabled TCIN that was configured but landed in neither list.
+    unchecked = sorted(t for t in enabled if t not in visible_set and t not in summary.invisible_enabled)
+    if invisible:
+        status = "warning"
+    elif unchecked or summary.stale:
+        status = "partial"
+    else:
+        status = "ok"
+    _VIS = {"status": status, "reason": "", "invisible": invisible, "unchecked": unchecked,
+            "stale": summary.stale, "age": age, "n_enabled": len(enabled)}
+    return status
+
+
 def main() -> int:
     print("=" * 78)
     print("DROP-READINESS PRE-CHECK — persisted sessions (READ-ONLY, no browser)")
@@ -154,6 +313,10 @@ def main() -> int:
               f"accessToken={'MEMBER' if is_member else 'guest/none'} (sut={sut})")
         print(f"           {verdict}")
 
+    # 2026-08-25: TCIN visibility from the last run (independent of session health;
+    # never changes all_green or the exit code -- unpublished TCINs are legitimate).
+    vis_status = tcin_visibility_report()
+
     print("\n" + "=" * 78)
     if not any_file:
         print("VERDICT: no session files found — accounts will start signed out.")
@@ -165,6 +328,24 @@ def main() -> int:
     else:
         print("VERDICT: ⚠ one or more accounts will NOT start hot — see above.")
         print("  Recover them PRE-drop (restart bot / nightly relogin), then re-run.")
+    if vis_status == "ok":
+        print(f"TCIN VISIBILITY: OK -- all {_VIS['n_enabled']} enabled TCIN(s) were visible to RedSky "
+              f"in the last run ({_VIS['age']} old)")
+    elif vis_status == "warning":
+        print(f"TCIN VISIBILITY: WARNING -- {len(_VIS['invisible'])} enabled TCIN(s) invisible to RedSky "
+              f"in the last run: {_VIS['invisible']} (see above)")
+    elif vis_status == "partial":
+        parts = []
+        if _VIS["unchecked"]:
+            parts.append(f"{len(_VIS['unchecked'])} enabled TCIN(s) NOT yet checked (added since the "
+                         f"last run): {_VIS['unchecked']}")
+        if _VIS["stale"]:
+            parts.append(f"state is STALE ({_VIS['age']} old)")
+        print("TCIN VISIBILITY: PARTIAL -- " + " -- ".join(parts)
+              + f" -- confirm the [TCIN-VISIBILITY] banner {_BANNER_TIMING}, "
+              f"or re-run this script once the bot is up")
+    else:
+        print(f"TCIN VISIBILITY: UNKNOWN -- {_VIS.get('reason', 'see above')}")
     print("=" * 78)
     return 0
 

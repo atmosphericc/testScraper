@@ -125,3 +125,4 @@ logs/walmart_app_*.log
 # Per-run debugging artifacts (screenshots + activity log dumps)
 walmart/logs/*.png
 walmart/logs/activity_log*.pkl
+state/tcin_visibility*

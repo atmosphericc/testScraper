@@ -95,6 +95,26 @@ REM  not the attempt count. Pre-ATC 429s are provably pre-submit ? cannot double
 REM  Wall A (checkout "busy" / RESERVATION_FAILURE) is handled by the new
 REM  checkout_busy_retryable path; kill-switch: set TARGET_RETRY_CHECKOUT_BUSY=0.
 set TARGET_RETRY_WHILE_IN_STOCK_MAX=40
+REM  2026-08-26 adaptive edge-lottery cadence (08-26 post-mortem: 1011960739 restock
+REM  02:51, ~60-75s window, 85 shots/0x2xx at ~4s cadence). Cross-log census verdict:
+REM  lottery (empty-429) windows are 0-for-1,865 tickets ALL-TIME; every order ever came
+REM  from a 401-dominated regular-SKU window, almost always shot #1 (bot already fires
+REM  shot #1 in 0.8s). This knob packs ~50%% more tickets into an empty-429 window by
+REM  tightening the inter-attempt sleep ONLY while the last attempt was an empty-body
+REM  429 (gate_kind=edge); 401/DCO keep the proven 2.5/3.5s. Honest label: census EV of
+REM  the extra tickets ~= 0 on hyped SKUs -- this is a doctrine bet (ticket count is the
+REM  only lever there), not an evidenced converter. Research: vendor tested-safe band
+REM  1000-4000ms, ~1s/IP ban floor (help.refractbot.com/modules/target); 2.0 stays >=2x
+REM  the floor. Rollback (exact prior behaviour): set both EDGE knobs to 2.5 / 3.5.
+set TARGET_ATC_EDGE429_RETRY_DELAY_MIN=2.0
+set TARGET_ATC_EDGE429_RETRY_DELAY_MAX=3.0
+REM  2026-08-26 Tgt-Cart-Error-Key capture on ATC responses (the 08-21 open item; CORS
+REM  hides the header from page JS). Log-only [ATC_RESP] status= tgt-cart-error-key=
+REM  line per ATC POST response via CDP response-stage interception -- next lottery
+REM  window finally tells demand-throttle from identity-block. Continue-exactly-once
+REM  per the 07-23 leak rule; capture never blocks or mutates the response.
+REM  Kill-switch: set TARGET_ATC_RESPONSE_HEADER_CAPTURE=0
+set TARGET_ATC_RESPONSE_HEADER_CAPTURE=1
 REM ---------------------------------------------------------------------------
 REM  ATC gate-wall circuit breaker (2026-08-09, run_20260806_234205.log audit).
 REM  The 08-06->07 restock went 0-for-0: all 3 identities hit a Shape Device ID+
@@ -124,7 +144,18 @@ REM  3 distinct devices, so the "shared device score" the breaker guarded is
 REM  largely obsolete. 20/45 still brakes a 2,960-add runaway (~3-4x more tickets,
 REM  not unlimited). FAIL-SAFE unchanged: any 2xx add resets the streak instantly.
 REM  Rollback to the protective config: STREAK_LIMIT=8, COOLDOWN_S=120.
-set TARGET_ATC_GATE_BREAKER=1
+REM
+REM  2026-08-31 OFF (08-28 Phase-2 audit, adversarially verified). The breaker
+REM  looped W05 into 45s-cooldown -> 20s-rearm -> throttle-bail -> 1 escaping
+REM  401/identity/60s: cadence 48/min -> 3.2/min for 18 min of live stock,
+REM  ~980 forgone shots across W05/W06/W07 (W07 opened pre-armed off W06's
+REM  carried streak). Its premise is dead: 245 arms in 9 runs, 0 ever followed
+REM  by a 2xx; the hot-SKU 401 re-forms in ~45-95s at ANY cadence (401 on shot
+REM  #1 after 65 min idle) and resting never lowered it; the calm-TCIN
+REM  heartbeat 401 rate was flat pre/post-arm. Nothing measurable is being
+REM  protected; the only measured effect is the shot cut. Code default is now
+REM  OFF too (purchase_executor.py). Re-enable for experiments: =1.
+set TARGET_ATC_GATE_BREAKER=0
 set TARGET_ATC_GATE_STREAK_LIMIT=20
 set TARGET_ATC_GATE_COOLDOWN_S=45
 REM  2026-08-21 post-mortem: the breaker armed at 03:14:39 on a streak that was
@@ -329,7 +360,15 @@ REM     ~22-min street-date windows got 17-18 min of live stock with zero
 REM     shots). Now: failed-but-still-stocked TCINs re-publish every 20s
 REM     ('failed' states only -- purchased repeats still need a real flip).
 REM     Kill: TARGET_LEVEL_REARM_S=0
-set TARGET_LEVEL_REARM_S=20
+REM     2026-08-31: 20 -> 3. The 08-28 audit measured 46 in-window wave
+REM     boundaries at median 11.6s lag (the 20s poll quantization), ~130-160
+REM     forgone shots/night, and the breaker-era claim of 2,228s inter-wave
+REM     dead air was a double-counting artifact (real: ~154s). At 3s the
+REM     boundary drops to ~1.5-6.5s; the poll reads in-memory state so the
+REM     cost is nil, and the publish->stock-aware-reset->dedup path is
+REM     unchanged. Wave-first pauses now come from TARGET_401_PULSE, not from
+REM     slow boundaries. Rollback: =20.
+set TARGET_LEVEL_REARM_S=3
 REM  4) Dead-session park: with a dead login-session + relogin capped, the
 REM     sentinel ladder restarted that account's Chrome every 5 min forever
 REM     (576 restarts on 08-02) and hammered Target's login surface. Now: park
@@ -378,6 +417,56 @@ REM     a dummy POST between EVERY retry (03:13: 26 navs / 27 PUTs for 30 real
 REM     shots). The guard now applies; the dummy POST still refills the Shape
 REM     ring. Restore the forced reload: set TARGET_RETRY_FORCE_REWARM=1
 set TARGET_RETRY_FORCE_REWARM=0
+REM ---------------------------------------------------------------------------
+REM  2026-08-31: 08-28 Fri 0-for Phase-2 fix stack (14 windows / 2,680 shots /
+REM  0x2xx; multi-agent audit + adversarial verification; FAILURES.md 08-28).
+REM  Verified night shape: 84%% empty-429 (global per-TCIN edge limiter) and
+REM  100%% of limiter-passing shots died 401 (TCIN-scoped Shape score) -- the
+REM  night was unwinnable at our pass rate, but the bot ALSO forfeited ~980
+REM  shots to the breaker (now off above) and ~1.0-1.15s per 3.3s retry cycle
+REM  to self-inflicted per-retry work. Winning-night forensics (07-31/08-04):
+REM  wave-first shots (first shot per identity on a TCIN after a >=15s pause)
+REM  converted 32.6%% vs 0.9%% for later re-POSTs -- every order ever was shot
+REM  #1-3 of a fresh wave.
+REM  10) Retry-path dummy-POST warm OFF: each retry awaited a warmup-tab dummy
+REM      cart_items POST (+0.3-0.56s clean, +1.3-2.0s on its ~20%% 401s via the
+REM      0.6s/probe re-probe, 17/17 FALSE "dead token" repairs at 4-13s each on
+REM      08-28). The ring refills from every real shot's own capture (never <4
+REM      unused); injected headers are re-signed in-page anyway (07-10). ~+40%%
+REM      tickets/identity and ~25%% less cookie burn (Refract: more cookies =
+REM      more flags). Forced re-warm + background refill + sentinel unchanged
+REM      (07-07 dead-token net stays). Rollback: set TARGET_RETRY_WARM=1
+set TARGET_RETRY_WARM=0
+REM  11) Cart-hold read skipped on EMPTY-body 429s only: edge-dropped before
+REM      the carts app, cannot silently land (1,526 GETs / 0 hits / 21 runs;
+REM      0.19s median each). DCO-body 429s + 401s keep the hold read (silent
+REM      lands documented there). Rollback: set TARGET_CART_HOLD_SKIP_EDGE=0
+set TARGET_CART_HOLD_SKIP_EDGE=1
+REM  12) Shot-#1 proactive Shape-TTL refresh OFF: all 4 firings on 08-28 taxed
+REM      a wave's shot #1 (0.2-2.05s, one opened a lazy warmup tab mid-race) --
+REM      the exact shots that win. Headers are inert (07-10); zero-header sends
+REM      pass the same. Rollback: set TARGET_SHOT_TTL_REFRESH=1
+set TARGET_SHOT_TTL_REFRESH=0
+REM  13) ATC-level DCO/FAST_SELLING 429 now uses the edge cadence (it is the
+REM      same demand-throttle class; auth provably passed). Checkout-level FS
+REM      cooldown untouched. Rollback: set TARGET_ATC_DCO_AS_EDGE_CADENCE=0
+set TARGET_ATC_DCO_AS_EDGE_CADENCE=1
+REM  14) WAVE-FIRST 401 PULSE (the doctrine bet of this stack): after 3
+REM      consecutive carts-401s an identity pauses 15-25s IN PLACE OF one
+REM      2.5-3.5s sleep, so its next shot re-enters as wave-first (32.6%% vs
+REM      0.9%% conversion on 07-31; the 401 is velocity-flat so hammering into
+REM      it is ~1%% EV). Edge-429s neither count nor reset the streak -- an
+REM      edge-lottery window never accumulates 3 and keeps FULL ticket cadence
+REM      (ticket doctrine unchanged there). Rollback: set TARGET_401_PULSE=0
+set TARGET_401_PULSE=1
+set TARGET_401_PULSE_STREAK=3
+set TARGET_401_PULSE_SLEEP_MIN=15
+set TARGET_401_PULSE_SLEEP_MAX=25
+REM  15) Real PDP referrer on the fast-lane ATC via fetch's `referrer` INIT
+REM      option (the headers-object Referer is a forbidden name and never hit
+REM      the wire -- shots actually carried the parked homepage//account URL; a
+REM      real add carries the full PDP URL). Rollback: set TARGET_ATC_REFERRER_PDP=0
+set TARGET_ATC_REFERRER_PDP=1
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

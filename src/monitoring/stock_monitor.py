@@ -228,7 +228,7 @@ class StockMonitor:
             return None
 
     def start_resilient_monitoring(self, on_stock_detected, target_sweeps_per_sec=2.0,
-                                   target_rps=None):
+                                   target_rps=None, on_alert=None):
         """
         Browser-native resilient checker (post-2026-05-13 rearchitect):
           - N permanently-running Chrome instances, one per BD ISP IP
@@ -245,6 +245,8 @@ class StockMonitor:
         Default 2.0 (each TCIN checked every ~500ms). Bump to 5.0 for drop mode.
 
         `target_rps`: backward-compat alias. If provided, used as the sweep rate.
+
+        `on_alert(kind, level, message)`: optional checker alert sink (2026-08-25: invisible-TCIN alerts).
 
         Runs an asyncio event loop in a dedicated daemon thread. Returns the
         thread handle. The legacy threaded proxy_workers path is left intact
@@ -298,6 +300,7 @@ class StockMonitor:
             # The per-IP park/burn logic in proxy_state.py is the actual safety net
             # for IPs that go bad at runtime.
             preflight=False,
+            on_alert=on_alert,
         )
 
         def _runner():

@@ -37,9 +37,55 @@ So on drop night: **just start the bat and watch the startup output.** You want:
 - `[RELOGIN]` 3/3 logged in, member token MINTED ✅
 - pool **LIVE** 3 BD exits, **write-auth ×3**, `[SENTINEL] timer thread started`
 - first `STOCK STATS` clean (200s, **0 403s**)
+- the readiness echo's new **`TCIN visibility`** section (from the previous run's
+  `state/tcin_visibility.json`; four-state verdict **OK / PARTIAL / WARNING /
+  UNKNOWN** — PARTIAL = unchecked or stale, and is the EXPECTED result right
+  after arming NEW TCINs, because no run has checked them yet; on PARTIAL,
+  confirm the banner at the moment below, or re-run
+  `venv\Scripts\python.exe check_session_readiness.py` once the bot is up and
+  has written a fresh state file; UNKNOWN = the last run's state file carries
+  `verified=false`, i.e. its ground-truth reads were failing and the lists are
+  last-known, not current) and the **`[TCIN-VISIBILITY]` banner in the same second as the first `[STOCK STATS] t=30.0s` line (30 s after `[MULTI_SESSION] started -- N/N sessions ready`, ~3-4 min after launch; 08-24: launch 23:19:20 -> pool ready 23:22:33 -> STATS + banner 23:23:03)** naming **NO TCIN you expect to buy**. That banner is
+  the real check for newly armed TCINs. No banner is the GOOD case (it prints only when something is invisible) -- confirm it positively: the `[GROUND-TRUTH] pool cache-bust ok: in_stock=[] (N TCINs)` line in that same second must show N == the number of armed TCINs (08-24 showed `(9 TCINs)` for 13 armed = THE finding). If that line is missing too, look for `[GROUND-TRUTH] pool cache-bust read FAILED` / `no ready session` lines; after ~5 min of failed reads the bot prints `[TCIN-VISIBILITY] UNKNOWN -- N consecutive ground-truth reads failed` and stamps the state file `verified=false`. Keep <=30 TCINs enabled -- the unchunked
+  ground-truth read fails every cycle above 30 (RedSky caps the endpoint at
+  30/req; the sweep chunks at 28 and is unaffected) and visibility is UNKNOWN
+  all night; the pre-drop scripts warn about this up front. If a TCIN you are counting on is
+  listed as invisible, the bot cannot detect its drop — fix the config before
+  the window, not after (2026-08-25: 4 of 13 armed TCINs were invisible all night).
 
 A `TOKEN CHURN`/`AUTH_CRITICAL` alarm on a rebuild before the drop is expected
 behavior, not a new bug.
+
+## TCIN visibility (2026-08-25)
+- A configured TCIN that RedSky's bulk response never returns is **invisible**:
+  the bot can never see it flip, so it can never buy it. Two causes, same
+  symptom: the SKU is **unpublished** on Target (a name-less `Product <tcin>`
+  entry in configureProducts.py that RedSky never resolved) or the TCIN is a
+  **typo**. Verify at the source before the window — `pdp_client_v1` 404 = not
+  a product (yet).
+- The checker writes `state/tcin_visibility.json` (configured / visible /
+  invisible / last-seen per TCIN) on change, at least every 2.5 min (every 5th
+  ground-truth cycle) and on the first successful read (`updated_at_unix` =
+  freshness key, stale after 24 h); the readiness echo and
+  `preflight_fp_drop.py` [8b] read it and WARN on enabled-but-invisible TCINs.
+  `check_session_readiness.py` verdict is four-state: **OK** / **PARTIAL**
+  (unchecked or stale — expected right after arming NEW TCINs; confirm the boot
+  banner in the same second as the first `[STOCK STATS] t=30.0s` line (30 s after `[MULTI_SESSION] started -- N/N sessions ready`, ~3-4 min after launch; 08-24: launch 23:19:20 -> pool ready 23:22:33 -> STATS + banner 23:23:03), or re-run
+  `check_session_readiness.py` once the bot is up) / **WARNING** (invisible) /
+  **UNKNOWN** (state file has `verified=false`: the last run's ground-truth
+  reads were failing, lists are last-known only — also the result of >30 armed
+  TCINs).
+- "Invisible" is debounced: absent from the cache-bust read AND unseen by any
+  200 response for >90 s (`RESILIENT_TCIN_INVISIBLE_GRACE_S`). Keep <=30 TCINs
+  armed -- `dispatch_verify` sends the full list unchunked and RedSky caps the
+  endpoint at 30/req, so above 30 the ground-truth read fails every cycle and
+  visibility goes UNKNOWN (`verified=false`); the pre-drop scripts warn when
+  >30 are enabled (the sweep chunks at 28 and is unaffected).
+- An unpublished SKU can stay armed: when Target publishes it the bot logs
+  `NOW VISIBLE` + a success entry in the activity feed, and detection starts
+  automatically. The alert re-fires hourly while it stays invisible.
+- `product_config.json` loads at boot — a TCIN added while the bot is up is
+  not monitored until the next restart.
 
 ## The one thing that's NOT automated
 - **Sign `elricomon` out of the Target app on your phone** — the one churn source

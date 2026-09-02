@@ -178,7 +178,17 @@ class PurchaseExecutor:
         # successful add resets the streak, so a winning night never trips it
         # (arming needs a high streak AND a live gate-denial; a stale streak is
         # inert while adds succeed). Kill-switch: TARGET_ATC_GATE_BREAKER=0.
-        self._atc_gate_breaker_on: bool = os.environ.get('TARGET_ATC_GATE_BREAKER', '1') != '0'
+        # 2026-08-31 (08-28 Phase-2 audit): DEFAULT OFF. The premise above is
+        # falsified — 245 arms across all 9 breaker-era runs, 0 preceded a 2xx;
+        # resting neither lowers the hot-SKU 401 rate (57/58 post-arm probes at
+        # 3/min over 18 min still 401) nor does hammering create it (401 on
+        # shot #1 after 65 min idle, W12), and the calm-TCIN heartbeat 401 rate
+        # was flat (24.2% pre-arm vs 16.5% post-arm). On 08-28 the breaker's
+        # cooldown/rearm loop forfeited ~980 shots (W05 ~821, W06 ~111, W07
+        # ~46 via streak carry-over). The gate is TCIN-scoped product security,
+        # not a device score this breaker can protect. TARGET_ATC_GATE_BREAKER=1
+        # re-enables for opt-in experiments only.
+        self._atc_gate_breaker_on: bool = os.environ.get('TARGET_ATC_GATE_BREAKER', '0') == '1'
         self._atc_gate_streak_limit: int = int(os.environ.get('TARGET_ATC_GATE_STREAK_LIMIT', '8'))
         self._atc_gate_cooldown_s: float = float(os.environ.get('TARGET_ATC_GATE_COOLDOWN_S', '120'))
         self._tcin_denial_streak: Dict[str, int] = {}  # tcin -> consecutive ATC gate-denials
@@ -246,6 +256,32 @@ class PurchaseExecutor:
         # Log cart-hold MISSES (not just hits) so the lever is falsifiable in a
         # post-drop audit — see _check_cart_hold. Kill-switch: =0.
         self._cart_hold_verbose: bool = os.environ.get('TARGET_CART_HOLD_VERBOSE', '1') != '0'
+        # ── 08-28 Phase-2 waste fixes (2026-08-31 audit, all flag-gated) ─────
+        # Cart-hold skip on EDGE 429s: an empty-body ERR_A2C_TCIN_RATE_LIMITED
+        # is dropped at the edge BEFORE the carts app (docs/RETAILERS/target.md)
+        # and physically cannot silently land; 08-31 audit: 1,526 hold GETs /
+        # 0 hits across 21 runs, 1,049 of them after empty-body 429s, 0.19s
+        # median each on the critical path. DCO-body 429s and 401s (where a
+        # silent land IS documented) keep the hold read. Default OFF = exact
+        # prior behaviour; the bat arms it.
+        self._cart_hold_skip_edge: bool = os.environ.get('TARGET_CART_HOLD_SKIP_EDGE', '0') == '1'
+        # Shot-#1 proactive TTL refresh (headers_age > 60 → awaited warmup
+        # before the fast lane / place-order): injected Shape headers are
+        # re-signed in-page anyway (07-10), and on 08-28 all 4 firings were on
+        # business wave-#1 shots costing 0.2-2.05s each (one opened a lazy
+        # warmup tab mid-race and let a 0-token capture overwrite the cache).
+        # =0 skips the refresh and fires straight from the ring/cache (the
+        # <90s use_cached gate still applies; a zero-header send is proven
+        # harmless). Default ON = exact prior behaviour; the bat disables.
+        self._shot_ttl_refresh_on: bool = os.environ.get('TARGET_SHOT_TTL_REFRESH', '1') != '0'
+        # PDP referrer on the fast-lane ATC fetch: the JS sets 'Referer' in the
+        # headers object, but Referer is a fetch FORBIDDEN header name, so the
+        # wire referer is the parked page (homepage//account) — a real ATC
+        # carries the full PDP URL. =1 passes fetch's `referrer` INIT option
+        # (same-origin, spec-allowed) + no-referrer-when-downgrade policy so
+        # the wire matches a real add. Wins have landed with the parked
+        # referer, so default OFF = exact prior behaviour; the bat arms it.
+        self._atc_referrer_pdp: bool = os.environ.get('TARGET_ATC_REFERRER_PDP', '0') == '1'
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -661,6 +697,12 @@ class PurchaseExecutor:
            persistent=False for main tab (disabled after each purchase)."""
         from zendriver import cdp
         label = "warmup" if persistent else "main"
+        # 2026-08-26: FAILURES.md 08-21 open item — CORS hides tgt-cart-error-key
+        # from page JS, so empty-body-429 (edge demand-lottery) vs a real block
+        # can only be told apart by reading the ATC RESPONSE header via CDP
+        # response-stage interception. Flag read ONCE here (cheap), stored on self;
+        # the handler + pattern below are log-only (never mutate/fulfill/abort).
+        self._atc_resp_capture_on = os.environ.get('TARGET_ATC_RESPONSE_HEADER_CAPTURE', '1') != '0'
 
         async def _on_request_paused(event: cdp.fetch.RequestPaused):
             # Deduplicate by (request_id + stage) — REQUEST and RESPONSE share the same
@@ -737,7 +779,38 @@ class PurchaseExecutor:
                                 print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body: {raw_body[:500]!r}")
                             except Exception as body_err:
                                 print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body capture failed: {body_err}")
+                    # 2026-08-26: ATC (cart_items) RESPONSE capture — the FAILURES.md
+                    # 08-21 open item. Read tgt-cart-error-key + x-request-id off the
+                    # wire to decide empty-body-429 = high-demand-lottery vs a real
+                    # block (CORS hides this header from page JS). LOG-ONLY: never
+                    # mutate/fulfill/abort. Any error here is swallowed BEFORE the
+                    # shared continue below so the 07-23 leak rule holds — EVERY
+                    # paused event is continued exactly once (the continue at the
+                    # end of this is_response branch always runs).
+                    # Review hardening (2026-08-26): build the message CHEAPLY here
+                    # (dict reads only, no I/O), send the shared continue FIRST, and
+                    # only then print/log — so the paused ATC response (including a
+                    # winning 201 on the fast-lane await path) is never held behind
+                    # console I/O. POST-only: the same URL prefix also matches the
+                    # cart-clear DELETE (cart_items/{id}) and GETs, which would
+                    # pollute the census.
+                    _atc_resp_msg = None
+                    if self._atc_resp_capture_on and 'web_checkouts/v1/cart_items' in url and method == 'POST':
+                        try:
+                            _err_key = resp_headers.get('tgt-cart-error-key') or '-'
+                            _req_id_hdr = resp_headers.get('x-request-id') or '-'
+                            _atc_resp_msg = (f"[ATC_RESP] status={status} method=POST "
+                                             f"tgt-cart-error-key={_err_key} "
+                                             f"x-request-id={_req_id_hdr} url=cart_items")
+                        except Exception as _atc_resp_err:
+                            self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
+                    if _atc_resp_msg:
+                        try:
+                            print(f"[INTERCEPTOR:{label}] {_atc_resp_msg}")
+                            self.logger.info(_atc_resp_msg)
+                        except Exception:
+                            pass
                     return
 
                 if 'carts.target.com' in url or 'cart_items' in url:
@@ -905,19 +978,30 @@ class PurchaseExecutor:
                 print(f"[INTERCEPTOR:{label}] continue_request failed (req_id={req_id}): {e}")
 
         _cdp_enable_attempts = 3
+        # 2026-08-26: capture the ATC (cart_items) RESPONSE stage so the handler
+        # can read tgt-cart-error-key off the wire (see flag note at top of this
+        # method). Log-only; gated by TARGET_ATC_RESPONSE_HEADER_CAPTURE.
+        _fetch_patterns = [
+            cdp.fetch.RequestPattern(
+                url_pattern='*carts.target.com*',
+                request_stage=cdp.fetch.RequestStage.REQUEST
+            ),
+            cdp.fetch.RequestPattern(
+                url_pattern='*web_checkouts/v1/checkout*',
+                request_stage=cdp.fetch.RequestStage.RESPONSE
+            ),
+        ]
+        if self._atc_resp_capture_on:
+            _fetch_patterns.append(
+                cdp.fetch.RequestPattern(
+                    url_pattern='*web_checkouts/v1/cart_items*',
+                    request_stage=cdp.fetch.RequestStage.RESPONSE
+                )
+            )
         for _attempt in range(1, _cdp_enable_attempts + 1):
             try:
                 await tab.send(cdp.fetch.enable(
-                    patterns=[
-                        cdp.fetch.RequestPattern(
-                            url_pattern='*carts.target.com*',
-                            request_stage=cdp.fetch.RequestStage.REQUEST
-                        ),
-                        cdp.fetch.RequestPattern(
-                            url_pattern='*web_checkouts/v1/checkout*',
-                            request_stage=cdp.fetch.RequestStage.RESPONSE
-                        ),
-                    ]
+                    patterns=_fetch_patterns
                 ))
                 print(f"[INTERCEPTOR:{label}] cdp.fetch.enable() sent with pattern *carts.target.com* + checkout RESPONSE (attempt {_attempt})")
                 break
@@ -1670,7 +1754,9 @@ class PurchaseExecutor:
 
             # PROACTIVE REFRESH: if cached headers approaching TTL (60s+), refresh warmup tab
             # before ATC to avoid 403 Shape block. Target's Shape tokens rotate ~every 90-120s.
-            if self._cached_cart_headers and headers_age > 60:
+            # 2026-08-31: gated by TARGET_SHOT_TTL_REFRESH (injected headers are
+            # inert — 07-10; the 4 firings on 08-28 all taxed wave-#1 shots).
+            if getattr(self, '_shot_ttl_refresh_on', True) and self._cached_cart_headers and headers_age > 60:
                 print(f"[PURCHASE] Shape headers approaching TTL (age={headers_age:.0f}s) — refreshing warmup tab")
                 warmup_ok = await self.warm_shape_headers()
                 if warmup_ok:
@@ -1852,7 +1938,16 @@ class PurchaseExecutor:
                 # 2026-08-14 exception: unless the denied add silently LANDED
                 # (cart hold — see _check_cart_hold), in which case skip the
                 # bail and ride the normal cart_confirmed path to checkout.
-                if await self._check_cart_hold(tab, tcin, atc_status):
+                # 2026-08-31: an EMPTY-body 429 is edge-dropped before the
+                # carts app and cannot silently land (1,526 hold GETs / 0 hits
+                # across 21 runs) — skip the ~0.2s read when the flag arms it;
+                # DCO-body 429s keep the hold read.
+                _edge_429 = not (atc_body or '').strip()
+                if (getattr(self, '_cart_hold_skip_edge', False) and _edge_429):
+                    _hold_landed = False
+                else:
+                    _hold_landed = await self._check_cart_hold(tab, tcin, atc_status)
+                if _hold_landed:
                     cart_confirmed = True
                     skip_signal_wait = True
                 else:
@@ -4846,6 +4941,16 @@ class PurchaseExecutor:
         _cvv_digits = self._fast_lane_cvv()
         _cvv_first = 'true' if (self._cvv_required and _cvv_digits) else 'false'
 
+        # 2026-08-31 (TARGET_ATC_REFERRER_PDP): the 'Referer' entry mk() builds
+        # is a forbidden header name — fetch drops it and the wire referer is
+        # the parked page. The `referrer` INIT option (same-origin => allowed)
+        # + no-referrer-when-downgrade puts the real PDP URL on the wire like a
+        # genuine add. Empty string = exact prior behaviour.
+        _ref_init = ''
+        if getattr(self, '_atc_referrer_pdp', False):
+            _ref_init = (f"referrer: 'https://www.target.com/p/-/A-{tcin}', "
+                         "referrerPolicy: 'no-referrer-when-downgrade',")
+
         js = f"""(async () => {{
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{
@@ -4866,7 +4971,7 @@ class PurchaseExecutor:
             // ── 1. Add to cart ────────────────────────────────────────────────
             try {{
                 const r = await fetch('{atc_url}', {{
-                    method: 'POST', credentials: 'include',
+                    method: 'POST', credentials: 'include', {_ref_init}
                     headers: mk('https://www.target.com/p/-/A-{tcin}'),
                     body: JSON.stringify({{
                         cart_item: {{
@@ -5096,7 +5201,8 @@ class PurchaseExecutor:
 
         # Build headers the same way ATC does (strip Cookie/Referer, force x-application-name).
         headers_age = time.time() - self._cached_cart_headers_ts
-        if self._cached_cart_headers and headers_age > 60:
+        # 2026-08-31: same TARGET_SHOT_TTL_REFRESH gate as the ATC path.
+        if getattr(self, '_shot_ttl_refresh_on', True) and self._cached_cart_headers and headers_age > 60:
             print(f"[API_PLACE_ORDER] Shape headers approaching TTL (age={headers_age:.0f}s) — refreshing warmup tab")
             warmup_ok = await self.warm_shape_headers()
             if warmup_ok:
