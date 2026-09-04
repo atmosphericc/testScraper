@@ -320,6 +320,30 @@ except ImportError as e:
 except Exception as e:
     warn(f"TCIN visibility check skipped: {e}")
 
+# ---- 8c. Real-click Shape harvest (2026-09-03) ------------------------------
+print("\n[8c] Real-click Shape harvest + banked replay (TARGET_SHAPE_HARVEST)")
+try:
+    from src.session import shape_harvest as _sh
+    _bat_env = {k: _bat_val(k) for k in ('TARGET_SHAPE_HARVEST', 'TARGET_HARVEST_TCINS', 'TARGET_HARVEST_BANK',
+                                          'TARGET_HARVEST_TTL_S', 'TARGET_HARVEST_REPLAY', 'TARGET_HARVEST_SELFTEST')}
+    _hc = _sh.config({k: v for k, v in _bat_env.items() if v != ''})
+    if not _hc['enabled']:
+        warn("TARGET_SHAPE_HARVEST is OFF in the bat -> shots stay page-signed (the 0-for-hot-SKU path)")
+    else:
+        ok("TARGET_SHAPE_HARVEST=1 (harvest tab + banked replay armed)")
+        if _hc['tcins']:
+            ok(f"harvest candidate TCINs: {_hc['tcins']} (must be in-stock, ship-eligible, cheap; loop rotates on a missing button)")
+        else:
+            fail("TARGET_SHAPE_HARVEST=1 but TARGET_HARVEST_TCINS is empty -> harvester will self-disable at boot")
+        ok(f"bank={_hc['bank']} ttl={_hc['ttl_s']:.0f}s replay={'on' if _hc['replay'] else 'OFF'} selftest={'on' if _hc['selftest'] else 'off'}")
+    _exe_src = (ROOT / 'src' / 'session' / 'purchase_executor.py').read_text(encoding='utf-8', errors='replace')
+    _wired = all(t in _exe_src for t in (
+        "label='harvest'", "self._harvest_replay_headers_for(label, headers)",
+        "headers=_override_headers", "self._start_harvest()  # 2026-09-03"))
+    ok("executor wiring present (capture+block, main-tab override, start hook)") if _wired else fail("executor harvest wiring MISSING")
+except Exception as e:
+    fail(f"harvest check failed: {e}")
+
 # ---- 9. Logging coverage (informational) -----------------------------------
 print("\n[9] Logging coverage — where to look on drop night")
 for m in [
@@ -328,6 +352,8 @@ for m in [
     "logs/purchases/purchase_*   per-SKU purchase detail (one file per attempt)",
     "  grep '[CVV][ERROR]'       fires if an account is missing its cvv",
     "  grep '[MULTI_SKU_MISS]'   fires if a 2nd hot SKU is skipped while one is active",
+    "  grep '[HARVEST/'          real-click Shape harvest: CAPTURED (tokens/a0), REAL_ATC_SHAPE (first genuine ATC bytes),",
+    "                            'SELFTEST verdict' (banked replay accepted?), 'REPLAY on main' (shot fired with a banked set)",
     "logs/bot_restart_wrapper.log  crash/restart wrapper + [DEADMAN] login-budget line",
 ]:
     print(f"  [log] {m}")

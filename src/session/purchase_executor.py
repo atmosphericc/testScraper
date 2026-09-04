@@ -19,6 +19,7 @@ from typing import Optional, Callable, Deque, Dict, Any
 from zendriver import cdp
 
 from .session_manager import SessionManager
+from . import shape_harvest as _shape_harvest   # 2026-09-03 real-click Shape harvest + banked replay
 
 CARD_CVV = '229'
 
@@ -282,6 +283,34 @@ class PurchaseExecutor:
         # the wire matches a real add. Wins have landed with the parked
         # referer, so default OFF = exact prior behaviour; the bat arms it.
         self._atc_referrer_pdp: bool = os.environ.get('TARGET_ATC_REFERRER_PDP', '0') == '1'
+        # ── Real-click Shape harvest + banked replay (2026-09-03) ────────────
+        # The gap behind every hot-SKU 0-for (FAILURES.md 08-28 + 09-03 vendor
+        # research): winners bank Shape header sets minted by a GENUINE
+        # add-to-cart click and replay one per shot; our shot was signed by
+        # a tab parked on /account with zero interaction (0/53,950 main-tab
+        # ATCs ever carried the -a0 chunk). See src/session/shape_harvest.py.
+        # Default OFF = exact prior behaviour; the bat arms it.
+        self._harvest_cfg: Dict[str, Any] = _shape_harvest.config()
+        self._shape_bank = _shape_harvest.ShapeBank(self._harvest_cfg['bank'], self._harvest_cfg['ttl_s'])
+        self._harvest_replay_on: bool = bool(self._harvest_cfg['enabled'] and self._harvest_cfg['replay'])
+        self._harvest_tab = None
+        self._harvest_browser_ref = None
+        self._harvest_task = None
+        self._harvest_tcin: str = ''
+        self._harvest_tcin_idx: int = 0
+        self._harvest_tab_nav_ts: float = 0.0
+        self._harvest_last_click_ts: float = 0.0
+        self._harvest_last_xy = None
+        self._harvest_capture_evt = asyncio.Event()
+        self._harvest_selftest_armed: bool = False   # warmup-tab replay ONLY while the boot self-test runs
+        self._harvest_selftest_done: bool = False
+        self._harvest_last_replay: Optional[Dict[str, Any]] = None
+        self._harvest_landed_suspect: bool = False
+        self._harvest_disabled_reason: str = ''
+        self._harvest_first_capture_logged: bool = False
+        self._harvest_miss: int = 0
+        self._harvest_nocap: int = 0
+        self._harvest_stats: Dict[str, int] = {'captured': 0, 'no_tokens': 0}
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -692,11 +721,14 @@ class PurchaseExecutor:
     # CDP fetch interceptor helpers
     # -------------------------------------------------------------------------
 
-    async def _setup_cdp_fetch_interceptor(self, tab, persistent: bool = False) -> None:
+    async def _setup_cdp_fetch_interceptor(self, tab, persistent: bool = False,
+                                           label: Optional[str] = None) -> None:
         """Install CDP fetch interceptor. persistent=True for warmup tab (never disabled).
            persistent=False for main tab (disabled after each purchase)."""
         from zendriver import cdp
-        label = "warmup" if persistent else "main"
+        # 2026-09-03: explicit label for the real-click HARVEST tab (persistent,
+        # its cart_items POSTs are banked + blocked instead of continued).
+        label = label or ("warmup" if persistent else "main")
         # 2026-08-26: FAILURES.md 08-21 open item — CORS hides tgt-cart-error-key
         # from page JS, so empty-body-429 (edge demand-lottery) vs a real block
         # can only be told apart by reading the ATC RESPONSE header via CDP
@@ -737,11 +769,21 @@ class PurchaseExecutor:
                         pass  # already continued/fulfilled — expected for true duplicates
                 return
             self._cdp_continued_ids.add(dedup_key)
+            _override_headers = None  # 2026-09-03 harvest replay (main tab / armed warmup self-test)
 
             try:
                 url = event.request.url if hasattr(event, 'request') else ''
                 method = event.request.method if hasattr(event.request, 'method') else '?'
                 is_checkout_post = 'web_checkouts/v1/checkout' in url and method == 'POST'
+
+                # 2026-09-03 real-click harvest: the harvest tab's GENUINE ATC POST
+                # is banked and then FAILED before it leaves Chrome (nothing lands,
+                # the single-use Shape uuid stays unspent). Resolved in the helper
+                # (fail_request), so it must never fall through to continue.
+                if (label == 'harvest' and not is_response and method == 'POST'
+                        and 'web_checkouts/v1/cart_items' in url):
+                    await self._harvest_capture_and_block(tab, event, url)
+                    return
 
                 # RESPONSE stage — log status for checkout POST only
                 if is_response:
@@ -816,6 +858,18 @@ class PurchaseExecutor:
                 if 'carts.target.com' in url or 'cart_items' in url:
                     headers = dict(event.request.headers) if event.request.headers else {}
                     header_names = list(headers.keys())
+                    # 2026-09-03 banked replay: swap the page-signed Shape tokens on
+                    # a main-tab ATC POST (or the warmup dummy POST while the boot
+                    # self-test is armed) for the freshest harvested set. Applied
+                    # at the final continue_request below; None = unchanged.
+                    if (not is_response and method == 'POST'
+                            and 'web_checkouts/v1/cart_items' in url
+                            and getattr(self, '_harvest_cfg', {}).get('enabled')):
+                        try:
+                            _override_headers = self._harvest_replay_headers_for(label, headers)
+                        except Exception as _hr_err:
+                            _override_headers = None
+                            print(f"[INTERCEPTOR:{label}] harvest replay lookup failed (non-fatal): {_hr_err}")
                     shape_headers = [h for h in header_names if h.lower().startswith('x-')]
                     # FIX 2: only cache POST — GET/OPTIONS/PUT don't carry Shape tokens
                     if method == 'POST' and headers:
@@ -973,7 +1027,17 @@ class PurchaseExecutor:
             except Exception as e:
                 print(f"[INTERCEPTOR:{label}] Handler error: {e}")
             try:
-                await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
+                if _override_headers:
+                    # Header override (banked Shape set). If CDP rejects the list,
+                    # release the request unchanged so a shot can never stay paused.
+                    try:
+                        await tab.send(cdp.fetch.continue_request(
+                            request_id=event.request_id, headers=_override_headers))
+                    except Exception as _ov_err:
+                        print(f"[INTERCEPTOR:{label}] header-override continue FAILED ({_ov_err}) — continuing unchanged")
+                        await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
+                else:
+                    await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
             except Exception as e:
                 print(f"[INTERCEPTOR:{label}] continue_request failed (req_id={req_id}): {e}")
 
@@ -1419,6 +1483,7 @@ class PurchaseExecutor:
 
     def _start_background_refill(self) -> None:
         """Kick off one `_background_refill_loop` task per pool index. Idempotent."""
+        self._start_harvest()  # 2026-09-03: real-click Shape harvest (flag-gated, idempotent)
         # Drop completed/cancelled tasks before deciding whether to spawn new ones.
         self._warmup_refill_tasks = [t for t in self._warmup_refill_tasks if not t.done()]
         if len(self._warmup_refill_tasks) >= self._warmup_pool_size:
@@ -1435,6 +1500,333 @@ class PurchaseExecutor:
             task._warmup_idx = idx  # tag so we don't double-spawn for the same idx
             self._warmup_refill_tasks.append(task)
             print(f"[WARMUP_REFILL] Spawned background refill task for tab #{idx}")
+
+    # -------------------------------------------------------------------------
+    # Real-click Shape harvest + banked replay (2026-09-03, flag-gated)
+    # -------------------------------------------------------------------------
+    def _harvest_acct(self) -> str:
+        return getattr(self.session_manager, 'account_id', None) or 'session'
+
+    def _harvest_log(self, msg: str) -> None:
+        line = f"[HARVEST/{self._harvest_acct()}] {msg}"
+        print(line)
+        try:
+            self.logger.info(line)
+        except Exception:
+            pass
+
+    def _harvest_replay_headers_for(self, label: str, req_headers: Dict[str, str]):
+        """Header override for a paused cart_items POST, or None (= continue
+        unchanged). main tab: every shot while replay is on and a fresh banked
+        set exists. warmup tab: ONLY while the boot self-test has armed it, so a
+        routine heartbeat never burns a banked set."""
+        if not self._harvest_cfg.get('enabled') or not self._harvest_replay_on:
+            return None
+        if label == 'main':
+            pass
+        elif label == 'warmup' and self._harvest_selftest_armed:
+            pass
+        else:
+            return None
+        entry = self._shape_bank.pop_fresh()
+        if entry is None:
+            if label == 'main':
+                self._harvest_log(f"bank EMPTY at shot time — shot goes page-signed ({self._shape_bank.summary()})")
+            return None
+        try:
+            merged = _shape_harvest.merge_replay_headers(req_headers, entry['headers'])
+        except Exception as e:
+            self._harvest_log(f"merge failed ({e}) — shot goes page-signed")
+            return None
+        age = time.time() - entry['ts']
+        self._harvest_last_replay = {'ts': time.time(), 'age': age, 'a0': entry['a0'], 'label': label}
+        self._harvest_log(f"REPLAY on {label} shot: banked set age={age:.0f}s tokens={len(entry['tokens'])} "
+                          f"a0={'yes' if entry['a0'] else 'no'} src_tcin={entry['meta'].get('tcin', '?')} "
+                          f"| {self._shape_bank.summary()}")
+        return [cdp.fetch.HeaderEntry(name=k, value=v) for k, v in merged]
+
+    async def _harvest_capture_and_block(self, tab, event, url: str) -> None:
+        """Harvest-tab cart_items POST: bank the page-signed header set, then
+        FAIL the request so the real add never leaves Chrome."""
+        headers = dict(event.request.headers) if event.request.headers else {}
+        post_data = ''
+        try:
+            post_data = getattr(event.request, 'post_data', '') or ''
+            if not post_data and getattr(event.request, 'has_post_data', False):
+                post_data = await asyncio.wait_for(
+                    tab.send(cdp.fetch.get_request_post_data(request_id=event.request_id)), timeout=1.0)
+                post_data = str(post_data or '')
+        except Exception:
+            post_data = str(post_data or '')
+        blocked = False
+        try:
+            await tab.send(cdp.fetch.fail_request(
+                request_id=event.request_id,
+                error_reason=cdp.network.ErrorReason.BLOCKED_BY_CLIENT))
+            blocked = True
+        except Exception as e:
+            # The add may have gone out. Never let a foreign item sit in the cart
+            # (the fast lane refuses place-order on a foreign TCIN): flag it, the
+            # loop clears the cart on its next tick, and the operator sees it.
+            self._harvest_landed_suspect = True
+            self._harvest_log(f"[DANGER] fail_request FAILED ({e}) — harvest add may have LANDED; cart clear scheduled")
+            try:
+                self.session_manager._alert_critical(
+                    f"{self._harvest_acct()}: HARVEST fail_request failed — cheap item {self._harvest_tcin} may be in the cart; auto-clear scheduled")
+            except Exception:
+                pass
+        if blocked:
+            toks = _shape_harvest.shape_tokens(headers)
+            ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin, 'url': url[:160], 'body': post_data[:300]})
+            self._harvest_stats['captured' if ok else 'no_tokens'] += 1
+            a0 = any(str(k).lower().endswith('-a0') for k in toks)
+            self._harvest_log(f"CAPTURED{'' if ok else ' (NO Shape tokens — not banked)'} tokens={len(toks)} "
+                              f"a0={'yes' if a0 else 'no'} hdrs={len(headers)} url={url[:120]} "
+                              f"body={post_data[:200]!r} | {self._shape_bank.summary()}")
+            if ok and not self._harvest_first_capture_logged:
+                self._harvest_first_capture_logged = True
+                # Once per run: the byte shape of a GENUINE page-driven ATC (first
+                # ever captured in this repo — the 08-28 byte-match open item).
+                _pfx = _shape_harvest.shape_prefix(headers) or 'x-zzz-'
+                safe = {k: (f'<{len(str(v))} chars>' if (str(k).lower() == 'cookie' or str(k).lower().startswith(_pfx)) else v)
+                        for k, v in headers.items()}
+                self._harvest_log(f"REAL_ATC_SHAPE url={url} headers={safe} body={post_data[:600]!r}")
+        try:
+            self._harvest_capture_evt.set()
+        except Exception:
+            pass
+
+    async def _ensure_harvest_tab(self):
+        browser = self.session_manager.browser
+        if not browser:
+            return None
+        if self._harvest_browser_ref is not browser:
+            if self._harvest_browser_ref is not None:
+                self._harvest_log("browser changed — dropping harvest tab handle")
+            self._harvest_tab = None
+            self._harvest_browser_ref = browser
+        if self._harvest_tab is not None:
+            return self._harvest_tab
+        tcins = self._harvest_cfg.get('tcins') or []
+        if not tcins:
+            return None
+        tcin = tcins[self._harvest_tcin_idx % len(tcins)]
+        try:
+            self._harvest_log(f"opening harvest tab on PDP {tcin} ...")
+            tab = await asyncio.wait_for(
+                browser.get(_shape_harvest.pdp_url(tcin), new_tab=True), timeout=25.0)
+            await asyncio.wait_for(
+                self._setup_cdp_fetch_interceptor(tab, persistent=True, label='harvest'), timeout=12.0)
+            self._harvest_tab = tab
+            self._harvest_tcin = tcin
+            self._harvest_tab_nav_ts = time.time()
+            self._harvest_last_xy = None
+            self._harvest_log(f"harvest tab ready on {tcin} (url={tab.url})")
+            return tab
+        except Exception as e:
+            self._harvest_log(f"harvest tab open FAILED on {tcin}: {type(e).__name__}: {e}")
+            self._harvest_tab = None
+            return None
+
+    async def _harvest_rotate(self, same: bool = False) -> None:
+        """Re-navigate the harvest tab to the (next) candidate PDP. Skipped
+        while a purchase is live (a full PDP nav is the CDP-flood pattern
+        behind the 07-20 false wedges); the loop retries once idle."""
+        if self.session_manager.is_purchase_in_progress():
+            return
+        tcins = self._harvest_cfg.get('tcins') or []
+        if not tcins:
+            return
+        if not same:
+            self._harvest_tcin_idx = (self._harvest_tcin_idx + 1) % len(tcins)
+        tcin = tcins[self._harvest_tcin_idx % len(tcins)]
+        tab = self._harvest_tab
+        if tab is None:
+            return
+        try:
+            self._harvest_log(f"{'reloading' if same else 'rotating to'} PDP {tcin}")
+            await asyncio.wait_for(tab.get(_shape_harvest.pdp_url(tcin)), timeout=25.0)
+            self._harvest_tcin = tcin
+            self._harvest_tab_nav_ts = time.time()
+            self._harvest_last_xy = None
+        except Exception as e:
+            self._harvest_log(f"PDP nav failed ({type(e).__name__}: {e}) — dropping harvest tab handle")
+            self._harvest_tab = None
+
+    async def _harvest_once(self) -> bool:
+        """One real click on the PDP's Add-to-cart -> one banked set (or a
+        diagnosed miss). Bounded everywhere; never raises."""
+        tab = await self._ensure_harvest_tab()
+        if tab is None:
+            return False
+        try:
+            info = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
+        except Exception as e:
+            self._harvest_log(f"button lookup failed ({type(e).__name__}: {e}) — dropping harvest tab")
+            self._harvest_tab = None
+            return False
+        if not isinstance(info, dict):
+            info = {}
+        if not info.get('found') or info.get('disabled'):
+            self._harvest_miss += 1
+            self._harvest_log(f"ATC button {'DISABLED' if info.get('found') else 'absent'} on {self._harvest_tcin} "
+                              f"(oos={info.get('oos')}; miss #{self._harvest_miss}) — "
+                              f"{'rotating to the next candidate' if self._harvest_miss >= 2 else 'will retry'}")
+            if self._harvest_miss >= 2:
+                self._harvest_miss = 0
+                await self._harvest_rotate(same=False)
+            return False
+        self._harvest_miss = 0
+        x, y = _shape_harvest.click_point(info)
+        self._harvest_capture_evt.clear()
+        t0 = time.time()
+        try:
+            self._harvest_last_xy = await asyncio.wait_for(
+                _shape_harvest.human_click(tab, x, y, self._harvest_last_xy), timeout=6.0)
+        except Exception as e:
+            self._harvest_log(f"click dispatch failed ({type(e).__name__}: {e})")
+            return False
+        try:
+            await asyncio.wait_for(self._harvest_capture_evt.wait(), timeout=4.0)
+            self._harvest_nocap = 0
+            self._harvest_log(f"click -> capture in {time.time() - t0:.2f}s via {info.get('via')} text={info.get('text')!r}")
+            return True
+        except asyncio.TimeoutError:
+            self._harvest_nocap += 1
+            self._harvest_log(f"click produced NO cart_items POST within 4s (via {info.get('via')} "
+                              f"text={info.get('text')!r}; #{self._harvest_nocap}) — "
+                              f"{'reloading the PDP' if self._harvest_nocap >= 2 else 'will retry'}")
+            if self._harvest_nocap >= 2:
+                self._harvest_nocap = 0
+                await self._harvest_rotate(same=True)
+            return False
+
+    async def _harvest_clear_suspect_cart(self) -> None:
+        """Danger path: a blocked harvest add may have gone through. Clear the
+        cart (bounded) so no foreign item can poison a real checkout."""
+        self._harvest_landed_suspect = False
+        tab = self._harvest_tab
+        if tab is None:
+            return
+        try:
+            self._harvest_log("clearing cart after a suspected landed harvest add ...")
+            ok = await asyncio.wait_for(self._clear_cart(tab), timeout=45.0)
+            self._harvest_log(f"cart clear {'OK' if ok else 'reported failure'} — dropping harvest tab (re-opens on the PDP)")
+        except Exception as e:
+            self._harvest_log(f"cart clear errored ({type(e).__name__}: {e})")
+        self._harvest_tab = None
+
+    async def _harvest_selftest(self) -> None:
+        """Boot replay validation on the WARMUP tab (a different page instance
+        than the harvest tab, like a real shot): fire the dummy POST with a
+        banked set swapped in. 424/400/404/422/2xx = the server accepted the
+        banked signature; 401/403 = rejected. 3/3 rejections => replay OFF for
+        this run (shots stay page-signed = the proven path); harvesting keeps
+        running so the night's log still records the real-ATC byte shape."""
+        self._harvest_selftest_done = True
+        tab = await self._ensure_warmup_tab(0)
+        if tab is None:
+            self._harvest_log("SELFTEST skipped: no warmup tab")
+            return
+        results = []
+        for i in range(3):
+            if self._shape_bank.count() == 0:
+                if not await self._harvest_once():
+                    break
+            self._harvest_selftest_armed = True
+            status = -1
+            try:
+                res = await asyncio.wait_for(tab.evaluate(_WARMUP_DUMMY_POST_JS, await_promise=True), timeout=15.0)
+                status = int(res)
+            except Exception:
+                status = -1
+            finally:
+                self._harvest_selftest_armed = False
+            lr = self._harvest_last_replay
+            replayed = bool(lr and lr.get('label') == 'warmup' and time.time() - lr['ts'] < 15.0)
+            results.append((status, replayed))
+            self._harvest_log(f"SELFTEST probe {i + 1}/3: status={status} replayed={'yes' if replayed else 'NO'}")
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+        try:
+            ctrl = int(await asyncio.wait_for(tab.evaluate(_WARMUP_DUMMY_POST_JS, await_promise=True), timeout=15.0))
+        except Exception:
+            ctrl = -1
+        replayed_n = len([1 for _, r in results if r])
+        passed = [st for st, r in results if r and st not in (401, 403, 0, -1)]
+        rejected = [st for st, r in results if r and st in (401, 403)]
+        self._harvest_log(f"SELFTEST verdict: probes={len(results)} replayed={replayed_n} accepted={passed} "
+                          f"rejected={rejected} control_page_signed={ctrl}")
+        if replayed_n >= 3 and len(rejected) >= 3:
+            self._harvest_replay_on = False
+            self._harvest_log("SELFTEST FAILED 3/3 — banked replay DISABLED for this run; shots stay page-signed "
+                              "(harvest loop keeps banking for the audit)")
+        elif passed:
+            self._harvest_log(f"SELFTEST PASSED — banked replay is LIVE for real shots ({len(passed)}/{replayed_n} accepted)")
+        else:
+            self._harvest_log("SELFTEST inconclusive — replay stays ON (a single 401 is normal Shape token-burn)")
+
+    async def _harvest_loop(self) -> None:
+        cfg = self._harvest_cfg
+        try:
+            await asyncio.sleep(8.0 + random.uniform(0, 4.0))
+        except asyncio.CancelledError:
+            return
+        self._harvest_log(f"loop started: bank={cfg['bank']} ttl={cfg['ttl_s']:.0f}s interval={cfg['interval_s']:.0f}s "
+                          f"replay={'on' if self._harvest_replay_on else 'OFF'} "
+                          f"selftest={'on' if cfg['selftest'] else 'off'} in_window={'on' if cfg['in_window'] else 'off'} "
+                          f"tcins={cfg['tcins']}")
+        while True:
+            try:
+                if self._harvest_disabled_reason:
+                    return
+                live = bool(self.session_manager.is_purchase_in_progress())
+                if live and not cfg['in_window']:
+                    await asyncio.sleep(2.0)
+                    continue
+                if self._harvest_landed_suspect and not live:
+                    await self._harvest_clear_suspect_cart()
+                need = self._shape_bank.need()
+                min_gap = 6.0 if live else 3.0
+                if need > 0 and (time.time() - self._harvest_last_click_ts) >= min_gap:
+                    self._harvest_last_click_ts = time.time()
+                    ok = await self._harvest_once()
+                    if (ok and cfg['selftest'] and not self._harvest_selftest_done and not live
+                            and self._shape_bank.count() >= min(2, cfg['bank'])):
+                        await self._harvest_selftest()
+                    await asyncio.sleep(random.uniform(4.0, 7.0) if live else random.uniform(6.0, 10.0))
+                    continue
+                if not live and self._harvest_tab is not None and time.time() - self._harvest_tab_nav_ts > 900.0:
+                    await self._harvest_rotate(same=True)   # keep the SPA state sane
+                await asyncio.sleep(random.uniform(cfg['interval_s'] * 0.8, cfg['interval_s'] * 1.2))
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                self._harvest_log(f"loop error: {type(e).__name__}: {e} — continuing after 20s")
+                try:
+                    await asyncio.sleep(20.0)
+                except asyncio.CancelledError:
+                    return
+
+    def _start_harvest(self) -> None:
+        """Spawn the background harvest task on the worker loop. Idempotent;
+        no-op when the flag is off. Loud when armed without candidate TCINs."""
+        cfg = getattr(self, '_harvest_cfg', None) or {}
+        if not cfg.get('enabled'):
+            return
+        if self._harvest_task is not None and not self._harvest_task.done():
+            return
+        if not cfg.get('tcins'):
+            if not self._harvest_disabled_reason:
+                self._harvest_disabled_reason = 'no TARGET_HARVEST_TCINS'
+                self._harvest_log("DISABLED: TARGET_HARVEST_TCINS is empty — set 1-3 in-stock, ship-eligible, "
+                                  "cheap PDP TCINs in run_bot_with_nightly_restart.bat")
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._harvest_task = loop.create_task(self._harvest_loop())
+        self._harvest_log("background harvest task spawned")
 
     async def warm_shape_headers(self, force_fresh: bool = False) -> bool:
         """Refresh Shape headers via cart page visit on a pool warmup tab.
@@ -1824,6 +2216,9 @@ class PurchaseExecutor:
                     and os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
                     and (not self._cvv_required or self._fast_lane_cvv())
                     and not self._fast_selling_cooling_down()):
+                if getattr(self, '_harvest_cfg', {}).get('enabled'):
+                    self._harvest_log(f"pre-shot {self._shape_bank.summary()} "
+                                      f"replay={'on' if self._harvest_replay_on else 'OFF'}")
                 _fl = await self._api_fast_lane(tab, tcin, quantity, extra_headers_js)
                 atc_result = _fl.get('atc') or {}
                 _verdict, _terminal = self._apply_fast_lane_result(_fl, tcin, start_time)

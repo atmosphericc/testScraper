@@ -480,6 +480,38 @@ REM      option (the headers-object Referer is a forbidden name and never hit
 REM      the wire -- shots actually carried the parked homepage//account URL; a
 REM      real add carries the full PDP URL). Rollback: set TARGET_ATC_REFERRER_PDP=0
 set TARGET_ATC_REFERRER_PDP=1
+REM  16) 2026-09-03 REAL-CLICK SHAPE HARVEST + BANKED REPLAY -- the hot-SKU gap.
+REM      Every hot-SKU window since 08-07 died 100%% 401 _ERR_AUTH_DENIED on the
+REM      shots that passed the edge limiter. Vendor research (Refract/Stellar/
+REM      Hidden AIO/Shikari docs, memory reference_target_winning_bot_architecture_2026):
+REM      winners never sign a programmatic request -- a HARVESTER drives the REAL
+REM      add-to-cart click on an in-stock product, captures the Shape header set
+REM      that genuine interaction minted, banks ~3 per task (TTL 5-15 min) and
+REM      replays one per shot. Our byte-audit: the main-tab ATC has carried the
+REM      -a0 behavioral chunk 0/53,950 times; we never once fired a real page
+REM      click. Now (src/session/shape_harvest.py): a harvest tab per identity
+REM      parks on a cheap in-stock PDP (TCINS below), human-trajectory CDP-clicks
+REM      the real button, the interceptor banks the page-signed X-headers and
+REM      FAILS the request before it leaves Chrome (nothing lands, uuid unspent);
+REM      the main-tab fast-lane ATC is paused at the request stage and
+REM      Fetch.continueRequest swaps in the freshest banked set (after the in-page
+REM      hook, so unlike fetch() header injection -- inert since 07-10 -- it hits
+REM      the wire). Boot SELFTEST replays banked sets on the warmup dummy POST:
+REM      424 = accepted, 3/3 x 401/403 = replay auto-OFF for the run (shots stay
+REM      page-signed = the proven path). Bank empty mid-window = page-signed shot.
+REM      grep "[HARVEST/" for CAPTURED / REAL_ATC_SHAPE / SELFTEST verdict / REPLAY
+REM      on main. TCINS = staples (Tide Pods 42ct, Tide Free 42ct, Bounty 6 triple)
+REM      -- swap for any cheap in-stock ship-eligible item; the loop rotates on a
+REM      missing/disabled button and says so. Kill-switch: TARGET_SHAPE_HARVEST=0
+REM      (exact prior behaviour); replay-only kill: TARGET_HARVEST_REPLAY=0.
+set TARGET_SHAPE_HARVEST=1
+set TARGET_HARVEST_TCINS=21516452,50225561,53274278
+set TARGET_HARVEST_BANK=3
+set TARGET_HARVEST_TTL_S=300
+set TARGET_HARVEST_INTERVAL_S=40
+set TARGET_HARVEST_REPLAY=1
+set TARGET_HARVEST_SELFTEST=1
+set TARGET_HARVEST_IN_WINDOW=1
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

@@ -410,6 +410,24 @@ plus community/web research (LordOfRestocks trick, Hidden AIO docs, r/PokemonDea
   ever come through a hard-401 wall — once 401s dominate, that identity+TCIN is
   done for the window.
 
+### Real-click Shape harvest + banked replay (shipped 2026-09-03, flag-gated)
+The mechanism winning 2026 Target bots (Refract / Stellar / Hidden AIO / Shikari)
+share, per their own docs: a HARVESTER drives the genuine add-to-cart on an
+in-stock product, captures the Shape header set that real interaction minted,
+banks ~3 per task (TTL 5-15 min) and replays one per shot -- "each protected
+request consumes one cookie"; ~80% blocks on hot drops are normal and they win on
+the ~20% that pass. Our byte-audit (09-03): the main-tab ATC had carried the
+`-a0` behavioral chunk 0 / 53,950 times and no genuine page-button add had ever
+been fired -- our shot was signed by a tab parked on /account with zero
+interaction. Implementation: `src/session/shape_harvest.py` + hooks in
+`purchase_executor.py` (harvest tab label `harvest`: capture + `Fetch.failRequest`
+BlockedByClient; main tab: `Fetch.continueRequest` header override with the
+freshest banked set; boot SELFTEST on the warmup dummy POST auto-disables replay
+on 3/3 rejections). Flags: `TARGET_SHAPE_HARVEST`, `TARGET_HARVEST_TCINS`,
+`_BANK`, `_TTL_S`, `_INTERVAL_S`, `_REPLAY`, `_SELFTEST`, `_IN_WINDOW`. Audit:
+`grep "[HARVEST/"` -> CAPTURED / REAL_ATC_SHAPE / SELFTEST verdict / REPLAY on main,
+then per-shot `[ATC_RESP]` status split by replayed vs page-signed.
+
 ### Known Automation Notes (from existing codebase)
 - `src/session/purchase_executor.py` uses CDP header interception to inject auth — do not modify
 - `CARD_CVV` is hardcoded in purchase_executor.py — off-limits file, pending externalization to `.env` as `TARGET_CVV`
