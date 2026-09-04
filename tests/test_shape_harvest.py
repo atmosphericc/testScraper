@@ -279,11 +279,18 @@ def test_executor_wiring():
           and "self._harvest_replay_on: bool = bool(self._harvest_cfg['enabled'] and self._harvest_cfg['replay'])" in EXE_SRC)
     check("exe_interceptor_label_param", "label: Optional[str] = None) -> None:" in EXE_SRC
           and 'label = label or ("warmup" if persistent else "main")' in EXE_SRC)
-    i_branch = EXE_SRC.find("if (label == 'harvest' and not is_response and method == 'POST'")
+    i_branch = EXE_SRC.find("if _harvest_atc:")
     i_call = EXE_SRC.find("await self._harvest_capture_and_block(tab, event, url)", i_branch)
     i_ret = EXE_SRC.find("return", i_call)
     i_generic = EXE_SRC.find("if 'carts.target.com' in url or 'cart_items' in url:")
     check("exe_harvest_branch_before_generic_and_returns", 0 < i_branch < i_call < i_ret < i_generic)
+    i_calc = EXE_SRC.find("_harvest_atc = (label == 'harvest' and not is_response")
+    i_dedup = EXE_SRC.find("if dedup_key in self._cdp_continued_ids and not _harvest_atc:")
+    check("exe_harvest_add_bypasses_dedup_shortcut", 0 < i_calc < i_dedup < i_branch)
+    check("exe_harvest_matches_any_cart_items_post_put",
+          "_hv_method in ('POST', 'PUT') and 'cart_items' in _hv_url" in EXE_SRC)
+    check("exe_harvest_put_blocked_not_banked", "blocked a harvest-tab" in EXE_SRC
+          and "if blocked and _method == 'POST':" in EXE_SRC)
     check("exe_replay_lookup_guarded_by_flag",
           "_override_headers = self._harvest_replay_headers_for(label, headers)" in EXE_SRC
           and "getattr(self, '_harvest_cfg', {}).get('enabled')" in EXE_SRC)

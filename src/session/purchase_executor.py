@@ -742,7 +742,20 @@ class PurchaseExecutor:
             req_id = str(event.request_id)
             is_response = event.response_status_code is not None or getattr(event, 'response_error_reason', None) is not None
             dedup_key = req_id + (':resp' if is_response else ':req')
-            if dedup_key in self._cdp_continued_ids:
+            # 2026-09-03: the HARVEST tab's genuine add must NEVER take the dedup
+            # shortcut below (it continue_requests the event): interception-job
+            # ids collide across tabs (07-23), and a continued harvest add would
+            # LAND a foreign item in the cart and block the real checkout
+            # (foreign_cart_item). Any cart_items POST/PUT from that tab always
+            # goes through capture+block, whatever its id.
+            try:
+                _hv_url = event.request.url if hasattr(event, 'request') else ''
+                _hv_method = event.request.method if hasattr(event.request, 'method') else '?'
+            except Exception:
+                _hv_url, _hv_method = '', '?'
+            _harvest_atc = (label == 'harvest' and not is_response
+                            and _hv_method in ('POST', 'PUT') and 'cart_items' in _hv_url)
+            if dedup_key in self._cdp_continued_ids and not _harvest_atc:
                 # 2026-07-23 wedge-leak guard. A dedup hit is NOT always an event
                 # we already continued: CDP re-pauses every REDIRECT hop under
                 # the SAME request id, and the interception-job ids of the two
@@ -776,12 +789,13 @@ class PurchaseExecutor:
                 method = event.request.method if hasattr(event.request, 'method') else '?'
                 is_checkout_post = 'web_checkouts/v1/checkout' in url and method == 'POST'
 
-                # 2026-09-03 real-click harvest: the harvest tab's GENUINE ATC POST
-                # is banked and then FAILED before it leaves Chrome (nothing lands,
-                # the single-use Shape uuid stays unspent). Resolved in the helper
-                # (fail_request), so it must never fall through to continue.
-                if (label == 'harvest' and not is_response and method == 'POST'
-                        and 'web_checkouts/v1/cart_items' in url):
+                # 2026-09-03 real-click harvest: the harvest tab's GENUINE ATC
+                # (any cart_items POST/PUT, whatever host/path Target's page uses)
+                # is banked (POST with Shape tokens) and then FAILED before it
+                # leaves Chrome (nothing lands, the single-use Shape uuid stays
+                # unspent). Resolved in the helper (fail_request), so it must
+                # never fall through to continue.
+                if _harvest_atc:
                     await self._harvest_capture_and_block(tab, event, url)
                     return
 
@@ -1575,7 +1589,10 @@ class PurchaseExecutor:
                     f"{self._harvest_acct()}: HARVEST fail_request failed — cheap item {self._harvest_tcin} may be in the cart; auto-clear scheduled")
             except Exception:
                 pass
-        if blocked:
+        _method = str(getattr(event.request, 'method', 'POST') or 'POST').upper()
+        if blocked and _method != 'POST':
+            self._harvest_log(f"blocked a harvest-tab {_method} to cart_items (not banked) url={url[:120]}")
+        if blocked and _method == 'POST':
             toks = _shape_harvest.shape_tokens(headers)
             ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin, 'url': url[:160], 'body': post_data[:300]})
             self._harvest_stats['captured' if ok else 'no_tokens'] += 1
