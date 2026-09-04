@@ -45,6 +45,18 @@ REM  still checks every ~0.67s (wins land in 0.8-3.6s) at HALF the RedSky load,
 REM  so the pool IPs are far less likely to re-tarpit. The burned IPs still need
 REM  to REST first (stop the bot ~45 min before restarting). Revert: 3.0.
 set TARGET_SWEEPS_PER_SEC=3.0
+REM  2026-09-04 ~01:20 RedSky CAPTCHA WALL -- root cause + fix. A real Chrome on the
+REM  HOME IP read RedSky 200 (probe) while the SAME browser on every Bright Data
+REM  range got 403 + captchaRelativeURL (F5/Shape ATA): the BD ranges were flagged
+REM  after two app.py instances ran at once. carts.target.com on BD stayed fine.
+REM  So the stock sweep now exits the HOME IP (proxyIps 'proxies' = 2 entries =
+REM  2 sweep Chromes, no --proxy-server) and purchases keep their own BD exits
+REM  (primary back on 168.158.160.228 so the home IP is sweep-only). If the sweep
+REM  ever sees the captcha 403 it backs off x2/x4/x8/x16 (cap ~5s) instead of
+REM  hammering, and a single 200 restores full rate (no ProxyState 3h park).
+REM  Revert: RESILIENT_HARVEST_VIA_LOCAL_IP=0 + restore 4 BD entries in proxyIps.
+set RESILIENT_HARVEST_VIA_LOCAL_IP=1
+set RESILIENT_CAPTCHA_BACKOFF=1
 
 REM ---------------------------------------------------------------------------
 REM  Fingerprint kill-switch (2026-06-24 incident).

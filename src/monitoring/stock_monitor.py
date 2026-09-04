@@ -287,11 +287,21 @@ class StockMonitor:
             except Exception as e:
                 print(f"[RESILIENT] callback error: {e}")
 
+        # 2026-09-04: RESILIENT_HARVEST_VIA_LOCAL_IP=1 -> sweep Chromes launch
+        # WITHOUT --proxy-server and read RedSky from the HOME IP. Live 09-04: a
+        # real browser on the home IP read 200 while every Bright Data range got
+        # the F5/Shape captcha 403 (BD ranges flagged after a double-bot overload).
+        # Purchases keep their own BD exits (carts.target.com on BD was fine).
+        _local_ip = os.environ.get('RESILIENT_HARVEST_VIA_LOCAL_IP', '0') == '1'
+        if _local_ip:
+            print("[RESILIENT] sweep exits the HOME IP (RESILIENT_HARVEST_VIA_LOCAL_IP=1); "
+                  f"{len(self.proxies)} session(s), no BD proxy on the stock path")
         self._resilient_checker = ResilientStockChecker(
             proxy_urls=self.proxies,
             tcins=tcins,
             on_in_stock=_adapter,
             target_sweeps_per_sec=target_sweeps_per_sec,
+            harvest_via_local_ip=_local_ip,
             state_dir=ROOT / "state",
             log_per_request=False,
             # preflight uses curl_cffi which Shape false-negatives on Target IPs

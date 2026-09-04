@@ -117,6 +117,18 @@ class ResilientStockChecker:
         self.behavioral_mix_ratio = max(0.0, min(0.5, float(behavioral_mix_ratio)))
         self.harvest_via_local_ip = harvest_via_local_ip
         self.on_alert = on_alert
+        # 2026-09-04 captcha-aware backoff (RESILIENT_CAPTCHA_BACKOFF, default ON).
+        # RedSky answers a flagged reader with 403 + {"captchaRelativeURL":...}
+        # (F5/Shape ATA). Firing 3/s into that wall deepens the flag (09-04:
+        # 1,073 straight 403s, pool never recovered). On a captcha 403 the WHOLE
+        # sweep backs off exponentially (x2 per 5 walled reads, cap x16) and the
+        # read is NOT handed to ProxyState (its 2-strike 3h park would blind a
+        # single-IP sweep). Any 200 resets the multiplier instantly.
+        import os as _os
+        self._captcha_backoff_on = _os.environ.get('RESILIENT_CAPTCHA_BACKOFF', '1') != '0'
+        self._captcha_streak = 0
+        self._captcha_backoff_mult = 1.0
+        self._captcha_total = 0
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = state_dir
@@ -353,7 +365,8 @@ class ResilientStockChecker:
                              if self.behavioral_mix_ratio > 0 else 0)
 
         while not self._stop_event.is_set():
-            period = 1.0 / max(0.01, self.target_sweeps_per_sec)
+            period = ((1.0 / max(0.01, self.target_sweeps_per_sec))
+                      * max(1.0, getattr(self, '_captcha_backoff_mult', 1.0)))  # 09-04 captcha backoff
             jitter = period * random.uniform(-0.15, 0.15)
             sleep_for = max(0.05, period + jitter)
             try:
@@ -399,11 +412,28 @@ class ResilientStockChecker:
             if result.http_status == 200:
                 self._total_200 += 1
                 self.proxy_state.record_status(result.pinned_ip, 200)
+                if self._captcha_backoff_mult > 1.0 or self._captcha_streak:
+                    logger.info(f"[STOCK][CAPTCHA-BACKOFF] recovered: 200 from {result.session_id} "
+                                f"after {self._captcha_streak} walled reads — sweep period back to x1")
+                    self._captcha_streak = 0
+                    self._captcha_backoff_mult = 1.0
                 if result.raw:
                     await self._ingest_bulk_response(result)
             elif result.http_status in (401, 403):
                 self._total_403 += 1
-                self.proxy_state.record_status(result.pinned_ip, result.http_status)
+                _err = (result.error or '')
+                if (self._captcha_backoff_on and result.http_status == 403
+                        and 'captcha' in _err.lower()):
+                    self._captcha_total += 1
+                    self._captcha_streak += 1
+                    new_mult = float(min(16.0, 2.0 ** min(4, self._captcha_streak // 5)))
+                    if new_mult != self._captcha_backoff_mult:
+                        self._captcha_backoff_mult = new_mult
+                        logger.warning(f"[STOCK][CAPTCHA-BACKOFF] {result.session_id} ({result.pinned_ip}) "
+                                       f"RedSky captcha wall (streak={self._captcha_streak}, "
+                                       f"total={self._captcha_total}) — sweep period x{new_mult:.0f}")
+                else:
+                    self.proxy_state.record_status(result.pinned_ip, result.http_status)
                 if self.log_per_request:
                     logger.info(f"  !! {result.session_id} ({result.pinned_ip}) "
                                 f"http={result.http_status} {result.latency_ms}ms "
