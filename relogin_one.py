@@ -372,6 +372,14 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
         # MANUAL enrollment: open the login (through this account's IP) and let the
         # operator sign in + clear any one-time device challenge by hand, then save.
         if manual:
+            # 2026-09-04: --force in manual mode signs out FIRST so the hand-login
+            # prompt actually appears. Without it a dead-but-present session (login
+            # cookie there, but it can only mint a GUEST token — alt-1 tonight)
+            # passes the "already logged in" check below and gets re-saved as
+            # guest forever; every 23:45/00:01 attempt skipped for that reason.
+            if force:
+                log("MANUAL", f"{acc_id}: --force -> full sign-out first so you get a real login prompt")
+                await full_signout(tab)
             await tab.get("https://www.target.com/account")
             await asyncio.sleep(3)
             if await _on_account_page_loggedin(tab):

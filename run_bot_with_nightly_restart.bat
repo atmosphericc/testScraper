@@ -33,6 +33,18 @@ set "RUNLOG=%LOGDIR%\bot_restart_wrapper.log"
 
 REM Target production stack (app.py also defaults this, set explicitly anyway).
 set USE_RESILIENT_STACK=1
+REM  2026-09-04: sweep rate stays 3.0/s (operator requirement). The 403 tarpit was
+REM  caused by TWO app.py instances running at once (orphan under system Python +
+REM  the venv bot = ~6/s) plus restarts, NOT by 3/s itself; fixed by killing the
+REM  orphan + swapping the burned sweep pool for the 4 clean reserves (proxyIps).
+REM  History of the rest of this note:
+REM  logins tripped a Target RedSky throttle: the 23:54 run read stock fine
+REM  (~174 good reads) then went 100%% 403 within ~2.5 min, and every restart
+REM  after started already-blocked. One bulk fetch covers all TCINs, so 1.5/s
+REM  still checks every ~0.67s (wins land in 0.8-3.6s) at HALF the RedSky load,
+REM  so the pool IPs are far less likely to re-tarpit. The burned IPs still need
+REM  to REST first (stop the bot ~45 min before restarting). Revert: 3.0.
+set TARGET_SWEEPS_PER_SEC=3.0
 
 REM ---------------------------------------------------------------------------
 REM  Fingerprint kill-switch (2026-06-24 incident).
@@ -519,7 +531,7 @@ REM  captures) while business (worker 2, own loop) captured 10 + SELFTEST 424.
 REM  Skip primary so its failing clicks don't contend with its real shots; it
 REM  fires the proven page-signed shots. Un-skip once harvest is moved off the
 REM  shared loop. Kill-switch: set TARGET_HARVEST_SKIP=  (empty).
-set TARGET_HARVEST_SKIP=primary
+set TARGET_HARVEST_SKIP=primary,alt-1
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the
