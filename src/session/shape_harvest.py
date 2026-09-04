@@ -71,6 +71,24 @@ def harvest_tcins(env: Optional[Dict[str, str]] = None) -> List[str]:
     return out
 
 
+def harvest_skip(env: Optional[Dict[str, str]] = None) -> List[str]:
+    """Account ids (lowercased) that should NOT run the harvest loop — they fire
+    page-signed shots instead. Mirrors TARGET_FP_CHROMIUM_SKIP. 2026-09-04: worker
+    1 (primary) shares the global event loop with the 16-IP stock sweep, so its
+    CDP Input.dispatchMouseEvent times out under sweep load (18/18 clicks failed
+    live); skipping it stops that contention with its real purchase shots."""
+    e = os.environ if env is None else env
+    raw = str(e.get("TARGET_HARVEST_SKIP", "") or "")
+    return [t.strip().lower() for t in raw.replace(";", ",").split(",") if t.strip()]
+
+
+def enabled_for(account_id: Optional[str], env: Optional[Dict[str, str]] = None) -> bool:
+    """Master switch AND this account is not in TARGET_HARVEST_SKIP."""
+    if not is_enabled(env):
+        return False
+    return (account_id or "").strip().lower() not in harvest_skip(env)
+
+
 def _int(e, key, default, lo, hi):
     try:
         v = int(str(e.get(key, default)).strip())
@@ -98,6 +116,7 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "replay": str(e.get("TARGET_HARVEST_REPLAY", "1")).strip() != "0",
         "selftest": str(e.get("TARGET_HARVEST_SELFTEST", "1")).strip() != "0",
         "in_window": str(e.get("TARGET_HARVEST_IN_WINDOW", "1")).strip() != "0",
+        "skip": harvest_skip(e),
     }
 
 

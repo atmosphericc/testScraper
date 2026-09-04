@@ -134,6 +134,13 @@ def test_config_and_js():
     check("cfg_ttl_clamped", c['ttl_s'] == 30.0)
     check("cfg_replay_off", c['replay'] is False)
     check("cfg_default_off", h.config({})['enabled'] is False and h.is_enabled({}) is False)
+    # 2026-09-04 per-account skip
+    se = {'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_SKIP': ' Primary , alt-1 '}
+    check("skip_parsed_lower", h.harvest_skip(se) == ['primary', 'alt-1'])
+    check("cfg_has_skip", h.config(se)['skip'] == ['primary', 'alt-1'])
+    check("enabled_for_skips_named", h.enabled_for('primary', se) is False and h.enabled_for('PRIMARY', se) is False)
+    check("enabled_for_allows_others", h.enabled_for('business', se) is True)
+    check("enabled_for_off_when_master_off", h.enabled_for('business', {}) is False)
     js = h.FIND_ATC_BUTTON_JS
     check("js_selectors", 'shippingButton' in js and 'addToCartButton' in js and 'shipItButton' in js)
     check("js_scrolls_into_view", 'scrollIntoView' in js)
@@ -320,6 +327,8 @@ def test_executor_wiring():
     check("exe_real_atc_shape_logged_once", "REAL_ATC_SHAPE url=" in EXE_SRC)
     check("exe_harvest_readiness_poll",
           "info.get('found') and not info.get('disabled') and info.get('ready') == 'complete'" in EXE_SRC)
+    check("exe_start_harvest_honors_skip",
+          "if _acct in (cfg.get('skip') or []):" in EXE_SRC and "TARGET_HARVEST_SKIP" in EXE_SRC)
     check("exe_harvest_hydration_settle",
           "if time.time() - self._harvest_tab_nav_ts < 3.0:" in EXE_SRC)
 

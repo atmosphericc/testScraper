@@ -1856,6 +1856,18 @@ class PurchaseExecutor:
         cfg = getattr(self, '_harvest_cfg', None) or {}
         if not cfg.get('enabled'):
             return
+        # 2026-09-04: skip the harvest loop for accounts in TARGET_HARVEST_SKIP.
+        # Worker 1 (primary) shares the global event loop with the stock sweep, so
+        # its CDP click dispatch times out under load (harvest never captures) and
+        # would only contend with its real shots. Skipped accounts fire the proven
+        # page-signed shots; their empty bank makes replay a no-op automatically.
+        _acct = (self._harvest_acct() or '').lower()
+        if _acct in (cfg.get('skip') or []):
+            if not self._harvest_disabled_reason:
+                self._harvest_disabled_reason = 'account in TARGET_HARVEST_SKIP'
+                self._harvest_log(f"harvest SKIPPED for '{_acct}' (TARGET_HARVEST_SKIP) — "
+                                  f"this account fires page-signed shots")
+            return
         if self._harvest_task is not None and not self._harvest_task.done():
             return
         if not cfg.get('tcins'):

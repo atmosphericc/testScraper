@@ -512,6 +512,14 @@ set TARGET_HARVEST_INTERVAL_S=40
 set TARGET_HARVEST_REPLAY=1
 set TARGET_HARVEST_SELFTEST=1
 set TARGET_HARVEST_IN_WINDOW=1
+REM  2026-09-04: run the harvester ONLY where it works. Worker 1 (primary)
+REM  shares the global event loop with the 16-IP stock sweep, so its CDP click
+REM  dispatch times out under load (live 09-04: 18/18 primary clicks failed, 0
+REM  captures) while business (worker 2, own loop) captured 10 + SELFTEST 424.
+REM  Skip primary so its failing clicks don't contend with its real shots; it
+REM  fires the proven page-signed shots. Un-skip once harvest is moved off the
+REM  shared loop. Kill-switch: set TARGET_HARVEST_SKIP=  (empty).
+set TARGET_HARVEST_SKIP=primary
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the
