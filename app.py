@@ -1227,7 +1227,9 @@ class StockMonitorThread:
                         if os.environ.get('TEST_MODE', 'false').lower() == 'true':
                             cycle_duration = random.randint(25, 35)
                         else:
-                            cycle_duration = random.randint(15, 25)
+                            cycle_duration = (random.randint(4, 8)
+                                              if os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0') == '1'
+                                              else random.randint(15, 25))
 
                         start_time = time.time()
                         self.shared_data.timer_start_time = start_time
@@ -1275,7 +1277,9 @@ class StockMonitorThread:
                     if os.environ.get('TEST_MODE', 'false').lower() == 'true':
                         next_cycle_duration = random.randint(25, 35)
                     else:
-                        next_cycle_duration = random.randint(15, 25)
+                        next_cycle_duration = (random.randint(4, 8)
+                                               if os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0') == '1'
+                                               else random.randint(15, 25))
 
                     next_start_time = time.time()
                     with self.shared_data.lock:
@@ -1329,8 +1333,21 @@ class StockMonitorThread:
             # tab fetch would duplicate traffic on the purchase session's tab
             # (shape-protected) for no benefit.
             stock_data = None
-            if not getattr(self, "_use_resilient", False):
+            # 2026-09-04: RESILIENT_FORCE_TAB_FETCH=1 runs the trusted-browser
+            # RedSky read EVEN in resilient mode. The cold pool profiles get the
+            # F5/Shape captcha (device flagged after the double-bot overload),
+            # but a purchase worker's account browser has a valid Akamai _abck
+            # and reads 200 (proven live). This is the detection path tonight.
+            _force_tab = os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0') == '1'
+            if (not getattr(self, "_use_resilient", False)) or _force_tab:
                 sm = getattr(self._purchase_manager, 'session_manager', None)
+                if sm is None or not getattr(sm, 'browser', None):
+                    _wp = getattr(self._purchase_manager, 'worker_pool', None)
+                    for _w in (getattr(_wp, 'workers', None) or []):
+                        _wsm = getattr(_w, 'session_manager', None)
+                        if _wsm and getattr(_wsm, 'browser', None):
+                            sm = _wsm
+                            break
                 if sm and self._event_loop and self._event_loop.is_running():
                     try:
                         future = asyncio.run_coroutine_threadsafe(sm.get_page(), self._event_loop)
@@ -1340,7 +1357,9 @@ class StockMonitorThread:
                     except Exception as e:
                         print(f"[STOCK] Browser fetch unavailable, falling back to requests: {e}")
 
-                if stock_data is None:
+                # Raw curl check_stock() always gets the captcha (Shape TLS flag),
+                # so only fall back to it in the NON-resilient legacy mode.
+                if stock_data is None and not getattr(self, "_use_resilient", False):
                     stock_data = monitor_to_use.check_stock()
 
             if stock_data:

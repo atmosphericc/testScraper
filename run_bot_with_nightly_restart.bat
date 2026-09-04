@@ -57,6 +57,16 @@ REM  hammering, and a single 200 restores full rate (no ProxyState 3h park).
 REM  Revert: RESILIENT_HARVEST_VIA_LOCAL_IP=0 + restore 4 BD entries in proxyIps.
 set RESILIENT_HARVEST_VIA_LOCAL_IP=1
 set RESILIENT_CAPTCHA_BACKOFF=1
+REM  2026-09-04 ~01:40 RedSky captcha ROOT CAUSE isolated with 3 read-only probes:
+REM  account profile on HOME IP -> 200; FRESH profile on home IP -> 403 captcha;
+REM  fresh profile + injected trust cookies -> still 403. The device is F5-flagged so
+REM  only a browser that EARNED a valid Akamai _abck (the logged-in purchase profiles)
+REM  reads RedSky; cold pool profiles can't. And the trusted tab-fetch reader was
+REM  SKIPPED whenever the resilient pool is active -> the bot was fully blind. This
+REM  flag re-enables the tab-fetch (a live worker's account browser) IN resilient mode
+REM  and polls every 4-8s. That is the detector tonight; the pool stays up (with the
+REM  captcha backoff) and self-revives if the F5 flag decays. Revert: =0.
+set RESILIENT_FORCE_TAB_FETCH=1
 
 REM ---------------------------------------------------------------------------
 REM  Fingerprint kill-switch (2026-06-24 incident).
