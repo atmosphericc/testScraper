@@ -138,6 +138,8 @@ def test_config_and_js():
     check("js_selectors", 'shippingButton' in js and 'addToCartButton' in js and 'shipItButton' in js)
     check("js_scrolls_into_view", 'scrollIntoView' in js)
     check("js_reports_oos_and_disabled", "oos:" in js and 'aria-disabled' in js)
+    check("js_null_body_guarded", 'document.body && document.body.innerText' in js)
+    check("js_reports_readystate", 'ready:' in js and 'document.readyState' in js)
     check("pdp_url", h.pdp_url('123') == 'https://www.target.com/p/-/A-123')
 
 
@@ -316,6 +318,10 @@ def test_executor_wiring():
           EXE_SRC.find('self._harvest_log(f"pre-shot') < EXE_SRC.find("_fl = await self._api_fast_lane(tab, tcin, quantity, extra_headers_js)"))
     check("exe_start_harvest_loud_without_tcins", "DISABLED: TARGET_HARVEST_TCINS is empty" in EXE_SRC)
     check("exe_real_atc_shape_logged_once", "REAL_ATC_SHAPE url=" in EXE_SRC)
+    check("exe_harvest_readiness_poll",
+          "info.get('found') and not info.get('disabled') and info.get('ready') == 'complete'" in EXE_SRC)
+    check("exe_harvest_hydration_settle",
+          "if time.time() - self._harvest_tab_nav_ts < 3.0:" in EXE_SRC)
 
 
 # ---------------------------------------------------------------------------

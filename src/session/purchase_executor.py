@@ -1676,24 +1676,50 @@ class PurchaseExecutor:
         tab = await self._ensure_harvest_tab()
         if tab is None:
             return False
-        try:
-            info = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
-        except Exception as e:
-            self._harvest_log(f"button lookup failed ({type(e).__name__}: {e}) — dropping harvest tab")
-            self._harvest_tab = None
-            return False
-        if not isinstance(info, dict):
-            info = {}
+        # Readiness poll (09-03 live-check hardening): on a fresh PDP the button
+        # is present + enabled a beat BEFORE React wires its click handler, so an
+        # early click fired zero cart_items POSTs (~6 wasted clicks + a reload
+        # before the first capture). Poll up to ~9s for found + enabled +
+        # document 'complete', then a short hydration settle on the first click
+        # after a nav. Each real click is a detection surface — don't waste them.
+        info: Dict[str, Any] = {}
+        _poll_deadline = time.time() + 9.0
+        while time.time() < _poll_deadline:
+            try:
+                info = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
+            except Exception as e:
+                self._harvest_log(f"button lookup failed ({type(e).__name__}: {e}) — dropping harvest tab")
+                self._harvest_tab = None
+                return False
+            if not isinstance(info, dict):
+                info = {}
+            if info.get('found') and not info.get('disabled') and info.get('ready') == 'complete':
+                break
+            await asyncio.sleep(0.5)
         if not info.get('found') or info.get('disabled'):
             self._harvest_miss += 1
             self._harvest_log(f"ATC button {'DISABLED' if info.get('found') else 'absent'} on {self._harvest_tcin} "
-                              f"(oos={info.get('oos')}; miss #{self._harvest_miss}) — "
+                              f"(ready={info.get('ready')} oos={info.get('oos')}; miss #{self._harvest_miss}) — "
                               f"{'rotating to the next candidate' if self._harvest_miss >= 2 else 'will retry'}")
             if self._harvest_miss >= 2:
                 self._harvest_miss = 0
                 await self._harvest_rotate(same=False)
             return False
         self._harvest_miss = 0
+        # First click after a fresh nav: let React attach the fetch handler.
+        if time.time() - self._harvest_tab_nav_ts < 3.0:
+            await asyncio.sleep(random.uniform(1.2, 2.2))
+        # Re-read the rect immediately before clicking: lazy PDP content shifts
+        # the button down between the poll and the click, and a click on stale
+        # coordinates lands off-target and fires no cart_items POST (09-03 live
+        # check). Fresh coords cut the wasted cold-start clicks (each is a
+        # detection surface). Falls back to the poll's rect on any error.
+        try:
+            _fresh = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
+            if isinstance(_fresh, dict) and _fresh.get('found') and not _fresh.get('disabled'):
+                info = _fresh
+        except Exception:
+            pass
         x, y = _shape_harvest.click_point(info)
         self._harvest_capture_evt.clear()
         t0 = time.time()

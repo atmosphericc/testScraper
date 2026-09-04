@@ -428,6 +428,25 @@ on 3/3 rejections). Flags: `TARGET_SHAPE_HARVEST`, `TARGET_HARVEST_TCINS`,
 `grep "[HARVEST/"` -> CAPTURED / REAL_ATC_SHAPE / SELFTEST verdict / REPLAY on main,
 then per-shot `[ATC_RESP]` status split by replayed vs page-signed.
 
+**Genuine PDP add-to-cart byte shape (captured LIVE 2026-09-03, primary/home IP —
+first ever recorded here; closes the 08-28 byte-match open item).** A real
+human-click add on `A-21516452`:
+- URL `POST .../web_checkouts/v1/cart_items?field_groups=CART%2CCART_ITEMS%2CSUMMARY&key=9f36aeafbe60771e321a7cc95a78140772ab3e96`
+  — `%2C`-encoded commas and a static `key=` our fast-lane ATC omits (ours: literal
+  commas, no key).
+- Body nests fulfillment: `{"cart_item":{"item_channel_id":"10","tcin":"…","quantity":1},"fulfillment":{"type":"PICKUP","location_id":1176,"ship_method":"STORE_PICKUP"},"cart_type":"REGULAR","channel_id":"10","shopping_context":"DIGITAL"}`
+  (a shippable SKU carries the SHIPPING variant) — ours sends flat
+  `fulfillment_type`/`fulfillment_type_code`.
+- Headers: `X-GyJwza5Z-a` ≈ **7,692 chars** (the full behavioral sensor), `-b` 6,
+  `-c` 60, `-d` 98, `-f` 88, `-z` 1; a second capture ~20 s later added
+  `X-GyJwza5Z-a0` (7 tokens). UA `Chrome/152.0.0.0` (reduced UA). sec-ch-ua carries
+  `"Google Chrome";v="152"`.
+- **Decisive:** a banked set from this click, replayed via `Fetch.continueRequest`
+  onto the warmup tab's dummy POST (different tab, different body TCIN 81926151,
+  literal-comma/no-key URL), returned **HTTP 424** = Shape PASS. So the Shape verdict
+  is NOT bound to the request URL/`key=`/body — harvest on any cheap in-stock SKU,
+  replay against the hot TCIN. This is why the ATC URL/body were left unchanged.
+
 ### Known Automation Notes (from existing codebase)
 - `src/session/purchase_executor.py` uses CDP header interception to inject auth — do not modify
 - `CARD_CVV` is hardcoded in purchase_executor.py — off-limits file, pending externalization to `.env` as `TARGET_CVV`

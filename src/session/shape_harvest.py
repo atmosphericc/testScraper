@@ -310,12 +310,16 @@ FIND_ATC_BUTTON_JS = """(() => {
             if (visible(b) && re.test(b.textContent || '')) { el = b; via = 'text'; break; }
         }
     }
-    if (!el) return {found: false, disabled: true, x: 0, y: 0, w: 0, h: 0, via: '', text: '',
-                     oos: /out of stock|sold out/i.test(document.body.innerText || '')};
+    const ready = document.readyState;
+    if (!el) {
+        const body_txt = (document.body && document.body.innerText) || '';
+        return {found: false, disabled: true, x: 0, y: 0, w: 0, h: 0, via: '', text: '',
+                ready: ready, oos: /out of stock|sold out/i.test(body_txt)};
+    }
     try { el.scrollIntoView({block: 'center', inline: 'nearest'}); } catch (e) {}
     const r = el.getBoundingClientRect();
     return {found: true, disabled: disabledOf(el), x: r.left, y: r.top, w: r.width, h: r.height,
-            via: via, text: (el.textContent || '').trim().slice(0, 40), oos: false};
+            via: via, text: (el.textContent || '').trim().slice(0, 40), ready: ready, oos: false};
 })()"""
 
 
