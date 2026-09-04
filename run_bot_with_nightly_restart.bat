@@ -63,8 +63,7 @@ REM  set RELOGIN_SKIP_FINGERPRINT=1 and TARGET_APPLY_FINGERPRINT=0.
 set RELOGIN_SKIP_FINGERPRINT=0
 set RELOGIN_SKIP_PROXY=1
 set TARGET_APPLY_FINGERPRINT=1
-REM fp-chromium: engine-level distinct device per account on the PURCHASE side only (login stays real Chrome via RELOGIN_SKIP_PROXY). Kill-switch: delete this line.
-set TARGET_FP_CHROMIUM=1
+REM fp-chromium: engine-level distinct device per account on the PURCHASE side only (login stays real Chrome via RELOGIN_SKIP_PROXY). Master switch is set BELOW (09-03: OFF).
 REM  2026-08-21 A/B (post-mortem in docs/FAILURES.md 08-21): every win in history
 REM  (07-24/07-28/07-31/08-04) was on REAL Chrome + the real profile; every drop
 REM  since fp-chromium shipped 08-11 went 0-for. Keep ONE identity on the proven
@@ -74,6 +73,20 @@ REM  hand-login anyway). Judge the night by per-identity ATC composition (grep
 REM  "ident=" on the chain-done / ATC fetch lines), not by orders alone.
 REM  Rollback to all-fp: set TARGET_FP_CHROMIUM_SKIP=   (empty). Full revert to the
 REM  pre-08-11 winning config for ALL three: set TARGET_FP_CHROMIUM=0.
+REM  2026-09-03 (pre-drop check for the 09-04 restock): A/B VERDICT after 3 nights
+REM  (08-21/08-26/08-28) -- on the contested hot-SKU gate the fp-chromium pair
+REM  passed Shape 0/318 shots while business (real Chrome) passed 9/146
+REM  (Fisher p=2.5e-5; IP-range confounded, see FAILURES.md 08-28). Every order
+REM  in history came from real Chrome; the fp engine is also ungoogled-Chromium
+REM  148, four majors behind the real 152, and never reached even the demand
+REM  throttle. So tonight ALL THREE run real Chrome + their real profiles (the
+REM  07-24..08-04 winning config) and the IP axis is tested instead:
+REM  primary = HOME IP (proxy_url emptied in config	arget_accounts.json; was
+REM  168.158.160.228), business = 31.98.158.87, alt-1 = 168.158.32.64. Judge by
+REM  per-identity P(401 | not edge-429) via grep "ident=" / [ATC_RESP].
+REM  Rollback to the 08-21 A/B: set TARGET_FP_CHROMIUM=1 (SKIP line below still
+REM  names business as the real-Chrome control) and restore primary's proxy_url.
+set TARGET_FP_CHROMIUM=0
 set TARGET_FP_CHROMIUM_SKIP=business
 REM  Optional: rotate the fp-chromium device nightly by mixing a salt into the
 REM  seed (e.g. set TARGET_FP_SEED_SALT=%DATE:~-4%%DATE:~4,2%%DATE:~7,2%). Left

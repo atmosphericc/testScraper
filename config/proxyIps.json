@@ -18,7 +18,7 @@
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.222.246:jw569klxgs9c@brd.superproxy.io:33335",
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.227.219:jw569klxgs9c@brd.superproxy.io:33335"
   ],
-  "_comment_purchase": "Account purchase exits (NOT swept): primary=168.158.160.228, business=31.98.158.87, alt-1=168.158.32.64 \u2014 see config/target_accounts.json. 2026-08-07: primary+alt-1 rotated off 31.105.133.83/92.112.18.99 (0 carts on 08-04 + 08-06->07, per-identity ATC gate; lever #1 of the 08-07 post-mortem).",
+  "_comment_purchase": "Account purchase exits (NOT swept): primary=HOME IP since 2026-09-03 (09-04 IP-axis test; its BD exit 168.158.160.228 is PARKED, not burned -- restore by putting it back in target_accounts.json), business=31.98.158.87, alt-1=168.158.32.64 \u2014 see config/target_accounts.json. 2026-08-07: primary+alt-1 rotated off 31.105.133.83/92.112.18.99 (0 carts on 08-04 + 08-06->07, per-identity ATC gate; lever #1 of the 08-07 post-mortem).",
   "_comment_reserve": "Spare clean IPs \u2014 manually move into 'proxies' if an active one burns. 4 entries (2 consumed 2026-08-07 by the purchase-exit rotation).",
   "reserve_proxies": [
     "http://brd-customer-hl_5a076ad9-zone-main_proxy_target_50-ip-31.105.63.137:jw569klxgs9c@brd.superproxy.io:33335",

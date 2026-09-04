@@ -186,7 +186,16 @@ for aid in _fp_off:
 print("\n[6] run_bot_with_nightly_restart.bat flags")
 try:
     bat = (ROOT / 'run_bot_with_nightly_restart.bat').read_text(errors='ignore')
-    ok("TARGET_FP_CHROMIUM=1 present (purchase fp ON)") if 'set TARGET_FP_CHROMIUM=1' in bat else fail("TARGET_FP_CHROMIUM=1 missing -> purchase would run normal Chrome")
+    # 2026-09-03: the master switch is a documented A/B lever, not a required
+    # value -- =0 (all real Chrome, the 07-24..08-04 winning config) is the
+    # deliberate 09-04 setting after the fp pair went 0/318 on the contested gate.
+    _fp_master = _bat_val('TARGET_FP_CHROMIUM')
+    if _fp_master == '1':
+        ok("TARGET_FP_CHROMIUM=1 (purchase fp ON for identities not in _SKIP)")
+    elif _fp_master == '0':
+        ok("TARGET_FP_CHROMIUM=0 (purchase on REAL Chrome + real profiles for ALL identities -- 09-03 decision; [5] above is a simulation only)")
+    else:
+        fail("TARGET_FP_CHROMIUM not set in the bat -> code default applies; set it explicitly (0 or 1)")
     ok("RELOGIN_SKIP_PROXY=1 present (login on HOME IP)") if 'set RELOGIN_SKIP_PROXY=1' in bat else fail("RELOGIN_SKIP_PROXY=1 missing -> login via BD IP would Shape-block")
     ok("TARGET_FP_CHROMIUM_LOGIN absent (login stays normal)") if 'TARGET_FP_CHROMIUM_LOGIN' not in bat else warn("TARGET_FP_CHROMIUM_LOGIN is set -> login would use fp-chromium (risky)")
     # 2026-08-21 post-mortem flags (defaults in code match these; the bat pins them explicitly)
@@ -194,7 +203,7 @@ try:
             ('TARGET_ATC_GATE_COUNT_EDGE_429', '0', 'breaker must NOT count empty-body edge 429s (08-21: armed on 53/62 lottery denials)'),
             ('TARGET_ATC_401_LADDER', '0', 'ATC-401 repair ladder must be OFF (0/85 mints, 0/103 in-ladder retries converted)'),
             ('TARGET_RETRY_FORCE_REWARM', '0', 'inter-retry re-warm must not force a /cart reload + cart PUT'),
-            ('TARGET_ATC_GATE_BREAKER', '1', 'breaker stays ON (401/DCO-only counting)')):
+            ('TARGET_ATC_GATE_BREAKER', '0', 'breaker OFF for good (08-31: 245 arms / 0 wins, ~980 shots forfeited on 08-28)')):
         _v = _bat_val(_flag)
         if _v == _want:
             ok(f"{_flag}={_want} ({_why})")

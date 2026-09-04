@@ -48,11 +48,14 @@ from typing import Any, Dict, List, Optional
 # spent 08-21 presenting a Chrome/150 UA on a 151 engine — the exact UA-vs-engine
 # incoherence this list exists to prevent. Bumped to the real installed build.
 # 2026-08-25: host auto-updated again to 151.0.7922.174 — bumped to match.
+# 2026-09-03: host auto-updated to 152.0.7977.82 (caught by the pre-drop check for
+# the 09-04 restock; the 09-01 jars were minted under 151). Bumped to match —
+# hand_login_all.bat MUST be re-run so every jar mints under the 152 UA.
 # Verify after each Chrome auto-update: this string must equal the ProductVersion
 # of C:\Program Files\Google\Chrome\Application\chrome.exe. fp-chromium accounts
 # (primary/alt-1) suppress this JS spoof and present their own 148 engine UA, so
 # this only governs the login browsers and the business (real-Chrome) purchase arm.
-_CHROME_BUILDS: List[str] = ["151.0.7922.174"]
+_CHROME_BUILDS: List[str] = ["152.0.7977.82"]
 
 # (UA platform token, navigator.platform, UA-CH platform, UA-CH platformVersion)
 # Windows-only: the host is Windows 11, and "macOS-on-Windows" is an incoherent
