@@ -105,16 +105,36 @@ def test_bank():
 
 
 def test_bezier_and_click_point():
+    import os
     rng = random.Random(7)
-    pts = h.bezier_path(100, 100, 500, 400, rng)
-    check("bezier_min_points", len(pts) >= 5)
-    check("bezier_ends_on_target", pts[-1][0] == 500.0 and pts[-1][1] == 400.0)
-    # curvature: max perpendicular deviation from the straight line > 2px
-    dx, dy = 400.0, 300.0
-    L = math.hypot(dx, dy)
-    dev = max(abs((x - 100) * dy - (y - 100) * dx) / L for x, y, _ in pts[:-1])
-    check("bezier_is_curved", dev > 2.0)
-    check("bezier_dt_bounds", all(0.004 <= dt <= 0.13 for _, _, dt in pts))
+    # 2026-09-09: TARGET_HARVEST_CLICK_MOVES caps the intermediate moves so the
+    # click makes fewer CDP round trips and clears the contended socket. Default
+    # 2 -> 2 moves + 1 settle point = 3. Restore the env after (no cross-test leak).
+    _prev = os.environ.pop('TARGET_HARVEST_CLICK_MOVES', None)
+    try:
+        pts = h.bezier_path(100, 100, 500, 400, random.Random(7))
+        check("bezier_default_lean_3pts", len(pts) == 3)
+        check("bezier_ends_on_target", pts[-1][0] == 500.0 and pts[-1][1] == 400.0)
+        # curvature: max perpendicular deviation from the straight line > 2px
+        dx, dy = 400.0, 300.0
+        L = math.hypot(dx, dy)
+        dev = max(abs((x - 100) * dy - (y - 100) * dx) / L for x, y, _ in pts[:-1])
+        check("bezier_is_curved", dev > 2.0)
+        check("bezier_dt_bounds", all(0.004 <= dt <= 0.13 for _, _, dt in pts))
+        # knob raises the move count …
+        os.environ['TARGET_HARVEST_CLICK_MOVES'] = '6'
+        check("bezier_knob_raises_moves", len(h.bezier_path(100, 100, 500, 400, random.Random(7))) >= 5)
+        # … lowers it to a single move + settle …
+        os.environ['TARGET_HARVEST_CLICK_MOVES'] = '1'
+        check("bezier_knob_min_one_move", len(h.bezier_path(100, 100, 500, 400, random.Random(7))) == 2)
+        # … and a bad value falls back to the default.
+        os.environ['TARGET_HARVEST_CLICK_MOVES'] = 'bogus'
+        check("bezier_knob_bad_value_defaults", len(h.bezier_path(100, 100, 500, 400, random.Random(7))) == 3)
+    finally:
+        if _prev is None:
+            os.environ.pop('TARGET_HARVEST_CLICK_MOVES', None)
+        else:
+            os.environ['TARGET_HARVEST_CLICK_MOVES'] = _prev
     p2 = h.bezier_path(100, 100, 500, 400, random.Random(8))
     check("bezier_paths_differ", [round(p[0], 1) for p in p2[:-1]] != [round(p[0], 1) for p in pts[:-1]])
     rect = {'x': 100, 'y': 200, 'w': 120, 'h': 40}
@@ -179,7 +199,9 @@ def test_human_click_events():
     end = asyncio.run(run())
     kinds = [c['params']['type'] for _, c in tab.events]
     check("click_returns_target", end == (300.0, 200.0))
-    check("click_moves_then_press_release", kinds.count('mouseMoved') >= 5
+    # 2026-09-09: default cap = 2 intermediate + 1 settle = 3 mouseMoved, then
+    # press/release. Still a real trusted move-then-click, just fewer round trips.
+    check("click_moves_then_press_release", kinds.count('mouseMoved') >= 3
           and kinds[-2:] == ['mousePressed', 'mouseReleased'])
     check("click_method_is_input_domain", all(c['method'] == 'Input.dispatchMouseEvent' for _, c in tab.events))
     t_press = [t for t, c in tab.events if c['params']['type'] == 'mousePressed'][0]

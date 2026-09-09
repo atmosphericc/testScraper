@@ -153,3 +153,45 @@ mint for one purchase identity; and whether to invest in the mobile-app path.
 **Verification before any drop:** `probe_sweep_pool.bat` read-only checks, the existing test
 suites, and `live_harvest_check.py` (user-gated) to confirm the harvester banks a real
 page-signed set and the boot self-test passes.
+
+---
+
+## Update 2026-09-09 — harvester click root cause pinned + a surgical fix shipped
+
+Ground truth from the last real run (`run_20260907_231629`, ~19h, business-only):
+
+| Harvest activity | Count |
+|---|---|
+| Tab-open attempts / succeeded / failed | 320 / 28 / 292 |
+| Clicks that captured a Shape set | 32 |
+| Click failures — **every one a bare `TimeoutError`** | 9,230 |
+| Warmup-interceptor log lines (shared CDP socket) | 31,819 |
+
+The click is *reached* and times out ~99.7% of the time, while the single-send button-lookup
+`evaluate()` on the **same** socket almost always succeeds. That is the tell: `human_click`
+made **9 sequential CDP round trips** (7 bezier moves + press + release), and *all* of them
+had to clear the account browser's single websocket — saturated by the warmup interceptor's
+~31,819 continue-request round trips — inside the click budget. Raising the budget (the earlier
+band-aid) does not drain the queue, so most clicks still time out. The warmup traffic itself is
+necessary and already conservatively tuned (60–90 s), so it is not a safe lever.
+
+**Shipped (surgical, harvest-only, cannot touch the purchase path):**
+- `bezier_path` intermediate moves capped by `TARGET_HARVEST_CLICK_MOVES` (**default 2**, was
+  effectively 6) → ~5 CDP sends per click instead of ~9, so the click clears the contended
+  socket far more often. A completed trusted click still fires `isTrusted` mousedown/up with a
+  real preceding move. Raise toward 6 only if a live run shows captures **and** socket headroom.
+- On the click-timeout path the harvest tab is dropped after `TARGET_HARVEST_CLICK_DROP_AFTER`
+  consecutive timeouts (**default 3**) so the next cycle re-opens fresh instead of hammering a
+  wedged tab (the 9,230-in-a-row pattern). Streak resets on any capture. Matches the existing
+  drop-on-failure pattern for the button lookup and the no-capture rotate.
+- Tests: `test_shape_harvest` 98/98 (added knob coverage); full tree compiles; executor +
+  harvest smokes green. No bat edit needed — the fix is the new code default.
+
+**Still the real fix if this is not enough:** a dedicated browser for the harvest tab (its own
+CDP socket, zero warmup contention). Deferred because it carries an unresolved question I cannot
+test without a live run — whether a Shape set minted in a *separate* browser (different sensor
+instance, and `_abck`/`_px3` that rotate ~90–120 s) replays in the buyer at all. The in-browser
+harvest sidesteps that entirely, so the click-tuning fix is the right first move: **validate it
+with `live_harvest_check.py` on a quiet night** (watch `[HARVEST/…]` for `click -> capture`,
+`SELFTEST PASSED`, and a rising bank) before deciding whether the dedicated browser is worth the
+build.

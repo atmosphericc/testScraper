@@ -283,12 +283,24 @@ def bezier_path(x0: float, y0: float, x1: float, y1: float,
     sign = rng.choice((-1.0, 1.0))
     cp_x = (x0 + x1) / 2 + sign * offset_mag * px + rng.uniform(-offset_mag * 0.4, offset_mag * 0.4)
     cp_y = (y0 + y1) / 2 + sign * offset_mag * py + rng.uniform(-offset_mag * 0.4, offset_mag * 0.4)
-    # 2026-09-08: cap steps at 6 (was 9). Each step is an awaited CDP
-    # dispatch_mouse_event on a socket shared with the warmup interceptor; under
-    # contention a 9-step path blew the click timeout (9230 TimeoutErrors on
-    # 09-07). 6 points is still a curved, velocity-timed human path, and a click
-    # that COMPLETES beats a perfect one that times out and captures nothing.
-    steps = max(4, min(6, int(dist / 80) + rng.randint(3, 5)))
+    # 2026-09-09: the click's CDP round trips are the harvester's REAL bottleneck.
+    # Each bezier point is an awaited dispatch_mouse_event on the account browser's
+    # single CDP websocket, which the warmup interceptor saturates (~31,819 round
+    # trips over the 09-07 run). A 6-9 point path needs ALL of its sends to clear
+    # that contended socket inside the click budget, and it lost the race ~99.7%
+    # of the time (9,230 TimeoutErrors vs 32 captures on 09-07) — while the
+    # single-send button-lookup evaluate() on the SAME socket almost always slips
+    # through. Fewer intermediate moves = fewer serialized round trips = the click
+    # actually completes and captures a page-signed set. TARGET_HARVEST_CLICK_MOVES
+    # caps the intermediate moves (default 2 -> ~5 total sends vs ~9); a completed
+    # trusted click still fires isTrusted mousedown/up with a real preceding move.
+    # Raise toward 6 only if a live run shows captures AND socket headroom.
+    try:
+        _cap = int(os.environ.get('TARGET_HARVEST_CLICK_MOVES', '2'))
+    except (TypeError, ValueError):
+        _cap = 2
+    _cap = max(1, min(9, _cap))
+    steps = max(1, min(_cap, int(dist / 80) + rng.randint(1, 3)))
     pts: List[Tuple[float, float, float]] = []
     for i in range(1, steps + 1):
         t = i / (steps + 1)

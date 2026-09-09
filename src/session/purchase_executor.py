@@ -1743,11 +1743,29 @@ class PurchaseExecutor:
             self._harvest_last_xy = await asyncio.wait_for(
                 _shape_harvest.human_click(tab, x, y, self._harvest_last_xy), timeout=_click_budget)
         except Exception as e:
-            self._harvest_log(f"click dispatch failed ({type(e).__name__}: {e})")
+            # 2026-09-09: a click that times out on the contended CDP socket leaves
+            # the tab in an unknown state, and re-clicking the SAME tab just re-loses
+            # the socket race (9,230 timeouts in a row on 09-07). After 3 in a row,
+            # drop the tab so the next cycle re-opens fresh on a possibly quieter
+            # socket — same drop-on-failure pattern as the button lookup + no-capture
+            # rotate above. Kill/tune the streak via TARGET_HARVEST_CLICK_DROP_AFTER.
+            self._harvest_click_timeouts = getattr(self, '_harvest_click_timeouts', 0) + 1
+            self._harvest_log(f"click dispatch failed ({type(e).__name__}: {e}) "
+                              f"#{self._harvest_click_timeouts}")
+            try:
+                _drop_after = max(1, int(os.environ.get('TARGET_HARVEST_CLICK_DROP_AFTER', '3')))
+            except (TypeError, ValueError):
+                _drop_after = 3
+            if self._harvest_click_timeouts >= _drop_after:
+                self._harvest_click_timeouts = 0
+                self._harvest_log(f"{_drop_after} consecutive click timeouts — dropping the harvest "
+                                  f"tab so the next cycle re-opens fresh")
+                self._harvest_tab = None
             return False
         try:
             await asyncio.wait_for(self._harvest_capture_evt.wait(), timeout=4.0)
             self._harvest_nocap = 0
+            self._harvest_click_timeouts = 0    # 2026-09-09: reset the timeout streak on any capture
             self._harvest_log(f"click -> capture in {time.time() - t0:.2f}s via {info.get('via')} text={info.get('text')!r}")
             return True
         except asyncio.TimeoutError:
