@@ -311,6 +311,10 @@ class PurchaseExecutor:
         self._harvest_miss: int = 0
         self._harvest_nocap: int = 0
         self._harvest_stats: Dict[str, int] = {'captured': 0, 'no_tokens': 0}
+        # 2026-09-09 hidden-tab root cause (see shape_harvest.human_click):
+        self._harvest_click_timeouts: int = 0
+        self._harvest_vis_state: str = ''      # last logged visibility verdict ('' = not probed yet)
+        self._harvest_vis_skips: int = 0       # clicks skipped: tab hidden but we must not steal the foreground
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -1613,6 +1617,122 @@ class PurchaseExecutor:
         except Exception:
             pass
 
+    def _harvest_drop_after(self) -> int:
+        """Consecutive click failures before the harvest tab is dropped + re-opened."""
+        try:
+            return max(1, int(os.environ.get('TARGET_HARVEST_CLICK_DROP_AFTER', '3')))
+        except (TypeError, ValueError):
+            return 3
+
+    async def _harvest_drop_tab(self, reason: str, close: bool = True) -> None:
+        """Forget the harvest tab handle and, unless the Chrome it belonged to is
+        gone, CLOSE the tab (via the browser-level connection, bounded).
+        2026-09-09: every earlier drop only cleared the handle, so each re-open
+        left one more live Target PDP (React + Shape + PX sensors + its Fetch
+        interceptor) running in the account Chrome for the rest of that
+        browser's life."""
+        tab = self._harvest_tab
+        self._harvest_tab = None
+        self._harvest_last_xy = None
+        self._harvest_vis_state = ''
+        if tab is None:
+            return
+        self._harvest_log(f"dropping harvest tab ({reason}){' + closing it' if close else ''}")
+        if not close:
+            return
+        try:
+            tid = tab.target.target_id
+            browser = self.session_manager.browser
+            conn = getattr(browser, 'connection', None) if browser else None
+            if conn is None:
+                return
+            await asyncio.wait_for(conn.send(cdp.target.close_target(target_id=tid)), timeout=5.0)
+        except Exception as e:
+            self._harvest_log(f"harvest tab close failed (non-fatal: {type(e).__name__}: {e})")
+
+    async def _harvest_close_orphans(self, browser, url_prefix: str, keep_id: Optional[str]) -> int:
+        """Close page targets left behind by a timed-out open: Target.createTarget
+        has usually created the tab already when zendriver's 10 s targetInfoChanged
+        wait gives up. Bounded, best-effort, at most 3 per call."""
+        closed = 0
+        try:
+            targets = list(getattr(browser, 'targets', []) or [])
+        except Exception:
+            return 0
+        for t in targets:
+            try:
+                if getattr(t, 'type_', '') != 'page':
+                    continue
+                tid = t.target.target_id
+                if keep_id and tid == keep_id:
+                    continue
+                if not str(getattr(t.target, 'url', '') or '').startswith(url_prefix):
+                    continue
+                await asyncio.wait_for(browser.connection.send(cdp.target.close_target(target_id=tid)), timeout=3.0)
+                closed += 1
+                if closed >= 3:
+                    break
+            except Exception:
+                continue
+        return closed
+
+    async def _harvest_ensure_visible(self, tab) -> str:
+        """The click needs a PAINTING tab (shape_harvest.human_click docstring).
+        Probe document.visibilityState + one animation frame. Returns 'ok' =
+        click now; 'skip' = the tab is hidden but a purchase is live or the
+        account is parked (challenge / dead-session), so the shot or the person
+        owns the window and we do not steal it (no strike); 'hidden' = still
+        not painting after Target.activateTarget (a strike -> re-open after N).
+        Why hidden at all: every Target.createTarget in desktop Chrome opens a
+        NEW FOREGROUND TAB, so each warmup-tab (re)open after a Chrome restart
+        pushed the harvest tab into the background (09-07 log, 11/11 lives)."""
+        async def _probe():
+            info = await asyncio.wait_for(
+                tab.evaluate(_shape_harvest.VISIBILITY_PROBE_JS, await_promise=True), timeout=3.0)
+            return _shape_harvest.visibility_verdict(info)
+        try:
+            verdict, detail = await _probe()
+        except Exception as e:
+            self._harvest_log(f"visibility probe failed ({type(e).__name__}: {e}) — clicking anyway")
+            return 'ok'
+        if verdict != self._harvest_vis_state:
+            self._harvest_log(f"harvest tab is {verdict.upper()} ({detail})")
+            self._harvest_vis_state = verdict
+        if verdict in ('visible', 'stalled'):
+            # 'stalled' = visible per the DOM but no frame within 700 ms: let the
+            # click's per-move abort decide (a painting tab acks a move in ms).
+            return 'ok'
+        live = bool(self.session_manager.is_purchase_in_progress())
+        parked_until = float(getattr(self.session_manager, '_dead_session_parked_until', 0.0) or 0.0)
+        if live or time.time() < parked_until:
+            self._harvest_vis_skips += 1
+            if self._harvest_vis_skips in (1, 10, 100) or self._harvest_vis_skips % 500 == 0:
+                self._harvest_log(f"harvest tab hidden while {'a purchase is live' if live else 'the account is parked'} "
+                                  f"— not stealing the foreground; click skipped (#{self._harvest_vis_skips})")
+            return 'skip'
+        try:
+            try:
+                await asyncio.wait_for(tab.activate(), timeout=3.0)
+            except Exception:
+                await asyncio.wait_for(self.session_manager.browser.connection.send(
+                    cdp.target.activate_target(tab.target.target_id)), timeout=3.0)
+        except Exception as e:
+            self._harvest_log(f"activate failed ({type(e).__name__}: {e}) — click skipped")
+            return 'hidden'
+        for _ in range(4):
+            await asyncio.sleep(0.35)
+            try:
+                verdict, detail = await _probe()
+            except Exception:
+                break
+            if verdict in ('visible', 'stalled'):
+                self._harvest_log(f"harvest tab re-activated -> {verdict.upper()} ({detail})")
+                self._harvest_vis_state = verdict
+                return 'ok'
+        self._harvest_log(f"harvest tab still {verdict.upper()} after activate ({detail}) — is the account "
+                          f"Chrome window minimized? click skipped")
+        return 'hidden'
+
     async def _ensure_harvest_tab(self):
         browser = self.session_manager.browser
         if not browser:
@@ -1620,6 +1740,7 @@ class PurchaseExecutor:
         if self._harvest_browser_ref is not browser:
             if self._harvest_browser_ref is not None:
                 self._harvest_log("browser changed — dropping harvest tab handle")
+                await self._harvest_drop_tab("browser changed", close=False)
             self._harvest_tab = None
             self._harvest_browser_ref = browser
         if self._harvest_tab is not None:
@@ -1628,10 +1749,15 @@ class PurchaseExecutor:
         if not tcins:
             return None
         tcin = tcins[self._harvest_tcin_idx % len(tcins)]
-        # 2026-09-08: the 25s open budget timed out ~90% of the time (292 fails /
-        # 28 ready on 09-07) — a Target PDP under HUMAN+Shape is slow to fire its
-        # load event while the box runs ~20 Chromes on one asyncio loop. Give it a
-        # realistic, tunable budget. Kill/tune: TARGET_HARVEST_TAB_OPEN_TIMEOUT_S.
+        # TARGET_HARVEST_TAB_OPEN_TIMEOUT_S bounds the whole open. 2026-09-09
+        # CORRECTION of the 09-08 note: zendriver's browser.get(new_tab=True) has
+        # its OWN 10 s wait for a Target.targetInfoChanged event, so a budget above
+        # 10 s only matters when Target.createTarget itself stalls. On 09-07 the
+        # opens that succeeded took 0.3-0.7 s; 143 of the 146 failures (real,
+        # de-duplicated counts) took exactly 10 s and ALL fell inside the ~5 min
+        # wedged-Chrome phase before each ~75 min sentinel restart (TAB_HEALTH
+        # evaluate('true') timeouts on the main tab at the same moments). A slow
+        # PDP was never it.
         try:
             _open_budget = max(10.0, float(os.environ.get('TARGET_HARVEST_TAB_OPEN_TIMEOUT_S', '45')))
         except (TypeError, ValueError):
@@ -1649,8 +1775,19 @@ class PurchaseExecutor:
             self._harvest_log(f"harvest tab ready on {tcin} (url={tab.url})")
             return tab
         except Exception as e:
-            self._harvest_log(f"harvest tab open FAILED on {tcin}: {type(e).__name__}: {e}")
+            _hint = (' (~10 s = zendriver targetInfoChanged wait: Chrome is wedged, not slow)'
+                     if isinstance(e, asyncio.TimeoutError) else '')
+            self._harvest_log(f"harvest tab open FAILED on {tcin}: {type(e).__name__}: {e}{_hint}")
             self._harvest_tab = None
+            # Target.createTarget may already have created the tab before the wait
+            # gave up: close such orphans so a wedged phase never piles PDP tabs
+            # onto the account Chrome.
+            try:
+                n = await self._harvest_close_orphans(browser, _shape_harvest.pdp_url(tcin), None)
+                if n:
+                    self._harvest_log(f"closed {n} orphaned PDP tab(s) left by the timed-out open")
+            except Exception:
+                pass
             return None
 
     async def _harvest_rotate(self, same: bool = False) -> None:
@@ -1675,8 +1812,8 @@ class PurchaseExecutor:
             self._harvest_tab_nav_ts = time.time()
             self._harvest_last_xy = None
         except Exception as e:
-            self._harvest_log(f"PDP nav failed ({type(e).__name__}: {e}) — dropping harvest tab handle")
-            self._harvest_tab = None
+            self._harvest_log(f"PDP nav failed ({type(e).__name__}: {e}) — dropping harvest tab")
+            await self._harvest_drop_tab("PDP nav failed")
 
     async def _harvest_once(self) -> bool:
         """One real click on the PDP's Add-to-cart -> one banked set (or a
@@ -1697,7 +1834,7 @@ class PurchaseExecutor:
                 info = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
             except Exception as e:
                 self._harvest_log(f"button lookup failed ({type(e).__name__}: {e}) — dropping harvest tab")
-                self._harvest_tab = None
+                await self._harvest_drop_tab("button lookup failed")
                 return False
             if not isinstance(info, dict):
                 info = {}
@@ -1729,50 +1866,70 @@ class PurchaseExecutor:
         except Exception:
             pass
         x, y = _shape_harvest.click_point(info)
+        # 2026-09-09 ROOT CAUSE of the 09-07 click timeouts (4,613 real; the log
+        # carries every line twice): the harvest tab was a BACKGROUND tab. Every
+        # Target.createTarget in desktop Chrome is a new FOREGROUND tab, so each
+        # warmup-tab (re)open after a Chrome restart pushed the harvest tab behind
+        # it (11/11 such lives: first click failure 5-45 s after the warmup open,
+        # every capture before it). A hidden tab paints no frames and Chromium
+        # releases queued mouseMoved input only via its 5 s rAF fallback, so no
+        # click budget or move cap could win. Fix = keep the tab PAINTING: probe
+        # and re-activate before the click (never over a live purchase / park).
+        if self._harvest_cfg.get('vis_guard', True):
+            _vis = await self._harvest_ensure_visible(tab)
+            if _vis != 'ok':
+                if _vis == 'hidden':
+                    self._harvest_click_timeouts += 1
+                    if self._harvest_click_timeouts >= self._harvest_drop_after():
+                        self._harvest_click_timeouts = 0
+                        self._harvest_log(f"{self._harvest_drop_after()} consecutive hidden-tab skips — dropping "
+                                          f"the harvest tab so the next cycle re-opens fresh (in the foreground)")
+                        await self._harvest_drop_tab("hidden after activate")
+                return False
         self._harvest_capture_evt.clear()
-        # 2026-09-08: 6s blew constantly (9230 TimeoutErrors on 09-07) — the click's
-        # ~6-11 dispatch_mouse_event CDP sends queue behind the warmup interceptor on
-        # the shared socket. 12s default (paired with the 6-step click cap in
-        # shape_harvest). Kill/tune: TARGET_HARVEST_CLICK_TIMEOUT_S.
+        # TARGET_HARVEST_CLICK_TIMEOUT_S bounds the whole click; a painting tab
+        # completes a 9-move click in well under a second (09-07: 0.57-0.74 s).
         try:
             _click_budget = max(3.0, float(os.environ.get('TARGET_HARVEST_CLICK_TIMEOUT_S', '12')))
         except (TypeError, ValueError):
             _click_budget = 12.0
         t0 = time.time()
+        _stats: Dict[str, Any] = {}
         try:
             self._harvest_last_xy = await asyncio.wait_for(
-                _shape_harvest.human_click(tab, x, y, self._harvest_last_xy), timeout=_click_budget)
+                _shape_harvest.human_click(tab, x, y, self._harvest_last_xy, stats=_stats,
+                                           move_abort_ms=self._harvest_cfg.get('move_abort_ms', 2500)),
+                timeout=_click_budget)
         except Exception as e:
-            # 2026-09-09: a click that times out on the contended CDP socket leaves
-            # the tab in an unknown state, and re-clicking the SAME tab just re-loses
-            # the socket race (9,230 timeouts in a row on 09-07). After 3 in a row,
-            # drop the tab so the next cycle re-opens fresh on a possibly quieter
-            # socket — same drop-on-failure pattern as the button lookup + no-capture
-            # rotate above. Kill/tune the streak via TARGET_HARVEST_CLICK_DROP_AFTER.
-            self._harvest_click_timeouts = getattr(self, '_harvest_click_timeouts', 0) + 1
-            self._harvest_log(f"click dispatch failed ({type(e).__name__}: {e}) "
-                              f"#{self._harvest_click_timeouts}")
-            try:
-                _drop_after = max(1, int(os.environ.get('TARGET_HARVEST_CLICK_DROP_AFTER', '3')))
-            except (TypeError, ValueError):
-                _drop_after = 3
-            if self._harvest_click_timeouts >= _drop_after:
+            self._harvest_click_timeouts += 1
+            _timing = _shape_harvest.click_stats_summary(_stats)
+            if isinstance(e, _shape_harvest.HarvestTabNotPainting):
+                # The fingerprint of the hidden-tab stall (~5000 ms = kMaxRafDelay).
+                self._harvest_vis_state = 'hidden'
+                self._harvest_log(f"click ABORTED: {e} | {_timing} | the tab lost the foreground mid-cycle; "
+                                  f"it will be re-activated before the next click #{self._harvest_click_timeouts}")
+            else:
+                self._harvest_log(f"click dispatch failed ({type(e).__name__}: {e}) | {_timing} "
+                                  f"#{self._harvest_click_timeouts}")
+            if self._harvest_click_timeouts >= self._harvest_drop_after():
                 self._harvest_click_timeouts = 0
-                self._harvest_log(f"{_drop_after} consecutive click timeouts — dropping the harvest "
-                                  f"tab so the next cycle re-opens fresh")
-                self._harvest_tab = None
+                self._harvest_log(f"{self._harvest_drop_after()} consecutive click failures — dropping the "
+                                  f"harvest tab so the next cycle re-opens fresh")
+                await self._harvest_drop_tab("consecutive click failures")
             return False
         try:
             await asyncio.wait_for(self._harvest_capture_evt.wait(), timeout=4.0)
             self._harvest_nocap = 0
             self._harvest_click_timeouts = 0    # 2026-09-09: reset the timeout streak on any capture
-            self._harvest_log(f"click -> capture in {time.time() - t0:.2f}s via {info.get('via')} text={info.get('text')!r}")
+            self._harvest_log(f"click -> capture in {time.time() - t0:.2f}s via {info.get('via')} text={info.get('text')!r} "
+                              f"| {_shape_harvest.click_stats_summary(_stats)}")
             return True
         except asyncio.TimeoutError:
             self._harvest_nocap += 1
             self._harvest_log(f"click produced NO cart_items POST within 4s (via {info.get('via')} "
                               f"text={info.get('text')!r}; #{self._harvest_nocap}) — "
-                              f"{'reloading the PDP' if self._harvest_nocap >= 2 else 'will retry'}")
+                              f"{'reloading the PDP' if self._harvest_nocap >= 2 else 'will retry'} "
+                              f"| {_shape_harvest.click_stats_summary(_stats)}")
             if self._harvest_nocap >= 2:
                 self._harvest_nocap = 0
                 await self._harvest_rotate(same=True)
@@ -1791,7 +1948,7 @@ class PurchaseExecutor:
             self._harvest_log(f"cart clear {'OK' if ok else 'reported failure'} — dropping harvest tab (re-opens on the PDP)")
         except Exception as e:
             self._harvest_log(f"cart clear errored ({type(e).__name__}: {e})")
-        self._harvest_tab = None
+        await self._harvest_drop_tab("after suspect-cart clear")
 
     async def _harvest_selftest(self) -> None:
         """Boot replay validation on the WARMUP tab (a different page instance

@@ -107,13 +107,13 @@ def test_bank():
 def test_bezier_and_click_point():
     import os
     rng = random.Random(7)
-    # 2026-09-09: TARGET_HARVEST_CLICK_MOVES caps the intermediate moves so the
-    # click makes fewer CDP round trips and clears the contended socket. Default
-    # 2 -> 2 moves + 1 settle point = 3. Restore the env after (no cross-test leak).
+    # TARGET_HARVEST_CLICK_MOVES bounds the intermediate moves. 2026-09-09: the
+    # default is back to the natural path (cap 9) — the earlier "2" rested on the
+    # refuted socket-saturation diagnosis. Restore the env after (no cross-test leak).
     _prev = os.environ.pop('TARGET_HARVEST_CLICK_MOVES', None)
     try:
         pts = h.bezier_path(100, 100, 500, 400, random.Random(7))
-        check("bezier_default_lean_3pts", len(pts) == 3)
+        check("bezier_default_natural_path", 6 <= len(pts) <= 10)
         check("bezier_ends_on_target", pts[-1][0] == 500.0 and pts[-1][1] == 400.0)
         # curvature: max perpendicular deviation from the straight line > 2px
         dx, dy = 400.0, 300.0
@@ -129,7 +129,7 @@ def test_bezier_and_click_point():
         check("bezier_knob_min_one_move", len(h.bezier_path(100, 100, 500, 400, random.Random(7))) == 2)
         # … and a bad value falls back to the default.
         os.environ['TARGET_HARVEST_CLICK_MOVES'] = 'bogus'
-        check("bezier_knob_bad_value_defaults", len(h.bezier_path(100, 100, 500, 400, random.Random(7))) == 3)
+        check("bezier_knob_bad_value_defaults", len(h.bezier_path(100, 100, 500, 400, random.Random(7))) == len(pts))
     finally:
         if _prev is None:
             os.environ.pop('TARGET_HARVEST_CLICK_MOVES', None)
@@ -209,6 +209,54 @@ def test_human_click_events():
     check("click_hold_60_130ms", 0.05 <= (t_rel - t_press) <= 0.20)
     last = [c for _, c in tab.events if c['params']['type'] == 'mouseMoved'][-1]['params']
     check("click_last_move_on_target", last['x'] == 300 and last['y'] == 200)
+    # 2026-09-09: per-send timing + the hidden-tab abort (a painting tab acks a
+    # move in ms; a hidden one only via Chromium's 5 s rAF fallback).
+    stats = {}
+    asyncio.run(h.human_click(FakeTab(), 300.0, 200.0, (50.0, 50.0), stats=stats, move_abort_ms=0))
+    kinds2 = [k for k, _ in stats['sends']]
+    check("click_stats_records_every_send", kinds2.count('move') >= 2 and kinds2[-2:] == ['press', 'release']
+          and all(isinstance(ms, int) and ms >= 0 for _, ms in stats['sends']))
+    summ = h.click_stats_summary(stats)
+    check("click_stats_summary_shape", summ.startswith('sends=') and 'max_move_ms=' in summ and 'press_ms=' in summ)
+    check("click_stats_summary_empty",
+          h.click_stats_summary(None) == 'sends=0 moves=0 max_move_ms=- press_ms=- release_ms=-')
+
+    class SlowTab(FakeTab):
+        async def send(self, gen):
+            await asyncio.sleep(0.03)
+            return await FakeTab.send(self, gen)
+
+    slow = SlowTab()
+    stats2 = {}
+    try:
+        asyncio.run(h.human_click(slow, 300.0, 200.0, (50.0, 50.0), stats=stats2, move_abort_ms=10))
+        aborted = False
+    except h.HarvestTabNotPainting as e:
+        aborted = 'took' in str(e) and 'not painting' in str(e)
+    check("click_aborts_on_slow_move", aborted)
+    check("click_abort_is_on_first_move", len(stats2['sends']) == 1 and stats2['sends'][0][0] == 'move'
+          and not any(c['params']['type'] == 'mousePressed' for _, c in slow.events))
+    stats3 = {}
+    asyncio.run(h.human_click(SlowTab(), 300.0, 200.0, (50.0, 50.0), stats=stats3, move_abort_ms=0))
+    check("click_abort_disabled_by_zero", [k for k, _ in stats3['sends']][-1] == 'release')
+    check("abort_error_is_runtime_error", issubclass(h.HarvestTabNotPainting, RuntimeError))
+
+
+def test_visibility_probe_and_verdict():
+    js = h.VISIBILITY_PROBE_JS
+    check("vis_js_reads_visibility_and_raf", 'document.visibilityState' in js and 'requestAnimationFrame' in js
+          and 'setTimeout' in js and 'raf_ms' in js)
+    check("vis_verdict_visible", h.visibility_verdict({'vis': 'visible', 'raf_ms': 16, 'focus': True})[0] == 'visible')
+    check("vis_verdict_hidden", h.visibility_verdict({'vis': 'hidden', 'raf_ms': -1, 'focus': False})[0] == 'hidden')
+    check("vis_verdict_stalled", h.visibility_verdict({'vis': 'visible', 'raf_ms': -1})[0] == 'stalled')
+    check("vis_verdict_garbage", h.visibility_verdict(None)[0] == 'stalled'
+          and h.visibility_verdict({'vis': 'visible', 'raf_ms': 'x'})[0] == 'stalled')
+    check("vis_verdict_detail", 'vis=hidden' in h.visibility_verdict({'vis': 'hidden', 'raf_ms': -1})[1])
+    c = h.config({'TARGET_SHAPE_HARVEST': '1'})
+    check("cfg_vis_guard_default_on", c['vis_guard'] is True and c['move_abort_ms'] == 2500)
+    c2 = h.config({'TARGET_HARVEST_VIS_GUARD': '0', 'TARGET_HARVEST_MOVE_ABORT_MS': '0'})
+    check("cfg_vis_guard_off_and_abort_off", c2['vis_guard'] is False and c2['move_abort_ms'] == 0)
+    check("cfg_move_abort_clamped", h.config({'TARGET_HARVEST_MOVE_ABORT_MS': '999999'})['move_abort_ms'] == 20000)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +349,82 @@ def test_executor_capture_and_block():
     check("danger_banks_nothing", ex3._shape_bank.count() == 0)
 
 
+def _tid(s):
+    from zendriver import cdp
+    return cdp.target.TargetID(s)     # what zendriver's Tab.target.target_id really is (str subclass)
+
+
+class VisTab:
+    """Fake harvest tab: a scripted sequence of visibility-probe answers."""
+    def __init__(self, seq):
+        self.seq = list(seq)
+        self.activated = 0
+        self.target = SimpleNamespace(target_id=_tid('T1'), url='https://www.target.com/p/-/A-21516452')
+        self.type_ = 'page'
+
+    async def evaluate(self, js, await_promise=False):
+        return self.seq.pop(0) if len(self.seq) > 1 else self.seq[0]
+
+    async def activate(self):
+        self.activated += 1
+
+
+def test_executor_visibility_guard():
+    ex, pe = _stub_executor()
+    ex._harvest_vis_state = ''
+    ex._harvest_vis_skips = 0
+    ex._harvest_tab = None
+    ex._harvest_last_xy = (1.0, 1.0)
+    ex.session_manager.is_purchase_in_progress = lambda: False
+    ex.session_manager._dead_session_parked_until = 0.0
+    ex.session_manager.browser = None
+    vis = {'vis': 'visible', 'raf_ms': 16, 'focus': True}
+    hid = {'vis': 'hidden', 'raf_ms': -1, 'focus': False}
+    t = VisTab([vis])
+    check("guard_visible_ok", asyncio.run(ex._harvest_ensure_visible(t)) == 'ok' and t.activated == 0)
+    t = VisTab([hid, vis])
+    check("guard_hidden_activates_then_ok", asyncio.run(ex._harvest_ensure_visible(t)) == 'ok' and t.activated == 1)
+    t = VisTab([hid, hid])
+    check("guard_still_hidden_is_a_strike", asyncio.run(ex._harvest_ensure_visible(t)) == 'hidden' and t.activated == 1)
+    ex.session_manager.is_purchase_in_progress = lambda: True
+    t = VisTab([hid])
+    check("guard_skips_over_live_purchase", asyncio.run(ex._harvest_ensure_visible(t)) == 'skip' and t.activated == 0)
+    ex.session_manager.is_purchase_in_progress = lambda: False
+    ex.session_manager._dead_session_parked_until = time.time() + 60
+    t = VisTab([hid])
+    check("guard_skips_when_parked", asyncio.run(ex._harvest_ensure_visible(t)) == 'skip' and t.activated == 0)
+    ex.session_manager._dead_session_parked_until = 0.0
+    t = VisTab([{'vis': 'visible', 'raf_ms': -1}])
+    check("guard_stalled_lets_the_click_decide", asyncio.run(ex._harvest_ensure_visible(t)) == 'ok')
+    # drop closes the target through the browser-level connection …
+    sent = []
+
+    async def _send(cmd):
+        sent.append(next(cmd))
+        return {}
+    ex.session_manager.browser = SimpleNamespace(connection=SimpleNamespace(send=_send))
+    ex._harvest_tab = VisTab([vis])
+    asyncio.run(ex._harvest_drop_tab("test"))
+    check("drop_closes_target", ex._harvest_tab is None and len(sent) == 1
+          and sent[0]['method'] == 'Target.closeTarget' and sent[0]['params']['targetId'] == 'T1')
+    # … but not when the browser it belonged to is gone.
+    ex._harvest_tab = VisTab([vis])
+    sent.clear()
+    asyncio.run(ex._harvest_drop_tab("browser gone", close=False))
+    check("drop_without_close_when_browser_changed", ex._harvest_tab is None and not sent)
+    # orphan sweep: closes PDP page targets, never the kept id, max 3
+    orphans = [VisTab([vis]) for _ in range(5)]
+    for i, o in enumerate(orphans):
+        o.target = SimpleNamespace(target_id=_tid(f'O{i}'), url='https://www.target.com/p/-/A-21516452?x')
+    other = VisTab([vis])
+    other.target = SimpleNamespace(target_id=_tid('W'), url='https://www.target.com/cart')
+    browser = SimpleNamespace(connection=SimpleNamespace(send=_send), targets=orphans + [other])
+    sent.clear()
+    n = asyncio.run(ex._harvest_close_orphans(browser, 'https://www.target.com/p/-/A-21516452', 'O0'))
+    ids = [c['params']['targetId'] for c in sent]
+    check("orphans_closed_bounded_and_keep_respected", n == 3 and 'O0' not in ids and 'W' not in ids and len(ids) == 3)
+
+
 # ---------------------------------------------------------------------------
 # 4. Executor wiring (source pins)
 # ---------------------------------------------------------------------------
@@ -353,6 +477,26 @@ def test_executor_wiring():
           "if _acct in (cfg.get('skip') or []):" in EXE_SRC and "TARGET_HARVEST_SKIP" in EXE_SRC)
     check("exe_harvest_hydration_settle",
           "if time.time() - self._harvest_tab_nav_ts < 3.0:" in EXE_SRC)
+    # 2026-09-09 hidden-tab root cause wiring
+    check("exe_vis_guard_before_click", 0 < EXE_SRC.find("_vis = await self._harvest_ensure_visible(tab)")
+          < EXE_SRC.find("_shape_harvest.human_click(tab, x, y, self._harvest_last_xy, stats=_stats"))
+    check("exe_click_passes_abort_threshold", "move_abort_ms=self._harvest_cfg.get('move_abort_ms', 2500)" in EXE_SRC)
+    check("exe_abort_marks_hidden", "isinstance(e, _shape_harvest.HarvestTabNotPainting)" in EXE_SRC
+          and "self._harvest_vis_state = 'hidden'" in EXE_SRC)
+    check("exe_activate_bounded", "await asyncio.wait_for(tab.activate(), timeout=3.0)" in EXE_SRC)
+    check("exe_never_steals_over_purchase_or_park",
+          "if live or time.time() < parked_until:" in EXE_SRC and "return 'skip'" in EXE_SRC)
+    check("exe_drop_closes_target", "cdp.target.close_target(target_id=tid)" in EXE_SRC)
+    for site in ("button lookup failed", "PDP nav failed", "consecutive click failures",
+                 "after suspect-cart clear", "hidden after activate"):
+        check(f"exe_drop_site_{site.split()[0]}_{site.split()[-1]}", f'self._harvest_drop_tab("{site}' in EXE_SRC)
+    check("exe_browser_changed_drop_no_close",
+          'await self._harvest_drop_tab("browser changed", close=False)' in EXE_SRC)
+    check("exe_orphan_sweep_after_failed_open",
+          "await self._harvest_close_orphans(browser, _shape_harvest.pdp_url(tcin), None)" in EXE_SRC)
+    check("exe_no_bare_handle_drops_left", EXE_SRC.count("self._harvest_tab = None") <= 4)
+    check("exe_click_logs_timing", "| {_shape_harvest.click_stats_summary(_stats)}" in EXE_SRC)
+    check("exe_socket_story_gone", "queue behind the warmup interceptor" not in EXE_SRC)
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +516,10 @@ def test_bat_pins():
           and _bat_val('TARGET_HARVEST_REPLAY') == '1' and _bat_val('TARGET_HARVEST_SELFTEST') == '1')
     check("bat_crlf_only", BAT_RAW.count(b'\n') == BAT_RAW.count(b'\r\n') and BAT_RAW.count(b'\r\n') > 100)
     check("bat_changelog_dated", "2026-09-03" in BAT_SRC and "HARVEST" in BAT_SRC)
+    check("bat_vis_guard_pinned", _bat_val('TARGET_HARVEST_VIS_GUARD') == '1'
+          and _bat_val('TARGET_HARVEST_MOVE_ABORT_MS') == '2500')
+    check("bat_hidden_tab_note", "FOREGROUND tab" in BAT_SRC and "2026-09-09" in BAT_SRC
+          and "share the CDP socket" not in BAT_SRC)
 
 
 def test_compiles():
@@ -388,7 +536,8 @@ def test_compiles():
 
 if __name__ == '__main__':
     for fn in (test_prefix_and_tokens, test_merge, test_bank, test_bezier_and_click_point, test_config_and_js,
-               test_human_click_events, test_executor_replay_lookup, test_executor_capture_and_block,
+               test_human_click_events, test_visibility_probe_and_verdict, test_executor_replay_lookup,
+               test_executor_capture_and_block, test_executor_visibility_guard,
                test_executor_wiring, test_bat_pins, test_compiles):
         try:
             fn()

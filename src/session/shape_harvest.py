@@ -117,6 +117,11 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "selftest": str(e.get("TARGET_HARVEST_SELFTEST", "1")).strip() != "0",
         "in_window": str(e.get("TARGET_HARVEST_IN_WINDOW", "1")).strip() != "0",
         "skip": harvest_skip(e),
+        # 2026-09-09 hidden-tab root cause (see human_click): probe visibility and
+        # re-activate the harvest tab before each click; abort a click as soon as
+        # one mouse move stalls (0 = never abort).
+        "vis_guard": str(e.get("TARGET_HARVEST_VIS_GUARD", "1")).strip() != "0",
+        "move_abort_ms": _int(e, "TARGET_HARVEST_MOVE_ABORT_MS", 2500, 0, 20000),
     }
 
 
@@ -283,22 +288,23 @@ def bezier_path(x0: float, y0: float, x1: float, y1: float,
     sign = rng.choice((-1.0, 1.0))
     cp_x = (x0 + x1) / 2 + sign * offset_mag * px + rng.uniform(-offset_mag * 0.4, offset_mag * 0.4)
     cp_y = (y0 + y1) / 2 + sign * offset_mag * py + rng.uniform(-offset_mag * 0.4, offset_mag * 0.4)
-    # 2026-09-09: the click's CDP round trips are the harvester's REAL bottleneck.
-    # Each bezier point is an awaited dispatch_mouse_event on the account browser's
-    # single CDP websocket, which the warmup interceptor saturates (~31,819 round
-    # trips over the 09-07 run). A 6-9 point path needs ALL of its sends to clear
-    # that contended socket inside the click budget, and it lost the race ~99.7%
-    # of the time (9,230 TimeoutErrors vs 32 captures on 09-07) — while the
-    # single-send button-lookup evaluate() on the SAME socket almost always slips
-    # through. Fewer intermediate moves = fewer serialized round trips = the click
-    # actually completes and captures a page-signed set. TARGET_HARVEST_CLICK_MOVES
-    # caps the intermediate moves (default 2 -> ~5 total sends vs ~9); a completed
-    # trusted click still fires isTrusted mousedown/up with a real preceding move.
-    # Raise toward 6 only if a live run shows captures AND socket headroom.
+    # TARGET_HARVEST_CLICK_MOVES bounds the intermediate moves (default 9 = the
+    # natural path for any realistic distance). 2026-09-09 CORRECTION: the earlier
+    # default of 2 was built on a wrong diagnosis ("the warmup interceptor
+    # saturates the account browser's single CDP websocket"). zendriver gives
+    # every tab its OWN websocket, the interceptor averaged <0.5 round trips/s,
+    # and the 09-07 run log shows the real cause: every click failure streak
+    # began right after a `[WARMUP] Opening warmup tab` (Target.createTarget =
+    # a NEW FOREGROUND TAB in desktop Chrome, always), which pushed the harvest
+    # tab into the background. Chromium queues mouseMoved as rAF-aligned input
+    # and a hidden tab produces no frames, so each move is only released by the
+    # 5 s fallback timer (kMaxRafDelay) -> ANY move count blows ANY sane budget.
+    # Fewer moves never fixed that; keeping the harvest tab VISIBLE does (see
+    # human_click's per-move timing + the executor's visibility guard).
     try:
-        _cap = int(os.environ.get('TARGET_HARVEST_CLICK_MOVES', '2'))
+        _cap = int(os.environ.get('TARGET_HARVEST_CLICK_MOVES', '9'))
     except (TypeError, ValueError):
-        _cap = 2
+        _cap = 9
     _cap = max(1, min(9, _cap))
     steps = max(1, min(_cap, int(dist / 80) + rng.randint(1, 3)))
     pts: List[Tuple[float, float, float]] = []
@@ -312,25 +318,107 @@ def bezier_path(x0: float, y0: float, x1: float, y1: float,
     return pts
 
 
+class HarvestTabNotPainting(RuntimeError):
+    """One CDP mouseMoved took longer than the abort threshold. Chromium queues
+    mouseMoved as rAF-aligned input (MainThreadEventQueue::IsRafAlignedEvent);
+    a tab that is not painting (background tab, minimized window) produces no
+    main frame, so the event is released only by the 5 s fallback timer
+    (kMaxRafDelay, "eg. Tab gets hidden"). A slow move is therefore a
+    diagnosis — the tab must be re-activated — not something to wait out."""
+
+
+# Runs in-page: visibilityState + whether ONE animation frame arrives within
+# 700 ms. A painting tab answers in ~16-50 ms; a hidden tab never fires rAF.
+VISIBILITY_PROBE_JS = """(() => new Promise((resolve) => {
+    const t0 = performance.now();
+    let done = false;
+    const out = (raf_ms) => {
+        if (done) return;
+        done = true;
+        resolve({vis: document.visibilityState, focus: document.hasFocus(), raf_ms: raf_ms});
+    };
+    try { requestAnimationFrame(() => out(Math.round(performance.now() - t0))); } catch (e) { out(-2); }
+    setTimeout(() => out(-1), 700);
+}))()"""
+
+
+def visibility_verdict(info: Any) -> Tuple[str, str]:
+    """('visible' | 'hidden' | 'stalled', detail) from a VISIBILITY_PROBE_JS
+    result. hidden = document.visibilityState != 'visible' (background tab or
+    minimized window -> re-activate); stalled = visible per the DOM but no
+    animation frame within 700 ms (let the per-move abort decide)."""
+    if not isinstance(info, dict):
+        return ("stalled", f"probe returned {type(info).__name__}")
+    vis = str(info.get("vis") or "?")
+    try:
+        raf = int(info.get("raf_ms", -1))
+    except (TypeError, ValueError):
+        raf = -1
+    detail = f"vis={vis} raf_ms={raf} focus={'yes' if info.get('focus') else 'no'}"
+    if vis != "visible":
+        return ("hidden", detail)
+    if raf < 0:
+        return ("stalled", detail)
+    return ("visible", detail)
+
+
 async def human_click(tab, x: float, y: float,
-                      start: Optional[Tuple[float, float]] = None) -> Tuple[float, float]:
+                      start: Optional[Tuple[float, float]] = None,
+                      stats: Optional[Dict[str, Any]] = None,
+                      move_abort_ms: Optional[int] = None) -> Tuple[float, float]:
     """Move along a Bezier path and click (trusted CDP input events). Returns
-    the final pointer position for the next call."""
+    the final pointer position for the next call.
+
+    `stats` (optional dict) receives 'sends': [(kind, ms), ...] as each CDP
+    send completes, so a caller whose overall click budget expires still sees
+    which sends finished and how long each took. `move_abort_ms` (default
+    TARGET_HARVEST_MOVE_ABORT_MS=2500, 0 = off) raises HarvestTabNotPainting
+    the moment ONE mouseMoved exceeds it — a painting tab acks a move in tens
+    of ms, a hidden one only when Chromium's 5 s rAF fallback fires."""
     import asyncio
     from zendriver.cdp import input_ as cdp_input
+    if move_abort_ms is None:
+        try:
+            move_abort_ms = int(os.environ.get('TARGET_HARVEST_MOVE_ABORT_MS', '2500'))
+        except (TypeError, ValueError):
+            move_abort_ms = 2500
+    sends: List[Tuple[str, int]] = stats.setdefault('sends', []) if stats is not None else []
+
+    async def _send(kind: str, cmd) -> None:
+        t0 = time.monotonic()
+        await tab.send(cmd)
+        ms = int((time.monotonic() - t0) * 1000)
+        sends.append((kind, ms))
+        if kind == 'move' and move_abort_ms > 0 and ms > move_abort_ms:
+            n_moves = sum(1 for k, _ in sends if k == 'move')
+            raise HarvestTabNotPainting(
+                f"mouseMoved #{n_moves} took {ms} ms (> {move_abort_ms} ms abort): "
+                f"the harvest tab is not painting")
+
     sx, sy = start or (random.uniform(200, 900), random.uniform(150, 500))
     for bx, by, dt in bezier_path(sx, sy, x, y):
-        await tab.send(cdp_input.dispatch_mouse_event(
+        await _send('move', cdp_input.dispatch_mouse_event(
             type_="mouseMoved", x=int(bx), y=int(by), pointer_type="mouse"))
         await asyncio.sleep(dt)
-    await tab.send(cdp_input.dispatch_mouse_event(
+    await _send('press', cdp_input.dispatch_mouse_event(
         type_="mousePressed", x=x, y=y, button=cdp_input.MouseButton.LEFT,
         buttons=1, click_count=1, pointer_type="mouse"))
     await asyncio.sleep(random.uniform(0.06, 0.13))
-    await tab.send(cdp_input.dispatch_mouse_event(
+    await _send('release', cdp_input.dispatch_mouse_event(
         type_="mouseReleased", x=x, y=y, button=cdp_input.MouseButton.LEFT,
         buttons=0, click_count=1, pointer_type="mouse"))
     return (x, y)
+
+
+def click_stats_summary(stats: Optional[Dict[str, Any]]) -> str:
+    """Compact per-send timing line for the log, e.g.
+    'sends=5 moves=3 max_move_ms=18 press_ms=4 release_ms=3'."""
+    sends = list((stats or {}).get('sends') or [])
+    moves = [ms for k, ms in sends if k == 'move']
+    press = [ms for k, ms in sends if k == 'press']
+    rel = [ms for k, ms in sends if k == 'release']
+    return (f"sends={len(sends)} moves={len(moves)} max_move_ms={max(moves) if moves else '-'} "
+            f"press_ms={press[0] if press else '-'} release_ms={rel[0] if rel else '-'}")
 
 
 # --------------------------------------------------------------------------- #

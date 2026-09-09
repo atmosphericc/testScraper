@@ -31,6 +31,69 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-09] - Shape harvester: the 99.7% click timeouts were a HIDDEN-TAB input stall, not CDP-socket contention; every failed tab open sat inside the ~75-min wedge - TARGET
+**Symptom**: run_20260907_231629.log (09-07 23:16 → 09-08 18:06, business-only harvest).
+De-duplicated counts (the run log carries every `[HARVEST/…]` line twice — print + logger):
+**4,613** `click dispatch failed (TimeoutError)` vs **16** captures + 18 completed-but-no-POST
+clicks; **160** tab-open attempts / **14** ready / **146** FAILED. The 09-08 diagnosis ("the
+warmup interceptor's ~31,819 round trips saturate the account browser's single CDP websocket,
+so the click's 6-11 sends lose the race") and the two band-aids built on it (budgets 25→45 s
+and 6→12 s; `TARGET_HARVEST_CLICK_MOVES=2`, 7025492e) were wrong.
+**Root Cause**:
+1. zendriver opens ONE websocket PER TAB (`Connection(websocket_url=…/devtools/page/<id>)`),
+   so the harvest tab never shared a socket with the warmup interceptor — whose 31.8k LINES
+   were ~9k requests over 19 h (<0.5/s), nothing for a websocket.
+2. Timeline: every successful open took 0.3–0.7 s and its first click captured in
+   0.57–1.03 s. In 11 of the 14 browser lives a `[WARMUP] Opening warmup tab` line landed
+   5–45 s BEFORE the first click failure, with every capture before it; in two more the
+   warmup open came in the same second as the harvest tab (0 captures); life 1 at boot had
+   the 16 sweep Chromes launching on-screen and the operator at the keyboard. Desktop
+   Chrome's `ChromeDevToolsManagerDelegate::CreateNewTarget` hard-codes
+   `WindowOpenDisposition::NEW_FOREGROUND_TAB` (it ignores both `background` and
+   `newWindow`), so the warmup tab re-created after each sentinel Chrome restart pushed the
+   harvest tab into the BACKGROUND.
+3. Chromium queues `mouseMoved` as rAF-aligned input (`MainThreadEventQueue::IsRafAlignedEvent`);
+   a hidden tab produces no main frame, so each queued move is released only by the fallback
+   timer `kMaxRafDelay = 5 s` ("This fallback fires when the browser doesn't produce main
+   frames … eg. Tab gets hidden"). `Input.dispatchMouseEvent` answers only on the renderer's
+   ack (`InputInjector::OnInputEventAck`), so 2–12 moves × 5 s beat ANY budget, while
+   `Runtime.evaluate` (no frame needed) kept working — exactly the observed signature. The
+   account browsers' `--disable-backgrounding-occluded-windows` only turns OCCLUDED into
+   VISIBLE (`WebContentsImpl::UpdateVisibilityAndNotifyPageAndView`); it does nothing for a
+   background tab or a minimized window (`IsIconic` → HIDDEN).
+4. Tab opens: 143/146 failures took exactly 10.0 s = zendriver's own
+   `wait_for(TargetInfoChanged, 10)` inside `browser.get()`; every one followed a
+   `button lookup failed` (evaluate timeout on the harvest tab) and ended with the sentinel
+   restart — i.e. the pre-existing ~75-min wedge phase (entries 07-23 / 07-08), not a slow
+   PDP. The 25→45 s budget could never fire first (opens outside the wedge: 0.5 s).
+5. Every drop only cleared the handle (`self._harvest_tab = None`) — a leaked live PDP tab
+   (React + Shape + PX sensors + Fetch interceptor) per drop; the 3-strike drop would have
+   leaked one per ~45 s while hidden.
+**Fix Applied** (flag-gated, harvest-only; 5 files): `shape_harvest.human_click` times every
+CDP send (`stats`) and raises `HarvestTabNotPainting` when ONE `mouseMoved` exceeds
+`TARGET_HARVEST_MOVE_ABORT_MS` (2500 — the 5 s fallback fingerprint); `VISIBILITY_PROBE_JS`
++ `visibility_verdict` (visibilityState + one rAF within 700 ms); executor
+`_harvest_ensure_visible` probes before every click and re-activates the tab
+(`Target.activateTarget`, bounded) — never over a live purchase or a parked account ('skip',
+no strike); 'still hidden after activate' counts toward the 3-strike drop; `_harvest_drop_tab`
+CLOSES the tab (browser-level `Target.closeTarget`, 5 s bound) at all five drop sites (not on
+"browser changed"); `_harvest_close_orphans` closes PDP tabs left by timed-out opens;
+`TARGET_HARVEST_CLICK_MOVES` default back to 9 (natural path); every click line logs
+`sends/moves/max_move_ms/press_ms`. Bat: `TARGET_HARVEST_VIS_GUARD=1`,
+`TARGET_HARVEST_MOVE_ABORT_MS=2500`, corrected note. Tests: test_shape_harvest 141/141 + the
+five sibling suites green.
+**Confidence**: high on the mechanism (Chromium source + 14/14 lives consistent). The live
+proof is the next quiet-night run: `max_move_ms` ≈ 16–50 on captures; `click ABORTED:
+mouseMoved #1 took ~5000 ms` followed by `harvest tab re-activated -> VISIBLE` whenever a
+warmup tab steals the foreground.
+**Outcome**: SHIPPED, UNPROVEN LIVE (user-gated). Still open: the ~75-min wedge itself (every
+open failure and every Chrome restart on 09-07 was that clock). `TARGET_HARVEST_SKIP=primary`
+was justified on 09-04 by "18/18 clicks failed under sweep load" — most likely the same
+hidden-tab mechanism; re-test with the guard on a quiet night. Operator rule: never minimize
+the account Chrome windows while the harvester runs.
+
+---
+
 ### [2026-09-04 → 09-07] - Sweep blind for 3.9 days + two accounts driven to GUEST by the sentinel ladder - TARGET
 **Symptom**: run_20260904_014716.log (bat 09-04 01:47 → user stop 09-07 22:30). The
 home-IP sweep (`RESILIENT_HARVEST_VIA_LOCAL_IP=1`, 2 cold sessions) read **zero**

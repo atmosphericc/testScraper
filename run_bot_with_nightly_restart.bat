@@ -622,14 +622,27 @@ REM  Skip primary so its failing clicks don't contend with its real shots; it
 REM  fires the proven page-signed shots. Un-skip once harvest is moved off the
 REM  shared loop. Kill-switch: set TARGET_HARVEST_SKIP=  (empty).
 set TARGET_HARVEST_SKIP=primary,alt-1
-REM 2026-09-08: harvest reliability budgets. The 25s tab-open timed out ~90%
-REM and the 6s click ~always (9230 TimeoutErrors on 09-07) because ~20 Chromes
-REM share one asyncio loop + business's warmup interceptor shares the CDP socket.
-REM Bigger, tunable budgets + a 6-step click (shape_harvest) let the harvest tab
-REM open and the real click complete so the bank actually fills. Tune DOWN only if
-REM a failed open/click is wasting the window; UP if they still time out.
+REM 2026-09-09: the REAL 09-07 harvester root cause (supersedes the 09-08 note).
+REM The 09-07 click timeouts (4,613 real; the log carries every line twice) were
+REM NOT socket contention -- zendriver gives every tab its own CDP socket. The
+REM harvest tab was a BACKGROUND tab: every Target.createTarget in desktop Chrome
+REM opens a new FOREGROUND tab, so each warmup-tab re-open after the ~75-min
+REM sentinel Chrome restart pushed the harvest tab behind it (first click failure
+REM 5-45 s later in 11/11 such lives; every capture came before). A hidden tab
+REM paints no frames and Chromium releases queued mouseMoved input only via its
+REM 5 s rAF fallback timer, so no click budget or move cap could ever win. Fix:
+REM probe visibility and re-activate the harvest tab before each click (never
+REM over a live purchase or a parked account), abort a click the moment one move
+REM stalls (>2500 ms = the 5 s fallback fingerprint), close dropped tabs, log
+REM per-move timing. grep "[HARVEST/" for "harvest tab is HIDDEN", "re-activated",
+REM "click ABORTED", "max_move_ms=". The open budget below only matters past
+REM zendriver's own 10 s wait; every 09-07 open failure sat inside a wedged-Chrome
+REM phase. Kill: TARGET_HARVEST_VIS_GUARD=0 / TARGET_HARVEST_MOVE_ABORT_MS=0.
+REM Never minimize the account Chrome windows while the harvester runs.
 set TARGET_HARVEST_TAB_OPEN_TIMEOUT_S=45
 set TARGET_HARVEST_CLICK_TIMEOUT_S=12
+set TARGET_HARVEST_VIS_GUARD=1
+set TARGET_HARVEST_MOVE_ABORT_MS=2500
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the
