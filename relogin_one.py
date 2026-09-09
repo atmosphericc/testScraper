@@ -386,7 +386,9 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
                 log("MANUAL", f"{acc_id}: already logged in")
             else:
                 print(f"\n  >>> [{acc_id}] LOG IN BY HAND in the browser window "
-                      f"(email {_mask(acc['username'])}), clear any code, then press ENTER here <<<", flush=True)
+                      f"(email {_mask(acc['username'])}), clear any one-time code AND any "
+                      f"'Press & Hold' human-verification widget (HUMAN Security, 2026-09), "
+                      f"wait until the /account page shows your name, then press ENTER here <<<", flush=True)
                 await asyncio.get_event_loop().run_in_executor(None, input, "")
             ok = await _on_account_page_loggedin(tab)
             log("RESULT", f"{acc_id}: {'LOGGED IN ✅' if ok else 'NOT logged in ❌'}")

@@ -1274,6 +1274,10 @@ class BulletproofPurchaseManager:
                         'atc_failed_api_mode', 'rate_limited_429',
                         'atc_evaluate_timeout', 'page_not_ready', 'button_not_found',
                         'cdp_wedged_pre_atc',
+                        # 2026-09-09: fast lane cleared a foreign/extra cart item
+                        # (would-be whole-cart buy) — re-race a fresh ATC on the
+                        # now-clean cart. Cleared before returning, so no stacking.
+                        'foreign_cart_cleared',
                     }
                     # 2026-06-30 drop fix — persist through Target's checkout demand-
                     # throttle. The executor emits 'checkout_busy_retryable' ONLY when

@@ -250,6 +250,19 @@ class SessionManager:
 
             import platform as _platform
             _browser_args = ['--window-size=1920,1080']
+            # 2026-09-09: account/purchase browsers stay ON-SCREEN by default.
+            # Off-screening THESE hides HUMAN's "Press & Hold" widget that the PX
+            # guard deliberately leaves up for a PERSON to solve (this week's top
+            # recovery path — business/alt-1 died to that challenge), and it also
+            # hides the hand-login window. The focus-steal fix (a fullscreen game
+            # getting alt-tabbed) belongs on the 16 read-only SWEEP Chromes
+            # (src/session/multi_session_pool.py), which never need to be seen.
+            # So the account browsers are visible unless you explicitly opt in
+            # (only sensible on a box where you never hand-solve). Windows only.
+            if (_platform.system() == 'Windows'
+                    and os.environ.get('TARGET_ACCOUNT_OFFSCREEN', '0').strip().lower()
+                    in ('1', 'true', 'yes', 'on')):
+                _browser_args.append('--window-position=-32000,-32000')
             # Anti-idle flags (2026-07-06): on two consecutive overnight runs
             # every purchase Chrome's CDP went dead around midnight while the
             # browsers sat idle/backgrounded (07-03 23:50, 07-06 00:21) —
@@ -1617,6 +1630,61 @@ class SessionManager:
         except Exception:
             pass
 
+    async def _px_challenge_parks_ladder(self) -> bool:
+        """2026-09-07 HUMAN Security (PerimeterX) "Press & Hold" guard.
+
+        Runs after the nav-refresh rung failed and BEFORE the destructive rungs
+        (Chrome restart -> full sign-out -> scripted relogin). Takes a READ-ONLY
+        DOM snapshot of the current tab (querySelector/innerText/URL only). If it
+        is HUMAN's challenge/block page the account is CHALLENGED, not dead:
+        restarting + relogging over it only wipes a still-valid login-session
+        (business and alt-1 went GUEST exactly that way on 09-06..09-07, every
+        scripted relogin "username did NOT advance"). So: alert (once per 10 min),
+        park the heavy rungs for TARGET_PX_CHALLENGE_PARK_S and leave the widget
+        on screen for a PERSON to press. Rung-0 (ensure_fresh_access_token) keeps
+        polling and clears the park the moment a member token mints again.
+        Never touches the widget. Kill-switch TARGET_PX_CHALLENGE_GUARD=0 =
+        the exact pre-09-07 ladder."""
+        try:
+            try:
+                from .px_challenge import (guard_enabled, park_seconds, is_px_challenge,
+                                           describe, PX_MARKERS_JS)
+            except ImportError:
+                from src.session.px_challenge import (guard_enabled, park_seconds, is_px_challenge,  # type: ignore
+                                                      describe, PX_MARKERS_JS)
+        except Exception as e:
+            self.logger.info(f"[PX-CHALLENGE] guard unavailable ({e})")
+            return False
+        if not guard_enabled():
+            return False
+        try:
+            tab = await self.get_page()
+            if not tab:
+                return False
+            markers = await asyncio.wait_for(tab.evaluate(PX_MARKERS_JS), timeout=4.0)
+        except Exception as e:
+            self.logger.info(f"[PX-CHALLENGE] {self.account_id}: DOM probe skipped "
+                             f"({type(e).__name__}: {e})")
+            return False
+        if not is_px_challenge(markers):
+            return False
+        park_s = park_seconds()
+        self._dead_session_parked_until = time.time() + park_s
+        self._px_challenge_count = getattr(self, '_px_challenge_count', 0) + 1
+        self.logger.warning(
+            f"[PX-CHALLENGE] {self.account_id}: HUMAN 'Press & Hold' page is up "
+            f"({describe(markers)}) — parking restart/sign-out/relogin for {park_s:.0f}s "
+            f"(#{self._px_challenge_count}); solve it BY HAND in that Chrome window")
+        now = time.time()
+        if now - getattr(self, '_px_challenge_alert_at', 0.0) >= 600.0:
+            self._px_challenge_alert_at = now
+            self._alert_critical(
+                f"{self.account_id}: HUMAN Security 'Press & Hold' challenge is showing on the "
+                f"account browser ({describe(markers)}) — press it BY HAND in that window; the "
+                f"sentinel will not restart / sign out / relogin while it shows "
+                f"(parked {park_s:.0f}s, rung-0 token check keeps watching)")
+        return True
+
     async def _trigger_token_refresh(self) -> bool:
         """Trigger Target's auto-refresh flow by navigating to account page"""
         try:
@@ -2008,6 +2076,10 @@ class SessionManager:
                 if await self._trigger_token_refresh():
                     self.logger.info(f"[SENTINEL] {self.account_id}: logged in on recheck (first check was transient)")
                     return True
+            # 2026-09-07: a HUMAN "Press & Hold" page is a CHALLENGED account,
+            # not a dead one — never restart/sign-out/relogin over it.
+            if await self._px_challenge_parks_ladder():
+                return False
             self.logger.warning(f"[SENTINEL] {self.account_id}: navigation refresh failed — escalating to restart")
             # guard=False: the sentinel wrapper already holds the executor's
             # page lock (drop-guard); re-acquiring it here would deadlock.

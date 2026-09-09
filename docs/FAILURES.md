@@ -31,6 +31,57 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-04 → 09-07] - Sweep blind for 3.9 days + two accounts driven to GUEST by the sentinel ladder - TARGET
+**Symptom**: run_20260904_014716.log (bat 09-04 01:47 → user stop 09-07 22:30). The
+home-IP sweep (`RESILIENT_HARVEST_VIA_LOCAL_IP=1`, 2 cold sessions) read **zero**
+RedSky 200s the entire run (11,050 consecutive failed ground-truth reads, captcha
+backoff pinned at x16 from 01:48); the 09-04 emergency trusted-tab reader
+(`RESILIENT_FORCE_TAB_FETCH=1`) timed out 30,012× on `get_page` (3 s) and returned
+"no result" 4,567×, 1 stock detection all run. From 09-05 the sentinel walked its full
+ladder on business and alt-1 every tick: token repair → nav refresh → Chrome restart →
+full sign-out → scripted relogin (`username did NOT advance` 0/12, 09-06 23:40 → 09-07
+20:55) → relogin CAPPED; both accounts ended GUEST (`check_session_readiness.py`).
+`TOKEN CHURN` alerts 7×. Harvester (business only): 88 captures, 1,270 harvest-tab
+open failures, SELFTEST 424 2/2 at boot, 0 replays (no hot window occurred).
+**Root Cause**: (1) The RedSky wall is HUMAN Security / PerimeterX (Target now runs
+HUMAN's sensor on the storefront in addition to Shape — `_px2/_px3/_pxhd/_pxvid/pxcts`
+on `.target.com` in every jar), keyed to the cold profiles/device trust after the 09-04
+double-bot overload, so moving the sweep to the home IP did not help and the pool's
+cold profiles stayed walled on any IP. (2) A challenged account browser renders the
+"Press & Hold" interstitial on the sentinel's `/account` nav; the ladder read that page
+as a dead session and escalated into the DESTRUCTIVE rungs, wiping still-valid
+login-sessions and then failing the Shape-burned scripted relogin. (3) The run exceeded
+the 24 h restart rule by ~3 days (login-sessions rot at 32-46 h), compounding (2).
+**Fix Applied** (2026-09-07, flag-gated, no browser; tests/test_px_challenge_guard.py 90/90 +
+test_captcha_backoff_local_ip 23/23, regression test_shape_harvest 95/95 + test_0828_phase2_fixes 70/70): BD sweep
+pool restored (16 IPs, 3.0/s = 0.19/s per IP) with `probe_sweep_pool.bat` as the
+read-only pre-drop standing check; `RESILIENT_FORCE_TAB_FETCH=auto`
+(`src/monitoring/tab_fetch_policy.py`: trusted-browser fallback only while the pool has
+no 200 for 180 s); `src/session/px_challenge.py` + sentinel guard
+`_px_challenge_parks_ladder` (`TARGET_PX_CHALLENGE_GUARD=1`: a challenge page parks the
+restart/sign-out/relogin rungs for 300 s, alerts `[PX-CHALLENGE]`/`[AUTH_CRITICAL]`,
+leaves the widget for a person); `px_block` labels on ATC/place-order 403s;
+`[STOCK][PX-CAPTCHA]` on the trusted reader; hand-login prompt names the widget.
+**Probe verdict (2026-09-07 23:05, `probe_sweep_pool.bat`, same fresh profile, same
+machine)**: 31.105.228.245 / 31.105.93.225 / 168.158.143.27 → 403 captcha envelope;
+72.56.171.184 → 200 OK-DATA twice. So the wall is IP-RANGE reputation (HUMAN), not the
+device, and after 3.9 days of rest most of the pool is still walled. Shipped on top
+(same night, flag-gated, tests/test_captcha_session_park.py): a captcha 403 now parks
+THAT session (`RESILIENT_CAPTCHA_PARK_S`=1800, ×2 per repeat, cap ×8) instead of
+slowing the whole sweep, so the clean IPs keep cadence and walled ones retest on their
+own; the sweep is capped at usable_sessions × `RESILIENT_PER_IP_MAX_RPS` (1.0), so one
+clean IP is read at 1/s not 3/s; `RESILIENT_POOL_FRESH_PROFILES=1` wipes the pool's
+scratch profiles at launch (they carry the HUMAN ids flagged on 09-04); the
+trusted-tab `get_page` budget is `RESILIENT_TAB_FETCH_TIMEOUT_S`=8 (was 3); the probe
+script gained `home` / `reserve` / single-IP modes. Every session walled → the auto
+tab-fetch is the detector.
+**Confidence**: high on the vendor + ladder mechanism (cookies, probes, log census) and
+on the range verdict (probe); the real lever for the pool is NEW exits outside
+31.105.x / 168.158.x (Bright Data refresh) — one clean IP at 1/s is a floor, not a plan.
+**Outcome**: pending first live run. Operator: `hand_login_all.bat` → 3/3 MEMBER,
+`probe_sweep_pool.bat all` / `reserve` / `home` → move CAPTCHA IPs to reserve, request
+replacements from Bright Data, launch exactly once, ≤ 24 h.
+
 ### [2026-08-28] - Fri drop 0-for across 14 windows: unwinnable 401 wall behind the edge limiter, PLUS ~980 shots forfeited to the breaker and ~1.1s/cycle of self-inflicted retry waste - TARGET
 **Symptom**: run_20260827_224501.log (bat 08-27 22:45 -> user stop 17:01).
 Six TCINs released one at a time 02:03-04:44 in a fixed ~19-26 min sequence,

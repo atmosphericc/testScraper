@@ -1038,6 +1038,45 @@ class StockMonitorThread:
         self.running = False
         self.thread = None
 
+    def _tab_fetch_wanted(self) -> bool:
+        """2026-09-07: RESILIENT_FORCE_TAB_FETCH policy (0 / 1 / auto) — see
+        src/monitoring/tab_fetch_policy.py. In auto the trusted-browser RedSky
+        read runs only while the resilient pool is blind; logs each flip."""
+        try:
+            from src.monitoring.tab_fetch_policy import decide as _tf_decide, mode as _tf_mode
+            want = bool(_tf_decide(getattr(self.stock_monitor, '_resilient_checker', None)))
+        except Exception as e:
+            want = os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0').strip().lower() in ('1', 'true', 'yes', 'on', 'always')
+            _tf_mode = lambda: 'error'  # noqa: E731
+            print(f"[STOCK][TAB-FETCH] policy error ({e}) — using plain env value {want}")
+        prev = getattr(self, '_tab_fetch_state', None)
+        if want != prev:
+            self._tab_fetch_state = want
+            if prev is not None or want:
+                print(f"[STOCK][TAB-FETCH] trusted-browser RedSky fallback "
+                      f"{'ON (resilient pool blind)' if want else 'OFF (pool reading again)'} "
+                      f"[mode={_tf_mode()}]")
+        return want
+
+    def _tab_fetch_cadence_s(self) -> float:
+        """Seconds between home-IP RedSky reads while the trusted-browser reader
+        is the detector. 2026-09-09: was random.randint(4,8) — too slow to catch
+        a wave-first window. Every win lands 0.4-3.7s after a flip and hot SKUs
+        sell out <60s, so an 8s poll can miss the flip entirely; the wave-first
+        shot (32.6% convert vs 0.9% for re-POSTs) never fires. One bulk fetch
+        covers all ~19 TCINs, so a ~1-2s cadence detects the flip in time and
+        still sits inside the vendor-safe monitor band (Refract 1000-4000ms),
+        not an interaction-free burst that would flag the home IP. Widen via
+        RESILIENT_READ_CADENCE_MIN_S / _MAX_S if the home IP ever shows strain."""
+        try:
+            lo = float(os.environ.get('RESILIENT_READ_CADENCE_MIN_S', '1.0'))
+            hi = float(os.environ.get('RESILIENT_READ_CADENCE_MAX_S', '2.0'))
+        except (TypeError, ValueError):
+            lo, hi = 1.0, 2.0
+        lo = max(0.5, lo)
+        hi = max(lo, hi)
+        return random.uniform(lo, hi)
+
     def _on_resilient_alert(self, kind, level, message):
         """2026-08-25: surface checker alerts (invisible TCINs) on the dashboard feed + error_log.txt."""
         try:
@@ -1227,8 +1266,8 @@ class StockMonitorThread:
                         if os.environ.get('TEST_MODE', 'false').lower() == 'true':
                             cycle_duration = random.randint(25, 35)
                         else:
-                            cycle_duration = (random.randint(4, 8)
-                                              if os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0') == '1'
+                            cycle_duration = (self._tab_fetch_cadence_s()
+                                              if self._tab_fetch_wanted()
                                               else random.randint(15, 25))
 
                         start_time = time.time()
@@ -1246,11 +1285,18 @@ class StockMonitorThread:
                 else:
 
                     # WAIT FIRST (let purchase happen during countdown)
-                    # This ensures browser stays on cart page until timer expires
-                    for i in range(cycle_duration):
+                    # This ensures browser stays on cart page until timer expires.
+                    # 2026-09-09: deadline loop (was `for i in range(cycle_duration)`).
+                    # cycle_duration is now a FLOAT (the 1-2s home-IP reader cadence via
+                    # _tab_fetch_cadence_s), and range(float) raises TypeError — which,
+                    # once the tab-fetch reader is the detector, wedged the loop into a
+                    # permanent 5s error-spinner after a single read (drop-blocker).
+                    # Sub-second sleeps keep shutdown responsive and honor the float cadence.
+                    _wait_deadline = time.time() + float(cycle_duration or 0)
+                    while time.time() < _wait_deadline:
                         if not self.running:
                             return
-                        time.sleep(1)
+                        time.sleep(min(0.2, max(0.0, _wait_deadline - time.time())))
 
                 # THEN check stock when timer expires
 
@@ -1277,8 +1323,8 @@ class StockMonitorThread:
                     if os.environ.get('TEST_MODE', 'false').lower() == 'true':
                         next_cycle_duration = random.randint(25, 35)
                     else:
-                        next_cycle_duration = (random.randint(4, 8)
-                                               if os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0') == '1'
+                        next_cycle_duration = (self._tab_fetch_cadence_s()
+                                               if self._tab_fetch_wanted()
                                                else random.randint(15, 25))
 
                     next_start_time = time.time()
@@ -1335,10 +1381,15 @@ class StockMonitorThread:
             stock_data = None
             # 2026-09-04: RESILIENT_FORCE_TAB_FETCH=1 runs the trusted-browser
             # RedSky read EVEN in resilient mode. The cold pool profiles get the
-            # F5/Shape captcha (device flagged after the double-bot overload),
-            # but a purchase worker's account browser has a valid Akamai _abck
-            # and reads 200 (proven live). This is the detection path tonight.
-            _force_tab = os.environ.get('RESILIENT_FORCE_TAB_FETCH', '0') == '1'
+            # captcha envelope (HUMAN/PerimeterX Press & Hold layer, device
+            # flagged after the double-bot overload), but a purchase worker's
+            # logged-in account browser carries an earned _px3/_pxvid trust set
+            # and reads 200 (proven live 09-04).
+            # 2026-09-07: =auto (src/monitoring/tab_fetch_policy.py) — fallback
+            # ONLY while the resilient pool is blind (no 200 for
+            # RESILIENT_TAB_FETCH_BLIND_S); with a healthy pool it stays off so
+            # it cannot contend with the primary account's tab during a shot.
+            _force_tab = self._tab_fetch_wanted()
             if (not getattr(self, "_use_resilient", False)) or _force_tab:
                 sm = getattr(self._purchase_manager, 'session_manager', None)
                 if sm is None or not getattr(sm, 'browser', None):
@@ -1348,10 +1399,28 @@ class StockMonitorThread:
                         if _wsm and getattr(_wsm, 'browser', None):
                             sm = _wsm
                             break
+                # 2026-09-09: if the reader fell back to a PROXIED (Bright Data) account
+                # browser instead of the home-IP primary, its RedSky reads are HUMAN
+                # captcha-walled -> silent no-detection that looks like all-OOS. Warn
+                # (rate-limited 60s) so a degraded drop-night detector is visible.
+                if sm is not None and getattr(sm, 'proxy_url', None):
+                    _now = time.time()
+                    if _now - getattr(self, '_tab_fetch_walled_warn_at', 0.0) >= 60.0:
+                        self._tab_fetch_walled_warn_at = _now
+                        print(f"[STOCK][TAB-FETCH] WARNING: reading via a PROXIED account browser "
+                              f"({getattr(sm, 'account_id', '?')} exit={sm.proxy_url}) — HUMAN likely "
+                              f"captcha-walls it, so stock detection is DEGRADED. Is the home-IP "
+                              f"primary browser up?")
                 if sm and self._event_loop and self._event_loop.is_running():
                     try:
                         future = asyncio.run_coroutine_threadsafe(sm.get_page(), self._event_loop)
-                        tab = future.result(timeout=3)
+                        # 2026-09-07: was a hard 3s — 30,012 timeouts 09-04..09-07 on a
+                        # loop shared with the sweep. RESILIENT_TAB_FETCH_TIMEOUT_S (8).
+                        try:
+                            _gp_budget = float(os.environ.get('RESILIENT_TAB_FETCH_TIMEOUT_S', '8'))
+                        except ValueError:
+                            _gp_budget = 8.0
+                        tab = future.result(timeout=max(1.0, _gp_budget))
                         if tab:
                             stock_data = monitor_to_use.check_stock_via_tab(tab, self._event_loop)
                     except Exception as e:

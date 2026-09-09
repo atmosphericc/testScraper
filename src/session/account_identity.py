@@ -36,8 +36,29 @@ It does not change any existing code path.
 from __future__ import annotations
 
 import hashlib
+import os
 import random as _random
 from typing import Any, Dict, List, Optional
+
+
+def _spoof_js_enabled() -> bool:
+    """Whether to inject the JS fingerprint spoof (``_spoof_js``).
+
+    DEFAULT OFF as of 2026-09-08. ``_spoof_js`` overrides
+    ``CanvasRenderingContext2D.prototype.getImageData`` and installs
+    ``navigator`` ``defineProperty`` getters via
+    ``add_script_to_evaluate_on_new_document`` — both are JS-detectable tamper
+    tells (``getImageData.toString()`` and the property-descriptor getters no
+    longer read ``[native code]``, exactly the prototype-tamper signal F5 Shape
+    and HUMAN/PerimeterX look for), while the heavy axes (WebGL, canvas
+    ``toDataURL``, audio) stay unmasked — so it never actually unlinked the
+    accounts (see memory ``reference_why_our_spoof_fails_engine_level_antidetect``).
+    Detectable but ineffective. The CDP UA/timezone/locale/viewport overrides in
+    ``apply_identity`` are unaffected — they are the genuine emulation path (not
+    JS patches) and ``_px3`` is UA-signed, so identity coherence with login is
+    preserved. Restore the pre-09-08 behaviour: ``TARGET_SPOOF_JS=1``.
+    """
+    return os.environ.get('TARGET_SPOOF_JS', '0').strip().lower() in ('1', 'true', 'yes', 'on')
 
 # Realistic desktop Chrome builds. MUST track the real installed Chrome major on
 # the host — a UA claiming a different major than the real JA3/TLS handshake is
@@ -258,11 +279,19 @@ async def apply_identity(tab, identity: Dict[str, Any]) -> Dict[str, bool]:
     except Exception:
         results["viewport"] = False
 
-    # 5) navigator hardening + canvas/audio noise on every new document
-    try:
-        await tab.send(cdp.page.add_script_to_evaluate_on_new_document(source=_spoof_js(identity)))
-        results["spoof_js"] = True
-    except Exception:
+    # 5) navigator hardening + canvas/audio noise on every new document.
+    # 2026-09-08: DEFAULT OFF (see _spoof_js_enabled). The injected getImageData
+    # override + navigator defineProperty getters are a detectable prototype
+    # tamper that never unlinked the accounts; skipping the injection removes the
+    # tell while the CDP UA/tz/locale/viewport overrides above (which _px3's
+    # UA-signature and login rely on) stay in force. Re-enable: TARGET_SPOOF_JS=1.
+    if _spoof_js_enabled():
+        try:
+            await tab.send(cdp.page.add_script_to_evaluate_on_new_document(source=_spoof_js(identity)))
+            results["spoof_js"] = True
+        except Exception:
+            results["spoof_js"] = False
+    else:
         results["spoof_js"] = False
 
     return results

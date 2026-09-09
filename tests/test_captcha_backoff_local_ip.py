@@ -10,9 +10,11 @@ same browser on every Bright Data range got 403 + {"captchaRelativeURL": ...}
   2. Checker wiring: captcha 403 -> backoff, NOT ProxyState (no 2-strike 3h park);
      sweep period multiplies by the backoff; 200 resets + logs recovery.
   3. stock_monitor passes RESILIENT_HARVEST_VIA_LOCAL_IP into the checker.
-  4. Bat pins: RESILIENT_HARVEST_VIA_LOCAL_IP=1, RESILIENT_CAPTCHA_BACKOFF=1,
-     TARGET_SWEEPS_PER_SEC=3.0; CRLF-only.
-  5. proxyIps: 2 sweep sessions (count only in local-IP mode).
+  4. Bat pins: RESILIENT_CAPTCHA_BACKOFF=1, TARGET_SWEEPS_PER_SEC=3.0; CRLF-only.
+     2026-09-07: RESILIENT_HARVEST_VIA_LOCAL_IP is pinned to 0 (home-IP sweep mode
+     REVERTED — it read zero RedSky 200s in 3.9 days; the wall was HUMAN/PerimeterX
+     device-keyed, not IP-keyed). The mode stays wired for emergencies (=1).
+  5. proxyIps: 16 BD sweep IPs restored + 4 reserves; the 09-04 burned list retired.
 
 Run: python tests/test_captcha_backoff_local_ip.py
 """
@@ -46,8 +48,10 @@ def test_backoff_math():
 
 def test_checker_wiring():
     check("flag_default_on", "_os.environ.get('RESILIENT_CAPTCHA_BACKOFF', '1') != '0'" in CHK)
-    check("captcha_detected_on_403_body", "'captcha' in _err.lower()" in CHK)
-    i_c = CHK.find("'captcha' in _err.lower()"); i_else = CHK.find("else:\n                    self.proxy_state.record_status(result.pinned_ip, result.http_status)", i_c)
+    # 2026-09-09: match the DISTINCTIVE RedSky/PX captcha envelope, not a bare
+    # 'captcha' substring (which over-parked sweep IPs on any 403 mentioning it).
+    check("captcha_detected_on_403_body", "captcharelativeurl" in CHK and "px-captcha" in CHK and "any(s in _err.lower()" in CHK)
+    i_c = CHK.find("any(s in _err.lower()"); i_else = CHK.find("else:\n                    self.proxy_state.record_status(result.pinned_ip, result.http_status)", i_c)
     check("captcha_403_skips_proxystate_park", 0 < i_c < i_else)
     check("formula_pinned", "min(16.0, 2.0 ** min(4, self._captcha_streak // 5))" in CHK)
     check("sweep_period_uses_multiplier", "getattr(self, '_captcha_backoff_mult', 1.0)" in CHK)
@@ -64,14 +68,14 @@ def _bat_val(name):
     return m.group(1).strip() if m else ''
 
 def test_bat_and_config():
-    check("bat_local_ip_on", _bat_val('RESILIENT_HARVEST_VIA_LOCAL_IP') == '1')
+    check("bat_local_ip_off_since_0907", _bat_val('RESILIENT_HARVEST_VIA_LOCAL_IP') == '0')
     check("bat_backoff_on", _bat_val('RESILIENT_CAPTCHA_BACKOFF') == '1')
     check("bat_rate_3", _bat_val('TARGET_SWEEPS_PER_SEC') == '3.0')
     check("bat_crlf_only", BAT_RAW.count(b'\n') == BAT_RAW.count(b'\r\n') and BAT_RAW.count(b'\r\n') > 100)
     d = json.load(open(ROOT / 'config' / 'proxyIps.json', encoding='utf-8'))
-    check("two_sweep_sessions", len(d['proxies']) == 2)
-    check("reserves_kept", len(d.get('reserve_proxies', [])) == 2)
-    check("burned_parked", len(d.get('burned_sweep_20260904', [])) == 16)
+    check("sixteen_sweep_sessions", len(d['proxies']) == 16)
+    check("reserves_kept", len(d.get('reserve_proxies', [])) == 4)
+    check("burned_list_retired", 'burned_sweep_20260904' not in d)
 
 if __name__ == '__main__':
     for fn in (test_backoff_math, test_checker_wiring, test_monitor_local_ip_wiring, test_bat_and_config):

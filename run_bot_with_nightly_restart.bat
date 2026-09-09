@@ -55,8 +55,38 @@ REM  (primary back on 168.158.160.228 so the home IP is sweep-only). If the swee
 REM  ever sees the captcha 403 it backs off x2/x4/x8/x16 (cap ~5s) instead of
 REM  hammering, and a single 200 restores full rate (no ProxyState 3h park).
 REM  Revert: RESILIENT_HARVEST_VIA_LOCAL_IP=0 + restore 4 BD entries in proxyIps.
-set RESILIENT_HARVEST_VIA_LOCAL_IP=1
+REM  2026-09-07 REVERTED: back on the Bright Data sweep pool -- the 16 pre-09-04
+REM  IPs are restored in proxyIps after 3.9 days of rest (3.0/s across 16 =
+REM  0.19/s per IP). The home-IP sweep (2 sessions) ran 09-04 01:47 -> 09-07
+REM  22:30 and read ZERO RedSky 200s (11,050 straight failed ground-truth
+REM  reads): the pool's cold profiles were captcha-walled on the home IP too,
+REM  so the wall was never IP-only. The captcha is HUMAN Security's (PerimeterX)
+REM  "Press & Hold" layer, which Target now runs on top of Shape -- all three
+REM  account jars carry _px2/_px3/_pxhd/_pxvid/pxcts on .target.com. Verify the
+REM  pool BEFORE a drop with probe_sweep_pool.bat (read-only, real Chrome + BD
+REM  IP): want OK-DATA. Home-IP sweep again: =1 (+ 2 entries in proxyIps).
+set RESILIENT_HARVEST_VIA_LOCAL_IP=0
 set RESILIENT_CAPTCHA_BACKOFF=1
+REM  2026-09-07 23:05 PROBE VERDICT (probe_sweep_pool.bat, same fresh profile, same
+REM  machine): 31.105.228.245 / 31.105.93.225 / 168.158.143.27 -> CAPTCHA;
+REM  72.56.171.184 -> OK-DATA twice. The wall is IP-RANGE reputation (HUMAN), not
+REM  the device, and most of the pool is still walled. Three pool changes ship
+REM  with that: (a) a captcha 403 now parks THAT SESSION for
+REM  RESILIENT_CAPTCHA_PARK_S (x2 per repeat, cap x8) instead of slowing the whole
+REM  sweep, so the clean IPs keep full cadence and walled ones retest on their
+REM  own; (b) the sweep is capped at usable_sessions x RESILIENT_PER_IP_MAX_RPS,
+REM  so a lone clean IP is read at 1/s (validated ceiling), never 3/s; (c)
+REM  RESILIENT_POOL_FRESH_PROFILES=1 wipes the pool's scratch profiles at launch
+REM  (the 09-04 profiles carry the HUMAN ids flagged that night). Every session
+REM  walled -> the auto tab-fetch below takes over. grep "[STOCK][RATE]" and
+REM  "[STOCK][CAPTCHA-PARK]" after boot. Revert: PARK_S=0 is NOT a kill (floor
+REM  60s); pre-09-07 behaviour = RESILIENT_PER_IP_MAX_RPS=0 + FRESH_PROFILES=0.
+set RESILIENT_CAPTCHA_PARK_S=1800
+set RESILIENT_PER_IP_MAX_RPS=1.0
+set RESILIENT_POOL_FRESH_PROFILES=1
+REM  get_page budget for the trusted-browser tab-fetch (was a hard 3s: 30,012
+REM  timeouts 09-04..09-07 on the loop shared with the sweep).
+set RESILIENT_TAB_FETCH_TIMEOUT_S=8
 REM  2026-09-04 ~01:40 RedSky captcha ROOT CAUSE isolated with 3 read-only probes:
 REM  account profile on HOME IP -> 200; FRESH profile on home IP -> 403 captcha;
 REM  fresh profile + injected trust cookies -> still 403. The device is F5-flagged so
@@ -66,7 +96,37 @@ REM  SKIPPED whenever the resilient pool is active -> the bot was fully blind. T
 REM  flag re-enables the tab-fetch (a live worker's account browser) IN resilient mode
 REM  and polls every 4-8s. That is the detector tonight; the pool stays up (with the
 REM  captcha backoff) and self-revives if the F5 flag decays. Revert: =0.
-set RESILIENT_FORCE_TAB_FETCH=1
+REM  2026-09-07: =auto -- the trusted-browser read is a FALLBACK only. It engages
+REM  when the BD pool has produced no RedSky 200 for RESILIENT_TAB_FETCH_BLIND_S
+REM  seconds (also covers a slow boot) and switches itself off on the pool's
+REM  next 200. With a healthy pool it adds nothing but CDP contention on the
+REM  primary account's tab (09-04..09-07: 30,012 x 3s get_page timeouts, 4,567
+REM  empty reads). =1 forces it on (09-04 emergency behaviour), =0 never.
+set RESILIENT_FORCE_TAB_FETCH=auto
+set RESILIENT_TAB_FETCH_BLIND_S=180
+REM 2026-09-09: home-IP reader cadence. The trusted-browser reader (now the
+REM PRIMARY detector since the BD sweep is HUMAN-walled) polled every 4-8s -
+REM too slow: wins land 0.4-3.7s after a flip and hot SKUs sell <60s, so an 8s
+REM poll misses the wave-first window (the only shot type that converts, 32.6%
+REM vs 0.9% re-POSTs). One bulk fetch covers all ~19 TCINs, so ~1-2s catches the
+REM flip in time and stays inside the vendor-safe 1000-4000ms monitor band.
+REM Widen toward 4s if the home IP ever shows an interaction-burst flag.
+set RESILIENT_READ_CADENCE_MIN_S=1.0
+set RESILIENT_READ_CADENCE_MAX_S=2.0
+REM  2026-09-07 HUMAN Security (PerimeterX) "Press & Hold" GUARD. Target runs
+REM  HUMAN's sensor on the storefront in addition to Shape; when an account
+REM  browser's trust score drops, the /account nav (sentinel rung 1) renders the
+REM  Press & Hold interstitial. Before this guard the ladder read that page as a
+REM  dead session and escalated: Chrome restart -> full sign-out -> scripted
+REM  relogin (Shape-burned: "username did NOT advance" 0/12 on 09-06..09-07) ->
+REM  jar left GUEST. That is how business + alt-1 died mid-run this week. Now
+REM  the ladder takes a READ-ONLY DOM snapshot after a failed nav; a challenge
+REM  page parks the heavy rungs for TARGET_PX_CHALLENGE_PARK_S, writes
+REM  [PX-CHALLENGE] + [AUTH_CRITICAL] to logs\error_log.txt and leaves the
+REM  widget on screen for a PERSON to press; the cheap token check clears the
+REM  park on recovery. No automated solving. Kill-switch: TARGET_PX_CHALLENGE_GUARD=0
+set TARGET_PX_CHALLENGE_GUARD=1
+set TARGET_PX_CHALLENGE_PARK_S=300
 
 REM ---------------------------------------------------------------------------
 REM  Fingerprint kill-switch (2026-06-24 incident).
@@ -97,6 +157,14 @@ REM  set RELOGIN_SKIP_FINGERPRINT=1 and TARGET_APPLY_FINGERPRINT=0.
 set RELOGIN_SKIP_FINGERPRINT=0
 set RELOGIN_SKIP_PROXY=1
 set TARGET_APPLY_FINGERPRINT=1
+REM 2026-09-08: the JS fingerprint spoof (getImageData + navigator defineProperty
+REM overrides injected via add_script_to_evaluate_on_new_document) is DEFAULT OFF
+REM in code now - a detectable prototype-tamper tell (toString != native) that F5
+REM Shape and HUMAN/PerimeterX both look for, and it never unlinked the accounts
+REM (they collide on WebGL/canvas/audio regardless). The CDP UA/timezone/locale/
+REM viewport overrides (which _px3's UA-signature and login rely on) stay ON via
+REM TARGET_APPLY_FINGERPRINT=1 above. Restore the JS spoof (pre-09-08): =1.
+set TARGET_SPOOF_JS=0
 REM fp-chromium: engine-level distinct device per account on the PURCHASE side only (login stays real Chrome via RELOGIN_SKIP_PROXY). Master switch is set BELOW (09-03: OFF).
 REM  2026-08-21 A/B (post-mortem in docs/FAILURES.md 08-21): every win in history
 REM  (07-24/07-28/07-31/08-04) was on REAL Chrome + the real profile; every drop
@@ -554,6 +622,14 @@ REM  Skip primary so its failing clicks don't contend with its real shots; it
 REM  fires the proven page-signed shots. Un-skip once harvest is moved off the
 REM  shared loop. Kill-switch: set TARGET_HARVEST_SKIP=  (empty).
 set TARGET_HARVEST_SKIP=primary,alt-1
+REM 2026-09-08: harvest reliability budgets. The 25s tab-open timed out ~90%
+REM and the 6s click ~always (9230 TimeoutErrors on 09-07) because ~20 Chromes
+REM share one asyncio loop + business's warmup interceptor shares the CDP socket.
+REM Bigger, tunable budgets + a 6-step click (shape_harvest) let the harvest tab
+REM open and the real click complete so the bank actually fills. Tune DOWN only if
+REM a failed open/click is wasting the window; UP if they still time out.
+set TARGET_HARVEST_TAB_OPEN_TIMEOUT_S=45
+set TARGET_HARVEST_CLICK_TIMEOUT_S=12
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the
@@ -597,6 +673,26 @@ REM  Chrome with the tabs restored. Runs BEFORE the account logins so the bot's
 REM  sessions end up the only live ones. Kill-switch: set CHROME_SIGNOUT_SKIP=1.
 REM  Never fatal ? a stale personal session degrades a drop, it can't break the bot.
 REM ---------------------------------------------------------------------------
+REM ---------------------------------------------------------------------------
+REM  2026-09-08 SINGLE-INSTANCE guard. Two app.py bots at once is the 09-04
+REM  disaster: ~6 req/s from two instances poisoned the Bright Data pool's
+REM  HUMAN/PerimeterX standing for days. check_single_instance.py is read-only
+REM  (kills nothing) and exits 9 if another app.py is already running.
+REM  Kill-switch: set SINGLE_INSTANCE_GUARD_SKIP=1
+REM ---------------------------------------------------------------------------
+REM reset errorlevel so a skipped guard can't inherit a stale 9 (2026-09-09)
+ver >nul
+if not "%SINGLE_INSTANCE_GUARD_SKIP%"=="1" "%PYTHON%" check_single_instance.py
+if !ERRORLEVEL! EQU 9 (
+    echo [!date! !time!] single-instance guard TRIPPED: app.py already running - not launching >> "%RUNLOG%"
+    echo.
+    echo   Another app.py bot is ALREADY running on this machine.
+    echo   Running two at once poisons the proxy pool - see the 09-04 incident.
+    echo   Close the other bot first, then re-run this script. Closing in ~30s.
+    ping -n 31 127.0.0.1 >nul
+    exit /b 9
+)
+
 echo === signing personal Chrome out of Target  --  !date! !time! ===
 "%PYTHON%" chrome_target_signout.py
 echo [!date! !time!] chrome target sign-out done code=!ERRORLEVEL! >> "%RUNLOG%"

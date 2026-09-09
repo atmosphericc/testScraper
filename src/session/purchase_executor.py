@@ -1628,12 +1628,20 @@ class PurchaseExecutor:
         if not tcins:
             return None
         tcin = tcins[self._harvest_tcin_idx % len(tcins)]
+        # 2026-09-08: the 25s open budget timed out ~90% of the time (292 fails /
+        # 28 ready on 09-07) — a Target PDP under HUMAN+Shape is slow to fire its
+        # load event while the box runs ~20 Chromes on one asyncio loop. Give it a
+        # realistic, tunable budget. Kill/tune: TARGET_HARVEST_TAB_OPEN_TIMEOUT_S.
         try:
-            self._harvest_log(f"opening harvest tab on PDP {tcin} ...")
+            _open_budget = max(10.0, float(os.environ.get('TARGET_HARVEST_TAB_OPEN_TIMEOUT_S', '45')))
+        except (TypeError, ValueError):
+            _open_budget = 45.0
+        try:
+            self._harvest_log(f"opening harvest tab on PDP {tcin} (budget {_open_budget:.0f}s) ...")
             tab = await asyncio.wait_for(
-                browser.get(_shape_harvest.pdp_url(tcin), new_tab=True), timeout=25.0)
+                browser.get(_shape_harvest.pdp_url(tcin), new_tab=True), timeout=_open_budget)
             await asyncio.wait_for(
-                self._setup_cdp_fetch_interceptor(tab, persistent=True, label='harvest'), timeout=12.0)
+                self._setup_cdp_fetch_interceptor(tab, persistent=True, label='harvest'), timeout=20.0)
             self._harvest_tab = tab
             self._harvest_tcin = tcin
             self._harvest_tab_nav_ts = time.time()
@@ -1722,10 +1730,18 @@ class PurchaseExecutor:
             pass
         x, y = _shape_harvest.click_point(info)
         self._harvest_capture_evt.clear()
+        # 2026-09-08: 6s blew constantly (9230 TimeoutErrors on 09-07) — the click's
+        # ~6-11 dispatch_mouse_event CDP sends queue behind the warmup interceptor on
+        # the shared socket. 12s default (paired with the 6-step click cap in
+        # shape_harvest). Kill/tune: TARGET_HARVEST_CLICK_TIMEOUT_S.
+        try:
+            _click_budget = max(3.0, float(os.environ.get('TARGET_HARVEST_CLICK_TIMEOUT_S', '12')))
+        except (TypeError, ValueError):
+            _click_budget = 12.0
         t0 = time.time()
         try:
             self._harvest_last_xy = await asyncio.wait_for(
-                _shape_harvest.human_click(tab, x, y, self._harvest_last_xy), timeout=6.0)
+                _shape_harvest.human_click(tab, x, y, self._harvest_last_xy), timeout=_click_budget)
         except Exception as e:
             self._harvest_log(f"click dispatch failed ({type(e).__name__}: {e})")
             return False
@@ -2279,6 +2295,25 @@ class PurchaseExecutor:
                 _verdict, _terminal = self._apply_fast_lane_result(_fl, tcin, start_time)
                 if _verdict == 'terminal':
                     return _terminal
+                # 2026-09-09: the fast lane refused to place the order because a
+                # non-our-TCIN item is in the cart (skip='foreign_cart_item'), but
+                # the legacy fallthrough below would buy the WHOLE cart — foreign
+                # item included — which Target cancels. Clear the cart and re-race a
+                # fresh ATC instead of falling through. Flag: TARGET_FOREIGN_CART_BAIL=0
+                # restores the old (buy-through) behaviour.
+                if (_verdict == 'fallthrough'
+                        and _fl.get('skip') == 'foreign_cart_item'
+                        and os.environ.get('TARGET_FOREIGN_CART_BAIL', '1').strip().lower()
+                        not in ('0', 'false', 'no', 'off')):
+                    print(f"[FAST_LANE] foreign/extra cart item present — clearing cart + "
+                          f"re-racing a fresh ATC (NOT buying the whole cart) ident={self._ident_tag()}")
+                    try:
+                        await self._clear_cart(tab)
+                    except Exception as _cc_e:
+                        print(f"[FAST_LANE] cart clear after foreign_cart_item failed ({_cc_e})")
+                    return {'success': False, 'tcin': tcin, 'reason': 'foreign_cart_cleared',
+                            'error': 'foreign/extra item in cart — cleared, re-racing',
+                            'execution_time': time.time() - start_time}
 
             if _fl is None:
                 print(f"[PURCHASE] Firing ATC fetch qty={quantity} (t={time.time()-start_time:.2f}s)")
@@ -2347,7 +2382,26 @@ class PurchaseExecutor:
             atc_status = atc_result.get('status', 0) if isinstance(atc_result, dict) else atc_result
             atc_body = atc_result.get('body', '') if isinstance(atc_result, dict) else ''
             # Classify the failure for better diagnostics
-            if atc_status == 403 and ('<html' in atc_body.lower() or '<!doctype' in atc_body.lower()):
+            try:
+                from .px_challenge import body_looks_px_blocked as _px_blocked
+            except ImportError:
+                from src.session.px_challenge import body_looks_px_blocked as _px_blocked  # type: ignore
+            if atc_status == 403 and _px_blocked(atc_status, atc_body):
+                # 2026-09-07: HUMAN Security (PerimeterX) block/captcha envelope on
+                # the ATC — the identity is being challenged (Press & Hold layer),
+                # which is a different wall from the Shape 401/403. Log it under
+                # its own tag so the post-drop audit can split the two.
+                print(f"[PURCHASE] ATC fetch blocked by HUMAN/PerimeterX challenge (403 captcha envelope) "
+                      f"(t={time.time()-start_time:.2f}s)")
+                try:
+                    import os as _os, datetime as _dt
+                    _os.makedirs('logs', exist_ok=True)
+                    with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [PX_BLOCK] ATC 403 HUMAN/PerimeterX "
+                                 f"challenge — url={tab.url} body={atc_body[:300]!r}\n")
+                except Exception:
+                    pass
+            elif atc_status == 403 and ('<html' in atc_body.lower() or '<!doctype' in atc_body.lower()):
                 print(f"[PURCHASE] ATC fetch blocked by Shape Security (403 HTML) (t={time.time()-start_time:.2f}s)")
                 try:
                     import os as _os, datetime as _dt
@@ -5759,7 +5813,13 @@ class PurchaseExecutor:
         if status not in (200, 201):
             # Classify common failure modes for diagnosis (mirrors ATC error path).
             up = body.upper()
-            if status == 403 and ('<html' in body.lower() or '<!doctype' in body.lower()):
+            try:
+                from .px_challenge import body_looks_px_blocked as _px_blocked
+            except ImportError:
+                from src.session.px_challenge import body_looks_px_blocked as _px_blocked  # type: ignore
+            if status == 403 and _px_blocked(status, body):
+                reason = 'px_block'      # 2026-09-07: HUMAN/PerimeterX challenge envelope
+            elif status == 403 and ('<html' in body.lower() or '<!doctype' in body.lower()):
                 reason = 'shape_block'
             elif status == 401:
                 reason = 'auth_expired'

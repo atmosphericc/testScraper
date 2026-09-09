@@ -410,6 +410,50 @@ plus community/web research (LordOfRestocks trick, Hidden AIO docs, r/PokemonDea
   ever come through a hard-401 wall — once 401s dominate, that identity+TCIN is
   done for the window.
 
+### HUMAN Security (PerimeterX) "Press & Hold" layer — confirmed 2026-09-07
+
+Target runs HUMAN's Bot Defender on the storefront **in addition to** Shape (Shape still signs
+`carts.target.com` requests via the `X-[prefix]-*` headers; HUMAN scores the session and gates
+navigations + RedSky reads).
+
+- **Evidence**: every account jar carries `_px2 / _px3 / _pxhd / _pxvid / pxcts` on `.target.com`
+  (`_pxvid` = 1-year visitor id, `_pxhd` = device hash, `_px3` = short-TTL trust token that the page
+  sensor keeps refreshing, `pxcts` = session id). Sensor script: `client.px-cloud.net` (`humanSensor`).
+- **What it looks like**: a low trust score renders the **"Press & Hold to confirm you are a human"**
+  interstitial (`#px-captcha` container, HUMAN's Human Challenge) on page navigations, and answers API
+  reads with `403 {"captchaRelativeURL": "/captcha?trackingId=…", "captchaAbsoluteURL": …}`
+  (RedSky) — the same envelope raw `curl`/`requests` always got.
+- **What triggers it (vendor-documented, general)**: IP/ASN reputation (datacenter worst, ISP middling,
+  residential/mobile best — and shared/proxy ranges accumulate cross-site reputation), TLS/HTTP
+  fingerprint, device fingerprint, behavioral telemetry (an interaction-free parked tab scores low),
+  request velocity, and cookie history (a fresh profile with no earned `_pxvid` history starts cold).
+  Our 09-04 datum: cold pool profiles were walled on every BD range **and** on a fresh profile on the
+  home IP; the logged-in account profiles (earned trust) read 200. Two bots at once (~6 req/s from 16
+  identical-fingerprint Chromes) is the event that flagged the device.
+- **Doctrine**: avoid + detect + hand off. Keep the sweep ≤ validated per-IP rates, launch exactly once,
+  restart ≤ 24 h, hand-login every account before a drop (a human clears the widget as part of the
+  login), never run a second instance. Detection: `src/session/px_challenge.py` (read-only DOM snapshot
+  classifier + API-body classifier). Hand-off: sentinel guard `_px_challenge_parks_ladder`
+  (`TARGET_PX_CHALLENGE_GUARD=1`, park `TARGET_PX_CHALLENGE_PARK_S=300`) — a challenge page parks the
+  destructive restart → sign-out → scripted-relogin rungs, writes `[PX-CHALLENGE]` + `[AUTH_CRITICAL]`
+  to `logs/error_log.txt`, and leaves the widget on screen for a person; rung-0 clears the park once a
+  member token mints again. Executor labels `px_block` on ATC / place-order 403s (`[PX_BLOCK]` in
+  error_log); the trusted tab reader logs `[STOCK][PX-CAPTCHA]`. **No automated solving** — the widget
+  exists to verify a human is present, and the repo does not press it.
+- **Pool health check**: `probe_sweep_pool.bat` (read-only real Chrome on each BD sweep IP through the
+  production forwarder; want `OK-DATA`; `all` / `reserve` / `home` / `<ip>` modes). First run 2026-09-07
+  23:05: 31.105.228.245, 31.105.93.225, 168.158.143.27 → CAPTCHA; 72.56.171.184 → OK-DATA twice with the
+  same fresh profile, i.e. **the wall is IP-range reputation, not the device**. If all CAPTCHA: rest the
+  pool, run that night with `RESILIENT_FORCE_TAB_FETCH=1` (trusted account browser detects stock);
+  `=auto` (default) engages that fallback by itself whenever the pool has read no 200 for
+  `RESILIENT_TAB_FETCH_BLIND_S` (180 s).
+- **Partly-walled pool (shipped 2026-09-07 late)**: a captcha 403 parks that session
+  (`RESILIENT_CAPTCHA_PARK_S`=1800, ×2 per repeat, cap ×8; `[STOCK][CAPTCHA-PARK]`), the sweep rate is
+  capped at usable sessions × `RESILIENT_PER_IP_MAX_RPS` (1.0/s; `[STOCK][RATE]`), and
+  `RESILIENT_POOL_FRESH_PROFILES=1` wipes the pool's scratch profiles at launch so they mint fresh
+  `_pxvid`/`_pxhd`. The whole-sweep slow-down (`[STOCK][CAPTCHA-BACKOFF]`) now applies only when no
+  usable session remains. The real lever is new exits outside the flagged ranges (Bright Data refresh).
+
 ### Real-click Shape harvest + banked replay (shipped 2026-09-03, flag-gated)
 The mechanism winning 2026 Target bots (Refract / Stellar / Hidden AIO / Shikari)
 share, per their own docs: a HARVESTER drives the genuine add-to-cart on an

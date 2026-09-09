@@ -70,6 +70,34 @@ DEFAULT_BEHAVIORAL_MIX_RATIO = 0.0
 MAX_OUTSTANDING_DISPATCHES = 50
 
 
+def _env_float(name: str, default: float, floor: float = 0.0) -> float:
+    try:
+        return max(floor, float(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def captcha_park_seconds(hits: int, base_s: float, max_mult: int = 8) -> float:
+    """2026-09-07 per-session captcha park: base x 2^(hits-1), capped at
+    base x max_mult (1800 s -> 30 m / 1 h / 2 h / 4 h), floor 60 s."""
+    h = max(1, int(hits or 1))
+    mult = min(float(max_mult), 2.0 ** (h - 1))
+    return max(60.0, float(base_s) * mult)
+
+
+def effective_sweep_rate(target_rps: float, usable_sessions: int, per_ip_max_rps: float) -> float:
+    """Sweep rate = min(target, usable_sessions x per-IP ceiling). With the
+    ceiling <= 0 the cap is off; with no usable session the schedule keeps its
+    target cadence (dispatch just returns None cheaply until a park expires)."""
+    target = max(0.01, float(target_rps))
+    if per_ip_max_rps is None or float(per_ip_max_rps) <= 0.0:
+        return target
+    n = int(usable_sessions or 0)
+    if n <= 0:
+        return target
+    return max(0.01, min(target, n * float(per_ip_max_rps)))
+
+
 @dataclass
 class TcinStatus:
     tcin: str
@@ -129,6 +157,16 @@ class ResilientStockChecker:
         self._captcha_streak = 0
         self._captcha_backoff_mult = 1.0
         self._captcha_total = 0
+        # 2026-09-07 probe verdict (probe_sweep_pool.bat, same fresh profile, same
+        # device): 31.105.x / 168.158.x exits -> captcha, 72.56.171.184 -> 200 x2.
+        # The wall is IP-RANGE reputation (HUMAN/PerimeterX), so a captcha 403 now
+        # parks THAT SESSION (RESILIENT_CAPTCHA_PARK_S, x2 per repeat, cap x8) and
+        # the whole-sweep slow-down above applies only when nothing usable is left.
+        # The sweep rate is capped at usable_sessions x RESILIENT_PER_IP_MAX_RPS so
+        # a lone clean IP is read at 1/s (validated ceiling), never 3/s.
+        self._captcha_park_base_s = _env_float('RESILIENT_CAPTCHA_PARK_S', 1800.0, floor=60.0)
+        self._per_ip_max_rps = _env_float('RESILIENT_PER_IP_MAX_RPS', 1.0, floor=0.0)
+        self._last_usable_logged: Optional[int] = None
 
         state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = state_dir
@@ -226,6 +264,10 @@ class ResilientStockChecker:
         # Stats
         self._total_dispatched = 0
         self._total_200 = 0
+        # 2026-09-07: unix time of the pool's last RedSky 200 — read by
+        # src/monitoring/tab_fetch_policy.py (RESILIENT_FORCE_TAB_FETCH=auto:
+        # the trusted-browser fallback engages only while the pool is blind).
+        self._last_200_at = 0.0
         self._total_403 = 0
         self._total_other = 0
         self._total_behavioral = 0
@@ -342,6 +384,12 @@ class ResilientStockChecker:
             "elapsed_s": round(elapsed, 1),
             "total_dispatched": self._total_dispatched,
             "total_200": self._total_200,
+            "last_200_at": self._last_200_at,
+            "usable_sessions": (self.multi_session_pool.usable_session_count()
+                                if self.multi_session_pool else 0),
+            "captcha_parked": (self.multi_session_pool.captcha_parked_count()
+                               if self.multi_session_pool else 0),
+            "captcha_total": self._captcha_total,
             "total_403": self._total_403,
             "total_other": self._total_other,
             "total_behavioral": self._total_behavioral,
@@ -365,7 +413,7 @@ class ResilientStockChecker:
                              if self.behavioral_mix_ratio > 0 else 0)
 
         while not self._stop_event.is_set():
-            period = ((1.0 / max(0.01, self.target_sweeps_per_sec))
+            period = ((1.0 / max(0.01, self._effective_sweeps_per_sec()))       # 09-07 per-IP cap
                       * max(1.0, getattr(self, '_captcha_backoff_mult', 1.0)))  # 09-04 captcha backoff
             jitter = period * random.uniform(-0.15, 0.15)
             sleep_for = max(0.05, period + jitter)
@@ -389,6 +437,57 @@ class ResilientStockChecker:
                 name=f"sweep_{self._sweep_count}",
             )
 
+    # ───────── 2026-09-07 per-session captcha park + per-IP rate cap ─────────
+
+    def _effective_sweeps_per_sec(self) -> float:
+        pool = self.multi_session_pool
+        usable = pool.usable_session_count() if pool is not None else 0
+        total = len(pool.sessions) if pool is not None else 0
+        eff = effective_sweep_rate(self.target_sweeps_per_sec, usable, self._per_ip_max_rps)
+        if usable != self._last_usable_logged:
+            self._last_usable_logged = usable
+            logger.info(f"[STOCK][RATE] usable sessions {usable}/{total} -> sweep {eff:.2f}/s "
+                        f"(target {self.target_sweeps_per_sec:.2f}/s, cap "
+                        f"{self._per_ip_max_rps:.2f}/s per IP)")
+        return eff
+
+    def _find_session(self, session_id: str):
+        pool = self.multi_session_pool
+        if pool is None:
+            return None
+        return next((x for x in pool.sessions if x.id == session_id), None)
+
+    def _park_captcha_session(self, session_id: str, pinned_ip: str) -> tuple[int, int]:
+        """Park the Chrome that just got the captcha envelope; returns
+        (usable_sessions, total_sessions) after the park."""
+        pool = self.multi_session_pool
+        if pool is None:
+            return 0, 0
+        total = len(pool.sessions)
+        s = self._find_session(session_id)
+        if s is None:
+            return pool.usable_session_count(), total
+        s.captcha_hits += 1
+        park = captcha_park_seconds(s.captcha_hits, self._captcha_park_base_s)
+        s.captcha_parked_until = time.time() + park
+        usable = pool.usable_session_count()
+        logger.warning(f"[STOCK][CAPTCHA-PARK] {session_id} ({pinned_ip}) RedSky captcha wall "
+                       f"(hit #{s.captcha_hits}) — parked {park:.0f}s; usable sessions {usable}/{total}")
+        if usable == 0:
+            logger.error("[STOCK][CAPTCHA-PARK] every session is walled — pool blind until a park "
+                         "expires; the trusted-browser tab-fetch (RESILIENT_FORCE_TAB_FETCH=auto) "
+                         "takes over after RESILIENT_TAB_FETCH_BLIND_S")
+        return usable, total
+
+    def _clear_captcha_session(self, session_id: str, pinned_ip: str) -> None:
+        s = self._find_session(session_id)
+        if s is None or not (s.captcha_hits or s.captcha_parked_until):
+            return
+        logger.info(f"[STOCK][CAPTCHA-PARK] {session_id} ({pinned_ip}) reads 200 again — "
+                    f"cleared (had {s.captcha_hits} captcha hit(s))")
+        s.captcha_hits = 0
+        s.captcha_parked_until = 0.0
+
     async def _dispatch_one(self, behavioral: bool):
         try:
             if behavioral:
@@ -411,7 +510,9 @@ class ResilientStockChecker:
             self._total_dispatched += 1
             if result.http_status == 200:
                 self._total_200 += 1
+                self._last_200_at = time.time()
                 self.proxy_state.record_status(result.pinned_ip, 200)
+                self._clear_captcha_session(result.session_id, result.pinned_ip)
                 if self._captcha_backoff_mult > 1.0 or self._captcha_streak:
                     logger.info(f"[STOCK][CAPTCHA-BACKOFF] recovered: 200 from {result.session_id} "
                                 f"after {self._captcha_streak} walled reads — sweep period back to x1")
@@ -422,11 +523,20 @@ class ResilientStockChecker:
             elif result.http_status in (401, 403):
                 self._total_403 += 1
                 _err = (result.error or '')
+                # 2026-09-09: match the DISTINCTIVE RedSky/PX captcha envelope, not a
+                # bare 'captcha' substring — an unrelated 403 body merely containing the
+                # word would park a sweep IP for 30 min-4 h (per-session park has no early
+                # re-test). RedSky returns {"captchaRelativeURL":"/captcha?trackingId=..."}.
                 if (self._captcha_backoff_on and result.http_status == 403
-                        and 'captcha' in _err.lower()):
+                        and any(s in _err.lower() for s in
+                                ('captcharelativeurl', 'px-captcha', '/captcha'))):
                     self._captcha_total += 1
                     self._captcha_streak += 1
-                    new_mult = float(min(16.0, 2.0 ** min(4, self._captcha_streak // 5)))
+                    # 2026-09-07: park THIS session; slow the whole sweep only when
+                    # no usable session remains (then the auto tab-fetch takes over).
+                    _usable, _total = self._park_captcha_session(result.session_id, result.pinned_ip)
+                    new_mult = (float(min(16.0, 2.0 ** min(4, self._captcha_streak // 5)))
+                                if _usable == 0 else 1.0)
                     if new_mult != self._captcha_backoff_mult:
                         self._captcha_backoff_mult = new_mult
                         logger.warning(f"[STOCK][CAPTCHA-BACKOFF] {result.session_id} ({result.pinned_ip}) "

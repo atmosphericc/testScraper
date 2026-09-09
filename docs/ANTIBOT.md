@@ -34,12 +34,29 @@ the 2026-05-06 entry in this file for live validation.
 
 | Retailer | Vendor | Detection Vectors | Bypass Status |
 |----------|--------|-------------------|---------------|
-| **Target** (active) | F5 Shape Security | TLS fingerprinting (JA3/JA4), JS sensor payload, Device ID+ ML, IP reputation, CDP artifacts | ✅ Round 2 resilient stack — 99.95% over 60 min @ 3 RPS / 3 IPs / 33 TCINs |
+| **Target** (active) | F5 Shape Security (cart/checkout request signing) **+ HUMAN Security / PerimeterX (storefront + RedSky, "Press & Hold" Human Challenge) — confirmed 2026-09-07** | Shape: TLS fingerprinting (JA3/JA4), JS sensor payload, Device ID+ ML, IP reputation, CDP artifacts. HUMAN: `_px3` (short-TTL trust token) / `_pxvid` (1-yr visitor id) / `_pxhd` (device hash) / `pxcts` on `.target.com`, behavioral sensor from `client.px-cloud.net`, IP/ASN reputation; a low trust score renders the Press & Hold interstitial on navigations and a 403 `{"captchaRelativeURL": "/captcha?trackingId=…"}` envelope on API reads (RedSky) | ✅ Round 2 resilient stack — 99.95% over 60 min @ 3 RPS / 3 IPs / 33 TCINs (pre-HUMAN baseline). 2026-09-04: cold pool profiles captcha-walled on every IP incl. the home IP; logged-in account profiles (earned `_px3`/`_pxvid`) read 200. Mitigation = avoid + detect + hand off (`src/session/px_challenge.py`, `TARGET_PX_CHALLENGE_GUARD`); no automated solving. |
 | **Walmart** (legacy) | Akamai (v2/v3) + PerimeterX/HUMAN + Cloudflare | TLS, JS sensor payload, behavioral analysis, IP reputation, HTTP/2 fingerprinting | ⏸ Implemented in `walmart/` but not actively exercised post-pivot. See ANTIBOT_ARCHIVE.md. |
 
 **Difficulty (reference)**: Target ~7/10, Walmart ~9/10.
 
 ## Recent Target Patches
+
+2026-09-07 — **HUMAN Security (PerimeterX) "Press & Hold" layer CONFIRMED on Target; detection + hand-off shipped.**
+Evidence: all three Target account jars (`target.json`, `target-2.json`, `target-3.json`) carry `_px2/_px3/_pxhd/_pxvid/pxcts`
+on `.target.com` (`_pxvid` on primary dates from 2026-08-25); an Aug-27-2026 scraping write-up names Target's storefront
+sensor as HUMAN's `humanSensor` from `client.px-cloud.net`; the 09-04 read-only browser probes got the 403 captcha envelope
+on every Bright Data range AND on a fresh profile on the home IP, while the logged-in account profile on the home IP read 200.
+The 09-04→09-07 home-IP sweep (2 cold sessions) then read **zero** RedSky 200s in 3.9 days — the wall is keyed to the cold
+profile/device trust, not the IP alone. Shipped (flag-gated, no browser tests): `src/session/px_challenge.py` (read-only DOM
+classifier + API-body classifier), sentinel guard `_px_challenge_parks_ladder` (a challenge page parks the destructive
+restart/sign-out/relogin rungs and alerts — that ladder is how business + alt-1 went GUEST on 09-06/07), `px_block` labels on
+ATC/place-order 403s, `[STOCK][PX-CAPTCHA]` on the trusted tab reader, `RESILIENT_FORCE_TAB_FETCH=auto`
+(`src/monitoring/tab_fetch_policy.py`), BD sweep pool restored (16 IPs) with `probe_sweep_pool.bat` as the pre-drop standing
+check. Boundary unchanged: the widget is for a person to press; nothing in the repo automates it.
+Same night, 23:05 probe verdict: 31.105.228.245 / 31.105.93.225 / 168.158.143.27 → CAPTCHA, 72.56.171.184 → OK-DATA ×2
+with the same fresh profile → the wall is IP-range reputation. Shipped on top: per-session captcha park
+(`RESILIENT_CAPTCHA_PARK_S`), sweep cap usable × `RESILIENT_PER_IP_MAX_RPS`, `RESILIENT_POOL_FRESH_PROFILES`, probe
+`home`/`reserve` modes (tests/test_captcha_session_park.py).
 
 2026-05-06 — **Target Phase 4b place-order: LIVE-VALIDATED.** OBSERVE-mode run on TCIN 50270379
 (single-account, N=1) placed a real order via API in 0.92s (HTTP 200, 8807-byte body). Parser at

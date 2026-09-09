@@ -239,6 +239,12 @@ class SessionEntry:
     consecutive_launch_failures: int = 0  # Fix #6: drives orphan-kill / profile rotate
     recent_4xx: deque = field(default_factory=deque)  # Fix #5: recent 4xx timestamps
     state: str = "starting"              # starting | ready | refreshing | crashed | recycling
+    # 2026-09-07 per-session HUMAN/PerimeterX captcha park. The resilient checker
+    # sets it on a RedSky captcha 403 from THIS Chrome; pick_session skips the
+    # session until it expires (the wall is IP-range reputation — the same fresh
+    # profile read 200 on 72.56.x while 31.105.x / 168.158.x were walled).
+    captcha_parked_until: float = 0.0
+    captcha_hits: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -380,12 +386,38 @@ class MultiSessionPool:
                 except asyncio.TimeoutError:
                     pass
 
+    def _wipe_profile(self, s: SessionEntry) -> None:
+        """Delete + recreate one pool session's scratch profile dir (guarded to
+        profile_root). Used by RESILIENT_POOL_FRESH_PROFILES=1 (2026-09-07)."""
+        try:
+            pd = Path(s.profile_dir).resolve()
+            root = Path(self.profile_root).resolve()
+            if root not in pd.parents:
+                logger.warning(f"[MULTI_SESSION] {s.id}: refusing to wipe {pd} (outside {root})")
+                return
+            if pd.exists():
+                shutil.rmtree(pd, ignore_errors=True)
+            pd.mkdir(parents=True, exist_ok=True)
+            s.cookies = {}
+            s.visitor_id = ""
+            logger.info(f"[MULTI_SESSION] {s.id}: fresh profile "
+                        f"(RESILIENT_POOL_FRESH_PROFILES=1) at {pd}")
+        except Exception as e:
+            logger.warning(f"[MULTI_SESSION] {s.id}: profile wipe failed ({e}) — launching as-is")
+
     async def _launch_persistent_one(self, s: SessionEntry):
         """Launch this session's Chrome and park its tab open on target.com.
         Does NOT close the browser. Records cookies and visitor_id, sets
         s.state='ready' on success or 'crashed' on failure."""
         s.state = "starting"
         s.last_refresh_attempt = time.time()
+        # 2026-09-07: RESILIENT_POOL_FRESH_PROFILES=1 wipes this session's scratch
+        # profile before launch so the Chrome mints fresh HUMAN/PerimeterX ids
+        # (_pxvid/_pxhd) instead of re-presenting the ones flagged on 09-04. The
+        # pool profiles hold nothing but Target cookies re-harvested on every
+        # launch; never applied outside profile_root. Default OFF (=exact prior).
+        if os.environ.get("RESILIENT_POOL_FRESH_PROFILES", "0") == "1":
+            self._wipe_profile(s)
         browser_args = [
             "--window-size=1024,768",
             "--no-first-run",
@@ -412,6 +444,16 @@ class MultiSessionPool:
             "InterestFeedV2,CalculateNativeWinOcclusion,AccountConsistency,"
             "SafeBrowsingEnhancedProtectionMessageInInterstitials",
         ]
+        # 2026-09-09 focus-steal fix. These 16 sweep Chromes launching at boot are
+        # the bulk of the windows that steal foreground from a fullscreen game.
+        # They are read-only stock monitors — they never need to be seen or
+        # hand-solved (unlike the account browsers, which stay on-screen for the
+        # Press & Hold hand-solve). Shove them off-screen. CDP/screenshots are
+        # unaffected by window position. Windows only. Kill: TARGET_LAUNCH_OFFSCREEN=0.
+        if (sys.platform == "win32"
+                and os.environ.get("TARGET_LAUNCH_OFFSCREEN", "1").strip().lower()
+                not in ("0", "false", "no", "off")):
+            browser_args.append("--window-position=-32000,-32000")
         if not self.harvest_via_local_ip:
             browser_args.insert(0, f"--proxy-server=127.0.0.1:{s.local_port}")
         cfg = uc.Config(
@@ -677,16 +719,17 @@ class MultiSessionPool:
         subnet under Shape pressure is drained before it drags the pool down.
         If excluding souring subnets would leave nothing, fall back to the
         full ready set — availability beats avoidance."""
+        now = time.time()
         ready = [s for s in self.sessions
                  if s.state == "ready"
                  and s.tab is not None
                  and not s.in_flight
                  and s.cookies
-                 and s.visitor_id]
+                 and s.visitor_id
+                 and s.captcha_parked_until <= now]   # 2026-09-07 per-session captcha park
         if not ready:
             return None
         # Tally recent 4xx per /16, pruning each session's window in place.
-        now = time.time()
         subnet_4xx: dict[str, int] = {}
         for s in self.sessions:
             if not s.recent_4xx:
@@ -714,6 +757,18 @@ class MultiSessionPool:
         ready = sum(1 for s in self.sessions
                     if s.state == "ready" and s.cookies and s.visitor_id)
         return ready, len(self.sessions)
+
+    def usable_session_count(self, now: Optional[float] = None) -> int:
+        """2026-09-07: ready sessions that are NOT captcha-parked — the number
+        the sweep-rate cap (RESILIENT_PER_IP_MAX_RPS) is multiplied by."""
+        t = time.time() if now is None else now
+        return sum(1 for s in self.sessions
+                   if s.state == "ready" and s.cookies and s.visitor_id
+                   and s.captcha_parked_until <= t)
+
+    def captcha_parked_count(self, now: Optional[float] = None) -> int:
+        t = time.time() if now is None else now
+        return sum(1 for s in self.sessions if s.captcha_parked_until > t)
 
     def state_summary(self) -> dict[str, int]:
         out = {"starting": 0, "ready": 0, "refreshing": 0,

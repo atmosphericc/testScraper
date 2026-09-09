@@ -20,11 +20,21 @@ os.environ.setdefault('TARGET_APPLY_FINGERPRINT', '0')   # pool sessions run un-
 os.environ.pop('TEST_MODE', None)
 
 WANT_IP = sys.argv[1] if len(sys.argv) > 1 else '168.158.111.240'
+# 2026-09-07: `home` / `local` = same fresh-profile probe with NO proxy (the
+# home IP); reserve_proxies entries are searchable too; unknown IP = exit 5.
+HOME = WANT_IP.lower() in ('home', 'local')
 cfg = json.load(open('config/proxyIps.json', encoding='utf-8'))
-BD_URL = next((u for u in cfg['proxies'] if f'-ip-{WANT_IP}:' in u), cfg['proxies'][0])
-PIN = re.search(r'-ip-([0-9.]+)', BD_URL).group(1)
+if HOME:
+    BD_URL, PIN = None, 'home'
+else:
+    _pool = list(cfg['proxies']) + list(cfg.get('reserve_proxies', []))
+    BD_URL = next((u for u in _pool if f'-ip-{WANT_IP}:' in u), None)
+    if BD_URL is None:
+        print(f"[PROBE-BD] {WANT_IP} is not in proxyIps 'proxies' or 'reserve_proxies' — nothing probed", flush=True)
+        sys.exit(5)
+    PIN = re.search(r'-ip-([0-9.]+)', BD_URL).group(1)
 PORT = 22900
-PROFILE = ROOT / 'state' / 'smoke_profiles' / 'redsky_probe_bd'
+PROFILE = ROOT / 'state' / 'smoke_profiles' / ('redsky_probe_home' if HOME else 'redsky_probe_bd')
 
 from src.proxy.local_forwarder import ForwarderPool   # noqa
 from src.session.session_manager import SessionManager  # noqa
@@ -59,15 +69,21 @@ async def read(tab, tag):
     return st, kind
 
 async def main():
-    log(f"pinned BD exit={PIN} via 127.0.0.1:{PORT}; fresh profile {PROFILE.name}")
+    if HOME:
+        log(f"HOME IP (no proxy); fresh profile {PROFILE.name}")
+    else:
+        log(f"pinned BD exit={PIN} via 127.0.0.1:{PORT}; fresh profile {PROFILE.name}")
     if PROFILE.exists():
         shutil.rmtree(PROFILE, ignore_errors=True)
     PROFILE.mkdir(parents=True, exist_ok=True)
-    fwd = ForwarderPool()
-    fwd.add_upstream(BD_URL, PORT)
-    await fwd.start_all()
+    fwd = None
+    if not HOME:
+        fwd = ForwarderPool()
+        fwd.add_upstream(BD_URL, PORT)
+        await fwd.start_all()
     sm = SessionManager(session_path=str(PROFILE / 'probe_session.json'), user_data_dir=str(PROFILE),
-                        proxy_url=f'127.0.0.1:{PORT}', account_id='probe-bd', timezone='America/Chicago',
+                        proxy_url=(None if HOME else f'127.0.0.1:{PORT}'),
+                        account_id=('probe-home' if HOME else 'probe-bd'), timezone='America/Chicago',
                         apply_fingerprint=False)
     rc = 1
     try:
@@ -87,11 +103,13 @@ async def main():
         await asyncio.sleep(4)
         r2 = await read(tab, "B) second read via BD")
         kinds = [r[1] for r in (r1, r2) if r]
+        where = "the HOME IP" if HOME else f"BD exit {PIN}"
         if 'OK-DATA' in kinds:
-            log("VERDICT: pool transport (real Chrome + BD IP) READS RedSky NOW -> launch the clean single bot; stock detection will work.")
+            log(f"VERDICT: fresh-profile real Chrome on {where} READS RedSky NOW (OK-DATA) -> usable as a sweep exit.")
             rc = 0
         elif 'CAPTCHA' in kinds:
-            log("VERDICT: BD-IP browser is captcha-gated while HOME-IP browser is not -> the BD range is flagged; needs rest or different exits.")
+            log(f"VERDICT: fresh-profile real Chrome on {where} is captcha-gated (HUMAN/PerimeterX) -> "
+                f"{'the device/home IP itself is flagged; rest it' if HOME else 'that IP range is flagged; rest it or replace the exit'}.")
             rc = 2
         else:
             log("VERDICT: non-captcha block on BD transport -> inspect body above.")
@@ -102,8 +120,9 @@ async def main():
         except Exception:
             try: sm.close_browser_sync()
             except Exception: pass
-        try: await asyncio.wait_for(fwd.stop_all(), timeout=5.0)
-        except Exception: pass
+        if fwd is not None:
+            try: await asyncio.wait_for(fwd.stop_all(), timeout=5.0)
+            except Exception: pass
 
 if __name__ == '__main__':
     try: code = asyncio.run(asyncio.wait_for(main(), timeout=300))

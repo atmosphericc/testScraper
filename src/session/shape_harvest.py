@@ -225,7 +225,20 @@ class ShapeBank:
         self.prune(now)
         if not self._items:
             return None
-        entry = self._items.pop()          # LIFO: freshest set for the shot
+        entry = self._items[-1]            # peek the freshest (LIFO)
+        # 2026-09-09: a banked set older than the Shape token-rotation window
+        # (~90-120s) is likely dead on the wire even within the 300s bank TTL, and
+        # replaying a dead set makes the shot WORSE than a fresh page-signed one
+        # (which is re-signed in-page every time). If even the freshest set is past
+        # the cap, replay nothing so the shot goes page-signed.
+        # TARGET_HARVEST_MAX_REPLAY_AGE_S=0 disables the cap (exact prior behaviour).
+        try:
+            _max_age = float(os.environ.get("TARGET_HARVEST_MAX_REPLAY_AGE_S", "100"))
+        except (TypeError, ValueError):
+            _max_age = 100.0
+        if _max_age > 0 and (now - entry["ts"]) > _max_age:
+            return None
+        self._items.pop()                  # LIFO: freshest set for the shot
         self.replayed += 1
         return entry
 
@@ -270,7 +283,12 @@ def bezier_path(x0: float, y0: float, x1: float, y1: float,
     sign = rng.choice((-1.0, 1.0))
     cp_x = (x0 + x1) / 2 + sign * offset_mag * px + rng.uniform(-offset_mag * 0.4, offset_mag * 0.4)
     cp_y = (y0 + y1) / 2 + sign * offset_mag * py + rng.uniform(-offset_mag * 0.4, offset_mag * 0.4)
-    steps = max(4, min(9, int(dist / 80) + rng.randint(3, 5)))
+    # 2026-09-08: cap steps at 6 (was 9). Each step is an awaited CDP
+    # dispatch_mouse_event on a socket shared with the warmup interceptor; under
+    # contention a 9-step path blew the click timeout (9230 TimeoutErrors on
+    # 09-07). 6 points is still a curved, velocity-timed human path, and a click
+    # that COMPLETES beats a perfect one that times out and captures nothing.
+    steps = max(4, min(6, int(dist / 80) + rng.randint(3, 5)))
     pts: List[Tuple[float, float, float]] = []
     for i in range(1, steps + 1):
         t = i / (steps + 1)

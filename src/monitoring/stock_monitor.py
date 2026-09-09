@@ -197,11 +197,25 @@ class StockMonitor:
                 url.searchParams.set('has_pricing_context', 'true');
                 url.searchParams.set('has_promotions', 'true');
                 // Patch 5 (2026-04-25): is_bot=false removed — Shape Security flags this param.
+                // 2026-09-09: cache-buster + no-store. This tab-fetch is the SOLE stock
+                // detector while the BD sweep is HUMAN-walled; without it Target's edge
+                // can serve a STALE OUT_OF_STOCK for the cache TTL and mask a live
+                // restock through the entire wave-first window (the 2026-05-22 missed
+                // ETB). A `_=<ts><rand>` param is the standard innocuous cache-buster.
+                url.searchParams.set('_', String(Date.now()) + Math.floor(Math.random() * 1e6));
                 const resp = await fetch(url.toString(), {{
                     credentials: 'include',
+                    cache: 'no-store',
                     headers: {{'accept': 'application/json', 'accept-language': 'en-US,en;q=0.9'}}
                 }});
-                if (!resp.ok) return {{error: resp.status}};
+                if (!resp.ok) {{
+                    // 2026-09-07: keep the body head so a HUMAN/PerimeterX captcha
+                    // envelope ({{"captchaRelativeURL": ...}}) is distinguishable
+                    // from a plain throttle/5xx in the log.
+                    let t = '';
+                    try {{ t = (await resp.text()).slice(0, 240); }} catch (e) {{}}
+                    return {{error: resp.status, body: t}};
+                }}
                 return await resp.json();
             }} catch(e) {{ return {{error: String(e)}}; }}
         }})()"""
@@ -212,11 +226,25 @@ class StockMonitor:
 
             future = asyncio.run_coroutine_threadsafe(_do_fetch(), event_loop)
             start_time = time.time()
-            result = future.result(timeout=12)
+            # 2026-09-09: 12s -> 6s. As the primary detector this read runs on the
+            # shared CDP loop; during a live shot a 12s stall would block the loop
+            # and the shot. A warmed home-IP bulk read returns in <2s, so 6s bounds
+            # a stall while leaving ample headroom for a legit read.
+            result = future.result(timeout=6)
             response_time = (time.time() - start_time) * 1000
 
             if not result or isinstance(result, dict) and 'error' in result:
                 err = result.get('error') if result else 'no result'
+                _body = (result.get('body') or '') if isinstance(result, dict) else ''
+                if 'captcha' in str(_body).lower():
+                    # 2026-09-07: the TRUSTED account browser itself is being
+                    # HUMAN/PerimeterX-challenged (Press & Hold layer). Loud but
+                    # rate-limited (once/60s) — this read runs every 4-8s.
+                    _now = time.time()
+                    if _now - getattr(self, '_px_captcha_last_log', 0.0) >= 60.0:
+                        self._px_captcha_last_log = _now
+                        print(f"[STOCK][PX-CAPTCHA] trusted-browser RedSky read walled (http={err}) — "
+                              f"the account browser is HUMAN-challenged; look for Press & Hold in its window")
                 print(f"[STOCK] Browser fetch error: {err}")
                 return None
 
