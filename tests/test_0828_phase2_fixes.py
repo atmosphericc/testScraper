@@ -193,11 +193,13 @@ def test_pulse_knobs_and_defaults():
 
 
 def test_pulse_counter_source_pins():
-    reg = _region(MGR_SRC, "if _gk == 'auth401':", after=1400)
+    # 2026-09-09: the wave-first-only block (census) sits between the counter and
+    # the pulse, so the region is wider and the pulse is now an `elif` behind it.
+    reg = _region(MGR_SRC, "if _gk == 'auth401':", after=5200)
     check("auth401_increments", "_consec_401 += 1" in reg)
     check("edge_is_neutral", "elif _gk != 'edge':" in reg)
     check("pulse_guarded_by_flag_and_streak",
-          "if _pulse_on and _consec_401 >= _pulse_streak_n:" in reg)
+          "_pulse_on and _consec_401 >= _pulse_streak_n:" in reg)
     check("pulse_capped_by_deadline",
           "max(0.0, _retry_deadline - time.time()) + 1.0" in reg)
     check("pulse_log_line", "[PULSE401]" in reg)

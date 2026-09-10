@@ -87,9 +87,10 @@ REM = 293/293 clean for 10 min; 2 reads/s = HTTP 404 "Not Found" on every read
 REM after ~166 reads and still blocked >3 min later. Production is ~0.19/s per
 REM exit at 3/s over 16; the cap keeps ANY exit under 0.5/s when few are usable
 REM (sweep = min(target, usable x cap)). A 404 parks that exit only
-REM (RESILIENT_RAW_404_PARK_S base, x2 per repeat, cap x8, reset on a 200).
+REM (RESILIENT_RAW_404_PARK_S base, x2 per repeat, cap x8, reset on a 200). The
+REM 404 ban measured on 168.158.143.27 lasted >29 min at zero load -> base 300 s.
 set RESILIENT_PER_IP_MAX_RPS=0.5
-set RESILIENT_RAW_404_PARK_S=120
+set RESILIENT_RAW_404_PARK_S=300
 REM 2026-09-09 THE DETECTION FIX. RESILIENT_REDSKY_CHANNEL=apps_raw reads the
 REM mobile-app RedSky aggregation (/v1/apps/tcin_product_list_v2) as RAW HTTP
 REM through each sweep session's forwarder with the app header set, instead of
@@ -607,6 +608,24 @@ set TARGET_401_PULSE=1
 set TARGET_401_PULSE_STREAK=3
 set TARGET_401_PULSE_SLEEP_MIN=15
 set TARGET_401_PULSE_SLEEP_MAX=25
+REM 2026-09-09 CENSUS over every run log since June (21,684 ATC POSTs, 1,609
+REM windows, 20 orders): 19/20 orders landed on attempt #1 at t+0 and the 20th was
+REM a checkout re-shoot on a cart the first shots had already won; ZERO orders ever
+REM came from a re-POSTed ATC (0/13,244 at attempt>=2). Cart rate by attempt:
+REM 6.1%% -> 1.4%% -> 0.4%% -> 0.0%% (k=1,2,3-5,6-10). A fresh shot fired after >=5 prior
+REM shots on the TCIN within 120 s went 0-for-438 vs 10%% cold. On hyped SKUs the
+REM 429 share climbed 30%% -> 90%% by shot 3-5 (ERR_A2C_TCIN_RATE_LIMITED = our own
+REM volume trips Target's per-TCIN limiter). Spam is a COST, not a lever. So:
+REM WAVE_FIRST_ONLY: after an ATC-level 401/429 no re-POST -- a cold re-entry after
+REM 55-70 s (or end the window; the level re-arm opens a fresh one), and
+REM SHOT_BANK_GATE waits up to 8 s for a fresh real-click set before that cold
+REM shot (a page-signed cold shot still fires -- that is what won 19/20).
+REM Checkout-leg re-shoots (cart hold) are untouched. Kill: TARGET_WAVE_FIRST_ONLY=0.
+set TARGET_WAVE_FIRST_ONLY=1
+set TARGET_WAVE_REENTRY_MIN_S=55
+set TARGET_WAVE_REENTRY_MAX_S=70
+set TARGET_SHOT_BANK_GATE=1
+set TARGET_SHOT_BANK_WAIT_S=8
 REM  15) Real PDP referrer on the fast-lane ATC via fetch's `referrer` INIT
 REM      option (the headers-object Referer is a forbidden name and never hit
 REM      the wire -- shots actually carried the parked homepage//account URL; a

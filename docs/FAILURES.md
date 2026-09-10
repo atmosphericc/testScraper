@@ -31,6 +31,49 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-09] - CENSUS: re-POST spam has never produced an order and poisons the next cold shot; policy flipped to wave-first-only - TARGET
+**Symptom**: the retry-while-in-stock loop fires ~15-20 ATC POSTs per identity per window at
+2.5-3.5 s (median 3.8 s between attempts; only 4% of gaps ≥15 s), on the doctrine that
+re-POSTs are lottery tickets.
+**Root Cause / Evidence** (census over 92 run logs, Jun 4 → Sep 8: 21,684 raw `cart_items`
+POSTs, 1,609 windows, 14,107 attempts, 20 orders; scripts `scratchpad/census/*.py`):
+- **19 of 20 orders landed on attempt #1 at t+0 s**; the 20th (08-04 02:07, business) was a
+  re-shot CHECKOUT on a cart that attempt 2's ATC 201 had already won and held. **No re-POSTed
+  ATC has ever produced an order** (0 / 13,244 shots at attempt ≥2; 95% UB 0.023%).
+- Cart rate by attempt: **6.14% → 1.38% → 0.37% → 0.00% → 0.07%** for k = 1, 2, 3-5, 6-10
+  (n=3,064, 0 carts), 11+ (Fisher k=1 vs k≥6: p = 1.4e-54). Wave-first (first shot after a ≥15 s
+  pause) vs re-POST: 5.38% vs 0.16% cart, 19 vs 1 orders; in 401 context on converting nights
+  18.97% vs 0.37%.
+- **Volume poisons the next fresh shot**: a wave-first shot with 0 prior shots on the TCIN in
+  120 s → 10.0% cart, 19 orders (n=499); 1-4 prior → 6.4%, 0 orders (n=125); ≥5 prior →
+  **0-for-438** (p = 5.1e-15). Transition matrix: P(cart | prev cart) = 22% vs 0.056% after a
+  401; 20 of the 24 windows that opened with a cart collapsed into an unbroken `_ERR_AUTH_DENIED`
+  wall after 1-3 adds, including the uncontested 08-04 11:07 control.
+- **The "empty-body 429 lottery" is self-inflicted**: 2,233 of 2,236 ATC 429s carry
+  `tgt-cart-error-key: ERR_A2C_TCIN_RATE_LIMITED` (a per-TCIN add-to-cart limiter), and on the
+  hyped 08-27/28 night the 429 share climbed 30% (shot 1) → 78% (shot 2) → 90% (shots 3-5).
+  429-dominant episodes: 5,957 shots, 5,292 at attempt ≥3 → 5 carts, 0 orders; the only hot
+  conversion ever (07-31 02:29) was attempt 1 of a fresh wave. Episodes of 10-29 shots: 6 orders
+  in 919 shots; 100-399 shots: 0 in 5,061; 400+: 0 in 3,367.
+- Confounds stated: depth correlates with unwinnable nights (9 of 23 active nights had zero
+  carts from any shot); hot vs regular is confounded with depth; 20 orders is a small count
+  (the 74 carts carry the statistics).
+**Fix Applied**: `TARGET_WAVE_FIRST_ONLY=1` (bat) — after an ATC-level 401/429 (gate_kind
+auth401/edge/dco) the loop takes a COLD re-entry of `TARGET_WAVE_REENTRY_MIN/MAX_S` (55-70 s)
+instead of the 2.5-3.5 s cadence, or ends the window when the budget cannot fit one (the level
+re-arm opens a fresh window while the item stays in stock); `TARGET_SHOT_BANK_GATE=1` waits up to
+`TARGET_SHOT_BANK_WAIT_S` (8) for a fresh real-click set before that cold shot (a page-signed cold
+shot still fires — that is what won 19/20). Checkout-leg re-shoots (cart hold / FAST_SELLING)
+are untouched. Kill switches restore the exact prior cadence. Tests: test_redsky_apps_channel
+pins + logic checks on the executor's `harvest_set_ready`/`harvest_wait_for_set`.
+**Confidence**: high on the finding (sample 21,684 POSTs; the poisoning effect p=5e-15); medium
+on the exact re-entry interval (55-70 s is between the "1-4 prior" and "0 prior in 120 s"
+classes; a 120 s cold gap would be the purest but the 110 s window budget allows one shot then).
+**Outcome**: SHIPPED, UNPROVEN LIVE. First-run check: `[WAVE_FIRST]` lines after any ATC 401/429,
+`[BANK_GATE] fresh banked set ready` before cold shots, attempts per window ≤3.
+
+---
+
 ### [2026-09-09] - The "~75-min per-Chrome wedge" is a Chrome-wide CDP dispatch stall with no precursor; the account Chromes never had the occlusion calculator disabled (last `--disable-features` wins) - TARGET
 **Symptom**: every account Chrome stops answering CDP roughly hourly; the sentinel's 5-min tick +
 63 s ladder made it look like a rigid 75-min clock. Cost per wedge: onset → `Session restored`

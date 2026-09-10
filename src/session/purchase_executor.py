@@ -1661,6 +1661,32 @@ class PurchaseExecutor:
         except (TypeError, ValueError):
             return 3
 
+    def harvest_set_ready(self) -> bool:
+        """True when a banked Shape set is present AND inside the replay cap, i.e.
+        the next main-tab ATC will carry a real-click-signed set."""
+        try:
+            if not (self._harvest_cfg.get('enabled') and self._harvest_replay_on):
+                return False
+            age = self._shape_bank.newest_age()
+            cap = self._shape_bank.max_replay_age()
+            return age is not None and (cap <= 0 or age <= cap)
+        except Exception:
+            return False
+
+    async def harvest_wait_for_set(self, max_wait_s: float) -> bool:
+        """2026-09-09 fresh-set gate: poll (0.25 s) up to `max_wait_s` for a replayable
+        banked set. Used by the purchase manager between re-POSTs after a carts-401
+        so a retry carries a real-click-signed set (the in-window harvest refills
+        one set per ~8-10 s) instead of going page-signed — the class that
+        converted 0.0% on hot items and 0.9% on regular ones (08-28 census)."""
+        deadline = time.time() + max(0.0, float(max_wait_s))
+        while True:
+            if self.harvest_set_ready():
+                return True
+            if time.time() >= deadline:
+                return False
+            await asyncio.sleep(0.25)
+
     async def _harvest_drop_tab(self, reason: str, close: bool = True) -> None:
         """Forget the harvest tab handle and, unless the Chrome it belonged to is
         gone, CLOSE the tab (via the browser-level connection, bounded).

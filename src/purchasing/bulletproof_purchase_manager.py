@@ -1475,7 +1475,40 @@ class BulletproofPurchaseManager:
                             _consec_401 += 1
                         elif _gk != 'edge':
                             _consec_401 = 0
-                        if _pulse_on and _consec_401 >= _pulse_streak_n:
+                        _wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'
+                        if _wf_only and _gk in ('auth401', 'edge', 'dco'):
+                            # 2026-09-09 CENSUS (21,684 ATC POSTs, 1,609 windows, Jun 4-Sep 8):
+                            # 19 of 20 orders = attempt #1 at t+0; ZERO orders from any
+                            # re-POSTed ATC (0/13,244 at k>=2; cart rate 6.1% -> 1.4% -> 0.4%
+                            # -> 0.0% for k=1, 2, 3-5, 6-10; p=1.4e-54). A fresh shot fired
+                            # after >=5 prior shots on the TCIN in 120 s went 0-for-438 vs 10%
+                            # cold (p=5.1e-15). On hyped SKUs the 429 share climbed 30% -> 90%
+                            # by shot 3-5 (ERR_A2C_TCIN_RATE_LIMITED = our own volume trips
+                            # Target's per-TCIN limiter). So after an ATC-level 401/429: NO
+                            # re-POST — a COLD re-entry after TARGET_WAVE_REENTRY_MIN/MAX_S, or
+                            # end the window when the budget cannot fit one (the level re-arm
+                            # opens a fresh window while the item stays in stock). Checkout-leg
+                            # retries (cart-hold re-shoots, which DID convert) are untouched.
+                            # Kill: TARGET_WAVE_FIRST_ONLY=0 (exact prior cadence).
+                            try:
+                                _re_lo = float(os.environ.get('TARGET_WAVE_REENTRY_MIN_S', '55'))
+                                _re_hi = float(os.environ.get('TARGET_WAVE_REENTRY_MAX_S', '70'))
+                            except ValueError:
+                                _re_lo, _re_hi = 55.0, 70.0
+                            _re_lo = max(15.0, _re_lo)
+                            _re_hi = max(_re_hi, _re_lo)
+                            _remaining = _retry_deadline - time.time()
+                            if _remaining < _re_lo:
+                                print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} with {_remaining:.0f}s of window left — "
+                                      f"no warm re-POST; ending the window (re-arm opens a fresh one) "
+                                      f"ident={_race_wlbl or 'auto'}")
+                                break
+                            _re_s = random.uniform(_re_lo, min(_re_hi, _remaining))
+                            print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} — no re-POST; cold re-entry in "
+                                  f"{_re_s:.0f}s ident={_race_wlbl or 'auto'}")
+                            _consec_401 = 0
+                            time.sleep(_re_s)
+                        elif _pulse_on and _consec_401 >= _pulse_streak_n:
                             _pulse_s = min(random.uniform(_pulse_lo, _pulse_hi),
                                            max(0.0, _retry_deadline - time.time()) + 1.0)
                             print(f"[PULSE401] {_consec_401} consecutive carts-401s on {tcin} — "
@@ -1484,6 +1517,51 @@ class BulletproofPurchaseManager:
                             time.sleep(_pulse_s)
                         else:
                             time.sleep(random.uniform(_atc_lo, _atc_hi))
+                        # 2026-09-09 fresh-set gate (TARGET_SHOT_BANK_GATE=1; default 0 =
+                        # exact prior behaviour). Every re-POST also pops a banked Shape
+                        # set, so the 3 fresh sets are spent ~10 s after the flip and the
+                        # remaining re-POSTs go page-signed — the class that converted
+                        # 0.0% on hot items / 0.9% on regular ones (08-28). After a
+                        # carts-401 (a spent/blocked set), wait up to
+                        # TARGET_SHOT_BANK_WAIT_S (8) for the in-window harvest to bank a
+                        # new set; if none arrives, take a wave-first pause instead of
+                        # firing page-signed. Edge-429s (no Shape verdict) are untouched:
+                        # the ticket lottery keeps its cadence.
+                        _gate_kinds = ('auth401', 'edge', 'dco') if _wf_only else ('auth401',)
+                        if (os.environ.get('TARGET_SHOT_BANK_GATE', '0') == '1' and _gk in _gate_kinds
+                                and getattr(target_purchase_executor, 'harvest_set_ready', None) is not None
+                                and target_purchase_executor._harvest_cfg.get('enabled')
+                                and target_purchase_executor._harvest_replay_on):
+                            try:
+                                _bw = float(os.environ.get('TARGET_SHOT_BANK_WAIT_S', '8'))
+                            except ValueError:
+                                _bw = 8.0
+                            _bw = min(_bw, max(0.0, _retry_deadline - time.time()))
+                            try:
+                                if worker is not None:
+                                    _have = worker.run_async(
+                                        target_purchase_executor.harvest_wait_for_set(_bw)).result(timeout=_bw + 2.0)
+                                else:
+                                    _have = target_session_manager.submit_async_task(
+                                        target_purchase_executor.harvest_wait_for_set(_bw)).result(timeout=_bw + 2.0)
+                            except Exception as _bg_err:
+                                print(f"[BANK_GATE] wait errored ({_bg_err}) — firing anyway")
+                                _have = True
+                            if _have:
+                                print(f"[BANK_GATE] fresh banked set ready — the shot carries a real-click set "
+                                      f"ident={_race_wlbl or 'auto'}")
+                            elif _wf_only:
+                                # A cold page-signed wave-first shot is exactly what won 19/20 orders;
+                                # the banked set is an upgrade for the hot tier, not a requirement.
+                                print(f"[BANK_GATE] no fresh set within {_bw:.0f}s — cold re-entry fires page-signed "
+                                      f"ident={_race_wlbl or 'auto'}")
+                            else:
+                                _pulse_s = min(random.uniform(_pulse_lo, _pulse_hi),
+                                               max(0.0, _retry_deadline - time.time()) + 1.0)
+                                print(f"[BANK_GATE] no fresh set within {_bw:.0f}s after a 401 — wave-first "
+                                      f"pause {_pulse_s:.1f}s instead of a page-signed re-POST ident={_race_wlbl or 'auto'}")
+                                _consec_401 = 0
+                                time.sleep(_pulse_s)
 
                     # CRITICAL: Update state ATOMICALLY with lock held
                     # This prevents race condition where next cycle sees stale "attempting" status

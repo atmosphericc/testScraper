@@ -158,6 +158,51 @@ def test_executor_wiring():
     check("exe_orphans_substring_match", "if url_marker not in str(getattr(t.target, 'url', '') or ''):" in EXE_SRC)
 
 
+def test_bank_gate():
+    MGR = (ROOT / 'src' / 'purchasing' / 'bulletproof_purchase_manager.py').read_text(encoding='utf-8', errors='replace')
+    check("exe_harvest_set_ready_defined", "def harvest_set_ready(self) -> bool:" in EXE_SRC
+          and "async def harvest_wait_for_set(self, max_wait_s: float) -> bool:" in EXE_SRC)
+    check("mgr_bank_gate_flag_default_off", "os.environ.get('TARGET_SHOT_BANK_GATE', '0') == '1' and _gk in _gate_kinds" in MGR)
+    check("mgr_bank_gate_only_after_401", "_gk == 'auth401'" in MGR and "TARGET_SHOT_BANK_WAIT_S" in MGR)
+    check("mgr_bank_gate_pauses_instead_of_page_signed", "[BANK_GATE] no fresh set within" in MGR
+          and "instead of a page-signed re-POST" in MGR)
+    check("mgr_bank_gate_bounded_by_deadline", "_bw = min(_bw, max(0.0, _retry_deadline - time.time()))" in MGR)
+    # wave-first-only policy (census 2026-09-09)
+    check("mgr_wave_first_flag_default_off", "_wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'" in MGR)
+    check("mgr_wave_first_covers_401_and_429", "if _wf_only and _gk in ('auth401', 'edge', 'dco'):" in MGR)
+    check("mgr_wave_first_cold_reentry", "TARGET_WAVE_REENTRY_MIN_S" in MGR and "_re_lo = max(15.0, _re_lo)" in MGR
+          and "cold re-entry in" in MGR)
+    check("mgr_wave_first_ends_window_when_no_room", "if _remaining < _re_lo:" in MGR and "ending the window (re-arm opens a fresh one)" in MGR)
+    check("mgr_wave_first_keeps_checkout_retries", "'checkout_busy_retryable'" in MGR)
+    check("mgr_gate_kinds_widen_in_wave_first", "_gate_kinds = ('auth401', 'edge', 'dco') if _wf_only else ('auth401',)" in MGR
+          and "cold re-entry fires page-signed" in MGR)
+    # executor stub: ready iff bank has a set inside the replay cap
+    ex, pe = _stub_executor_for_gate()
+    check("gate_not_ready_empty", ex.harvest_set_ready() is False)
+    ex._shape_bank.push(HD, now=__import__('time').time())
+    check("gate_ready_fresh", ex.harvest_set_ready() is True)
+    check("gate_wait_returns_true_fast", __import__('asyncio').run(ex.harvest_wait_for_set(2.0)) is True)
+    ex._shape_bank.push(HD, now=__import__('time').time() - 500)   # push a stale one on top
+    ex._shape_bank._items.clear()
+    ex._shape_bank.push(HD, now=__import__('time').time() - 150)   # 150 s old > 100 s cap
+    check("gate_not_ready_stale", ex.harvest_set_ready() is False)
+    t0 = __import__('time').time()
+    check("gate_wait_times_out", __import__('asyncio').run(ex.harvest_wait_for_set(0.6)) is False
+          and 0.5 <= __import__('time').time() - t0 <= 2.0)
+    ex._harvest_replay_on = False
+    ex._shape_bank.push(HD, now=__import__('time').time())
+    check("gate_not_ready_when_replay_off", ex.harvest_set_ready() is False)
+
+
+def _stub_executor_for_gate():
+    import src.session.purchase_executor as pe
+    ex = pe.PurchaseExecutor.__new__(pe.PurchaseExecutor)
+    ex._harvest_cfg = h.config({'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_TCINS': '21516452'})
+    ex._shape_bank = h.ShapeBank(3, 300)
+    ex._harvest_replay_on = True
+    return ex, pe
+
+
 def test_session_manager_wedge_fixes():
     SM = (ROOT / 'src' / 'session' / 'session_manager.py').read_text(encoding='utf-8', errors='replace')
     check("sm_occlusion_feature_merged", "_feat.append('CalculateNativeWinOcclusion')" in SM
@@ -181,7 +226,10 @@ def test_bat_pins():
     check("bat_prefer_shipping", _bat_val('TARGET_HARVEST_PREFER_SHIPPING') == '1')
     check("bat_bytematch", _bat_val('TARGET_ATC_BYTEMATCH') == '1')
     check("bat_per_ip_cap_half", _bat_val('RESILIENT_PER_IP_MAX_RPS') == '0.5')
-    check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '120')
+    check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '300')
+    check("bat_wave_first_armed", _bat_val('TARGET_WAVE_FIRST_ONLY') == '1' and _bat_val('TARGET_WAVE_REENTRY_MIN_S') == '55'
+          and _bat_val('TARGET_WAVE_REENTRY_MAX_S') == '70' and _bat_val('TARGET_SHOT_BANK_GATE') == '1'
+          and _bat_val('TARGET_SHOT_BANK_WAIT_S') == '8')
     check("bat_crlf_only", BAT_RAW.count(b'\n') == BAT_RAW.count(b'\r\n') and BAT_RAW.count(b'\r\n') > 100)
     check("bat_old_skip_gone", 'set TARGET_HARVEST_SKIP=primary,alt-1' not in BAT_SRC)
 
@@ -202,8 +250,8 @@ def test_compiles():
 
 if __name__ == '__main__':
     for fn in (test_channel_helper, test_dispatcher_wiring, test_trusted_reader_fixes,
-               test_bank_stale_and_refill, test_executor_wiring, test_session_manager_wedge_fixes,
-               test_bat_pins, test_compiles):
+               test_bank_stale_and_refill, test_executor_wiring, test_bank_gate,
+               test_session_manager_wedge_fixes, test_bat_pins, test_compiles):
         try:
             fn()
         except Exception as e:
