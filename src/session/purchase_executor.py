@@ -2541,6 +2541,18 @@ class PurchaseExecutor:
                                       f"replay={'on' if self._harvest_replay_on else 'OFF'}")
                 _fl = await self._api_fast_lane(tab, tcin, quantity, extra_headers_js)
                 atc_result = _fl.get('atc') or {}
+                # 2026-09-09 (research): under load Target serves a near-blank
+                # "Sorry for the wait -- It's a little busier than we expected"
+                # interstitial; competitors HOLD position rather than re-navigate.
+                # Detect it on the ATC response so a post-drop audit can tell a
+                # queue from a Shape block / edge 429 (diagnostic; the status code
+                # still drives the retry policy).
+                _ab = str(atc_result.get('body') or '').lower()
+                if 'busier than we expected' in _ab or 'sorry for the wait' in _ab:
+                    self._waiting_room_hits = getattr(self, '_waiting_room_hits', 0) + 1
+                    print(f"[WAITING_ROOM] Target queue interstitial on the ATC response "
+                          f"(http={atc_result.get('status')}, hit #{self._waiting_room_hits}) — "
+                          f"hold and retry, do not re-navigate ident={self._ident_tag()}")
                 _verdict, _terminal = self._apply_fast_lane_result(_fl, tcin, start_time)
                 if _verdict == 'terminal':
                     return _terminal
@@ -5684,9 +5696,25 @@ class PurchaseExecutor:
             atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
                        '?field_groups=CART%2CCART_ITEMS%2CSUMMARY'
                        '&key=9f36aeafbe60771e321a7cc95a78140772ab3e96')
+            # BODY byte-match (2026-09-09): two independent public captures of real
+            # browser adds (Chrome 136, May 2026) and our own 09-07 page capture agree
+            # that the page sends {{cart_item:{{item_channel_id,tcin,quantity}},
+            # cart_type, channel_id, shopping_context}} in that order and NO
+            # fulfillment field for a shipping add (a pickup add carries a top-level
+            # `fulfillment` object). Our old body added `fulfillment_type`/
+            # `fulfillment_type_code`, which no page add ever sends. Both forms are
+            # accepted by the API (15 real orders on the old one); this one is what a
+            # human's browser emits.
+            _atc_body_js = ("{{cart_item: {{item_channel_id: '10', tcin: '" + str(tcin) + "', quantity: "
+                            + str(int(quantity)) + "}}, cart_type: 'REGULAR', channel_id: '10', "
+                            "shopping_context: 'DIGITAL'}}")
         else:
             atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
                        '?field_groups=CART,CART_ITEMS,SUMMARY')
+            _atc_body_js = ("{{cart_item: {{tcin: '" + str(tcin) + "', quantity: " + str(int(quantity))
+                            + ", item_channel_id: '10', fulfillment_type: 'SHIPPING', "
+                            "fulfillment_type_code: '02'}}, cart_type: 'REGULAR', channel_id: '10', "
+                            "shopping_context: 'DIGITAL'}}")
         pre_url = ('https://carts.target.com/web_checkouts/v1/pre_checkout'
                    '?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,'
                    'PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES')
@@ -5735,16 +5763,7 @@ class PurchaseExecutor:
                 const r = await fetch('{atc_url}', {{
                     method: 'POST', credentials: 'include', {_ref_init}
                     headers: mk('https://www.target.com/p/-/A-{tcin}'),
-                    body: JSON.stringify({{
-                        cart_item: {{
-                            tcin: '{tcin}', quantity: {quantity},
-                            item_channel_id: '10',
-                            fulfillment_type: 'SHIPPING',
-                            fulfillment_type_code: '02'
-                        }},
-                        cart_type: 'REGULAR', channel_id: '10',
-                        shopping_context: 'DIGITAL'
-                    }})
+                    body: JSON.stringify({_atc_body_js})
                 }});
                 const t = await r.text();
                 out.atc.status = r.status;

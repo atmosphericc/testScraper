@@ -129,6 +129,14 @@ def test_executor_wiring():
     check("exe_bytematch_url", "if os.environ.get('TARGET_ATC_BYTEMATCH', '0') == '1':" in EXE_SRC
           and "'?field_groups=CART%2CCART_ITEMS%2CSUMMARY'" in EXE_SRC
           and "'&key=9f36aeafbe60771e321a7cc95a78140772ab3e96')" in EXE_SRC)
+    # body byte-match: the page's shipping add carries NO fulfillment field and this key order
+    check("exe_bytematch_body_page_shape",
+          "item_channel_id: '10', tcin: '" in EXE_SRC and "cart_type: 'REGULAR', channel_id: '10', " in EXE_SRC
+          and "body: JSON.stringify({_atc_body_js})" in EXE_SRC)
+    check("exe_bytematch_body_old_shape_kept", "fulfillment_type: 'SHIPPING', " in EXE_SRC
+          and "fulfillment_type_code: '02'}}, cart_type: 'REGULAR'" in EXE_SRC)
+    check("exe_waiting_room_detected", "[WAITING_ROOM] Target queue interstitial" in EXE_SRC
+          and "'busier than we expected' in _ab" in EXE_SRC)
     check("exe_window_census", 'window census: shots=' in EXE_SRC and "self._harvest_win['shots'] += 1" in EXE_SRC
           and "self._harvest_win['replayed'] += 1" in EXE_SRC)
     check("exe_refill_gate_uses_stale", "want = need > 0 or self._shape_bank.refill_wanted()" in EXE_SRC
