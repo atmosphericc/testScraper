@@ -125,7 +125,8 @@ def test_wiring():
 
     POOL = _read('src/session/multi_session_pool.py')
     check("entry_fields", "captcha_parked_until: float = 0.0" in POOL and "captcha_hits: int = 0" in POOL)
-    check("pick_filters_parked", "and s.captcha_parked_until <= now]" in POOL)
+    check("pick_filters_parked", "and s.captcha_parked_until <= now" in POOL
+          and "and s.rate_parked_until <= now]" in POOL)   # 2026-09-09: + app-channel rate park
     check("usable_helper", "def usable_session_count(self, now: Optional[float] = None) -> int:" in POOL)
     check("fresh_profiles_flag_gated", 'os.environ.get("RESILIENT_POOL_FRESH_PROFILES", "0") == "1"' in POOL)
     w0 = POOL.find("def _wipe_profile(self, s: SessionEntry) -> None:")
@@ -155,7 +156,8 @@ def test_bat():
         return m.group(1).strip() if m else ''
 
     check("bat_park_1800", v('RESILIENT_CAPTCHA_PARK_S') == '1800')
-    check("bat_per_ip_cap_1", v('RESILIENT_PER_IP_MAX_RPS') == '1.0')
+    # 2026-09-09: the app channel's per-IP limiter (404 after ~166 reads at 2/s; clean at 0.5/s)
+    check("bat_per_ip_cap_half", v('RESILIENT_PER_IP_MAX_RPS') == '0.5')
     # 2026-09-09 audit of run_20260907: fresh profiles did not help (all 16 walled
     # within 3.5 min of boot; the only recovery came with equally fresh profiles),
     # so the pin flipped to 0 (persistent profiles let HUMAN cookies age).

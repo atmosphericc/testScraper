@@ -104,9 +104,12 @@ demand limiter and the 3-account ticket count are unchanged).
 **Outcome**: SHIPPED, UNPROVEN LIVE (user-launched). First-run checks: `[STOCK STATS] 200=` rising
 past boot+5 min, `[STOCK][CAPTCHA-PARK]` quiet, `[STOCK][RATE] usable 16/16`; `[HARVEST/*]`
 `fulfillment cell:` showing a Shipping click, captures with `a_len=`, and after a window `window
-census: … replayed=N` with N>0. Still open: the ~75-min Chrome wedge; the SHIPPING add body
-schema (read it off the first shipping capture's REAL_ATC_SHAPE line, then byte-match the body);
-Target's "Sorry for the wait" interstitial (hold, don't re-navigate) is not handled.
+census: … replayed=N` with N>0. Later the same evening: the SHIPPING add body was settled from
+two public real-browser captures (no `fulfillment` field; key order `item_channel_id, tcin,
+quantity` / `cart_type, channel_id, shopping_context`) and byte-matched under the same flag; the
+raw reader was driven end to end through the production forwarder path (2/2 reads HTTP 200 in
+~0.6 s, 19/19 TCINs parsed); a `[WAITING_ROOM]` detector logs Target's "busier than we expected"
+interstitial on the ATC response. Still open: the ~75-min Chrome wedge (forensics in progress).
 
 ---
 

@@ -79,6 +79,14 @@ def test_dispatcher_wiring():
     check("disp_raw_reuses_interpreter", '{"__http_status": status, "__body": body, "__body_text": (text or "")[:800]}' in DISP_SRC)
     check("disp_raw_http_error_body_kept", "except urllib.error.HTTPError as e:" in DISP_SRC)
     check("disp_raw_bounded", "timeout=self.tab_eval_timeout_s + 2.0" in DISP_SRC)
+    check("disp_raw_404_rate_park", "RESILIENT_RAW_404_PARK_S" in DISP_SRC and "s.rate_parked_until = time.time() + _park" in DISP_SRC
+          and "s.recent_4xx.pop()" in DISP_SRC and 'elif status == 404 and \'"Not Found"\' in (text or \'\'):' in DISP_SRC
+          and "_park = _base * min(8.0, 2.0 ** (s.rate_parks - 1))" in DISP_SRC and "s.rate_parks = 0" in DISP_SRC)
+    check("disp_raw_cache_bust_off_by_default", "RESILIENT_RAW_CACHE_BUST" in DISP_SRC)
+    POOL_SRC = (ROOT / 'src' / 'session' / 'multi_session_pool.py').read_text(encoding='utf-8', errors='replace')
+    check("pool_rate_park_field", "rate_parked_until: float = 0.0" in POOL_SRC)
+    check("pool_pick_honors_rate_park", "and s.rate_parked_until <= now]" in POOL_SRC)
+    check("pool_usable_honors_rate_park", "and s.rate_parked_until <= t)" in POOL_SRC)
 
 
 def test_trusted_reader_fixes():
@@ -160,6 +168,8 @@ def test_bat_pins():
     check("bat_replay_age_pinned", _bat_val('TARGET_HARVEST_MAX_REPLAY_AGE_S') == '100')
     check("bat_prefer_shipping", _bat_val('TARGET_HARVEST_PREFER_SHIPPING') == '1')
     check("bat_bytematch", _bat_val('TARGET_ATC_BYTEMATCH') == '1')
+    check("bat_per_ip_cap_half", _bat_val('RESILIENT_PER_IP_MAX_RPS') == '0.5')
+    check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '120')
     check("bat_crlf_only", BAT_RAW.count(b'\n') == BAT_RAW.count(b'\r\n') and BAT_RAW.count(b'\r\n') > 100)
     check("bat_old_skip_gone", 'set TARGET_HARVEST_SKIP=primary,alt-1' not in BAT_SRC)
 

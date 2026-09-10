@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -214,7 +215,12 @@ class TabDispatcher:
             s.in_flight = True
             s.last_request_at = time.time()
             t0 = time.time()
-            url = _rc.raw_apps_url(tcins, self.store_id, cache_bust=cache_bust)
+            # 2026-09-09 research: no evidence RedSky edge-caches this aggregation, and a
+            # per-request unique query param is a client-shape uniqueness signal to
+            # HUMAN. The 293/293 + soak reads used no cache-bust. Off unless
+            # RESILIENT_RAW_CACHE_BUST=1 (the in-page web verify keeps its bust).
+            _bust = bool(cache_bust) and os.environ.get('RESILIENT_RAW_CACHE_BUST', '0') == '1'
+            url = _rc.raw_apps_url(tcins, self.store_id, cache_bust=_bust)
             # RESILIENT_HARVEST_VIA_LOCAL_IP=1 launches the pool without forwarders:
             # read direct from the home IP then, exactly like that mode's Chromes.
             proxy = (None if getattr(self.session_pool, 'harvest_via_local_ip', False)
@@ -231,8 +237,34 @@ class TabDispatcher:
                     body = _json.loads(text)
                 except Exception:
                     body = None
-                return self._interpret_eval_result(
+                res = self._interpret_eval_result(
                     s, {"__http_status": status, "__body": body, "__body_text": (text or "")[:800]}, ms)
+                if status == 200:
+                    s.rate_parks = 0                      # a clean read resets the ladder
+                elif status == 404 and '"Not Found"' in (text or ''):
+                    # App-channel per-IP rate limiter (soaks 2026-09-09): 0.5 reads/s
+                    # = 293/293 clean for 10 min; 2 reads/s = HTTP 404
+                    # {"errors":[{"message":"Not Found"}],"data":{}} on every read after
+                    # ~166 reads (~80 s), still 404 >3 min after the burst stopped.
+                    # Park THIS session (RESILIENT_RAW_404_PARK_S base, x2 per repeat,
+                    # cap x8; a 200 resets) and do not let the 404 sour its /16
+                    # (pick_session excludes a /16 after 2 recent 4xx, which would
+                    # drain 13 of 16 exits at once for a per-IP limit).
+                    try:
+                        _base = max(0.0, float(os.environ.get('RESILIENT_RAW_404_PARK_S', '120')))
+                    except (TypeError, ValueError):
+                        _base = 120.0
+                    if s.recent_4xx:
+                        s.recent_4xx.pop()
+                    s.consecutive_errors = max(0, s.consecutive_errors - 1)   # not a crash signal
+                    if _base > 0:
+                        s.rate_parks = getattr(s, 'rate_parks', 0) + 1
+                        _park = _base * min(8.0, 2.0 ** (s.rate_parks - 1))
+                        s.rate_parked_until = time.time() + _park
+                        logger.warning(f"[STOCK][RAW-RATE] {s.id} ({s.proxy_ip}) app-channel 404 "
+                                       f"(per-IP rate limit) — parked {_park:.0f}s (park #{s.rate_parks})")
+                    res.error = f"raw_404_rate_limited:{(text or '')[:120]}"
+                return res
             except asyncio.TimeoutError:
                 s.consecutive_errors += 1
                 if s.consecutive_errors >= CONSECUTIVE_ERROR_RECYCLE_THRESHOLD:

@@ -82,7 +82,14 @@ REM  walled -> the auto tab-fetch below takes over. grep "[STOCK][RATE]" and
 REM  "[STOCK][CAPTCHA-PARK]" after boot. Revert: PARK_S=0 is NOT a kill (floor
 REM  60s); pre-09-07 behaviour = RESILIENT_PER_IP_MAX_RPS=0 + FRESH_PROFILES=0.
 set RESILIENT_CAPTCHA_PARK_S=1800
-set RESILIENT_PER_IP_MAX_RPS=1.0
+REM 2026-09-09 app-channel limiter (soaks through two walled exits): 0.5 reads/s
+REM = 293/293 clean for 10 min; 2 reads/s = HTTP 404 "Not Found" on every read
+REM after ~166 reads and still blocked >3 min later. Production is ~0.19/s per
+REM exit at 3/s over 16; the cap keeps ANY exit under 0.5/s when few are usable
+REM (sweep = min(target, usable x cap)). A 404 parks that exit only
+REM (RESILIENT_RAW_404_PARK_S base, x2 per repeat, cap x8, reset on a 200).
+set RESILIENT_PER_IP_MAX_RPS=0.5
+set RESILIENT_RAW_404_PARK_S=120
 REM 2026-09-09 THE DETECTION FIX. RESILIENT_REDSKY_CHANNEL=apps_raw reads the
 REM mobile-app RedSky aggregation (/v1/apps/tcin_product_list_v2) as RAW HTTP
 REM through each sweep session's forwarder with the app header set, instead of

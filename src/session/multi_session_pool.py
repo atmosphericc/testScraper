@@ -245,6 +245,12 @@ class SessionEntry:
     # profile read 200 on 72.56.x while 31.105.x / 168.158.x were walled).
     captcha_parked_until: float = 0.0
     captcha_hits: int = 0
+    # 2026-09-09 app-channel (apps_raw) per-IP rate limiter: at 2 reads/s one exit
+    # flipped to HTTP 404 on every read after ~174 reads (~90 s), no captcha; at
+    # 0.5/s it read 293/293 for 10 min. A short per-session park, separate from
+    # the captcha ladder and from the /16 souring logic (a rate limit is per IP).
+    rate_parked_until: float = 0.0
+    rate_parks: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -726,7 +732,8 @@ class MultiSessionPool:
                  and not s.in_flight
                  and s.cookies
                  and s.visitor_id
-                 and s.captcha_parked_until <= now]   # 2026-09-07 per-session captcha park
+                 and s.captcha_parked_until <= now    # 2026-09-07 per-session captcha park
+                 and s.rate_parked_until <= now]      # 2026-09-09 apps_raw 404 rate park
         if not ready:
             return None
         # Tally recent 4xx per /16, pruning each session's window in place.
@@ -764,7 +771,8 @@ class MultiSessionPool:
         t = time.time() if now is None else now
         return sum(1 for s in self.sessions
                    if s.state == "ready" and s.cookies and s.visitor_id
-                   and s.captcha_parked_until <= t)
+                   and s.captcha_parked_until <= t
+                   and s.rate_parked_until <= t)
 
     def captcha_parked_count(self, now: Optional[float] = None) -> int:
         t = time.time() if now is None else now
