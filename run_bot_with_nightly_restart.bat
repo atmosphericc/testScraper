@@ -632,7 +632,7 @@ REM 5-45 s later in 11/11 such lives; every capture came before). A hidden tab
 REM paints no frames and Chromium releases queued mouseMoved input only via its
 REM 5 s rAF fallback timer, so no click budget or move cap could ever win. Fix:
 REM probe visibility and re-activate the harvest tab before each click (never
-REM over a live purchase or a parked account), abort a click the moment one move
+REM over a PARKED account -- a person may be solving), abort a click when one move
 REM stalls (>2500 ms = the 5 s fallback fingerprint), close dropped tabs, log
 REM per-move timing. grep "[HARVEST/" for "harvest tab is HIDDEN", "re-activated",
 REM "click ABORTED", "max_move_ms=". The open budget below only matters past

@@ -74,16 +74,24 @@ CDP send (`stats`) and raises `HarvestTabNotPainting` when ONE `mouseMoved` exce
 `TARGET_HARVEST_MOVE_ABORT_MS` (2500 — the 5 s fallback fingerprint); `VISIBILITY_PROBE_JS`
 + `visibility_verdict` (visibilityState + one rAF within 700 ms); executor
 `_harvest_ensure_visible` probes before every click and re-activates the tab
-(`Target.activateTarget`, bounded) — never over a live purchase or a parked account ('skip',
-no strike); 'still hidden after activate' counts toward the 3-strike drop; `_harvest_drop_tab`
+(`Target.activateTarget`, bounded) — never over a parked account ('skip', no strike; a live
+purchase does NOT block it: the shot path is fetch/JS-click based and the in-window refill is
+what keeps the bank fresh for a wave's later shots); 'still hidden after activate' counts toward the 3-strike drop; `_harvest_drop_tab`
 CLOSES the tab (browser-level `Target.closeTarget`, 5 s bound) at all five drop sites (not on
 "browser changed"); `_harvest_close_orphans` closes PDP tabs left by timed-out opens;
 `TARGET_HARVEST_CLICK_MOVES` default back to 9 (natural path); every click line logs
 `sends/moves/max_move_ms/press_ms`. Bat: `TARGET_HARVEST_VIS_GUARD=1`,
 `TARGET_HARVEST_MOVE_ABORT_MS=2500`, corrected note. Tests: test_shape_harvest 141/141 + the
 five sibling suites green.
-**Confidence**: high on the mechanism (Chromium source + 14/14 lives consistent). The live
-proof is the next quiet-night run: `max_move_ms` ≈ 16–50 on captures; `click ABORTED:
+**Confidence**: high — mechanism confirmed by Chromium source, 14/14 lives, AND a local
+reproduction on this machine (2026-09-09, throwaway Chrome on `data:` pages, no Target, no
+profile): foreground `mouseMoved` ack 0–16 ms; after one `Target.createTarget` the first tab
+reports `visibilityState=hidden`, `evaluate` still 0 ms, `mouseMoved` **5,032 / 5,015 ms**,
+press+release 0 ms; `Target.activateTarget` from the tab's own session 63 ms → visible, moves
+0 ms; `human_click` on the hidden tab aborts at move #1 with `HarvestTabNotPainting` (5,014 ms).
+The 09-03 `-a0` capture was the SECOND capture on the same PDP (~40 s in), i.e. accumulated
+interaction — the visibility fix makes repeated same-page clicks routine again. Remaining live
+proof on the next quiet-night run: `max_move_ms` ≈ 16–50 on captures; `click ABORTED:
 mouseMoved #1 took ~5000 ms` followed by `harvest tab re-activated -> VISIBLE` whenever a
 warmup tab steals the foreground.
 **Outcome**: SHIPPED, UNPROVEN LIVE (user-gated). Still open: the ~75-min wedge itself (every

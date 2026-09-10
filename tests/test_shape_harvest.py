@@ -387,8 +387,8 @@ def test_executor_visibility_guard():
     t = VisTab([hid, hid])
     check("guard_still_hidden_is_a_strike", asyncio.run(ex._harvest_ensure_visible(t)) == 'hidden' and t.activated == 1)
     ex.session_manager.is_purchase_in_progress = lambda: True
-    t = VisTab([hid])
-    check("guard_skips_over_live_purchase", asyncio.run(ex._harvest_ensure_visible(t)) == 'skip' and t.activated == 0)
+    t = VisTab([hid, vis])
+    check("guard_activates_during_live_purchase", asyncio.run(ex._harvest_ensure_visible(t)) == 'ok' and t.activated == 1)
     ex.session_manager.is_purchase_in_progress = lambda: False
     ex.session_manager._dead_session_parked_until = time.time() + 60
     t = VisTab([hid])
@@ -484,8 +484,9 @@ def test_executor_wiring():
     check("exe_abort_marks_hidden", "isinstance(e, _shape_harvest.HarvestTabNotPainting)" in EXE_SRC
           and "self._harvest_vis_state = 'hidden'" in EXE_SRC)
     check("exe_activate_bounded", "await asyncio.wait_for(tab.activate(), timeout=3.0)" in EXE_SRC)
-    check("exe_never_steals_over_purchase_or_park",
-          "if live or time.time() < parked_until:" in EXE_SRC and "return 'skip'" in EXE_SRC)
+    check("exe_never_steals_from_a_parked_account",
+          "if time.time() < parked_until:" in EXE_SRC and "return 'skip'" in EXE_SRC
+          and "if live or time.time() < parked_until:" not in EXE_SRC)
     check("exe_drop_closes_target", "cdp.target.close_target(target_id=tid)" in EXE_SRC)
     for site in ("button lookup failed", "PDP nav failed", "consecutive click failures",
                  "after suspect-cart clear", "hidden after activate"):

@@ -1679,10 +1679,12 @@ class PurchaseExecutor:
     async def _harvest_ensure_visible(self, tab) -> str:
         """The click needs a PAINTING tab (shape_harvest.human_click docstring).
         Probe document.visibilityState + one animation frame. Returns 'ok' =
-        click now; 'skip' = the tab is hidden but a purchase is live or the
-        account is parked (challenge / dead-session), so the shot or the person
-        owns the window and we do not steal it (no strike); 'hidden' = still
-        not painting after Target.activateTarget (a strike -> re-open after N).
+        click now; 'skip' = the tab is hidden and the account is PARKED (a
+        person may be solving the challenge), so we do not steal the window
+        (no strike); 'hidden' = still not painting after Target.activateTarget
+        (a strike -> re-open after N). Verified locally 2026-09-09 (throwaway
+        Chrome, data: pages): hidden tab = 5,015-5,032 ms per mouseMoved,
+        evaluate 0 ms, activateTarget from the page session 63 ms, then 0-16 ms.
         Why hidden at all: every Target.createTarget in desktop Chrome opens a
         NEW FOREGROUND TAB, so each warmup-tab (re)open after a Chrome restart
         pushed the harvest tab into the background (09-07 log, 11/11 lives)."""
@@ -1702,13 +1704,19 @@ class PurchaseExecutor:
             # 'stalled' = visible per the DOM but no frame within 700 ms: let the
             # click's per-move abort decide (a painting tab acks a move in ms).
             return 'ok'
-        live = bool(self.session_manager.is_purchase_in_progress())
+        # A parked account (PX "Press & Hold" left up for a PERSON, or a dead-
+        # session park) owns the window: never pull the foreground from under a
+        # human. A LIVE PURCHASE does NOT block activation: the shot path is
+        # fetch()/JS-click based and the main tab has run hidden behind warmup
+        # tab #1 since boot on every winning night, while the in-window refill
+        # (min_gap 6 s) is exactly what keeps the bank fresh (max replay age
+        # 100 s) for the 2nd..Nth shots of a wave.
         parked_until = float(getattr(self.session_manager, '_dead_session_parked_until', 0.0) or 0.0)
-        if live or time.time() < parked_until:
+        if time.time() < parked_until:
             self._harvest_vis_skips += 1
             if self._harvest_vis_skips in (1, 10, 100) or self._harvest_vis_skips % 500 == 0:
-                self._harvest_log(f"harvest tab hidden while {'a purchase is live' if live else 'the account is parked'} "
-                                  f"— not stealing the foreground; click skipped (#{self._harvest_vis_skips})")
+                self._harvest_log(f"harvest tab hidden while the account is parked — not stealing the "
+                                  f"foreground from a person; click skipped (#{self._harvest_vis_skips})")
             return 'skip'
         try:
             try:
@@ -1874,7 +1882,7 @@ class PurchaseExecutor:
         # every capture before it). A hidden tab paints no frames and Chromium
         # releases queued mouseMoved input only via its 5 s rAF fallback, so no
         # click budget or move cap could win. Fix = keep the tab PAINTING: probe
-        # and re-activate before the click (never over a live purchase / park).
+        # and re-activate before the click (never over a parked account).
         if self._harvest_cfg.get('vis_guard', True):
             _vis = await self._harvest_ensure_visible(tab)
             if _vis != 'ok':
