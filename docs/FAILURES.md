@@ -31,6 +31,37 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-09] - Adversarial review of the day's nine commits found a DROP-KILLING bug in the new fast-lane body (doubled braces → JS SyntaxError on every shot) that the string-pin tests could not see - TARGET
+**Symptom**: none yet — caught before any live run. The `TARGET_ATC_BYTEMATCH` body literals were
+written with `{{ }}` inside PLAIN strings that are then substituted into the fast-lane f-string,
+so the browser would have received `JSON.stringify({{cart_item: {{…}}}})` — a SyntaxError that
+kills the whole fast-lane chain (ATC + pre_checkout + place-order) in BOTH flag branches. The test
+suite pinned the broken line as a substring and passed.
+**Root Cause**: f-string brace doubling applied to a value that is substituted, not to template
+text; and tests that pin source text instead of evaluating behaviour.
+**Fix Applied**: the literal is now built by a pure helper `fast_lane_atc_body_literal(tcin,
+quantity, bytematch)` and `tests/test_redsky_apps_channel.py` evaluates it with **node**
+(`JSON.stringify(<literal>)`) and compares the JSON and key order for both branches. Other
+review findings fixed in the same pass: the banked-replay merge guard compared total header
+count and silently disabled replay whenever a 7-token page set met a 6-token banked set (now a
+non-Shape-header subset check, with a real test); `[WAITING_ROOM]` matched only the first 500
+chars of the response (now an in-page regex over the full text, `atc.wr`); the Shipping-cell
+click could hit Target's `shippingButton`/"Ship it" Add-to-cart button (excluded); the 55-70 s
+cold re-entry could push a late checkout leg into the 120 s force-complete watchdog (re-entry
+now leaves room for the bank wait + 20 s leg, and the watchdog is budget+90 s, floor 120); the
+`[RETRY_CADENCE] edge-429 lottery` line printed while wave-first slept (silenced, and
+`TARGET_WAVE_FIRST_EDGE=1` makes the lottery override an explicit knob); an app-channel 404 on a
+session that has never read 200 (rotated key, wrong path) no longer parks the pool (loud
+`[STOCK][RAW-404]` instead) and a pool-wide alarm fires when >50% of sessions are rate-parked;
+stale-bank discards no longer double-count as expired; a real apps-channel response is now a
+test fixture parsed by the production parser; the wedge probe is 2 s; the repro script has a
+main guard.
+**Confidence**: high that the emitted JavaScript is valid (evaluated by node in the suite).
+**Outcome**: FIXED before launch. Lesson recorded: every generated-code path gets an evaluating
+test, not a substring pin.
+
+---
+
 ### [2026-09-09] - CENSUS: re-POST spam has never produced an order and poisons the next cold shot; policy flipped to wave-first-only - TARGET
 **Symptom**: the retry-while-in-stock loop fires ~15-20 ATC POSTs per identity per window at
 2.5-3.5 s (median 3.8 s between attempts; only 4% of gaps ≥15 s), on the doctrine that

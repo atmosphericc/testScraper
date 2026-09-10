@@ -251,6 +251,7 @@ class SessionEntry:
     # the captcha ladder and from the /16 souring logic (a rate limit is per IP).
     rate_parked_until: float = 0.0
     rate_parks: int = 0
+    raw_ok_seen: bool = False            # this session has read HTTP 200 on the app channel
 
     def to_dict(self) -> dict:
         return {

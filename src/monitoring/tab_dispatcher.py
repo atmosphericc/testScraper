@@ -241,6 +241,19 @@ class TabDispatcher:
                     s, {"__http_status": status, "__body": body, "__body_text": (text or "")[:800]}, ms)
                 if status == 200:
                     s.rate_parks = 0                      # a clean read resets the ladder
+                    s.raw_ok_seen = True
+                elif status == 404 and '"Not Found"' in (text or '') and not getattr(s, 'raw_ok_seen', False):
+                    # Review 2026-09-09: a 404 on a session that has NEVER read 200 on this
+                    # channel is far more likely a bad request (rotated APPS_KEY, wrong path)
+                    # than a rate limit — parking the whole pool on it would blind the drop.
+                    # Log loudly, do not park.
+                    _now = time.time()
+                    if _now - getattr(self, '_raw_404_cold_log_at', 0.0) >= 60.0:
+                        self._raw_404_cold_log_at = _now
+                        logger.error(f"[STOCK][RAW-404] {s.id} ({s.proxy_ip}) app-channel 404 before ANY 200 on this "
+                                     f"session — NOT parking; check RESILIENT_REDSKY_CHANNEL / APPS_KEY / the TCIN list: "
+                                     f"{(text or '')[:120]!r}")
+                    res.error = f"raw_404_unverified_channel:{(text or '')[:120]}"
                 elif status == 404 and '"Not Found"' in (text or ''):
                     # App-channel per-IP rate limiter (soaks 2026-09-09): 0.5 reads/s
                     # = 293/293 clean for 10 min; 2 reads/s = HTTP 404
@@ -263,6 +276,14 @@ class TabDispatcher:
                         s.rate_parked_until = time.time() + _park
                         logger.warning(f"[STOCK][RAW-RATE] {s.id} ({s.proxy_ip}) app-channel 404 "
                                        f"(per-IP rate limit) — parked {_park:.0f}s (park #{s.rate_parks})")
+                        try:
+                            _sessions = list(getattr(self.session_pool, 'sessions', []) or [])
+                            _parked = sum(1 for x in _sessions if getattr(x, 'rate_parked_until', 0.0) > time.time())
+                            if _sessions and _parked * 2 > len(_sessions):
+                                logger.error(f"[STOCK][RAW-RATE] {_parked}/{len(_sessions)} sessions rate-parked — the "
+                                             f"app-channel limiter is biting pool-wide; lower TARGET_SWEEPS_PER_SEC")
+                        except Exception:
+                            pass
                     res.error = f"raw_404_rate_limited:{(text or '')[:120]}"
                 return res
             except asyncio.TimeoutError:

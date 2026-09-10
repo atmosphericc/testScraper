@@ -586,8 +586,16 @@ class BulletproofPurchaseManager:
 
                         status = state.get('status')
 
-                        # Only force-fail real purchases if they've been running for more than 120 seconds
-                        if elapsed_time > 120:
+                        # Only force-fail real purchases if they've been running for more than
+                        # the retry budget + a checkout-leg allowance (2026-09-09: was a hard
+                        # 120 s; a wave-first cold re-entry at ~t+78 s plus a cart-hold leg
+                        # could otherwise be finalized as FAILED while a place-order POST is
+                        # in flight). Floor 120 s = exact prior behaviour when the budget is short.
+                        try:
+                            _force_s = max(120.0, float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110')) + 90.0)
+                        except ValueError:
+                            _force_s = 200.0
+                        if elapsed_time > _force_s:
                             print(f"[PURCHASE_FORCE_COMPLETE] {tcin} REAL purchase timeout after {elapsed_time:.1f}s, forcing completion")
                             final_outcome = 'failed'
                             self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
@@ -1448,6 +1456,18 @@ class BulletproofPurchaseManager:
                         # >=2x that floor. ROLLBACK: set the EDGE knobs = 2.5/3.5
                         # (== no behaviour change).
                         _gk = str((result or {}).get('gate_kind', ''))
+                        # 2026-09-09 CENSUS (see the WAVE_FIRST block below): the wave-first
+                        # policy owns ATC-level 401s and, when TARGET_WAVE_FIRST_EDGE=1 (bat
+                        # default), the 429 lottery too — 2,233/2,236 of those 429s carried
+                        # ERR_A2C_TCIN_RATE_LIMITED and their share climbed 30%->90% with our
+                        # own re-POST count while 5,292 deep tickets produced 0 orders. The
+                        # "ticket count is the only lever" doctrine below is superseded by that
+                        # data; set TARGET_WAVE_FIRST_EDGE=0 to restore the lottery cadence.
+                        _wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'
+                        _wf_kinds = (('auth401', 'edge', 'dco')
+                                     if os.environ.get('TARGET_WAVE_FIRST_EDGE', '1') == '1'
+                                     else ('auth401',))
+                        _wf_takes = _wf_only and _gk in _wf_kinds
                         # 2026-08-31: an ATC-LEVEL DCO/FAST_SELLING 429 is the same
                         # demand-throttle class as the edge lottery (zyn maps all
                         # three 429 keys to one error) and proves auth passed —
@@ -1464,7 +1484,7 @@ class BulletproofPurchaseManager:
                             _edge_hi = max(_edge_hi, _edge_lo)
                             _std_lo, _std_hi = _atc_lo, _atc_hi
                             _atc_lo, _atc_hi = _edge_lo, _edge_hi
-                            if (_edge_lo, _edge_hi) != (_std_lo, _std_hi):
+                            if (_edge_lo, _edge_hi) != (_std_lo, _std_hi) and not _wf_takes:
                                 print(f"[RETRY_CADENCE] edge-429 lottery cadence "
                                       f"{_edge_lo:.1f}-{_edge_hi:.1f}s (std {_std_lo:.1f}-{_std_hi:.1f}s)")
                         # Wave-first pulse bookkeeping (knobs + evidence above the
@@ -1475,8 +1495,7 @@ class BulletproofPurchaseManager:
                             _consec_401 += 1
                         elif _gk != 'edge':
                             _consec_401 = 0
-                        _wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'
-                        if _wf_only and _gk in ('auth401', 'edge', 'dco'):
+                        if _wf_takes:
                             # 2026-09-09 CENSUS (21,684 ATC POSTs, 1,609 windows, Jun 4-Sep 8):
                             # 19 of 20 orders = attempt #1 at t+0; ZERO orders from any
                             # re-POSTed ATC (0/13,244 at k>=2; cart rate 6.1% -> 1.4% -> 0.4%
@@ -1498,12 +1517,21 @@ class BulletproofPurchaseManager:
                             _re_lo = max(15.0, _re_lo)
                             _re_hi = max(_re_hi, _re_lo)
                             _remaining = _retry_deadline - time.time()
-                            if _remaining < _re_lo:
+                            # Review 2026-09-09: leave room for the bank wait (8 s) and a
+                            # checkout leg (~20 s) inside the window, so a late cold shot can
+                            # never run into the force-complete watchdog mid-flight.
+                            try:
+                                _bw_est = (float(os.environ.get('TARGET_SHOT_BANK_WAIT_S', '8'))
+                                           if os.environ.get('TARGET_SHOT_BANK_GATE', '0') == '1' else 0.0)
+                            except ValueError:
+                                _bw_est = 8.0
+                            _re_lo_needed = _re_lo + _bw_est + 20.0
+                            if _remaining < _re_lo_needed:
                                 print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} with {_remaining:.0f}s of window left — "
                                       f"no warm re-POST; ending the window (re-arm opens a fresh one) "
                                       f"ident={_race_wlbl or 'auto'}")
                                 break
-                            _re_s = random.uniform(_re_lo, min(_re_hi, _remaining))
+                            _re_s = random.uniform(_re_lo, min(_re_hi, _remaining - _bw_est - 20.0))
                             print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} — no re-POST; cold re-entry in "
                                   f"{_re_s:.0f}s ident={_race_wlbl or 'auto'}")
                             _consec_401 = 0
@@ -1527,7 +1555,7 @@ class BulletproofPurchaseManager:
                         # new set; if none arrives, take a wave-first pause instead of
                         # firing page-signed. Edge-429s (no Shape verdict) are untouched:
                         # the ticket lottery keeps its cadence.
-                        _gate_kinds = ('auth401', 'edge', 'dco') if _wf_only else ('auth401',)
+                        _gate_kinds = _wf_kinds if _wf_only else ('auth401',)
                         if (os.environ.get('TARGET_SHOT_BANK_GATE', '0') == '1' and _gk in _gate_kinds
                                 and getattr(target_purchase_executor, 'harvest_set_ready', None) is not None
                                 and target_purchase_executor._harvest_cfg.get('enabled')

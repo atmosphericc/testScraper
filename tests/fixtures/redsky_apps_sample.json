@@ -1,0 +1,611 @@
+{
+ "data": {
+  "product_summaries": [
+   {
+    "parent": {
+     "item": {
+      "enrichment": {
+       "buy_url": "https://www.target.com/p/tide-pods-laundry-detergent-pacs-original/-/A-79394303",
+       "images": {
+        "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_3f00fdc1-2a1e-40bb-94f1-acbe5e8fa626",
+        "alternate_image_urls": [
+         "https://target.scene7.com/is/image/Target/GUEST_8ec1852c-6870-493b-9f04-0f262c5f5f06",
+         "https://target.scene7.com/is/image/Target/GUEST_1911553b-88f9-4a6e-a6ba-10cf934727c9",
+         "https://target.scene7.com/is/image/Target/GUEST_1a1afb6f-f6d9-4d89-b3a2-50ff23dec093",
+         "https://target.scene7.com/is/image/Target/GUEST_3a8fd5f2-4cc6-468b-8c04-f3b6abef485c",
+         "https://target.scene7.com/is/image/Target/GUEST_78f10673-09de-47ba-a682-de08c749b907",
+         "https://target.scene7.com/is/image/Target/GUEST_dea35ecd-338c-434d-acb8-f00ccbaee7d0",
+         "https://target.scene7.com/is/image/Target/GUEST_b10dcc2c-2ce5-404c-ae2b-714640acb45a",
+         "https://target.scene7.com/is/image/Target/GUEST_5d2981d9-2314-4396-ac63-e9748ef4d897",
+         "https://target.scene7.com/is/image/Target/GUEST_3352cb09-dd9b-4735-996d-c8725a62b1c5",
+         "https://target.scene7.com/is/image/Target/GUEST_24a8da45-f689-49f9-be63-f749b612a21d",
+         "https://target.scene7.com/is/image/Target/GUEST_030a65c8-ab75-4793-b060-5ee5b852e30f",
+         "https://target.scene7.com/is/image/Target/GUEST_1938cbba-6fd7-449f-aed2-a69803590067",
+         "https://target.scene7.com/is/image/Target/GUEST_1cb704c7-3798-4bf7-8a2f-cd568e583ab9"
+        ]
+       },
+       "image_info": {
+        "primary_image": {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_3f00fdc1-2a1e-40bb-94f1-acbe5e8fa626"
+        },
+        "alternate_images": [
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_8ec1852c-6870-493b-9f04-0f262c5f5f06"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_1911553b-88f9-4a6e-a6ba-10cf934727c9"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_1a1afb6f-f6d9-4d89-b3a2-50ff23dec093"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_3a8fd5f2-4cc6-468b-8c04-f3b6abef485c"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_78f10673-09de-47ba-a682-de08c749b907"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_dea35ecd-338c-434d-acb8-f00ccbaee7d0"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_b10dcc2c-2ce5-404c-ae2b-714640acb45a"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_5d2981d9-2314-4396-ac63-e9748ef4d897"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_3352cb09-dd9b-4735-996d-c8725a62b1c5"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_24a8da45-f689-49f9-be63-f749b612a21d"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_030a65c8-ab75-4793-b060-5ee5b852e30f"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_1938cbba-6fd7-449f-aed2-a69803590067"
+         },
+         {
+          "url": "https://target.scene7.com/is/image/Target/GUEST_1cb704c7-3798-4bf7-8a2f-cd568e583ab9"
+         }
+        ]
+       },
+       "videos": [
+        {
+         "video_captions": [
+          {
+           "caption_url": "https://target.scene7.com/is/content/Target/GUEST_a487a982-a71d-4bc4-bd59-4f2604006ad7",
+           "language": "EN"
+          }
+         ],
+         "video_files": [
+          {
+           "mime_type": "video/mp4",
+           "video_height_pixels": "720",
+           "video_url": "https://target.scene7.com/is/content/Target/GUEST_044defcd-be66-4ec4-aac0-0fdc2afcd2cd"
+          }
+         ],
+         "video_length_seconds": "24",
+         "video_poster_image": "https://target.scene7.com/is/image/Target/GUEST_044defcd-be66-4ec4-aac0-0fdc2afcd2cd",
+         "video_sequence": "1",
+         "video_title": "Tide Pods Original ",
+         "is_list_page_eligible": false
+        },
+        {
+         "video_captions": [
+          {
+           "caption_url": "https://target.scene7.com/is/content/Target/GUEST_2b2c5869-60f0-4125-8b6a-b012367c34a8",
+           "language": "EN"
+          }
+         ],
+         "video_files": [
+          {
+           "mime_type": "video/mp4",
+           "video_height_pixels": "720",
+           "video_url": "https://target.scene7.com/is/content/Target/GUEST_d5b5a619-431e-4c8b-8a88-8d19ee80f305"
+          }
+         ],
+         "video_length_seconds": "27",
+         "video_poster_image": "https://target.scene7.com/is/image/Target/GUEST_d5b5a619-431e-4c8b-8a88-8d19ee80f305",
+         "video_sequence": "1",
+         "video_title": "Tide Pods Original Video 1",
+         "is_list_page_eligible": false
+        }
+       ]
+      },
+      "eligibility_rules": {},
+      "handling": {},
+      "is_limited_time_offer": false,
+      "item_state": "READY_FOR_LAUNCH",
+      "merchandise_classification": {
+       "department_id": 3
+      },
+      "product_description": {
+       "title": "Tide Original HE Deep Cleaning Concentrated Laundry Detergent Pods",
+       "bullet_descriptions": [
+        "<B>Scent:</B> Original, Scented",
+        "<B>Health Facts:</B> Phosphate-Free, Bleach-Free, Perchloroethylene-Free, Aluminum-Free, Paraben-Free, Trichloroethylene-Free",
+        "<B>Product Warning:</B> Keep out of reach of animals, keep out of eyes, flammable, seek medical help if product is swallowed, keep out of reach of children",
+        "<B>Features:</B> Odor Control, Cold Water Detergent, All-Temperature Detergent, Color Care",
+        "<B>Product Form:</B> Capsule",
+        "<B>Formulation:</B> High Efficiency (HE), Concentrated, Deep Cleaning",
+        "<B>Sustainability Claims:</B> Contains Recycled Content, Post-Consumer Recycled Material, Recyclable",
+        "<B>Safety and Security Features:</B> Locking Lid, Child-Resistant Packaging",
+        "<B>Industry or Government Certifications:</B> No Certifications",
+        "<B>Surfaces Not Recommended:</B> Fur, Silk, Suede, Leather",
+        "<B>Number of uses:</B> 31"
+       ]
+      },
+      "product_classification": {
+       "item_type": {
+        "name": "Laundry Detergents",
+        "type": "253671"
+       },
+       "purchase_behavior": "Frequency"
+      },
+      "relationship_type_code": "VAP",
+      "tcin": "79394303",
+      "has_extended_sizing": false,
+      "variation_info": {}
+     },
+     "child_tcins": [
+      "87767249",
+      "21516452",
+      "87469578",
+      "84114518"
+     ],
+     "price": {
+      "current_retail_max": 27.49,
+      "current_retail_min": 9.99,
+      "formatted_current_price": "$9.99 - $27.49",
+      "formatted_current_price_type": "reg",
+      "is_current_price_range": true,
+      "location_id": 865
+     },
+     "promotions": [],
+     "ratings_and_reviews": {
+      "statistics": {
+       "question_count": 18,
+       "rating": {
+        "average": 4.25,
+        "count": 7144
+       },
+       "recommended_percentage": 72
+      }
+     },
+     "variation_summary": {
+      "themes": [
+       {
+        "name": "Size",
+        "has_swatch": true,
+        "swatches": [
+         {
+          "value": "31ct",
+          "first_child": {
+           "image_info": {
+            "swatch_image": {}
+           }
+          }
+         },
+         {
+          "value": "42ct",
+          "first_child": {
+           "image_info": {
+            "swatch_image": {}
+           }
+          }
+         },
+         {
+          "value": "76ct",
+          "first_child": {
+           "image_info": {
+            "swatch_image": {}
+           }
+          }
+         },
+         {
+          "value": "112ct",
+          "first_child": {
+           "image_info": {
+            "swatch_image": {}
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    },
+    "item": {
+     "assigned_selling_channels_code": "online_and_stores",
+     "dpci": "003-08-0116",
+     "enrichment": {
+      "buy_url": "https://www.target.com/p/tide-pods-laundry-detergent-pacs-original-35oz-42ct/-/A-21516452",
+      "images": {
+       "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_52f91bfb-3239-4eda-9a43-25155fde7a27",
+       "alternate_image_urls": [
+        "https://target.scene7.com/is/image/Target/GUEST_e16a7c56-6fb1-4a63-9584-b725499d307f",
+        "https://target.scene7.com/is/image/Target/GUEST_d7674494-849a-4f9c-8bff-6115499d7df1",
+        "https://target.scene7.com/is/image/Target/GUEST_abb9be7e-4905-4c60-8d4e-7a8555879d52",
+        "https://target.scene7.com/is/image/Target/GUEST_e8df2b0c-0540-406d-93a8-5d4f9141c550",
+        "https://target.scene7.com/is/image/Target/GUEST_61aa5b42-5ed8-4cb0-a0e7-6c9319595ef2",
+        "https://target.scene7.com/is/image/Target/GUEST_3a826338-473a-44a1-866d-23913214b9c9",
+        "https://target.scene7.com/is/image/Target/GUEST_e68add36-b8e1-4e50-bffb-a4f52f03d60b",
+        "https://target.scene7.com/is/image/Target/GUEST_76167fde-27da-462e-a49e-758b4b6f69ce",
+        "https://target.scene7.com/is/image/Target/GUEST_f331d415-5784-41ec-aed6-092804e79aef",
+        "https://target.scene7.com/is/image/Target/GUEST_844935d6-46a5-4659-9529-f779a7071eb9",
+        "https://target.scene7.com/is/image/Target/GUEST_00eec133-a7d4-4e26-8575-4e57a19cbcde",
+        "https://target.scene7.com/is/image/Target/GUEST_d619cf52-5044-42b5-981f-75a564d987c9"
+       ]
+      },
+      "image_info": {
+       "primary_image": {
+        "url": "https://target.scene7.com/is/image/Target/GUEST_52f91bfb-3239-4eda-9a43-25155fde7a27"
+       },
+       "alternate_images": [
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_e16a7c56-6fb1-4a63-9584-b725499d307f"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_d7674494-849a-4f9c-8bff-6115499d7df1"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_abb9be7e-4905-4c60-8d4e-7a8555879d52"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_e8df2b0c-0540-406d-93a8-5d4f9141c550"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_61aa5b42-5ed8-4cb0-a0e7-6c9319595ef2"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_3a826338-473a-44a1-866d-23913214b9c9"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_e68add36-b8e1-4e50-bffb-a4f52f03d60b"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_76167fde-27da-462e-a49e-758b4b6f69ce"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_f331d415-5784-41ec-aed6-092804e79aef"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_844935d6-46a5-4659-9529-f779a7071eb9"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_00eec133-a7d4-4e26-8575-4e57a19cbcde"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_d619cf52-5044-42b5-981f-75a564d987c9"
+        }
+       ]
+      },
+      "videos": [
+       {
+        "video_captions": [
+         {
+          "caption_url": "https://target.scene7.com/is/content/Target/GUEST_a487a982-a71d-4bc4-bd59-4f2604006ad7",
+          "language": "EN"
+         }
+        ],
+        "video_files": [
+         {
+          "mime_type": "video/mp4",
+          "video_height_pixels": "720",
+          "video_url": "https://target.scene7.com/is/content/Target/GUEST_044defcd-be66-4ec4-aac0-0fdc2afcd2cd"
+         }
+        ],
+        "video_length_seconds": "24",
+        "video_poster_image": "https://target.scene7.com/is/image/Target/GUEST_044defcd-be66-4ec4-aac0-0fdc2afcd2cd",
+        "video_sequence": "1",
+        "video_title": "Tide Pods Original ",
+        "is_list_page_eligible": false
+       },
+       {
+        "video_captions": [
+         {
+          "caption_url": "https://target.scene7.com/is/content/Target/GUEST_2b2c5869-60f0-4125-8b6a-b012367c34a8",
+          "language": "EN"
+         }
+        ],
+        "video_files": [
+         {
+          "mime_type": "video/mp4",
+          "video_height_pixels": "720",
+          "video_url": "https://target.scene7.com/is/content/Target/GUEST_d5b5a619-431e-4c8b-8a88-8d19ee80f305"
+         }
+        ],
+        "video_length_seconds": "27",
+        "video_poster_image": "https://target.scene7.com/is/image/Target/GUEST_d5b5a619-431e-4c8b-8a88-8d19ee80f305",
+        "video_sequence": "1",
+        "video_title": "Tide Pods Original Video 1",
+        "is_list_page_eligible": false
+       }
+      ]
+     },
+     "eligibility_rules": {},
+     "fulfillment": {},
+     "handling": {
+      "buy_unit_of_measure": "Each"
+     },
+     "is_limited_time_offer": false,
+     "item_state": "READY_FOR_LAUNCH",
+     "merchandise_classification": {
+      "department_id": 3
+     },
+     "product_description": {
+      "title": "Tide Original HE Laundry Detergent Pods 42 Pacs - 32oz: Paraben-Free, Child-Resistant Packaging, Cold Water Detergent",
+      "bullet_descriptions": [
+       "<B>Scent:</B> Original, Scented",
+       "<B>Health Facts:</B> Phosphate-Free, Bleach-Free, Perchloroethylene-Free, Aluminum-Free, Paraben-Free, Trichloroethylene-Free",
+       "<B>Product Warning:</B> Keep out of reach of animals, keep out of eyes, flammable, seek medical help if product is swallowed, keep out of reach of children",
+       "<B>Features:</B> Odor Control, Cold Water Detergent, All-Temperature Detergent, Color Care",
+       "<B>Product Form:</B> Capsule",
+       "<B>Formulation:</B> High Efficiency (HE), Concentrated, Deep Cleaning",
+       "<B>Sustainability Claims:</B> Contains Recycled Content, Post-Consumer Recycled Material, Recyclable",
+       "<B>Safety and Security Features:</B> Locking Lid, Child-Resistant Packaging",
+       "<B>Industry or Government Certifications:</B> No Certifications",
+       "<B>Surfaces Not Recommended:</B> Fur, Silk, Suede, Leather",
+       "<B>Number of uses:</B> 42"
+      ]
+     },
+     "product_classification": {
+      "item_type": {
+       "name": "Laundry Detergents",
+       "type": "253671"
+      },
+      "purchase_behavior": "Frequency"
+     },
+     "relationship_type_code": "VC",
+     "tcin": "21516452",
+     "variation_info": {
+      "is_expanded_variation": false
+     }
+    },
+    "tcin": "21516452",
+    "fulfillment": {
+     "sold_out": false,
+     "is_out_of_stock_in_all_store_locations": false,
+     "shipping_options": {
+      "availability_status": "IN_STOCK",
+      "loyalty_availability_status": "IN_STOCK",
+      "available_to_promise_quantity": 10.0,
+      "minimum_order_quantity": 1.0,
+      "services": [
+       {
+        "is_two_day_shipping": true,
+        "is_base_shipping_method": true,
+        "shipping_method_id": "STANDARD",
+        "cutoff": "2026-09-10T23:00:00Z",
+        "max_delivery_date": "2026-09-11",
+        "min_delivery_date": "2026-09-11",
+        "shipping_method_short_description": "Standard",
+        "service_level_description": "2-day shipping"
+       }
+      ]
+     },
+     "store_options": [
+      {
+       "store": {
+        "location_name": "Gurnee"
+       },
+       "location_id": "865",
+       "search_response_store_type": "PRIMARY",
+       "location_available_to_promise_quantity": 10.0,
+       "pre_order_location_available_to_promise_quantity": 0.0,
+       "order_pickup": {
+        "availability_status": "IN_STOCK",
+        "guest_pick_sla": 120,
+        "location_locale": "America/Chicago",
+        "pickup_date": "2026-09-09",
+        "preferred_store_option_description": "Store Pickup"
+       },
+       "curbside": {
+        "availability_status": "IN_STOCK",
+        "guest_pick_sla": 120,
+        "location_locale": "America/Chicago",
+        "pickup_date": "2026-09-09",
+        "preferred_store_option_description": "Curbside"
+       },
+       "in_store_only": {
+        "availability_status": "IN_STOCK",
+        "preferred_store_option_description": "available in store"
+       }
+      }
+     ]
+    },
+    "free_shipping": {
+     "enabled": false
+    },
+    "price": {
+     "current_retail": 12.99,
+     "default_price": false,
+     "display_was_now": false,
+     "external_system_id": "21516452-865-12.99-2025102123",
+     "formatted_current_price": "$12.99",
+     "formatted_current_price_type": "reg",
+     "formatted_unit_price": "$0.41",
+     "formatted_unit_price_suffix": "/ounce",
+     "is_current_price_range": false,
+     "location_id": 865,
+     "msrp": 12.99,
+     "reg_retail": 12.99
+    },
+    "promotions": [],
+    "store_positions": [
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 2,
+      "block": "CL",
+      "floor": "01"
+     },
+     {
+      "aisle": 29,
+      "block": "G",
+      "floor": "01"
+     }
+    ]
+   },
+   {
+    "item": {
+     "assigned_selling_channels_code": "online_and_stores",
+     "dpci": "361-00-0047",
+     "enrichment": {
+      "buy_url": "https://www.target.com/p/pok-233-mon-trading-card-game-first-partner-illustration-collection-8212-series-3/-/A-1011960739",
+      "images": {
+       "primary_image_url": "https://target.scene7.com/is/image/Target/GUEST_8b8616a3-c1cb-4db9-9821-c6514376f967",
+       "alternate_image_urls": [
+        "https://target.scene7.com/is/image/Target/GUEST_d779763b-6621-47f1-a7ed-0315ddb4c108",
+        "https://target.scene7.com/is/image/Target/GUEST_7acc6759-a142-41c1-a445-400320e64268"
+       ]
+      },
+      "image_info": {
+       "primary_image": {
+        "url": "https://target.scene7.com/is/image/Target/GUEST_8b8616a3-c1cb-4db9-9821-c6514376f967"
+       },
+       "alternate_images": [
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_d779763b-6621-47f1-a7ed-0315ddb4c108"
+        },
+        {
+         "url": "https://target.scene7.com/is/image/Target/GUEST_7acc6759-a142-41c1-a445-400320e64268"
+        }
+       ]
+      }
+     },
+     "fulfillment": {},
+     "handling": {
+      "buy_unit_of_measure": "Each"
+     },
+     "item_state": "READY_FOR_LAUNCH",
+     "merchandise_classification": {
+      "department_id": 361
+     },
+     "mmbv_content": {
+      "street_date": "2026-08-07"
+     },
+     "product_description": {
+      "title": "Pok&#233;mon Trading Card Game: First Partner Illustration Collection&#8212;Series 3",
+      "bullet_descriptions": [
+       "<B>Suggested Age:</B> 6 Years and Up",
+       "<B>CPSC Choking Hazard Warnings:</B> Choking_hazard_small_parts",
+       "<B>Theme:</B> Pokemon",
+       "<B>Includes:</B> Cards",
+       "<B>Package Type:</B> Box Set"
+      ]
+     },
+     "product_classification": {
+      "item_type": {
+       "name": "Collectible Trading Cards",
+       "type": "39980041"
+      },
+      "purchase_behavior": "Discretionary"
+     },
+     "relationship_type_code": "SA",
+     "tcin": "1011960739"
+    },
+    "tcin": "1011960739",
+    "fulfillment": {
+     "sold_out": false,
+     "is_out_of_stock_in_all_store_locations": true,
+     "shipping_options": {
+      "availability_status": "OUT_OF_STOCK",
+      "loyalty_availability_status": "OUT_OF_STOCK",
+      "available_to_promise_quantity": 0.0,
+      "minimum_order_quantity": 1.0,
+      "reason_code": "INVENTORY_UNAVAILABLE",
+      "services": []
+     },
+     "store_options": [
+      {
+       "store": {
+        "location_name": "Gurnee"
+       },
+       "location_id": "865",
+       "search_response_store_type": "PRIMARY",
+       "location_available_to_promise_quantity": 0.0,
+       "pre_order_location_available_to_promise_quantity": 0.0,
+       "order_pickup": {
+        "availability_status": "UNAVAILABLE",
+        "preferred_store_option_description": "Store Pickup"
+       },
+       "curbside": {
+        "availability_status": "UNAVAILABLE",
+        "preferred_store_option_description": "Curbside"
+       },
+       "in_store_only": {
+        "availability_status": "OUT_OF_STOCK",
+        "preferred_store_option_description": "available in store"
+       },
+       "ship_to_store": {
+        "availability_status": "UNAVAILABLE",
+        "preferred_store_option_description": "Ship To Store"
+       }
+      }
+     ]
+    },
+    "free_shipping": {
+     "enabled": false
+    },
+    "price": {
+     "current_retail": 17.99,
+     "default_price": false,
+     "display_was_now": false,
+     "external_system_id": "1011960739-3991-17.99-2026062610",
+     "formatted_current_price": "$17.99",
+     "formatted_current_price_type": "reg",
+     "is_current_price_range": false,
+     "location_id": 3991,
+     "msrp": 17.99,
+     "reg_retail": 17.99
+    },
+    "promotions": [],
+    "ratings_and_reviews": {
+     "statistics": {
+      "question_count": 15,
+      "rating": {
+       "average": 2.13,
+       "count": 445
+      },
+      "recommended_percentage": 74
+     }
+    }
+   }
+  ]
+ }
+}

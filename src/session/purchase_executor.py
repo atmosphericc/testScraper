@@ -48,6 +48,25 @@ _WARMUP_DUMMY_POST_JS = """(async () => {
 })()"""
 
 
+def fast_lane_atc_body_literal(tcin, quantity, bytematch: bool) -> str:
+    """The JS object literal the fast lane passes to JSON.stringify for the
+    add-to-cart body. PLAIN string (single braces) — it is substituted INTO the
+    fast-lane f-string, so it must not carry f-string brace doubling
+    (2026-09-09 review: doubled braces here produced `{{...}}` in the browser,
+    a JS SyntaxError that would have killed every shot). Tested by
+    tests/test_redsky_apps_channel.py against node's JSON.stringify.
+    bytematch=True = the page's own shape (two real captures + zyn 2026): no
+    fulfillment field, key order item_channel_id, tcin, quantity."""
+    t = str(tcin)
+    q = int(quantity)
+    if bytematch:
+        return ("{cart_item: {item_channel_id: '10', tcin: '" + t + "', quantity: " + str(q)
+                + "}, cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'}")
+    return ("{cart_item: {tcin: '" + t + "', quantity: " + str(q)
+            + ", item_channel_id: '10', fulfillment_type: 'SHIPPING', fulfillment_type_code: '02'}, "
+            "cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'}")
+
+
 class PurchaseExecutor:
     """Executes real purchases using persistent session and buy_bot logic"""
 
@@ -1583,10 +1602,16 @@ class PurchaseExecutor:
         except Exception as e:
             self._harvest_log(f"merge failed ({e}) — shot goes page-signed")
             return None
-        if len(merged) < len(req_headers or {}):
-            # 2026-09-09 audit #9: Fetch.continueRequest REPLACES the header set; a
-            # shorter merge would strip Content-Type/Accept/Origin from the shot.
-            self._harvest_log(f"merge produced fewer headers ({len(merged)} < {len(req_headers)}) — shot goes page-signed")
+        # 2026-09-09 audit #9 + review: Fetch.continueRequest REPLACES the header
+        # set, so every NON-Shape request header must survive the merge. (A plain
+        # length check was wrong: a 7-token page set replaced by a 6-token banked
+        # set is a legitimately shorter, valid merge.)
+        _req_prefix = _shape_harvest.shape_prefix(req_headers or {})
+        _non_shape_req = {str(k).lower() for k in (req_headers or {})
+                          if not (_req_prefix and str(k).lower().startswith(_req_prefix))}
+        _merged_names = {str(k).lower() for k, _ in merged}
+        if not _non_shape_req.issubset(_merged_names):
+            self._harvest_log(f"merge dropped request headers {sorted(_non_shape_req - _merged_names)} — shot goes page-signed")
             return None
         if label == 'main':
             self._harvest_win['replayed'] += 1
@@ -2574,7 +2599,7 @@ class PurchaseExecutor:
                 # queue from a Shape block / edge 429 (diagnostic; the status code
                 # still drives the retry policy).
                 _ab = str(atc_result.get('body') or '').lower()
-                if 'busier than we expected' in _ab or 'sorry for the wait' in _ab:
+                if atc_result.get('wr') or 'busier than we expected' in _ab or 'sorry for the wait' in _ab:
                     self._waiting_room_hits = getattr(self, '_waiting_room_hits', 0) + 1
                     print(f"[WAITING_ROOM] Target queue interstitial on the ATC response "
                           f"(http={atc_result.get('status')}, hit #{self._waiting_room_hits}) — "
@@ -5731,16 +5756,11 @@ class PurchaseExecutor:
             # `fulfillment_type_code`, which no page add ever sends. Both forms are
             # accepted by the API (15 real orders on the old one); this one is what a
             # human's browser emits.
-            _atc_body_js = ("{{cart_item: {{item_channel_id: '10', tcin: '" + str(tcin) + "', quantity: "
-                            + str(int(quantity)) + "}}, cart_type: 'REGULAR', channel_id: '10', "
-                            "shopping_context: 'DIGITAL'}}")
+            _atc_body_js = fast_lane_atc_body_literal(tcin, quantity, bytematch=True)
         else:
             atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
                        '?field_groups=CART,CART_ITEMS,SUMMARY')
-            _atc_body_js = ("{{cart_item: {{tcin: '" + str(tcin) + "', quantity: " + str(int(quantity))
-                            + ", item_channel_id: '10', fulfillment_type: 'SHIPPING', "
-                            "fulfillment_type_code: '02'}}, cart_type: 'REGULAR', channel_id: '10', "
-                            "shopping_context: 'DIGITAL'}}")
+            _atc_body_js = fast_lane_atc_body_literal(tcin, quantity, bytematch=False)
         pre_url = ('https://carts.target.com/web_checkouts/v1/pre_checkout'
                    '?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,'
                    'PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES')
@@ -5777,7 +5797,7 @@ class PurchaseExecutor:
                 'x-application-name': 'web',
             }});
             const out = {{
-                atc: {{status: 0, body: '', cart_items: [], cart_id: ''}},
+                atc: {{status: 0, body: '', cart_items: [], cart_id: '', wr: false}},
                 pre: {{status: 0, n: 0, tcins: [], pi: [], cart_id: ''}},
                 po:  {{status: 0, body: '', fired: false}},
                 cvv: {{put: -1, first: {_cvv_first}, reshot: false, po1: 0}},
@@ -5794,6 +5814,7 @@ class PurchaseExecutor:
                 const t = await r.text();
                 out.atc.status = r.status;
                 out.atc.body = t.slice(0, 500);
+                out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);
                 try {{
                     const p = JSON.parse(t);
                     if (p && p.cart_id) out.atc.cart_id = p.cart_id;

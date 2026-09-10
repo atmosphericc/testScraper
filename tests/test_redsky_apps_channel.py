@@ -82,6 +82,10 @@ def test_dispatcher_wiring():
     check("disp_raw_404_rate_park", "RESILIENT_RAW_404_PARK_S" in DISP_SRC and "s.rate_parked_until = time.time() + _park" in DISP_SRC
           and "s.recent_4xx.pop()" in DISP_SRC and 'elif status == 404 and \'"Not Found"\' in (text or \'\'):' in DISP_SRC
           and "_park = _base * min(8.0, 2.0 ** (s.rate_parks - 1))" in DISP_SRC and "s.rate_parks = 0" in DISP_SRC)
+    check("disp_raw_404_needs_prior_200", "s.raw_ok_seen = True" in DISP_SRC
+          and "and not getattr(s, 'raw_ok_seen', False):" in DISP_SRC and "[STOCK][RAW-404]" in DISP_SRC
+          and "sessions rate-parked" in DISP_SRC)
+    check("shipping_js_never_clicks_buttons", "/button$/.test(dt)" in h.SELECT_SHIPPING_JS and "dt.includes('addtocart')" in h.SELECT_SHIPPING_JS)
     check("disp_raw_cache_bust_off_by_default", "RESILIENT_RAW_CACHE_BUST" in DISP_SRC)
     POOL_SRC = (ROOT / 'src' / 'session' / 'multi_session_pool.py').read_text(encoding='utf-8', errors='replace')
     check("pool_rate_park_field", "rate_parked_until: float = 0.0" in POOL_SRC)
@@ -133,16 +137,15 @@ def test_bank_stale_and_refill():
 def test_executor_wiring():
     check("exe_dedup_key_per_tab", 'dedup_key = f"{label}:{req_id}" + (\':resp\' if is_response else \':req\')' in EXE_SRC)
     check("exe_override_needs_headers", "and headers   # 2026-09-09 audit #9" in EXE_SRC)
-    check("exe_merge_length_guard", "if len(merged) < len(req_headers or {}):" in EXE_SRC)
+    check("exe_merge_guard_non_shape_subset", "if not _non_shape_req.issubset(_merged_names):" in EXE_SRC
+          and "if len(merged) < len(req_headers or {}):" not in EXE_SRC)
     check("exe_bytematch_url", "if os.environ.get('TARGET_ATC_BYTEMATCH', '0') == '1':" in EXE_SRC
           and "'?field_groups=CART%2CCART_ITEMS%2CSUMMARY'" in EXE_SRC
           and "'&key=9f36aeafbe60771e321a7cc95a78140772ab3e96')" in EXE_SRC)
     # body byte-match: the page's shipping add carries NO fulfillment field and this key order
-    check("exe_bytematch_body_page_shape",
-          "item_channel_id: '10', tcin: '" in EXE_SRC and "cart_type: 'REGULAR', channel_id: '10', " in EXE_SRC
-          and "body: JSON.stringify({_atc_body_js})" in EXE_SRC)
-    check("exe_bytematch_body_old_shape_kept", "fulfillment_type: 'SHIPPING', " in EXE_SRC
-          and "fulfillment_type_code: '02'}}, cart_type: 'REGULAR'" in EXE_SRC)
+    check("exe_bytematch_body_helper_present", "def fast_lane_atc_body_literal(tcin, quantity, bytematch: bool) -> str:" in EXE_SRC)
+    check("exe_waiting_room_full_text_flag", "out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);" in EXE_SRC
+          and "if atc_result.get('wr') or" in EXE_SRC)
     check("exe_waiting_room_detected", "[WAITING_ROOM] Target queue interstitial" in EXE_SRC
           and "'busier than we expected' in _ab" in EXE_SRC)
     check("exe_window_census", 'window census: shots=' in EXE_SRC and "self._harvest_win['shots'] += 1" in EXE_SRC
@@ -158,6 +161,68 @@ def test_executor_wiring():
     check("exe_orphans_substring_match", "if url_marker not in str(getattr(t.target, 'url', '') or ''):" in EXE_SRC)
 
 
+def test_fast_lane_body_js_really_parses():
+    """The 2026-09-09 review caught doubled braces in the body literal: the emitted JS
+    was `JSON.stringify({{...}})` = SyntaxError = every shot dead. Evaluate the REAL
+    literal with node (present on this box) and compare the JSON it produces."""
+    import json, shutil, subprocess
+    from src.session.purchase_executor import fast_lane_atc_body_literal as lit
+    for bm in (True, False):
+        s = lit('1011960739', 2, bytematch=bm)
+        check(f"body_literal_no_doubled_braces_bm{int(bm)}", '{{' not in s and '}}' not in s
+              and s.count('{') == s.count('}') == 2)
+    node = shutil.which('node')
+    check("node_available_for_js_eval", node is not None)
+    if node:
+        for bm, expect in ((True, {"cart_item": {"item_channel_id": "10", "tcin": "1011960739", "quantity": 2},
+                                   "cart_type": "REGULAR", "channel_id": "10", "shopping_context": "DIGITAL"}),
+                           (False, {"cart_item": {"tcin": "1011960739", "quantity": 2, "item_channel_id": "10",
+                                                  "fulfillment_type": "SHIPPING", "fulfillment_type_code": "02"},
+                                    "cart_type": "REGULAR", "channel_id": "10", "shopping_context": "DIGITAL"})):
+            s = lit('1011960739', 2, bytematch=bm)
+            out = subprocess.run([node, '-e', 'process.stdout.write(JSON.stringify(' + s + '))'],
+                                 capture_output=True, text=True, timeout=20)
+            ok = out.returncode == 0
+            got = json.loads(out.stdout) if ok else None
+            check(f"body_literal_node_json_bm{int(bm)}", ok and got == expect)
+            check(f"body_literal_key_order_bm{int(bm)}", ok and list(got.keys()) == list(expect.keys())
+                  and list(got['cart_item'].keys()) == list(expect['cart_item'].keys()))
+    # the fast lane must consume the helper, not an inline literal
+    check("exe_fast_lane_uses_helper", "_atc_body_js = fast_lane_atc_body_literal(tcin, quantity, bytematch=True)" in EXE_SRC
+          and "_atc_body_js = fast_lane_atc_body_literal(tcin, quantity, bytematch=False)" in EXE_SRC
+          and "body: JSON.stringify({_atc_body_js})" in EXE_SRC)
+
+
+def test_apps_response_parses_with_production_parser():
+    """A real apps-channel response (2026-09-09, home IP) through StockMonitor._process_response."""
+    import json
+    from src.monitoring.stock_monitor import StockMonitor
+    raw = json.loads((ROOT / 'tests' / 'fixtures' / 'redsky_apps_sample.json').read_text(encoding='utf-8'))
+    parsed = StockMonitor()._process_response(raw, 100)
+    check("apps_parsed_both_tcins", set(map(str, parsed.keys())) == {'21516452', '1011960739'})
+    p = {str(k): v for k, v in parsed.items()}
+    check("apps_in_stock_flag", p['21516452']['in_stock'] is True and p['1011960739']['in_stock'] is False)
+    check("apps_status_fields", p['21516452'].get('availability_status') == 'IN_STOCK'
+          and p['1011960739'].get('availability_status') == 'OUT_OF_STOCK')
+
+
+def test_replay_merge_guard_allows_shorter_token_set():
+    """Review #2: a 7-token page set replaced by a 6-token banked set is a valid merge."""
+    ex, pe = _stub_executor_for_gate()
+    ex._harvest_selftest_armed = False
+    ex._harvest_last_replay = None
+    ex._harvest_win = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
+    ex.logger = __import__('types').SimpleNamespace(info=lambda *a, **k: None)
+    ex.session_manager = __import__('types').SimpleNamespace(account_id='primary')
+    req = dict(HD); req['X-GyJwza5Z-a0'] = 'PAGE-A0'          # 7 page tokens
+    ex._shape_bank.push(HD, {'tcin': '1'})                    # 6 banked tokens
+    out = ex._harvest_replay_headers_for('main', req)
+    check("merge_guard_allows_6_for_7", isinstance(out, list) and len(out) == len(req) - 1)
+    names = {e.name.lower() for e in out}
+    check("merge_guard_keeps_non_shape", {'cookie', 'user-agent', 'content-type'} <= names and 'x-gyjwza5z-a0' not in names)
+    check("merge_guard_counts_replay", ex._harvest_win['replayed'] == 1)
+
+
 def test_bank_gate():
     MGR = (ROOT / 'src' / 'purchasing' / 'bulletproof_purchase_manager.py').read_text(encoding='utf-8', errors='replace')
     check("exe_harvest_set_ready_defined", "def harvest_set_ready(self) -> bool:" in EXE_SRC
@@ -169,12 +234,18 @@ def test_bank_gate():
     check("mgr_bank_gate_bounded_by_deadline", "_bw = min(_bw, max(0.0, _retry_deadline - time.time()))" in MGR)
     # wave-first-only policy (census 2026-09-09)
     check("mgr_wave_first_flag_default_off", "_wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'" in MGR)
-    check("mgr_wave_first_covers_401_and_429", "if _wf_only and _gk in ('auth401', 'edge', 'dco'):" in MGR)
+    check("mgr_wave_first_covers_401_and_429", "if _wf_takes:" in MGR and "TARGET_WAVE_FIRST_EDGE" in MGR
+          and "_wf_kinds = (('auth401', 'edge', 'dco')" in MGR)
+    check("mgr_wave_first_leaves_room_for_leg", "_re_lo_needed = _re_lo + _bw_est + 20.0" in MGR
+          and "if _remaining < _re_lo_needed:" in MGR)
+    check("mgr_watchdog_tracks_budget", "_force_s = max(120.0, float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110')) + 90.0)" in MGR
+          and "if elapsed_time > _force_s:" in MGR)
+    check("mgr_cadence_print_silenced_under_wave_first", "and not _wf_takes:" in MGR)
     check("mgr_wave_first_cold_reentry", "TARGET_WAVE_REENTRY_MIN_S" in MGR and "_re_lo = max(15.0, _re_lo)" in MGR
           and "cold re-entry in" in MGR)
-    check("mgr_wave_first_ends_window_when_no_room", "if _remaining < _re_lo:" in MGR and "ending the window (re-arm opens a fresh one)" in MGR)
+    check("mgr_wave_first_ends_window_when_no_room", "if _remaining < _re_lo_needed:" in MGR and "ending the window (re-arm opens a fresh one)" in MGR)
     check("mgr_wave_first_keeps_checkout_retries", "'checkout_busy_retryable'" in MGR)
-    check("mgr_gate_kinds_widen_in_wave_first", "_gate_kinds = ('auth401', 'edge', 'dco') if _wf_only else ('auth401',)" in MGR
+    check("mgr_gate_kinds_widen_in_wave_first", "_gate_kinds = _wf_kinds if _wf_only else ('auth401',)" in MGR
           and "cold re-entry fires page-signed" in MGR)
     # executor stub: ready iff bank has a set inside the replay cap
     ex, pe = _stub_executor_for_gate()
@@ -227,6 +298,7 @@ def test_bat_pins():
     check("bat_bytematch", _bat_val('TARGET_ATC_BYTEMATCH') == '1')
     check("bat_per_ip_cap_half", _bat_val('RESILIENT_PER_IP_MAX_RPS') == '0.5')
     check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '900')
+    check("bat_wave_first_edge_knob", _bat_val('TARGET_WAVE_FIRST_EDGE') == '1')
     check("bat_wave_first_armed", _bat_val('TARGET_WAVE_FIRST_ONLY') == '1' and _bat_val('TARGET_WAVE_REENTRY_MIN_S') == '55'
           and _bat_val('TARGET_WAVE_REENTRY_MAX_S') == '70' and _bat_val('TARGET_SHOT_BANK_GATE') == '1'
           and _bat_val('TARGET_SHOT_BANK_WAIT_S') == '8')
@@ -250,8 +322,9 @@ def test_compiles():
 
 if __name__ == '__main__':
     for fn in (test_channel_helper, test_dispatcher_wiring, test_trusted_reader_fixes,
-               test_bank_stale_and_refill, test_executor_wiring, test_bank_gate,
-               test_session_manager_wedge_fixes, test_bat_pins, test_compiles):
+               test_bank_stale_and_refill, test_executor_wiring, test_fast_lane_body_js_really_parses,
+               test_apps_response_parses_with_production_parser, test_replay_merge_guard_allows_shorter_token_set,
+               test_bank_gate, test_session_manager_wedge_fixes, test_bat_pins, test_compiles):
         try:
             fn()
         except Exception as e:

@@ -623,6 +623,12 @@ REM SHOT_BANK_GATE waits up to 8 s for a fresh real-click set before that cold
 REM shot (a page-signed cold shot still fires -- that is what won 19/20).
 REM Checkout-leg re-shoots (cart hold) are untouched. Kill: TARGET_WAVE_FIRST_ONLY=0.
 set TARGET_WAVE_FIRST_ONLY=1
+REM WAVE_FIRST_EDGE=1 applies the cold re-entry to the 429 lottery as well (the
+REM census: 2,233/2,236 ATC 429s = ERR_A2C_TCIN_RATE_LIMITED, share climbing with our
+REM own re-POSTs, 0 orders from 5,292 deep tickets). =0 restores the 2-3 s ticket
+REM cadence for empty-429s only. With WAVE_FIRST_ONLY=1 the 401-PULSE above is
+REM superseded (a 401 now always takes the longer cold re-entry).
+set TARGET_WAVE_FIRST_EDGE=1
 set TARGET_WAVE_REENTRY_MIN_S=55
 set TARGET_WAVE_REENTRY_MAX_S=70
 set TARGET_SHOT_BANK_GATE=1

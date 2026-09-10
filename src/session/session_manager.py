@@ -1319,15 +1319,15 @@ class SessionManager:
             def _get():
                 import urllib.request
                 t0 = time.time()
-                with urllib.request.urlopen(url, timeout=3.0) as r:
+                with urllib.request.urlopen(url, timeout=2.0) as r:
                     r.read(200)
                 return int((time.time() - t0) * 1000)
             try:
-                ms = await asyncio.wait_for(asyncio.to_thread(_get), timeout=4.0)
+                ms = await asyncio.wait_for(asyncio.to_thread(_get), timeout=2.5)
                 self.logger.warning(f"[WEDGE-PROBE] {url} answered in {ms} ms — Chrome's HTTP thread is "
                                     f"alive while CDP is silent (browser-side CDP dispatch stall)")
             except Exception as e:
-                self.logger.warning(f"[WEDGE-PROBE] {url} did NOT answer within 3 s ({type(e).__name__}) — "
+                self.logger.warning(f"[WEDGE-PROBE] {url} did NOT answer within 2 s ({type(e).__name__}) — "
                                     f"the browser process itself is unresponsive")
         except Exception:
             pass

@@ -269,8 +269,7 @@ class ShapeBank:
             # "bank EMPTY" at 3/3. Discard them so the refill fires.
             n = len(self._items)
             self._items.clear()
-            self.expired += n
-            self.stale += n
+            self.stale += n          # counted as stale, not double-counted as expired
             return None
         entry = self._items.pop()          # LIFO: freshest set for the shot
         self.replayed += 1
@@ -513,10 +512,13 @@ SELECT_SHIPPING_JS = """(() => {
         if (r.width <= 0 || r.height <= 0) continue;
         const txt = norm(el.getAttribute('aria-label') || el.textContent).slice(0, 80);
         const dt = norm((el.getAttribute('data-test') || '') + ' ' + (el.getAttribute('data-testid') || ''));
-        const isCell = dt.includes('fulfillment') || dt.includes('shipping') ||
-                       txt.startsWith('shipping') || txt.startsWith('ship it');
+        // NEVER the Add-to-cart / Ship-it BUTTON itself (data-test="shippingButton",
+        // "shipItButton", "addToCartButton…"): those are the real add, not a cell.
+        if (/button$/.test(dt) || dt.includes('addtocart') || dt.includes('shipit')) continue;
+        if (el.tagName === 'BUTTON' && /\\bship it\\b/.test(txt)) continue;
+        const isCell = dt.includes('fulfillment') || dt.includes('shipping') || txt.startsWith('shipping');
         if (!isCell) continue;
-        if (txt.includes('add to cart') || txt.includes('free shipping')) continue;
+        if (txt.includes('add to cart') || txt.includes('free shipping') || txt.includes('ship it')) continue;
         const selected = el.getAttribute('aria-pressed') === 'true' || el.getAttribute('aria-checked') === 'true' ||
                          el.getAttribute('aria-selected') === 'true';
         cands.push({el: el, txt: txt, dt: dt, selected: selected});
