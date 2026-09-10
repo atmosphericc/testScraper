@@ -31,6 +31,85 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-09] - DETECTION was dark 94-97% of the last run (3 AM slot: 0 reads in 1,501 attempts); the fallback reader never awaited its fetch; the mobile-app RedSky channel reads through the walled Bright Data IPs - TARGET
+**Symptom**: run_20260907_231629.log audited end to end (de-duplicated). 40,083 sweep ticks but
+**33,554 (83.7%) never became a request** (no usable session); 6,263 RedSky 200s, ALL inside two
+windows totalling 38.5 of 1,126 minutes (23:20-23:23 at boot, 14:51-15:26); usable sessions = 0
+for **94.4%** of the run (three ~234-min blackouts = the park ladder's 4 h cap); **02:30-04:30 =
+1,501 ticks, 0 reads**; every one of the 16 sweep IPs was captcha-parked within 3.5 min of boot,
+including 72.56.171.184 (the 09-07 probe's "OK-DATA" exit, parked 7x). The trusted-browser
+fallback (`check_stock_via_tab`, ON for 18 h) returned **0 usable reads in 3,550 attempts**
+(`Browser fetch error: no result` 3,424x). P(seeing a random 60 s restock window) = 3.5% (upper
+bound); at the 3 AM drop hour = 0%. Purchase-side work (401-pulse, wave-first, banked replay) sat
+behind a detector that could not fire.
+**Root Cause**:
+1. **The fallback reader never worked**: its RedSky JS is an async IIFE (a Promise) evaluated with
+   zendriver's default `await_promise=False`, so `remote_object.value` was `None` on every read
+   ("no result") — the fetch ran in-page, the answer was never awaited (also 4,567x on 09-04..07,
+   where "proven live" was a misread). The 09-09 cadence change to 1-2 s therefore never ran.
+2. **The BD prefixes are captcha-walled on the WEB aggregation regardless of profile freshness**:
+   `RESILIENT_POOL_FRESH_PROFILES=1` (09-07 hypothesis) changed nothing — fresh sessions walled
+   after ~33 reads at boot; the one recovery (4 sessions, 98% 200s for 18-31 min) came with
+   equally fresh profiles and re-walled. All 16 sessions were relaunched 12-16x (the ~75-min
+   pool-Chrome clock) = 220 profile wipes.
+3. **The mobile-app aggregation is NOT walled**: raw HTTP `GET
+   /redsky_aggregations/v1/apps/tcin_product_list_v2` with the app header set (`x-channel-id:
+   APPS`, `x-client-platform: iPhone`, `x-client-version`, iOS `Target/…` UA) **through the walled
+   exit 31.105.228.245 = HTTP 200 product data (0.72 s)** while the web URL through the same exit
+   = 403 `captchaRelativeURL`. Same parser shape (`product_summaries[].fulfillment.shipping_options
+   .availability_status`, `available_to_promise_quantity`, `item.relationship_type_code`). Two
+   independent public monitors read Target this way (research 2026-09-09). From INSIDE a browser
+   tab the apps URL is still captcha'd (plain headers) or CORS-preflight-blocked (app headers), so
+   it must be raw HTTP.
+4. Shot-path audit (adversarial, 12 findings): **a full-but-stale bank froze the harvester** —
+   `pop_fresh` refused sets past the 100 s replay cap but left them in place, `need()` (TTL 300 s)
+   stayed 0, no re-click for ~200 s of every 300 s cycle → most windows replayed nothing (the
+   "bank EMPTY at 3/3" log); **`_cdp_continued_ids` collided across the three tabs** (interception
+   ids restart per Fetch.enable; 2,476 cross-tab hits, job-1.0 alone 78x) and a colliding main-tab
+   ATC was continued WITHOUT the banked headers; an empty request-header set would have let the
+   override strip Content-Type/Origin; the rejected place-order RESPONSE was held paused while the
+   body was fetched/decoded; the fast-lane ATC URL differed from the page's own (`%2C` + `key=`);
+   every harvest capture was a STORE_PICKUP add; replay has never run on a real shot (22x self-test
+   only) and only business harvested. Research: `-a0` is the overflow of the 7,900-char `-a`
+   (absent in the current Target build — not a harvest defect); banked sets are single-use,
+   IP-bound, product-agnostic (our design is right).
+**Fix Applied** (all flag-gated; 10 files):
+- `src/monitoring/redsky_channel.py` (new) + `tab_dispatcher._fire_raw_on`: `RESILIENT_REDSKY_CHANNEL
+  =apps_raw` reads the app aggregation as raw urllib through each session's forwarder (or direct
+  in home-IP mode), in a worker thread, reusing `_interpret_eval_result` so park/backoff/clear
+  logic is unchanged; also used by the cache-busted verify read. Bat pins apps_raw.
+- `stock_monitor.check_stock_via_tab`: `await_promise=True`; parks itself
+  `RESILIENT_TRUSTED_READER_PARK_S` (600) on a captcha to protect the purchase account. Bat: reader
+  cadence 3-5 s (the home IP tolerated ~200 reads/h on 09-07; 1-2 s was 10x that on the primary
+  account, unmeasured).
+- Bank: `pop_fresh` DISCARDS over-cap sets (`stale` counter), `refill_wanted()` re-clicks past half
+  the cap, the loop gates on it; `TARGET_HARVEST_MAX_REPLAY_AGE_S=100` pinned; "bank STALE" vs
+  "bank EMPTY" logs; `window census: shots/replayed/a0/stale` logged when a purchase ends.
+- Interceptor: dedup key `f"{label}:{req_id}"`; override only with non-empty headers and a merge
+  that is not shorter; checkout body read gated `TARGET_CHECKOUT_BODY_CAPTURE` (default off).
+- `TARGET_ATC_BYTEMATCH=1`: fast-lane ATC URL = the page's `?field_groups=CART%2CCART_ITEMS%2C
+  SUMMARY&key=9f36…`. `TARGET_HARVEST_PREFER_SHIPPING=1`: select the Shipping fulfillment cell once
+  per PDP nav (JS click on the toggle) so captures are SHIPPING adds; CAPTURED logs `a_len`.
+- `TARGET_HARVEST_SKIP=` (all three accounts harvest; the 09-04 primary skip was the hidden-tab bug,
+  run_20260904_001027 shows the same warmup-open→failure signature). `RESILIENT_POOL_FRESH_PROFILES=0`.
+- Tests: tests/test_redsky_apps_channel.py 55/55 (new), test_shape_harvest 141/141, sibling
+  suites 90/53/23/70/10 green; tree compiles. Probe harness `redsky_browser_probe_bd.py` gained
+  `PROBE_REDSKY_CHANNEL=apps|apps_plain`.
+**Confidence**: high that the detector was dark and why (log arithmetic + the await_promise bug);
+high that the app channel reads through the walled prefixes (probed on our own exit, both
+directions); medium on how long HUMAN tolerates the app channel at 3/s from these prefixes
+(unmeasured — the park ladder + `[STOCK STATS] 200=` will show it on the first run); medium on
+the shot-path fixes converting a hot SKU (replay is still unproven on a real shot; the empty-429
+demand limiter and the 3-account ticket count are unchanged).
+**Outcome**: SHIPPED, UNPROVEN LIVE (user-launched). First-run checks: `[STOCK STATS] 200=` rising
+past boot+5 min, `[STOCK][CAPTCHA-PARK]` quiet, `[STOCK][RATE] usable 16/16`; `[HARVEST/*]`
+`fulfillment cell:` showing a Shipping click, captures with `a_len=`, and after a window `window
+census: … replayed=N` with N>0. Still open: the ~75-min Chrome wedge; the SHIPPING add body
+schema (read it off the first shipping capture's REAL_ATC_SHAPE line, then byte-match the body);
+Target's "Sorry for the wait" interstitial (hold, don't re-navigate) is not handled.
+
+---
+
 ### [2026-09-09] - Shape harvester: the 99.7% click timeouts were a HIDDEN-TAB input stall, not CDP-socket contention; every failed tab open sat inside the ~75-min wedge - TARGET
 **Symptom**: run_20260907_231629.log (09-07 23:16 → 09-08 18:06, business-only harvest).
 De-duplicated counts (the run log carries every `[HARVEST/…]` line twice — print + logger):
@@ -96,8 +175,10 @@ mouseMoved #1 took ~5000 ms` followed by `harvest tab re-activated -> VISIBLE` w
 warmup tab steals the foreground.
 **Outcome**: SHIPPED, UNPROVEN LIVE (user-gated). Still open: the ~75-min wedge itself (every
 open failure and every Chrome restart on 09-07 was that clock). `TARGET_HARVEST_SKIP=primary`
-was justified on 09-04 by "18/18 clicks failed under sweep load" — most likely the same
-hidden-tab mechanism; re-test with the guard on a quiet night. Operator rule: never minimize
+was justified on 09-04 by "18/18 clicks failed under sweep load" — CONFIRMED the same
+hidden-tab mechanism, not loop contention: run_20260904_001027.log shows primary's harvest tab
+ready 00:10:39, `[WARMUP] Opening warmup tab #1` at 00:10:59, first click failure 00:11:05 and
+every click after. Un-skipping primary/alt-1 is justified once the guard is live-validated. Operator rule: never minimize
 the account Chrome windows while the harvester runs.
 
 ---

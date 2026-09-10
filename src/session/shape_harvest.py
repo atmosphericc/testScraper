@@ -122,6 +122,9 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         # one mouse move stalls (0 = never abort).
         "vis_guard": str(e.get("TARGET_HARVEST_VIS_GUARD", "1")).strip() != "0",
         "move_abort_ms": _int(e, "TARGET_HARVEST_MOVE_ABORT_MS", 2500, 0, 20000),
+        # 2026-09-09 audit #10: select the Shipping fulfillment cell once per PDP nav
+        # so the harvested add is a SHIPPING add (captures were STORE_PICKUP).
+        "prefer_shipping": str(e.get("TARGET_HARVEST_PREFER_SHIPPING", "1")).strip() != "0",
     }
 
 
@@ -143,6 +146,21 @@ def shape_prefix(headers: Dict[str, str]) -> Optional[str]:
         if len(parts) >= 3 and parts[-1] in ("a", "a0") and len(parts[1]) >= 6:
             return "-".join(parts[:-1]) + "-"
     return None
+
+
+def sensor_a_len(headers: Dict[str, str], prefix: Optional[str] = None) -> int:
+    """Length of the `X-<prefix>-a` sensor value (0 if absent). Four public
+    captures of real Target adds show `-a` capped at 7,900 chars with `-a0`
+    carrying only the overflow, and Target's current build mostly emits no
+    -a0 at all -- so a missing -a0 next to a short -a is the normal shape of a
+    genuine click, not a broken harvest (research 2026-09-09)."""
+    p = prefix or shape_prefix(headers)
+    if not p:
+        return 0
+    for k, v in (headers or {}).items():
+        if str(k).lower() == p + "a":
+            return len(str(v))
+    return 0
 
 
 def shape_tokens(headers: Dict[str, str], prefix: Optional[str] = None) -> Dict[str, str]:
@@ -199,6 +217,7 @@ class ShapeBank:
         self.harvested = 0
         self.replayed = 0
         self.expired = 0
+        self.stale = 0           # sets discarded because they were past the replay cap
 
     def prune(self, now: Optional[float] = None) -> int:
         now = time.time() if now is None else now
@@ -225,27 +244,48 @@ class ShapeBank:
         self.harvested += 1
         return True
 
+    @staticmethod
+    def max_replay_age() -> float:
+        """TARGET_HARVEST_MAX_REPLAY_AGE_S (default 100 s; 0 = no cap). A set
+        older than the Shape token-rotation window (~90-120 s) is likely dead
+        on the wire even inside the 300 s bank TTL, and replaying a dead set
+        makes the shot WORSE than a fresh page-signed one."""
+        try:
+            return max(0.0, float(os.environ.get("TARGET_HARVEST_MAX_REPLAY_AGE_S", "100")))
+        except (TypeError, ValueError):
+            return 100.0
+
     def pop_fresh(self, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
         now = time.time() if now is None else now
         self.prune(now)
         if not self._items:
             return None
-        entry = self._items[-1]            # peek the freshest (LIFO)
-        # 2026-09-09: a banked set older than the Shape token-rotation window
-        # (~90-120s) is likely dead on the wire even within the 300s bank TTL, and
-        # replaying a dead set makes the shot WORSE than a fresh page-signed one
-        # (which is re-signed in-page every time). If even the freshest set is past
-        # the cap, replay nothing so the shot goes page-signed.
-        # TARGET_HARVEST_MAX_REPLAY_AGE_S=0 disables the cap (exact prior behaviour).
-        try:
-            _max_age = float(os.environ.get("TARGET_HARVEST_MAX_REPLAY_AGE_S", "100"))
-        except (TypeError, ValueError):
-            _max_age = 100.0
-        if _max_age > 0 and (now - entry["ts"]) > _max_age:
+        _max_age = self.max_replay_age()
+        if _max_age > 0 and (now - self._items[-1]["ts"]) > _max_age:
+            # 2026-09-09 (audit finding #1): the freshest set is past the replay
+            # cap, so every older one is too. Until today they STAYED in the bank,
+            # which kept need()==0, so the loop never re-clicked and every shot
+            # for ~200 s of each 300 s cycle went page-signed while logging
+            # "bank EMPTY" at 3/3. Discard them so the refill fires.
+            n = len(self._items)
+            self._items.clear()
+            self.expired += n
+            self.stale += n
             return None
-        self._items.pop()                  # LIFO: freshest set for the shot
+        entry = self._items.pop()          # LIFO: freshest set for the shot
         self.replayed += 1
         return entry
+
+    def refill_wanted(self, now: Optional[float] = None) -> bool:
+        """True when the loop should click: room in the bank, OR the freshest
+        set is already past HALF the replay cap -- so a fresh set is banked
+        before the cap bites instead of after a shot finds nothing replayable."""
+        now = time.time() if now is None else now
+        if self.need(now) > 0:
+            return True
+        age = self.newest_age(now)
+        cap = self.max_replay_age()
+        return bool(cap > 0 and age is not None and age > cap * 0.5)
 
     def count(self, now: Optional[float] = None) -> int:
         self.prune(now)
@@ -265,7 +305,8 @@ class ShapeBank:
         age = self.newest_age(now)
         age_s = "-" if age is None else f"{age:.0f}s"
         return (f"bank={self.count(now)}/{self.size} newest_age={age_s} "
-                f"harvested={self.harvested} replayed={self.replayed} expired={self.expired}")
+                f"harvested={self.harvested} replayed={self.replayed} expired={self.expired} "
+                f"stale={self.stale}")
 
 
 # --------------------------------------------------------------------------- #
@@ -457,6 +498,34 @@ FIND_ATC_BUTTON_JS = """(() => {
     const r = el.getBoundingClientRect();
     return {found: true, disabled: disabledOf(el), x: r.left, y: r.top, w: r.width, h: r.height,
             via: via, text: (el.textContent || '').trim().slice(0, 40), ready: ready, oos: false};
+})()"""
+
+
+# Runs in-page once per PDP nav (2026-09-09 audit #10): the captured page adds
+# were STORE_PICKUP because the PDP defaulted to the profile's store, while the
+# shot replays a SHIPPING add. Clicks the Shipping fulfillment cell (a UI
+# toggle -- never the Add-to-cart button) when it is present and not selected.
+SELECT_SHIPPING_JS = """(() => {
+    const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const cands = [];
+    for (const el of document.querySelectorAll('button, [role="radio"], [role="tab"], label')) {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const txt = norm(el.getAttribute('aria-label') || el.textContent).slice(0, 80);
+        const dt = norm((el.getAttribute('data-test') || '') + ' ' + (el.getAttribute('data-testid') || ''));
+        const isCell = dt.includes('fulfillment') || dt.includes('shipping') ||
+                       txt.startsWith('shipping') || txt.startsWith('ship it');
+        if (!isCell) continue;
+        if (txt.includes('add to cart') || txt.includes('free shipping')) continue;
+        const selected = el.getAttribute('aria-pressed') === 'true' || el.getAttribute('aria-checked') === 'true' ||
+                         el.getAttribute('aria-selected') === 'true';
+        cands.push({el: el, txt: txt, dt: dt, selected: selected});
+    }
+    const pick = cands.find(c => c.txt.includes('ship') || c.dt.includes('ship'));
+    if (!pick) return {found: false, clicked: false, selected: false, seen: cands.slice(0, 4).map(c => c.txt)};
+    if (pick.selected) return {found: true, clicked: false, selected: true, label: pick.txt};
+    try { pick.el.click(); } catch (e) { return {found: true, clicked: false, selected: false, error: String(e)}; }
+    return {found: true, clicked: true, selected: false, label: pick.txt};
 })()"""
 
 

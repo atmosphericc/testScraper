@@ -111,6 +111,9 @@ class TabDispatcher:
             return None
         chunk = self._chunks[self._next_chunk_idx]
         self._next_chunk_idx = (self._next_chunk_idx + 1) % len(self._chunks)
+        from src.monitoring import redsky_channel as _rc
+        if _rc.is_raw():
+            return await self._fire_raw_on(s, chunk)
         return await self._fire_bulk_on(s, chunk)
 
     async def dispatch_verify(self, tcins: list[str]) -> Optional[BulkResult]:
@@ -123,6 +126,9 @@ class TabDispatcher:
         s = self.session_pool.pick_session()
         if s is None:
             return None
+        from src.monitoring import redsky_channel as _rc
+        if _rc.is_raw():
+            return await self._fire_raw_on(s, list(tcins), cache_bust=True)
         return await self._fire_bulk_on(s, list(tcins), cache_bust=True)
 
     # ───────── behavioral mixin: navigate to a PDP, dwell, return ─────────
@@ -166,6 +172,83 @@ class TabDispatcher:
                 return BulkResult(s.id, s.proxy_ip, 0,
                                   int((time.time() - t0) * 1000),
                                   error=f"behavioral_pdp:{type(e).__name__}:{e}")
+            finally:
+                s.in_flight = False
+
+    # ───────── 2026-09-09 raw app-channel read (RESILIENT_REDSKY_CHANNEL=apps_raw) ─────────
+
+    @staticmethod
+    def _raw_apps_get(url: str, headers: dict, proxy: str, timeout_s: float):
+        """Blocking urllib GET through the session's local forwarder (runs in a
+        worker thread). Returns (status, body_text); HTTP errors return their
+        status + body so the captcha envelope reaches the park logic."""
+        import urllib.error
+        import urllib.request
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({'http': proxy, 'https': proxy} if proxy else {}))
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with opener.open(req, timeout=timeout_s) as r:
+                return int(r.status), r.read().decode('utf-8', 'replace')
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode('utf-8', 'replace')
+            except Exception:
+                body = ''
+            return int(e.code), body
+
+    async def _fire_raw_on(self, s: SessionEntry, tcins: list[str],
+                           cache_bust: bool = False) -> BulkResult:
+        """Read the mobile-app aggregation as RAW HTTP through this session's
+        forwarder (same Bright Data exit as its Chrome). Probe 2026-09-09
+        through the walled exit 31.105.228.245: web-in-browser = 403 captcha,
+        this path = HTTP 200 product data. The session's Chrome stays parked on
+        target.com untouched; park/backoff/park-clear logic is shared with the
+        browser path via the identical BulkResult."""
+        import json as _json
+        from src.monitoring import redsky_channel as _rc
+        async with s.busy_lock:
+            if s.state != "ready":
+                return BulkResult(s.id, s.proxy_ip, 0, 0,
+                                  error=f"session_not_ready:{s.state}")
+            s.in_flight = True
+            s.last_request_at = time.time()
+            t0 = time.time()
+            url = _rc.raw_apps_url(tcins, self.store_id, cache_bust=cache_bust)
+            # RESILIENT_HARVEST_VIA_LOCAL_IP=1 launches the pool without forwarders:
+            # read direct from the home IP then, exactly like that mode's Chromes.
+            proxy = (None if getattr(self.session_pool, 'harvest_via_local_ip', False)
+                     else f"http://127.0.0.1:{s.local_port}")
+            try:
+                status, text = await asyncio.wait_for(
+                    asyncio.to_thread(self._raw_apps_get, url, _rc.raw_headers(), proxy,
+                                      self.tab_eval_timeout_s),
+                    timeout=self.tab_eval_timeout_s + 2.0,
+                )
+                ms = int((time.time() - t0) * 1000)
+                body = None
+                try:
+                    body = _json.loads(text)
+                except Exception:
+                    body = None
+                return self._interpret_eval_result(
+                    s, {"__http_status": status, "__body": body, "__body_text": (text or "")[:800]}, ms)
+            except asyncio.TimeoutError:
+                s.consecutive_errors += 1
+                if s.consecutive_errors >= CONSECUTIVE_ERROR_RECYCLE_THRESHOLD:
+                    s.state = "crashed"
+                    logger.warning(f"[DISPATCHER] {s.id} flagged crashed after "
+                                   f"{s.consecutive_errors} consec errors (raw timeout)")
+                return BulkResult(s.id, s.proxy_ip, 0,
+                                  int((time.time() - t0) * 1000),
+                                  error="raw_get_timeout")
+            except Exception as e:
+                s.consecutive_errors += 1
+                if s.consecutive_errors >= CONSECUTIVE_ERROR_RECYCLE_THRESHOLD:
+                    s.state = "crashed"
+                return BulkResult(s.id, s.proxy_ip, 0,
+                                  int((time.time() - t0) * 1000),
+                                  error=f"raw:{type(e).__name__}:{e}")
             finally:
                 s.in_flight = False
 
@@ -253,9 +336,15 @@ class TabDispatcher:
         cb_param = ("url.searchParams.set('_', String(Date.now()) + "
                     "Math.random().toString(36).slice(2));" if cache_bust else "")
         cache_opt = "cache: 'no-store'," if cache_bust else ""
+        # 2026-09-09: RESILIENT_REDSKY_CHANNEL=apps reads the mobile-app aggregation
+        # (same parser shape) that public monitors read without the HUMAN captcha
+        # that blinded the web channel 94% of the 09-07 run. Default web.
+        from src.monitoring import redsky_channel as _rc
+        _bulk_url = _rc.bulk_url()
+        _xh = _rc.extra_headers_js()
         return f"""(async () => {{
             try {{
-                const url = new URL('{REDSKY_BULK}');
+                const url = new URL('{_bulk_url}');
                 url.searchParams.set('key', '{key}');
                 url.searchParams.set('tcins', '{tcins_csv}');
                 url.searchParams.set('store_id', '{store_id}');
@@ -267,6 +356,7 @@ class TabDispatcher:
                     {cache_opt}
                     credentials: 'include',
                     headers: {{
+                        {_xh}
                         'accept': 'application/json',
                         'accept-language': 'en-US,en;q=0.9'
                     }}

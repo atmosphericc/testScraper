@@ -83,7 +83,21 @@ REM  "[STOCK][CAPTCHA-PARK]" after boot. Revert: PARK_S=0 is NOT a kill (floor
 REM  60s); pre-09-07 behaviour = RESILIENT_PER_IP_MAX_RPS=0 + FRESH_PROFILES=0.
 set RESILIENT_CAPTCHA_PARK_S=1800
 set RESILIENT_PER_IP_MAX_RPS=1.0
-set RESILIENT_POOL_FRESH_PROFILES=1
+REM 2026-09-09 THE DETECTION FIX. RESILIENT_REDSKY_CHANNEL=apps_raw reads the
+REM mobile-app RedSky aggregation (/v1/apps/tcin_product_list_v2) as RAW HTTP
+REM through each sweep session's forwarder with the app header set, instead of
+REM the in-page web fetch HUMAN captcha-walls on the Bright Data prefixes.
+REM Probe 2026-09-09 19:3x through the walled exit 31.105.228.245: web = 403
+REM captcha, apps_raw = HTTP 200 product data. Same parser shape. The pool
+REM Chromes stay up (park/backoff logic is shared); grep "[STOCK STATS]" for
+REM 200= climbing and "[STOCK][CAPTCHA-PARK]" staying quiet. Kill: =web.
+set RESILIENT_REDSKY_CHANNEL=apps_raw
+REM 2026-09-09 audit of run_20260907: FRESH_PROFILES=1 did NOT help -- all 16 fresh
+REM sessions were captcha-walled within 3.5 min of boot (~33 reads each), the pool
+REM was blind 94% of 19 h, and the only recovery (4 sessions, 14:51-15:26, 98%
+REM 200s) came with profiles just as fresh. Persistent profiles at least let the
+REM HUMAN cookies age. Reads now go through the app channel anyway (below).
+set RESILIENT_POOL_FRESH_PROFILES=0
 REM  get_page budget for the trusted-browser tab-fetch (was a hard 3s: 30,012
 REM  timeouts 09-04..09-07 on the loop shared with the sweep).
 set RESILIENT_TAB_FETCH_TIMEOUT_S=8
@@ -104,6 +118,9 @@ REM  primary account's tab (09-04..09-07: 30,012 x 3s get_page timeouts, 4,567
 REM  empty reads). =1 forces it on (09-04 emergency behaviour), =0 never.
 set RESILIENT_FORCE_TAB_FETCH=auto
 set RESILIENT_TAB_FETCH_BLIND_S=180
+REM 2026-09-09: a HUMAN captcha on the TRUSTED account browser parks that reader
+REM (protects the purchase account). 0 = never park.
+set RESILIENT_TRUSTED_READER_PARK_S=600
 REM 2026-09-09: home-IP reader cadence. The trusted-browser reader (now the
 REM PRIMARY detector since the BD sweep is HUMAN-walled) polled every 4-8s -
 REM too slow: wins land 0.4-3.7s after a flip and hot SKUs sell <60s, so an 8s
@@ -111,8 +128,14 @@ REM poll misses the wave-first window (the only shot type that converts, 32.6%
 REM vs 0.9% re-POSTs). One bulk fetch covers all ~19 TCINs, so ~1-2s catches the
 REM flip in time and stays inside the vendor-safe 1000-4000ms monitor band.
 REM Widen toward 4s if the home IP ever shows an interaction-burst flag.
-set RESILIENT_READ_CADENCE_MIN_S=1.0
-set RESILIENT_READ_CADENCE_MAX_S=2.0
+REM 2026-09-09 CORRECTION: this reader had NEVER returned a verdict (its async
+REM fetch was evaluated without await_promise -> "no result" on all 3,424 reads
+REM 09-07/08 and 4,567 on 09-04..07). Now fixed. The home-IP account browser
+REM tolerated ~200 reads/h (18 s cadence, 3,550 reads, no Press & Hold) on 09-07;
+REM 1-2 s would be 10x that on the PRIMARY purchase account, so 3-5 s until the
+REM home IP's HUMAN budget is measured. It only runs while the pool is blind.
+set RESILIENT_READ_CADENCE_MIN_S=3.0
+set RESILIENT_READ_CADENCE_MAX_S=5.0
 REM  2026-09-07 HUMAN Security (PerimeterX) "Press & Hold" GUARD. Target runs
 REM  HUMAN's sensor on the storefront in addition to Shape; when an account
 REM  browser's trust score drops, the /account nav (sentinel rung 1) renders the
@@ -614,14 +637,12 @@ set TARGET_HARVEST_INTERVAL_S=40
 set TARGET_HARVEST_REPLAY=1
 set TARGET_HARVEST_SELFTEST=1
 set TARGET_HARVEST_IN_WINDOW=1
-REM  2026-09-04: run the harvester ONLY where it works. Worker 1 (primary)
-REM  shares the global event loop with the 16-IP stock sweep, so its CDP click
-REM  dispatch times out under load (live 09-04: 18/18 primary clicks failed, 0
-REM  captures) while business (worker 2, own loop) captured 10 + SELFTEST 424.
-REM  Skip primary so its failing clicks don't contend with its real shots; it
-REM  fires the proven page-signed shots. Un-skip once harvest is moved off the
-REM  shared loop. Kill-switch: set TARGET_HARVEST_SKIP=  (empty).
-set TARGET_HARVEST_SKIP=primary,alt-1
+REM  2026-09-09: harvest on ALL accounts. The 09-04 "primary fails under sweep
+REM  load" premise was the hidden-tab bug (run_20260904_001027: warmup tab opened
+REM  00:10:59, first click failure 00:11:05, every click after), fixed today by
+REM  the visibility guard. Each account needs its own bank (sets are IP-bound and
+REM  single-use). Re-skip an account: set TARGET_HARVEST_SKIP=primary
+set TARGET_HARVEST_SKIP=
 REM 2026-09-09: the REAL 09-07 harvester root cause (supersedes the 09-08 note).
 REM The 09-07 click timeouts (4,613 real; the log carries every line twice) were
 REM NOT socket contention -- zendriver gives every tab its own CDP socket. The
@@ -643,6 +664,16 @@ set TARGET_HARVEST_TAB_OPEN_TIMEOUT_S=45
 set TARGET_HARVEST_CLICK_TIMEOUT_S=12
 set TARGET_HARVEST_VIS_GUARD=1
 set TARGET_HARVEST_MOVE_ABORT_MS=2500
+REM 2026-09-09 audit fixes (docs/FAILURES.md 2026-09-09 detection+shot entry):
+REM  - MAX_REPLAY_AGE pinned next to TTL: sets past it are now DISCARDED so the
+REM    bank refills (a full-but-stale bank used to freeze the harvester ~2/3 of
+REM    every 300 s cycle); the loop also re-clicks past half the cap.
+REM  - PREFER_SHIPPING selects the Shipping fulfillment cell once per PDP nav
+REM    (every 09-07 capture was a STORE_PICKUP add).
+REM  - ATC_BYTEMATCH sends the page's own ATC URL (%%2C + key=) on the fast lane.
+set TARGET_HARVEST_MAX_REPLAY_AGE_S=100
+set TARGET_HARVEST_PREFER_SHIPPING=1
+set TARGET_ATC_BYTEMATCH=1
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

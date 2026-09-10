@@ -315,6 +315,10 @@ class PurchaseExecutor:
         self._harvest_click_timeouts: int = 0
         self._harvest_vis_state: str = ''      # last logged visibility verdict ('' = not probed yet)
         self._harvest_vis_skips: int = 0       # clicks skipped: tab hidden but we must not steal the foreground
+        self._harvest_ship_nav_ts: float = -1.0   # nav for which the Shipping cell was already selected
+        # 2026-09-09 audit #2: per-window census (logged when a purchase ends)
+        self._harvest_win: Dict[str, int] = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
+        self._harvest_prev_live: bool = False
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -745,7 +749,12 @@ class PurchaseExecutor:
             # request_id but are separate events; keying on id alone drops RESPONSE events.
             req_id = str(event.request_id)
             is_response = event.response_status_code is not None or getattr(event, 'response_error_reason', None) is not None
-            dedup_key = req_id + (':resp' if is_response else ':req')
+            # 2026-09-09 (audit #4): interception-job ids restart at 1 for every
+            # Fetch.enable, so the main, warmup and harvest tabs collide in this
+            # shared set (2,476 cross-tab "dedup hits" in the logs, job-1.0 alone
+            # 78x) -- and a main-tab ATC that took the dedup branch was continued
+            # WITHOUT the banked-header override. Key on the tab label too.
+            dedup_key = f"{label}:{req_id}" + (':resp' if is_response else ':req')
             # 2026-09-03: the HARVEST tab's genuine add must NEVER take the dedup
             # shortcut below (it continue_requests the event): interception-job
             # ids collide across tabs (07-23), and a continued harvest add would
@@ -827,18 +836,25 @@ class PurchaseExecutor:
                             self._checkout_reject_status = status
                             print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] 424 flagged — short-circuiting wait loop (reason={error_key})")
                             print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] headers: {dict(list(resp_headers.items())[:10])}")
-                            try:
-                                body_result = await tab.send(cdp.fetch.get_response_body(request_id=event.request_id))
-                                raw_body = getattr(body_result, 'body', '') or ''
-                                if getattr(body_result, 'base64_encoded', False):
-                                    import base64, zlib
-                                    try:
-                                        raw_body = zlib.decompress(base64.b64decode(raw_body), 16 + zlib.MAX_WBITS).decode('utf-8', errors='replace')
-                                    except Exception:
-                                        raw_body = base64.b64decode(raw_body).decode('utf-8', errors='replace')
-                                print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body: {raw_body[:500]!r}")
-                            except Exception as body_err:
-                                print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body capture failed: {body_err}")
+                            # 2026-09-09 (audit #11): reading the body here held the
+                            # REJECTED place-order response paused behind a CDP round
+                            # trip + decode on exactly the 424/429 paths the fast lane
+                            # re-shoots through. tgt-cart-error-key is a HEADER (captured
+                            # above), so the body is diagnostics only.
+                            # TARGET_CHECKOUT_BODY_CAPTURE=1 restores it.
+                            if os.environ.get('TARGET_CHECKOUT_BODY_CAPTURE', '0') == '1':
+                                try:
+                                    body_result = await tab.send(cdp.fetch.get_response_body(request_id=event.request_id))
+                                    raw_body = getattr(body_result, 'body', '') or ''
+                                    if getattr(body_result, 'base64_encoded', False):
+                                        import base64, zlib
+                                        try:
+                                            raw_body = zlib.decompress(base64.b64decode(raw_body), 16 + zlib.MAX_WBITS).decode('utf-8', errors='replace')
+                                        except Exception:
+                                            raw_body = base64.b64decode(raw_body).decode('utf-8', errors='replace')
+                                    print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body: {raw_body[:500]!r}")
+                                except Exception as body_err:
+                                    print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] body capture failed: {body_err}")
                     # 2026-08-26: ATC (cart_items) RESPONSE capture — the FAILURES.md
                     # 08-21 open item. Read tgt-cart-error-key + x-request-id off the
                     # wire to decide empty-body-429 = high-demand-lottery vs a real
@@ -882,6 +898,7 @@ class PurchaseExecutor:
                     # at the final continue_request below; None = unchanged.
                     if (not is_response and method == 'POST'
                             and 'web_checkouts/v1/cart_items' in url
+                            and headers   # 2026-09-09 audit #9: never override an empty header set
                             and getattr(self, '_harvest_cfg', {}).get('enabled')):
                         try:
                             _override_headers = self._harvest_replay_headers_for(label, headers)
@@ -1538,7 +1555,11 @@ class PurchaseExecutor:
         unchanged). main tab: every shot while replay is on and a fresh banked
         set exists. warmup tab: ONLY while the boot self-test has armed it, so a
         routine heartbeat never burns a banked set."""
-        if not self._harvest_cfg.get('enabled') or not self._harvest_replay_on:
+        if not self._harvest_cfg.get('enabled'):
+            return None
+        if label == 'main':
+            self._harvest_win['shots'] += 1
+        if not self._harvest_replay_on:
             return None
         if label == 'main':
             pass
@@ -1546,16 +1567,31 @@ class PurchaseExecutor:
             pass
         else:
             return None
+        _stale_before = self._shape_bank.stale
         entry = self._shape_bank.pop_fresh()
         if entry is None:
             if label == 'main':
-                self._harvest_log(f"bank EMPTY at shot time — shot goes page-signed ({self._shape_bank.summary()})")
+                if self._shape_bank.stale > _stale_before:
+                    self._harvest_win['stale'] += 1
+                    self._harvest_log(f"bank STALE at shot time (past the replay cap) — shot goes page-signed "
+                                      f"({self._shape_bank.summary()})")
+                else:
+                    self._harvest_log(f"bank EMPTY at shot time — shot goes page-signed ({self._shape_bank.summary()})")
             return None
         try:
             merged = _shape_harvest.merge_replay_headers(req_headers, entry['headers'])
         except Exception as e:
             self._harvest_log(f"merge failed ({e}) — shot goes page-signed")
             return None
+        if len(merged) < len(req_headers or {}):
+            # 2026-09-09 audit #9: Fetch.continueRequest REPLACES the header set; a
+            # shorter merge would strip Content-Type/Accept/Origin from the shot.
+            self._harvest_log(f"merge produced fewer headers ({len(merged)} < {len(req_headers)}) — shot goes page-signed")
+            return None
+        if label == 'main':
+            self._harvest_win['replayed'] += 1
+            if entry['a0']:
+                self._harvest_win['a0'] += 1
         age = time.time() - entry['ts']
         self._harvest_last_replay = {'ts': time.time(), 'age': age, 'a0': entry['a0'], 'label': label}
         self._harvest_log(f"REPLAY on {label} shot: banked set age={age:.0f}s tokens={len(entry['tokens'])} "
@@ -1602,7 +1638,8 @@ class PurchaseExecutor:
             self._harvest_stats['captured' if ok else 'no_tokens'] += 1
             a0 = any(str(k).lower().endswith('-a0') for k in toks)
             self._harvest_log(f"CAPTURED{'' if ok else ' (NO Shape tokens — not banked)'} tokens={len(toks)} "
-                              f"a0={'yes' if a0 else 'no'} hdrs={len(headers)} url={url[:120]} "
+                              f"a0={'yes' if a0 else 'no'} a_len={_shape_harvest.sensor_a_len(headers)} "
+                              f"hdrs={len(headers)} url={url[:120]} "
                               f"body={post_data[:200]!r} | {self._shape_bank.summary()}")
             if ok and not self._harvest_first_capture_logged:
                 self._harvest_first_capture_logged = True
@@ -1650,7 +1687,7 @@ class PurchaseExecutor:
         except Exception as e:
             self._harvest_log(f"harvest tab close failed (non-fatal: {type(e).__name__}: {e})")
 
-    async def _harvest_close_orphans(self, browser, url_prefix: str, keep_id: Optional[str]) -> int:
+    async def _harvest_close_orphans(self, browser, url_marker: str, keep_id: Optional[str]) -> int:
         """Close page targets left behind by a timed-out open: Target.createTarget
         has usually created the tab already when zendriver's 10 s targetInfoChanged
         wait gives up. Bounded, best-effort, at most 3 per call."""
@@ -1666,7 +1703,8 @@ class PurchaseExecutor:
                 tid = t.target.target_id
                 if keep_id and tid == keep_id:
                     continue
-                if not str(getattr(t.target, 'url', '') or '').startswith(url_prefix):
+                # substring match: Target's router rewrites /p/-/A-<tcin> to /p/<slug>/-/A-<tcin>
+                if url_marker not in str(getattr(t.target, 'url', '') or ''):
                     continue
                 await asyncio.wait_for(browser.connection.send(cdp.target.close_target(target_id=tid)), timeout=3.0)
                 closed += 1
@@ -1791,7 +1829,7 @@ class PurchaseExecutor:
             # gave up: close such orphans so a wedged phase never piles PDP tabs
             # onto the account Chrome.
             try:
-                n = await self._harvest_close_orphans(browser, _shape_harvest.pdp_url(tcin), None)
+                n = await self._harvest_close_orphans(browser, f"/A-{tcin}", None)
                 if n:
                     self._harvest_log(f"closed {n} orphaned PDP tab(s) left by the timed-out open")
             except Exception:
@@ -1862,6 +1900,19 @@ class PurchaseExecutor:
         # First click after a fresh nav: let React attach the fetch handler.
         if time.time() - self._harvest_tab_nav_ts < 3.0:
             await asyncio.sleep(random.uniform(1.2, 2.2))
+        # 2026-09-09 (audit #10): every captured page add was STORE_PICKUP (the PDP
+        # defaulted to the profile's store) while the shot replays a SHIPPING add.
+        # Select the Shipping fulfillment cell once per nav -- a JS click on a UI
+        # toggle, never the Add-to-cart button. Kill: TARGET_HARVEST_PREFER_SHIPPING=0.
+        if self._harvest_cfg.get('prefer_shipping', True) and self._harvest_ship_nav_ts != self._harvest_tab_nav_ts:
+            self._harvest_ship_nav_ts = self._harvest_tab_nav_ts
+            try:
+                _sel = await asyncio.wait_for(tab.evaluate(_shape_harvest.SELECT_SHIPPING_JS), timeout=4.0)
+                self._harvest_log(f"fulfillment cell: {_sel}")
+                if isinstance(_sel, dict) and _sel.get('clicked'):
+                    await asyncio.sleep(random.uniform(0.8, 1.4))
+            except Exception as _se:
+                self._harvest_log(f"shipping-cell select skipped ({type(_se).__name__}: {_se})")
         # Re-read the rect immediately before clicking: lazy PDP content shifts
         # the button down between the poll and the click, and a click on stale
         # coordinates lands off-target and fires no cart_items POST (09-03 live
@@ -1884,7 +1935,11 @@ class PurchaseExecutor:
         # click budget or move cap could win. Fix = keep the tab PAINTING: probe
         # and re-activate before the click (never over a parked account).
         if self._harvest_cfg.get('vis_guard', True):
-            _vis = await self._harvest_ensure_visible(tab)
+            try:
+                _vis = await self._harvest_ensure_visible(tab)
+            except Exception as _ve:       # _harvest_once must never raise (audit #12)
+                self._harvest_log(f"visibility guard errored ({type(_ve).__name__}: {_ve}) — clicking anyway")
+                _vis = 'ok'
             if _vis != 'ok':
                 if _vis == 'hidden':
                     self._harvest_click_timeouts += 1
@@ -2022,14 +2077,25 @@ class PurchaseExecutor:
                 if self._harvest_disabled_reason:
                     return
                 live = bool(self.session_manager.is_purchase_in_progress())
+                if self._harvest_prev_live and not live:
+                    # 2026-09-09 audit #2: one line per window so the post-drop audit can
+                    # tell "replayed and lost" from "never replayed".
+                    w = self._harvest_win
+                    self._harvest_log(f"window census: shots={w['shots']} replayed={w['replayed']} a0={w['a0']} "
+                                      f"stale={w['stale']} | {self._shape_bank.summary()}")
+                    self._harvest_win = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
+                self._harvest_prev_live = live
                 if live and not cfg['in_window']:
                     await asyncio.sleep(2.0)
                     continue
                 if self._harvest_landed_suspect and not live:
                     await self._harvest_clear_suspect_cart()
                 need = self._shape_bank.need()
+                # 2026-09-09 audit #1: also click when the freshest set is past half the
+                # replay cap -- a full bank of unreplayable sets used to freeze the loop.
+                want = need > 0 or self._shape_bank.refill_wanted()
                 min_gap = 6.0 if live else 3.0
-                if need > 0 and (time.time() - self._harvest_last_click_ts) >= min_gap:
+                if want and (time.time() - self._harvest_last_click_ts) >= min_gap:
                     self._harvest_last_click_ts = time.time()
                     ok = await self._harvest_once()
                     if (ok and cfg['selftest'] and not self._harvest_selftest_done and not live
@@ -5610,8 +5676,17 @@ class PurchaseExecutor:
 
         Kill-switch: TARGET_FAST_LANE=0 restores the 2026-07-21 behaviour.
         """
-        atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
-                   '?field_groups=CART,CART_ITEMS,SUMMARY')
+        # 2026-09-09 (audit #3): the page's own add (169 harvest captures) is
+        # `?field_groups=CART%2CCART_ITEMS%2CSUMMARY&key=9f36...` -- ours sent literal
+        # commas and no key. TARGET_ATC_BYTEMATCH=1 sends the page's URL byte-for-
+        # byte (identical query semantics; the bat arms it). Default 0 = prior URL.
+        if os.environ.get('TARGET_ATC_BYTEMATCH', '0') == '1':
+            atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
+                       '?field_groups=CART%2CCART_ITEMS%2CSUMMARY'
+                       '&key=9f36aeafbe60771e321a7cc95a78140772ab3e96')
+        else:
+            atc_url = ('https://carts.target.com/web_checkouts/v1/cart_items'
+                       '?field_groups=CART,CART_ITEMS,SUMMARY')
         pre_url = ('https://carts.target.com/web_checkouts/v1/pre_checkout'
                    '?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,'
                    'PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES')

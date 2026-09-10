@@ -156,7 +156,10 @@ def test_bat():
 
     check("bat_park_1800", v('RESILIENT_CAPTCHA_PARK_S') == '1800')
     check("bat_per_ip_cap_1", v('RESILIENT_PER_IP_MAX_RPS') == '1.0')
-    check("bat_fresh_profiles_on", v('RESILIENT_POOL_FRESH_PROFILES') == '1')
+    # 2026-09-09 audit of run_20260907: fresh profiles did not help (all 16 walled
+    # within 3.5 min of boot; the only recovery came with equally fresh profiles),
+    # so the pin flipped to 0 (persistent profiles let HUMAN cookies age).
+    check("bat_fresh_profiles_off", v('RESILIENT_POOL_FRESH_PROFILES') == '0')
     check("bat_tab_fetch_budget_8", v('RESILIENT_TAB_FETCH_TIMEOUT_S') == '8')
     check("bat_local_ip_still_off", v('RESILIENT_HARVEST_VIA_LOCAL_IP') == '0')
     check("bat_crlf_only", BAT_RAW.count(b'\n') == BAT_RAW.count(b'\r\n') and BAT_RAW.count(b'\r\n') > 100)

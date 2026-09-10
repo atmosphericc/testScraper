@@ -41,22 +41,37 @@ from src.session.session_manager import SessionManager  # noqa
 
 KEY = "9f36aeafbe60771e321a7cc95a78140772ab3e96"
 TCINS = "1011960739,21516452"
+# 2026-09-09: PROBE_REDSKY_CHANNEL=apps probes the mobile-app RedSky aggregation
+# (`/v1/apps/tcin_product_list_v2` + x-channel-id: APPS) that public monitors use
+# to read stock without the HUMAN captcha; default 'web' = the sweep's endpoint.
+CHANNEL = os.environ.get('PROBE_REDSKY_CHANNEL', 'web').strip().lower()
+if CHANNEL == 'apps':
+    _URL = 'https://redsky.target.com/redsky_aggregations/v1/apps/tcin_product_list_v2'
+    _EXTRA_HDRS = "'x-channel-id':'APPS','x-client-platform':'iPhone','x-client-version':'2026.28.0',"
+elif CHANNEL == 'apps_plain':
+    # the app aggregation with PLAIN headers: custom x-* headers force a CORS
+    # preflight that RedSky rejects from an in-page fetch (probe 2026-09-09).
+    _URL = 'https://redsky.target.com/redsky_aggregations/v1/apps/tcin_product_list_v2'
+    _EXTRA_HDRS = ""
+else:
+    _URL = 'https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1'
+    _EXTRA_HDRS = ""
 REDSKY_JS = f"""(async () => {{
   try {{
-    const u = new URL('https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1');
+    const u = new URL('{_URL}');
     u.searchParams.set('key','{KEY}'); u.searchParams.set('tcins','{TCINS}');
     u.searchParams.set('store_id','1176'); u.searchParams.set('pricing_store_id','1176');
     u.searchParams.set('has_pricing_context','true'); u.searchParams.set('has_promotions','true');
     u.searchParams.set('_', Date.now()+''+Math.random().toString(36).slice(2));
     const r = await fetch(u.toString(), {{ cache:'no-store', credentials:'include',
-      headers:{{'accept':'application/json','accept-language':'en-US,en;q=0.9'}} }});
+      headers:{{{_EXTRA_HDRS}'accept':'application/json','accept-language':'en-US,en;q=0.9'}} }});
     const t = await r.text();
     return {{status:r.status, body:t.slice(0,400)}};
   }} catch(e) {{ return {{status:-1, body:String(e)}}; }}
 }})()"""
 IP_JS = """(async () => { try { const r = await fetch('https://api.ipify.org?format=json', {cache:'no-store'}); return (await r.json()).ip; } catch(e) { return 'err:'+e; } })()"""
 
-def log(m): print(f"[PROBE-BD {time.strftime('%H:%M:%S')}] {m}", flush=True)
+def log(m): print(f"[PROBE-BD {time.strftime('%H:%M:%S')} {CHANNEL}] {m}", flush=True)
 
 async def read(tab, tag):
     try:

@@ -187,9 +187,24 @@ class StockMonitor:
         api_key = random.choice(self.api_keys)
         tcins_str = ','.join(tcins)
 
+        # 2026-09-09: a HUMAN captcha on the TRUSTED account browser means the
+        # account itself is at risk -- park this reader (RESILIENT_TRUSTED_READER_PARK_S,
+        # default 600 s) instead of hammering on.
+        _parked_until = getattr(self, '_trusted_reader_parked_until', 0.0)
+        if time.time() < _parked_until:
+            _now = time.time()
+            if _now - getattr(self, '_trusted_reader_park_log', 0.0) >= 60.0:
+                self._trusted_reader_park_log = _now
+                print(f"[STOCK][PX-CAPTCHA] trusted-browser reader parked for {_parked_until - _now:.0f}s more")
+            return None
+
+        from src.monitoring import redsky_channel as _rc   # web | apps (RESILIENT_REDSKY_CHANNEL)
+        _bulk_url = _rc.bulk_url()
+        _xh = _rc.extra_headers_js()
+
         js = f"""(async () => {{
             try {{
-                const url = new URL('https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1');
+                const url = new URL('{_bulk_url}');
                 url.searchParams.set('key', '{api_key}');
                 url.searchParams.set('tcins', '{tcins_str}');
                 url.searchParams.set('store_id', '865');
@@ -206,7 +221,7 @@ class StockMonitor:
                 const resp = await fetch(url.toString(), {{
                     credentials: 'include',
                     cache: 'no-store',
-                    headers: {{'accept': 'application/json', 'accept-language': 'en-US,en;q=0.9'}}
+                    headers: {{{_xh}'accept': 'application/json', 'accept-language': 'en-US,en;q=0.9'}}
                 }});
                 if (!resp.ok) {{
                     // 2026-09-07: keep the body head so a HUMAN/PerimeterX captcha
@@ -222,7 +237,13 @@ class StockMonitor:
 
         try:
             async def _do_fetch():
-                return await tab.evaluate(js)
+                # 2026-09-09 ROOT CAUSE of every "no result": the JS is an async
+                # IIFE (a Promise) and evaluate() defaulted to await_promise=False,
+                # so zendriver returned the un-awaited Promise's value = None on EVERY
+                # read (3,424x on 09-07/08, 4,567x on 09-04..07). The fetch still ran
+                # in-page; only the answer was never awaited. This reader has never
+                # returned a stock verdict before this line.
+                return await tab.evaluate(js, await_promise=True)
 
             future = asyncio.run_coroutine_threadsafe(_do_fetch(), event_loop)
             start_time = time.time()
@@ -241,10 +262,17 @@ class StockMonitor:
                     # HUMAN/PerimeterX-challenged (Press & Hold layer). Loud but
                     # rate-limited (once/60s) — this read runs every 4-8s.
                     _now = time.time()
+                    try:
+                        _park_s = max(0.0, float(os.environ.get('RESILIENT_TRUSTED_READER_PARK_S', '600')))
+                    except (TypeError, ValueError):
+                        _park_s = 600.0
+                    if _park_s > 0:
+                        self._trusted_reader_parked_until = _now + _park_s
                     if _now - getattr(self, '_px_captcha_last_log', 0.0) >= 60.0:
                         self._px_captcha_last_log = _now
                         print(f"[STOCK][PX-CAPTCHA] trusted-browser RedSky read walled (http={err}) — "
-                              f"the account browser is HUMAN-challenged; look for Press & Hold in its window")
+                              f"the account browser is HUMAN-challenged; look for Press & Hold in its window; "
+                              f"reader parked {_park_s:.0f}s to protect the account")
                 print(f"[STOCK] Browser fetch error: {err}")
                 return None
 

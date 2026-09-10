@@ -275,6 +275,8 @@ def _stub_executor():
     ex._harvest_tcin = '21516452'
     ex._harvest_first_capture_logged = False
     ex._harvest_landed_suspect = False
+    ex._harvest_win = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
+    ex._harvest_prev_live = False
     ex.logger = SimpleNamespace(info=lambda *a, **k: None)
     alerts = []
     ex.session_manager = SimpleNamespace(account_id='primary', _alert_critical=lambda m: alerts.append(m))
@@ -494,7 +496,7 @@ def test_executor_wiring():
     check("exe_browser_changed_drop_no_close",
           'await self._harvest_drop_tab("browser changed", close=False)' in EXE_SRC)
     check("exe_orphan_sweep_after_failed_open",
-          "await self._harvest_close_orphans(browser, _shape_harvest.pdp_url(tcin), None)" in EXE_SRC)
+          'await self._harvest_close_orphans(browser, f"/A-{tcin}", None)' in EXE_SRC)
     check("exe_no_bare_handle_drops_left", EXE_SRC.count("self._harvest_tab = None") <= 4)
     check("exe_click_logs_timing", "| {_shape_harvest.click_stats_summary(_stats)}" in EXE_SRC)
     check("exe_socket_story_gone", "queue behind the warmup interceptor" not in EXE_SRC)
