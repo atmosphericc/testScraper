@@ -88,9 +88,10 @@ REM after ~166 reads and still blocked >3 min later. Production is ~0.19/s per
 REM exit at 3/s over 16; the cap keeps ANY exit under 0.5/s when few are usable
 REM (sweep = min(target, usable x cap)). A 404 parks that exit only
 REM (RESILIENT_RAW_404_PARK_S base, x2 per repeat, cap x8, reset on a 200). The
-REM 404 ban measured on 168.158.143.27 lasted >29 min at zero load -> base 300 s.
+REM 404 ban measured on 168.158.143.27: still blocked 39 min after the burst at 1 read
+REM per 5 min -> base 900 s (15/30/60/120 min ladder); production never nears the limit.
 set RESILIENT_PER_IP_MAX_RPS=0.5
-set RESILIENT_RAW_404_PARK_S=300
+set RESILIENT_RAW_404_PARK_S=900
 REM 2026-09-09 THE DETECTION FIX. RESILIENT_REDSKY_CHANNEL=apps_raw reads the
 REM mobile-app RedSky aggregation (/v1/apps/tcin_product_list_v2) as RAW HTTP
 REM through each sweep session's forwarder with the app header set, instead of

@@ -226,7 +226,7 @@ def test_bat_pins():
     check("bat_prefer_shipping", _bat_val('TARGET_HARVEST_PREFER_SHIPPING') == '1')
     check("bat_bytematch", _bat_val('TARGET_ATC_BYTEMATCH') == '1')
     check("bat_per_ip_cap_half", _bat_val('RESILIENT_PER_IP_MAX_RPS') == '0.5')
-    check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '300')
+    check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '900')
     check("bat_wave_first_armed", _bat_val('TARGET_WAVE_FIRST_ONLY') == '1' and _bat_val('TARGET_WAVE_REENTRY_MIN_S') == '55'
           and _bat_val('TARGET_WAVE_REENTRY_MAX_S') == '70' and _bat_val('TARGET_SHOT_BANK_GATE') == '1'
           and _bat_val('TARGET_SHOT_BANK_WAIT_S') == '8')

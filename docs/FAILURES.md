@@ -190,11 +190,12 @@ raw reader was driven end to end through the production forwarder path (2/2 read
 ~0.6 s, 19/19 TCINs parsed); a `[WAITING_ROOM]` detector logs Target's "busier than we expected"
 interstitial on the ATC response. **App-channel limiter measured** (raw soaks through two walled
 exits): 0.5 reads/s = 293/293 clean for 10 min; 2 reads/s = HTTP 404 `{"errors":[{"message":"Not
-Found"}],"data":{}}` on every read after ~166 reads (~80 s) and still 404 >3 min later (not a
-captcha — an API quota, per IP). Production runs ~0.19 reads/s per exit; the bat now caps any exit
-at 0.5/s (`RESILIENT_PER_IP_MAX_RPS=0.5`) and a Not-Found 404 parks only that session
-(`RESILIENT_RAW_404_PARK_S=120`, ×2 per repeat, cap ×8, reset on 200) without souring its /16.
-Still open: the ~75-min Chrome wedge (forensics in progress); the exact 404 ban length.
+Found"}],"data":{}}` on every read after ~166 reads (~80 s), and **still blocked 39 min after the
+burst ended** at one probe read per 5 min (not a captcha — an API quota, per IP; whether the
+probe reads themselves extend the block is unknown). Production runs ~0.19 reads/s per exit; the
+bat caps any exit at 0.5/s (`RESILIENT_PER_IP_MAX_RPS=0.5`) and a Not-Found 404 parks only that
+session (`RESILIENT_RAW_404_PARK_S=900`: 15/30/60/120 min ladder, reset on 200) without souring
+its /16. Still open: the ~75-min Chrome wedge (own entry above).
 
 ---
 
