@@ -271,13 +271,27 @@ class SessionManager:
             # are Chrome-internal scheduling switches with no JS-visible
             # fingerprint surface. Kill-switch: TARGET_ANTI_IDLE_FLAGS=0.
             if os.environ.get('TARGET_ANTI_IDLE_FLAGS', '1').lower() not in ('0', 'false', 'no'):
+                # 2026-09-09 wedge forensics (run_20260907, 35 wedges): Chrome keeps only
+                # the LAST --disable-features switch, and this one came after zendriver's
+                # two, so the account Chromes never had CalculateNativeWinOcclusion
+                # disabled (the 16 sweep Chromes do, and they never showed the ~75-min
+                # Chrome-wide CDP stall). Add it here (harmless: the occlusion tracker
+                # only saves CPU on covered windows). Site isolation stays exactly as on
+                # every winning night (zendriver's IsolateOrigins/site-per-process
+                # disable was ALSO being overridden); TARGET_ACCOUNT_DISABLE_SITE_ISOLATION=1
+                # restores zendriver's default for an A/B. Kill: TARGET_ACCOUNT_OCCLUSION_FIX=0.
+                _feat = ['HighEfficiencyModeAvailable', 'BatterySaverModeAvailable']
+                if os.environ.get('TARGET_ACCOUNT_OCCLUSION_FIX', '1').lower() not in ('0', 'false', 'no'):
+                    _feat.append('CalculateNativeWinOcclusion')
+                if os.environ.get('TARGET_ACCOUNT_DISABLE_SITE_ISOLATION', '0').lower() in ('1', 'true', 'yes'):
+                    _feat = ['IsolateOrigins', 'site-per-process', 'DisableLoadExtensionCommandLineSwitch'] + _feat
                 _browser_args += [
                     '--disable-background-timer-throttling',
                     '--disable-backgrounding-occluded-windows',
                     '--disable-renderer-backgrounding',
-                    '--disable-features=HighEfficiencyModeAvailable,BatterySaverModeAvailable',
+                    '--disable-features=' + ','.join(_feat),
                 ]
-                print("[SESSION_INIT] Anti-idle flags ON (background throttling disabled)")
+                print(f"[SESSION_INIT] Anti-idle flags ON (background throttling disabled; disable-features={','.join(_feat)})")
             # Per-account exit IP: route this browser through its forwarder/proxy
             # so N racing accounts don't all correlate on one home IP. Chrome
             # takes a bare host:port here (auth is handled by the local forwarder).
@@ -1283,6 +1297,41 @@ class SessionManager:
         except Exception:
             return False
 
+    async def _wedge_http_probe(self) -> None:
+        """2026-09-09 wedge discriminator. On a tab-health timeout, GET Chrome's plain
+        HTTP endpoint http://127.0.0.1:<debug-port>/json/version (no CDP, no websocket)
+        with a 3 s budget, at most once per 60 s. If it answers while every CDP
+        websocket is silent, Chrome's HTTP thread is alive and CDP dispatch is dead
+        (browser-side stall); if it also times out, the browser process is
+        unresponsive; the 09-07 forensics could not tell these apart from the log."""
+        try:
+            now = time.time()
+            if now - getattr(self, '_wedge_probe_at', 0.0) < 60.0:
+                return
+            self._wedge_probe_at = now
+            cfg = getattr(getattr(self, 'browser', None), 'config', None)
+            host = getattr(cfg, 'host', None) or '127.0.0.1'
+            port = getattr(cfg, 'port', None)
+            if not port:
+                return
+            url = f"http://{host}:{port}/json/version"
+
+            def _get():
+                import urllib.request
+                t0 = time.time()
+                with urllib.request.urlopen(url, timeout=3.0) as r:
+                    r.read(200)
+                return int((time.time() - t0) * 1000)
+            try:
+                ms = await asyncio.wait_for(asyncio.to_thread(_get), timeout=4.0)
+                self.logger.warning(f"[WEDGE-PROBE] {url} answered in {ms} ms — Chrome's HTTP thread is "
+                                    f"alive while CDP is silent (browser-side CDP dispatch stall)")
+            except Exception as e:
+                self.logger.warning(f"[WEDGE-PROBE] {url} did NOT answer within 3 s ({type(e).__name__}) — "
+                                    f"the browser process itself is unresponsive")
+        except Exception:
+            pass
+
     async def _test_tab_health(self, tab, slow_reprobe: bool = False) -> bool:
         """Test if tab is healthy.
 
@@ -1320,10 +1369,12 @@ class SessionManager:
                         self.logger.warning(
                             f"[TAB_HEALTH] evaluate('true') timed out >2s AND >{_slow_s:.0f}s "
                             f"on re-probe — tab/websocket genuinely wedged")
+                        await self._wedge_http_probe()
                         return False
                     except Exception:
                         return bool(getattr(tab, 'url', None))
                 self.logger.warning("[TAB_HEALTH] evaluate('true') timed out >2s — tab/websocket wedged")
+                await self._wedge_http_probe()
                 return False
             except Exception:
                 # Non-timeout CDP errors (e.g. transient nav race) — keep the

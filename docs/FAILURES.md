@@ -31,6 +31,42 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-09] - The "~75-min per-Chrome wedge" is a Chrome-wide CDP dispatch stall with no precursor; the account Chromes never had the occlusion calculator disabled (last `--disable-features` wins) - TARGET
+**Symptom**: every account Chrome stops answering CDP roughly hourly; the sentinel's 5-min tick +
+63 s ladder made it look like a rigid 75-min clock. Cost per wedge: onset → `Session restored`
+median 4.3 min (p90 5.8), i.e. that account is out of a drop window for ~5 min.
+**Root Cause** (forensics on run_20260907, 35 wedges, 58 launches): lifetimes re-based on the
+last confirmed-good CDP op are **61–92 min** (primary median 75.5, business 74.2, alt-1 63.5;
+CV 0.12), lengthening through the run while traffic fell — neither wall-clock nor an event count
+fits. **Harvester exonerated** (business with the harvest tab and primary without have identical
+clocks). **No precursor**: the 120 s before each wedge contains nothing distinctive; the cookie
+watchdog's `Storage.getCookies` round trip is 7 ms median at T-20 min and 7 ms at T-0 — it goes
+7 ms → ∞ in one step. **Total and Chrome-wide**: four independent websockets to the same Chrome
+(`Runtime.evaluate` on main/harvest tabs, `Storage.getCookies`, `Page.navigate`,
+`Target.createTarget` on the browser socket) all stop within ~15 s while the other two
+accounts' Chromes keep answering; nothing raises, every restart hard-kills a live process.
+Forwarder/proxy/`WinError 10054`/memory/ping/`MAX_SIZE`/`_context_lock`/leaked-pause
+hypotheses all fail the log. Best-fit finding: the account Chromes are launched with THREE
+`--disable-features=` switches and Chrome keeps only the last (`session_manager.py` anti-idle
+block), so zendriver's `IsolateOrigins,site-per-process,DisableLoadExtensionCommandLineSwitch`
+AND the sweep pool's `CalculateNativeWinOcclusion` disable were never in effect for accounts —
+the 16 sweep Chromes (which do disable it) never showed this stall, and on 08-24 the two
+fp-chromium accounts never wedged while the stock-Chrome one did.
+**Fix Applied**: one merged `--disable-features` value for the account Chromes that adds
+`CalculateNativeWinOcclusion` (`TARGET_ACCOUNT_OCCLUSION_FIX=1`; site isolation left exactly as on
+the winning nights, `TARGET_ACCOUNT_DISABLE_SITE_ISOLATION=1` restores zendriver's default for an
+A/B); a `[WEDGE-PROBE]` that GETs `http://127.0.0.1:<port>/json/version` (plain HTTP, 3 s, once
+per 60 s) whenever a tab-health probe times out, so the next wedge says whether Chrome's HTTP
+thread is alive while CDP dispatch is dead.
+**Confidence**: high on the characterisation (not rigid, no precursor, Chrome-wide, harvester
+not involved); medium-low that the occlusion flag is the cause — it is the cheapest falsifiable
+candidate; the probe is what turns the next run into evidence.
+**Outcome**: SHIPPED, UNPROVEN LIVE. If the clock persists: run one account under fp-chromium as
+the 08-24 control, then `TARGET_ACCOUNT_DISABLE_SITE_ISOLATION=1`, then `--enable-logging --v=1`
+on one account Chrome.
+
+---
+
 ### [2026-09-09] - DETECTION was dark 94-97% of the last run (3 AM slot: 0 reads in 1,501 attempts); the fallback reader never awaited its fetch; the mobile-app RedSky channel reads through the walled Bright Data IPs - TARGET
 **Symptom**: run_20260907_231629.log audited end to end (de-duplicated). 40,083 sweep ticks but
 **33,554 (83.7%) never became a request** (no usable session); 6,263 RedSky 200s, ALL inside two
@@ -109,7 +145,13 @@ two public real-browser captures (no `fulfillment` field; key order `item_channe
 quantity` / `cart_type, channel_id, shopping_context`) and byte-matched under the same flag; the
 raw reader was driven end to end through the production forwarder path (2/2 reads HTTP 200 in
 ~0.6 s, 19/19 TCINs parsed); a `[WAITING_ROOM]` detector logs Target's "busier than we expected"
-interstitial on the ATC response. Still open: the ~75-min Chrome wedge (forensics in progress).
+interstitial on the ATC response. **App-channel limiter measured** (raw soaks through two walled
+exits): 0.5 reads/s = 293/293 clean for 10 min; 2 reads/s = HTTP 404 `{"errors":[{"message":"Not
+Found"}],"data":{}}` on every read after ~166 reads (~80 s) and still 404 >3 min later (not a
+captcha — an API quota, per IP). Production runs ~0.19 reads/s per exit; the bat now caps any exit
+at 0.5/s (`RESILIENT_PER_IP_MAX_RPS=0.5`) and a Not-Found 404 parks only that session
+(`RESILIENT_RAW_404_PARK_S=120`, ×2 per repeat, cap ×8, reset on 200) without souring its /16.
+Still open: the ~75-min Chrome wedge (forensics in progress); the exact 404 ban length.
 
 ---
 

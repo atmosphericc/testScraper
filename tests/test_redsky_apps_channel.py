@@ -158,6 +158,18 @@ def test_executor_wiring():
     check("exe_orphans_substring_match", "if url_marker not in str(getattr(t.target, 'url', '') or ''):" in EXE_SRC)
 
 
+def test_session_manager_wedge_fixes():
+    SM = (ROOT / 'src' / 'session' / 'session_manager.py').read_text(encoding='utf-8', errors='replace')
+    check("sm_occlusion_feature_merged", "_feat.append('CalculateNativeWinOcclusion')" in SM
+          and "'--disable-features=' + ','.join(_feat)" in SM
+          and "'--disable-features=HighEfficiencyModeAvailable,BatterySaverModeAvailable'," not in SM)
+    check("sm_occlusion_fix_flag", "TARGET_ACCOUNT_OCCLUSION_FIX" in SM and "TARGET_ACCOUNT_DISABLE_SITE_ISOLATION" in SM)
+    check("sm_wedge_probe_defined", "async def _wedge_http_probe(self) -> None:" in SM and "/json/version" in SM
+          and "[WEDGE-PROBE]" in SM)
+    check("sm_wedge_probe_called_on_both_timeouts", SM.count("await self._wedge_http_probe()") == 2)
+    check("sm_wedge_probe_rate_limited", "if now - getattr(self, '_wedge_probe_at', 0.0) < 60.0:" in SM)
+
+
 def test_bat_pins():
     check("bat_channel_apps_raw", _bat_val('RESILIENT_REDSKY_CHANNEL') == 'apps_raw')
     check("bat_fresh_profiles_off", _bat_val('RESILIENT_POOL_FRESH_PROFILES') == '0')
@@ -190,7 +202,8 @@ def test_compiles():
 
 if __name__ == '__main__':
     for fn in (test_channel_helper, test_dispatcher_wiring, test_trusted_reader_fixes,
-               test_bank_stale_and_refill, test_executor_wiring, test_bat_pins, test_compiles):
+               test_bank_stale_and_refill, test_executor_wiring, test_session_manager_wedge_fixes,
+               test_bat_pins, test_compiles):
         try:
             fn()
         except Exception as e:
