@@ -2248,6 +2248,27 @@ class PurchaseExecutor:
                 print(f"[WARMUP] Stale headers available: {bool(self._cached_cart_headers)}, age={cache_age:.0f}s")
             else:
                 print("[WARMUP] No headers available")
+            # 2026-09-10: start the background refill loop EVEN WHEN this first
+            # warmup missed. The 09-10 run left alt-1 with NO harvester and NO
+            # Shape-header refill for 18 h: its boot warmup returned False (its
+            # BD exit refused the dummy POST at that instant → "No headers
+            # available"), so _start_background_refill was never called, and the
+            # resilient path has no re-warm loop to rescue it. The refill loop is
+            # self-healing (retries _refresh_on_tab every 60-90 s) and also spawns
+            # the real-click harvester (_start_harvest), so starting it on a live
+            # session is exactly what a missed first warmup needs — the account
+            # keeps its Shape headers fresh instead of going into the drop cold.
+            # Idempotent; both inner starts no-op if already running. Kill-switch:
+            # TARGET_REFILL_ON_WARM_MISS=0 restores the success-only start.
+            if os.environ.get('TARGET_REFILL_ON_WARM_MISS', '1').lower() not in ('0', 'false', 'no', 'off'):
+                try:
+                    if getattr(self, 'session_manager', None) is not None \
+                            and getattr(self.session_manager, 'session_active', False):
+                        self._start_background_refill()
+                        print("[WARMUP] first warmup missed — started background refill/harvest anyway "
+                              "(self-healing; keeps Shape headers fresh + runs the harvester)")
+                except Exception as _e:
+                    print(f"[WARMUP] could not start background refill after miss: {_e}")
             return bool(self._cached_cart_headers)
         except Exception as e:
             print(f"[WARMUP] Error: {e}")

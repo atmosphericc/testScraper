@@ -128,6 +128,21 @@ class SessionManager:
         # Dead-session park (2026-08-02): while set, ensure_logged_in skips the
         # nav/restart/relogin rungs and only runs the cheap rung-0 token check.
         self._dead_session_parked_until = 0.0
+        # 2026-09-10 wedge forensics: the ~68-min CDP-dispatch wedge hits ONLY
+        # the proxied account Chromes (business/alt-1) — the HOME-IP primary ran
+        # 18 h / 1 launch clean; the occlusion flag was applied and the wedge
+        # still fired (theory falsified). Until the proxy-path root cause is
+        # found, two mitigations keep the drop safe:
+        #   _browser_launched_at   — set on each successful launch; the sentinel
+        #                            proactively relaunches a proxied Chrome
+        #                            BEFORE the wedge window (TARGET_CHROME_MAX_AGE_S).
+        #   _genuine_wedge_at      — set by _wedge_http_probe when Chrome's HTTP
+        #                            thread answers while CDP is silent (a
+        #                            confirmed genuine stall, never backpressure);
+        #                            lets the cookie watchdog restart on strike 1.
+        self._browser_launched_at = 0.0
+        self._genuine_wedge_at = 0.0
+        self._proactive_relaunch_at = 0.0   # last age-based relaunch (rate-limit)
 
         # Configuration
         self.max_validation_failures = 3
@@ -334,6 +349,10 @@ class SessionManager:
 
             self.logger.info("[OK] nodriver browser launched successfully")
             print("[SESSION_INIT] Browser launched - STEALTH MODE ACTIVE!")
+            # 2026-09-10: mark launch time so the sentinel can proactively
+            # relaunch a proxied Chrome before the ~68-min CDP wedge window.
+            self._browser_launched_at = time.time()
+            self._genuine_wedge_at = 0.0   # fresh browser — clear any stale wedge flag
 
             # Store Chrome PID globally so shutdown can kill the whole process tree
             global _chrome_pid
@@ -828,10 +847,28 @@ class SessionManager:
                 else:
                     consecutive_failures += 1
                     self.logger.warning(f"[WATCHDOG] Cookie check failed ({consecutive_failures} consecutive)")
-                    if consecutive_failures >= 3:
-                        self.logger.error("[WATCHDOG] 3 consecutive failures — escalating to session refresh (browser restart if needed)")
-                        print(f"[WATCHDOG] {self.account_id or 'primary'}: 3 consecutive cookie-check failures — restarting session")
+                    # 2026-09-10: when a GENUINE CDP-dispatch wedge was just
+                    # confirmed by the wedge-probe (Chrome HTTP thread alive +
+                    # CDP silent — never backpressure, never a slow box), don't
+                    # burn ~2 more 60s cycles waiting out the 3-strike debounce.
+                    # A wedged proxied Chrome loses ~70-135s of the drop window
+                    # this way (09-10 run: 32 wedges). The confirmed-wedge signal
+                    # is strong enough to restart on strike 1. Kill-switch:
+                    # TARGET_WEDGE_FAST_RESTART=0 restores the pure 3-strike path.
+                    _fast_restart = os.environ.get('TARGET_WEDGE_FAST_RESTART', '1').lower() \
+                        not in ('0', 'false', 'no', 'off')
+                    _genuine_wedge = (time.time() - getattr(self, '_genuine_wedge_at', 0.0)) < 90.0
+                    _threshold = 1 if (_fast_restart and _genuine_wedge) else 3
+                    if consecutive_failures >= _threshold:
+                        if _threshold == 1:
+                            self.logger.error("[WATCHDOG] genuine CDP wedge confirmed — fast-restarting on strike 1 "
+                                              "(not waiting out the 3-strike debounce)")
+                            print(f"[WATCHDOG] {self.account_id or 'primary'}: genuine CDP wedge — fast-restarting session")
+                        else:
+                            self.logger.error("[WATCHDOG] 3 consecutive failures — escalating to session refresh (browser restart if needed)")
+                            print(f"[WATCHDOG] {self.account_id or 'primary'}: 3 consecutive cookie-check failures — restarting session")
                         consecutive_failures = 0
+                        self._genuine_wedge_at = 0.0
                         # DETACHED task (2026-07-06 incident): running the
                         # refresh inline here dies to self-cancellation —
                         # _safe_cleanup stops the watchdog, i.e. THIS task.
@@ -1324,6 +1361,13 @@ class SessionManager:
                 return int((time.time() - t0) * 1000)
             try:
                 ms = await asyncio.wait_for(asyncio.to_thread(_get), timeout=2.5)
+                # Genuine CDP-dispatch stall CONFIRMED: the HTTP thread answered
+                # while every CDP websocket is silent. This is never backpressure
+                # (the caller already failed evaluate('true') at 2s AND on the
+                # slow re-probe) and never a dead box (that path times out below).
+                # Record it so the cookie watchdog can restart on strike 1
+                # instead of waiting out the full 3-strike / 5-min sentinel lag.
+                self._genuine_wedge_at = time.time()
                 self.logger.warning(f"[WEDGE-PROBE] {url} answered in {ms} ms — Chrome's HTTP thread is "
                                     f"alive while CDP is silent (browser-side CDP dispatch stall)")
             except Exception as e:
@@ -2060,6 +2104,49 @@ class SessionManager:
              DESTRUCTIVE, rate-capped)
         Returns True iff the account ends up logged in with a live member token."""
         try:
+            # ── Proactive pre-wedge relaunch (2026-09-10) ─────────────────────
+            # The ~68-min CDP-dispatch wedge hits ONLY the proxied account
+            # Chromes (business/alt-1); the HOME-IP primary ran 18 h on one
+            # launch, clean. Earliest observed onset = 49 min. Rather than eat a
+            # 70-135 s dead-socket outage that could land ON the 2 AM drop (a
+            # Chrome launched ~1 AM is ~60 min old at 2 AM = squarely in the
+            # wedge window), relaunch a proxied Chrome once it crosses
+            # TARGET_CHROME_MAX_AGE_S (default 2100 s = 35 min, safely under 49).
+            # A scheduled relaunch is a ~5 s blip at a SAFE moment; the wedge is
+            # a random 100 s outage. Reuses _relaunch_browser (proven: 32×/run).
+            # Runs INSIDE the sentinel's drop-guard + mid-purchase skip, exactly
+            # like the existing restart rung, so it can't fire under a shot.
+            # Never touches the home-IP primary (proxy_url is None there) — that
+            # Chrome is bound to the stock monitor's get_page loop and never
+            # wedges. Kill-switch: TARGET_CHROME_MAX_AGE_S=0.
+            try:
+                _max_age = float(os.environ.get('TARGET_CHROME_MAX_AGE_S', '2100'))
+            except (TypeError, ValueError):
+                _max_age = 2100.0
+            if (_max_age > 0 and self.proxy_url is not None
+                    and not self.purchase_in_progress
+                    and self._browser_launched_at > 0
+                    and (time.time() - self._browser_launched_at) > _max_age
+                    and (time.time() - self._proactive_relaunch_at) > _max_age):
+                _age_min = (time.time() - self._browser_launched_at) / 60.0
+                self._proactive_relaunch_at = time.time()
+                self.logger.warning(
+                    f"[CHROME-AGE] {self.account_id}: proxied Chrome is {_age_min:.0f} min old "
+                    f"(> {_max_age/60:.0f} min) — proactively relaunching BEFORE the ~68-min CDP "
+                    f"wedge window (a 5s blip now beats a random 100s outage at drop time)")
+                print(f"[CHROME-AGE] {self.account_id}: proactive pre-wedge relaunch ({_age_min:.0f} min old)")
+                _relaunched = await self._relaunch_browser()
+                if _relaunched:
+                    # Fresh Chrome — validate + mint a member token, then done.
+                    if await self.ensure_fresh_access_token():
+                        self.last_validation = datetime.now()
+                        self.validation_failures = 0
+                        return True
+                    # Fresh but token not yet member — fall through to the ladder.
+                else:
+                    self.logger.warning(f"[CHROME-AGE] {self.account_id}: proactive relaunch failed — "
+                                        f"falling through to the normal self-heal ladder")
+
             # ── Dead-session park (2026-08-02, 07-31→08-02 post-drop audit) ──
             # With a dead login-session and the destructive relogin capped, the
             # full ladder still ran EVERY 5-min tick: nav refresh → Chrome

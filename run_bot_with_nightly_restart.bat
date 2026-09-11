@@ -407,6 +407,46 @@ REM  before (~4s later). Validated: tests/test_wedge_recovery_smoke.py (17/17).
 REM  Kill-switch (exact pre-07-20 behavior): set TARGET_TAB_HEALTH_SLOW_RETRY_S=0
 set TARGET_TAB_HEALTH_SLOW_RETRY_S=6.0
 
+REM ---------------------------------------------------------------------------
+REM  CDP WEDGE mitigations (2026-09-10). The run_20260910 soak (18 h) settled the
+REM  open wedge question: the [WEDGE-PROBE] answered in 0-30 ms on 55/59 events
+REM  (Chrome's HTTP thread ALIVE while CDP dispatch is DEAD = a browser-side CDP
+REM  stall), and it hit ONLY the two PROXIED account Chromes (business/alt-1) on a
+REM  ~49-84 min clock (median 69) -- the HOME-IP primary ran the whole 18 h on ONE
+REM  launch, clean. The occlusion flag (TARGET_ACCOUNT_OCCLUSION_FIX) WAS applied
+REM  and the wedge still fired => that theory is FALSIFIED; the wedge is
+REM  proxy-path correlated. Root cause still open, but two flag-gated mitigations
+REM  keep the 2 AM drop safe (a Chrome launched ~1 AM is ~60 min old at 2 AM =
+REM  squarely in the wedge window):
+REM   1) PROACTIVE pre-wedge relaunch: the sentinel relaunches a PROXIED Chrome
+REM      once it crosses TARGET_CHROME_MAX_AGE_S (2100 s = 35 min, under
+REM      the 49-min earliest onset). A scheduled ~5 s blip at a safe moment beats
+REM      a random 70-135 s outage landing on the drop. Never touches the home-IP
+REM      primary (proxy_url=None). Runs inside the sentinel drop-guard + mid-
+REM      purchase skip, so it can't fire under a shot. Kill: TARGET_CHROME_MAX_AGE_S=0.
+REM   2) FAST reactive restart: when the wedge-probe CONFIRMS a genuine CDP stall,
+REM      the cookie watchdog restarts on strike 1 instead of waiting out the
+REM      3-strike / ~2 extra 60 s cycles. The confirmed-wedge signal already
+REM      required evaluate('true') to fail at 2 s AND on the slow re-probe, so it
+REM      never fires on a healthy or backpressured tab. Kill: TARGET_WEDGE_FAST_RESTART=0.
+REM  Validated offline: tests/test_wedge_recovery_smoke.py + session_sentinel_smoke.
+REM  2100 s = 35 min: with the 300 s sentinel tick the relaunch lands by ~40 min,
+REM  a ~9 min margin under the 49-min earliest observed wedge onset.
+set TARGET_CHROME_MAX_AGE_S=2100
+set TARGET_WEDGE_FAST_RESTART=1
+
+REM ---------------------------------------------------------------------------
+REM  Background-refill-on-warmup-miss (2026-09-10). run_20260910 left alt-1 with
+REM  NO harvester and NO Shape-header refill for the ENTIRE 18 h run: its boot
+REM  warmup returned False ("No headers available" -- its BD exit refused the
+REM  first dummy POST), so _start_background_refill was never called, and the
+REM  resilient path has no re-warm loop to rescue it. alt-1 would enter the drop
+REM  with cold cart Shape headers (slow button-click ATC / miss). warm_shape_headers
+REM  now starts the SELF-HEALING refill loop (which retries the warmup every
+REM  60-90 s AND spawns the real-click harvester) even when the first warmup missed,
+REM  as long as the session is alive. Kill: TARGET_REFILL_ON_WARM_MISS=0.
+set TARGET_REFILL_ON_WARM_MISS=1
+
 REM  CDP paused-request LEAK guard (2026-07-23). The 07-21->22 run re-scoped the
 REM  07-20 "false wedge" verdict: the wedges are REAL and on a rigid clock --
 REM  every Chrome's CDP went dead ~70-75 min after ITS OWN launch (primary

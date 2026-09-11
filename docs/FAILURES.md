@@ -31,6 +31,70 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-10] - The ~68-min CDP wedge is PROXY-correlated, not occlusion; the [WEDGE-PROBE] settled it, and two flag-gated mitigations de-risk the drop - TARGET
+**Symptom**: run_20260910 (18 h, 01:37→19:25, NO drop) wedged the account Chromes 32 times
+(16× business, 16× alt-1) on a 49-84 min clock (median 69). Each wedge: `evaluate('true')`
+times out, the `[WEDGE-PROBE]` GETs `/json/version` and it answers in 0-30 ms 55/59 times
+(Chrome's HTTP thread ALIVE, CDP dispatch DEAD), then the account is down ~70-135 s until the
+cookie-watchdog 3-strike or the 5-min sentinel restarts it (~3-6 s, always recovers).
+**Root Cause**: NOT the occlusion calculator — `CalculateNativeWinOcclusion` WAS in the last
+`--disable-features` this run (occlusion fix from 1765e5ad applied) and the wedge fired anyway,
+so that 2026-09-09 candidate is **FALSIFIED**. The new discriminator: the wedge hit ONLY the two
+PROXIED Chromes (business→BD 31.98.158.87, alt-1→BD 168.158.32.64); the HOME-IP primary ran the
+whole 18 h on ONE launch, zero wedges. 120 `ConnectionResetError` / `_ProactorBasePipeTransport`
+(BD resetting long-lived CONNECT tunnels through the local forwarder) accompany it. So it is a
+browser-side CDP-dispatch stall on the proxy path; exact mechanism still open, but the correlation
+(proxied wedges / direct clean) is strong and actionable.
+**Fix Applied** (all flag-gated, `run_bot_with_nightly_restart.bat` + `src/session/session_manager.py`):
+(1) PROACTIVE pre-wedge relaunch — the sentinel relaunches a PROXIED Chrome once it crosses
+`TARGET_CHROME_MAX_AGE_S` (2100 s = 35 min; with the 300 s sentinel tick it lands by ~40 min,
+~9 min under the 49-min earliest onset), via the proven `_relaunch_browser`, inside the drop-guard
++ mid-purchase skip, NEVER the home-IP primary (`proxy_url is None`). Converts a random 100 s
+outage into a scheduled ~5 s blip at a safe moment. Kill: `TARGET_CHROME_MAX_AGE_S=0`.
+(2) FAST reactive restart — when `_wedge_http_probe` confirms a genuine stall (`_genuine_wedge_at`),
+the cookie watchdog restarts on strike 1 instead of 3 (cuts ~70-135 s → ~50 s). The verdict
+already required `evaluate('true')` to fail at 2 s AND on the slow re-probe, so it never fires on a
+healthy/backpressured tab. Kill: `TARGET_WEDGE_FAST_RESTART=0`.
+**Confidence**: high that the wedge is proxy-correlated and the occlusion theory is dead (direct
+observation, both proven this run); high that the mitigations are safe (reuse the proven restart
+path under the existing guards; 7/7 new + 17/17 wedge + 4/4 sentinel tests green). UNPROVEN LIVE.
+**Outcome**: shipped, tests green; live behavior to be confirmed on the first run — grep `[CHROME-AGE]`
+(proactive relaunches, ~1 per 35 min per proxied account) and any `genuine CDP wedge — fast-restarting`.
+
+### [2026-09-10] - alt-1 ran 18 h with NO harvester and NO Shape-header refill: a missed BOOT warmup never started the self-healing loop, and the resilient path has no re-warm - TARGET
+**Symptom**: run_20260910 shows `[HARVEST/alt-1]` = 0 lines and `WARMUP#*/alt-1` = 0; only primary
++ business ever spawned the harvester / background refill. alt-1's boot warmup logged the lone
+"No headers available". alt-1's AUTH stayed healthy (member tokens minted all night) but its CART
+Shape headers were never refreshed after boot → it would enter the drop with cold headers (slow
+button-click ATC or miss).
+**Root Cause**: `PurchaseExecutor.warm_shape_headers()` started `_start_background_refill()` (which
+spawns BOTH the refill loop and `_start_harvest`) ONLY on the success path (`if ok:`). alt-1's first
+warmup dummy POST was refused by its BD exit at boot (returned False), so the loop never started —
+and the refill loop is the very thing that RETRIES the warmup every 60-90 s. The `_warmup_cycle_counter`
+re-warm loop in `bulletproof_purchase_manager` that would have rescued it does NOT run in the
+resilient stack path (0 occurrences in the log).
+**Fix Applied**: `warm_shape_headers` now also starts the self-healing refill/harvest loop on the
+MISS path when the session is alive (idempotent inner starts). Kill: `TARGET_REFILL_ON_WARM_MISS=0`.
+**Confidence**: high (root cause is a one-branch omission proven by the log; the refill loop is
+already defensive and idempotent). UNPROVEN LIVE.
+**Outcome**: shipped, tests green; first-run grep: `[HARVEST/alt-1]` lines should now appear, or the
+"first warmup missed — started background refill/harvest anyway" line if its boot warmup misses again.
+
+### [2026-09-10] - "Press & Hold" / PerimeterX did NOT fire this run; detection ran 100% clean on the app channel — the reported symptom was harvester click telemetry, not a challenge - TARGET
+**Symptom**: operator reported "still getting press-and-hold issues." The 18 h log has ZERO
+`[PX-CHALLENGE]` / `[STOCK][CAPTCHA-PARK]` lines, zero RedSky captcha 403s (403=0 across all
+190,255 sweeps), and the PX guard never tripped.
+**Root Cause**: the ~5,893 "press" strings in the log are the harvester's own click telemetry
+(`press_ms=… release_ms=…`), not HUMAN's "Press & Hold" widget. The account Chromes are also
+deliberately ON-SCREEN (2026-09-09), so a person watching sees the live account windows. PerimeterX
+is IP-reputation-driven (BD 31.105.x/168.158.x flagged) and simply did not fire on a quiet
+pre-drop night; the guard (`TARGET_PX_CHALLENGE_GUARD=1`) remains armed to park + hand-solve if it does.
+**Fix Applied**: none needed — no defect. NOTE: the PX guard's DOM probe can't see a Press & Hold on
+a WEDGED Chrome (the `evaluate` times out), so the 2026-09-10 wedge mitigations above also reduce that
+blind spot indirectly.
+**Confidence**: high (direct log evidence). **Outcome**: no change; expectation corrected — truly
+eliminating Press & Hold needs cleaner/residential exit IPs (the documented ceiling), not a code fix.
+
 ### [2026-09-09] - Adversarial review of the day's nine commits found a DROP-KILLING bug in the new fast-lane body (doubled braces → JS SyntaxError on every shot) that the string-pin tests could not see - TARGET
 **Symptom**: none yet — caught before any live run. The `TARGET_ATC_BYTEMATCH` body literals were
 written with `{{ }}` inside PLAIN strings that are then substituted into the fast-lane f-string,
