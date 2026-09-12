@@ -31,6 +31,72 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-11] - 09-11 drop 0-for: level re-arm was DEAD in production (projection dropped the breadcrumb) — long in-stock windows fired ~1 wave - TARGET
+**Symptom**: run_20260911_010759 (01:07→20:06). The 30th Celebration preorders published as
+`PRE_ORDER_SELLABLE` in 13 stock windows between 02:10 and 05:33 (bundle 1011407490 ×8, mini tin
+1012422107, Espeon 1010892075, Umbreon 1010892071 ×2). Detection was flawless (403=0, every edge
+caught, ground-truth confirmed). 78 fast-lane shots total = exactly 2 waves × 3 accounts per window,
+then SILENCE for the rest of each window: bundle 04:54→05:30 (36 min, 1 wave), mini tin 03:55→04:25
+(30 min, 1 wave), 03:09→03:25 (16 min, 1 wave). ~156 min of cumulative live stock, 78 tickets.
+**Root Cause**: `StockMonitorThread._build_level_rearm_map` re-arms a continuously-in-stock item
+only when its state carries `rearm_hint_ts` (the 08-18 emergency-reset breadcrumb). The production
+caller `_level_rearm_loop` feeds it `BulletproofPurchaseManager.get_all_states()`, a PROJECTION
+that never included that field. So the breadcrumb was invisible, the hinted-'ready' branch never
+matched, and after the first wave an in-stock item idled until the next OOS→IS flip. The 08-18 fix
+was effectively reverted the day it shipped; `tests/test_level_rearm_smoke.py` stayed green because
+it hands the builder a raw dict WITH the field (test data shape ≠ production data shape — the same
+class of gap as the 09-09 doubled-brace lesson). This also explains the 07-31 22-min and 08-18 8-min
+idles.
+**Fix Applied**: (1) `get_all_states()` now carries `rearm_hint_ts` (additive; dashboard ignores it).
+(2) Money-safety: the emergency-reset stamp is skipped when the prior status was `purchased`, so the
+now-working re-arm never auto-re-buys a WON item every ~60 s (repeat buys still need a real OOS→IS
+flip, exactly the builder's documented semantics; failed/interrupted still sustain). (3) Five new
+tests run the REAL `get_all_states` projection into the REAL builder (would have failed before).
+Expected effect: a fresh wave-first window every ~60-70 s for the whole in-stock span — the census
+says only attempt-#1 shots convert, so this multiplies the only kind of ticket that wins.
+**Confidence**: high on the bug (code-confirmed, reproduced in the log, test proves the data-shape
+gap); medium on the payoff (more cold tickets is the census-endorsed lever, but the empty-429 /
+Shape-401 lottery is unchanged). UNPROVEN LIVE.
+**Outcome**: pending next launch. First-run grep: `[LEVEL_REARM] stock still live` should now
+repeat every ~60-70 s while a TCIN stays in stock, each followed by a new `[RACE]`.
+
+### [2026-09-11] - 09-11 drop: the ONE won cart was cleared after 81 s while stock stayed live 11+ min - TARGET
+**Symptom**: 05:19:54 primary ATC `201` on Umbreon 1010892071 qty=2 (replayed real-click set, age 2 s)
+— the only cart won all night. Fast lane pre_checkout → 429 (key not logged) → legacy path (nav +
+5 s checkout-ready timeout + 6-step S&C loop = first place-order at t+26 s) → `429
+FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` → 45 s hold → 1 re-shoot → FS again → **cart CLEARED
+05:21:15** → `checkout_busy_retryable`. Stock stayed live until 05:32:25; zero further shots.
+**Root Cause**: the 07-28 hold-cart was bounded to ONE hold; a second FS rejection fell through to
+`clearing cart and waiting`, i.e. re-racing the ~98%-fail ATC wall — the documented 07-28 mistake
+(cleared carts → 0-for-~250). 07-21 showed the limiter clears in <2 min; a held cart converts the
+instant it does, a cleared one almost never.
+**Fix Applied**: multi-cycle re-hold, flag-gated: `TARGET_FAST_SELLING_HOLD_CYCLES=2` (=1 restores
+exact prior behaviour) inside a wall-clock cap `TARGET_FAST_SELLING_HOLD_TOTAL_S=80` that keeps the
+executor under the manager's `future.result(timeout=150)` so it can never be finalized and re-raced
+mid-flight. `_hold_cart_for_fast_selling` gained an optional `max_s` so the cap is exact. Every
+existing double-buy guard (order_id short-circuit, non-429/424 defer, no-response terminal bail,
+HOLD_CART=0) is untouched — 21/21 incl. kill-switch + spent-budget tests. Also: the fast lane now
+keeps the head of a non-2xx pre_checkout body and prints it on `skip=pre_*`, so the next post-mortem
+can say whether pre=429 is FAST_SELLING.
+**Confidence**: high that it is safe (guards preserved, bounded, tested); medium on payoff (a held
+cart needs the limiter to clear inside ~80-120 s; 07-21 says it does).
+**Outcome**: pending. NOT changed: the 26 s legacy checkout leg after pre=429 (needs the pre body first).
+
+### [2026-09-11] - HTTP 431 Request Header Fields Too Large on cart_items POSTs (new) - TARGET
+**Symptom**: ~370 warmup dummy POSTs and 4 real shots answered `431` (empty body, no Target error
+key ⇒ rejected at the edge). Two real shots died to it: alt-1 02:11:48 and primary's wave-first
+shot at 05:19:15 — the cold re-entry 39 s later was the night's only 201. Rate climbed 2/h (01:00)
+→ 88/h (10:00), then fell to ~0 after 12:00; all three accounts equally.
+**Root Cause**: NOT settled. Per-account Target cookie counts stayed flat (49-61) all night, so it is
+not simple jar growth. Candidates: the Shape `X-GyJwza5Z-a` header (~7.7-7.9 KB, near an 8 KB
+per-header cap) plus the Cookie header crossing the edge's total-header limit intermittently; or a
+transiently large PX/queue cookie during traffic. The post-12:00 drop-off is unexplained.
+**Fix Applied**: none on the hot path (mechanism unproven; cookie deletion could hurt Shape/PX
+scoring). Next step is a diagnostic: on a 431, log the outgoing request's total header bytes, Cookie
+bytes and largest X-header — then prune or shrink accordingly.
+**Confidence**: high that 431 is real and edge-side; low on mechanism.
+**Outcome**: OPEN. Minor during the 02-05 drop window (4 real shots); worsens over a long soak.
+
 ### [2026-09-10] - The ~68-min CDP wedge is PROXY-correlated, not occlusion; the [WEDGE-PROBE] settled it, and two flag-gated mitigations de-risk the drop - TARGET
 **Symptom**: run_20260910 (18 h, 01:37→19:25, NO drop) wedged the account Chromes 32 times
 (16× business, 16× alt-1) on a 49-84 min clock (median 69). Each wedge: `evaluate('true')`

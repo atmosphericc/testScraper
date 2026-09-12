@@ -392,6 +392,13 @@ REM  Validated: tests	est_checkout_inplace_reshoot.py + test_fast_lane_checkout.
 REM  Kill-switch (07-21 clear+re-race): set TARGET_FAST_SELLING_HOLD_CART=0
 set TARGET_FAST_SELLING_HOLD_CART=1
 set TARGET_FAST_SELLING_HOLD_MAX_S=75
+REM  2026-09-11 (09-11 drop 0-for): the only ATC 201 of the drop was held once,
+REM  re-shot once, hit FAST_SELLING again and was CLEARED while the item stayed in
+REM  stock 11+ min. Re-hold the WON cart up to N cycles inside a wall-clock budget
+REM  (must stay under the manager 150 s future). Kill-switch (exact prior, one hold):
+REM  set TARGET_FAST_SELLING_HOLD_CYCLES=1
+set TARGET_FAST_SELLING_HOLD_CYCLES=2
+set TARGET_FAST_SELLING_HOLD_TOTAL_S=80
 
 REM ---------------------------------------------------------------------------
 REM  CDP-backpressure guard (2026-07-20). Overnight 07-19 the session sentinel

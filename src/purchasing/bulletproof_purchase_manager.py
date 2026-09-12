@@ -2335,7 +2335,21 @@ class BulletproofPurchaseManager:
                     'last_attempt': state.get('started_at'),
                     'completed_at': state.get('completed_at'),
                     'completes_at': state.get('completes_at'),  # For countdown
-                    'product_title': state.get('product_title')
+                    'product_title': state.get('product_title'),
+                    # 2026-09-11 (09-11 drop 0-for): the level re-arm loop calls
+                    # get_all_states() and feeds the result to
+                    # StockMonitorThread._build_level_rearm_map, whose
+                    # emergency-reset branch re-arms a continuously-in-stock
+                    # 'ready' item ONLY if it still carries 'rearm_hint_ts'.
+                    # This projection dropped that field, so the breadcrumb was
+                    # invisible in production and a continuously-in-stock item
+                    # went idle after its first wave until the next OOS→IS flip
+                    # (the 09-11 bundle sat in stock 04:54→05:30 = ~36 min and
+                    # fired ~1 wave instead of ~30). The 08-18 deadlock fix was
+                    # effectively reverted by this projection. Carry the hint so
+                    # the re-arm can see it. Dashboard consumers ignore unknown
+                    # keys, so this is additive-only.
+                    'rearm_hint_ts': state.get('rearm_hint_ts'),
                 }
 
             return result
@@ -2626,7 +2640,16 @@ class BulletproofPurchaseManager:
                         # same money-safe machinery every other re-arm uses.
                         # Kill-switch: TARGET_REARM_AFTER_EMERGENCY_RESET=0.
                         _new_state = {'status': 'ready'}
-                        if os.environ.get('TARGET_REARM_AFTER_EMERGENCY_RESET', '1') != '0':
+                        # 2026-09-11: only stamp the breadcrumb for a NON-won
+                        # prior state. get_all_states() now carries the hint, so
+                        # the level re-arm genuinely sustains re-racing; a
+                        # 'purchased' item flipped to bare 'ready' here must NOT
+                        # auto-re-buy every ~60s (qty2 repeats have triggered
+                        # Target cancels). Repeat buys keep requiring a real
+                        # OOS→IS flip, exactly _build_level_rearm_map's stated
+                        # semantics. failed/interrupted still re-race.
+                        if (os.environ.get('TARGET_REARM_AFTER_EMERGENCY_RESET', '1') != '0'
+                                and current_status != 'purchased'):
                             _new_state['rearm_hint_ts'] = time.time()
                         states[tcin] = _new_state
                         self._save_states_unsafe(states)

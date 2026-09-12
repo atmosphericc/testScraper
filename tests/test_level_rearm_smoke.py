@@ -146,6 +146,69 @@ def test_bad_breadcrumb_value_excluded():
     check("bad_breadcrumb_value_excluded", m == {})
 
 
+# ── 2026-09-11 (09-11 drop 0-for): PRODUCTION DATA PATH ─────────────────────
+# The tests above hand the builder a raw states dict. Production does NOT: the
+# level re-arm loop feeds it BulletproofPurchaseManager.get_all_states(), a
+# PROJECTION. That projection silently dropped 'rearm_hint_ts', so the
+# emergency-reset breadcrumb was invisible in production and a continuously-
+# in-stock item idled after its first wave until the next OOS→IS flip (09-11
+# bundle: ~36 min in stock, ~1 wave). Every test above stayed green while the
+# feature was dead. These run the REAL projection into the REAL builder.
+import threading  # noqa: E402
+from src.purchasing.bulletproof_purchase_manager import (  # noqa: E402
+    BulletproofPurchaseManager as _BPM,
+)
+
+
+class _PM:
+    """Minimal stand-in exposing exactly what get_all_states() touches, so the
+    real (unbound) method runs without the full manager/Worker pool."""
+    def __init__(self, states):
+        self._state_lock = threading.RLock()
+        self._states = states
+
+    def _load_states_unsafe(self):
+        return {k: dict(v) for k, v in self._states.items()}
+
+
+def _project(states):
+    return _BPM.get_all_states(_PM(states))
+
+
+def test_prod_projection_carries_breadcrumb():
+    proj = _project({'111': {'status': 'ready', 'rearm_hint_ts': NOW - 1}})
+    check("prod_projection_carries_breadcrumb",
+          proj.get('111', {}).get('rearm_hint_ts') == NOW - 1)
+
+
+def test_prod_path_emergency_reset_item_rearmed():
+    # The exact production chain: emergency-reset 'ready'+hint → get_all_states
+    # → _build_level_rearm_map → must be re-armed.
+    proj = _project({'111': {'status': 'ready', 'rearm_hint_ts': NOW - 1}})
+    m = build({'111': _S('111', title='ETB')}, proj, NOW)
+    check("prod_path_emergency_reset_item_rearmed", set(m) == {'111'})
+
+
+def test_prod_path_failed_item_rearmed():
+    proj = _project({'111': {'status': 'failed'}})
+    m = build({'111': _S('111')}, proj, NOW)
+    check("prod_path_failed_item_rearmed", set(m) == {'111'})
+
+
+def test_prod_path_purchased_never_rearmed():
+    # Money-safety: a WON item must never auto-re-buy through the re-arm, even
+    # if some stale hint field were present on it.
+    proj = _project({'111': {'status': 'purchased', 'rearm_hint_ts': NOW - 1}})
+    m = build({'111': _S('111')}, proj, NOW)
+    check("prod_path_purchased_never_rearmed", m == {})
+
+
+def test_prod_path_plain_ready_not_rearmed():
+    proj = _project({'111': {'status': 'ready'}})
+    m = build({'111': _S('111')}, proj, NOW)
+    check("prod_path_plain_ready_not_rearmed", m == {})
+
+
 if __name__ == '__main__':
     test_failed_fresh_in_stock_included()
     test_title_fallback()
@@ -158,5 +221,10 @@ if __name__ == '__main__':
     test_stale_breadcrumb_excluded()
     test_ready_without_breadcrumb_excluded()
     test_bad_breadcrumb_value_excluded()
+    test_prod_projection_carries_breadcrumb()
+    test_prod_path_emergency_reset_item_rearmed()
+    test_prod_path_failed_item_rearmed()
+    test_prod_path_purchased_never_rearmed()
+    test_prod_path_plain_ready_not_rearmed()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

@@ -5526,7 +5526,8 @@ class PurchaseExecutor:
             return ''
         return CARD_CVV or ''
 
-    async def _hold_cart_for_fast_selling(self, where: str) -> bool:
+    async def _hold_cart_for_fast_selling(self, where: str,
+                                          max_s: "float | None" = None) -> bool:
         """Sleep out the fast-selling cooldown IN PLACE with the won cart intact.
 
         2026-07-28: all 4 hard-won carts were cleared after FAST_SELLING (or
@@ -5544,6 +5545,10 @@ class PurchaseExecutor:
         if _left <= 0:
             return False
         _hold = min(_left, float(os.environ.get('TARGET_FAST_SELLING_HOLD_MAX_S', '75')))
+        # 2026-09-11: optional caller cap so the multi-cycle re-hold honours its
+        # wall-clock budget (TARGET_FAST_SELLING_HOLD_TOTAL_S) exactly.
+        if max_s is not None:
+            _hold = max(0.0, min(_hold, float(max_s)))
         print(f"[PAYMENT] FAST_SELLING cooldown ({_left:.0f}s left) — HOLDING the won "
               f"cart in place for {_hold:.0f}s ({where}) instead of clearing "
               f"(07-28: cleared carts → 0-for-~250 ATC re-race)")
@@ -5723,8 +5728,10 @@ class PurchaseExecutor:
 
         # Chain stopped before the place-order POST (bad ATC / un-hydrated cart /
         # foreign cart item). Nothing was committed; the legacy path takes over.
+        _pre_body = ((fl.get('pre') or {}).get('body') or '')
         print(f"[FAST_LANE] chain stopped before place-order (skip={fl.get('skip')}) "
-              f"— legacy path continues")
+              f"— legacy path continues"
+              + (f" | pre_body={_pre_body[:200]!r}" if _pre_body else ''))
         return 'fallthrough', None
 
     async def _api_fast_lane(self, tab, tcin: str, quantity: int,
@@ -5863,6 +5870,12 @@ class PurchaseExecutor:
                 }});
                 const t2 = await r2.text();
                 out.pre.status = r2.status;
+                // 2026-09-11: keep the head of a NON-2xx body so a pre_checkout
+                // 429 can be attributed (FAST_SELLING vs other). The only ATC
+                // 201 of the 09-11 drop died on pre=429 with no key logged.
+                if (r2.status < 200 || r2.status > 299) {{
+                    out.pre.body = String(t2 || '').slice(0, 300);
+                }}
                 try {{
                     const p2 = JSON.parse(t2);
                     if (p2 && p2.cart_id) out.pre.cart_id = p2.cart_id;
@@ -6353,15 +6366,39 @@ class PurchaseExecutor:
             # got a non-throttled first shot). So on FAST_SELLING: back off and let
             # the manager re-race later. Every other 429/424 keeps the 07-17
             # behaviour, which is what that fix was actually validated against.
+            # 2026-09-11 (09-11 drop 0-for): bound how many FS hold+re-shoot
+            # cycles a WON cart gets before clear+re-race. That night the only
+            # ATC 201 of the drop (05:19:54, Umbreon deck) was held once, re-shot
+            # once, hit FS again and was CLEARED at 05:21:15 while the item stayed
+            # in stock until 05:32 (11+ min). Re-acquiring a cart through the ATC
+            # wall is ~2% (0-for-250 on 07-28); a held cart converts the instant
+            # the limiter clears (<2 min on 07-21). So hold more than once,
+            # bounded by a wall-clock budget that must fit under the manager's
+            # future.result(timeout=150) so a still-running executor can never be
+            # finalized (and re-raced) mid-flight. Defaults: 2 holds / 80 s.
+            # Kill-switch: TARGET_FAST_SELLING_HOLD_CYCLES=1 == exact prior
+            # behaviour (one hold, second FS clears).
+            try:
+                _fs_cycles = max(1, int(os.environ.get('TARGET_FAST_SELLING_HOLD_CYCLES', '2')))
+            except ValueError:
+                _fs_cycles = 2
+            try:
+                _fs_total_s = float(os.environ.get('TARGET_FAST_SELLING_HOLD_TOTAL_S', '80'))
+            except ValueError:
+                _fs_total_s = 80.0
+            _fs_deadline = None
+            _fs_cycle = 0
             if _is_fast_selling(api_result):
                 self._note_fast_selling_throttle()
+                _fs_deadline = time.time() + _fs_total_s
+                _fs_cycle = 1
                 # 2026-07-28: hold the won cart through the cooldown and let the
                 # re-shoot loop below fire into the reopened window. Only when
                 # the hold is disabled (or test mode) do we keep the 07-21
                 # zero-re-shoot behaviour that led to clear+re-race — that night
                 # the re-race went 0-for-~250 against the ATC wall while 4 won
-                # carts were thrown away. A second FS rejection still stops the
-                # loop and falls back to clear+re-race (bounded: one hold).
+                # carts were thrown away. Further FS rejections re-hold up to
+                # TARGET_FAST_SELLING_HOLD_CYCLES times inside the loop below.
                 if not await self._hold_cart_for_fast_selling('post-rejection'):
                     _reshoot_n = 0
             if (_reshoot_n > 0 and not self.test_mode
@@ -6417,10 +6454,29 @@ class PurchaseExecutor:
                               f"— stopping, deferring to fallback logic")
                         break
                     if _is_fast_selling(api_result):
-                        print(f"[PAYMENT] In-place re-shoot {_rs}/{_reshoot_n} hit the "
-                              f"fast-selling limiter — stopping (0-for-~20 on 07-21) "
-                              f"and backing off")
                         self._note_fast_selling_throttle()
+                        # 2026-09-11: re-hold the WON cart instead of clearing it
+                        # while hold cycles + wall-clock budget remain (see the
+                        # block above the loop). `continue` re-warms + sleeps +
+                        # re-shoots on the next iteration; every existing guard
+                        # (order_id short-circuit, non-429/424 defer, no-response
+                        # terminal bail) is untouched.
+                        if _fs_deadline is None:
+                            _fs_deadline = time.time() + _fs_total_s
+                        _fs_cycle += 1
+                        _fs_left = _fs_deadline - time.time()
+                        if (_fs_cycle <= _fs_cycles and _fs_left > 0
+                                and not self.test_mode):
+                            print(f"[PAYMENT] In-place re-shoot {_rs}/{_reshoot_n} hit the "
+                                  f"fast-selling limiter — HOLDING the won cart again "
+                                  f"(cycle {_fs_cycle}/{_fs_cycles}, {_fs_left:.0f}s budget left) "
+                                  f"instead of clearing")
+                            if await self._hold_cart_for_fast_selling(
+                                    f'post-rejection#{_fs_cycle}', max_s=_fs_left):
+                                continue
+                        print(f"[PAYMENT] In-place re-shoot {_rs}/{_reshoot_n} hit the "
+                              f"fast-selling limiter — stopping (hold cycles/budget spent: "
+                              f"cycle={_fs_cycle}/{_fs_cycles}) and backing off")
                         break
             # ── Double-buy guard (2026-07-02, research-driven) ───────────────────
             # NEVER DOM-retry a place-order that received NO definitive HTTP

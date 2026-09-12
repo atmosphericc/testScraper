@@ -279,10 +279,32 @@ def test_fast_selling_hold_keeps_cart_and_reshoots():
         os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
 
 
-def test_fast_selling_second_hit_stops_after_one_hold():
-    """A second FS rejection after the hold must stop (bounded: ONE hold) and
-    defer to the old clear+re-race — no infinite hold loop."""
+def test_fast_selling_rehold_bounded_by_cycles():
+    """2026-09-11 (09-11 drop 0-for): the only ATC 201 of the drop was held
+    once, re-shot once, hit FS again and was CLEARED while the item stayed in
+    stock 11+ min. Now a further FS re-HOLDS the won cart, bounded by
+    TARGET_FAST_SELLING_HOLD_CYCLES (default 2 holds) — still no infinite loop.
+    Sequence at default: shot FS → hold#1 → re-shoot FS → hold#2 → re-shoot FS
+    → cycles spent → bail. 3 API shots, cart never cleared mid-budget."""
     os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "0.1"
+    try:
+        os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_CYCLES", None)  # default = 2
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_TOTAL_S", None)
+        ex, c = _make_executor([_R(429, "http_429")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        assert r is False and c["api"] == 3, f"r={r} api={c['api']}"
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
+
+
+def test_fast_selling_hold_cycles_kill_switch_restores_one_hold():
+    """TARGET_FAST_SELLING_HOLD_CYCLES=1 == exact prior behaviour: one hold,
+    the second FS rejection stops the loop and defers to clear+re-race."""
+    os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "0.1"
+    os.environ["TARGET_FAST_SELLING_HOLD_CYCLES"] = "1"
     try:
         os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
         ex, c = _make_executor([_R(429, "http_429")])
@@ -293,6 +315,28 @@ def test_fast_selling_second_hit_stops_after_one_hold():
         assert r is False and c["api"] == 2, f"r={r} api={c['api']}"
     finally:
         os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_CYCLES", None)
+
+
+def test_fast_selling_rehold_stops_when_budget_spent():
+    """A spent wall-clock budget (TARGET_FAST_SELLING_HOLD_TOTAL_S) must stop
+    re-holding even with cycles left — this is what keeps the executor under
+    the manager's future.result(timeout=150) so it can never be finalized and
+    re-raced mid-flight."""
+    os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "0.1"
+    os.environ["TARGET_FAST_SELLING_HOLD_CYCLES"] = "5"
+    os.environ["TARGET_FAST_SELLING_HOLD_TOTAL_S"] = "0"
+    try:
+        os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+        ex, c = _make_executor([_R(429, "http_429")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        assert r is False and c["api"] == 2, f"r={r} api={c['api']}"
+    finally:
+        os.environ.pop("TARGET_FAST_SELLING_COOLDOWN_S", None)
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_CYCLES", None)
+        os.environ.pop("TARGET_FAST_SELLING_HOLD_TOTAL_S", None)
 
 
 def test_fast_selling_hold_kill_switch_restores_bail():
