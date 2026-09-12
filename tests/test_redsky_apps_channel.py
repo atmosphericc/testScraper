@@ -238,8 +238,12 @@ def test_bank_gate():
           and "_wf_kinds = (('auth401', 'edge', 'dco')" in MGR)
     check("mgr_wave_first_leaves_room_for_leg", "_re_lo_needed = _re_lo + _bw_est + 20.0" in MGR
           and "if _remaining < _re_lo_needed:" in MGR)
+    # 2026-09-11 won-cart ride: the watchdog still keys on _force_s, but the
+    # comparison now goes through the pure _force_complete_due predicate so a
+    # purchase holding a live WON cart is never force-finalized mid-ride
+    # (behaviour pinned in tests/test_won_cart_ride_smoke.py).
     check("mgr_watchdog_tracks_budget", "_force_s = max(120.0, float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110')) + 90.0)" in MGR
-          and "if elapsed_time > _force_s:" in MGR)
+          and "self._force_complete_due(elapsed_time, _force_s," in MGR)
     check("mgr_cadence_print_silenced_under_wave_first", "and not _wf_takes:" in MGR)
     check("mgr_wave_first_cold_reentry", "TARGET_WAVE_REENTRY_MIN_S" in MGR and "_re_lo = max(15.0, _re_lo)" in MGR
           and "cold re-entry in" in MGR)

@@ -78,8 +78,30 @@ existing double-buy guard (order_id short-circuit, non-429/424 defer, no-respons
 HOLD_CART=0) is untouched — 21/21 incl. kill-switch + spent-budget tests. Also: the fast lane now
 keeps the head of a non-2xx pre_checkout body and prints it on `skip=pre_*`, so the next post-mortem
 can say whether pre=429 is FAST_SELLING.
-**Confidence**: high that it is safe (guards preserved, bounded, tested); medium on payoff (a held
-cart needs the limiter to clear inside ~80-120 s; 07-21 says it does).
+**WON-CART RIDE (same day, after the user's push-back "you should be able to crack hot SKUs on BD")**:
+the 80 s cap above was OUR limit, not Target's — the manager cancels the executor at
+`future.result(timeout=150)` AND restarts the browser, the 200 s force-complete finalizes the
+TCIN, and the executor's own `asyncio.timeout(140)` cuts the impl. Vendor doctrine is "keep
+submitting and let it ride"; 07-21 measured the limiter clearing in <2 min. So, flag-gated
+`TARGET_WON_CART_RIDE=1`: the executor publishes `_won_cart_ride_until` the moment a FAST_SELLING
+hold begins on a WON cart (`_begin_won_cart_ride`), and (a) the manager's new
+`_wait_purchase_result` keeps waiting in 30 s slices instead of cancelling, ONLY while that
+deadline is live and under `TARGET_WON_CART_RIDE_MAX_S=300`; (b) the force-complete goes through
+`_force_complete_due`, which defers while a stamped `ride_until` is in the future; (c) the impl
+timeout is `reschedule()`d to the ride deadline — never shorter than the original 140 s, capped
+10 s inside the manager's cap so the coroutine still self-cancels first. Bat now arms
+`HOLD_CYCLES=6` / `HOLD_TOTAL_S=270` (≈6 place-order shots at the 45 s cooldown). With the flag
+OFF the executor clamps the hold back to 80 s so nothing can outlive the 150 s future. Money
+safety unchanged: a re-shoot still fires ONLY on a definitive 429/424 rejection; an OOS/reservation/
+401/no-response answer ends the ride through the existing guards, so no live-stock feed is needed.
+Cost: while one account rides, the TCIN stays `attempting`, so the other two accounts cannot open
+a new wave on it (the RACE waits) — a held cart is worth far more than ~5 min of their lottery
+samples. Tests: `tests/test_won_cart_ride_smoke.py` 12/12 (pure predicates),
+`test_checkout_inplace_reshoot.py` 24/24 (ride extends to 7 shots + signals; flag OFF never
+signals and keeps the RETRY_N cap; timeout helper never shortens and honours the cap).
+**Confidence**: high that it is safe (guards preserved, every extension bounded and gated on a
+provably held cart, tested); medium on payoff (needs the limiter to clear inside ~5 min; 07-21
+says ~2).
 **Outcome**: pending. NOT changed: the 26 s legacy checkout leg after pre=429 (needs the pre body first).
 
 ### [2026-09-11] - HTTP 431 Request Header Fields Too Large on cart_items POSTs (new) - TARGET

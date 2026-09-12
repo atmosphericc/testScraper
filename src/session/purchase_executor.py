@@ -161,6 +161,13 @@ class PurchaseExecutor:
         # checkout-nav + payment phase then short-circuits, so we can never fire
         # a second place-order POST against a cart that is already an order.
         self._fastlane_placed: bool = False
+        # 2026-09-11 won-cart ride: epoch until which this executor is holding a
+        # live WON cart through FAST_SELLING holds. The manager reads it on its
+        # 150 s timeout to extend the wait instead of cancelling + restarting
+        # the browser. 0.0 = not holding. Reset per purchase.
+        self._won_cart_ride_until: float = 0.0
+        self._purchase_timeout_ctx = None      # live asyncio.Timeout while a purchase runs
+        self._execute_started_at: float = 0.0  # epoch of the current execute_purchase()
         # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a rolling per-account
         # limiter on the checkout POST, and the 07-21 log is unambiguous about how
         # it behaves: it never once appeared on the FIRST shot of a wave, and once
@@ -501,8 +508,14 @@ class PurchaseExecutor:
         # non-retryable bucket, so the manager's restart-and-retry machinery
         # never fired. Track whether we actually entered the impl.
         _impl_entered = False
+        # 2026-09-11 won-cart ride: expose the timeout context so a FAST_SELLING
+        # hold on a WON cart can reschedule it (bounded, never shorter) instead
+        # of being cut at 140 s mid-hold. Cleared in `finally` so no later
+        # purchase can touch a dead context.
+        self._execute_started_at = time.time()
         try:
-            async with asyncio.timeout(140):  # slightly less than thread's 150s so coroutine self-cancels cleanly
+            async with asyncio.timeout(140) as _tmo:  # slightly less than thread's 150s so coroutine self-cancels cleanly
+                self._purchase_timeout_ctx = _tmo
                 async with self._page_lock:
                     _impl_entered = True
                     _impl_result = await self._execute_purchase_impl(tcin, quantity=quantity)
@@ -530,6 +543,49 @@ class PurchaseExecutor:
                 'reason': 'purchase_impl_hang',
                 'error': 'purchase impl hung >140s — CDP websocket likely dead/wedged'
             }
+        finally:
+            self._purchase_timeout_ctx = None
+
+    # ── 2026-09-11 won-cart ride (executor side) ─────────────────────────────
+    def _extend_purchase_timeout(self, until_epoch: float) -> float:
+        """Reschedule the in-flight execute_purchase() timeout to `until_epoch`.
+        Never SHORTER than the original 140 s from purchase start, and capped at
+        TARGET_WON_CART_RIDE_MAX_S from purchase start minus 10 s so the
+        coroutine still self-cancels BEFORE the manager's extended wait expires.
+        Returns the effective epoch deadline, or 0.0 when nothing is in flight.
+        Only ever called from _begin_won_cart_ride (kill-switch upstream)."""
+        ctx = getattr(self, '_purchase_timeout_ctx', None)
+        if ctx is None:
+            return 0.0
+        try:
+            _max = float(os.environ.get('TARGET_WON_CART_RIDE_MAX_S', '300'))
+        except ValueError:
+            _max = 300.0
+        start = float(getattr(self, '_execute_started_at', 0.0) or time.time())
+        target = max(float(until_epoch), start + 140.0)
+        target = min(target, start + _max - 10.0)
+        try:
+            loop = asyncio.get_running_loop()
+            ctx.reschedule(loop.time() + max(0.0, target - time.time()))
+            print(f"[WON_CART_RIDE] execute_purchase timeout now ends in "
+                  f"{max(0.0, target - time.time()):.0f}s (riding the won cart)")
+            return target
+        except Exception as e:
+            print(f"[WON_CART_RIDE] could not extend purchase timeout: {e}")
+            return 0.0
+
+    def _begin_won_cart_ride(self, fs_deadline: float) -> None:
+        """Mark this purchase as holding a live WON cart until ~fs_deadline+30 s
+        (capped to TARGET_WON_CART_RIDE_MAX_S from purchase start) so the
+        manager extends its 150 s wait, and extend the in-flight purchase
+        timeout to match (10 s inside the manager's deadline)."""
+        try:
+            _max = float(os.environ.get('TARGET_WON_CART_RIDE_MAX_S', '300'))
+        except ValueError:
+            _max = 300.0
+        start = float(getattr(self, '_execute_started_at', 0.0) or time.time())
+        self._won_cart_ride_until = min(float(fs_deadline) + 30.0, start + _max)
+        self._extend_purchase_timeout(self._won_cart_ride_until - 10.0)
 
     def _note_atc_gate_outcome(self, tcin: str, result: Dict[str, Any]) -> None:
         """Feed one purchase outcome into the ATC gate-wall circuit breaker.
@@ -2311,6 +2367,9 @@ class PurchaseExecutor:
         # MUST reset per purchase: a stale True would make the next attempt skip
         # the checkout+payment phases and report a phantom success.
         self._fastlane_placed = False
+        # MUST reset per purchase: a stale ride deadline would let the manager
+        # extend its wait for a purchase that is not holding any cart.
+        self._won_cart_ride_until = 0.0
         # MUST reset per purchase: a stale True from an earlier purchase would
         # block the auto-unlatch even when this purchase saw no CVV modal.
         self._cvv_modal_seen = False
@@ -6388,10 +6447,24 @@ class PurchaseExecutor:
                 _fs_total_s = 80.0
             _fs_deadline = None
             _fs_cycle = 0
+            # 2026-09-11 won-cart ride: with the manager-side extension on, the
+            # hold may outlive the 150 s future (bounded by TOTAL_S + the
+            # manager's RIDE_MAX_S). With it OFF there is no extension, so the
+            # whole hold must fit under 150 s: clamp to the pre-ride budget.
+            _ride_on = os.environ.get('TARGET_WON_CART_RIDE', '1') == '1'
+            if not _ride_on:
+                _fs_total_s = min(_fs_total_s, 80.0)
             if _is_fast_selling(api_result):
                 self._note_fast_selling_throttle()
                 _fs_deadline = time.time() + _fs_total_s
                 _fs_cycle = 1
+                if _ride_on:
+                    # Each re-hold consumes one loop iteration, so RETRY_N must
+                    # not cap the ride (range() is evaluated once, below). Only
+                    # widened on an FS FIRST shot; an FS that first appears mid-
+                    # loop keeps the RETRY_N cap (rare, conservative).
+                    _reshoot_n = max(_reshoot_n, _fs_cycles + 1)
+                    self._begin_won_cart_ride(_fs_deadline)
                 # 2026-07-28: hold the won cart through the cooldown and let the
                 # re-shoot loop below fire into the reopened window. Only when
                 # the hold is disabled (or test mode) do we keep the 07-21
@@ -6463,6 +6536,8 @@ class PurchaseExecutor:
                         # terminal bail) is untouched.
                         if _fs_deadline is None:
                             _fs_deadline = time.time() + _fs_total_s
+                        if _ride_on and not getattr(self, '_won_cart_ride_until', 0.0):
+                            self._begin_won_cart_ride(_fs_deadline)
                         _fs_cycle += 1
                         _fs_left = _fs_deadline - time.time()
                         if (_fs_cycle <= _fs_cycles and _fs_left > 0

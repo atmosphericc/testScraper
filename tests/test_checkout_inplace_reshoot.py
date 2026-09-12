@@ -339,6 +339,86 @@ def test_fast_selling_rehold_stops_when_budget_spent():
         os.environ.pop("TARGET_FAST_SELLING_HOLD_TOTAL_S", None)
 
 
+# ── 2026-09-11 won-cart ride (executor side) ─────────────────────────────────
+def _ride_env(ride, cycles, total_s):
+    os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "0.1"
+    os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+    os.environ["TARGET_WON_CART_RIDE"] = ride
+    os.environ["TARGET_FAST_SELLING_HOLD_CYCLES"] = cycles
+    os.environ["TARGET_FAST_SELLING_HOLD_TOTAL_S"] = total_s
+
+
+def _ride_env_clear():
+    for k in ("TARGET_FAST_SELLING_COOLDOWN_S", "TARGET_WON_CART_RIDE",
+              "TARGET_FAST_SELLING_HOLD_CYCLES", "TARGET_FAST_SELLING_HOLD_TOTAL_S"):
+        os.environ.pop(k, None)
+
+
+def test_won_cart_ride_extends_cycles_and_signals_manager():
+    """RIDE=1: 6 holds ride out FS forever (shot + 6 re-shoots = 7), RETRY_N=4
+    does NOT cap it (widened on the FS first shot), and the executor publishes
+    a ride deadline so the manager extends its 150 s wait."""
+    _ride_env("1", "6", "270")
+    try:
+        ex, c = _make_executor([_R(429, "http_429")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        ru = getattr(ex, "_won_cart_ride_until", 0.0)
+        assert r is False and c["api"] == 7 and ru > 0, f"r={r} api={c['api']} ride_until={ru}"
+    finally:
+        _ride_env_clear()
+
+
+def test_won_cart_ride_off_never_signals_and_keeps_retry_cap():
+    """RIDE=0: no manager extension is possible, so the executor must never
+    publish a ride deadline; RETRY_N=4 keeps its cap (shot + 4 re-shoots)."""
+    _ride_env("0", "6", "270")
+    try:
+        ex, c = _make_executor([_R(429, "http_429")])
+        ex._checkout_reject_status = 429
+        ex._checkout_reject_reason = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        r = asyncio.run(ex._place_order(_FakeTab("https://www.target.com/checkout/start")))
+        ru = getattr(ex, "_won_cart_ride_until", 0.0)
+        assert r is False and c["api"] == 5 and ru == 0.0, f"r={r} api={c['api']} ride_until={ru}"
+    finally:
+        _ride_env_clear()
+
+
+def test_won_cart_ride_timeout_helper_never_shortens_and_caps():
+    """_extend_purchase_timeout: never earlier than start+140 s, never later
+    than start+RIDE_MAX_S-10 s, no-op (0.0) with no purchase in flight."""
+    import time as _t
+    os.environ["TARGET_WON_CART_RIDE_MAX_S"] = "300"
+    try:
+        ex, _ = _make_executor([_R(200, "ok", True, "OID")])
+        seen = {}
+
+        class _Ctx:
+            def reschedule(self, when):
+                seen["when"] = when
+
+        async def _go():
+            loop = asyncio.get_running_loop()
+            start = _t.time()
+            ex._execute_started_at = start
+            ex._purchase_timeout_ctx = _Ctx()
+            t1 = ex._extend_purchase_timeout(start + 50)      # too early → 140
+            d1 = seen["when"] - loop.time()
+            t2 = ex._extend_purchase_timeout(start + 10_000)  # too late → 290
+            d2 = seen["when"] - loop.time()
+            ex._purchase_timeout_ctx = None
+            t3 = ex._extend_purchase_timeout(start + 200)     # nothing in flight
+            return t1 - start, d1, t2 - start, d2, t3
+
+        a, d1, b, d2, t3 = asyncio.run(_go())
+        assert abs(a - 140) < 1 and abs(d1 - 140) < 2, f"never-shorter: {a} {d1}"
+        assert abs(b - 290) < 1 and abs(d2 - 290) < 2, f"cap: {b} {d2}"
+        assert t3 == 0.0, f"no-op expected, got {t3}"
+    finally:
+        os.environ.pop("TARGET_WON_CART_RIDE_MAX_S", None)
+
+
 def test_fast_selling_hold_kill_switch_restores_bail():
     """TARGET_FAST_SELLING_HOLD_CART=0 restores the 07-21 zero-re-shoot bail."""
     os.environ["TARGET_FAST_SELLING_COOLDOWN_S"] = "5"

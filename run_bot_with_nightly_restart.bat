@@ -397,8 +397,14 @@ REM  re-shot once, hit FAST_SELLING again and was CLEARED while the item stayed 
 REM  stock 11+ min. Re-hold the WON cart up to N cycles inside a wall-clock budget
 REM  (must stay under the manager 150 s future). Kill-switch (exact prior, one hold):
 REM  set TARGET_FAST_SELLING_HOLD_CYCLES=1
-set TARGET_FAST_SELLING_HOLD_CYCLES=2
-set TARGET_FAST_SELLING_HOLD_TOTAL_S=80
+REM  WON-CART RIDE (2026-09-11): with TARGET_WON_CART_RIDE=1 the manager extends its 150 s
+REM  future wait (up to RIDE_MAX_S) ONLY while the executor is holding a live won cart, and
+REM  the 200 s force-complete respects it, so the hold can ride ~6 x 45 s. "Keep submitting
+REM  and let it ride." Kill-switch: set TARGET_WON_CART_RIDE=0 (holds then clamp to 80 s).
+set TARGET_WON_CART_RIDE=1
+set TARGET_WON_CART_RIDE_MAX_S=300
+set TARGET_FAST_SELLING_HOLD_CYCLES=6
+set TARGET_FAST_SELLING_HOLD_TOTAL_S=270
 
 REM ---------------------------------------------------------------------------
 REM  CDP-backpressure guard (2026-07-20). Overnight 07-19 the session sentinel

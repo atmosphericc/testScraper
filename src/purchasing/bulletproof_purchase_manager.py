@@ -595,7 +595,11 @@ class BulletproofPurchaseManager:
                             _force_s = max(120.0, float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110')) + 90.0)
                         except ValueError:
                             _force_s = 200.0
-                        if elapsed_time > _force_s:
+                        # 2026-09-11 won-cart ride: never force-finalize a purchase
+                        # whose executor is still holding a live won cart (the
+                        # wait helper stamps 'ride_until' on the state).
+                        if self._force_complete_due(elapsed_time, _force_s,
+                                                    state.get('ride_until'), current_time):
                             print(f"[PURCHASE_FORCE_COMPLETE] {tcin} REAL purchase timeout after {elapsed_time:.1f}s, forcing completion")
                             final_outcome = 'failed'
                             self._finalize_purchase_unsafe(tcin, state, final_outcome, states)
@@ -1338,8 +1342,10 @@ class BulletproofPurchaseManager:
                                 target_purchase_executor.execute_purchase(tcin, quantity=qty)
                             )
 
-                        # Wait for result with timeout
-                        result = future.result(timeout=150)
+                        # Wait for result with timeout. 2026-09-11: extended ONLY
+                        # while the executor reports a live WON cart hold (won-cart
+                        # ride); otherwise identical to future.result(timeout=150).
+                        result = self._wait_purchase_result(future, target_purchase_executor, tcin)
 
                         print(f"[REAL_PURCHASE_THREAD] [OK] Purchase execution completed "
                               f"(attempt {_attempt_n}): {result}")
@@ -2319,6 +2325,74 @@ class BulletproofPurchaseManager:
             # Notify real-time updates
             if self.status_callback:
                 self.status_callback(tcin, 'ready', {'status': 'ready'})
+
+    # ── 2026-09-11 won-cart ride ─────────────────────────────────────────────
+    # The 09-11 drop's only ATC 201 was held 80 s at checkout and then cleared
+    # while the item stayed in stock 11+ min. Target's FAST_SELLING limiter
+    # clears on its own (<2 min on 07-21) and the vendor doctrine is "keep
+    # submitting and let it ride"; the thing stopping us was OUR 150 s
+    # future timeout (cancel + browser restart) and the 200 s force-complete.
+    # These let a purchase that is provably holding a won cart ride longer,
+    # bounded, and change nothing for any other purchase.
+    # Kill-switch: TARGET_WON_CART_RIDE=0 == exact prior behaviour.
+    @staticmethod
+    def _ride_extension_allowed(ride_until, now, waited_s, max_s, flag_on) -> bool:
+        """Pure: may the manager keep waiting past the 150 s wall? Only while
+        the executor reports a live won cart (ride_until in the future), the
+        flag is on and the total wait stays under the hard cap."""
+        try:
+            ru = float(ride_until or 0.0)
+        except (TypeError, ValueError):
+            return False
+        return bool(flag_on) and ru > now and waited_s < max_s
+
+    @staticmethod
+    def _force_complete_due(elapsed_s, force_s, ride_until, now) -> bool:
+        """Pure: force-finalize an 'attempting' REAL purchase? Never while a
+        ride deadline stamped by _wait_purchase_result is still in the future."""
+        try:
+            ru = float(ride_until or 0.0)
+        except (TypeError, ValueError):
+            ru = 0.0
+        return elapsed_s > force_s and now >= ru
+
+    def _wait_purchase_result(self, future, executor, tcin):
+        """future.result(timeout=150), extended ONLY while the executor is
+        holding a live won cart. Re-raises TimeoutError exactly as before once
+        the ride is exhausted, so the existing cancel + browser-restart path
+        is untouched. Runs on the purchase thread, never under _state_lock
+        (the lock is taken only briefly to stamp 'ride_until')."""
+        _flag = os.environ.get('TARGET_WON_CART_RIDE', '1') == '1'
+        try:
+            _max = float(os.environ.get('TARGET_WON_CART_RIDE_MAX_S', '300'))
+        except ValueError:
+            _max = 300.0
+        t0 = time.time()
+        timeout = 150.0
+        while True:
+            try:
+                return future.result(timeout=timeout)
+            except TimeoutError:
+                now = time.time()
+                waited = now - t0
+                ride_until = getattr(executor, '_won_cart_ride_until', 0.0)
+                if not self._ride_extension_allowed(ride_until, now, waited, _max, _flag):
+                    raise
+                left = min(float(ride_until) - now, _max - waited)
+                print(f"[WON_CART_RIDE] {tcin}: executor is holding a live won cart "
+                      f"(ride ends in {float(ride_until) - now:.0f}s, waited {waited:.0f}s, "
+                      f"cap {_max:.0f}s) — extending the wait instead of cancelling + "
+                      f"restarting the browser")
+                try:
+                    with self._state_lock:
+                        states = self._load_states_unsafe()
+                        st = states.get(tcin)
+                        if st and st.get('status') == 'attempting':
+                            st['ride_until'] = float(ride_until)
+                            self._save_states_unsafe(states)
+                except Exception as _re:
+                    print(f"[WON_CART_RIDE] could not stamp ride_until: {_re}")
+                timeout = max(1.0, min(30.0, left))
 
     def get_all_states(self) -> Dict:
         """Get all purchase states for dashboard display (thread-safe)"""
