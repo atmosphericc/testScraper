@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random as _random
+import re
 from typing import Any, Dict, List, Optional
 
 
@@ -77,6 +78,64 @@ def _spoof_js_enabled() -> bool:
 # (primary/alt-1) suppress this JS spoof and present their own 148 engine UA, so
 # this only governs the login browsers and the business (real-Chrome) purchase arm.
 _CHROME_BUILDS: List[str] = ["152.0.7977.82"]
+
+# 2026-09-13: the pinned build drifted AGAIN (.82 pinned, 152.0.7977.84 installed) --
+# the fourth time (06-24, 08-21, 09-03, 09-13). Read the installed version from the
+# Chrome install dir at runtime instead; the list above is only the fallback when
+# nothing is found. TARGET_CHROME_VERSION=<a.b.c.d> forces a value (tests / other
+# hosts); TARGET_UA_AUTODETECT=0 restores the pinned-list behaviour.
+_CHROME_APP_DIRS: List[str] = [
+    r"C:\Program Files\Google\Chrome\Application",
+    r"C:\Program Files (x86)\Google\Chrome\Application",
+    os.path.join(os.environ.get("LOCALAPPDATA", "") or "", "Google", "Chrome", "Application"),
+]
+_installed_cache: Dict[str, Optional[str]] = {}
+
+
+def installed_chrome_version() -> Optional[str]:
+    """The installed real Chrome's full version ('152.0.7977.84') or None."""
+    forced = (os.environ.get("TARGET_CHROME_VERSION") or "").strip()
+    if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", forced):
+        return forced
+    if (os.environ.get("TARGET_UA_AUTODETECT", "1") or "1").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if "v" in _installed_cache:
+        return _installed_cache["v"]
+    found: List[str] = []
+    for d in _CHROME_APP_DIRS:
+        try:
+            if d and os.path.isdir(d):
+                found += [n for n in os.listdir(d)
+                          if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", n) and os.path.isdir(os.path.join(d, n))]
+        except OSError:
+            continue
+    if not found:
+        _installed_cache["v"] = None
+        return None
+    found.sort(key=lambda v: [int(x) for x in v.split(".")])
+    _installed_cache["v"] = found[-1]
+    return found[-1]
+
+
+def reset_installed_cache() -> None:
+    _installed_cache.clear()
+
+
+def ua_mode() -> str:
+    """TARGET_UA_MODE: 'legacy' (default = the pre-09-13 CDP User-Agent override with a
+    FULL-version UA string and a GREASE-less brand list) or 'engine' (no UA/brand
+    override at all: the tab keeps the real Chrome's reduced 'Chrome/<major>.0.0.0'
+    UA and its real sec-ch-ua brand list, byte-identical to the harvest/warmup tabs
+    that mint the Shape sensor). 2026-09-13 (09-11 forensics): the purchase tab
+    presented 'Chrome/152.0.7977.82' while the harvest tab whose banked sensor it
+    replayed had sent 'Chrome/152.0.0.0' + '"Not?A_Brand";v="24"' -- two identities
+    inside one browser. Real Chrome 101+ never sends a full-version UA header."""
+    m = (os.environ.get("TARGET_UA_MODE") or "legacy").strip().lower()
+    return "engine" if m == "engine" else "legacy"
+
+
+class _EngineMode(Exception):
+    """Internal: apply_identity skips the UA override in engine mode."""
 
 # (UA platform token, navigator.platform, UA-CH platform, UA-CH platformVersion)
 # Windows-only: the host is Windows 11, and "macOS-on-Windows" is an incoherent
@@ -126,11 +185,17 @@ def build_identity(account_id: str, timezone: Optional[str] = None) -> Dict[str,
     """
     rng = _seeded_rng(account_id)
     ua_platform, nav_platform, ch_platform, ch_platform_version = rng.choice(_PLATFORMS)
-    build = rng.choice(_CHROME_BUILDS)
+    build = rng.choice(_CHROME_BUILDS)     # keeps the seeded draw order stable
+    _inst = installed_chrome_version()
+    if _inst:
+        build = _inst                      # 2026-09-13: track the installed build
     major = build.split(".")[0]
+    _mode = ua_mode()
+    # engine mode: exactly what real Chrome puts on the wire (UA reduction, 101+)
+    _ua_ver = f"{major}.0.0.0" if _mode == "engine" else build
     ua = (
         f"Mozilla/5.0 ({ua_platform}) AppleWebKit/537.36 "
-        f"(KHTML, like Gecko) Chrome/{build} Safari/537.36"
+        f"(KHTML, like Gecko) Chrome/{_ua_ver} Safari/537.36"
     )
     viewport = rng.choice(_VIEWPORTS)
     tz = timezone or rng.choice(_TIMEZONES)
@@ -139,6 +204,7 @@ def build_identity(account_id: str, timezone: Optional[str] = None) -> Dict[str,
         "user_agent": ua,
         "ua_full_version": build,
         "ua_major_version": major,
+        "ua_mode": _mode,
         "platform": nav_platform,
         "ua_ch_platform": ch_platform,
         "ua_ch_platform_version": ch_platform_version,
@@ -223,6 +289,12 @@ async def apply_identity(tab, identity: Dict[str, Any]) -> Dict[str, bool]:
 
     # 1) User-Agent (+ UA Client Hints metadata so navigator.userAgentData agrees)
     try:
+        # 2026-09-13 engine mode: SKIP the override. Real Chrome already sends the
+        # reduced UA + its own brand list (with the GREASE entry this metadata never
+        # carried), and that is exactly what the harvest/warmup tabs -- where the
+        # Shape sensor is minted -- present. One identity per browser, no per-tab drift.
+        if str(identity.get("ua_mode") or ua_mode()) == "engine":
+            raise _EngineMode()
         ua_metadata = None
         try:
             ua_metadata = cdp.emulation.UserAgentMetadata(
@@ -248,6 +320,9 @@ async def apply_identity(tab, identity: Dict[str, Any]) -> Dict[str, bool]:
             user_agent_metadata=ua_metadata,
         ))
         results["user_agent"] = True
+    except _EngineMode:
+        results["user_agent"] = False
+        results["ua_mode"] = "engine"      # the engine's real UA + brands stay in force
     except Exception:
         results["user_agent"] = False
 

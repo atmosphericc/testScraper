@@ -197,6 +197,18 @@ REM (they collide on WebGL/canvas/audio regardless). The CDP UA/timezone/locale/
 REM viewport overrides (which _px3's UA-signature and login rely on) stay ON via
 REM TARGET_APPLY_FINGERPRINT=1 above. Restore the JS spoof (pre-09-08): =1.
 set TARGET_SPOOF_JS=0
+REM 2026-09-13 UA coherence (docs/FAILURES.md 2026-09-13): with APPLY_FINGERPRINT=1
+REM  the purchase tab got a CDP User-Agent override carrying a FULL-version UA
+REM  ("Chrome/152.0.7977.82" -- real Chrome 101+ only ever sends "152.0.0.0") and a
+REM  brand list without the GREASE entry, while the harvest + warmup tabs (new tabs,
+REM  never overridden) sent the real reduced UA + "Not?A_Brand";v="24" -- so the
+REM  banked sensor was minted under one UA and replayed under another, and the
+REM  pinned build had drifted again (.82 pinned, .84 installed). engine = no UA/brand
+REM  override at all (tz/locale/viewport overrides stay); the identity's build now
+REM  auto-tracks the installed Chrome (TARGET_UA_AUTODETECT=0 pins the list again).
+REM  hand_login_all.bat sets the SAME mode so the jars mint under the same UA --
+REM  keep the two bats in sync. Rollback: set TARGET_UA_MODE=legacy.
+set TARGET_UA_MODE=engine
 REM fp-chromium: engine-level distinct device per account on the PURCHASE side only (login stays real Chrome via RELOGIN_SKIP_PROXY). Master switch is set BELOW (09-03: OFF).
 REM  2026-08-21 A/B (post-mortem in docs/FAILURES.md 08-21): every win in history
 REM  (07-24/07-28/07-31/08-04) was on REAL Chrome + the real profile; every drop
@@ -760,6 +772,27 @@ REM  - ATC_BYTEMATCH sends the page's own ATC URL (%%2C + key=) on the fast lane
 set TARGET_HARVEST_MAX_REPLAY_AGE_S=100
 set TARGET_HARVEST_PREFER_SHIPPING=1
 set TARGET_ATC_BYTEMATCH=1
+REM 2026-09-13 (docs/FAILURES.md 2026-09-13, run_20260911 per-shot forensics):
+REM  EVERY win in history rode a SMALL first-click Shape set (no -a0 chunk). The
+REM  harvest tab clicked the same PDP document for ~15 min between reloads, so the
+REM  sensor overflowed its 7,900-char -a into -a0 with ~13 min of synthetic
+REM  click/move telemetry; those a0=yes sets went 0/14 on limiter-passing shots
+REM  (12x401 on the two BD accounts, 431+503 on home-IP primary) and the night's
+REM  ONLY 201 (05:19:54) rode a set captured 2 s after a PDP reload (a0=no). The
+REM  -a0 bytes are also what pushed 380 cart_items POSTs over the edge's 431
+REM  header cap. FRESH_PAGE reloads the PDP before every harvest click so each
+REM  banked set is a first-click set; _LIVE=1 allows those reloads during a live
+REM  window (wave re-entries need fresh sets too; =0 restores the no-nav-mid-
+REM  purchase rule if [WEDGE-PROBE]/TAB_HEALTH lines cluster around reloads);
+REM  MIN_GAP bounds the PDP load rate on the exit; PREFER_NO_A0 makes the shot
+REM  take the freshest replayable a0=no set over a fresher bloated one. Every
+REM  CAPTURED / REPLAY / 431 line now carries hdr_bytes= (cookie / shape / a0)
+REM  so 09-16 tells us the edge cap. grep: "fresh page: reloading", "a0_len=",
+REM  "req_bytes=". Kill: TARGET_HARVEST_FRESH_PAGE=0 (exact prior behaviour).
+set TARGET_HARVEST_FRESH_PAGE=1
+set TARGET_HARVEST_FRESH_PAGE_LIVE=1
+set TARGET_HARVEST_FRESH_PAGE_MIN_GAP_S=15
+set TARGET_HARVEST_PREFER_NO_A0=1
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

@@ -384,7 +384,8 @@ class SessionManager:
                     _identity = build_identity(self.account_id, timezone=self.account_timezone)
                     _applied = await apply_identity(self._active_tab, _identity)
                     print(f"[SESSION_INIT] Per-account identity applied for "
-                          f"{self.account_id}: {_applied} (tz={_identity.get('timezone')})")
+                          f"{self.account_id}: {_applied} (tz={_identity.get('timezone')} "
+                          f"ua_mode={_identity.get('ua_mode')} ua={_identity.get('user_agent')})")
                 except Exception as _id_err:
                     self.logger.warning(f"[FINGERPRINT] apply_identity failed (non-fatal): {_id_err}")
                     print(f"[SESSION_INIT] [WARN] apply_identity failed: {_id_err}")
@@ -406,8 +407,10 @@ class SessionManager:
                 live_ua = await self._active_tab.evaluate("navigator.userAgent")
                 if live_ua and isinstance(live_ua, str) and "Mozilla" in live_ua:
                     self.fingerprint_data['user_agent'] = live_ua
-                    self.logger.info(f"[FINGERPRINT] Live UA read from browser: {live_ua[:80]}")
-                    print(f"[SESSION_INIT] UA synced from live Chrome: {live_ua[:80]}")
+                    # 2026-09-13: log the WHOLE string -- the version token sits past
+                    # char 80, and it is the one thing the 09-11 audit could not read.
+                    self.logger.info(f"[FINGERPRINT] Live UA read from browser: {live_ua[:200]}")
+                    print(f"[SESSION_INIT] UA synced from live Chrome: {live_ua[:200]}")
                 else:
                     self.logger.warning("[FINGERPRINT] Could not read live UA — keeping generated value")
             except Exception as _ua_err:

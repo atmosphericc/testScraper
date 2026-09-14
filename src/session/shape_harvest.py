@@ -125,6 +125,23 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         # 2026-09-09 audit #10: select the Shipping fulfillment cell once per PDP nav
         # so the harvested add is a SHIPPING add (captures were STORE_PICKUP).
         "prefer_shipping": str(e.get("TARGET_HARVEST_PREFER_SHIPPING", "1")).strip() != "0",
+        # 2026-09-13 (09-11 forensics, docs/FAILURES.md): EVERY historical win used a
+        # SMALL first-click Shape set (no -a0). A long-lived harvest tab piles synthetic
+        # click/move telemetry into the sensor until it overflows the 7,900-char -a
+        # chunk into -a0 (~13 min after each page load); those bloated sets went 0/14
+        # on limiter-passing shots on 09-11 and trip the edge's 431 header cap, while
+        # the night's only 201 rode a set captured 2 s after a PDP reload. fresh_page
+        # reloads the PDP before every harvest click so each banked set is a
+        # first-click set. Kill: TARGET_HARVEST_FRESH_PAGE=0 (exact prior behaviour).
+        "fresh_page": str(e.get("TARGET_HARVEST_FRESH_PAGE", "0")).strip() == "1",
+        # Reloads are also allowed while a purchase is live (wave re-entries 55-70 s
+        # apart need fresh sets too); =0 keeps the "never navigate mid-purchase" rule.
+        "fresh_page_live": str(e.get("TARGET_HARVEST_FRESH_PAGE_LIVE", "1")).strip() != "0",
+        # Never reload more often than this (a PDP load is real traffic on the exit).
+        "fresh_page_min_gap_s": _float(e, "TARGET_HARVEST_FRESH_PAGE_MIN_GAP_S", 15.0, 0.0, 600.0),
+        # At shot time prefer the freshest replayable set WITHOUT -a0 over a fresher
+        # bloated one (belt-and-braces next to fresh_page).
+        "prefer_no_a0": str(e.get("TARGET_HARVEST_PREFER_NO_A0", "0")).strip() == "1",
     }
 
 
@@ -161,6 +178,32 @@ def sensor_a_len(headers: Dict[str, str], prefix: Optional[str] = None) -> int:
         if str(k).lower() == p + "a":
             return len(str(v))
     return 0
+
+
+def header_bytes(headers: Any, prefix: Optional[str] = None) -> Dict[str, int]:
+    """Approximate wire size of a request header set (dict or (name, value) pairs):
+    total = name + value + ': ' + CRLF per header, plus the Cookie value, the whole
+    Shape X-* set and the -a / -a0 chunks on their own. 2026-09-13: Target's edge
+    answered 431 (Request Header Fields Too Large) on 380 cart_items POSTs on 09-11,
+    one of them a limiter-passing real shot, and the banked sensor is the only size
+    knob we hold -- so every capture, replay and 431 now logs these numbers. Pure."""
+    items = headers.items() if hasattr(headers, "items") else list(headers or [])
+    hdrs = {str(k): str(v) for k, v in items}
+    p = prefix or shape_prefix(hdrs)
+    out = {"total": 0, "cookie": 0, "shape": 0, "a": 0, "a0": 0, "n": 0}
+    for k, v in hdrs.items():
+        out["total"] += len(k) + len(v) + 4
+        out["n"] += 1
+        kl = k.lower()
+        if kl == "cookie":
+            out["cookie"] += len(v)
+        elif p and kl.startswith(p):
+            out["shape"] += len(v)
+            if kl == p + "a":
+                out["a"] = len(v)
+            elif kl == p + "a0":
+                out["a0"] = len(v)
+    return out
 
 
 def shape_tokens(headers: Dict[str, str], prefix: Optional[str] = None) -> Dict[str, str]:
@@ -255,12 +298,23 @@ class ShapeBank:
         except (TypeError, ValueError):
             return 100.0
 
-    def pop_fresh(self, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    def pop_fresh(self, now: Optional[float] = None,
+                  prefer_no_a0: bool = False) -> Optional[Dict[str, Any]]:
         now = time.time() if now is None else now
         self.prune(now)
         if not self._items:
             return None
         _max_age = self.max_replay_age()
+        if prefer_no_a0:
+            # 2026-09-13: the freshest REPLAYABLE set without -a0 (a first-click set)
+            # beats a fresher bloated one; plain LIFO below when every replayable
+            # set carries -a0. A stale-only bank still falls through to the discard.
+            for idx in range(len(self._items) - 1, -1, -1):
+                it = self._items[idx]
+                if not it["a0"] and (_max_age <= 0 or (now - it["ts"]) <= _max_age):
+                    del self._items[idx]
+                    self.replayed += 1
+                    return it
         if _max_age > 0 and (now - self._items[-1]["ts"]) > _max_age:
             # 2026-09-09 (audit finding #1): the freshest set is past the replay
             # cap, so every older one is too. Until today they STAYED in the bank,

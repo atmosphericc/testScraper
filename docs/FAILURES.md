@@ -31,6 +31,70 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-13] - 09-11 per-shot forensics: the richer real-click Shape sets (a0=yes) went 0/14 on limiter-passing shots; every win in history rode a small FIRST-CLICK set — fresh-page harvest - TARGET
+**Symptom**: run_20260911_010759, 80 fast-lane chains rebuilt shot by shot (chain-done line + the
+preceding `[HARVEST/x] REPLAY` line): 63×429 (edge lottery), 13×401, 2×431, 1×503, 1×201. 75/80
+shots REPLAYED a real-click banked set (tokens=7, a0=yes, ages 2-91 s) — the harvester works. Of the
+shots that got PAST the limiter: business 0/6 (all 401), alt-1 0/7 (all 401), primary 503 + 431 +
+**201**. Sets carrying the `-a0` chunk: 0/14 (12×401 on the two Bright Data accounts, 431 + 503 on
+home-IP primary). Sets WITHOUT `-a0`: 1/2 — the 201 at 05:19:54 (age 2 s, tokens=6) and one 67-s-old
+business set (401). Every order in the repo's history (07-14 … 08-04) was signed by a set without
+`-a0` (the main-tab ATC carried it 0/53,950 times).
+**Root Cause**: `a0` tracks the harvest tab's PAGE AGE exactly. After every PDP (re)load the first
+capture is a0=no (a_len ≈ 7,700), then every capture for the next ~13 min is a0=yes — Shape chunks
+its sensor at 7,900 chars and the overflow is the accumulated SYNTHETIC telemetry of 9-move bezier
+clicks fired every ~40 s on the same document (1,400-1,650 captures/account/day). The harvester
+reloaded the PDP only every 900 s idle (`_harvest_rotate`), which is the 15-min a0 cycle visible in
+the log; the winning set was the first click after a 05:19:50 reload. Refract/Stellar harvesters
+mint one cookie per page load per click for the same reason ("cookie quality beats cookie count").
+The same overflow bytes are what pushed 380 cart_items POSTs over the edge's 431 header cap (see
+the 09-11 431 entry). Confound acknowledged: the 09-11 401s are ALSO perfectly split by exit (BD
+0/13 vs home 1/1) — this fix removes the sensor confound so 09-16 can read the exit cleanly.
+**Fix Applied** (all flag-gated, armed in the bat; kill = exact prior behaviour):
+`TARGET_HARVEST_FRESH_PAGE=1` — `_harvest_fresh_page()` reloads the PDP before any click on an
+already-clicked document (bounded 25 s, tab dropped + re-opened on failure, never raises);
+`TARGET_HARVEST_FRESH_PAGE_LIVE=1` allows those reloads inside a live window (wave re-entries 55-70 s
+apart need fresh sets too; =0 restores the no-nav-mid-purchase rule); `_MIN_GAP_S=15` bounds the
+PDP load rate (~60-70 loads/h/account idle — real traffic on the exit, watch alt-1's HUMAN-flagged
+168.158.x for `[PX-CHALLENGE]`); `TARGET_HARVEST_PREFER_NO_A0=1` — `ShapeBank.pop_fresh` hands the
+shot the freshest REPLAYABLE a0=no set over a fresher bloated one. Every CAPTURED / REPLAY line now
+carries `hdr_bytes=` (cookie / shape / a0) and `clicks_since_nav=`. `tests/test_shape_harvest.py`
+174/174 (8 new fresh-page tests incl. nav failure + live gating, bank preference, header sizes,
+wiring + bat pins); 19 adjacent suites unchanged.
+**Confidence**: high on the mechanism (page-age ↔ a0 is exact in 4,674 captures); medium on the
+payoff (n=1 pass vs 0/14, one drop; the exit confound remains until 09-16).
+**Outcome**: pending 09-16. First-run grep: `fresh page: reloading PDP` before nearly every
+`CAPTURED … a0=no`, `REPLAY on main shot … a0=no hdr_bytes=`, and per-identity P(2xx | not 429).
+
+### [2026-09-13] - Identity incoherence: full-version UA override on the purchase tab vs the real reduced UA on the sensor-minting tabs; pinned Chrome build drifted again; alt-1's exit sits in Phoenix under a Chicago browser clock - TARGET
+**Symptom**: (1) `[SESSION_INIT] Per-account identity applied … 'user_agent': True` on all three
+accounts, i.e. `Emulation.setUserAgentOverride` with `Chrome/152.0.7977.82` (a FULL-version UA —
+real Chrome 101+ only ever sends `152.0.0.0`) and a brand list without the GREASE entry — on the
+MAIN tab only. The harvest and warmup tabs are new targets that never get the override, and the
+wire dump (`REAL_ATC_SHAPE`) shows them sending `Chrome/152.0.0.0` + `"Chromium";v="152",
+"Not?A_Brand";v="24", "Google Chrome";v="152"`. So every replayed shot carried a sensor minted under
+one UA on a request wearing another. (2) `_CHROME_BUILDS` pinned `152.0.7977.82`; the installed
+Chrome is `152.0.7977.84` (fourth drift: 06-24, 08-21, 09-03, 09-13). (3) alt-1's exit
+168.158.32.64 geolocates to Mesa/Phoenix, AZ on ip-api, ipinfo and ipwho (America/Phoenix) while
+the browser was forced to America/Chicago; business's 31.98.158.87 = Dallas (Chicago) — coherent.
+**Root Cause**: the identity module predates the harvester; it assumed one tab per browser. UA
+reduction was never modelled. The tz was copied from the home account to every account.
+**Fix Applied**: `TARGET_UA_MODE=engine` (bat + `hand_login_all.bat`, so jars mint under the same
+UA): `apply_identity` skips the UA/brand override entirely — the tab keeps the engine's own reduced
+UA and real brand list, byte-identical to the harvest/warmup tabs; tz/locale/viewport overrides
+unchanged; `legacy` restores the prior override. `account_identity.installed_chrome_version()`
+reads the installed build from the Chrome install dir (seeded draw order preserved, so viewport/hw/
+canvas seeds are unchanged; `TARGET_CHROME_VERSION` forces, `TARGET_UA_AUTODETECT=0` pins the list
+again). `config/target_accounts.json`: alt-1 timezone → America/Phoenix (re-hand-login before the
+drop as always). `preflight_fp_drop.py`: the build check now reads what `build_identity` would
+present, and each proxied account's exit is geolocated and compared to its configured timezone
+(`--no-net` skips it). `session_manager` logs the whole live UA (was cut at 80 chars — the version
+token was never visible). New `tests/test_ua_engine_mode.py` 37/37.
+**Confidence**: high that these are real incoherences; low-medium that any of them was the
+09-11 gate (primary passed with the same UA mismatch). Free to fix, zero downside seen.
+**Outcome**: pending 09-16. Grep: `ua_mode=engine ua=Mozilla/5.0 … Chrome/152.0.0.0` on all three
+`Per-account identity applied` lines; preflight `exit … matches configured timezone`.
+
 ### [2026-09-11] - 09-11 drop 0-for: level re-arm was DEAD in production (projection dropped the breadcrumb) — long in-stock windows fired ~1 wave - TARGET
 **Symptom**: run_20260911_010759 (01:07→20:06). The 30th Celebration preorders published as
 `PRE_ORDER_SELLABLE` in 13 stock windows between 02:10 and 05:33 (bundle 1011407490 ×8, mini tin
@@ -117,7 +181,13 @@ transiently large PX/queue cookie during traffic. The post-12:00 drop-off is une
 scoring). Next step is a diagnostic: on a 431, log the outgoing request's total header bytes, Cookie
 bytes and largest X-header — then prune or shrink accordingly.
 **Confidence**: high that 431 is real and edge-side; low on mechanism.
-**Outcome**: OPEN. Minor during the 02-05 drop window (4 real shots); worsens over a long soak.
+**Outcome**: 2026-09-13 — mechanism narrowed + diagnostic shipped. The only header that GROWS is
+the Shape `-a0` overflow chunk, present only after the harvest/warmup page has been clicked
+repeatedly on one document (see the 2026-09-13 fresh-page entry); the Cookie header sat at a flat
+5.0-5.3 KB and `-a` is capped at 7,900. Fresh-page harvesting removes `-a0` from real shots, and
+every CAPTURED / REPLAY / 431 line now logs `hdr_bytes` / `cookie` / `a0` (`req_bytes=` on the 431
+response line) so 09-16 pins the edge cap. Warmup-tab 431s remain (page-signed dummy POSTs on a
+long-lived /cart tab) — harmless, they cost no ticket.
 
 ### [2026-09-10] - The ~68-min CDP wedge is PROXY-correlated, not occlusion; the [WEDGE-PROBE] settled it, and two flag-gated mitigations de-risk the drop - TARGET
 **Symptom**: run_20260910 (18 h, 01:37→19:25, NO drop) wedged the account Chromes 32 times

@@ -61,26 +61,31 @@ except Exception as e:
 # major (a mismatch is the exact Shape login-block vector from 06-24; it went
 # unnoticed on 08-21 when Chrome auto-updated 150->151). Warn on drift so it is
 # caught before the drop, not after.
+# 2026-09-13: the identity now auto-tracks the installed build (account_identity.
+# installed_chrome_version) and TARGET_UA_MODE=engine drops the UA override entirely,
+# so this check reads what build_identity would actually present.
 try:
-    import re as _re, glob as _glob
-    from src.session.account_identity import _CHROME_BUILDS as _BUILDS
-    _spoof_major = str(_BUILDS[0]).split('.')[0]
-    _real_major = None
-    _appdir = r'C:\Program Files\Google\Chrome\Application'
-    _vers = [os.path.basename(p) for p in _glob.glob(_appdir + r'\*')
-             if _re.fullmatch(r'\d+\.\d+\.\d+\.\d+', os.path.basename(p))]
-    if _vers:
-        _vers.sort(key=lambda v: [int(x) for x in v.split('.')])
-        _real_major = _vers[-1].split('.')[0]
-    if _real_major is None:
-        warn(f"could not read installed Chrome version under {_appdir}; verify account_identity major {_spoof_major} matches it by hand")
-    elif _real_major == _spoof_major:
-        ok(f"account_identity UA major {_spoof_major} matches installed Chrome {_vers[-1]}")
+    from src.session.account_identity import (installed_chrome_version as _icv, build_identity as _bi,
+                                              ua_mode as _uam, _CHROME_BUILDS as _BUILDS)
+    _inst = _icv()
+    _ident = _bi('primary', 'America/Chicago')
+    _mode = _uam()
+    if _inst is None:
+        warn(f"could not read the installed Chrome version (TARGET_CHROME_VERSION unset, no version dir found); "
+             f"identity falls back to the pinned list {_BUILDS} -- verify by hand")
+    elif _ident.get('ua_full_version') == _inst:
+        ok(f"identity build {_ident.get('ua_full_version')} == installed Chrome {_inst} (auto-detected)")
     else:
-        fail(f"account_identity UA major {_spoof_major} != installed Chrome major {_real_major} ({_vers[-1]}) "
-             f"-- update src/session/account_identity.py _CHROME_BUILDS to {_vers[-1]} and re-run hand_login_all.bat")
+        fail(f"identity build {_ident.get('ua_full_version')} != installed Chrome {_inst} "
+             f"(TARGET_UA_AUTODETECT off and the pinned list is stale?)")
+    if _mode == 'engine':
+        ok(f"TARGET_UA_MODE=engine: no UA/brand override; the tab presents the real Chrome UA "
+           f"(identity would send '{_ident.get('user_agent')}')")
+    else:
+        warn("TARGET_UA_MODE is legacy here (the bats set engine): run this from the bat's environment or "
+             "set TARGET_UA_MODE=engine -- a legacy login jar + engine purchase browser = two UAs")
 except Exception as e:
-    warn(f"Chrome-major coherence check skipped: {e}")
+    warn(f"Chrome-build coherence check skipped: {e}")
 try:
     from src.purchasing.worker_pool import _build_worker_configs_from_accounts
     from harvest_accounts import load_accounts
@@ -109,6 +114,32 @@ try:
             fail(f"{aid}: MISSING/invalid cvv — checkout WILL fail for this account")
         if str(a.get('proxy_url', '')).strip():
             ok(f"{aid}: has a purchase proxy_url")
+            # 2026-09-13: the browser's forced timezone must match the EXIT's geo
+            # (alt-1's 168.158.32.64 sits in Phoenix while the browser said Chicago;
+            # a tz/IP mismatch is a textbook proxy signal). ip-api is best-effort:
+            # --no-net skips it, any failure is a WARN, never a FAIL.
+            if '--no-net' not in sys.argv:
+                try:
+                    import re as _re2, urllib.request as _ur
+                    _m = _re2.search(r'-ip-(\d+\.\d+\.\d+\.\d+)', str(a.get('proxy_url', '')))
+                    if _m:
+                        _ip = _m.group(1)
+                        with _ur.urlopen(f"http://ip-api.com/json/{_ip}?fields=status,city,regionName,timezone",
+                                         timeout=6) as _r:
+                            _g = json.loads(_r.read().decode('utf-8', 'replace'))
+                        _want = str(a.get('timezone') or '').strip()
+                        if _g.get('status') == 'success' and _g.get('timezone'):
+                            if _want == _g['timezone']:
+                                ok(f"{aid}: exit {_ip} = {_g.get('city')}, {_g.get('regionName')} "
+                                   f"({_g['timezone']}) matches configured timezone")
+                            else:
+                                warn(f"{aid}: exit {_ip} = {_g.get('city')}, {_g.get('regionName')} "
+                                     f"({_g['timezone']}) but configured timezone is {_want or '(none)'} "
+                                     f"-- set it to {_g['timezone']} (then hand-login again)")
+                        else:
+                            warn(f"{aid}: exit {_ip} geo lookup returned no timezone")
+                except Exception as _ge:
+                    warn(f"{aid}: exit timezone check skipped ({type(_ge).__name__}: {_ge})")
         else:
             warn(f"{aid}: empty proxy_url -> exits HOME IP (shared-IP 429 risk if others also empty)")
     if _loaders:

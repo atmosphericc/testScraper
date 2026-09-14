@@ -337,6 +337,13 @@ class PurchaseExecutor:
         self._harvest_miss: int = 0
         self._harvest_nocap: int = 0
         self._harvest_stats: Dict[str, int] = {'captured': 0, 'no_tokens': 0}
+        # 2026-09-13 fresh-page harvest (shape_harvest.config 'fresh_page'): clicks
+        # dispatched on the current PDP document, last reload time, counters, and
+        # the per-tab size of the last cart_items POST we sent (431 forensics).
+        self._harvest_clicks_since_nav: int = 0
+        self._harvest_last_reload_ts: float = 0.0
+        self._harvest_fresh_stats: Dict[str, int] = {'reloads': 0, 'gap_skips': 0, 'live_skips': 0, 'failed': 0}
+        self._last_req_hdr_bytes: Dict[str, Dict[str, Any]] = {}
         # 2026-09-09 hidden-tab root cause (see shape_harvest.human_click):
         self._harvest_click_timeouts: int = 0
         self._harvest_vis_state: str = ''      # last logged visibility verdict ('' = not probed yet)
@@ -953,6 +960,14 @@ class PurchaseExecutor:
                             _atc_resp_msg = (f"[ATC_RESP] status={status} method=POST "
                                              f"tgt-cart-error-key={_err_key} "
                                              f"x-request-id={_req_id_hdr} url=cart_items")
+                            if status == 431:
+                                # 2026-09-13: Request Header Fields Too Large -- say how big
+                                # the request we sent on this tab was (dict reads only; the
+                                # stash is written in the request branch).
+                                _rb = (getattr(self, '_last_req_hdr_bytes', None) or {}).get(label) or {}
+                                _atc_resp_msg += (f" | req_bytes={_rb.get('total', '?')} cookie={_rb.get('cookie', '?')} "
+                                                  f"shape={_rb.get('shape', '?')} a={_rb.get('a', '?')} "
+                                                  f"a0={_rb.get('a0', '?')} replayed={'yes' if _rb.get('replayed') else 'no'}")
                         except Exception as _atc_resp_err:
                             self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
@@ -980,6 +995,23 @@ class PurchaseExecutor:
                         except Exception as _hr_err:
                             _override_headers = None
                             print(f"[INTERCEPTOR:{label}] harvest replay lookup failed (non-fatal): {_hr_err}")
+                        # 2026-09-13 431 forensics: remember the size of the cart_items
+                        # POST we are about to send on this tab (replayed or page-signed)
+                        # so a 431 response can name it. Dict reads only; never raises.
+                        try:
+                            if _override_headers:
+                                _sz_src = [(getattr(_e, 'name', None) if hasattr(_e, 'name') else _e[0],
+                                            getattr(_e, 'value', None) if hasattr(_e, 'value') else _e[1])
+                                           for _e in _override_headers]
+                            else:
+                                _sz_src = headers
+                            _sz = _shape_harvest.header_bytes(_sz_src)
+                            _sz['replayed'] = bool(_override_headers)
+                            if not isinstance(getattr(self, '_last_req_hdr_bytes', None), dict):
+                                self._last_req_hdr_bytes = {}
+                            self._last_req_hdr_bytes[label] = _sz
+                        except Exception:
+                            pass
                     shape_headers = [h for h in header_names if h.lower().startswith('x-')]
                     # FIX 2: only cache POST — GET/OPTIONS/PUT don't carry Shape tokens
                     if method == 'POST' and headers:
@@ -1643,7 +1675,7 @@ class PurchaseExecutor:
         else:
             return None
         _stale_before = self._shape_bank.stale
-        entry = self._shape_bank.pop_fresh()
+        entry = self._shape_bank.pop_fresh(prefer_no_a0=bool(self._harvest_cfg.get('prefer_no_a0')))
         if entry is None:
             if label == 'main':
                 if self._shape_bank.stale > _stale_before:
@@ -1674,9 +1706,12 @@ class PurchaseExecutor:
             if entry['a0']:
                 self._harvest_win['a0'] += 1
         age = time.time() - entry['ts']
-        self._harvest_last_replay = {'ts': time.time(), 'age': age, 'a0': entry['a0'], 'label': label}
+        _hb = _shape_harvest.header_bytes(merged)
+        self._harvest_last_replay = {'ts': time.time(), 'age': age, 'a0': entry['a0'], 'label': label,
+                                     'bytes': _hb['total'], 'cookie': _hb['cookie'], 'a0_len': _hb['a0']}
         self._harvest_log(f"REPLAY on {label} shot: banked set age={age:.0f}s tokens={len(entry['tokens'])} "
                           f"a0={'yes' if entry['a0'] else 'no'} src_tcin={entry['meta'].get('tcin', '?')} "
+                          f"hdr_bytes={_hb['total']} (cookie={_hb['cookie']} shape={_hb['shape']} a0={_hb['a0']}) "
                           f"| {self._shape_bank.summary()}")
         return [cdp.fetch.HeaderEntry(name=k, value=v) for k, v in merged]
 
@@ -1718,8 +1753,11 @@ class PurchaseExecutor:
             ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin, 'url': url[:160], 'body': post_data[:300]})
             self._harvest_stats['captured' if ok else 'no_tokens'] += 1
             a0 = any(str(k).lower().endswith('-a0') for k in toks)
+            _hb = _shape_harvest.header_bytes(headers)
             self._harvest_log(f"CAPTURED{'' if ok else ' (NO Shape tokens — not banked)'} tokens={len(toks)} "
                               f"a0={'yes' if a0 else 'no'} a_len={_shape_harvest.sensor_a_len(headers)} "
+                              f"a0_len={_hb['a0']} hdr_bytes={_hb['total']} cookie={_hb['cookie']} "
+                              f"clicks_since_nav={getattr(self, '_harvest_clicks_since_nav', 0)} "
                               f"hdrs={len(headers)} url={url[:120]} "
                               f"body={post_data[:200]!r} | {self._shape_bank.summary()}")
             if ok and not self._harvest_first_capture_logged:
@@ -1925,6 +1963,7 @@ class PurchaseExecutor:
             self._harvest_tcin = tcin
             self._harvest_tab_nav_ts = time.time()
             self._harvest_last_xy = None
+            self._harvest_clicks_since_nav = 0
             self._harvest_log(f"harvest tab ready on {tcin} (url={tab.url})")
             return tab
         except Exception as e:
@@ -1964,15 +2003,62 @@ class PurchaseExecutor:
             self._harvest_tcin = tcin
             self._harvest_tab_nav_ts = time.time()
             self._harvest_last_xy = None
+            self._harvest_clicks_since_nav = 0
         except Exception as e:
             self._harvest_log(f"PDP nav failed ({type(e).__name__}: {e}) — dropping harvest tab")
             await self._harvest_drop_tab("PDP nav failed")
+
+    async def _harvest_fresh_page(self, tab, live: bool) -> bool:
+        """2026-09-13 (TARGET_HARVEST_FRESH_PAGE): reload the harvest PDP before a
+        click whenever this document has already been clicked, so the NEXT capture
+        is a first-click Shape set (no -a0 overflow). 09-11 forensics: a0 tracks the
+        page's age exactly (first capture after every reload = a0=no, every capture
+        for the next ~13 min = a0=yes); a0=yes sets went 0/14 on limiter-passing
+        shots and drew the edge's 431s, the night's only 201 rode a 2-s-old
+        first-click set. Returns False only when a NEEDED reload failed (the tab is
+        dropped and re-opens on the next cycle). Never raises."""
+        cfg = self._harvest_cfg
+        if not cfg.get('fresh_page') or tab is None:
+            return True
+        if self._harvest_clicks_since_nav <= 0:
+            return True                     # already a fresh document
+        if live and not cfg.get('fresh_page_live', True):
+            self._harvest_fresh_stats['live_skips'] += 1
+            return True                     # operator kept the no-nav-mid-purchase rule
+        now = time.time()
+        gap = float(cfg.get('fresh_page_min_gap_s', 15.0) or 0.0)
+        if gap > 0 and (now - self._harvest_last_reload_ts) < gap:
+            self._harvest_fresh_stats['gap_skips'] += 1
+            return True                     # click anyway; prefer_no_a0 sorts the bank
+        tcin = self._harvest_tcin or ((cfg.get('tcins') or [''])[0])
+        self._harvest_last_reload_ts = now
+        try:
+            self._harvest_log(f"fresh page: reloading PDP {tcin} before the click "
+                              f"(clicks_since_nav={self._harvest_clicks_since_nav} live={'yes' if live else 'no'} "
+                              f"reloads={self._harvest_fresh_stats['reloads']})")
+            await asyncio.wait_for(tab.get(_shape_harvest.pdp_url(tcin)), timeout=25.0)
+            self._harvest_tab_nav_ts = time.time()
+            self._harvest_last_xy = None
+            self._harvest_clicks_since_nav = 0
+            self._harvest_fresh_stats['reloads'] += 1
+            return True
+        except Exception as e:
+            self._harvest_fresh_stats['failed'] += 1
+            self._harvest_log(f"fresh page reload FAILED ({type(e).__name__}: {e}) — dropping harvest tab")
+            await self._harvest_drop_tab("fresh page reload failed")
+            return False
 
     async def _harvest_once(self) -> bool:
         """One real click on the PDP's Add-to-cart -> one banked set (or a
         diagnosed miss). Bounded everywhere; never raises."""
         tab = await self._ensure_harvest_tab()
         if tab is None:
+            return False
+        try:
+            _live_now = bool(self.session_manager.is_purchase_in_progress())
+        except Exception:
+            _live_now = False
+        if not await self._harvest_fresh_page(tab, _live_now):
             return False
         # Readiness poll (09-03 live-check hardening): on a fresh PDP the button
         # is present + enabled a beat BEFORE React wires its click handler, so an
@@ -2087,6 +2173,7 @@ class PurchaseExecutor:
                                   f"harvest tab so the next cycle re-opens fresh")
                 await self._harvest_drop_tab("consecutive click failures")
             return False
+        self._harvest_clicks_since_nav += 1     # 2026-09-13: a dispatched click = telemetry on this document
         try:
             await asyncio.wait_for(self._harvest_capture_evt.wait(), timeout=4.0)
             self._harvest_nocap = 0

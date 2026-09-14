@@ -102,6 +102,29 @@ def test_bank():
     b2 = h.ShapeBank(3, 300)
     b2.push(a0, now=5.0)
     check("bank_flags_a0", b2.pop_fresh(6.0)['a0'] is True)
+    # 2026-09-13 prefer_no_a0: the freshest REPLAYABLE a0=no set beats a fresher a0=yes one
+    b3 = h.ShapeBank(3, 300)
+    b3.push(HD, {'tcin': 'clean-old'}, now=100.0)
+    b3.push(a0, {'tcin': 'bloated-new'}, now=110.0)
+    e = b3.pop_fresh(111.0, prefer_no_a0=True)
+    check("bank_prefers_no_a0", e is not None and e['meta']['tcin'] == 'clean-old' and e['a0'] is False)
+    check("bank_prefer_leaves_other", b3.count(111.0) == 1 and b3.replayed == 1)
+    e2 = b3.pop_fresh(112.0, prefer_no_a0=True)
+    check("bank_prefer_falls_back_to_a0", e2 is not None and e2['meta']['tcin'] == 'bloated-new')
+    import os as _os
+    _os.environ['TARGET_HARVEST_MAX_REPLAY_AGE_S'] = '50'
+    try:
+        b4 = h.ShapeBank(3, 300)
+        b4.push(HD, {'tcin': 'clean-stale'}, now=0.0)
+        b4.push(a0, {'tcin': 'bloated-fresh'}, now=90.0)
+        e3 = b4.pop_fresh(100.0, prefer_no_a0=True)
+        check("bank_prefer_skips_stale_clean", e3 is not None and e3['meta']['tcin'] == 'bloated-fresh')
+        b5 = h.ShapeBank(3, 300)
+        b5.push(HD, {'tcin': 'clean-old'}, now=100.0)
+        b5.push(a0, {'tcin': 'bloated-new'}, now=110.0)
+        check("bank_default_pop_still_lifo", b5.pop_fresh(111.0)['meta']['tcin'] == 'bloated-new')
+    finally:
+        _os.environ.pop('TARGET_HARVEST_MAX_REPLAY_AGE_S', None)
 
 
 def test_bezier_and_click_point():
@@ -168,6 +191,25 @@ def test_config_and_js():
     check("js_null_body_guarded", 'document.body && document.body.innerText' in js)
     check("js_reports_readystate", 'ready:' in js and 'document.readyState' in js)
     check("pdp_url", h.pdp_url('123') == 'https://www.target.com/p/-/A-123')
+    # 2026-09-13 fresh-page knobs
+    c0 = h.config({'TARGET_SHAPE_HARVEST': '1'})
+    check("cfg_fresh_page_default_off", c0['fresh_page'] is False and c0['prefer_no_a0'] is False
+          and c0['fresh_page_live'] is True and c0['fresh_page_min_gap_s'] == 15.0)
+    c1 = h.config({'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_FRESH_PAGE': '1', 'TARGET_HARVEST_FRESH_PAGE_LIVE': '0',
+                   'TARGET_HARVEST_FRESH_PAGE_MIN_GAP_S': '9999', 'TARGET_HARVEST_PREFER_NO_A0': '1'})
+    check("cfg_fresh_page_parsed", c1['fresh_page'] is True and c1['fresh_page_live'] is False
+          and c1['fresh_page_min_gap_s'] == 600.0 and c1['prefer_no_a0'] is True)
+
+
+def test_header_bytes():
+    hb = h.header_bytes(HD)
+    exp_total = sum(len(k) + len(v) + 4 for k, v in HD.items())
+    check("hb_total", hb['total'] == exp_total and hb['n'] == len(HD))
+    check("hb_cookie_and_shape", hb['cookie'] == 3 and hb['shape'] == 6 and hb['a'] == 1 and hb['a0'] == 0)
+    a0 = dict(HD); a0['X-GyJwza5Z-a0'] = 'zzzz'
+    check("hb_a0", h.header_bytes(a0)['a0'] == 4 and h.header_bytes(a0)['shape'] == 10)
+    check("hb_pairs_input", h.header_bytes(list(a0.items())) == h.header_bytes(a0))
+    check("hb_empty", h.header_bytes({})['total'] == 0 and h.header_bytes(None)['n'] == 0)
 
 
 # ---------------------------------------------------------------------------
@@ -301,13 +343,87 @@ def test_executor_replay_lookup():
           ex._harvest_replay_headers_for('warmup', dict(HD)) is None and ex._shape_bank.count() == 1)
     ex._harvest_selftest_armed = True
     check("replay_warmup_armed_returns", isinstance(ex._harvest_replay_headers_for('warmup', dict(HD)), list))
-    check("replay_records_last", ex._harvest_last_replay and ex._harvest_last_replay['label'] == 'warmup')
+    check("replay_records_last", ex._harvest_last_replay and ex._harvest_last_replay['label'] == 'warmup'
+          and ex._harvest_last_replay.get('bytes', 0) > 0)
     ex._harvest_selftest_armed = False
     ex._shape_bank.push(bank, {'tcin': '21516452'})
     check("replay_harvest_label_none", ex._harvest_replay_headers_for('harvest', dict(HD)) is None)
     ex._harvest_replay_on = False
     check("replay_off_none_and_bank_kept",
           ex._harvest_replay_headers_for('main', dict(HD)) is None and ex._shape_bank.count() == 1)
+    # 2026-09-13 prefer_no_a0 wiring: the shot takes the clean set over the fresher bloated one
+    ex5, _ = _stub_executor()
+    ex5._harvest_cfg = h.config({'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_TCINS': '21516452',
+                                 'TARGET_HARVEST_PREFER_NO_A0': '1'})
+    clean = dict(HD); clean['X-GyJwza5Z-f'] = 'F-CLEAN'
+    ex5._shape_bank.push(clean, {'tcin': 'clean'}); ex5._shape_bank.push(bank, {'tcin': 'bloated'})
+    out5 = {e.name: e.value for e in ex5._harvest_replay_headers_for('main', dict(HD))}
+    check("replay_prefers_no_a0_set", out5.get('X-GyJwza5Z-f') == 'F-CLEAN' and 'X-GyJwza5Z-a0' not in out5)
+    ex6, _ = _stub_executor()   # default (no preference) still takes the freshest = bloated
+    ex6._shape_bank.push(clean, {'tcin': 'clean'}); ex6._shape_bank.push(bank, {'tcin': 'bloated'})
+    out6 = {e.name: e.value for e in ex6._harvest_replay_headers_for('main', dict(HD))}
+    check("replay_default_takes_freshest", out6.get('X-GyJwza5Z-a0') == 'A0')
+
+
+class NavTab(FakeTab):
+    def __init__(self, fail=False):
+        super().__init__()
+        self.gets = []
+        self.fail_get = fail
+
+    async def get(self, url):
+        self.gets.append(url)
+        if self.fail_get:
+            raise RuntimeError('nav boom')
+        return self
+
+
+def _fresh_stub(env_extra=None):
+    ex, pe = _stub_executor()
+    env = {'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_TCINS': '21516452', 'TARGET_HARVEST_FRESH_PAGE': '1'}
+    env.update(env_extra or {})
+    ex._harvest_cfg = h.config(env)
+    ex._harvest_clicks_since_nav = 0
+    ex._harvest_last_reload_ts = 0.0
+    ex._harvest_fresh_stats = {'reloads': 0, 'gap_skips': 0, 'live_skips': 0, 'failed': 0}
+    ex._harvest_tab_nav_ts = 0.0
+    ex._harvest_last_xy = (1, 1)
+    drops = []
+
+    async def _drop(reason, close=True):
+        drops.append(reason)
+        ex._harvest_tab = None
+    ex._harvest_drop_tab = _drop
+    ex._drops = drops
+    return ex
+
+
+def test_executor_fresh_page():
+    ex = _fresh_stub(); tab = NavTab(); ex._harvest_tab = tab
+    check("fresh_no_click_no_reload", asyncio.run(ex._harvest_fresh_page(tab, False)) is True and tab.gets == [])
+    ex._harvest_clicks_since_nav = 3; ex._harvest_last_xy = (5, 5)
+    ok = asyncio.run(ex._harvest_fresh_page(tab, False))
+    check("fresh_reloads_same_pdp", ok is True and tab.gets == [h.pdp_url('21516452')])
+    check("fresh_resets_state", ex._harvest_clicks_since_nav == 0 and ex._harvest_last_xy is None
+          and ex._harvest_fresh_stats['reloads'] == 1 and ex._harvest_tab_nav_ts > 0)
+    ex._harvest_clicks_since_nav = 1
+    check("fresh_min_gap_skips", asyncio.run(ex._harvest_fresh_page(tab, False)) is True and len(tab.gets) == 1
+          and ex._harvest_fresh_stats['gap_skips'] == 1)
+    ex._harvest_last_reload_ts = 0.0
+    check("fresh_live_allowed_by_default", asyncio.run(ex._harvest_fresh_page(tab, True)) is True and len(tab.gets) == 2)
+    ex2 = _fresh_stub({'TARGET_HARVEST_FRESH_PAGE_LIVE': '0'}); tab2 = NavTab(); ex2._harvest_tab = tab2
+    ex2._harvest_clicks_since_nav = 2
+    check("fresh_live_blocked_when_off", asyncio.run(ex2._harvest_fresh_page(tab2, True)) is True and tab2.gets == []
+          and ex2._harvest_fresh_stats['live_skips'] == 1)
+    check("fresh_idle_reloads_when_live_off", asyncio.run(ex2._harvest_fresh_page(tab2, False)) is True and len(tab2.gets) == 1)
+    ex3 = _fresh_stub({'TARGET_HARVEST_FRESH_PAGE': '0'}); tab3 = NavTab(); ex3._harvest_tab = tab3
+    ex3._harvest_clicks_since_nav = 9
+    check("fresh_flag_off_noop", asyncio.run(ex3._harvest_fresh_page(tab3, False)) is True and tab3.gets == []
+          and ex3._harvest_clicks_since_nav == 9)
+    ex4 = _fresh_stub(); tab4 = NavTab(fail=True); ex4._harvest_tab = tab4
+    ex4._harvest_clicks_since_nav = 1
+    check("fresh_nav_failure_drops_tab", asyncio.run(ex4._harvest_fresh_page(tab4, False)) is False
+          and ex4._drops == ['fresh page reload failed'] and ex4._harvest_fresh_stats['failed'] == 1)
 
 
 def _event(headers, body='{"cart_item":{"tcin":"21516452","quantity":1}}'):
@@ -500,6 +616,21 @@ def test_executor_wiring():
     check("exe_no_bare_handle_drops_left", EXE_SRC.count("self._harvest_tab = None") <= 4)
     check("exe_click_logs_timing", "| {_shape_harvest.click_stats_summary(_stats)}" in EXE_SRC)
     check("exe_socket_story_gone", "queue behind the warmup interceptor" not in EXE_SRC)
+    # 2026-09-13 fresh-page harvest + size forensics
+    check("exe_fresh_page_before_click", 0 < EXE_SRC.find("if not await self._harvest_fresh_page(tab, _live_now):")
+          < EXE_SRC.find("_poll_deadline = time.time() + 9.0"))
+    check("exe_fresh_page_counts_clicks", "self._harvest_clicks_since_nav += 1" in EXE_SRC
+          and EXE_SRC.count("self._harvest_clicks_since_nav = 0") >= 3)
+    check("exe_fresh_page_drop_site", 'self._harvest_drop_tab("fresh page reload failed")' in EXE_SRC)
+    check("exe_fresh_page_bounded_nav",
+          EXE_SRC.count("await asyncio.wait_for(tab.get(_shape_harvest.pdp_url(tcin)), timeout=25.0)") == 2)
+    check("exe_capture_logs_bytes", "a0_len={_hb['a0']} hdr_bytes={_hb['total']} cookie={_hb['cookie']}" in EXE_SRC)
+    check("exe_replay_logs_bytes",
+          "hdr_bytes={_hb['total']} (cookie={_hb['cookie']} shape={_hb['shape']} a0={_hb['a0']})" in EXE_SRC)
+    check("exe_pop_prefers_no_a0",
+          "self._shape_bank.pop_fresh(prefer_no_a0=bool(self._harvest_cfg.get('prefer_no_a0')))" in EXE_SRC)
+    check("exe_431_names_request_size", "if status == 431:" in EXE_SRC and "req_bytes={_rb.get('total', '?')}" in EXE_SRC
+          and "self._last_req_hdr_bytes[label] = _sz" in EXE_SRC)
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +654,12 @@ def test_bat_pins():
           and _bat_val('TARGET_HARVEST_MOVE_ABORT_MS') == '2500')
     check("bat_hidden_tab_note", "FOREGROUND tab" in BAT_SRC and "2026-09-09" in BAT_SRC
           and "share the CDP socket" not in BAT_SRC)
+    # 2026-09-13 fresh-page harvest armed
+    check("bat_fresh_page_armed", _bat_val('TARGET_HARVEST_FRESH_PAGE') == '1'
+          and _bat_val('TARGET_HARVEST_FRESH_PAGE_LIVE') == '1'
+          and _bat_val('TARGET_HARVEST_FRESH_PAGE_MIN_GAP_S') == '15'
+          and _bat_val('TARGET_HARVEST_PREFER_NO_A0') == '1')
+    check("bat_fresh_page_note", "2026-09-13" in BAT_SRC and "first-click" in BAT_SRC)
 
 
 def test_compiles():
@@ -539,8 +676,9 @@ def test_compiles():
 
 if __name__ == '__main__':
     for fn in (test_prefix_and_tokens, test_merge, test_bank, test_bezier_and_click_point, test_config_and_js,
+               test_header_bytes,
                test_human_click_events, test_visibility_probe_and_verdict, test_executor_replay_lookup,
-               test_executor_capture_and_block, test_executor_visibility_guard,
+               test_executor_capture_and_block, test_executor_visibility_guard, test_executor_fresh_page,
                test_executor_wiring, test_bat_pins, test_compiles):
         try:
             fn()
