@@ -118,6 +118,66 @@ def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float
     return min(hi, max(lo, v))
 
 
+# ── 2026-09-16 hot-sku plan P11 (CFG-2): per-TCIN quantity pin (U2) ──────────
+# TARGET_QTY_PER_TCIN=1 honours an optional "qty" on a product_config.json
+# entry (e.g. "qty": 1 on the 30th Celebration TCINs) in place of the
+# manager's _decide_target_qty result for that TCIN. The pin is capped by
+# TARGET_QTY_CEILING and by a genuinely reported RedSky limit, and never beats
+# TARGET_FORCE_QTY_1. A malformed pin or a config that fails to load falls back
+# to _decide_target_qty. Default '0' = exact prior behaviour for every TCIN.
+# Kill-switch: =0. Zero-code alternative (qty 1 everywhere):
+# TARGET_QTY_OPTIMISTIC=0.
+def _qty_per_tcin_on() -> bool:
+    return os.environ.get('TARGET_QTY_PER_TCIN', '0').strip() == '1'
+
+
+def _qty_pin_decision(products_list, tcin, redsky_max_qty):
+    """(qty, reason) for tcin's pinned "qty", or None when no pin applies.
+
+    The first entry whose str(tcin) matches and whose "qty" is truthy wins
+    (a 0 / missing qty means no pin). Raises (ValueError / OverflowError) on
+    a malformed pin (bool, non-numeric, non-finite); the caller falls back to
+    _decide_target_qty."""
+    if os.environ.get('TARGET_FORCE_QTY_1', 'false').lower() == 'true':
+        return None
+    t = str(tcin)
+    pin = None
+    for p in products_list or ():
+        if isinstance(p, dict) and str(p.get('tcin')) == t and p.get('qty'):
+            pin = p.get('qty')
+            break
+    if pin is None:
+        return None
+    if isinstance(pin, bool) or not isinstance(pin, (int, float, str)):
+        raise ValueError(f"malformed qty pin {pin!r}")
+    pin_n = int(float(str(pin).strip()))   # nan / inf raise here
+    # Same ceiling parse as _decide_target_qty.
+    try:
+        ceiling = int(os.environ.get('TARGET_QTY_CEILING', '2'))
+    except ValueError:
+        ceiling = 2
+    ceiling = max(1, ceiling)
+    cap = ceiling
+    try:
+        redsky_qty = max(1, int(redsky_max_qty or 1))
+    except (TypeError, ValueError):
+        redsky_qty = 1
+    if redsky_qty > 1:
+        cap = min(ceiling, redsky_qty)
+    qty = max(1, min(pin_n, cap))
+    return qty, (f"per-TCIN pin qty={pin} from product_config.json "
+                 f"(TARGET_QTY_PER_TCIN=1; cap={cap})")
+
+
+# ── 2026-09-16 hot-sku plan P12 (INF-1): visible sentinel skips ──────────────
+# The sentinel tick silently skipped a worker that was mid-purchase, which hid
+# why the proxied Chromes relaunched past TARGET_CHROME_MAX_AGE_S (37-45 min on
+# 09-16). TARGET_SENTINEL_LOG_SKIPS=1 prints one line per skipped worker per
+# tick. Log-only. Default '0' = silent (prior behaviour). Kill-switch: =0.
+def _sentinel_log_skips_on() -> bool:
+    return os.environ.get('TARGET_SENTINEL_LOG_SKIPS', '0').strip() == '1'
+
+
 # ── 2026-09-16 hot-sku plan P7 (DX-1) + P9 recorder: exposure / census ───────
 # The 09-16 401 wall tracked per-identity EXPOSURE on the hot TCIN; the next
 # audit needs it per shot, plus per-identity P(401) / pass per non-401 shot /
@@ -1470,7 +1530,9 @@ class BulletproofPurchaseManager:
                     # and only falls back to a PDP poll when qty == 1.
                     qty = max(1, int(max_qty or 1))
                     if qty != 1:
-                        print(f"[REAL_PURCHASE_THREAD] [QTY] qty={qty} from RedSky purchase_limit (executor will skip PDP poll)")
+                        # 2026-09-16 plan P11: the old "from RedSky purchase_limit"
+                        # label was wrong (optimistic ceiling / pin). Log-only.
+                        print(f"[REAL_PURCHASE_THREAD] [QTY] qty={qty} (manager decision; see [QTY] reason line)")
                     # --- Retry-while-in-stock (deferred bug C3) ------------------
                     # A single transient ATC failure (atc_failed_api_mode / 401 /
                     # rate-limit / race) used to abandon the drop, even though the
@@ -2391,6 +2453,12 @@ class BulletproofPurchaseManager:
                 continue
             # Never disturb a worker that's mid-purchase.
             if getattr(sm, 'purchase_in_progress', False):
+                # 2026-09-16 plan P12 (INF-1): make the skip visible.
+                if _sentinel_log_skips_on():
+                    try:
+                        print(f"[SENTINEL] {w.label()}: tick skipped (purchase in flight)")
+                    except Exception:
+                        pass
                 continue
             label = w.label()
 
@@ -3102,6 +3170,9 @@ class BulletproofPurchaseManager:
                             # Keep active_purchase set to block new purchases
 
             # BUG FIX #2: Load product priority order from config
+            # 2026-09-16 plan P11: bound before the try so a config-load failure
+            # can never leave it unbound for the qty-pin lookup below.
+            products_list = []
             try:
                 import json
                 config_path = 'config/product_config.json'
@@ -3235,7 +3306,20 @@ class BulletproofPurchaseManager:
                         # Known residual: a limit-1 SKU whose ATC permissively accepts 2
                         # can be cancelled post-checkout to 0 (rare; bounded by the cap).
                         max_qty, _qty_reason = self._decide_target_qty(product_data.get('max_qty', 1))
-                        if max_qty != 1:
+                        # 2026-09-16 plan P11 (CFG-2): optional per-TCIN pin
+                        # (TARGET_QTY_PER_TCIN=1). Any error -> the decision above.
+                        _qty_pinned = False
+                        if _qty_per_tcin_on():
+                            try:
+                                _pin_dec = _qty_pin_decision(products_list, tcin,
+                                                             product_data.get('max_qty', 1))
+                                if _pin_dec is not None:
+                                    max_qty, _qty_reason = _pin_dec
+                                    _qty_pinned = True
+                            except Exception as _pin_err:
+                                print(f"[QTY] {tcin}: per-TCIN pin ignored "
+                                      f"({type(_pin_err).__name__}: {_pin_err}) — using the default decision")
+                        if max_qty != 1 or _qty_pinned:
                             print(f"[QTY] {tcin}: targeting qty={max_qty} — {_qty_reason}")
                         result = self.start_purchase(tcin, product_data.get('title', f'Product {tcin}'), max_qty=max_qty)
                         if result.get('success'):

@@ -24,6 +24,73 @@ import zendriver as uc
 _chrome_pid: Optional[int] = None
 
 
+# ── 2026-09-16 hot-sku 0916 plan P12 (INF-1): de-lockstepped relaunch ages ────
+# On 09-16 business and alt-1 relaunched in the same second at ages of
+# 37-45 min: both proxied Chromes cross TARGET_CHROME_MAX_AGE_S on the same
+# 300 s sentinel tick, and a tick skipped under a purchase pushes both further.
+# TARGET_CHROME_MAX_AGE_OFFSETS="business:-300" gives one account its own
+# threshold so the two Chromes relaunch on different ticks.
+# - Format: account:offset_s entries separated by ';' or ','.
+# - Each offset is clamped to [-600, +240]; negative offsets are allowed.
+# - base + offset is clamped to [1500, 2340] s. With one skipped 300 s tick
+#   the relaunch then lands by about 2340 + 600 = 2940 s (plus timer drift and
+#   any page-lock wait), the earliest observed wedge (49 min).
+# - An account without an entry, and a base <= 0 (the relaunch kill-switch),
+#   keep the base unchanged.
+# Default empty = the base for every account (exact prior behaviour).
+# Kill-switch: unset it.
+_CHROME_AGE_OFFSET_MIN_S = -600.0
+_CHROME_AGE_OFFSET_MAX_S = 240.0
+_CHROME_AGE_EFFECTIVE_MIN_S = 1500.0
+_CHROME_AGE_EFFECTIVE_MAX_S = 2340.0
+
+
+def _parse_chrome_age_offsets(raw) -> Dict[str, float]:
+    """'business:-300;alt-1:120' -> {'business': -300.0, 'alt-1': 120.0}.
+    Account names are stripped and lower-cased; malformed or non-finite
+    entries are skipped; each offset is clamped to [-600, +240]. Never raises."""
+    out: Dict[str, float] = {}
+    try:
+        for part in str(raw or '').replace(',', ';').split(';'):
+            acct, sep, val = part.partition(':')
+            acct = acct.strip().lower()
+            if not sep or not acct:
+                continue
+            try:
+                off = float(val.strip())
+            except (TypeError, ValueError):
+                continue
+            if off != off or off in (float('inf'), float('-inf')):
+                continue
+            out[acct] = min(_CHROME_AGE_OFFSET_MAX_S, max(_CHROME_AGE_OFFSET_MIN_S, off))
+    except Exception:
+        return {}
+    return out
+
+
+def _effective_chrome_max_age(base, account_id, raw=None):
+    """The proactive-relaunch age for account_id. raw defaults to
+    TARGET_CHROME_MAX_AGE_OFFSETS. Returns base unchanged when it is <= 0 or
+    non-finite, when raw is empty, or when the account has no entry; otherwise
+    clamp(base + offset, 1500, 2340). Never raises."""
+    try:
+        if raw is None:
+            raw = os.environ.get('TARGET_CHROME_MAX_AGE_OFFSETS', '')
+        if not str(raw).strip() or not account_id:
+            return base
+        b = float(base)
+        if not (b > 0) or b == float('inf'):
+            return base
+        offs = _parse_chrome_age_offsets(raw)
+        key = str(account_id).strip().lower()
+        if key not in offs:
+            return base
+        return min(_CHROME_AGE_EFFECTIVE_MAX_S,
+                   max(_CHROME_AGE_EFFECTIVE_MIN_S, b + offs[key]))
+    except Exception:
+        return base
+
+
 class SessionManager:
     """Manages persistent browser session for Target.com automation using nodriver"""
 
@@ -2126,6 +2193,10 @@ class SessionManager:
                 _max_age = float(os.environ.get('TARGET_CHROME_MAX_AGE_S', '2100'))
             except (TypeError, ValueError):
                 _max_age = 2100.0
+            # 2026-09-16 plan P12 (INF-1): optional per-account offset
+            # (TARGET_CHROME_MAX_AGE_OFFSETS; empty = unchanged).
+            _base_max_age = _max_age
+            _max_age = _effective_chrome_max_age(_max_age, self.account_id)
             if (_max_age > 0 and self.proxy_url is not None
                     and not self.purchase_in_progress
                     and self._browser_launched_at > 0
@@ -2137,7 +2208,10 @@ class SessionManager:
                     f"[CHROME-AGE] {self.account_id}: proxied Chrome is {_age_min:.0f} min old "
                     f"(> {_max_age/60:.0f} min) — proactively relaunching BEFORE the ~68-min CDP "
                     f"wedge window (a 5s blip now beats a random 100s outage at drop time)")
-                print(f"[CHROME-AGE] {self.account_id}: proactive pre-wedge relaunch ({_age_min:.0f} min old)")
+                print(f"[CHROME-AGE] {self.account_id}: proactive pre-wedge relaunch ({_age_min:.0f} min old)"
+                      + (f" [max_age {_max_age:.0f}s = base {_base_max_age:.0f}s "
+                         f"{_max_age - _base_max_age:+.0f}s via TARGET_CHROME_MAX_AGE_OFFSETS]"
+                         if _max_age != _base_max_age else ""))
                 _relaunched = await self._relaunch_browser()
                 if _relaunched:
                     # Fresh Chrome — validate + mint a member token, then done.
