@@ -19,7 +19,15 @@ Covers (plan P1 tests a-e):
       manager's transient/terminal classifier parsed from the REAL source; quiet
       mode; eligibility; the call site inside the real _execute_purchase_impl;
   (d) the manager's stock_snapshot / any_stock_live;
-  (e) SCR note_stock_read + the real sweep-ingest wiring.
+  (e) SCR note_stock_read + the real sweep-ingest wiring;
+  (f) stage S2c, plan P3 (WC-3): the held-cart check inside the real
+      _execute_purchase_impl (exact/idle/empty/429/foreign/over-qty/other-TCIN/
+      TTL/cap/CVV/error, plus an end-to-end held po_only order), the boot cart
+      audit, the selective suspect-clear, the error-recovery marker drop, and
+      every new reason through the manager classifier (digit-free errors: the
+      manager restarts the browser on '1011', a hot-TCIN prefix);
+  (g) stage S2c, plan P4 (WC-2) impl pieces: ride trim at purchase exit and the
+      duplicate pre_checkout skip.
 
 Offline: no browser, no network (node subprocess only). Anything that could
 append to logs/error_log.txt runs in a temp cwd.
@@ -59,6 +67,10 @@ _ALL_FLAGS = (
     "TARGET_FOREIGN_CART_BAIL", "TARGET_RETRY_CHECKOUT_BUSY", "TARGET_QTY_CEILING",
     "TARGET_WARMUP_PAUSE_DURING_PURCHASE", "TARGET_DEBUG_AUTH", "TARGET_PDP_QTY_LOOKUP",
     "TARGET_FORCE_QTY_1", "TARGET_SHOT_TTL_REFRESH",
+    # stage S2c (WC-3 / WC-2)
+    "TARGET_BOOT_CART_AUDIT", "TARGET_HELD_CART_TTL_S", "TARGET_RESHOOT_FORCE_REWARM",
+    "TARGET_HOLD_QUIET_WARMUP", "TARGET_WARMUP_CYCLE_SKIP_ON_STOCK", "TARGET_FASTLANE_SKIP_DUP_PRE",
+    "TARGET_WON_CART_RIDE_CLEAN_EXIT",
 )
 for _k in _ALL_FLAGS:
     os.environ.pop(_k, None)
@@ -1811,11 +1823,549 @@ def test_e_note_stock_read():
           src.count("note_stock_read(s, True, s.last_checked_at, stock_hyst_s())") == 2)
 
 
+# ─────────── (f) WC-3 held-cart re-entry + boot cart audit (stage S2c) ────────
+
+HELD = dict(ARMED, TARGET_HELD_CART_REENTRY="1")
+EXACT_READ = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+NEW_REASON_RESULTS: list = []
+
+
+def mk_held(tcin=TCIN, age=10.0, **kw):
+    now = real_time.time()
+    h = {"tcin": tcin, "qty": 2, "cart_id": "CART-1234567890", "created": now - age,
+         "first_201_ts": now - age, "tickets": 3, "sched_used": 2, "verified": True,
+         "pi_id": "", "cvv_put": "none", "last_ticket_ts": now - 50.0, "fs_seen_ts": 0.0,
+         "source": "first"}
+    h.update(kw)
+    return h
+
+
+def held_impl(c, marker, read=None, probes=None, loop_result=None, **kw):
+    ex, tab = impl_ex(c, FL_PRE429, loop_result=loop_result, **kw)
+    ex._held_cart = marker
+    ex.reads = []
+
+    async def _read(t, timeout=2.5):
+        ex.reads.append(timeout)
+        return json.loads(json.dumps(read if read is not None else {"ok": True, "status": 200, "items": []}))
+
+    ex._cart_items_read = _read
+    probes = dict(probes or {})
+    ex._stock_live_fn = lambda t: {"live": probes.get(str(t))}
+    return ex, tab
+
+
+def test_f_held_cart_reentry():
+    c = Clock()
+    # exact + live -> the loop (entry=held), no ATC chain; placed -> success dict.
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True}, loop_result=("placed", None))
+    r = run_impl(ex, HELD)
+    check("f_exact_live_placed", r.get("success") is True and r.get("order_id") == "OID-LOOP"
+          and r.get("quantity") == 2 and ex.loop_calls == [(TCIN, 2, "held")] and ex.fl_calls == []
+          and not ex.deletes and "checking_out" not in ex.statuses and ex.reads == [2.5]
+          and "[HELD_CART] re-entering the won-cart loop" in run.last_out, f"{r} fl={ex.fl_calls} {ex.statuses}")
+    check("f_exact_keeps_verified", ex._held_cart["verified"] is True)
+    # A held line of qty 1 reports quantity 1 (read), not the requested 2.
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1}]},
+                        probes={TCIN: True}, loop_result=("placed", None))
+    r = run_impl(ex, HELD)
+    check("f_placed_quantity_from_read", r.get("success") is True and r.get("quantity") == 1, r)
+    # The loop's final non-success result is returned as-is (no fall-through).
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True})
+    r = run_impl(ex, HELD)
+    check("f_loop_result_returned", r.get("reason") == "won_cart_held" and ex.fl_calls == []
+          and "checking_out" not in ex.statuses, r)
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True},
+                        loop_result=("terminal", {"success": False, "tcin": TCIN,
+                                                  "reason": "checkout_navigation_failed", "ambiguous_commit": True}))
+    r = run_impl(ex, HELD)
+    check("f_loop_terminal_returned", r.get("ambiguous_commit") is True and ex.fl_calls == [], r)
+    # Not live (False / None) -> held_cart_idle_skip, nothing read, nothing fired.
+    for live in (False, None):
+        ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: live})
+        r = run_impl(ex, HELD)
+        NEW_REASON_RESULTS.append(r)
+        check(f"f_idle_skip[{live}]", r.get("reason") == "held_cart_idle_skip" and r.get("success") is False
+              and ex.reads == [] and ex.fl_calls == [] and ex.loop_calls == [] and not ex.deletes
+              and isinstance(ex._held_cart, dict) and tab.gets == [], f"{r} {ex.reads} {tab.gets}")
+    # Empty cart -> marker dropped, normal shot (fast lane called).
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "items": []}, probes={TCIN: True})
+    r = run_impl(ex, HELD)
+    check("f_empty_normal_shot", ex._held_cart is None and ex.fl_calls == [2]
+          and ex.loop_calls == [(TCIN, 2, "first")] and not ex.deletes, f"{r} {ex.loop_calls}")
+    # Read 429 -> loop entered; the ticket's pre re-verifies (verified demoted).
+    ex, tab = held_impl(c, mk_held(), read={"ok": False, "status": 429, "items": []}, probes={TCIN: True})
+    r = run_impl(ex, HELD)
+    check("f_read_429_enters_loop", ex.loop_calls == [(TCIN, 2, "held")] and ex.fl_calls == []
+          and ex._held_cart["verified"] is False and "cart read failed" in run.last_out, r)
+    # Unknown qty -> loop entered, verified demoted.
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200,
+                                            "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]},
+                        probes={TCIN: True})
+    run_impl(ex, HELD)
+    check("f_unknown_qty_demotes", ex.loop_calls == [(TCIN, 2, "held")] and ex._held_cart["verified"] is False)
+    # Foreign line beside the held one -> selective delete (keep T), loop entered.
+    two = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+                                                {"id": "CI-F", "tcin": OTHER, "qty": 1}]}
+    ex, tab = held_impl(c, mk_held(), read=two, probes={TCIN: True})
+    run_impl(ex, HELD)
+    check("f_foreign_selective", ex.deletes == [{"only": None, "keep": TCIN, "budget": 15.0}]
+          and ex.loop_calls == [(TCIN, 2, "held")] and ex._held_cart["verified"] is True, ex.deletes)
+    ex, tab = held_impl(c, mk_held(), read=two, probes={TCIN: True})
+    ex.delete_result = (False, 0)
+    run_impl(ex, HELD)
+    check("f_foreign_delete_failed_demotes", ex.loop_calls == [(TCIN, 2, "held")]
+          and ex._held_cart["verified"] is False)
+    # Held line over qty -> delete ONLY that line, marker dropped, normal shot.
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200,
+                                            "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]},
+                        probes={TCIN: True})
+    r = run_impl(ex, HELD)
+    check("f_qty_over_released", ex.deletes == [{"only": TCIN, "keep": None, "budget": 15.0}]
+          and ex._held_cart is None and ex.fl_calls == [2], f"{r} {ex.deletes}")
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200,
+                                            "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]},
+                        probes={TCIN: True})
+    ex.delete_result = (False, 0)
+    r = run_impl(ex, HELD)
+    NEW_REASON_RESULTS.append(r)
+    check("f_qty_over_delete_failed", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == []
+          and ex._held_cart is None, r)
+    # Other TCIN held and LIVE -> sit out, cart untouched.
+    ex, tab = held_impl(c, mk_held(tcin=OTHER), probes={OTHER: True, TCIN: True})
+    r = run_impl(ex, HELD)
+    NEW_REASON_RESULTS.append(r)
+    check("f_other_live_sits_out", r.get("reason") == "held_cart_other_tcin" and not ex.deletes
+          and ex.reads == [] and ex.fl_calls == [] and ex._held_cart["tcin"] == OTHER, r)
+    # Other TCIN held and not live (False / None) -> bounded delete of ITS line, normal shot.
+    for live in (False, None):
+        ex, tab = held_impl(c, mk_held(tcin=OTHER), probes={OTHER: live, TCIN: True})
+        r = run_impl(ex, HELD)
+        check(f"f_other_released[{live}]", ex.deletes == [{"only": OTHER, "keep": None, "budget": 15.0}]
+              and ex._held_cart is None and ex.fl_calls == [2] and "[HELD_CART] released" in run.last_out,
+              f"{r} {ex.deletes}")
+    ex, tab = held_impl(c, mk_held(tcin=OTHER), probes={OTHER: False})
+    ex.delete_result = (False, 0)
+    r = run_impl(ex, HELD)
+    check("f_other_release_failed", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == []
+          and ex._held_cart is None, r)
+    # TTL / ticket cap -> retire (bounded delete of the held line), then a normal shot.
+    for label, marker in (("ttl", mk_held(age=1000.0)), ("cap", mk_held(tickets=14)),
+                          ("no_created", mk_held(created=0.0))):
+        ex, tab = held_impl(c, marker, read=EXACT_READ, probes={TCIN: True})
+        r = run_impl(ex, HELD)
+        check(f"f_retire[{label}]", ex.deletes == [{"only": TCIN, "keep": None, "budget": 15.0}]
+              and ex._held_cart is None and ex.fl_calls == [2] and ex.reads == []
+              and "[HELD_CART] retired" in run.last_out, f"{r} {ex.deletes}")
+    with env(TARGET_HELD_CART_TTL_S="2000"):
+        ex, tab = held_impl(c, mk_held(age=1000.0), read=EXACT_READ, probes={TCIN: True})
+        run_impl(ex, HELD)
+    check("f_ttl_knob", ex.loop_calls == [(TCIN, 2, "held")] and not ex.deletes)
+    # A marker without a TCIN is dropped (nothing to delete) and the shot goes on.
+    ex, tab = held_impl(c, mk_held(tcin=""), read=EXACT_READ, probes={TCIN: True})
+    run_impl(ex, HELD)
+    check("f_bad_marker_dropped", ex._held_cart is None and not ex.deletes and ex.fl_calls == [2])
+    # API place-order off -> the loop cannot run: retire, then the (legacy) shot.
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True})
+    run_impl(ex, dict(HELD, TARGET_API_PLACE_ORDER="false"))
+    check("f_api_path_off_retires", ex.deletes and ex.deletes[0]["only"] == TCIN
+          and ex._held_cart is None and ex.loop_calls == [] and ex.reads == [], ex.deletes)
+    # CVV required without digits -> the loop cannot run: retire before any shot.
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True}, cvv_required=True)
+    run_impl(ex, HELD)
+    check("f_cvv_no_digits_retires", ex.deletes and ex.deletes[0]["only"] == TCIN
+          and ex._held_cart is None and ex.loop_calls == [], ex.deletes)
+    # WC-3 flag off -> the check block never runs (a marker cannot exist then anyway).
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True})
+    run_impl(ex, ARMED)
+    check("f_flag_off_no_check", ex.reads == [] and ex.fl_calls == [2]
+          and ex.loop_calls == [(TCIN, 2, "first")] and isinstance(ex._held_cart, dict))
+    # A check that errors fires nothing and keeps the cart + marker.
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True})
+    ex._stock_live_fn = None
+    ex._stock_state = lambda t: (_ for _ in ()).throw(RuntimeError("probe broke"))
+    r = run_impl(ex, HELD)
+    NEW_REASON_RESULTS.append(r)
+    check("f_check_error_fires_nothing", r.get("reason") == "held_cart_error" and ex.fl_calls == []
+          and not ex.deletes and isinstance(ex._held_cart, dict), r)
+    # A 'terminal' first-entry loop never leaves a marker (real loop).
+    c2 = Clock()
+    ex = bare(c2)
+    tab = TicketTab(ex, [t_prepo(0)], c2)
+    (v, r), _ = loop_run(ex, tab, c2, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+    check("f_terminal_never_sets_marker", v == "terminal" and ex._held_cart is None and not ex.deletes, f"{v} {r}")
+    # End-to-end: real held check + real loop -> one po_only ticket -> order; no ATC.
+    ex, _ = impl_ex(c, FL_PRE429)
+    del ex._won_cart_ticket_loop
+    ex._held_cart = mk_held()
+    ex.probe = {"live": True}
+
+    class E2ETab(TicketTab):
+        handlers = {}
+        enabled_domains = []
+
+        async def get(self, url):
+            raise AssertionError("no navigation expected: " + url)
+
+        async def send(self, *a, **k):
+            return None
+
+    etab = E2ETab(ex, [t_po(200, ORDER_BODY)], c, cart_items=[{"id": "CI-1", "tcin": TCIN, "qty": 2}])
+
+    async def _gp():
+        return etab
+
+    ex.session_manager.get_page = _gp
+    r = run_impl(ex, HELD)
+    check("f_e2e_held_po_only_order", r.get("success") is True and r.get("order_id") == "OID-777"
+          and [m for _, m, _ in etab.tickets] == ["po_only"] and ex.fl_calls == []
+          and ex._held_cart is None and etab.deleted == [] and "[WON_CART_DIRECT] start entry=held" in run.last_out,
+          f"{r} {[m for _, m, _ in etab.tickets]} {run.last_out[-300:]}")
+
+
+def test_f_held_protections():
+    c = Clock()
+    # _held_cart_active: TTL-aware; a marker without a stamp counts as active.
+    ex = bare(c)
+    check("p_active_none", ex._held_cart_active() is False)
+    ex._held_cart = mk_held(age=10.0)
+    check("p_active_fresh", ex._held_cart_active() is True)
+    ex._held_cart = mk_held(age=1000.0)
+    check("p_active_expired", ex._held_cart_active() is False)
+    ex._held_cart = {"tcin": TCIN}
+    check("p_active_unstamped", ex._held_cart_active() is True)
+    check("p_ttl_clamps", pe_mod.held_cart_ttl_s({}) == 900.0
+          and pe_mod.held_cart_ttl_s({"TARGET_HELD_CART_TTL_S": "5"}) == 60.0
+          and pe_mod.held_cart_ttl_s({"TARGET_HELD_CART_TTL_S": "99999"}) == 3600.0
+          and pe_mod.held_cart_ttl_s({"TARGET_HELD_CART_TTL_S": "junk"}) == 900.0
+          and pe_mod.held_cart_ttl_s({"TARGET_HELD_CART_TTL_S": "nan"}) == 900.0)
+    with env(TARGET_HELD_CART_REENTRY=None, TARGET_BOOT_CART_AUDIT=None):
+        check("p_boot_audit_off_by_default", pe_mod.boot_cart_audit_on() is False)
+    with env(TARGET_HELD_CART_REENTRY="1", TARGET_BOOT_CART_AUDIT=None):
+        check("p_boot_audit_auto_on", pe_mod.boot_cart_audit_on() is True)
+    with env(TARGET_HELD_CART_REENTRY="1", TARGET_BOOT_CART_AUDIT="0"):
+        check("p_boot_audit_killswitch", pe_mod.boot_cart_audit_on() is False)
+
+    # Harvest suspect-clear keeps the held line (selective delete), else the full clear.
+    def suspect_ex(marker):
+        e = bare(c)
+        e._harvest_tab = object()
+        e._harvest_landed_suspect = True
+        e.drops, e.clears = [], []
+
+        async def _drop(why):
+            e.drops.append(why)
+
+        async def _clr(t):
+            e.clears.append(t)
+            return True
+
+        e._harvest_drop_tab = _drop
+        e._clear_cart = _clr
+        e._held_cart = marker
+        return e
+
+    e = suspect_ex(mk_held())
+    with env(**HELD):
+        run(e._harvest_clear_suspect_cart())
+    check("p_suspect_keeps_held", e.deletes == [{"only": None, "keep": TCIN, "budget": 15.0}]
+          and e.clears == [] and len(e.drops) == 1 and e._harvest_landed_suspect is False, f"{e.deletes} {e.clears}")
+    e = suspect_ex(mk_held())
+    with env(TARGET_HELD_CART_REENTRY=None):
+        run(e._harvest_clear_suspect_cart())
+    check("p_suspect_flag_off_full_clear", e.deletes == [] and len(e.clears) == 1 and len(e.drops) == 1)
+    e = suspect_ex(None)
+    with env(**HELD):
+        run(e._harvest_clear_suspect_cart())
+    check("p_suspect_no_marker_full_clear", e.deletes == [] and len(e.clears) == 1)
+
+    # Error-recovery clear drops the marker (flag on, clear succeeded only).
+    for label, flags, cleared, want_none in (("on", HELD, True, True), ("off", ARMED, True, False),
+                                             ("clear_failed", HELD, False, False)):
+        ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True})
+
+        async def _boom(*a, **k):
+            raise RuntimeError("unexpected")
+
+        ex._held_cart_entry = _boom
+        ex._api_fast_lane = _boom
+        rtab = ImplTab()
+        ex.session_manager.browser = types.SimpleNamespace(tabs=[rtab])
+
+        async def _clr(t, _v=cleared):
+            return _v
+
+        ex._clear_cart = _clr
+        r = run_impl(ex, flags)
+        check(f"p_recovery_clear_marker[{label}]", r.get("reason") == "exception"
+              and (ex._held_cart is None) == want_none, f"{r} {ex._held_cart}")
+
+
+def boot_ex(c, read, busy=False):
+    ex = bare(c)
+    ex.session_manager.live = busy
+    ex.ensured = []
+    wt = types.SimpleNamespace(name="warmup0")
+
+    async def _ens(idx):
+        ex.ensured.append(idx)
+        return wt
+
+    ex._ensure_warmup_tab = _ens
+    ex.reads = []
+
+    async def _read(t, timeout=2.5):
+        ex.reads.append((t, timeout, ex._warmup_pool_lock.locked()))
+        if callable(read):
+            return read()
+        return json.loads(json.dumps(read))
+
+    ex._cart_items_read = _read
+    return ex, wt
+
+
+def boot_run(ex, c, flags=None, delay_s=0.0):
+    async def go():
+        ex._warmup_pool_lock = REAL_ASYNCIO.Lock()
+        return await ex._boot_cart_audit(delay_s=delay_s)
+
+    e = dict(IMPL_ENV)
+    e.update(HELD if flags is None else flags)
+    with in_tmp_cwd(), env(**e), fake_time(c) as shim:
+        out = run(go())
+    return out, shim
+
+
+def test_f_boot_audit():
+    c = Clock()
+    one = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+    ex, wt = boot_ex(c, one)
+    out, _ = boot_run(ex, c)
+    h = ex._held_cart
+    check("b_single_line_held", out == "held" and isinstance(h, dict) and h["tcin"] == TCIN and h["qty"] == 2
+          and h["source"] == "boot" and h["verified"] is False and h["tickets"] == 0
+          and h["sched_used"] == 0 and h["created"] == c.t and not ex.deletes
+          and ex.ensured == [0] and ex.reads == [(wt, 5.0, True)]
+          and "[BOOT_CART_AUDIT] single line" in run.last_out, f"{out} {h} {ex.reads}")
+    cases = [
+        ("over_ceiling", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 3}]}),
+        ("two_lines", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1},
+                                                             {"id": "CI-2", "tcin": OTHER, "qty": 1}]}),
+        ("same_tcin_two_lines", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1},
+                                                                       {"id": "CI-2", "tcin": TCIN, "qty": 1}]}),
+        ("unknown_qty", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]}),
+        ("zero_qty", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 0}]}),
+        ("bad_tcin", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": "", "qty": 1}]}),
+    ]
+    for label, read in cases:
+        ex, wt = boot_ex(c, read)
+        out, _ = boot_run(ex, c)
+        check(f"b_not_clean_deleted[{label}]", out == "deleted" and ex._held_cart is None
+              and ex.deletes == [{"only": None, "keep": None, "budget": 15.0}], f"{out} {ex.deletes}")
+    with env(TARGET_QTY_CEILING="3"):
+        ex, wt = boot_ex(c, cases[0][1])
+        out, _ = boot_run(ex, c)
+    check("b_ceiling_knob", out == "held" and ex._held_cart["qty"] == 3)
+    ex, wt = boot_ex(c, cases[1][1])
+    ex.delete_result = (False, 0)
+    out, _ = boot_run(ex, c)
+    check("b_delete_failed", out == "delete_failed" and ex._held_cart is None)
+    ex, wt = boot_ex(c, {"ok": True, "status": 200, "items": []})
+    out, _ = boot_run(ex, c)
+    check("b_empty", out == "empty" and not ex.deletes and ex._held_cart is None)
+    ex, wt = boot_ex(c, {"ok": False, "status": 429, "items": []})
+    out, _ = boot_run(ex, c)
+    check("b_read_failed_no_action", out == "read_failed" and not ex.deletes and ex._held_cart is None)
+    # A purchase owns the cart -> wait (15 s x 10, fake clock), then give up; nothing read.
+    ex, wt = boot_ex(c, one, busy=True)
+    out, shim = boot_run(ex, c)
+    check("b_busy_gives_up", out == "busy" and ex.reads == [] and shim.sleeps == [0.0] + [15.0] * 10
+          and ex._held_cart is None and not ex.deletes, f"{out} {shim.sleeps}")
+    # Busy once, then free -> proceeds.
+    ex, wt = boot_ex(c, one)
+    ex.session_manager.live = True
+    states = iter([True, False, False, False])
+    ex.session_manager.is_purchase_in_progress = lambda: next(states, False)
+    out, shim = boot_run(ex, c)
+    check("b_busy_then_free", out == "held" and shim.sleeps == [0.0, 15.0], f"{out} {shim.sleeps}")
+    # A purchase starts during the read -> no action.
+    ex, wt = boot_ex(c, None)
+
+    def _flip():
+        ex.session_manager.live = True
+        return json.loads(json.dumps(cases[1][1]))
+
+    ex, wt = boot_ex(c, _flip)
+    out, _ = boot_run(ex, c)
+    check("b_busy_during_read", out == "busy" and not ex.deletes and ex._held_cart is None, out)
+    # The page lock held by a purchase also counts as busy.
+    ex, wt = boot_ex(c, one)
+    lock_state = types.SimpleNamespace(locked=lambda: True)
+    ex._page_lock = lock_state
+    out, _ = boot_run(ex, c)
+    check("b_page_lock_busy", out == "busy" and ex.reads == [])
+    # A marker that already exists is never overwritten.
+    ex, wt = boot_ex(c, one)
+    ex._held_cart = mk_held(tcin=OTHER)
+    out, _ = boot_run(ex, c)
+    check("b_marker_exists", out == "marker_exists" and ex.reads == [] and ex._held_cart["tcin"] == OTHER)
+    # Not armed (WC-3 on, WC-1 off) -> skipped; no warmup tab -> no action.
+    ex, wt = boot_ex(c, one)
+    out, _ = boot_run(ex, c, flags={"TARGET_HELD_CART_REENTRY": "1"})
+    check("b_not_armed", out == "not_armed" and ex.reads == [])
+    ex, wt = boot_ex(c, one)
+    out, _ = boot_run(ex, c, flags=dict(HELD, TARGET_API_PLACE_ORDER="false"))
+    check("b_api_path_off", out == "not_armed" and ex.reads == [])
+    ex, wt = boot_ex(c, one)
+
+    async def _no_tab(idx):
+        return None
+
+    ex._ensure_warmup_tab = _no_tab
+    out, _ = boot_run(ex, c)
+    check("b_no_tab", out == "no_tab" and ex.reads == [])
+    # Default delay is 30-60 s; an exception is swallowed.
+    ex, wt = boot_ex(c, lambda: 1 / 0)
+    out, shim = boot_run(ex, c, delay_s=None)
+    check("b_default_delay_and_error", out == "error" and 30.0 <= shim.sleeps[0] <= 60.0, f"{out} {shim.sleeps}")
+    # Spawn: flag off -> nothing; on -> exactly one task (via _start_background_refill); test_mode -> none.
+    for label, flags, test_mode, want in (("off", {"TARGET_HELD_CART_REENTRY": None}, False, 0),
+                                          ("on", HELD, False, 1), ("test_mode", HELD, True, 0),
+                                          ("killswitch", dict(HELD, TARGET_BOOT_CART_AUDIT="0"), False, 0)):
+        ex = bare(c)
+        ex.test_mode = test_mode
+        ex._start_harvest = lambda: None
+        ex._warmup_refill_tasks = []
+        ex._warmup_pool_size = 0
+        spawned = []
+
+        async def _audit(delay_s=None, _s=spawned):
+            _s.append(delay_s)
+            return "stub"
+
+        ex._boot_cart_audit = _audit
+
+        async def go(_e=ex):
+            _e._start_background_refill()
+            _e._start_background_refill()
+            t = getattr(_e, "_boot_cart_audit_task", None)
+            return (await t) if t is not None else None
+
+        with env(**flags):
+            res = run(go())
+        check(f"b_spawn[{label}]", len(spawned) == want and (res == "stub") == (want == 1), f"{spawned} {res}")
+
+
+def test_f_new_reason_classification():
+    classify, terminal = _bpm_classifier()
+    # won_cart_ride_timeout from the real hang branch (clean exit on, ride live).
+    c = Clock()
+    ex = bare(c)
+    ex._purchase_timeout_ctx = None
+    ex._note_atc_gate_outcome = lambda t, r: None
+
+    async def _impl(tcin, quantity=1, _e=ex):
+        _e._won_cart_ride_until = real_time.time() + 100
+        await REAL_ASYNCIO.sleep(5)
+
+    ex._execute_purchase_impl = _impl
+    shim = types.SimpleNamespace(**{n: getattr(REAL_ASYNCIO, n) for n in dir(REAL_ASYNCIO) if not n.startswith("__")})
+    shim.timeout = lambda s: REAL_ASYNCIO.timeout(0.05)
+    saved = pe_mod.asyncio
+    pe_mod.asyncio = shim
+    try:
+        async def go():
+            ex._page_lock = REAL_ASYNCIO.Lock()
+            return await ex.execute_purchase(TCIN, quantity=2)
+        with env(TARGET_WON_CART_RIDE_CLEAN_EXIT="1"):
+            r = run(go())
+    finally:
+        pe_mod.asyncio = saved
+    check("k2_ride_timeout_shape", r.get("reason") == "won_cart_ride_timeout" and "websocket" not in str(r).lower()
+          and r.get("ambiguous_commit") is False, r)
+    NEW_REASON_RESULTS.append(r)
+    seen = set()
+    for res in NEW_REASON_RESULTS:
+        seen.add(res.get("reason"))
+        with env(**HELD):
+            got = classify(res)
+        check(f"k2_final[{res.get('reason')}]", got == "final", f"{res} -> {got}")
+        check(f"k2_no_terminal_token[{res.get('reason')}]",
+              not any(t in str(res.get("reason", "")).lower() for t in terminal))
+        # The manager restarts the browser on '1011' anywhere in a failed
+        # result's error; hot TCINs start with 1011 -> no digit runs at all.
+        check(f"k2_error_digit_free[{res.get('reason')}]",
+              not re.search(r"\d{3,}", str(res.get("error", ""))), res.get("error"))
+    check("k2_all_new_reasons_seen", {"held_cart_idle_skip", "held_cart_other_tcin", "held_cart_release_failed",
+                                      "held_cart_error", "won_cart_ride_timeout"} <= seen, seen)
+
+
+def test_g_wc2_impl():
+    c = Clock()
+    # 5c: the ride deadline is trimmed to now+20 s when the purchase returns.
+    for flag, ride_rel, want in (("1", 500.0, "trimmed"), ("0", 500.0, "kept"), ("1", None, "zero")):
+        ex, tab = impl_ex(c, FL_PRE429)
+
+        async def _loop(t, tcin, qty, fl, start_time, entry="first", _e=ex, _r=ride_rel):
+            if _r is not None:
+                _e._won_cart_ride_until = real_time.time() + _r
+            return "done", {"success": False, "tcin": tcin, "reason": "won_cart_held"}
+
+        ex._won_cart_ticket_loop = _loop
+        run_impl(ex, dict(ARMED, TARGET_WON_CART_RIDE_CLEAN_EXIT=flag))
+        left = ex._won_cart_ride_until - real_time.time()
+        if want == "trimmed":
+            ok = 0 < left <= 20.5
+        elif want == "kept":
+            ok = left > 400
+        else:
+            ok = ex._won_cart_ride_until == 0.0
+        check(f"g_ride_trim[{flag},{want}]", ok, f"left={left:.1f}")
+
+    # Item 4: the legacy fire-and-forget pre_checkout is skipped when the fast
+    # lane already awaited one (flag on), fired otherwise.
+    class DupTab(ImplTab):
+        def __init__(self):
+            super().__init__()
+            self.evals = []
+
+        async def get(self, url):
+            self.gets.append(url)
+            if "checkout/start" in url:
+                raise LegacyReached("checkout nav")
+
+        async def evaluate(self, js, await_promise=False):
+            self.evals.append(js)
+            return None
+
+    def pre_fires(fl0, flags):
+        ex, _ = impl_ex(c, fl0)
+        dt = DupTab()
+
+        async def _gp():
+            return dt
+
+        ex.session_manager.get_page = _gp
+        ex._notify_status = lambda *a, **k: None
+        run_impl(ex, flags)
+        return sum(1 for j in dt.evals if "pre_checkout?cart_type=REGULAR" in j and "keepalive: true" in j), dt
+
+    n, dt = pre_fires(FL_PRE429, {})
+    check("g_dup_pre_default_fires", n == 1 and any("checkout/start" in g for g in dt.gets), n)
+    n, dt = pre_fires(FL_PRE429, {"TARGET_FASTLANE_SKIP_DUP_PRE": "1"})
+    check("g_dup_pre_skipped", n == 0 and any("checkout/start" in g for g in dt.gets)
+          and "pre_checkout NOT re-fired" in run.last_out, n)
+    n, dt = pre_fires(dict(FL_PRE429, pre={"status": 0}, skip="pre_0"), {"TARGET_FASTLANE_SKIP_DUP_PRE": "1"})
+    check("g_dup_pre_fires_when_fast_lane_had_no_pre", n == 1, n)
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
              test_c_reason_classification, test_c_quiet_mode, test_c_helpers, test_c_cart_read_delete,
-             test_d_stock_snapshot, test_e_note_stock_read)
+             test_d_stock_snapshot, test_e_note_stock_read, test_f_held_cart_reentry,
+             test_f_held_protections, test_f_boot_audit, test_f_new_reason_classification,
+             test_g_wc2_impl)
     for fn in tests:
         try:
             fn()

@@ -46,6 +46,8 @@ class _FakeTab:
         return None
 
     async def evaluate(self, script, await_promise=False):
+        if "readyState" not in script:
+            self._c["dummy"] += 1          # the warmup dummy POST
         return "complete"
 
 
@@ -133,6 +135,193 @@ def test_warm_tab_skip_still_applies_without_purchase():
     ex, c, _ = _make(in_progress=False, cart_nav_age=10.0)
     _run(ex)
     assert c["nav"] == 0, f"warm tab should not re-nav, got {c['nav']}"
+
+
+# ── 2026-09-16 hot-sku plan P1/P3/P4: won-cart quiet warmups ────────────────
+# 09-16: before every legacy re-shoot a forced re-warm loaded /cart on the
+# holding account, whose page JS fired `PUT cart ADDRESSES` on the held cart.
+# TARGET_HOLD_QUIET_WARMUP=1 skips the /cart nav (even force_fresh) while a won
+# cart is held: the legacy ride (_won_cart_ride_until), the won-cart loop
+# (_woncart_active_until) or a WC-3 marker younger than its TTL. Level 2
+# (experimental, not armed) also skips the dummy POST.
+_QUIET_FLAGS = ("TARGET_HOLD_QUIET_WARMUP", "TARGET_HELD_CART_TTL_S")
+
+
+def _quiet_clear():
+    for k in _QUIET_FLAGS:
+        os.environ.pop(k, None)
+    os.environ["TARGET_WARMUP_PAUSE_DURING_PURCHASE"] = "1"
+
+
+def _run_ret(ex, force_fresh=False):
+    return asyncio.run(ex._refresh_on_tab(0, force_fresh=force_fresh))
+
+
+def test_quiet_level1_ride_skips_forced_nav_but_fires_dummy():
+    import time as _t
+    _quiet_clear()
+    os.environ["TARGET_HOLD_QUIET_WARMUP"] = "1"
+    try:
+        ex, c, _ = _make(in_progress=False)
+        ex._won_cart_ride_until = _t.time() + 60
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 0 and c["dummy"] == 1, f"nav={c['nav']} dummy={c['dummy']}"
+    finally:
+        _quiet_clear()
+
+
+def test_quiet_level0_ride_unchanged_force_fresh_navigates():
+    import time as _t
+    _quiet_clear()
+    try:
+        ex, c, _ = _make(in_progress=True)
+        ex._won_cart_ride_until = _t.time() + 60
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 1 and c["dummy"] == 1, f"nav={c['nav']} dummy={c['dummy']}"
+    finally:
+        _quiet_clear()
+
+
+def test_quiet_level1_expired_ride_navigates():
+    import time as _t
+    _quiet_clear()
+    os.environ["TARGET_HOLD_QUIET_WARMUP"] = "1"
+    try:
+        ex, c, _ = _make(in_progress=False)
+        ex._won_cart_ride_until = _t.time() - 1
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 1, f"nav={c['nav']}"
+    finally:
+        _quiet_clear()
+
+
+def test_quiet_level2_skips_dummy_post_too():
+    import time as _t
+    _quiet_clear()
+    os.environ["TARGET_HOLD_QUIET_WARMUP"] = "2"
+    try:
+        ex, c, _ = _make(in_progress=False)
+        ex._won_cart_ride_until = _t.time() + 60
+        r = _run_ret(ex, force_fresh=True)
+        assert c["nav"] == 0 and c["dummy"] == 0 and r is False, f"nav={c['nav']} dummy={c['dummy']} r={r}"
+        ex, c, _ = _make(in_progress=False)
+        ex._cached_cart_headers = {"x": "1"}
+        ex._won_cart_ride_until = _t.time() + 60
+        assert _run_ret(ex) is True and c["dummy"] == 0
+    finally:
+        _quiet_clear()
+
+
+def test_quiet_level_parse():
+    from src.session.purchase_executor import hold_quiet_warmup_level
+    _quiet_clear()
+    try:
+        got = {}
+        for v in (None, "0", "1", " 1 ", "2", "3", "-1", "x", ""):
+            if v is None:
+                os.environ.pop("TARGET_HOLD_QUIET_WARMUP", None)
+            else:
+                os.environ["TARGET_HOLD_QUIET_WARMUP"] = v
+            got[v] = hold_quiet_warmup_level()
+        assert got == {None: 0, "0": 0, "1": 1, " 1 ": 1, "2": 2, "3": 0, "-1": 0, "x": 0, "": 0}, got
+    finally:
+        _quiet_clear()
+
+
+def test_won_cart_loop_quiet_skips_nav_without_the_flag():
+    import time as _t
+    _quiet_clear()
+    try:
+        ex, c, _ = _make(in_progress=False)
+        ex._woncart_active_until = _t.time() + 60
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 0 and c["dummy"] == 1, f"nav={c['nav']} dummy={c['dummy']}"
+    finally:
+        _quiet_clear()
+
+
+def test_held_marker_quiet_respects_ttl():
+    import time as _t
+    _quiet_clear()
+    try:
+        ex, c, _ = _make(in_progress=False)
+        ex._held_cart = {"tcin": "1010892069", "created": _t.time() - 10}
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 0, f"fresh marker: nav={c['nav']}"
+        ex, c, _ = _make(in_progress=False)
+        ex._held_cart = {"tcin": "1010892069", "created": _t.time() - 1000}
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 1, f"expired marker (900 s TTL): nav={c['nav']}"
+        os.environ["TARGET_HELD_CART_TTL_S"] = "2000"
+        ex, c, _ = _make(in_progress=False)
+        ex._held_cart = {"tcin": "1010892069", "created": _t.time() - 1000}
+        _run(ex, force_fresh=True)
+        assert c["nav"] == 0, f"TTL knob: nav={c['nav']}"
+    finally:
+        _quiet_clear()
+
+
+# ── plan P4 (WC-2 item 3): the fleet cycle-warm is skipped while stock is in ──
+def _mgr_stub():
+    import threading
+    import types
+    from src.purchasing.bulletproof_purchase_manager import BulletproofPurchaseManager
+    m = object.__new__(BulletproofPurchaseManager)
+    m._state_lock = threading.Lock()
+    m._load_states_unsafe = lambda: {}
+    m._save_states_unsafe = lambda s: None
+    m._active_purchases = {}
+    m._warmup_cycle_counter = 0
+    queued = []
+    ex = types.SimpleNamespace(_cached_cart_headers_ts=0, _warmup_in_progress=False,
+                               warm_shape_headers=lambda: "warm-coro")
+    w = types.SimpleNamespace(purchase_executor=ex, label=lambda: "w1",
+                              run_async=lambda coro: queued.append(coro))
+    m.worker_pool = types.SimpleNamespace(workers=[w])
+
+    class _Stop(Exception):
+        pass
+
+    def _sentinel():
+        raise _Stop()
+
+    m._maybe_run_session_sentinel = _sentinel
+    return m, queued, _Stop
+
+
+def _cycle(stock, flag):
+    import contextlib
+    import io
+    if flag is None:
+        os.environ.pop("TARGET_WARMUP_CYCLE_SKIP_ON_STOCK", None)
+    else:
+        os.environ["TARGET_WARMUP_CYCLE_SKIP_ON_STOCK"] = flag
+    m, queued, stop = _mgr_stub()
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                m.process_stock_data(stock)
+            except stop:
+                pass
+    finally:
+        os.environ.pop("TARGET_WARMUP_CYCLE_SKIP_ON_STOCK", None)
+    return queued, buf.getvalue()
+
+
+def test_cycle_warm_skipped_when_stock_is_in():
+    live = {"1010892069": {"in_stock": True}, "1011407490": {"in_stock": False}}
+    dead = {"1010892069": {"in_stock": False}}
+    q, out = _cycle(live, None)
+    assert q == ["warm-coro"], f"default must queue the warm: {q}"
+    q, out = _cycle(live, "0")
+    assert q == ["warm-coro"], f"flag 0 must queue the warm: {q}"
+    q, out = _cycle(live, "1")
+    assert q == [] and "skipped — stock is live" in out, f"flag 1 + stock in: {q} {out[-200:]}"
+    q, out = _cycle(dead, "1")
+    assert q == ["warm-coro"], f"flag 1 + no stock: {q}"
+    q, out = _cycle({"1010892069": "garbage"}, "1")
+    assert q == ["warm-coro"], f"malformed row never skips: {q}"
 
 
 if __name__ == "__main__":

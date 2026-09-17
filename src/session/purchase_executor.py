@@ -102,8 +102,72 @@ def woncart_direct_on() -> bool:
 
 def held_cart_reentry_on() -> bool:
     """TARGET_HELD_CART_REENTRY=1 (plan P3 / WC-3): a loop exit that still holds
-    a live cart keeps it (self._held_cart) instead of clearing it. Default '0'."""
+    a live cart keeps it (self._held_cart) instead of clearing it, the next
+    dispatch on that identity re-enters the loop while the TCIN reads live (no
+    ATC), and a boot cart audit adopts a clean single-line cart left over from a
+    restart. The held/boot paths only act when TARGET_WONCART_DIRECT is armed
+    (a lone WC-3 flag only forces QG on). Default '0'. Kill-switch: =0."""
     return os.environ.get('TARGET_HELD_CART_REENTRY', '0').strip() == '1'
+
+
+def boot_cart_audit_on() -> bool:
+    """TARGET_BOOT_CART_AUDIT (plan P3): automatically on with WC-3
+    (TARGET_HELD_CART_REENTRY=1); TARGET_BOOT_CART_AUDIT=0 turns only the
+    one-shot boot cart read off."""
+    return (held_cart_reentry_on()
+            and os.environ.get('TARGET_BOOT_CART_AUDIT', '1').strip() != '0')
+
+
+def held_cart_ttl_s(env=None) -> float:
+    """TARGET_HELD_CART_TTL_S: lifetime of a held-cart marker (default 900 s,
+    clamped 60..3600). An older marker is retired (bounded delete) on the next
+    dispatch and no longer keeps the warmup tabs quiet."""
+    env = os.environ if env is None else env
+    try:
+        v = float(str(env.get('TARGET_HELD_CART_TTL_S', '900')).strip())
+    except (TypeError, ValueError):
+        v = 900.0
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        v = 900.0
+    return min(3600.0, max(60.0, v))
+
+
+# ── 2026-09-16 plan P4 (WC-2): legacy-path hygiene + ride clean exit ─────────
+def reshoot_force_rewarm_on() -> bool:
+    """TARGET_RESHOOT_FORCE_REWARM (default '1' = the 07-17 forced /cart
+    re-warm before every legacy in-place re-shoot). '0' makes that warm a
+    normal one, so the purchase-time /cart guard applies (09-16: the forced
+    re-warm put a /cart nav + `PUT cart ADDRESSES` on the held cart before
+    each re-shoot). Mirrors the manager's TARGET_RETRY_FORCE_REWARM."""
+    return os.environ.get('TARGET_RESHOOT_FORCE_REWARM', '1').strip() == '1'
+
+
+def hold_quiet_warmup_level() -> int:
+    """TARGET_HOLD_QUIET_WARMUP (default 0). 1: while a won cart is held (the
+    legacy ride, the won-cart loop or a WC-3 marker) the warmup tabs never load
+    /cart, not even force_fresh. 2 (experimental, NOT armed): also skip the
+    warmup dummy POST during the hold. Anything unparsable = 0."""
+    try:
+        v = int(str(os.environ.get('TARGET_HOLD_QUIET_WARMUP', '0')).strip())
+    except (TypeError, ValueError):
+        return 0
+    return v if v in (0, 1, 2) else 0
+
+
+def fastlane_skip_dup_pre_on() -> bool:
+    """TARGET_FASTLANE_SKIP_DUP_PRE=1: the legacy path does not fire its
+    fire-and-forget pre_checkout when the fast lane already awaited one this
+    purchase (09-16: a duplicate pre_checkout on the held cart). Default '0'."""
+    return os.environ.get('TARGET_FASTLANE_SKIP_DUP_PRE', '0').strip() == '1'
+
+
+def ride_clean_exit_on() -> bool:
+    """TARGET_WON_CART_RIDE_CLEAN_EXIT=1 (default '0'): the legacy FAST_SELLING
+    hold budget ends 60 s before the ride cap (room for the final re-shoot), a
+    purchase timeout during a ride reports 'won_cart_ride_timeout' (no
+    'websocket' text, so the manager does not restart the browser) and the
+    ride deadline is trimmed to now+20 s when the purchase returns."""
+    return os.environ.get('TARGET_WON_CART_RIDE_CLEAN_EXIT', '0').strip() == '1'
 
 
 def fastlane_qty_guard_on() -> bool:
@@ -614,6 +678,10 @@ class PurchaseExecutor:
         self._fl_stage_key: str = ''
         self._woncart_ticket_seq: int = 0
         self._woncart_refusal_logged: bool = False
+        # 2026-09-16 plan P3 (WC-3): one-shot boot cart audit (spawned from
+        # _start_background_refill only when TARGET_HELD_CART_REENTRY=1).
+        self._boot_cart_audit_spawned: bool = False
+        self._boot_cart_audit_task = None
         self._purchase_timeout_ctx = None      # live asyncio.Timeout while a purchase runs
         self._execute_started_at: float = 0.0  # epoch of the current execute_purchase()
         # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a rolling per-account
@@ -1004,6 +1072,25 @@ class PurchaseExecutor:
                 return self._fastlane_success_dict(
                     tcin, max(1, min(int(quantity or 1), _ceil)),
                     time.time() - float(self._execute_started_at or time.time()))
+            if (ride_clean_exit_on()
+                    and float(getattr(self, '_won_cart_ride_until', 0.0) or 0.0) > 0):
+                # 2026-09-16 plan P4 (WC-2 5b): the timeout that ended a won-cart
+                # ride is the ride budget, not a dead websocket (09-16: a false
+                # purchase_impl_hang restarted a healthy browser). No 'websocket'
+                # text -> no manager restart; the reason is non-transient. A real
+                # wedge still surfaces on the next purchase's early CDP probe.
+                # Kill-switch: TARGET_WON_CART_RIDE_CLEAN_EXIT=0.
+                print(f"[WON_CART_RIDE] purchase timeout while riding a won cart — "
+                      f"reporting won_cart_ride_timeout (no browser restart) "
+                      f"po_inflight={bool(getattr(self, '_po_inflight', False))}")
+                return {
+                    'success': False,
+                    'tcin': tcin,
+                    'reason': 'won_cart_ride_timeout',
+                    'error': 'won-cart ride budget reached',
+                    'ambiguous_commit': bool(getattr(self, '_po_inflight', False)
+                                             or getattr(self, '_po_ambiguous', False)),
+                }
             _hang = {
                 'success': False,
                 'tcin': tcin,
@@ -1072,6 +1159,47 @@ class PurchaseExecutor:
             return float(getattr(self, '_woncart_active_until', 0.0) or 0.0) > time.time()
         except Exception:
             return False
+
+    def _held_cart_active(self) -> bool:
+        """True while a WC-3 held-cart marker exists and is younger than
+        TARGET_HELD_CART_TTL_S (a marker without a creation stamp counts as
+        active). An expired marker stops keeping the warmup tabs quiet; the next
+        dispatch retires it. Only the flag-gated WC-3 paths set a marker."""
+        h = getattr(self, '_held_cart', None)
+        if not h:
+            return False
+        try:
+            created = float(h.get('created') or 0.0) if isinstance(h, dict) else 0.0
+            if created <= 0.0:
+                return True
+            return (time.time() - created) <= held_cart_ttl_s()
+        except Exception:
+            return True
+
+    def _ride_clamp_fs_deadline(self, fs_deadline: float) -> float:
+        """WC-2 5a (TARGET_WON_CART_RIDE_CLEAN_EXIT=1): end the legacy
+        FAST_SELLING hold budget 60 s before the ride cap so the final re-shoot
+        still fits inside the purchase timeout. Identity when the flag is off or
+        the purchase start is unknown."""
+        if not ride_clean_exit_on():
+            return fs_deadline
+        try:
+            start = float(getattr(self, '_execute_started_at', 0.0) or 0.0)
+            if start <= 0.0:
+                return fs_deadline
+            try:
+                _max = float(os.environ.get('TARGET_WON_CART_RIDE_MAX_S', '300'))
+            except ValueError:
+                _max = 300.0
+            cap = start + _max - 60.0
+            if fs_deadline > cap:
+                print(f"[WON_CART_RIDE] FAST_SELLING hold budget clamped to end "
+                      f"{cap - time.time():.0f}s from now (ride cap {_max:.0f}s - 60s "
+                      f"for the final re-shoot)")
+                return cap
+            return fs_deadline
+        except Exception:
+            return fs_deadline
 
     def _stock_state(self, tcin) -> Dict[str, Any]:
         """The manager's stock probe for `tcin`; {'live': None} when there is no
@@ -2008,10 +2136,26 @@ class PurchaseExecutor:
         # one before every re-shoot). The dummy POST (bogus TCIN, 424 on
         # 5,025/5,025 calls on 09-16) still fires. Only the flag-gated loop sets
         # these attributes, so this branch is unreachable with the flags off.
-        _wc_quiet = self._woncart_quiet() or bool(getattr(self, '_held_cart', None))
+        # 2026-09-16 plan P4 (WC-2 item 2): TARGET_HOLD_QUIET_WARMUP>=1 extends
+        # the same quiet rule to the legacy FAST_SELLING ride
+        # (_won_cart_ride_until); level 2 (experimental, not armed) also skips
+        # the dummy POST. Level 0 (default) = exactly the rule above.
+        _hq_level = hold_quiet_warmup_level()
+        _wc_why = ('loop' if self._woncart_quiet()
+                   else 'held' if self._held_cart_active() else '')
+        if not _wc_why and _hq_level >= 1:
+            try:
+                if float(getattr(self, '_won_cart_ride_until', 0.0) or 0.0) > now:
+                    _wc_why = 'ride'
+            except Exception:
+                pass
+        _wc_quiet = bool(_wc_why)
         if _wc_quiet:
-            print(f"[WARMUP#{idx}] won-cart held — no /cart nav")
+            print(f"[WARMUP#{idx}] won-cart held — no /cart nav ({_wc_why})")
             fresh_nav = False
+            if _hq_level >= 2:
+                print(f"[WARMUP#{idx}] won-cart held — quiet level 2: no dummy POST either")
+                return bool(self._cached_cart_headers)
         elif _purchase_live:
             print(f"[WARMUP#{idx}] Purchase in flight — skipping /cart re-nav to avoid a "
                   f"concurrent cart/address write (CVV-challenge guard); dummy POST still fires")
@@ -2201,6 +2345,7 @@ class PurchaseExecutor:
     def _start_background_refill(self) -> None:
         """Kick off one `_background_refill_loop` task per pool index. Idempotent."""
         self._start_harvest()  # 2026-09-03: real-click Shape harvest (flag-gated, idempotent)
+        self._start_boot_cart_audit()  # 2026-09-16 plan P3 (WC-3 flag-gated, one-shot)
         # Drop completed/cancelled tasks before deciding whether to spawn new ones.
         self._warmup_refill_tasks = [t for t in self._warmup_refill_tasks if not t.done()]
         if len(self._warmup_refill_tasks) >= self._warmup_pool_size:
@@ -2779,9 +2924,20 @@ class PurchaseExecutor:
         if tab is None:
             return
         try:
-            self._harvest_log("clearing cart after a suspected landed harvest add ...")
-            ok = await asyncio.wait_for(self._clear_cart(tab), timeout=45.0)
-            self._harvest_log(f"cart clear {'OK' if ok else 'reported failure'} — dropping harvest tab (re-opens on the PDP)")
+            _held = getattr(self, '_held_cart', None)
+            if held_cart_reentry_on() and isinstance(_held, dict) and _held.get('tcin'):
+                # 2026-09-16 plan P3 (WC-3): a held won cart survives the
+                # suspect clear — delete every OTHER line only (bounded).
+                _keep = str(_held.get('tcin'))
+                self._harvest_log(f"suspected landed harvest add — deleting every cart line except "
+                                  f"the held won cart ({_keep}) ...")
+                ok, _n = await self._delete_cart_items(tab, keep_tcin=_keep, budget_s=15.0)
+                self._harvest_log(f"selective delete {'OK' if ok else 'reported failure'} ({_n} line(s)) — "
+                                  f"dropping harvest tab (re-opens on the PDP)")
+            else:
+                self._harvest_log("clearing cart after a suspected landed harvest add ...")
+                ok = await asyncio.wait_for(self._clear_cart(tab), timeout=45.0)
+                self._harvest_log(f"cart clear {'OK' if ok else 'reported failure'} — dropping harvest tab (re-opens on the PDP)")
         except Exception as e:
             self._harvest_log(f"cart clear errored ({type(e).__name__}: {e})")
         await self._harvest_drop_tab("after suspect-cart clear")
@@ -3336,6 +3492,16 @@ class PurchaseExecutor:
             # latch only disables the lane when no CVV is configured — the old
             # behaviour cost alt-1 two whole nights of DOM-only racing. Without
             # digits the shot is a guaranteed 400 and the DOM-first path handles it.
+            # 2026-09-16 plan P3 (WC-3): this identity holds a won cart from an
+            # earlier loop call (or the boot audit). Re-enter the ticket loop
+            # while that TCIN reads live (no ATC), sit out a different TCIN while
+            # the held one is live, otherwise release it (bounded delete) before
+            # a normal shot — the legacy path would buy the whole cart.
+            # Kill-switch: TARGET_HELD_CART_REENTRY=0 (no marker is ever set).
+            if held_cart_reentry_on() and getattr(self, '_held_cart', None) is not None:
+                _held_res = await self._held_cart_entry(tab, tcin, quantity, start_time)
+                if _held_res is not None:
+                    return _held_res
             # 2026-09-16 plan P1 (S-B1): an order this purchase already placed
             # must never reach the fast lane / legacy ATC below.
             if woncart_direct_on() and self._fastlane_placed:
@@ -4154,7 +4320,15 @@ class PurchaseExecutor:
             # Skipped when the fast lane ran: it already AWAITED its own
             # pre_checkout inside the fetch chain (that await is exactly what
             # makes dropping the nav safe) and has committed the order.
-            if not self._fastlane_placed:
+            # 2026-09-16 plan P4 (WC-2 item 4): TARGET_FASTLANE_SKIP_DUP_PRE=1
+            # also skips it when the fast lane already AWAITED a pre_checkout on
+            # this cart (09-16: a duplicate pre_checkout on the held cart).
+            _dup_pre_skip = (fastlane_skip_dup_pre_on() and _fl is not None
+                             and bool((_fl.get('pre') or {}).get('status')))
+            if _dup_pre_skip and not self._fastlane_placed:
+                print(f"[PURCHASE] pre_checkout NOT re-fired — the fast lane already awaited one "
+                      f"(status={(_fl.get('pre') or {}).get('status')}) (TARGET_FASTLANE_SKIP_DUP_PRE=1)")
+            if not self._fastlane_placed and not _dup_pre_skip:
                 try:
                     await tab.evaluate(f"""(() => {{
                     const shapeHeaders = {extra_headers_js};
@@ -4480,8 +4654,13 @@ class PurchaseExecutor:
                 if browser and browser.tabs:
                     recovery_tab = browser.tabs[0]
                     await recovery_tab.get("https://www.target.com/cart")
-                    await self._clear_cart(recovery_tab)
+                    _rec_cleared = await self._clear_cart(recovery_tab)
                     print(f"[PURCHASE] Error recovery: cart cleared")
+                    if (_rec_cleared and held_cart_reentry_on()
+                            and getattr(self, '_held_cart', None) is not None):
+                        # 2026-09-16 plan P3: the held line went with the clear.
+                        self._held_cart = None
+                        print(f"[HELD_CART] marker dropped — the error-recovery clear emptied the cart")
             except Exception:
                 pass
 
@@ -4517,6 +4696,17 @@ class PurchaseExecutor:
                     print(f"[PURCHASE] CDP fetch interceptor disabled (cleanup) — all RequestPaused handlers removed")
                 except Exception as cleanup_err:
                     print(f"[PURCHASE] CDP interceptor cleanup warning: {cleanup_err}")
+            # 2026-09-16 plan P4 (WC-2 5c): the ride ended with this purchase —
+            # stop advertising it 20 s from now (not 0: the manager's wait loop
+            # may still be between polls). Reached only when the cleanup above
+            # returned; a hang there leaves the ride intact for the 5b branch.
+            if ride_clean_exit_on():
+                try:
+                    _ru = float(getattr(self, '_won_cart_ride_until', 0.0) or 0.0)
+                    if _ru > 0:
+                        self._won_cart_ride_until = min(_ru, time.time() + 20.0)
+                except Exception:
+                    pass
 
     # -------------------------------------------------------------------------
     # ATC readiness and cart signal helpers
@@ -7462,6 +7652,253 @@ class PurchaseExecutor:
         self._reset_checkout_reject()
         return res
 
+    # ── 2026-09-16 plan P3 (WC-3): held-cart re-entry + boot cart audit ──────
+    # A held won cart is the only asset that bypasses the ATC wall. 09-16: the
+    # Tin came back at 03:44:55 and primary re-fired qty=2 ATCs with no cart
+    # read. Every path below is reachable only with TARGET_HELD_CART_REENTRY=1
+    # (no marker is ever set otherwise). Reason strings never contain a BPM
+    # terminal token and none is in the manager's transient set.
+    @staticmethod
+    def _held_skip(T: str, reason: str, error: str, start_time: float) -> Dict[str, Any]:
+        # The error text must never carry a TCIN or other digits: the manager
+        # restarts the browser on any failed result whose error contains
+        # '1011' (the websocket close code), and hot TCINs start with 1011.
+        return {'success': False, 'tcin': str(T), 'reason': reason, 'error': error,
+                'execution_time': time.time() - start_time}
+
+    def _held_desc(self, h) -> str:
+        try:
+            created = float(h.get('created') or 0.0)
+            age = f"{time.time() - created:.0f}s" if created > 0 else '?'
+            return (f"tcin={h.get('tcin')} src={h.get('source', 'first')} age={age} "
+                    f"tickets={h.get('tickets')} verified={h.get('verified')}")
+        except Exception:
+            return 'marker=?'
+
+    async def _held_cart_release(self, tab, h, why: str) -> bool:
+        """Bounded delete of the held TCIN's line(s) (15 s, no repair / warm /
+        DOM); the marker is dropped either way. Returns the delete's ok."""
+        HT = str((h or {}).get('tcin') or '') if isinstance(h, dict) else ''
+        ok, n = True, 0                       # no TCIN on the marker = nothing to delete
+        if HT:
+            ok, n = await self._delete_cart_items(tab, only_tcin=HT, budget_s=15.0)
+        if getattr(self, '_held_cart', None) is h:
+            self._held_cart = None
+        print(f"[HELD_CART] released ({why}) {self._held_desc(h) if isinstance(h, dict) else ''} "
+              f"delete_ok={ok} lines={n} ident={self._ident_tag()}")
+        return bool(ok)
+
+    async def _held_cart_entry(self, tab, tcin, quantity, start_time: float):
+        """The WC-3 check block (plan P3). Returns a final result dict, or None
+        when the purchase continues with a normal shot. Never fires an ATC and
+        never clears a cart it cannot prove is ours to release."""
+        T = str(tcin)
+        h = getattr(self, '_held_cart', None)
+        if not isinstance(h, dict):
+            self._held_cart = None
+            return None
+        HT = str(h.get('tcin') or '')
+        Q = max(1, int(quantity or 1))
+        exact_qty = None
+        try:
+            cfg = woncart_cfg()
+            ttl = held_cart_ttl_s()
+            created = float(h.get('created') or 0.0)
+            age = (time.time() - created) if created > 0 else float('inf')
+            tickets = int(h.get('tickets', 0) or 0)
+            loop_ok = (self._woncart_armed() and not self.test_mode and self._woncart_api_path_on()
+                       and (not self._cvv_required or self._fast_lane_cvv()))
+            if not HT or not loop_ok or age > ttl or tickets >= cfg['max_tickets']:
+                why = ('bad_marker' if not HT else 'loop_not_armed' if not loop_ok
+                       else 'ttl' if age > ttl else 'ticket_cap')
+                print(f"[HELD_CART] retired ({why}; ttl={ttl:.0f}s cap={cfg['max_tickets']}) "
+                      f"{self._held_desc(h)} ident={self._ident_tag()}")
+                if not await self._held_cart_release(tab, h, 'retired_' + why):
+                    return self._held_skip(T, 'held_cart_release_failed',
+                                           'held cart could not be deleted (retire)', start_time)
+                return None
+            if HT != T:
+                live_h = self._stock_state(HT).get('live')
+                if live_h is True:
+                    print(f"[HELD_CART] holding a LIVE won cart for {HT} — sitting out {T} "
+                          f"(cart untouched) {self._held_desc(h)} ident={self._ident_tag()}")
+                    return self._held_skip(T, 'held_cart_other_tcin',
+                                           'identity holds a live won cart for another item', start_time)
+                # Explicit release: the legacy path would buy the whole cart.
+                if not await self._held_cart_release(tab, h, f'shot_on_{T}_held_live_{live_h}'):
+                    return self._held_skip(T, 'held_cart_release_failed',
+                                           'held cart for another item could not be deleted', start_time)
+                return None
+            live = self._stock_state(T).get('live')
+            if live is not True:
+                print(f"[HELD_CART] {T} is held but the probe reads live={live} — nothing fired "
+                      f"(held_cart_idle_skip) {self._held_desc(h)} ident={self._ident_tag()}")
+                return self._held_skip(T, 'held_cart_idle_skip',
+                                       f'held cart kept; stock probe live={live}', start_time)
+            r = await self._cart_items_read(tab)
+            if r.get('ok'):
+                items = r.get('items') or []
+                ours = [it for it in items if str(it.get('tcin') or '') == T]
+                foreign = [it for it in items if str(it.get('tcin') or '') != T]
+                if not ours:
+                    self._held_cart = None
+                    print(f"[HELD_CART] {T} line is gone from the cart ({len(items)} other line(s)) — "
+                          f"marker dropped, normal shot (QG covers stacking) ident={self._ident_tag()}")
+                    return None
+                foreign_ok = True
+                if foreign:
+                    foreign_ok, _fn = await self._delete_cart_items(tab, keep_tcin=T, budget_s=15.0)
+                    print(f"[HELD_CART] {len(foreign)} foreign line(s) beside the held {T} — "
+                          f"selective delete ok={foreign_ok} lines={_fn}")
+                qs = [it.get('qty') for it in ours]
+                qsum = None if any(q is None for q in qs) else sum(qs)
+                if qsum is not None and qsum > Q:
+                    _ok, _n = await self._delete_cart_items(tab, only_tcin=T, budget_s=15.0)
+                    if getattr(self, '_held_cart', None) is h:
+                        self._held_cart = None
+                    print(f"[HELD_CART] held {T} line carries qty={qsum} > {Q} — deleted "
+                          f"(ok={_ok} lines={_n}), marker dropped ident={self._ident_tag()}")
+                    if not _ok:
+                        return self._held_skip(T, 'held_cart_release_failed',
+                                               'stacked held line could not be deleted', start_time)
+                    return None
+                if foreign_ok and qsum is not None and qsum >= 1:
+                    exact_qty = int(qsum)
+            else:
+                print(f"[HELD_CART] cart read failed (status={r.get('status')} "
+                      f"err={r.get('error', '-')}) — entering the loop; the ticket's "
+                      f"pre_checkout re-verifies the cart")
+            if exact_qty is None and h.get('verified'):
+                # Only a verified 2xx pre on this cart may unlock place-order-only
+                # tickets; an inconclusive read forces the strict gate again.
+                h['verified'] = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[HELD_CART] check errored ({type(e).__name__}: {e}) — nothing fired, "
+                  f"cart and marker kept ident={self._ident_tag()}")
+            return self._held_skip(T, 'held_cart_error', f'held-cart check errored: {type(e).__name__}',
+                                   start_time)
+        print(f"[HELD_CART] re-entering the won-cart loop for {T} (no ATC) "
+              f"{self._held_desc(h)} read_qty={exact_qty if exact_qty is not None else '?'} "
+              f"ident={self._ident_tag()}")
+        v, t = await self._won_cart_ticket_loop(tab, T, Q, None, start_time, entry='held')
+        if v == 'placed':
+            return await self._fastlane_success_result(
+                tab, T, exact_qty if exact_qty is not None else Q, start_time)
+        return t
+
+    @staticmethod
+    def _woncart_api_path_on() -> bool:
+        """The fast-lane gate's env half (TARGET_FAST_LANE / TARGET_API_PLACE_ORDER),
+        read exactly as _execute_purchase_impl reads it: the first-entry loop is
+        only reachable through the fast lane, so the held/boot paths require the
+        same API place-order path."""
+        return (os.environ.get('TARGET_FAST_LANE', '1') == '1'
+                and os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true')
+
+    def _start_boot_cart_audit(self) -> None:
+        """Spawn the one-shot boot cart audit (WC-3). Idempotent; no-op unless
+        TARGET_HELD_CART_REENTRY=1 (and TARGET_BOOT_CART_AUDIT is not 0)."""
+        if not boot_cart_audit_on():
+            return
+        if getattr(self, '_boot_cart_audit_spawned', False) or getattr(self, 'test_mode', False):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._boot_cart_audit_spawned = True
+        self._boot_cart_audit_task = loop.create_task(self._boot_cart_audit())
+        print(f"[BOOT_CART_AUDIT] scheduled in 30-60 s ident={self._ident_tag()}")
+
+    def _boot_audit_busy(self) -> bool:
+        """A purchase (or the won-cart loop) owns the cart right now."""
+        try:
+            if self.session_manager.is_purchase_in_progress():
+                return True
+        except Exception:
+            pass
+        try:
+            lk = getattr(self, '_page_lock', None)
+            if lk is not None and lk.locked():
+                return True
+        except Exception:
+            pass
+        return self._woncart_quiet()
+
+    async def _boot_cart_audit(self, delay_s=None) -> str:
+        """Read the cart once after boot (warmup tab 0, under the pool lock).
+        A single line of one TCIN at qty 1..TARGET_QTY_CEILING becomes a held
+        marker (source='boot': re-entered only while that TCIN reads live,
+        retired at the TTL); anything else (several lines, over-qty, unknown
+        qty) is deleted, bounded. Never runs while a purchase owns the cart.
+        Returns an outcome tag; never raises."""
+        tag = '[BOOT_CART_AUDIT]'
+        try:
+            await asyncio.sleep(random.uniform(30.0, 60.0) if delay_s is None else float(delay_s))
+            if (not boot_cart_audit_on() or not self._woncart_armed()
+                    or not self._woncart_api_path_on()):
+                print(f"{tag} skipped — the won-cart loop is not armed ident={self._ident_tag()}")
+                return 'not_armed'
+            for _ in range(10):
+                if not self._boot_audit_busy():
+                    break
+                await asyncio.sleep(15.0)
+            else:
+                print(f"{tag} skipped — a purchase kept the cart for ~150 s; its own cart "
+                      f"guards apply ident={self._ident_tag()}")
+                return 'busy'
+            if getattr(self, '_held_cart', None) is not None:
+                print(f"{tag} skipped — a held-cart marker already exists")
+                return 'marker_exists'
+            async with self._warmup_pool_lock:
+                wt = await self._ensure_warmup_tab(0)
+                if wt is None:
+                    print(f"{tag} no warmup tab — no action ident={self._ident_tag()}")
+                    return 'no_tab'
+                r = await self._cart_items_read(wt, timeout=5.0)
+            if not r.get('ok'):
+                print(f"{tag} cart read failed (status={r.get('status')} err={r.get('error', '-')}) "
+                      f"— no action ident={self._ident_tag()}")
+                return 'read_failed'
+            if self._boot_audit_busy() or getattr(self, '_held_cart', None) is not None:
+                print(f"{tag} a purchase took the cart during the read — no action")
+                return 'busy'
+            items = r.get('items') or []
+            if not items:
+                print(f"{tag} cart empty — nothing to adopt ident={self._ident_tag()}")
+                return 'empty'
+            try:
+                q_ceiling = max(1, int(os.environ.get('TARGET_QTY_CEILING', '2')))
+            except ValueError:
+                q_ceiling = 2
+            it = items[0]
+            tc = str(it.get('tcin') or '')
+            q = it.get('qty')
+            if (len(items) == 1 and re.fullmatch(r'\d{5,15}', tc)
+                    and isinstance(q, (int, float)) and not isinstance(q, bool)
+                    and q == q and 1 <= q <= q_ceiling):
+                now = time.time()
+                self._held_cart = {
+                    'tcin': tc, 'qty': int(q), 'cart_id': '', 'created': now, 'first_201_ts': now,
+                    'tickets': 0, 'sched_used': 0, 'verified': False, 'pi_id': '',
+                    'cvv_put': 'none', 'last_ticket_ts': 0.0, 'fs_seen_ts': 0.0, 'source': 'boot',
+                }
+                print(f"{tag} single line tcin={tc} qty={int(q)} -> HELD (re-entered only while it "
+                      f"reads live; retired after {held_cart_ttl_s():.0f}s) ident={self._ident_tag()}")
+                return 'held'
+            desc = ', '.join(f"{i.get('tcin') or '?'}x{i.get('qty')}" for i in items[:6])
+            ok, n = await self._delete_cart_items(wt, budget_s=15.0)
+            print(f"{tag} cart is not a clean single won cart ({len(items)} line(s): {desc}) -> "
+                  f"bounded delete of every line ok={ok} lines={n} ident={self._ident_tag()}")
+            return 'deleted' if ok else 'delete_failed'
+        except asyncio.CancelledError:
+            return 'cancelled'
+        except Exception as e:
+            print(f"{tag} errored ({type(e).__name__}: {e}) — no action")
+            return 'error'
+
     def _fastlane_success_dict(self, tcin: str, quantity: int, execution_time: float,
                                confirmation_url: str = '') -> Dict[str, Any]:
         """The PROD success result for an order the fast lane / a won-cart
@@ -7886,6 +8323,9 @@ class PurchaseExecutor:
                     # loop keeps the RETRY_N cap (rare, conservative).
                     _reshoot_n = max(_reshoot_n, _fs_cycles + 1)
                     self._begin_won_cart_ride(_fs_deadline)
+                # 2026-09-16 plan P4 (WC-2 5a): the ride itself keeps its full
+                # deadline; only the hold budget ends 60 s before the ride cap.
+                _fs_deadline = self._ride_clamp_fs_deadline(_fs_deadline)
                 # 2026-07-28: hold the won cart through the cooldown and let the
                 # re-shoot loop below fire into the reopened window. Only when
                 # the hold is disabled (or test mode) do we keep the 07-21
@@ -7906,7 +8346,10 @@ class PurchaseExecutor:
                           f"reason={api_result.get('reason')}) — in-place re-shoot "
                           f"{_rs}/{_reshoot_n} (cart intact), re-warm + wait {_rs_d:.1f}s")
                     try:
-                        await self.warm_shape_headers(force_fresh=True)
+                        # 2026-09-16 plan P4 (WC-2 item 1): TARGET_RESHOOT_FORCE_REWARM=0
+                        # makes this a normal warm (the purchase-time /cart guard
+                        # applies). Default '1' = the forced reload, unchanged.
+                        await self.warm_shape_headers(force_fresh=reshoot_force_rewarm_on())
                     except Exception as _rs_we:
                         print(f"[PAYMENT] in-place re-shoot warm failed: {_rs_we}")
                     await asyncio.sleep(_rs_d)
@@ -7959,6 +8402,7 @@ class PurchaseExecutor:
                             _fs_deadline = time.time() + _fs_total_s
                         if _ride_on and not getattr(self, '_won_cart_ride_until', 0.0):
                             self._begin_won_cart_ride(_fs_deadline)
+                        _fs_deadline = self._ride_clamp_fs_deadline(_fs_deadline)   # WC-2 5a
                         _fs_cycle += 1
                         _fs_left = _fs_deadline - time.time()
                         if (_fs_cycle <= _fs_cycles and _fs_left > 0
@@ -8274,7 +8718,9 @@ class PurchaseExecutor:
                 print("[PAYMENT] FLOW A: Place Order visible but disabled — entering S&C loop")
 
             # ── FLOWS B/C/D/E: S&C loop ───────────────────────────────────────────────
+            _sac_steps_run = 0      # 2026-09-16 plan P4 item 7: real count for the exhaust line
             for step in range(6):
+                _sac_steps_run = step + 1
                 print(f"[PAYMENT] --- Step {step + 1}: waiting for checkout step to load ---")
                 # Validate we're still on the checkout page (F5 may redirect us away).
                 current_url = tab.url
@@ -8373,7 +8819,7 @@ class PurchaseExecutor:
                 return True
 
             # Prod: one final attempt to find Place Order.
-            print(f"[PAYMENT] S&C loop exhausted after 6 steps — making final Place Order attempt (url={tab.url})")
+            print(f"[PAYMENT] S&C loop exhausted after {_sac_steps_run} steps — making final Place Order attempt (url={tab.url})")
             return await self._place_order(tab)
 
         except Exception as e:

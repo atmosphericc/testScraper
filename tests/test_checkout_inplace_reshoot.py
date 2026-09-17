@@ -435,6 +435,175 @@ def test_fast_selling_hold_kill_switch_restores_bail():
         os.environ.pop("TARGET_FAST_SELLING_HOLD_CART", None)
 
 
+# ── 2026-09-16 hot-sku plan P4 (WC-2): legacy hygiene + ride clean exit ─────
+_FS_KEY = "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+_WC2_FLAGS = ("TARGET_RESHOOT_FORCE_REWARM", "TARGET_WON_CART_RIDE_CLEAN_EXIT",
+              "TARGET_WON_CART_RIDE_MAX_S", "TARGET_WONCART_DIRECT")
+
+
+def _wc2_clear():
+    for k in _WC2_FLAGS:
+        os.environ.pop(k, None)
+    _ride_env_clear()
+
+
+def test_reshoot_force_rewarm_flag_values():
+    """TARGET_RESHOOT_FORCE_REWARM: unset/'1' = the forced /cart re-warm before
+    each in-place re-shoot (unchanged); '0' (bat) = a normal warm, so the
+    purchase-time /cart guard applies. Any value other than '1' is off."""
+    seen_all = {}
+    for val, want in ((None, True), ("1", True), (" 1 ", True), ("0", False), (" 0 ", False), ("junk", False)):
+        _wc2_clear()
+        if val is not None:
+            os.environ["TARGET_RESHOOT_FORCE_REWARM"] = val
+        try:
+            os.environ["TARGET_CHECKOUT_INPLACE_RETRY_N"] = "4"
+            ex, c = _make_executor([_R(429, "http_429"), _R(200, "ok", True, "OID-W")])
+            seen = []
+
+            async def rec(force_fresh=False, _s=seen):
+                _s.append(force_fresh)
+                return True
+
+            ex.warm_shape_headers = rec
+            r = asyncio.run(ex._place_order(_FakeTab()))
+            seen_all[val] = (r, c["api"], seen)
+            assert r is True and c["api"] == 2 and seen == [want], f"val={val!r}: r={r} api={c['api']} seen={seen}"
+        finally:
+            _wc2_clear()
+
+
+def _clamp_run(clean_exit, seq, first_rej=None, start_ago=10.0):
+    """Run _place_order with FS holds recorded (never slept)."""
+    import time as _t
+    _ride_env("1", "6", "270")
+    os.environ["TARGET_WON_CART_RIDE_CLEAN_EXIT"] = clean_exit
+    os.environ["TARGET_WON_CART_RIDE_MAX_S"] = "300"
+    try:
+        ex, c = _make_executor(seq)
+        if first_rej:
+            ex._checkout_reject_status, ex._checkout_reject_reason = first_rej
+        ex._execute_started_at = _t.time() - start_ago
+        holds = []
+
+        async def hold(label, max_s=None):
+            holds.append((label, max_s, _t.time()))
+            return True
+
+        ex._hold_cart_for_fast_selling = hold
+        r = asyncio.run(ex._place_order(_FakeTab()))
+        return r, c["api"], holds, ex._won_cart_ride_until - _t.time()
+    finally:
+        _wc2_clear()
+
+
+def test_ride_clean_exit_clamps_hold_budget_first_fs():
+    """5a, FS on the first shot: with the flag the hold budget ends at
+    start + RIDE_MAX - 60 (here ~230 s left instead of ~270 s); the ride
+    deadline itself is untouched (ride ~ start + 290 either way)."""
+    fs_rej = (429, _FS_KEY)
+    out = {}
+    for flag in ("1", "0"):
+        r, api, holds, ride_left = _clamp_run(flag, [_R(429, "http_429"), _R(429, "http_429"),
+                                                     _R(200, "ok", True, "OID-C")], first_rej=fs_rej)
+        h2 = [h for h in holds if h[0] == "post-rejection#2"]
+        out[flag] = (r, api, h2, ride_left)
+        assert r is True and api == 3 and len(h2) == 1, f"flag={flag}: r={r} api={api} holds={holds}"
+        assert 285 <= ride_left <= 291, f"flag={flag}: the ride keeps its deadline, left={ride_left:.1f}"
+    assert 225 <= out["1"][2][0][1] <= 231, f"clamped budget: {out['1'][2]}"
+    assert 265 <= out["0"][2][0][1] <= 271, f"unclamped budget: {out['0'][2]}"
+
+
+def test_ride_clean_exit_clamps_hold_budget_mid_loop_fs():
+    """5a, FS first seen mid-loop (the second clamp site)."""
+    fs_body = dict(_R(429, "http_429"), body=_FS_KEY)
+    for flag, lo, hi in (("1", 225, 231), ("0", 265, 271)):
+        r, api, holds, ride_left = _clamp_run(flag, [_R(429, "http_429"), fs_body,
+                                                     _R(200, "ok", True, "OID-M")])
+        h1 = [h for h in holds if h[0] == "post-rejection#1"]
+        assert r is True and api == 3 and len(h1) == 1, f"flag={flag}: r={r} api={api} holds={holds}"
+        assert lo <= h1[0][1] <= hi, f"flag={flag}: budget={h1[0][1]}"
+        assert 285 <= ride_left <= 291, f"flag={flag}: ride left={ride_left:.1f}"
+
+
+def test_ride_clean_exit_clamp_past_cap_stops_holding():
+    """A purchase already past start+RIDE_MAX-60 gets no further FS hold."""
+    fs_body = dict(_R(429, "http_429"), body=_FS_KEY)
+    r, api, holds, _ = _clamp_run("1", [_R(429, "http_429"), fs_body, _R(200, "ok", True, "OID-P")],
+                                  start_ago=250.0)
+    assert r is False and api == 2 and not [h for h in holds if h[0].startswith("post-rejection#")], \
+        f"r={r} api={api} holds={holds}"
+
+
+def _hang_run(ride_rel, clean_exit, po_inflight=False):
+    """execute_purchase whose impl hangs past a 0.05 s timeout."""
+    import time as _t
+    import types
+    import src.session.purchase_executor as pe_mod
+    _wc2_clear()
+    if clean_exit is not None:
+        os.environ["TARGET_WON_CART_RIDE_CLEAN_EXIT"] = clean_exit
+    ex, _ = _make_executor([_R(200, "ok", True, "X")])
+    ex._purchase_timeout_ctx = None
+    ex._note_atc_gate_outcome = lambda t, r: None
+    ex._fastlane_placed = False
+    ex._won_cart_ride_until = 0.0
+
+    async def impl(tcin, quantity=1):
+        ex._po_inflight = po_inflight
+        ex._po_ambiguous = False
+        if ride_rel is not None:
+            ex._won_cart_ride_until = _t.time() + ride_rel
+        await asyncio.sleep(5)
+
+    ex._execute_purchase_impl = impl
+    real = pe_mod.asyncio
+    shim = types.SimpleNamespace(**{n: getattr(real, n) for n in dir(real) if not n.startswith("__")})
+    shim.timeout = lambda s: real.timeout(0.05)
+    pe_mod.asyncio = shim
+    try:
+        async def go():
+            ex._page_lock = real.Lock()
+            return await ex.execute_purchase("1010892069", quantity=2)
+        return asyncio.run(go())
+    finally:
+        pe_mod.asyncio = real
+        _wc2_clear()
+
+
+def test_ride_timeout_reports_clean_exit():
+    """5b: a timeout while a ride is advertised -> won_cart_ride_timeout, no
+    'websocket' text (so the manager does not restart the browser)."""
+    r = _hang_run(100.0, "1")
+    assert r.get("reason") == "won_cart_ride_timeout" and r.get("success") is False, r
+    assert "websocket" not in str(r).lower() and "1011" not in str(r), r
+    assert r.get("ambiguous_commit") is False, r
+    r = _hang_run(100.0, "1", po_inflight=True)
+    assert r.get("reason") == "won_cart_ride_timeout" and r.get("ambiguous_commit") is True, r
+
+
+def test_timeout_without_ride_is_still_impl_hang():
+    """No ride -> the unchanged purchase_impl_hang (with 'websocket')."""
+    r = _hang_run(None, "1")
+    assert r.get("reason") == "purchase_impl_hang" and "websocket" in r.get("error", ""), r
+    assert "ambiguous_commit" not in r, r      # AC-1 off -> the 11797839 dict
+
+
+def test_ride_timeout_flag_off_unchanged():
+    for flag in (None, "0"):
+        r = _hang_run(100.0, flag)
+        assert r.get("reason") == "purchase_impl_hang" and "websocket" in r.get("error", ""), (flag, r)
+
+
+def test_sac_exhaust_line_prints_real_step_count():
+    """Item 7 (log-only): the S&C exhaust line names the steps that ran."""
+    import inspect
+    from src.session.purchase_executor import PurchaseExecutor as _PE
+    src = inspect.getsource(_PE._complete_payment)
+    assert "exhausted after {_sac_steps_run} steps" in src and "_sac_steps_run = step + 1" in src
+    assert "exhausted after 6 steps" not in src
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

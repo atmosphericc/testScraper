@@ -48,6 +48,11 @@ OFFLINE = [
     # (node subprocess + stub tabs only; CVV flag persistence stubbed).
     "test_won_cart_direct_smoke",
     "test_fast_lane_checkout",
+    # 2026-09-16 hot-sku 0916 plan P3/P4 (stage S2c): held-cart re-entry + boot
+    # cart audit, legacy re-shoot hygiene + ride clean exit, warmup quiet mode
+    # (stub tabs only; verified against LIVE_MARKERS before listing).
+    "test_checkout_inplace_reshoot",
+    "test_warmup_cart_nav_guard",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

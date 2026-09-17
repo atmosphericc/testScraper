@@ -89,6 +89,18 @@ def _qty_guard_on() -> bool:
                ('TARGET_FASTLANE_QTY_GUARD', 'TARGET_WONCART_DIRECT', 'TARGET_HELD_CART_REENTRY'))
 
 
+def _warmup_cycle_skip_on_stock(stock_data) -> bool:
+    """Plan P4 (WC-2 item 3): TARGET_WARMUP_CYCLE_SKIP_ON_STOCK=1 and at least
+    one TCIN in this sweep reads in_stock. Default '0' = never skip. Never
+    raises."""
+    if os.environ.get('TARGET_WARMUP_CYCLE_SKIP_ON_STOCK', '0').strip() != '1':
+        return False
+    try:
+        return any(isinstance(v, dict) and v.get('in_stock') for v in (stock_data or {}).values())
+    except Exception:
+        return False
+
+
 def _stock_probe_on() -> bool:
     """Plan P1 step 0: TARGET_STOCK_PROBE (default 1) — read-only stock probe for
     the won-cart loop; =0 makes stock_snapshot() report live=None (unknown)."""
@@ -2954,7 +2966,17 @@ class BulletproofPurchaseManager:
             # Auth tokens go stale in ~40-50s — 30s interval ensures the direct fetch ATC
             # stays within the valid window and avoids the slow button-click fallback path.
             self._warmup_cycle_counter += 1
-            if (self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 30 == 0) and self.worker_pool is not None:
+            _cycle_warm_due = ((self._warmup_cycle_counter == 1 or self._warmup_cycle_counter % 30 == 0)
+                               and self.worker_pool is not None)
+            # 2026-09-16 plan P4 (WC-2 item 3): no fleet-wide cycle warm while any
+            # armed TCIN reads in stock — the warm is a /cart-capable write on
+            # every identity, including one holding a won cart.
+            # Kill-switch: TARGET_WARMUP_CYCLE_SKIP_ON_STOCK=0 (default).
+            if _cycle_warm_due and _warmup_cycle_skip_on_stock(stock_data):
+                print(f"[WARMUP_CYCLE] Cycle {self._warmup_cycle_counter}: skipped — stock is live "
+                      f"(TARGET_WARMUP_CYCLE_SKIP_ON_STOCK=1)")
+                _cycle_warm_due = False
+            if _cycle_warm_due:
                 # Phase 6: cycle-warm every worker's executor on its own loop, not just primary's.
                 for w in self.worker_pool.workers:
                     ex = w.purchase_executor
