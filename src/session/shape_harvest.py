@@ -39,6 +39,24 @@ Flags (all read at executor init; bat pins them):
   TARGET_HARVEST_REPLAY=1       swap banked headers onto main-tab ATC shots
   TARGET_HARVEST_SELFTEST=1     boot replay self-test on the warmup dummy POST
   TARGET_HARVEST_IN_WINDOW=1    keep refilling while a purchase is live
+
+2026-09-16 hot-sku plan P8 (HV-1), every flag default OFF = exact prior behaviour:
+  TARGET_HARVEST_SKIP_DISABLES_REPLAY=1  a TARGET_HARVEST_SKIP account also turns banked
+                                replay (and so the manager's bank gate) off -- its bank
+                                can never fill, so the gate was a dead 8 s wait
+  TARGET_HARVEST_MISS_PROBE=1   on the first buttonless load per navigation, snapshot the
+                                page (PX markers + buttons/fulfilment/text/hint), log
+                                `MISS-PROBE`, capped screenshots; a HUMAN challenge parks
+                                the harvest tab (no nav, no click) for PX_PARK_S
+  TARGET_HARVEST_MISS_SHOTS_MAX=10  MISS-PROBE screenshots per run (0 = none)
+  TARGET_HARVEST_PX_PARK_S=300  harvest park after a PX verdict on the harvest tab
+  TARGET_HARVEST_MISS_RENAV_LIVE=1  BUILT, NOT ARMED: a buttonless page may be re-navigated
+                                while a purchase is live (never during a won-cart loop or a
+                                held cart); also arms the bad-load back-off below
+  TARGET_HARVEST_BADLOAD_BACKOFF_S=300  3 buttonless loads within 600 s -> no harvest nav
+                                or click for this long (renav flag only)
+  TARGET_HARVEST_FLUSH_ON_RELAUNCH=1  banked sets minted by a killed Chrome are dropped
+                                (ShapeBank.clear) instead of replayed on the new one
 """
 from __future__ import annotations
 
@@ -142,6 +160,19 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         # At shot time prefer the freshest replayable set WITHOUT -a0 over a fresher
         # bloated one (belt-and-braces next to fresh_page).
         "prefer_no_a0": str(e.get("TARGET_HARVEST_PREFER_NO_A0", "0")).strip() == "1",
+        # 2026-09-16 hot-sku plan P8 (HV-1). All default OFF (see module docstring).
+        # 09-16: alt-1's harvest PDP came back buttonless on 25/166 drop-hour loads
+        # (2/700 otherwise) and nothing recorded WHAT the page was; a no-op live
+        # rotate + a click-gated reload left it stuck 71.9 min; 49 x 8 s bank-gate
+        # waits; TARGET_HARVEST_SKIP left replay + the gate on; a replayed set was
+        # minted by the Chrome killed 3 s earlier (verdicts H-01/02/03/06, INFRA-4).
+        "skip_disables_replay": str(e.get("TARGET_HARVEST_SKIP_DISABLES_REPLAY", "0")).strip() == "1",
+        "miss_probe": str(e.get("TARGET_HARVEST_MISS_PROBE", "0")).strip() == "1",
+        "miss_shots_max": _int(e, "TARGET_HARVEST_MISS_SHOTS_MAX", 10, 0, 100),
+        "px_park_s": _float(e, "TARGET_HARVEST_PX_PARK_S", 300.0, 30.0, 3600.0),
+        "miss_renav_live": str(e.get("TARGET_HARVEST_MISS_RENAV_LIVE", "0")).strip() == "1",
+        "badload_backoff_s": _float(e, "TARGET_HARVEST_BADLOAD_BACKOFF_S", 300.0, 30.0, 3600.0),
+        "flush_on_relaunch": str(e.get("TARGET_HARVEST_FLUSH_ON_RELAUNCH", "0")).strip() == "1",
     }
 
 
@@ -328,6 +359,16 @@ class ShapeBank:
         entry = self._items.pop()          # LIFO: freshest set for the shot
         self.replayed += 1
         return entry
+
+    def clear(self) -> int:
+        """Drop every banked set (counted as expired) and return how many were
+        dropped. 2026-09-16 HV-1 (TARGET_HARVEST_FLUSH_ON_RELAUNCH): sets minted
+        by a Chrome that was just killed must not be replayed on its successor
+        (INFRA-4: a 62 s-old set from the previous Chrome rode a real shot)."""
+        n = len(self._items)
+        self._items.clear()
+        self.expired += n
+        return n
 
     def refill_wanted(self, now: Optional[float] = None) -> bool:
         """True when the loop should click: room in the bank, OR the freshest
@@ -552,6 +593,77 @@ FIND_ATC_BUTTON_JS = """(() => {
     return {found: true, disabled: disabledOf(el), x: r.left, y: r.top, w: r.width, h: r.height,
             via: via, text: (el.textContent || '').trim().slice(0, 40), ready: ready, oos: false};
 })()"""
+
+
+# 2026-09-16 hot-sku plan P8 (HV-1, TARGET_HARVEST_MISS_PROBE): read-only snapshot
+# of a harvest PDP that came back WITHOUT a usable Add-to-cart button. On 09-16
+# alt-1 logged 298 "ATC button absent (ready=complete oos=False)" misses and the
+# page itself was never recorded, so a HUMAN "Press & Hold" page, a redirect, an
+# error page and a buy box that never rendered all looked the same (verdict H-03).
+# ONE combined IIFE: the first seven keys duplicate px_challenge.PX_MARKERS_JS
+# (same selectors + regexes, so px_challenge.is_px_challenge / describe classify
+# it) and the rest describe the page. querySelector/innerText/location only -- no
+# events, no clicks, nothing dispatched into the page.
+HARVEST_MISS_PROBE_JS = r"""(() => {
+  const q = (s) => { try { return !!document.querySelector(s); } catch (e) { return false; } };
+  const cnt = (s) => { try { return document.querySelectorAll(s).length; } catch (e) { return -1; } };
+  const raw = (document.body && document.body.innerText) || '';
+  const txt = raw.slice(0, 20000);
+  let path = '';
+  try { path = String(location.pathname || ''); } catch (e) { path = ''; }
+  let visBtn = 0;
+  try {
+    for (const b of document.querySelectorAll('button')) {
+      const r = b.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) visBtn++;
+    }
+  } catch (e) { visBtn = -1; }
+  const fulfil = cnt('[data-test*="fulfillment" i], [data-testid*="fulfillment" i]');
+  const pxContainer = q('#px-captcha, [id^="px-captcha"], [class*="px-captcha"]');
+  const pxIframe = q('iframe[src*="px-cdn.net"], iframe[src*="px-cloud.net"], iframe[src*="/captcha/"]');
+  const pressHold = /press\s*(&|&amp;|and)\s*hold/i.test(txt);
+  const denied = /access to this page has been denied|verify (that )?you are (a )?human|are you a human\??/i.test(txt);
+  let hint = 'buybox_without_button';
+  if (!raw.trim()) hint = 'blank_body';
+  else if (pxContainer || pxIframe || pressHold || denied) hint = 'px_markers';
+  else if (!/\/A-\d+/.test(path)) hint = 'not_a_pdp_url';
+  else if (/something went wrong|page (was )?not found|can.t find (that|this|the) page|temporarily unavailable/i.test(txt)) hint = 'error_copy';
+  else if (/out of stock|sold out|no longer available/i.test(txt)) hint = 'unavailable_copy';
+  else if (fulfil === 0) hint = 'no_fulfillment_block';
+  return {
+    url: String(location.href || ''),
+    title: String(document.title || ''),
+    px_container: pxContainer,
+    px_iframe: pxIframe,
+    press_hold: pressHold,
+    denied: denied,
+    ready: String(document.readyState || ''),
+    vis: String(document.visibilityState || ''),
+    buttons: cnt('button'),
+    buttons_vis: visBtn,
+    fulfil: fulfil,
+    text: raw.replace(/\s+/g, ' ').trim().slice(0, 160),
+    hint: hint
+  };
+})()"""
+
+
+def miss_probe_fields(info: Any) -> str:
+    """The page half of the `MISS-PROBE` log line from a HARVEST_MISS_PROBE_JS
+    result, e.g. "ready=complete vis=visible buttons=41 buttons_vis=12 fulfil=0
+    hint=no_fulfillment_block text='...'". Pure; never raises."""
+    if not isinstance(info, dict):
+        return f"probe_result={type(info).__name__}"
+
+    def _n(k):
+        try:
+            return int(info.get(k))
+        except (TypeError, ValueError):
+            return '?'
+    text = str(info.get('text') or '')[:160]
+    return (f"ready={info.get('ready') or '?'} vis={info.get('vis') or '?'} "
+            f"buttons={_n('buttons')} buttons_vis={_n('buttons_vis')} fulfil={_n('fulfil')} "
+            f"hint={info.get('hint') or '-'} text={text!r}")
 
 
 # Runs in-page once per PDP nav (2026-09-09 audit #10): the captured page adds

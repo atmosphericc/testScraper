@@ -583,8 +583,11 @@ def test_executor_wiring():
     check("exe_selftest_disables_replay_on_3_rejections",
           "if replayed_n >= 3 and len(rejected) >= 3:" in EXE_SRC
           and "self._harvest_replay_on = False" in EXE_SRC)
+    # 2026-09-16 HV-1: the live guard keeps its default (allow_live=False); only the
+    # flag-gated buttonless-page path may pass allow_live (behaviour in test_hv1_*).
     check("exe_rotate_skips_live_purchase",
-          "if self.session_manager.is_purchase_in_progress():\n            return" in EXE_SRC)
+          "if self.session_manager.is_purchase_in_progress() and not allow_live:\n            return" in EXE_SRC
+          and "async def _harvest_rotate(self, same: bool = False, allow_live: bool = False) -> None:" in EXE_SRC)
     check("exe_pre_shot_log_before_fast_lane",
           EXE_SRC.find('self._harvest_log(f"pre-shot') < EXE_SRC.find("_fl = await self._api_fast_lane(tab, tcin, quantity, extra_headers_js)"))
     check("exe_start_harvest_loud_without_tcins", "DISABLED: TARGET_HARVEST_TCINS is empty" in EXE_SRC)
@@ -674,12 +677,731 @@ def test_compiles():
     check("compiles", ok)
 
 
+# ---------------------------------------------------------------------------
+# 6. 2026-09-16 hot-sku plan P8 (HV-1): miss probe + PX park, SKIP fix, live
+#    renav (built, not armed), bad-load back-off, harvest_stuck, adaptive bank
+#    gate, relaunch flush. No browser: stub tabs, node for the probe JS only.
+# ---------------------------------------------------------------------------
+import contextlib  # noqa: E402
+import io  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+from src.session import px_challenge as pxm  # noqa: E402
+
+NODE = shutil.which('node')
+_HV1_TMP = tempfile.mkdtemp(prefix='hv1_')
+MGR_PATH = ROOT / 'src' / 'purchasing' / 'bulletproof_purchase_manager.py'
+MGR_SRC = MGR_PATH.read_text(encoding='utf-8', errors='replace')
+HV1_ENV = ('TARGET_HARVEST_SKIP_DISABLES_REPLAY', 'TARGET_HARVEST_MISS_PROBE', 'TARGET_HARVEST_MISS_SHOTS_MAX',
+           'TARGET_HARVEST_PX_PARK_S', 'TARGET_HARVEST_MISS_RENAV_LIVE', 'TARGET_HARVEST_BADLOAD_BACKOFF_S',
+           'TARGET_HARVEST_FLUSH_ON_RELAUNCH', 'TARGET_BANK_GATE_ADAPTIVE')
+MISS = {'found': False, 'disabled': True, 'ready': 'complete', 'oos': False}
+PX_INFO = {'url': 'https://www.target.com/p/-/A-111', 'title': 'Target', 'px_container': True,
+           'px_iframe': False, 'press_hold': True, 'denied': False, 'ready': 'complete', 'vis': 'visible',
+           'buttons': 1, 'buttons_vis': 1, 'fulfil': 0, 'text': 'Press & Hold to confirm you are a human',
+           'hint': 'px_markers'}
+OK_INFO = {'url': 'https://www.target.com/p/x/-/A-111', 'title': 'Card : Target', 'px_container': False,
+           'px_iframe': False, 'press_hold': False, 'denied': False, 'ready': 'complete', 'vis': 'visible',
+           'buttons': 40, 'buttons_vis': 12, 'fulfil': 0, 'text': 'Pokemon card', 'hint': 'no_fulfillment_block'}
+
+
+def _captured(coro_or_fn):
+    """Run a coroutine (or a plain callable) and return (result, printed text)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        res = asyncio.run(coro_or_fn) if asyncio.iscoroutine(coro_or_fn) else coro_or_fn()
+    return res, buf.getvalue()
+
+
+class ProbeTab(NavTab):
+    """Harvest tab stub: answers the button lookup with MISS and the miss probe
+    with a scripted snapshot; records every evaluate + nav."""
+    def __init__(self, probe, probe_raises=None, fail_get=False):
+        super().__init__(fail=fail_get)
+        self.probe = probe
+        self.probe_raises = probe_raises
+        self.evals = []
+
+    async def evaluate(self, js, await_promise=False):
+        self.evals.append(js)
+        if js == h.HARVEST_MISS_PROBE_JS:
+            if self.probe_raises is not None:
+                raise self.probe_raises
+            return self.probe
+        return dict(MISS)
+
+    def probes(self):
+        return sum(1 for j in self.evals if j == h.HARVEST_MISS_PROBE_JS)
+
+
+def _hv1_stub(env_extra=None, live=False, tcins='111,222'):
+    ex, pe = _stub_executor()
+    env = {'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_TCINS': tcins}
+    env.update(env_extra or {})
+    ex._harvest_cfg = h.config(env)
+    ex._harvest_tcin = '111'
+    ex._harvest_tcin_idx = 0
+    ex._harvest_miss = 0
+    ex._harvest_tab_nav_ts = time.time() - 100.0
+    ex._harvest_last_reload_ts = 0.0
+    ex._harvest_last_xy = None
+    ex._harvest_clicks_since_nav = 0
+    ex._harvest_disabled_reason = ''
+    ex._harvest_tab = None           # tests attach their ProbeTab (the rotate navigates this handle)
+    ex.logger = SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
+    ex.session_manager.is_purchase_in_progress = (lambda: live)
+    shots = []
+
+    async def _shot(tab, path):
+        shots.append(path)
+    ex._screenshot = _shot
+    ex._shots = shots
+    ex._harvest_px_error_log_path = os.path.join(_HV1_TMP, f"err_{id(ex)}.txt")
+    return ex, pe
+
+
+def _err_lines(ex):
+    try:
+        with open(ex._harvest_px_error_log_path, encoding='utf-8') as f:
+            return [l for l in f.read().splitlines() if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def test_hv1_env_clean():
+    # The executor paths below read the harvest config dict, the manager reads the
+    # env: make sure no armed value leaks in from the shell running the suite.
+    for k in HV1_ENV:
+        os.environ.pop(k, None)
+    check("hv1_env_clean", all(k not in os.environ for k in HV1_ENV))
+
+
+def test_hv1_config():
+    c = h.config({'TARGET_SHAPE_HARVEST': '1'})
+    check("hv1_cfg_flags_default_off", c['skip_disables_replay'] is False and c['miss_probe'] is False
+          and c['miss_renav_live'] is False and c['flush_on_relaunch'] is False)
+    check("hv1_cfg_knob_defaults", c['miss_shots_max'] == 10 and c['px_park_s'] == 300.0
+          and c['badload_backoff_s'] == 300.0)
+    c1 = h.config({'TARGET_HARVEST_SKIP_DISABLES_REPLAY': ' 1 ', 'TARGET_HARVEST_MISS_PROBE': '1',
+                   'TARGET_HARVEST_MISS_SHOTS_MAX': ' 3', 'TARGET_HARVEST_PX_PARK_S': '600 ',
+                   'TARGET_HARVEST_MISS_RENAV_LIVE': '1', 'TARGET_HARVEST_BADLOAD_BACKOFF_S': '120',
+                   'TARGET_HARVEST_FLUSH_ON_RELAUNCH': '1'})
+    check("hv1_cfg_parsed_stripped", c1['skip_disables_replay'] and c1['miss_probe'] and c1['miss_renav_live']
+          and c1['flush_on_relaunch'] and c1['miss_shots_max'] == 3 and c1['px_park_s'] == 600.0
+          and c1['badload_backoff_s'] == 120.0)
+    c2 = h.config({'TARGET_HARVEST_MISS_SHOTS_MAX': '999', 'TARGET_HARVEST_PX_PARK_S': '5',
+                   'TARGET_HARVEST_BADLOAD_BACKOFF_S': 'x', 'TARGET_HARVEST_MISS_PROBE': '0',
+                   'TARGET_HARVEST_FLUSH_ON_RELAUNCH': 'yes'})
+    check("hv1_cfg_clamped_and_strict", c2['miss_shots_max'] == 100 and c2['px_park_s'] == 30.0
+          and c2['badload_backoff_s'] == 300.0 and c2['miss_probe'] is False and c2['flush_on_relaunch'] is False)
+    check("hv1_cfg_zero_shots_allowed", h.config({'TARGET_HARVEST_MISS_SHOTS_MAX': '0'})['miss_shots_max'] == 0)
+
+
+def test_hv1_bank_clear():
+    b = h.ShapeBank(3, 300)
+    check("hv1_clear_empty", b.clear() == 0 and b.expired == 0)
+    b.push(HD, now=time.time())
+    b.push(HD, now=time.time())
+    exp0 = b.expired
+    n = b.clear()
+    check("hv1_clear_counts_as_expired", n == 2 and b.count() == 0 and b.expired == exp0 + 2
+          and b.harvested == 2 and b.replayed == 0 and b.stale == 0)
+    check("hv1_clear_then_pop_none", b.pop_fresh() is None and b.need() == 3)
+
+
+def _probe_node(scen):
+    harness = r"""
+const scen = __SCEN__;
+const mkEl = (w, h) => ({ getBoundingClientRect: () => ({ width: w, height: h }) });
+globalThis.location = { href: scen.href, pathname: scen.path };
+globalThis.document = {
+  title: scen.title || '', readyState: 'complete', visibilityState: scen.vis || 'visible',
+  body: scen.body === null ? null : { innerText: scen.body },
+  querySelector: (s) => (scen.present || []).some((p) => s.includes(p)) ? mkEl(1, 1) : null,
+  querySelectorAll: (s) => {
+    if (s === 'button') return (scen.buttons || []).map((wh) => mkEl(wh[0], wh[1]));
+    if (s.includes('fulfillment')) return new Array(scen.fulfil || 0).fill(mkEl(1, 1));
+    return [];
+  },
+};
+const out = __JS__;
+console.log(JSON.stringify(out));
+"""
+    src = harness.replace('__SCEN__', json.dumps(scen)).replace('__JS__', h.HARVEST_MISS_PROBE_JS)
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False, encoding='utf-8', dir=_HV1_TMP) as f:
+        f.write(src)
+        path = f.name
+    proc = subprocess.run([NODE, path], capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise AssertionError(f"node failed rc={proc.returncode}: {proc.stderr[:400]}")
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_hv1_probe_js():
+    js = h.HARVEST_MISS_PROBE_JS
+    # The PX half duplicates px_challenge.PX_MARKERS_JS verbatim (same selectors +
+    # regexes), so is_px_challenge/describe classify the probe result.
+    for frag in ('#px-captcha, [id^="px-captcha"], [class*="px-captcha"]',
+                 'iframe[src*="px-cdn.net"], iframe[src*="px-cloud.net"], iframe[src*="/captcha/"]',
+                 r'/press\s*(&|&amp;|and)\s*hold/i',
+                 r'/access to this page has been denied|verify (that )?you are (a )?human|are you a human\??/i'):
+        check(f"hv1_probe_dup_px_marker[{frag[:18]}]", frag in pxm.PX_MARKERS_JS and frag in js)
+    for key in ('url:', 'title:', 'px_container:', 'px_iframe:', 'press_hold:', 'denied:', 'ready:',
+                'vis:', 'buttons:', 'buttons_vis:', 'fulfil:', 'text:', 'hint:'):
+        check(f"hv1_probe_key[{key[:-1]}]", key in js)
+    check("hv1_probe_read_only", not any(t in js for t in ('.click(', 'dispatchEvent', 'fetch(', 'scrollIntoView',
+                                                          'location.assign', 'location.href =')))
+    check("hv1_node_available", bool(NODE))
+    if not NODE:
+        return
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False, encoding='utf-8', dir=_HV1_TMP) as f:
+        f.write(js)
+    p = subprocess.run([NODE, '--check', f.name], capture_output=True, text=True, timeout=30)
+    check("hv1_probe_js_parses", p.returncode == 0)
+    pdp = {'href': 'https://www.target.com/p/x/-/A-111', 'path': '/p/x/-/A-111'}
+    r = _probe_node(dict(pdp, body='Press & Hold to confirm you are a human (and not a bot).',
+                         present=['px-captcha'], buttons=[[10, 10]], fulfil=0))
+    check("hv1_node_px_page", r['px_container'] is True and r['press_hold'] is True and r['hint'] == 'px_markers'
+          and pxm.is_px_challenge(r) is True and 'px_container' in pxm.describe(r))
+    r = _probe_node(dict(pdp, body='Access to this page has been denied.'))
+    check("hv1_node_denied_page_is_px", r['denied'] is True and pxm.is_px_challenge(r) is True)
+    r = _probe_node(dict(pdp, body='Pokemon   Tin\n\nShipping  Arrives by Fri', buttons=[[10, 10], [0, 0], [5, 0]],
+                         fulfil=2, title='Tin : Target'))
+    check("hv1_node_buybox_without_button", r['hint'] == 'buybox_without_button' and r['buttons'] == 3
+          and r['buttons_vis'] == 1 and r['fulfil'] == 2 and pxm.is_px_challenge(r) is False
+          and r['text'] == 'Pokemon Tin Shipping Arrives by Fri' and r['title'] == 'Tin : Target'
+          and r['vis'] == 'visible' and r['ready'] == 'complete' and r['url'] == pdp['href'])
+    r = _probe_node(dict(pdp, body='Pokemon Tin', fulfil=0))
+    check("hv1_node_no_fulfillment_block", r['hint'] == 'no_fulfillment_block')
+    r = _probe_node(dict(pdp, body='   '))
+    check("hv1_node_blank_body", r['hint'] == 'blank_body' and r['text'] == '')
+    r = _probe_node(dict(pdp, body=None))
+    check("hv1_node_null_body", r['hint'] == 'blank_body' and r['press_hold'] is False)
+    r = _probe_node({'href': 'https://www.target.com/', 'path': '/', 'body': 'Target home', 'fulfil': 3})
+    check("hv1_node_not_a_pdp", r['hint'] == 'not_a_pdp_url' and pxm.is_px_challenge(r) is False)
+    r = _probe_node(dict(pdp, body="Something went wrong. We can't find that page.", fulfil=0))
+    check("hv1_node_error_copy", r['hint'] == 'error_copy')
+    r = _probe_node(dict(pdp, body='This item is sold out', fulfil=1))
+    check("hv1_node_unavailable_copy", r['hint'] == 'unavailable_copy')
+    r = _probe_node(dict(pdp, body='x' * 500, fulfil=1, vis='hidden'))
+    check("hv1_node_text_capped_vis_reported", len(r['text']) == 160 and r['vis'] == 'hidden')
+    r = _probe_node({'href': 'https://www.target.com/captcha?trackingId=1', 'path': '/captcha',
+                     'body': 'Please verify'})
+    check("hv1_node_captcha_url_is_px", pxm.is_px_challenge(r) is True)
+
+
+def test_hv1_probe_fields():
+    s = h.miss_probe_fields(OK_INFO)
+    check("hv1_fields_shape", s.startswith('ready=complete vis=visible buttons=40 buttons_vis=12 fulfil=0 ')
+          and "hint=no_fulfillment_block text='Pokemon card'" in s)
+    check("hv1_fields_garbage", h.miss_probe_fields({'buttons': 'x', 'fulfil': None}).startswith(
+        'ready=? vis=? buttons=? buttons_vis=? fulfil=? hint=- '))
+    check("hv1_fields_non_dict", h.miss_probe_fields(None) == 'probe_result=NoneType')
+    check("hv1_fields_text_capped", len(h.miss_probe_fields({'text': 'y' * 999})) < 260)
+
+
+def test_hv1_skip_disables_replay():
+    def _skip_stub(env_extra):
+        ex, _ = _stub_executor()
+        env = {'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_TCINS': '21516452', 'TARGET_HARVEST_SKIP': 'primary'}
+        env.update(env_extra)
+        ex._harvest_cfg = h.config(env)
+        ex._harvest_disabled_reason = ''
+        ex._harvest_task = None
+        ex._shape_bank.push(HD, now=time.time())
+        return ex
+    ex = _skip_stub({'TARGET_HARVEST_SKIP_DISABLES_REPLAY': '1'})
+    _, out = _captured(ex._start_harvest)
+    check("hv1_skip_turns_replay_off", ex._harvest_replay_on is False and ex.harvest_set_ready() is False
+          and ex._harvest_task is None and 'banked replay OFF' in out)
+    check("hv1_skip_replay_lookup_none", ex._harvest_replay_headers_for('main', dict(HD)) is None
+          and ex._shape_bank.count() == 1)
+    check("hv1_skip_reads_stuck", ex.harvest_stuck() is True and 'disabled' in ex.harvest_stuck_reason())
+    ex2 = _skip_stub({})
+    _, out2 = _captured(ex2._start_harvest)
+    check("hv1_skip_flag_off_keeps_replay", ex2._harvest_replay_on is True and ex2.harvest_set_ready() is True
+          and 'banked replay OFF' not in out2 and 'harvest SKIPPED' in out2)
+    ex3 = _skip_stub({'TARGET_HARVEST_SKIP_DISABLES_REPLAY': '1', 'TARGET_HARVEST_SKIP': 'business'})
+    _captured(ex3._start_harvest)      # not skipped; no running loop -> no task
+    check("hv1_skip_flag_other_account_untouched", ex3._harvest_replay_on is True and ex3.harvest_set_ready() is True)
+
+
+def test_hv1_miss_probe_and_park():
+    ex, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab = ProbeTab(dict(PX_INFO))
+    ex._harvest_tab = tab
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_px_probe_parks", ex._harvest_hold_reason() == 'PX park' and ex.harvest_stuck() is True
+          and 'MISS-PROBE px=yes tcin=111 hits=px_container,press_hold' in out
+          and "hint=px_markers" in out and '[PX-CHALLENGE/harvest] primary:' in out and 'PARKED 300s' in out)
+    check("hv1_px_no_nav_no_rotate", tab.gets == [] and tab.probes() == 1 and 'no rotate (PX park)' in out
+          and ex._harvest_miss == 0)
+    check("hv1_px_screenshot_taken", len(ex._shots) == 1 and ex._shots[0].endswith('_px.png')
+          and 'harvest_miss_primary_111_' in ex._shots[0])
+    check("hv1_px_error_log_one_line", len(_err_lines(ex)) == 1 and '[PX-CHALLENGE/harvest]' in _err_lines(ex)[0])
+    check("hv1_px_nav_left_unprobed", getattr(ex, '_harvest_probe_nav_ts', -1.0) != ex._harvest_tab_nav_ts)
+    ensured = []
+
+    async def _ensure():
+        ensured.append(1)
+        return tab
+    ex._ensure_harvest_tab = _ensure
+    r, _ = _captured(ex._harvest_once())
+    check("hv1_parked_harvest_once_returns_early", r is False and ensured == [] and tab.gets == [])
+    _captured(ex._harvest_rotate(same=False))
+    _captured(ex._harvest_rotate(same=True, allow_live=True))
+    check("hv1_parked_rotate_noop", tab.gets == [])
+    # Park expired + same PX page -> the nav is probed again and re-parked, but the
+    # error_log line stays throttled to one per 10 min.
+    ex._harvest_px_parked_until = time.time() - 1
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_px_reprobe_after_park", tab.probes() == 2 and ex._harvest_hold_reason() == 'PX park'
+          and '(#2)' in out and len(_err_lines(ex)) == 1)
+    ex._harvest_px_parked_until = time.time() - 1
+    ex._harvest_px_alert_ts = time.time() - 601
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_px_error_log_after_10min", len(_err_lines(ex)) == 2)
+    ex._harvest_px_parked_until = time.time() - 1
+    check("hv1_park_expiry_clears_hold", ex._harvest_hold_reason() == '')
+    # Non-PX page: one probe per navigation, then the normal 2nd-miss rotate.
+    ex2, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab2 = ProbeTab(dict(OK_INFO))
+    ex2._harvest_tab = tab2
+    _, out1 = _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    check("hv1_nonpx_no_park", ex2._harvest_hold_reason() == '' and 'MISS-PROBE px=no' in out1
+          and 'buttons=40 buttons_vis=12 fulfil=0 hint=no_fulfillment_block' in out1
+          and 'miss #1) — will retry' in out1 and ex2._harvest_probe_nav_ts == ex2._harvest_tab_nav_ts)
+    check("hv1_nonpx_screenshot_plain", len(ex2._shots) == 1 and not ex2._shots[0].endswith('_px.png')
+          and _err_lines(ex2) == [])
+    _, out2 = _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    check("hv1_one_probe_per_nav", tab2.probes() == 1 and len(ex2._shots) == 1)
+    check("hv1_nonpx_second_miss_rotates", tab2.gets == [h.pdp_url('222')]
+          and 'miss #2) — rotating to the next candidate' in out2 and ex2._harvest_miss == 0)
+    # Screenshot cap across navigations + hidden tab + probe failure.
+    ex3, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1', 'TARGET_HARVEST_MISS_SHOTS_MAX': '2'})
+    tab3 = ProbeTab(dict(OK_INFO))
+    ex3._harvest_tab = tab3
+    outs = []
+    for i in range(3):
+        ex3._harvest_tab_nav_ts = 1000.0 + i
+        ex3._harvest_miss = 0
+        outs.append(_captured(ex3._harvest_handle_miss(tab3, dict(MISS)))[1])
+    check("hv1_screenshot_cap", tab3.probes() == 3 and len(ex3._shots) == 2 and 'screenshot 2/2' in outs[1]
+          and 'screenshot' not in outs[2])
+    ex4, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab4 = ProbeTab(dict(OK_INFO, vis='hidden'))
+    ex4._harvest_tab = tab4
+    _, out4 = _captured(ex4._harvest_handle_miss(tab4, dict(MISS)))
+    check("hv1_hidden_tab_no_screenshot", ex4._shots == [] and 'screenshot skipped (tab vis=hidden)' in out4
+          and ex4._harvest_miss_shots == 0 if hasattr(ex4, '_harvest_miss_shots') else ex4._shots == [])
+    ex5, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab5 = ProbeTab(None, probe_raises=asyncio.TimeoutError())
+    ex5._harvest_tab = tab5
+    _, out5 = _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    check("hv1_probe_failure_marks_nav", 'MISS-PROBE failed' in out5 and ex5._harvest_hold_reason() == ''
+          and ex5._harvest_probe_nav_ts == ex5._harvest_tab_nav_ts and ex5._shots == [])
+    _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    check("hv1_probe_failure_not_retried_same_nav", tab5.probes() == 1)
+    ex6, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab6 = ProbeTab(['not', 'a', 'dict'])
+    ex6._harvest_tab = tab6
+    _, out6 = _captured(ex6._harvest_handle_miss(tab6, dict(MISS)))
+    check("hv1_probe_garbage_result_safe", 'MISS-PROBE px=no' in out6 and ex6._harvest_hold_reason() == ''
+          and ex6._shots == [])
+    # Probe flag off: no evaluate at all, no screenshot (prior behaviour).
+    ex7, _ = _hv1_stub({})
+    tab7 = ProbeTab(dict(PX_INFO))
+    ex7._harvest_tab = tab7
+    _captured(ex7._harvest_handle_miss(tab7, dict(MISS)))
+    check("hv1_probe_flag_off_no_evaluate", tab7.evals == [] and ex7._shots == []
+          and ex7._harvest_hold_reason() == '')
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 1_800_000_000.0
+
+
+def test_hv1_harvest_once_px_integration():
+    """The real _harvest_once: 9 s readiness poll (fake clock) -> miss -> probe
+    -> PX park; no click, no nav."""
+    import src.session.purchase_executor as pe_mod
+    ex, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab = ProbeTab(dict(PX_INFO))
+    ex._harvest_tab = tab
+
+    async def _ensure():
+        return tab
+    ex._ensure_harvest_tab = _ensure
+    clicks = []
+
+    async def _click(*a, **k):
+        clicks.append(1)
+        return (0, 0)
+    c = _Clock()
+    real_time, real_asyncio = pe_mod.time, pe_mod.asyncio
+
+    class _T:
+        def time(self):
+            return c.t
+
+        def __getattr__(self, n):
+            return getattr(real_time, n)
+
+    class _A:
+        async def sleep(self, s, *a, **k):
+            c.t += float(s)
+            await real_asyncio.sleep(0)
+
+        def __getattr__(self, n):
+            return getattr(real_asyncio, n)
+    ex._harvest_tab_nav_ts = c.t - 100.0
+    saved_click = h.human_click
+    pe_mod.time, pe_mod.asyncio = _T(), _A()
+    h.human_click = _click
+    try:
+        r, out = _captured(ex._harvest_once())
+    finally:
+        pe_mod.time, pe_mod.asyncio = real_time, real_asyncio
+        h.human_click = saved_click
+    finds = sum(1 for j in tab.evals if j == h.FIND_ATC_BUTTON_JS)
+    check("hv1_once_px_parks_without_click", r is False and clicks == [] and tab.gets == []
+          and tab.probes() == 1 and finds >= 10 and '[PX-CHALLENGE/harvest]' in out
+          and ex._harvest_px_parked_until > c.t)
+
+
+def test_hv1_renav_live():
+    # Flag off, live: the rotate stays a no-op and the line no longer claims it rotates.
+    ex, _ = _hv1_stub({}, live=True)
+    tab = ProbeTab(dict(OK_INFO))
+    ex._harvest_tab = tab
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_renav_off_no_live_rotate", tab.gets == [] and 'miss #2) — rotation deferred (purchase live)' in out
+          and 'rotating to the next candidate' not in out and ex._harvest_miss == 0)
+    # Flag off, idle: exactly the prior rotate + text.
+    ex0, _ = _hv1_stub({}, live=False)
+    tab0 = ProbeTab(dict(OK_INFO))
+    ex0._harvest_tab = tab0
+    _, o1 = _captured(ex0._harvest_handle_miss(tab0, dict(MISS)))
+    _, o2 = _captured(ex0._harvest_handle_miss(tab0, dict(MISS)))
+    check("hv1_idle_rotate_unchanged",
+          'ATC button absent on 111 (ready=complete oos=False; miss #1) — will retry\n' in o1
+          and 'ATC button absent on 111 (ready=complete oos=False; miss #2) — rotating to the next candidate\n' in o2
+          and tab0.gets == [h.pdp_url('222')] and ex0._harvest_tcin == '222')
+    # A found-but-disabled button keeps the prior 'DISABLED' wording.
+    ex0d, _ = _hv1_stub({}, live=False)
+    tab0d = ProbeTab(dict(OK_INFO))
+    ex0d._harvest_tab = tab0d
+    _, o1d = _captured(ex0d._harvest_handle_miss(tab0d, {'found': True, 'disabled': True, 'ready': 'complete',
+                                                          'oos': True}))
+    check("hv1_disabled_text_unchanged",
+          'ATC button DISABLED on 111 (ready=complete oos=True; miss #1) — will retry\n' in o1d)
+    check("hv1_idle_flag_off_no_backoff_state", ex0._harvest_hold_reason() == ''
+          and not getattr(ex0, '_harvest_miss_times', None))
+    # Flag on, live, last load 100 s ago: exactly one nav, to the NEXT candidate.
+    ex1, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1'}, live=True)
+    tab1 = ProbeTab(dict(OK_INFO))
+    ex1._harvest_tab = tab1
+    _captured(ex1._harvest_handle_miss(tab1, dict(MISS)))
+    t_before = time.time()
+    _, out1 = _captured(ex1._harvest_handle_miss(tab1, dict(MISS)))
+    check("hv1_renav_live_one_nav_next_tcin", tab1.gets == [h.pdp_url('222')] and ex1._harvest_tcin == '222'
+          and 'rotating to the next candidate (live re-nav; last load' in out1
+          and ex1._harvest_last_reload_ts >= t_before and ex1._harvest_clicks_since_nav == 0)
+    # Flag on, live, recent load -> deferred.
+    ex2, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1'}, live=True)
+    ex2._harvest_tab_nav_ts = time.time() - 5.0
+    tab2 = ProbeTab(dict(OK_INFO))
+    ex2._harvest_tab = tab2
+    _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    _, out2 = _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    check("hv1_renav_live_min_gap", tab2.gets == [] and '< 15s)' in out2 and 'rotation deferred (purchase live;' in out2)
+    # The gap honours a larger fresh-page min gap, and a recent fresh reload counts.
+    ex3, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1', 'TARGET_HARVEST_FRESH_PAGE_MIN_GAP_S': '40'}, live=True)
+    ex3._harvest_tab_nav_ts = time.time() - 20.0
+    tab3 = ProbeTab(dict(OK_INFO))
+    ex3._harvest_tab = tab3
+    _captured(ex3._harvest_handle_miss(tab3, dict(MISS)))
+    _, out3 = _captured(ex3._harvest_handle_miss(tab3, dict(MISS)))
+    check("hv1_renav_live_uses_larger_gap", tab3.gets == [] and '< 40s)' in out3)
+    ex3b, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1'}, live=True)
+    ex3b._harvest_last_reload_ts = time.time() - 3.0
+    tab3b = ProbeTab(dict(OK_INFO))
+    ex3b._harvest_tab = tab3b
+    _captured(ex3b._harvest_handle_miss(tab3b, dict(MISS)))
+    _captured(ex3b._harvest_handle_miss(tab3b, dict(MISS)))
+    check("hv1_renav_live_recent_reload_counts", tab3b.gets == [])
+    # Won-cart loop (quiet) and held cart: never a live nav.
+    ex4, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1'}, live=True)
+    ex4._woncart_active_until = time.time() + 100.0
+    tab4 = ProbeTab(dict(OK_INFO))
+    ex4._harvest_tab = tab4
+    _captured(ex4._harvest_handle_miss(tab4, dict(MISS)))
+    _, out4 = _captured(ex4._harvest_handle_miss(tab4, dict(MISS)))
+    _captured(ex4._harvest_rotate(same=False, allow_live=True))
+    check("hv1_renav_refused_during_woncart_loop", tab4.gets == [] and 'rotation deferred (won-cart loop)' in out4)
+    ex5, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1'}, live=True)
+    ex5._held_cart = {'tcin': '999', 'created': time.time()}
+    tab5 = ProbeTab(dict(OK_INFO))
+    ex5._harvest_tab = tab5
+    _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    _, out5 = _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    check("hv1_renav_refused_with_held_cart", tab5.gets == [] and 'held won cart' in out5)
+    # The rotate primitive itself: allow_live bypasses only the live guard.
+    ex6, _ = _hv1_stub({}, live=True)
+    ex6._harvest_tab = ProbeTab(dict(OK_INFO))
+    _captured(ex6._harvest_rotate(same=True))
+    check("hv1_rotate_default_live_noop", ex6._harvest_tab.gets == [])
+    _captured(ex6._harvest_rotate(same=True, allow_live=True))
+    check("hv1_rotate_allow_live_navigates_same", ex6._harvest_tab.gets == [h.pdp_url('111')])
+
+
+def test_hv1_backoff():
+    ex, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1'}, live=False)
+    tab = ProbeTab(dict(OK_INFO))
+    ex._harvest_tab = tab
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_backoff_not_before_3", ex._harvest_hold_reason() == '' and tab.gets == [h.pdp_url('222')])
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_backoff_after_3_in_600s", ex._harvest_hold_reason() == 'bad-load back-off'
+          and ex._harvest_backoff_until > time.time() + 290 and 'rotation deferred (bad-load back-off)' in out
+          and tab.gets == [h.pdp_url('222')] and ex.harvest_stuck() is True)
+    ensured = []
+
+    async def _ensure():
+        ensured.append(1)
+        return tab
+    ex._ensure_harvest_tab = _ensure
+    r, _ = _captured(ex._harvest_once())
+    check("hv1_backoff_harvest_once_early", r is False and ensured == [])
+    ex._harvest_backoff_until = time.time() - 1
+    check("hv1_backoff_expires", ex._harvest_hold_reason() == '')
+    # Window: misses > 600 s apart never add up.
+    ex2, _ = _hv1_stub({'TARGET_HARVEST_MISS_RENAV_LIVE': '1', 'TARGET_HARVEST_BADLOAD_BACKOFF_S': '120'})
+    base = time.time() - 5000
+    r1 = [ex2._harvest_note_bad_load(base + d) for d in (0, 400, 1100)]
+    check("hv1_backoff_window_600s", r1 == [False, False, False] and ex2._harvest_backoff_until == 0.0
+          if hasattr(ex2, '_harvest_backoff_until') else r1 == [False, False, False])
+    now = time.time()
+    r2 = [ex2._harvest_note_bad_load(now - 20), ex2._harvest_note_bad_load(now - 10), ex2._harvest_note_bad_load(now)]
+    check("hv1_backoff_knob", r2 == [False, False, True] and abs(ex2._harvest_backoff_until - (now + 120)) < 1)
+    # Flag off: many misses, never a back-off.
+    ex3, _ = _hv1_stub({}, live=False)
+    tab3 = ProbeTab(dict(OK_INFO))
+    ex3._harvest_tab = tab3
+    for _ in range(6):
+        _captured(ex3._harvest_handle_miss(tab3, dict(MISS)))
+    check("hv1_backoff_flag_off", ex3._harvest_hold_reason() == '' and len(tab3.gets) == 3)
+
+
+def test_hv1_harvest_stuck():
+    import src.session.purchase_executor as pe_mod
+    bare = pe_mod.PurchaseExecutor.__new__(pe_mod.PurchaseExecutor)
+    check("hv1_stuck_bare_object_false", bare.harvest_stuck() is False and bare.harvest_stuck_reason() == ''
+          and bare._harvest_hold_reason() == '')
+    ex, _ = _hv1_stub({})
+    check("hv1_stuck_fresh_false", ex.harvest_stuck() is False)
+    tab = ProbeTab(dict(OK_INFO))
+    ex._harvest_tab = tab
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_stuck_one_miss_false", ex._harvest_miss_streak == 1 and ex.harvest_stuck() is False)
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("hv1_stuck_streak_survives_rotate", ex._harvest_miss_streak == 3 and ex.harvest_stuck() is True
+          and '3 buttonless loads' in ex.harvest_stuck_reason())
+    ev = _event({'Cookie': 'c', 'Content-Type': 'application/json'})
+    _captured(ex._harvest_capture_and_block(FakeTab(), ev, ev.request.url))
+    check("hv1_stuck_tokenless_capture_keeps_streak", ex._harvest_miss_streak == 3)
+    ev2 = _event(dict(HD))
+    _captured(ex._harvest_capture_and_block(FakeTab(), ev2, ev2.request.url))
+    check("hv1_stuck_capture_resets", ex._harvest_miss_streak == 0 and ex.harvest_stuck() is False)
+    ex._harvest_px_parked_until = time.time() + 60
+    check("hv1_stuck_parked", ex.harvest_stuck_reason() == 'PX park')
+    ex._harvest_px_parked_until = 0.0
+    ex._harvest_backoff_until = time.time() + 60
+    check("hv1_stuck_backoff", ex.harvest_stuck_reason() == 'bad-load back-off')
+    ex._harvest_backoff_until = 0.0
+    ex._harvest_disabled_reason = 'no TARGET_HARVEST_TCINS'
+    check("hv1_stuck_disabled", ex.harvest_stuck_reason() == 'disabled (no TARGET_HARVEST_TCINS)')
+    ex._harvest_disabled_reason = ''
+    ex._harvest_px_parked_until = 'garbage'
+    check("hv1_stuck_never_raises", ex.harvest_stuck() is False)
+
+
+def test_hv1_flush_on_relaunch():
+    def _flush_stub(flag):
+        ex, _ = _stub_executor()
+        env = {'TARGET_SHAPE_HARVEST': '1', 'TARGET_HARVEST_TCINS': ''}
+        if flag:
+            env['TARGET_HARVEST_FLUSH_ON_RELAUNCH'] = '1'
+        ex._harvest_cfg = h.config(env)
+        ex._harvest_tab = None
+        ex._harvest_vis_state = ''
+        ex._harvest_tcin_idx = 0
+        old, new = SimpleNamespace(name='old'), SimpleNamespace(name='new')
+        ex._harvest_browser_ref = old
+        ex.session_manager.browser = new
+        ex._shape_bank.push(HD, {'tcin': 'a'}, now=time.time())
+        ex._shape_bank.push(HD, {'tcin': 'b'}, now=time.time())
+        return ex, old, new
+    ex, old, new = _flush_stub(True)
+    r, out = _captured(lambda: ex._harvest_replay_headers_for('main', dict(HD)))
+    check("hv1_flush_at_replay", r is None and ex._shape_bank.count() == 0 and ex._shape_bank.expired == 2
+          and 'bank FLUSHED on relaunch (replay): dropped 2 set(s)' in out and 'bank EMPTY at shot time' in out)
+    ex.session_manager.browser = old
+    ex._shape_bank.push(HD, now=time.time())
+    r2, _ = _captured(lambda: ex._harvest_replay_headers_for('main', dict(HD)))
+    check("hv1_same_browser_replays", isinstance(r2, list))
+    exoff, _, _ = _flush_stub(False)
+    r3, out3 = _captured(lambda: exoff._harvest_replay_headers_for('main', dict(HD)))
+    check("hv1_flush_flag_off_replays_old_set", isinstance(r3, list) and 'FLUSHED' not in out3
+          and exoff._shape_bank.count() == 1)
+    exw, _, _ = _flush_stub(True)
+    exw._harvest_selftest_armed = False
+    _captured(lambda: exw._harvest_replay_headers_for('warmup', dict(HD)))
+    check("hv1_flush_not_run_for_unarmed_labels", exw._shape_bank.count() == 2)
+    # The harvest tab's browser-changed branch.
+    ex2, old2, new2 = _flush_stub(True)
+    r4, out4 = _captured(ex2._ensure_harvest_tab())
+    check("hv1_flush_on_browser_changed", r4 is None and ex2._shape_bank.count() == 0
+          and ex2._harvest_browser_ref is new2 and 'browser changed' in out4
+          and 'bank FLUSHED on relaunch (browser changed)' in out4)
+    ex3, _, new3 = _flush_stub(False)
+    _captured(ex3._ensure_harvest_tab())
+    check("hv1_browser_changed_flag_off_keeps_bank", ex3._shape_bank.count() == 2 and ex3._harvest_browser_ref is new3)
+    ex4, _, new4 = _flush_stub(True)
+    ex4._harvest_browser_ref = None
+    _captured(ex4._ensure_harvest_tab())
+    check("hv1_first_attach_no_flush", ex4._shape_bank.count() == 2 and ex4._harvest_browser_ref is new4)
+    ex5, _, _ = _flush_stub(True)
+    ex5.session_manager.browser = None          # teardown in progress = the minting Chrome is gone
+    check("hv1_flush_when_browser_torn_down", ex5._harvest_flush_if_relaunched('replay') == 2)
+
+
+def test_hv1_bank_gate_adaptive():
+    from src.purchasing.bulletproof_purchase_manager import BulletproofPurchaseManager as BPM
+    m = object.__new__(BPM)
+
+    class Exe:
+        def __init__(self, why=''):
+            self.why = why
+
+        def harvest_stuck_reason(self):
+            if self.why == 'raise':
+                raise RuntimeError('boom')
+            return self.why
+    os.environ.pop('TARGET_BANK_GATE_ADAPTIVE', None)
+    try:
+        check("hv1_gate_flag_off_never_skips", m._bank_gate_skip_reason(Exe('stuck'), 'W3/alt-1') == '')
+        m._bank_gate_note('W3/alt-1', False, 8.0)
+        m._bank_gate_note('W3/alt-1', False, 8.0)
+        check("hv1_gate_flag_off_note_noop", getattr(m, '_bank_gate_timeouts', None) is None
+              and m._bank_gate_skip_reason(Exe(), 'W3/alt-1') == '')
+        os.environ['TARGET_BANK_GATE_ADAPTIVE'] = '1'
+        check("hv1_gate_skips_when_harvest_stuck",
+              m._bank_gate_skip_reason(Exe('PX park'), 'W3/alt-1') == 'harvest stuck: PX park')
+        check("hv1_gate_waits_when_healthy", m._bank_gate_skip_reason(Exe(''), 'W3/alt-1') == '')
+        m._bank_gate_note('W3/alt-1', False, 8.0)
+        check("hv1_gate_one_timeout_still_waits", m._bank_gate_skip_reason(Exe(), 'W3/alt-1') == '')
+        m._bank_gate_note('W3/alt-1', False, 0.0)          # a 0 s check is not a timeout
+        check("hv1_gate_zero_wait_not_counted", m._bank_gate_timeouts.get('W3/alt-1') == 1)
+        m._bank_gate_note('W3/alt-1', False, 8.0)
+        check("hv1_gate_skips_after_2_timeouts",
+              m._bank_gate_skip_reason(Exe(), 'W3/alt-1') == '2 bank-gate timeouts in a row')
+        check("hv1_gate_counts_per_identity", m._bank_gate_skip_reason(Exe(), 'W2/business') == '')
+        _, out = _captured(lambda: m._bank_gate_note('W3/alt-1', True, 0.0))
+        check("hv1_gate_resets_on_ready", m._bank_gate_skip_reason(Exe(), 'W3/alt-1') == ''
+              and 'gate wait re-armed ident=W3/alt-1' in out)
+        m._bank_gate_note(None, False, 8.0)
+        m._bank_gate_note(None, False, 8.0)
+        check("hv1_gate_none_label_is_auto", m._bank_gate_skip_reason(Exe(), None) == '2 bank-gate timeouts in a row'
+              and m._bank_gate_timeouts.get('auto') == 2)
+        check("hv1_gate_executor_errors_safe", m._bank_gate_skip_reason(Exe('raise'), 'W1/primary') == ''
+              and m._bank_gate_skip_reason(object(), 'W1/primary') == ''
+              and m._bank_gate_skip_reason(None, 'W1/primary') == '')
+        os.environ['TARGET_BANK_GATE_ADAPTIVE'] = '0'
+        check("hv1_gate_kill_switch", m._bank_gate_skip_reason(Exe('PX park'), None) == '')
+    finally:
+        os.environ.pop('TARGET_BANK_GATE_ADAPTIVE', None)
+    # Wiring (source order inside the gate block).
+    i_gate = MGR_SRC.find("os.environ.get('TARGET_SHOT_BANK_GATE', '0') == '1' and _gk in _gate_kinds")
+    i_bw = MGR_SRC.find("_bw = min(_bw, max(0.0, _retry_deadline - time.time()))", i_gate)
+    i_skip = MGR_SRC.find("_bg_skip = self._bank_gate_skip_reason(target_purchase_executor, _race_wlbl)", i_bw)
+    i_zero = MGR_SRC.find("if _bg_skip:\n                                _bw = 0.0", i_skip)
+    i_wait = MGR_SRC.find("target_purchase_executor.harvest_wait_for_set(_bw)", i_zero)
+    i_note = MGR_SRC.find("self._bank_gate_note(_race_wlbl, bool(_have), _bw)", i_wait)
+    i_ready = MGR_SRC.find("[BANK_GATE] fresh banked set ready", i_note)
+    i_skwf = MGR_SRC.find("elif _bg_skip and _wf_only:", i_ready)
+    i_wf = MGR_SRC.find("elif _wf_only:", i_skwf)
+    check("hv1_gate_wiring_order", 0 < i_gate < i_bw < i_skip < i_zero < i_wait < i_note < i_ready < i_skwf < i_wf)
+    check("hv1_gate_note_skipped_on_wait_error", "if not _bg_errored:\n                                self._bank_gate_note(" in MGR_SRC
+          and "_bg_errored = True" in MGR_SRC)
+    check("hv1_gate_skip_lines", MGR_SRC.count("[BANK_GATE] skipped ({_bg_skip}) — no wait;") == 2)
+    check("hv1_gate_prior_lines_kept", "[BANK_GATE] no fresh set within {_bw:.0f}s — cold re-entry fires page-signed" in MGR_SRC
+          and "[BANK_GATE] no fresh set within {_bw:.0f}s after a 401 — wave-first " in MGR_SRC
+          and "self._bank_gate_timeouts: Dict[str, int] = {}" in MGR_SRC)
+
+
+def test_hv1_wiring():
+    i_def = EXE_SRC.find("async def _harvest_once(self) -> bool:")
+    i_quiet = EXE_SRC.find("if self._woncart_quiet():", i_def)
+    i_hold = EXE_SRC.find("if self._harvest_hold_reason():", i_def)
+    i_ens = EXE_SRC.find("tab = await self._ensure_harvest_tab()", i_def)
+    i_miss = EXE_SRC.find("await self._harvest_handle_miss(tab, info)", i_def)
+    i_vis = EXE_SRC.find("_vis = await self._harvest_ensure_visible(tab)", i_def)
+    check("hv1_once_order", 0 < i_def < i_quiet < i_hold < i_ens < i_miss < i_vis)
+    check("hv1_old_misleading_text_gone",
+          "'rotating to the next candidate' if self._harvest_miss >= 2 else 'will retry'" not in EXE_SRC)
+    i_rdef = EXE_SRC.find("async def _harvest_rotate(self, same: bool = False, allow_live: bool = False)")
+    i_rq = EXE_SRC.find("if self._woncart_quiet():", i_rdef)
+    i_rh = EXE_SRC.find("if self._harvest_hold_reason():", i_rdef)
+    i_rl = EXE_SRC.find("if self.session_manager.is_purchase_in_progress() and not allow_live:", i_rdef)
+    check("hv1_rotate_guard_order", 0 < i_rdef < i_rq < i_rh < i_rl)
+    check("hv1_only_miss_path_passes_allow_live",
+          EXE_SRC.count("allow_live=allow_live)") == 1 and EXE_SRC.count("allow_live=True") == 0)
+    i_bc = EXE_SRC.find('self._harvest_log("browser changed — dropping harvest tab handle")')
+    i_fl = EXE_SRC.find("self._harvest_flush_if_relaunched('browser changed')", i_bc)
+    i_dr = EXE_SRC.find('await self._harvest_drop_tab("browser changed", close=False)', i_bc)
+    check("hv1_flush_in_browser_changed_branch", 0 < i_bc < i_fl < i_dr)
+    i_lbl = EXE_SRC.find("elif label == 'warmup' and self._harvest_selftest_armed:")
+    i_rfl = EXE_SRC.find("self._harvest_flush_if_relaunched('replay')", i_lbl)
+    i_pop = EXE_SRC.find("entry = self._shape_bank.pop_fresh(", i_lbl)
+    check("hv1_flush_before_replay_pop", 0 < i_lbl < i_rfl < i_pop)
+    i_sk = EXE_SRC.find("if _acct in (cfg.get('skip') or []):")
+    i_sr = EXE_SRC.find("if cfg.get('skip_disables_replay') and self._harvest_replay_on:", i_sk)
+    i_ret = EXE_SRC.find("return", i_sr)
+    i_task = EXE_SRC.find("if self._harvest_task is not None and not self._harvest_task.done():", i_sk)
+    check("hv1_skip_branch_turns_replay_off", 0 < i_sk < i_sr < i_ret < i_task)
+    i_push = EXE_SRC.find("ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin")
+    i_rst = EXE_SRC.find("self._harvest_miss_streak = 0", i_push)
+    i_capt = EXE_SRC.find('self._harvest_log(f"CAPTURED', i_push)
+    check("hv1_streak_reset_at_captured_push", 0 < i_push < i_rst < i_capt)
+    check("hv1_probe_bounded", "tab.evaluate(_shape_harvest.HARVEST_MISS_PROBE_JS), timeout=3.0)" in EXE_SRC
+          and "await asyncio.wait_for(self._screenshot(tab, path), timeout=5.0)" in EXE_SRC)
+    check("hv1_px_alert_own_tag_not_auth_critical",
+          "[PX-CHALLENGE/harvest]" in EXE_SRC and "_alert_critical" not in
+          EXE_SRC[EXE_SRC.find("def _harvest_px_park"):EXE_SRC.find("def _harvest_note_bad_load")])
+
+
 if __name__ == '__main__':
     for fn in (test_prefix_and_tokens, test_merge, test_bank, test_bezier_and_click_point, test_config_and_js,
                test_header_bytes,
                test_human_click_events, test_visibility_probe_and_verdict, test_executor_replay_lookup,
                test_executor_capture_and_block, test_executor_visibility_guard, test_executor_fresh_page,
-               test_executor_wiring, test_bat_pins, test_compiles):
+               test_executor_wiring, test_bat_pins, test_compiles,
+               # 2026-09-16 HV-1
+               test_hv1_env_clean, test_hv1_config, test_hv1_bank_clear, test_hv1_probe_js,
+               test_hv1_probe_fields, test_hv1_skip_disables_replay, test_hv1_miss_probe_and_park,
+               test_hv1_harvest_once_px_integration, test_hv1_renav_live, test_hv1_backoff,
+               test_hv1_harvest_stuck, test_hv1_flush_on_relaunch, test_hv1_bank_gate_adaptive,
+               test_hv1_wiring):
         try:
             fn()
         except Exception as e:

@@ -948,6 +948,17 @@ class PurchaseExecutor:
         # 2026-09-09 audit #2: per-window census (logged when a purchase ends)
         self._harvest_win: Dict[str, int] = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
         self._harvest_prev_live: bool = False
+        # 2026-09-16 hot-sku plan P8 (HV-1). Only the flag-gated paths set the
+        # park / back-off deadlines; the miss streak is a plain counter read by
+        # harvest_stuck() (used only under TARGET_BANK_GATE_ADAPTIVE=1).
+        self._harvest_miss_streak: int = 0          # buttonless loads since the last banked CAPTURE
+        self._harvest_probe_nav_ts: float = -1.0    # nav whose first miss was already probed
+        self._harvest_miss_shots: int = 0           # MISS-PROBE screenshots taken this run
+        self._harvest_px_parked_until: float = 0.0  # TARGET_HARVEST_PX_PARK_S after a PX verdict
+        self._harvest_px_parks: int = 0
+        self._harvest_px_alert_ts: float = 0.0      # error_log line at most every 10 min
+        self._harvest_backoff_until: float = 0.0    # bad-load back-off (renav flag only)
+        self._harvest_miss_times: Deque[float] = deque(maxlen=16)
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -2492,6 +2503,8 @@ class PurchaseExecutor:
             pass
         else:
             return None
+        if self._harvest_cfg.get('flush_on_relaunch'):
+            self._harvest_flush_if_relaunched('replay')     # 2026-09-16 HV-1 (INFRA-4)
         _stale_before = self._shape_bank.stale
         entry = self._shape_bank.pop_fresh(prefer_no_a0=bool(self._harvest_cfg.get('prefer_no_a0')))
         if entry is None:
@@ -2570,6 +2583,8 @@ class PurchaseExecutor:
             toks = _shape_harvest.shape_tokens(headers)
             ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin, 'url': url[:160], 'body': post_data[:300]})
             self._harvest_stats['captured' if ok else 'no_tokens'] += 1
+            if ok:
+                self._harvest_miss_streak = 0       # 2026-09-16 HV-1: harvest_stuck() streak
             a0 = any(str(k).lower().endswith('-a0') for k in toks)
             _hb = _shape_harvest.header_bytes(headers)
             self._harvest_log(f"CAPTURED{'' if ok else ' (NO Shape tokens — not banked)'} tokens={len(toks)} "
@@ -2609,6 +2624,123 @@ class PurchaseExecutor:
             return age is not None and (cap <= 0 or age <= cap)
         except Exception:
             return False
+
+    # ── 2026-09-16 hot-sku plan P8 (HV-1) sync helpers ──────────────────────
+    def _harvest_hold_reason(self, now: Optional[float] = None) -> str:
+        """'PX park' / 'bad-load back-off' while the harvest tab must not be
+        navigated or clicked, else ''. Only the flag-gated HV-1 paths set the
+        deadlines, so this is always '' with the flags off. Never raises."""
+        try:
+            now = time.time() if now is None else now
+            if float(getattr(self, '_harvest_px_parked_until', 0.0) or 0.0) > now:
+                return 'PX park'
+            if float(getattr(self, '_harvest_backoff_until', 0.0) or 0.0) > now:
+                return 'bad-load back-off'
+        except Exception:
+            pass
+        return ''
+
+    def harvest_stuck_reason(self) -> str:
+        """Why the harvest cannot be expected to bank a set soon ('' = it can):
+        parked on a PX verdict, in a bad-load back-off, disabled for this run,
+        or >= 2 buttonless loads since the last banked CAPTURE. Read by the
+        manager's adaptive bank gate (TARGET_BANK_GATE_ADAPTIVE=1) from its own
+        thread: scalar reads only. Never raises."""
+        try:
+            why = self._harvest_hold_reason()
+            if why:
+                return why
+            dis = str(getattr(self, '_harvest_disabled_reason', '') or '')
+            if dis:
+                return f"disabled ({dis})"
+            streak = int(getattr(self, '_harvest_miss_streak', 0) or 0)
+            if streak >= 2:
+                return f"{streak} buttonless loads since the last capture"
+        except Exception:
+            pass
+        return ''
+
+    def harvest_stuck(self) -> bool:
+        return bool(self.harvest_stuck_reason())
+
+    def _harvest_flush_if_relaunched(self, where: str) -> int:
+        """TARGET_HARVEST_FLUSH_ON_RELAUNCH=1: drop every banked set when the
+        Chrome that minted them is no longer the account browser (the session
+        manager only swaps `browser` on a new launch or a teardown). Called
+        from the harvest tab's browser-changed branch AND at replay time: the
+        loop noticed a relaunch 78 s late on 09-16 and a set from the killed
+        Chrome rode a real shot in between (INFRA-4). Returns the number
+        dropped. Never raises."""
+        try:
+            ref = getattr(self, '_harvest_browser_ref', None)
+            if ref is None:
+                return 0
+            if getattr(self.session_manager, 'browser', None) is ref:
+                return 0
+            n = self._shape_bank.clear()
+            if n:
+                self._harvest_log(f"bank FLUSHED on relaunch ({where}): dropped {n} set(s) minted by the "
+                                  f"previous Chrome | {self._shape_bank.summary()}")
+            return n
+        except Exception:
+            return 0
+
+    def _harvest_px_park(self, desc: str) -> None:
+        """PX verdict on the harvest tab (TARGET_HARVEST_MISS_PROBE=1): no nav,
+        no click for TARGET_HARVEST_PX_PARK_S. Logs [PX-CHALLENGE/harvest] and,
+        at most every 10 min, one error_log line under that tag (not the
+        account-level AUTH_CRITICAL alert: the account's shots keep firing).
+        The widget is left alone. Never raises."""
+        try:
+            now = time.time()
+            park_s = float(self._harvest_cfg.get('px_park_s', 300.0) or 300.0)
+            self._harvest_px_parked_until = now + park_s
+            self._harvest_px_parks = int(getattr(self, '_harvest_px_parks', 0) or 0) + 1
+            self._harvest_miss = 0
+            msg = (f"[PX-CHALLENGE/harvest] {self._harvest_acct()}: HUMAN challenge on the harvest tab "
+                   f"({desc}) — harvest PARKED {park_s:.0f}s: no nav, no click "
+                   f"(#{self._harvest_px_parks}); shots continue")
+            print(msg)
+            try:
+                self.logger.warning(msg)
+            except Exception:
+                pass
+            if now - float(getattr(self, '_harvest_px_alert_ts', 0.0) or 0.0) >= 600.0:
+                self._harvest_px_alert_ts = now
+                try:
+                    _p = getattr(self, '_harvest_px_error_log_path', 'logs/error_log.txt')
+                    _d = os.path.dirname(_p)
+                    if _d:
+                        os.makedirs(_d, exist_ok=True)
+                    with open(_p, 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _harvest_note_bad_load(self, now: float) -> bool:
+        """TARGET_HARVEST_MISS_RENAV_LIVE=1 only: 3 buttonless loads within
+        600 s start a TARGET_HARVEST_BADLOAD_BACKOFF_S back-off (no harvest nav
+        or click). Returns True when this miss started one."""
+        try:
+            dq = getattr(self, '_harvest_miss_times', None)
+            if dq is None:
+                dq = self._harvest_miss_times = deque(maxlen=16)
+            dq.append(now)
+            while dq and now - dq[0] > 600.0:
+                dq.popleft()
+            if len(dq) >= 3 and not self._harvest_hold_reason(now):
+                backoff_s = float(self._harvest_cfg.get('badload_backoff_s', 300.0) or 300.0)
+                self._harvest_backoff_until = now + backoff_s
+                n = len(dq)
+                dq.clear()
+                self._harvest_log(f"bad-load BACK-OFF {backoff_s:.0f}s ({n} buttonless loads within 600s) — "
+                                  f"no harvest nav or click until it ends")
+                return True
+        except Exception:
+            pass
+        return False
 
     async def harvest_wait_for_set(self, max_wait_s: float) -> bool:
         """2026-09-09 fresh-set gate: poll (0.25 s) up to `max_wait_s` for a replayable
@@ -2749,6 +2881,8 @@ class PurchaseExecutor:
         if self._harvest_browser_ref is not browser:
             if self._harvest_browser_ref is not None:
                 self._harvest_log("browser changed — dropping harvest tab handle")
+                if self._harvest_cfg.get('flush_on_relaunch'):
+                    self._harvest_flush_if_relaunched('browser changed')   # 2026-09-16 HV-1
                 await self._harvest_drop_tab("browser changed", close=False)
             self._harvest_tab = None
             self._harvest_browser_ref = browser
@@ -2800,13 +2934,19 @@ class PurchaseExecutor:
                 pass
             return None
 
-    async def _harvest_rotate(self, same: bool = False) -> None:
+    async def _harvest_rotate(self, same: bool = False, allow_live: bool = False) -> None:
         """Re-navigate the harvest tab to the (next) candidate PDP. Skipped
         while a purchase is live (a full PDP nav is the CDP-flood pattern
-        behind the 07-20 false wedges); the loop retries once idle."""
+        behind the 07-20 false wedges); the loop retries once idle.
+        2026-09-16 HV-1: `allow_live` (passed only by the buttonless-page path
+        under TARGET_HARVEST_MISS_RENAV_LIVE=1) lets that one nav run while a
+        purchase is live; never during a won-cart loop (checked first) and
+        never while the tab is PX-parked or backed off."""
         if self._woncart_quiet():       # 2026-09-16 plan P1 quiet mode
             return
-        if self.session_manager.is_purchase_in_progress():
+        if self._harvest_hold_reason():     # 2026-09-16 HV-1 (only set under its flags)
+            return
+        if self.session_manager.is_purchase_in_progress() and not allow_live:
             return
         tcins = self._harvest_cfg.get('tcins') or []
         if not tcins:
@@ -2868,10 +3008,146 @@ class PurchaseExecutor:
             await self._harvest_drop_tab("fresh page reload failed")
             return False
 
+    async def _harvest_miss_probe(self, tab) -> bool:
+        """TARGET_HARVEST_MISS_PROBE=1 (2026-09-16 HV-1): one read-only snapshot
+        of a buttonless harvest page (bounded 3 s), logged as MISS-PROBE and
+        classified with px_challenge.is_px_challenge. A PX verdict parks the
+        harvest tab and returns True; that navigation stays un-probed, so the
+        page is checked again after the park. Anything else (incl. a failed
+        probe) marks the navigation probed: one evaluate per bad load.
+        Never raises."""
+        nav_ts = self._harvest_tab_nav_ts
+        try:
+            try:
+                from .px_challenge import is_px_challenge, describe
+            except ImportError:
+                from src.session.px_challenge import is_px_challenge, describe  # type: ignore
+        except Exception as e:
+            self._harvest_probe_nav_ts = nav_ts
+            self._harvest_log(f"MISS-PROBE unavailable ({type(e).__name__}: {e})")
+            return False
+        try:
+            info = await asyncio.wait_for(tab.evaluate(_shape_harvest.HARVEST_MISS_PROBE_JS), timeout=3.0)
+        except Exception as e:
+            self._harvest_probe_nav_ts = nav_ts
+            self._harvest_log(f"MISS-PROBE failed on {self._harvest_tcin} ({type(e).__name__}: {e}) — "
+                              f"page not labelled")
+            return False
+        if not isinstance(info, dict):
+            info = {}
+        try:
+            px = bool(is_px_challenge(info))
+            desc = describe(info)
+        except Exception:
+            px, desc = False, 'describe-failed'
+        self._harvest_log(f"MISS-PROBE px={'yes' if px else 'no'} tcin={self._harvest_tcin} {desc} "
+                          f"{_shape_harvest.miss_probe_fields(info)}")
+        await self._harvest_miss_screenshot(tab, info, px)
+        if px:
+            self._harvest_px_park(desc)
+            return True
+        self._harvest_probe_nav_ts = nav_ts
+        return False
+
+    async def _harvest_miss_screenshot(self, tab, info: Dict[str, Any], px: bool) -> Optional[str]:
+        """MISS-PROBE screenshot: at most TARGET_HARVEST_MISS_SHOTS_MAX per run
+        (0 = none), bounded 5 s, and skipped unless the probe saw a VISIBLE tab
+        (a capture of a background tab can stall). Never raises."""
+        try:
+            cap = int(self._harvest_cfg.get('miss_shots_max', 10) or 0)
+            n = int(getattr(self, '_harvest_miss_shots', 0) or 0)
+            if cap <= 0 or n >= cap:
+                return None
+            vis = str((info or {}).get('vis') or '')
+            if vis != 'visible':
+                self._harvest_log(f"MISS-PROBE screenshot skipped (tab vis={vis or '?'})")
+                return None
+            self._harvest_miss_shots = n + 1
+            acct = re.sub(r'[^A-Za-z0-9_-]', '_', str(self._harvest_acct()))
+            tcin = re.sub(r'[^0-9]', '', str(self._harvest_tcin or '')) or 'na'
+            path = (f"logs/screenshots/harvest_miss_{acct}_{tcin}_"
+                    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{'_px' if px else ''}.png")
+            await asyncio.wait_for(self._screenshot(tab, path), timeout=5.0)
+            self._harvest_log(f"MISS-PROBE screenshot {n + 1}/{cap} -> {path}")
+            return path
+        except Exception as e:
+            try:
+                self._harvest_log(f"MISS-PROBE screenshot failed ({type(e).__name__}: {e})")
+            except Exception:
+                pass
+            return None
+
+    async def _harvest_handle_miss(self, tab, info: Dict[str, Any]) -> None:
+        """A harvest PDP poll ended without a usable Add-to-cart button.
+        Prior behaviour (every HV-1 flag off): count it, log it, and call the
+        rotate on every 2nd miss (a no-op while a purchase is live). 2026-09-16
+        HV-1 (plan P8):
+          * the miss line says 'rotating' only when the rotate will really run
+            (09-16: 123 of 147 drop-hour 'rotating' lines were no-ops);
+          * TARGET_HARVEST_MISS_PROBE=1: the first miss per navigation is
+            probed; a PX verdict parks the harvest tab (no rotate);
+          * TARGET_HARVEST_MISS_RENAV_LIVE=1 (built, not armed): a live rotate
+            runs when the last load is >= max(fresh-page min gap, 15 s) old, no
+            park/back-off is active and no won-cart loop or held cart exists
+            on this identity; 3 misses within 600 s start the bad-load back-off.
+        """
+        cfg = self._harvest_cfg
+        self._harvest_miss += 1
+        miss_n = self._harvest_miss
+        self._harvest_miss_streak = int(getattr(self, '_harvest_miss_streak', 0) or 0) + 1
+        now = time.time()
+        px = False
+        if cfg.get('miss_probe') and getattr(self, '_harvest_probe_nav_ts', -1.0) != self._harvest_tab_nav_ts:
+            px = await self._harvest_miss_probe(tab)
+        renav = bool(cfg.get('miss_renav_live'))
+        if renav and not px:
+            self._harvest_note_bad_load(now)
+        rotate = (miss_n >= 2) and not px
+        allow_live = False
+        if px:
+            action = 'no rotate (PX park)'
+        elif miss_n < 2:
+            action = 'will retry'
+        else:
+            hold = self._harvest_hold_reason()
+            try:
+                live = bool(self.session_manager.is_purchase_in_progress())
+            except Exception:
+                live = False
+            if hold:
+                action = f"rotation deferred ({hold})"
+            elif self._woncart_quiet():
+                action = 'rotation deferred (won-cart loop)'
+            elif not live:
+                action = 'rotating to the next candidate'
+            elif not renav:
+                action = 'rotation deferred (purchase live)'
+            elif self._held_cart_active():
+                action = 'rotation deferred (purchase live, held won cart)'
+            else:
+                last = max(float(getattr(self, '_harvest_last_reload_ts', 0.0) or 0.0),
+                           float(self._harvest_tab_nav_ts or 0.0))
+                need = max(float(cfg.get('fresh_page_min_gap_s', 15.0) or 0.0), 15.0)
+                if now - last >= need:
+                    allow_live = True
+                    action = f"rotating to the next candidate (live re-nav; last load {now - last:.0f}s ago)"
+                else:
+                    action = (f"rotation deferred (purchase live; last load {now - last:.0f}s ago "
+                              f"< {need:.0f}s)")
+        self._harvest_log(f"ATC button {'DISABLED' if info.get('found') else 'absent'} on {self._harvest_tcin} "
+                          f"(ready={info.get('ready')} oos={info.get('oos')}; miss #{miss_n}) — {action}")
+        if rotate:
+            self._harvest_miss = 0
+            if allow_live:
+                self._harvest_last_reload_ts = time.time()
+            await self._harvest_rotate(same=False, allow_live=allow_live)
+
     async def _harvest_once(self) -> bool:
         """One real click on the PDP's Add-to-cart -> one banked set (or a
         diagnosed miss). Bounded everywhere; never raises."""
         if self._woncart_quiet():       # 2026-09-16 plan P1 quiet mode: no click, no nav
+            return False
+        if self._harvest_hold_reason():  # 2026-09-16 HV-1: PX park / bad-load back-off (flag-set only)
             return False
         tab = await self._ensure_harvest_tab()
         if tab is None:
@@ -2903,13 +3179,7 @@ class PurchaseExecutor:
                 break
             await asyncio.sleep(0.5)
         if not info.get('found') or info.get('disabled'):
-            self._harvest_miss += 1
-            self._harvest_log(f"ATC button {'DISABLED' if info.get('found') else 'absent'} on {self._harvest_tcin} "
-                              f"(ready={info.get('ready')} oos={info.get('oos')}; miss #{self._harvest_miss}) — "
-                              f"{'rotating to the next candidate' if self._harvest_miss >= 2 else 'will retry'}")
-            if self._harvest_miss >= 2:
-                self._harvest_miss = 0
-                await self._harvest_rotate(same=False)
+            await self._harvest_handle_miss(tab, info)
             return False
         self._harvest_miss = 0
         # First click after a fresh nav: let React attach the fetch handler.
@@ -3164,6 +3434,14 @@ class PurchaseExecutor:
                 self._harvest_disabled_reason = 'account in TARGET_HARVEST_SKIP'
                 self._harvest_log(f"harvest SKIPPED for '{_acct}' (TARGET_HARVEST_SKIP) — "
                                   f"this account fires page-signed shots")
+            # 2026-09-16 HV-1 (verdict H-06): a skipped account can never bank a
+            # set, yet replay stayed on, so the manager's bank gate made every gated
+            # re-entry wait TARGET_SHOT_BANK_WAIT_S for nothing (49 x 8 s on 09-16).
+            # Kill: TARGET_HARVEST_SKIP_DISABLES_REPLAY=0.
+            if cfg.get('skip_disables_replay') and self._harvest_replay_on:
+                self._harvest_replay_on = False
+                self._harvest_log(f"banked replay OFF for '{_acct}' (TARGET_HARVEST_SKIP_DISABLES_REPLAY=1) — "
+                                  f"no bank gate wait for this account")
             return
         if self._harvest_task is not None and not self._harvest_task.done():
             return

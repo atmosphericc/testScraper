@@ -417,6 +417,9 @@ class BulletproofPurchaseManager:
         self._ac_latch: Dict[tuple, float] = {}
         self._ac_latch_lock = threading.Lock()
         self._ac_skip_log_ts: Dict[str, float] = {}
+        # 2026-09-16 HV-1 (TARGET_BANK_GATE_ADAPTIVE): consecutive bank-gate
+        # timeouts per worker label (see _bank_gate_skip_reason).
+        self._bank_gate_timeouts: Dict[str, int] = {}
         self._purchase_tee: Optional['_PurchaseLogTee'] = None  # Active purchase log tee
         self._warmup_cycle_counter: int = 0
         # Per-account Session Sentinel: periodically validates each worker is
@@ -1829,6 +1832,12 @@ class BulletproofPurchaseManager:
                             except ValueError:
                                 _bw = 8.0
                             _bw = min(_bw, max(0.0, _retry_deadline - time.time()))
+                            # 2026-09-16 HV-1 TARGET_BANK_GATE_ADAPTIVE (helper docs above):
+                            # a stuck harvest / 2 straight timeouts -> one 0 s readiness check.
+                            _bg_skip = self._bank_gate_skip_reason(target_purchase_executor, _race_wlbl)
+                            if _bg_skip:
+                                _bw = 0.0
+                            _bg_errored = False
                             try:
                                 if worker is not None:
                                     _have = worker.run_async(
@@ -1839,9 +1848,15 @@ class BulletproofPurchaseManager:
                             except Exception as _bg_err:
                                 print(f"[BANK_GATE] wait errored ({_bg_err}) — firing anyway")
                                 _have = True
+                                _bg_errored = True
+                            if not _bg_errored:
+                                self._bank_gate_note(_race_wlbl, bool(_have), _bw)
                             if _have:
                                 print(f"[BANK_GATE] fresh banked set ready — the shot carries a real-click set "
                                       f"ident={_race_wlbl or 'auto'}")
+                            elif _bg_skip and _wf_only:
+                                print(f"[BANK_GATE] skipped ({_bg_skip}) — no wait; cold re-entry fires "
+                                      f"page-signed ident={_race_wlbl or 'auto'}")
                             elif _wf_only:
                                 # A cold page-signed wave-first shot is exactly what won 19/20 orders;
                                 # the banked set is an upgrade for the hot tier, not a requirement.
@@ -1850,8 +1865,12 @@ class BulletproofPurchaseManager:
                             else:
                                 _pulse_s = min(random.uniform(_pulse_lo, _pulse_hi),
                                                max(0.0, _retry_deadline - time.time()) + 1.0)
-                                print(f"[BANK_GATE] no fresh set within {_bw:.0f}s after a 401 — wave-first "
-                                      f"pause {_pulse_s:.1f}s instead of a page-signed re-POST ident={_race_wlbl or 'auto'}")
+                                if _bg_skip:
+                                    print(f"[BANK_GATE] skipped ({_bg_skip}) — no wait; wave-first pause "
+                                          f"{_pulse_s:.1f}s instead of a page-signed re-POST ident={_race_wlbl or 'auto'}")
+                                else:
+                                    print(f"[BANK_GATE] no fresh set within {_bw:.0f}s after a 401 — wave-first "
+                                          f"pause {_pulse_s:.1f}s instead of a page-signed re-POST ident={_race_wlbl or 'auto'}")
                                 _consec_401 = 0
                                 time.sleep(_pulse_s)
 
@@ -2483,6 +2502,58 @@ class BulletproofPurchaseManager:
     # latched is not opened at all. Cost: a genuinely failed identity loses its
     # second chance on that TCIN for 30 min. Kill-switch: the flag =0.
     _ac_error_log_path = 'logs/error_log.txt'
+
+    # ── 2026-09-16 hot-sku plan P8 (HV-1): adaptive bank gate ───────────────
+    # TARGET_BANK_GATE_ADAPTIVE=1 (default 0 = the fixed TARGET_SHOT_BANK_WAIT_S
+    # wait). 09-16: 49 gated re-entries on alt-1 each waited 8 s for a set its
+    # stuck harvest could never bank. With the flag, the wait shrinks to one
+    # non-blocking readiness check while the executor reports its harvest stuck
+    # or after 2 consecutive gate timeouts for that worker; a ready set resets
+    # the count. The gate's outcome policy (page-signed wave-first shot / pause)
+    # is unchanged. Kill-switch: =0.
+    @staticmethod
+    def _bank_gate_adaptive_on() -> bool:
+        return os.environ.get('TARGET_BANK_GATE_ADAPTIVE', '0').strip() == '1'
+
+    def _bank_gate_skip_reason(self, executor, wlbl) -> str:
+        """Why the bank-gate wait is skipped for this shot ('' = wait as
+        configured). Never raises."""
+        if not self._bank_gate_adaptive_on():
+            return ''
+        try:
+            fn = getattr(executor, 'harvest_stuck_reason', None)
+            why = fn() if callable(fn) else ''
+            if why:
+                return f"harvest stuck: {why}"
+        except Exception:
+            pass
+        try:
+            n = int((getattr(self, '_bank_gate_timeouts', None) or {}).get(str(wlbl or 'auto'), 0))
+        except Exception:
+            n = 0
+        if n >= 2:
+            return f"{n} bank-gate timeouts in a row"
+        return ''
+
+    def _bank_gate_note(self, wlbl, have: bool, waited_s: float) -> None:
+        """Bank-gate outcome bookkeeping (adaptive flag only): a ready set
+        resets the worker's timeout count; a real wait (>= 1 s) that found
+        nothing adds one. Never raises."""
+        if not self._bank_gate_adaptive_on():
+            return
+        try:
+            d = getattr(self, '_bank_gate_timeouts', None)
+            if d is None:
+                d = self._bank_gate_timeouts = {}
+            k = str(wlbl or 'auto')
+            if have:
+                if d.get(k, 0) >= 2:
+                    print(f"[BANK_GATE] fresh set ready again — gate wait re-armed ident={k}")
+                d[k] = 0
+            elif float(waited_s) >= 1.0:
+                d[k] = int(d.get(k, 0)) + 1
+        except Exception:
+            pass
 
     @staticmethod
     def _ac_ident(worker) -> str:
