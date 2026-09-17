@@ -53,6 +53,12 @@ OFFLINE = [
     # (stub tabs only; verified against LIVE_MARKERS before listing).
     "test_checkout_inplace_reshoot",
     "test_warmup_cart_nav_guard",
+    # 2026-09-16 hot-sku 0916 plan P7 (stage S3): DX-1 diagnostics (identity
+    # tracker, [EXPOSURE]/[IDENT_CENSUS], arrival stamps, [FS_TICKET] stash,
+    # RedSky pickup fields) + the apps-channel detection suite it extends
+    # (read before listing: node subprocess + fixtures + stubs only).
+    "test_dx_logs",
+    "test_redsky_apps_channel",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

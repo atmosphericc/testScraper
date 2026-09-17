@@ -22,6 +22,7 @@ from ..session import SessionManager, SessionKeepAlive, PurchaseExecutor
 from .state_store import StateStore
 from .worker import Worker, WorkerConfig
 from .worker_pool import WorkerPool
+from . import identity_rest as _ident_rest
 
 # Cross-platform file locking
 import platform
@@ -115,6 +116,96 @@ def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float
     if not (v == v) or v in (float('inf'), float('-inf')):
         v = float(default)
     return min(hi, max(lo, v))
+
+
+# ── 2026-09-16 hot-sku plan P7 (DX-1) + P9 recorder: exposure / census ───────
+# The 09-16 401 wall tracked per-identity EXPOSURE on the hot TCIN; the next
+# audit needs it per shot, plus per-identity P(401) / pass per non-401 shot /
+# P(edge429). Log-only: the tracker (src/purchasing/identity_rest.py) exists
+# only while TARGET_EXPOSURE_LOG, TARGET_IDENT_CENSUS or TARGET_IDENTITY_REST
+# is 1. Kill-switch: those flags =0 (the default). Module-level (they take the
+# manager as `mgr`) so the stand-in objects the race tests pass as `self` to
+# BulletproofPurchaseManager methods keep working.
+def _dx_tracker_of(mgr):
+    """The manager's shared IdentityTracker, created on first use."""
+    trk = getattr(mgr, '_ident_tracker', None)
+    if trk is None:
+        with _AC_INIT_LOCK:
+            trk = getattr(mgr, '_ident_tracker', None)
+            if trk is None:
+                trk = _ident_rest.IdentityTracker.from_env()
+                mgr._ident_tracker = trk
+    return trk
+
+
+def _dx_log_error(mgr, where: str, err) -> None:
+    """At most one line a minute for a DX-1 failure (it never stops a shot)."""
+    try:
+        now = time.time()
+        if now - float(getattr(mgr, '_dx_err_log_ts', 0.0) or 0.0) >= 60.0:
+            mgr._dx_err_log_ts = now
+            print(f"[DX1] {where} error (ignored): {type(err).__name__}: {err}")
+    except Exception:
+        pass
+
+
+def _dx_record_attempt(mgr, ident, acct, tcin, result, session_manager=None) -> None:
+    """Record one purchase attempt in the identity tracker and, under
+    TARGET_EXPOSURE_LOG=1, print
+    [EXPOSURE] ident= tcin= kind= run_shots= run_s= win_age_s= chrome_age_s= proxied= resting=
+    win_age_s = now - the stock probe's hysteresis window start ('-' = none);
+    chrome_age_s from the session manager's last browser launch. Returns at
+    once while every tracker consumer is off. Never raises."""
+    try:
+        if not _ident_rest.tracker_on():
+            return
+        now = time.time()
+        kind = _ident_rest.classify_result(result)
+        proxied = None
+        if session_manager is not None:
+            try:
+                proxied = bool(getattr(session_manager, 'proxy_url', None))
+            except Exception:
+                proxied = None
+        trk = _dx_tracker_of(mgr)
+        if kind is not None:
+            exp = trk.record(ident, acct, tcin, kind, now=now, proxied=proxied)
+        else:
+            exp = trk.exposure(ident, tcin, now=now)
+        if not _ident_rest.exposure_log_on():
+            return
+        try:
+            ws = float((mgr.stock_snapshot(tcin, now=now) or {}).get('window_start') or 0.0)
+        except Exception:
+            ws = 0.0
+        try:
+            launched = float(getattr(session_manager, '_browser_launched_at', 0.0) or 0.0)
+        except Exception:
+            launched = 0.0
+        win_age = f"{now - ws:.0f}" if ws > 0 else '-'
+        chrome_age = f"{now - launched:.0f}" if launched > 0 else '-'
+        prox = '-' if proxied is None else ('yes' if proxied else 'no')
+        resting = 'yes' if trk.is_resting(ident, tcin, now) else 'no'
+        print(f"[EXPOSURE] ident={ident} tcin={tcin} kind={kind or '-'} "
+              f"run_shots={int(exp.get('run_shots') or 0)} "
+              f"run_s={float(exp.get('run_s') or 0.0):.0f} win_age_s={win_age} "
+              f"chrome_age_s={chrome_age} proxied={prox} resting={resting}")
+    except Exception as e:
+        _dx_log_error(mgr, 'record', e)
+
+
+def _dx_ident_census(mgr, tcin, idents) -> None:
+    """[IDENT_CENSUS] per racing identity once a race is final
+    (TARGET_IDENT_CENSUS=1): cumulative counters since this process started,
+    per (identity, TCIN). Never raises."""
+    try:
+        if not _ident_rest.ident_census_on():
+            return
+        trk = _dx_tracker_of(mgr)
+        for ident in idents:
+            print(_ident_rest.format_census(ident, tcin, trk.counters(ident, tcin)))
+    except Exception as e:
+        _dx_log_error(mgr, 'census', e)
 
 
 def _stock_status_snapshot(s, now: float) -> Dict:
@@ -1511,6 +1602,11 @@ class BulletproofPurchaseManager:
                         # this identity off the TCIN before any state write.
                         if _ac_latch_on() and isinstance(result, dict) and result.get('ambiguous_commit'):
                             self._ac_latch_mark(_skip_ident, tcin, str(result.get('reason') or ''))
+                        # 2026-09-16 DX-1 (plan P7/P9): per-identity shot tracker +
+                        # [EXPOSURE] line. Log-only; a no-op unless TARGET_EXPOSURE_LOG /
+                        # TARGET_IDENT_CENSUS / TARGET_IDENTITY_REST is 1. Never raises.
+                        _dx_record_attempt(self, _skip_ident, _skip_acct, tcin, result,
+                                           target_session_manager)
 
                         if not _retry_on or result.get('success'):
                             break
@@ -2593,6 +2689,10 @@ class BulletproofPurchaseManager:
 
         print(f"[RACE] {tcin}: {recorded}/{total} accounts done, units_bought={units}, "
               f"breakdown={breakdown}")
+        # 2026-09-16 DX-1: per-identity outcome counters once the race is final
+        # (TARGET_IDENT_CENSUS=1; default off = nothing printed). Never raises.
+        if all_done:
+            _dx_ident_census(self, tcin, list(results_snapshot.keys()))
 
     def _finalize_purchase_unsafe(self, tcin: str, state: Dict, final_outcome: str, states: Dict):
         """Finalize a completed purchase (assumes caller has lock)"""

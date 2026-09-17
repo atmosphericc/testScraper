@@ -206,6 +206,43 @@ def test_apps_response_parses_with_production_parser():
           and p['1011960739'].get('availability_status') == 'OUT_OF_STOCK')
 
 
+def test_apps_response_pickup_fields_flag():
+    """2026-09-16 DX-1 (hot-sku plan P7): TARGET_REDSKY_STORE_OPTIONS_LOG=1 adds
+    the store_options pickup view as NEW keys only (apps ATP arrives as floats,
+    e.g. 10.0 -- kept as sent); in_stock / max_qty / status are identical on
+    vs off. Full malformed-input coverage lives in tests/test_dx_logs.py."""
+    import copy
+    import json
+    import os
+    from src.monitoring.stock_monitor import StockMonitor
+    raw = json.loads((ROOT / 'tests' / 'fixtures' / 'redsky_apps_sample.json').read_text(encoding='utf-8'))
+    new = {'pickup_status', 'store_loc_id', 's_atp', 'ship_atp'}
+    prev = os.environ.pop('TARGET_REDSKY_STORE_OPTIONS_LOG', None)
+    try:
+        off = {str(k): v for k, v in StockMonitor()._process_response(copy.deepcopy(raw), 100).items()}
+        os.environ['TARGET_REDSKY_STORE_OPTIONS_LOG'] = '1'
+        on = {str(k): v for k, v in StockMonitor()._process_response(copy.deepcopy(raw), 100).items()}
+    finally:
+        if prev is None:
+            os.environ.pop('TARGET_REDSKY_STORE_OPTIONS_LOG', None)
+        else:
+            os.environ['TARGET_REDSKY_STORE_OPTIONS_LOG'] = prev
+    check("apps_pickup_flag_off_no_new_keys", all(not (new & set(v)) for v in off.values()))
+    check("apps_pickup_flag_on_same_tcins", set(on) == set(off) == {'21516452', '1011960739'})
+    for t in off:
+        check(f"apps_pickup_base_unchanged_{t}",
+              all(on[t][k] == off[t][k] for k in ('in_stock', 'max_qty', 'availability_status',
+                                                   'status_detail', 'is_target_direct')))
+    a, b = on['21516452'], on['1011960739']
+    check("apps_pickup_in_stock_store", a['pickup_status'] == 'IN_STOCK' and a['store_loc_id'] == '865'
+          and a['s_atp'] == 10.0 and isinstance(a['s_atp'], float) and a['ship_atp'] == 10.0)
+    check("apps_pickup_unavailable_store", b['pickup_status'] == 'UNAVAILABLE' and b['s_atp'] == 0.0
+          and b['ship_atp'] == 0.0)
+    check("apps_pickup_merge_after_entry", "result[tcin].update(redsky_pickup_fields(fulfillment, shipping))" in MON_SRC
+          and MON_SRC.index("'max_qty': max_qty\n                }")
+          < MON_SRC.index("result[tcin].update(redsky_pickup_fields(fulfillment, shipping))"))
+
+
 def test_replay_merge_guard_allows_shorter_token_set():
     """Review #2: a 7-token page set replaced by a 6-token banked set is a valid merge."""
     ex, pe = _stub_executor_for_gate()
@@ -327,7 +364,8 @@ def test_compiles():
 if __name__ == '__main__':
     for fn in (test_channel_helper, test_dispatcher_wiring, test_trusted_reader_fixes,
                test_bank_stale_and_refill, test_executor_wiring, test_fast_lane_body_js_really_parses,
-               test_apps_response_parses_with_production_parser, test_replay_merge_guard_allows_shorter_token_set,
+               test_apps_response_parses_with_production_parser, test_apps_response_pickup_fields_flag,
+               test_replay_merge_guard_allows_shorter_token_set,
                test_bank_gate, test_session_manager_wedge_fixes, test_bat_pins, test_compiles):
         try:
             fn()

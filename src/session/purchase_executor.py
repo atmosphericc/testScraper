@@ -180,6 +180,83 @@ def fastlane_qty_guard_on() -> bool:
                ('TARGET_FASTLANE_QTY_GUARD', 'TARGET_WONCART_DIRECT', 'TARGET_HELD_CART_REENTRY'))
 
 
+# ── 2026-09-16 plan P7 (DX-1): diagnostics for the next audit, log-only ──────
+# Every flag defaults OFF; with all of them off the fast-lane JS is byte-identical
+# to 11797839 (golden fixture) and every existing log line is unchanged.
+def fastlane_t_stamps_on() -> bool:
+    """TARGET_FASTLANE_T_STAMPS=1: browser-side Date.now() stamps around the
+    fast-lane ATC fetch (out.atc.t0 / t1), printed as ' atc_t0= atc_rt=' on the
+    chain-done line; also appends ' envoy_ms=' (x-envoy-upstream-service-time)
+    to [ATC_RESP]. All Chromes share the host clock, so arrival order across
+    identities becomes auditable. Default '0'. Kill-switch: =0."""
+    return os.environ.get('TARGET_FASTLANE_T_STAMPS', '0').strip() == '1'
+
+
+def fastlane_log_cart_qty_on() -> bool:
+    """TARGET_FASTLANE_LOG_CART_QTY=1: ' cart_qty=' (our TCIN's quantity in the
+    ATC response's cart_items) on the chain-done line. Default '0'."""
+    return os.environ.get('TARGET_FASTLANE_LOG_CART_QTY', '0').strip() == '1'
+
+
+def fs_ticket_log_on() -> bool:
+    """TARGET_FS_TICKET_LOG=1: [FS_TICKET] per checkout ticket (won-cart loop and
+    the legacy _place_order path) and the interceptor's place-order response
+    stash (_last_checkout_resp) they read. Default '0'. Kill-switch: =0."""
+    return os.environ.get('TARGET_FS_TICKET_LOG', '0').strip() == '1'
+
+
+def _dx_epoch_ms(v):
+    """A browser Date.now() value as int ms, or None (bool / non-finite /
+    non-numeric / implausibly small)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not (v == v) or v in (float('inf'), float('-inf')) or v < 1e12:
+        return None
+    return int(v)
+
+
+def _dx_cart_qty(items, tcin) -> str:
+    """Our TCIN's summed quantity in an ATC cart_items list: '-' when absent,
+    '?' when a quantity is not a finite number. Never raises."""
+    try:
+        if not isinstance(items, list):
+            return '-'
+        total, seen = 0.0, False
+        for it in items:
+            if not isinstance(it, dict) or str(it.get('tcin')) != str(tcin):
+                continue
+            q = it.get('quantity')
+            if isinstance(q, bool) or not isinstance(q, (int, float)) or not (q == q) \
+                    or q in (float('inf'), float('-inf')):
+                return '?'
+            total += q
+            seen = True
+        if not seen:
+            return '-'
+        return str(int(total)) if float(total).is_integer() else str(total)
+    except Exception:
+        return '?'
+
+
+def fl_chain_dx_note(atc, tcin, t_stamps: bool, cart_qty: bool) -> str:
+    """Suffix for the [FAST_LANE] chain-done line: ' atc_t0=<epoch ms>
+    atc_rt=<ms from fetch start to response headers>' (t_stamps) and
+    ' cart_qty=<n>' (cart_qty). '' when both are off. Never raises."""
+    parts = []
+    try:
+        a = atc if isinstance(atc, dict) else {}
+        if t_stamps:
+            t0 = _dx_epoch_ms(a.get('t0'))
+            t1 = _dx_epoch_ms(a.get('t1'))
+            parts.append(f"atc_t0={t0 if t0 is not None else '-'}")
+            parts.append(f"atc_rt={(t1 - t0) if (t0 is not None and t1 is not None) else '-'}")
+        if cart_qty:
+            parts.append(f"cart_qty={_dx_cart_qty(a.get('cart_items'), tcin)}")
+    except Exception:
+        pass
+    return (' ' + ' '.join(parts)) if parts else ''
+
+
 def woncart_cfg(env=None) -> Dict[str, Any]:
     """Pure, clamped knobs for the won-cart loop. Every value is .strip()ed.
 
@@ -675,6 +752,9 @@ class PurchaseExecutor:
         self._woncart_active_until: float = 0.0
         self._held_cart: Optional[Dict[str, Any]] = None
         self._last_checkout_resp: Dict[str, Any] = {}
+        # 2026-09-16 DX-1: per-purchase context of the legacy-path [FS_TICKET]
+        # line (set only under TARGET_FS_TICKET_LOG=1; None = off).
+        self._fs_legacy_ctx: Optional[Dict[str, Any]] = None
         self._fl_stage_key: str = ''
         self._woncart_ticket_seq: int = 0
         self._woncart_refusal_logged: bool = False
@@ -1596,6 +1676,19 @@ class PurchaseExecutor:
                     cf_ray = resp_headers.get('cf-ray', '')
                     print(f"[INTERCEPTOR:{label}] [RESPONSE] {method} {url[:80]} → HTTP {status} (shape-pass={shape_pass}{', cf-ray=' + cf_ray if cf_ray else ''})")
                     if is_checkout_post:
+                        # 2026-09-16 DX-1 (TARGET_FS_TICKET_LOG=1): stash this place-order
+                        # response for the [FS_TICKET] lines. Dict write only (no body
+                        # read, no new CDP pattern — audit #11); never raises.
+                        if fs_ticket_log_on():
+                            try:
+                                self._last_checkout_resp = {
+                                    'ts': time.time(), 'status': status, 'label': label,
+                                    'key': str(resp_headers.get('tgt-cart-error-key') or '')[:80],
+                                    'envoy': str(resp_headers.get('x-envoy-upstream-service-time')
+                                                 or '-').strip()[:12] or '-',
+                                }
+                            except Exception:
+                                pass
                         print(f"[INTERCEPTOR:{label}] [CHECKOUT_RESPONSE] HTTP {status} — {'SUCCESS' if status in (200, 201) else 'REJECTED'}")
                         if status not in (200, 201):
                             error_key = resp_headers.get('tgt-cart-error-key', '')
@@ -1654,6 +1747,11 @@ class PurchaseExecutor:
                                 _atc_resp_msg += (f" | req_bytes={_rb.get('total', '?')} cookie={_rb.get('cookie', '?')} "
                                                   f"shape={_rb.get('shape', '?')} a={_rb.get('a', '?')} "
                                                   f"a0={_rb.get('a0', '?')} replayed={'yes' if _rb.get('replayed') else 'no'}")
+                            if fastlane_t_stamps_on():
+                                # 2026-09-16 DX-1: Target's upstream service time (dict read).
+                                _envoy = str(resp_headers.get('x-envoy-upstream-service-time')
+                                             or '-').strip()[:12] or '-'
+                                _atc_resp_msg += f" envoy_ms={_envoy}"
                         except Exception as _atc_resp_err:
                             self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
@@ -3198,6 +3296,9 @@ class PurchaseExecutor:
         self._po_inflight = False
         self._po_ambiguous = False
         self._woncart_po_unresolved = False
+        # 2026-09-16 DX-1: legacy-path [FS_TICKET] context (log-only).
+        self._fs_legacy_ctx = ({'tcin': str(tcin), 'atc_ts': 0.0, 'n': 0, 'last_ts': 0.0}
+                               if fs_ticket_log_on() else None)
         # MUST reset per purchase: a stale ride deadline would let the manager
         # extend its wait for a purchase that is not holding any cart.
         self._won_cart_ride_until = 0.0
@@ -3703,6 +3804,8 @@ class PurchaseExecutor:
             if atc_status in (200, 201):
                 print(f"[PURCHASE] Fetch ATC succeeded ({atc_status}), skipping cart signal wait")
                 cart_confirmed = True
+                if getattr(self, '_fs_legacy_ctx', None) is not None:
+                    self._fs_legacy_note_atc(atc_result)      # 2026-09-16 DX-1, log-only
             elif atc_status == 429 or 'RATE_LIMITED' in atc_body.upper() or 'DCO_RATE_LIMITED' in atc_body.upper():
                 # Fast-bail. The slow DOM polling / button-click fallback below
                 # exists for Shape token issues (401) and React-hydration races;
@@ -6844,6 +6947,14 @@ class PurchaseExecutor:
                 out.skip = 'cart_qty_over'; return out;
             }}"""
 
+        # 2026-09-16 plan P7 (DX-1, TARGET_FASTLANE_T_STAMPS=1): browser-side
+        # Date.now() immediately before the ATC fetch and right after it
+        # resolves (response headers in). Both strings are '' when the flag is
+        # off, so the evaluated JS stays byte-identical (golden fixture).
+        _t_stamps = fastlane_t_stamps_on()
+        _ts_pre_js = "\n                out.atc.t0 = Date.now();" if _t_stamps else ''
+        _ts_post_js = "\n                out.atc.t1 = Date.now();" if _t_stamps else ''
+
         js = f"""(async () => {{
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{
@@ -6862,12 +6973,12 @@ class PurchaseExecutor:
             }};
 
             // ── 1. Add to cart ────────────────────────────────────────────────
-            try {{
+            try {{{_ts_pre_js}
                 const r = await fetch('{atc_url}', {{
                     method: 'POST', credentials: 'include', {_ref_init}
                     headers: mk('https://www.target.com/p/-/A-{tcin}'),
                     body: JSON.stringify({_atc_body_js})
-                }});
+                }});{_ts_post_js}
                 const t = await r.text();
                 out.atc.status = r.status;
                 out.atc.body = t.slice(0, 500);
@@ -7062,10 +7173,15 @@ class PurchaseExecutor:
         if _cv.get('first') or _cv.get('put', -1) != -1:
             _cv_note = (f" cvv=put:{_cv.get('put')},first:{_cv.get('first')},"
                         f"reshot:{_cv.get('reshot')}")
+        # 2026-09-16 DX-1: ' atc_t0= atc_rt=' / ' cart_qty=' ('' with both flags off).
+        _dx_note = ''
+        _dx_cq = fastlane_log_cart_qty_on()
+        if _t_stamps or _dx_cq:
+            _dx_note = fl_chain_dx_note(_atc, tcin, _t_stamps, _dx_cq)
         print(f"[FAST_LANE] chain done in {res['elapsed']:.2f}s — "
               f"atc={_atc.get('status')} pre={_pre.get('status')} "
               f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_cv_note}"
-              f" ident={self._ident_tag()}")
+              f" ident={self._ident_tag()}{_dx_note}")
         if _pre.get('pi'):
             # One-line intel record: the payment-instruction id + any cvv flag is
             # the prerequisite for moving the CVV challenge onto the API path.
@@ -7318,7 +7434,7 @@ class PurchaseExecutor:
     def _log_fs_ticket(self, L, fl, cls: str, gap_s: float, live, mode: str) -> None:
         """[FS_TICKET] (TARGET_FS_TICKET_LOG=1, default off): one line per
         won-cart ticket for the next drop's P(admit | gap class) readout."""
-        if os.environ.get('TARGET_FS_TICKET_LOG', '0').strip() != '1':
+        if not fs_ticket_log_on():
             return
         pre = fl.get('pre') or {}
         po = fl.get('po') or {}
@@ -7331,12 +7447,93 @@ class PurchaseExecutor:
         now = time.time()
         win_age = f"{now - ws:.0f}s" if ws else '-'
         since_201 = int((now - float(L.get('first_201_ts') or now)) * 1000)
-        _envoy = (getattr(self, '_last_checkout_resp', None) or {}).get('envoy', '-')
+        # 2026-09-16 DX-1: envoy only from a stash that belongs to THIS
+        # place-order (same status, written after it was fired).
+        _envoy = '-'
+        if fired:
+            _t0 = _dx_epoch_ms(po.get('t0'))
+            try:
+                _js_s = float(fl.get('js_ms') or 15000) / 1000.0
+            except (TypeError, ValueError):
+                _js_s = 15.0
+            # Browser Date.now() vs this process's clock: allow 0.25 s.
+            _since = (_t0 / 1000.0) if _t0 is not None else (now - _js_s)
+            _st = self._checkout_stash_for(po.get('status'), _since, slack=0.25)
+            if _st:
+                _envoy = _st.get('envoy', '-')
         print(f"[FS_TICKET] ident={self._ident_tag()} tcin={L.get('tcin')} "
               f"cart_id={(L.get('cart_id') or '-')[:12]} n={L.get('tickets')} cls={cls} "
               f"gap_s={gap_s:.1f} ms_since_201={since_201} live={live} win_age={win_age} "
               f"layer={'po' if fired else 'pre'} mode={mode} status={status} key={key} "
               f"envoy_ms={_envoy} js_ms={fl.get('js_ms', '-')}")
+
+    def _checkout_stash_for(self, status, since_ts: float, slack: float = 0.05):
+        """The interceptor's last place-order response stash (DX-1) when it
+        plausibly belongs to a POST fired at `since_ts` that got `status`:
+        same status and written no earlier than since_ts - slack. Legacy
+        re-shoots are >= 2.5 s apart and tickets >= 5 s, so an older POST's
+        stash never qualifies. Else None. Never raises."""
+        try:
+            st = getattr(self, '_last_checkout_resp', None)
+            if not isinstance(st, dict) or not st:
+                return None
+            if isinstance(status, bool) or int(st.get('status')) != int(status):
+                return None
+            if float(st.get('ts') or 0.0) < float(since_ts) - float(slack):
+                return None
+            return st
+        except Exception:
+            return None
+
+    def _fs_legacy_note_atc(self, atc) -> None:
+        """Remember when this purchase's ATC got its 2xx (legacy [FS_TICKET]
+        ms_since_201): the browser stamp out.atc.t1 when TARGET_FASTLANE_T_STAMPS
+        put one there (and it is within the last minute), else now. Never raises."""
+        try:
+            ctx = getattr(self, '_fs_legacy_ctx', None)
+            if not isinstance(ctx, dict):
+                return
+            now = time.time()
+            t1 = _dx_epoch_ms((atc or {}).get('t1')) if isinstance(atc, dict) else None
+            ts = (t1 / 1000.0) if (t1 is not None and 0.0 <= now - t1 / 1000.0 <= 60.0) else now
+            ctx['atc_ts'] = ts
+        except Exception:
+            pass
+
+    def _log_fs_ticket_legacy(self, api_result, cls: str, t_fire: float) -> None:
+        """[FS_TICKET] for one legacy _place_order place-order POST
+        (TARGET_FS_TICKET_LOG=1): same fields as the won-cart loop's line with
+        layer=po mode=legacy; gap_s is measured from the previous legacy POST
+        of this purchase (the ATC 2xx for the first one); key/envoy come from
+        the interceptor stash only when it matches this POST. Never raises."""
+        ctx = getattr(self, '_fs_legacy_ctx', None)
+        if not isinstance(ctx, dict) or not fs_ticket_log_on():
+            return
+        try:
+            now = time.time()
+            t_fire = float(t_fire)
+            ctx['n'] = int(ctx.get('n', 0) or 0) + 1
+            atc_ts = float(ctx.get('atc_ts') or 0.0)
+            prev = float(ctx.get('last_ts') or 0.0) or atc_ts
+            ctx['last_ts'] = t_fire
+            gap = f"{t_fire - prev:.1f}" if prev else '-'
+            since_201 = int((t_fire - atc_ts) * 1000) if atc_ts else '-'
+            r = api_result if isinstance(api_result, dict) else {}
+            status = r.get('status', 0)
+            st = self._checkout_stash_for(status, t_fire)
+            key = (st.get('key') or '-') if st else '-'
+            envoy = st.get('envoy', '-') if st else '-'
+            tcin = ctx.get('tcin') or '-'
+            snap = self._stock_state(tcin)
+            ws = float(snap.get('window_start') or 0.0) if isinstance(snap, dict) else 0.0
+            win_age = f"{now - ws:.0f}s" if ws else '-'
+            print(f"[FS_TICKET] ident={self._ident_tag()} tcin={tcin} cart_id=- "
+                  f"n={ctx['n']} cls={cls} gap_s={gap} ms_since_201={since_201} "
+                  f"live={snap.get('live') if isinstance(snap, dict) else None} win_age={win_age} "
+                  f"layer=po mode=legacy status={status} key={key} envoy_ms={envoy} "
+                  f"js_ms={int((now - t_fire) * 1000)}")
+        except Exception:
+            pass
 
     async def _won_cart_ticket_loop(self, tab, tcin, qty, fl0, start_time: float,
                                     entry: str = 'first'):
@@ -8242,7 +8439,9 @@ class PurchaseExecutor:
             # shot feeding the limiter (and don't clear the cart either) — sit it
             # out here with the cart intact, then fire into the reopened window.
             await self._hold_cart_for_fast_selling('pre-shot')
+            _dx_t = time.time()
             api_result = await self._api_place_order(tab)
+            self._log_fs_ticket_legacy(api_result, 'legacy_first', _dx_t)   # DX-1, log-only
             if api_result.get('success'):
                 self._api_order_id = api_result.get('order_id')
                 self._api_confirmation_url = api_result.get('confirmation_url')
@@ -8375,7 +8574,9 @@ class PurchaseExecutor:
                         if 'checkout' not in (tab.url or '').lower():
                             print(f"[PAYMENT] in-place re-shoot: off checkout (url={tab.url}) — stopping")
                             break
+                    _dx_t = time.time()
                     api_result = await self._api_place_order(tab)
+                    self._log_fs_ticket_legacy(api_result, 'legacy_reshoot', _dx_t)   # DX-1
                     if api_result.get('success'):
                         self._api_order_id = api_result.get('order_id')
                         self._api_confirmation_url = api_result.get('confirmation_url')

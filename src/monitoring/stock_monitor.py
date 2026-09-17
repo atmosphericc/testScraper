@@ -15,6 +15,48 @@ from datetime import datetime
 from pathlib import Path
 import logging
 
+
+def _finite_number(v):
+    """int/float ATP value as-is (RedSky sends floats such as 10.0), else None
+    (bool, NaN, inf, strings, missing)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        return None
+    return v
+
+
+def redsky_pickup_fields(fulfillment, shipping=None) -> dict:
+    """2026-09-16 hot-sku plan P7 (DX-1): pickup-side view of one RedSky
+    product_summary, read defensively from fulfillment.store_options[0].
+
+    Returns exactly four NEW keys (never touches in_stock / atp_qty /
+    qty_candidates / max_qty):
+      pickup_status  order_pickup.availability_status of store_options[0] ('' = none)
+      store_loc_id   store_options[0].location_id ('' = none). Store 865 is the
+                     sweep's store, not an account's store.
+      s_atp          store_options[0].location_available_to_promise_quantity
+                     (int or float kept as sent; None = absent/invalid)
+      ship_atp       shipping_options.available_to_promise_quantity (same rules)
+    Raises only on a pathological input object; the caller wraps it."""
+    f = fulfillment if isinstance(fulfillment, dict) else {}
+    sh = shipping if isinstance(shipping, dict) else f.get('shipping_options')
+    sh = sh if isinstance(sh, dict) else {}
+    out = {'pickup_status': '', 'store_loc_id': '', 's_atp': None,
+           'ship_atp': _finite_number(sh.get('available_to_promise_quantity'))}
+    so = f.get('store_options')
+    s0 = so[0] if isinstance(so, list) and so and isinstance(so[0], dict) else None
+    if s0 is not None:
+        op = s0.get('order_pickup')
+        if isinstance(op, dict):
+            out['pickup_status'] = str(op.get('availability_status') or '').strip()[:40]
+        loc = s0.get('location_id')
+        if isinstance(loc, (str, int)) and not isinstance(loc, bool):
+            out['store_loc_id'] = str(loc).strip()[:16]
+        out['s_atp'] = _finite_number(s0.get('location_available_to_promise_quantity'))
+    return out
+
+
 class StockMonitor:
     def __init__(self):
         self.api_endpoint = 'https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1'
@@ -457,6 +499,9 @@ class StockMonitor:
 
         result = {}
         product_summaries = data['data']['product_summaries']
+        # 2026-09-16 hot-sku plan P7 (DX-1): read once per response; see
+        # redsky_pickup_fields(). Default '0' = the result dicts are unchanged.
+        _store_opts_log = os.environ.get('TARGET_REDSKY_STORE_OPTIONS_LOG', '0').strip() == '1'
 
         for product_summary in product_summaries:
             try:
@@ -551,6 +596,14 @@ class StockMonitor:
                     'response_time_ms': response_time,
                     'max_qty': max_qty
                 }
+                # 2026-09-16 DX-1 (TARGET_REDSKY_STORE_OPTIONS_LOG=1): pickup-side
+                # fields for the next audit. Own try AFTER the entry exists, new
+                # keys only — it can never drop a TCIN or change in_stock/max_qty.
+                if _store_opts_log:
+                    try:
+                        result[tcin].update(redsky_pickup_fields(fulfillment, shipping))
+                    except Exception:
+                        pass
 
             except Exception as e:
                 print(f"[STOCK] Error processing product {tcin}: {e}")

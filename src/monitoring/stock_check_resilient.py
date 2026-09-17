@@ -149,6 +149,40 @@ def note_stock_read(s, fresh_in, now: float, hyst_s: float) -> None:
         pass
 
 
+# ── 2026-09-16 hot-sku plan P7 (DX-1): RedSky pickup fields, log-only ─────────
+def store_options_log_on() -> bool:
+    """TARGET_REDSKY_STORE_OPTIONS_LOG=1: StockMonitor._process_response adds
+    pickup_status / store_loc_id / s_atp / ship_atp to each TCIN; the sweep
+    ingest copies pickup_status into TcinStatus.pickup, logs a
+    [STOCK PICKUP] line when it changes, and [STOCK WATCH] gains ' pickup='.
+    Default '0' = no new keys, no new text. Kill-switch: =0."""
+    return os.environ.get('TARGET_REDSKY_STORE_OPTIONS_LOG', '0').strip() == '1'
+
+
+def stock_watch_pickup_suffix(s) -> str:
+    """' pickup=<status>' for the [STOCK WATCH] line ('' with the flag off)."""
+    if not store_options_log_on():
+        return ''
+    try:
+        return f" pickup={getattr(s, 'pickup', '') or '-'}"
+    except Exception:
+        return ''
+
+
+def pickup_change_line(tcin, old, info) -> str:
+    """[STOCK PICKUP] line for a pickup_status change (pure; never raises).
+    A TCIN whose SHIPPING never reads in stock has no [STOCK WATCH] line, so
+    this transition line is the only place its pickup state is recorded."""
+    try:
+        i = info if isinstance(info, dict) else {}
+        return (f"[STOCK PICKUP] {tcin}: pickup {old or '-'} -> {i.get('pickup_status') or '-'} "
+                f"store={i.get('store_loc_id') or '-'} s_atp={i.get('s_atp')} "
+                f"ship={i.get('availability_status', '-')} ship_atp={i.get('ship_atp')} "
+                f"in_stock={bool(i.get('in_stock'))}")
+    except Exception:
+        return f"[STOCK PICKUP] {tcin}: pickup changed"
+
+
 class ResilientStockChecker:
     """
     Async stock-check engine. Start with .start(), stop with .stop().
@@ -619,6 +653,7 @@ class ResilientStockChecker:
         parsed = self._parse_bulk(result.raw)
 
         in_stock_transitions = []
+        _pickup_changes = []      # 2026-09-16 DX-1; stays empty with the flag off
         now = time.time()
         _hyst = stock_hyst_s()
         async with self._status_lock:
@@ -637,10 +672,23 @@ class ResilientStockChecker:
                 s.title = info.get("title", s.title)
                 s.max_qty = int(info.get("max_qty", s.max_qty or 1))
                 s.consecutive_non_200 = 0
+                # 2026-09-16 DX-1: 'pickup_status' exists only under
+                # TARGET_REDSKY_STORE_OPTIONS_LOG=1 (log-only, never raises).
+                if 'pickup_status' in info:
+                    try:
+                        _pk = str(info.get('pickup_status') or '')[:40]
+                        if _pk != (s.pickup or ''):
+                            _pickup_changes.append((tcin, s.pickup, info))
+                        s.pickup = _pk
+                    except Exception:
+                        pass
                 if s.in_stock:
                     self._ever_seen_in_stock.add(tcin)
                 if s.in_stock and not was_in_stock:
                     in_stock_transitions.append(s)
+
+        for _tc, _old, _info in _pickup_changes:
+            logger.info(pickup_change_line(_tc, _old, _info))
 
         for s in in_stock_transitions:
             if self.on_in_stock:
@@ -840,7 +888,8 @@ class ResilientStockChecker:
                 age = (now - s.last_checked_at) if s.last_checked_at else -1.0
                 logger.info(f"[STOCK WATCH] {s.tcin}: in_stock={s.in_stock} "
                             f"avail={s.availability_status} "
-                            f"last_clean_read={age:.0f}s ago")
+                            f"last_clean_read={age:.0f}s ago"
+                            + stock_watch_pickup_suffix(s))      # 2026-09-16 DX-1 ('' when off)
 
     # ───────── diagnostic probes (ground-truth CAN fire; canary read-only) ─────────
     # Three independent views of stock get logged so a later log review can
