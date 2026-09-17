@@ -31,6 +31,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -976,6 +977,233 @@ def test_ac_latch_save_replace_retry():
     finally:
         os.replace = real_replace
     check("aclatch_tmp_name_per_call", len(seen) == 2 and seen[0] != seen[1], seen)
+
+
+# ───── 9. R3 review (2026-09-17, cart safety): skip strand + latch durability ─────
+
+class _PoolRA:
+    """Pool whose ready list can differ from its worker list (a relaunching
+    worker is not ready)."""
+
+    def __init__(self, ready, all_):
+        self.ready, self._a = list(ready), list(all_)
+
+    def ready_workers(self):
+        return list(self.ready)
+
+    @property
+    def primary(self):
+        return self._a[0]
+
+    @property
+    def workers(self):
+        return list(self._a)
+
+
+class _BareW:
+    def __init__(self, wid, acct):
+        self.cfg = _Cfg(wid, acct)
+        self.session_manager = None
+        self.purchase_executor = None
+
+    def label(self):
+        return f"W{self.cfg.worker_id}/{self.cfg.account_id}"
+
+
+def _rearm_builder():
+    """app.py's pure StockMonitorThread._build_level_rearm_map, extracted
+    without importing app.py."""
+    import ast
+    import textwrap
+    from datetime import datetime
+    src = (ROOT / "app.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_level_rearm_map":
+            ns = {"datetime": datetime}
+            exec(textwrap.dedent(ast.get_source_segment(src, node)), ns)
+            return ns["_build_level_rearm_map"]
+    raise AssertionError("_build_level_rearm_map not found in app.py")
+
+
+def _strand_mgr(ready, all_):
+    m = bare_mgr()
+    m._state_lock = threading.RLock()
+    m._states = {}
+    m._load_states_unsafe = lambda: {k: dict(v) for k, v in m._states.items()}
+
+    def _save(states):
+        m._states = {k: dict(v) for k, v in states.items()}
+        return True
+    m._save_states_unsafe = _save
+    m._active_purchases = {}
+    m._warmup_cycle_counter = 5
+    m._maybe_run_session_sentinel = lambda: None
+    m.dispatched = []
+    m.start_purchase = lambda tcin, title, max_qty=1: (m.dispatched.append(tcin)
+                                                       or {"success": False, "reason": "stub"})
+    m.worker_pool = _PoolRA(ready, all_)
+    return m
+
+
+def _stock_event(m, stock):
+    """What app.py's _handle_stock_update does with one event: the stock-aware
+    reset, then process_stock_data (cwd = repo root for the config read)."""
+    old = os.getcwd()
+    os.chdir(ROOT)
+    try:
+        quiet(m.reset_completed_purchases_by_stock_status, stock)
+        _, out = quiet(m.process_stock_data, stock)
+    finally:
+        os.chdir(old)
+    return out
+
+
+def test_r3_dispatch_skip_keeps_tcin_rearmable():
+    """R1-PARK-DISPATCH-STRANDS-LIVE-TCIN: a TCIN skipped because every ready
+    identity sits out (primary AC-1 latched, alt-1 parked, business relaunching)
+    stays visible to the level re-arm, and is raced once someone is free."""
+    build = _rearm_builder()
+    primary, business, alt1 = _BareW(1, "primary"), _BareW(2, "business"), _BareW(3, "alt-1")
+    stock = {HOT_TCIN: {"in_stock": True, "max_qty": 1, "title": "Tin"}}
+
+    def snap():
+        return {HOT_TCIN: types.SimpleNamespace(in_stock=True, last_checked_at=time.time(), title="Tin",
+                                                availability_status="IN_STOCK")}
+
+    base_env = dict(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST="0",
+                    TARGET_WARMUP_CYCLE_SKIP_ON_STOCK="1", TARGET_HOME_SHARE_GUARD=None,
+                    TARGET_IDENTITY_REST=None, TARGET_REARM_AFTER_EMERGENCY_RESET=None)
+    with env(**base_env), park(f"alt-1:{HOT}"):
+        m = _strand_mgr([primary, alt1], [primary, business, alt1])
+        m._states = {HOT_TCIN: {"status": "failed", "completed_at": time.time() - 20,
+                                "failure_reason": "execution_timeout"}}
+        m._ac_latch[("W1/primary", HOT_TCIN)] = time.time()
+        check("r3k_rearm_publishes_failed", HOT_TCIN in build(snap(), m.get_all_states(), time.time()))
+        out = _stock_event(m, stock)
+        st = m._states.get(HOT_TCIN, {})
+        check("r3k_skip_no_dispatch", m.dispatched == [] and "[DISPATCH_SKIP] 1010892069" in out
+              and st.get("status") == "ready", (m.dispatched, st, out[-300:]))
+        check("r3k_skip_stamps_hint", isinstance(st.get("rearm_hint_ts"), float)
+              and time.time() - st["rearm_hint_ts"] < 5, st)
+        check("r3k_skipped_tcin_still_rearmed", HOT_TCIN in build(snap(), m.get_all_states(), time.time()),
+              m.get_all_states())
+        # A second skipped tick re-stamps (the 90 s TTL stays fresh while everyone sits out).
+        m._states[HOT_TCIN]["rearm_hint_ts"] = time.time() - 80.0
+        _stock_event(m, stock)
+        check("r3k_restamped", time.time() - m._states[HOT_TCIN]["rearm_hint_ts"] < 5, m._states[HOT_TCIN])
+        # business is back: the next re-arm event dispatches the live TCIN.
+        m.worker_pool.ready = [primary, business, alt1]
+        rearm = build(snap(), m.get_all_states(), time.time())
+        _stock_event(m, rearm)
+        check("r3k_dispatched_when_free", m.dispatched == [HOT_TCIN], m.dispatched)
+        # Only business / primary latched and alt-1 parked for 31 min: the latch
+        # expires and the TCIN is raced without any OOS->IS edge.
+        m = _strand_mgr([primary, alt1], [primary, business, alt1])
+        m._states = {HOT_TCIN: {"status": "ready"}}
+        m._ac_latch[("W1/primary", HOT_TCIN)] = time.time()
+        _stock_event(m, stock)
+        check("r3k_skip_again", m.dispatched == [] and m._states[HOT_TCIN].get("rearm_hint_ts"))
+        m._ac_latch[("W1/primary", HOT_TCIN)] = time.time() - 1900.0
+        rearm = build(snap(), m.get_all_states(), time.time())
+        _stock_event(m, rearm)
+        check("r3k_dispatched_after_latch_expiry", HOT_TCIN in rearm and m.dispatched == [HOT_TCIN],
+              (rearm, m.dispatched))
+        # Kill-switch: no stamp (the pre-R3 behaviour).
+        with env(TARGET_REARM_AFTER_EMERGENCY_RESET="0"):
+            m = _strand_mgr([primary, alt1], [primary, business, alt1])
+            m._states = {HOT_TCIN: {"status": "ready"}}
+            m._ac_latch[("W1/primary", HOT_TCIN)] = time.time()
+            _stock_event(m, stock)
+            check("r3k_killswitch_no_hint", "rearm_hint_ts" not in m._states[HOT_TCIN], m._states)
+        # A regular SKU (nobody sits out) is dispatched and never stamped.
+        m = _strand_mgr([primary, alt1], [primary, business, alt1])
+        m._states = {REG_TCIN: {"status": "ready"}}
+        m._ac_latch[("W1/primary", HOT_TCIN)] = time.time()
+        _stock_event(m, {REG_TCIN: {"in_stock": True, "max_qty": 1, "title": "Reg"}})
+        check("r3k_regular_dispatched", m.dispatched == [REG_TCIN]
+              and "rearm_hint_ts" not in m._states.get(REG_TCIN, {}), m._states)
+    # Unit: never raises, never touches a non-ready row.
+    m = _strand_mgr([], [])
+    states = {HOT_TCIN: {"status": "attempting"}}
+    m._stamp_dispatch_skip_rearm_hint(states, HOT_TCIN)
+    check("r3k_unit_attempting_untouched", states == {HOT_TCIN: {"status": "attempting"}}, states)
+    m._save_states_unsafe = lambda s: (_ for _ in ()).throw(RuntimeError("disk"))
+    m._stamp_dispatch_skip_rearm_hint({}, HOT_TCIN)
+    check("r3k_unit_never_raises", True)
+
+
+def test_r3_ac_latch_fsync_before_replace():
+    """AC1-LATCH-FILE-NOT-DURABLE: the temp file is fsynced before the rename."""
+    d = tempfile.mkdtemp(dir=_TMP)
+    path = os.path.join(d, "latch.json")
+    events = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd):
+        events.append("fsync")
+        return real_fsync(fd)
+
+    def spy_replace(a, b):
+        events.append("replace")
+        return real_replace(a, b)
+
+    os.fsync, os.replace = spy_fsync, spy_replace
+    try:
+        ok, out = quiet(bpm_mod._ac_latch_save, path, {("W1/primary", HOT_TCIN): 9_000.0}, 10_000.0, 1800.0)
+    finally:
+        os.fsync, os.replace = real_fsync, real_replace
+    check("r3l_fsync_then_replace", ok is True and events == ["fsync", "replace"], (ok, events, out))
+    check("r3l_content_ok", bpm_mod._ac_latch_load(path, 10_000.0, 1800.0) == {("W1/primary", HOT_TCIN): 9_000.0})
+
+    def bad_fsync(fd):
+        raise OSError(5, "fsync not supported")
+
+    os.fsync = bad_fsync
+    try:
+        ok, out = quiet(bpm_mod._ac_latch_save, path, {("W2/business", HOT_TCIN): 9_100.0}, 10_000.0, 1800.0)
+    finally:
+        os.fsync = real_fsync
+    check("r3l_fsync_oserror_still_saves", ok is True
+          and bpm_mod._ac_latch_load(path, 10_000.0, 1800.0) == {("W2/business", HOT_TCIN): 9_100.0}, (ok, out))
+
+
+def test_r3_ac_latch_unreadable_is_loud():
+    """AC1-LATCH-FILE-NOT-DURABLE: a latch file that exists but cannot be read
+    is reported (console + error_log) instead of silently restoring nothing."""
+    for label, content in (("garbled", b"{not json"), ("zeros", b"\x00" * 64), ("empty", b""),
+                           ("not_utf8", b"\xff\xfe\x00{"), ("list", b"[1, 2]"),
+                           ("latches_not_dict", b'{"latches": []}')):
+        d = tempfile.mkdtemp(dir=_TMP)
+        path = os.path.join(d, "latch.json")
+        with open(path, "wb") as f:
+            f.write(content)
+        m = bare_mgr()
+        with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=None,
+                 TARGET_AMBIGUOUS_COMMIT_LATCH_FILE=path):
+            n, out = quiet(m._ac_restore_latches)
+        try:
+            with open(m._ac_error_log_path, encoding="utf-8") as f:
+                elog = f.read()
+        except FileNotFoundError:
+            elog = ""
+        check(f"r3l_unreadable_loud[{label}]", n == 0 and "[AMBIGUOUS_COMMIT] latch file unreadable" in out
+              and "check order history" in out and "latch file unreadable" in elog, (n, out, elog))
+        info = {}
+        check(f"r3l_load_info[{label}]", bpm_mod._ac_latch_load(path, 10_000.0, 1800.0, info=info) == {}
+              and info.get("unreadable"), info)
+    for label, content in (("missing", None), ("no_latches", b'{"written_at": 1}'),
+                           ("expired", b'{"latches": {"W1/primary|1010892069": 1.0}}')):
+        d = tempfile.mkdtemp(dir=_TMP)
+        path = os.path.join(d, "latch.json")
+        if content is not None:
+            with open(path, "wb") as f:
+                f.write(content)
+        m = bare_mgr()
+        with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=None,
+                 TARGET_AMBIGUOUS_COMMIT_LATCH_FILE=path):
+            n, out = quiet(m._ac_restore_latches)
+        check(f"r3l_readable_silent[{label}]", n == 0 and "unreadable" not in out
+              and not os.path.exists(m._ac_error_log_path), (n, out))
 
 
 def main():

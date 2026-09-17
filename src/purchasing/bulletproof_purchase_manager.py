@@ -101,17 +101,21 @@ def _ac_latch_file() -> str:
     return (os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH_FILE', '') or '').strip() or _AC_LATCH_FILE_DEFAULT
 
 
-def _ac_latch_load(path, now: float, ttl: float) -> Dict[tuple, float]:
+def _ac_latch_load(path, now: float, ttl: float, info=None) -> Dict[tuple, float]:
     """Unexpired {(ident, tcin): ts} from the latch file; {} when the file is
-    missing or unreadable. Never raises."""
+    missing or unreadable. R3 review (AC1-LATCH-FILE-NOT-DURABLE): a file that
+    exists but cannot be parsed sets info['unreadable'] (when a dict is
+    passed) so the caller can say so. Never raises."""
     out: Dict[tuple, float] = {}
     try:
         if not path or not os.path.exists(path):
             return out
         with open(path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
-        items = raw.get('latches', {}) if isinstance(raw, dict) else {}
+        items = raw.get('latches', {}) if isinstance(raw, dict) else None
         if not isinstance(items, dict):
+            if isinstance(info, dict):
+                info['unreadable'] = 'bad_shape'
             return out
         for k, ts in items.items():
             ident, sep, tcin = str(k).rpartition('|')
@@ -123,7 +127,12 @@ def _ac_latch_load(path, now: float, ttl: float) -> Dict[tuple, float]:
             if not (ts == ts) or ts > now + 60.0 or ts + ttl <= now:
                 continue
             out[(ident, tcin)] = ts
-    except Exception:
+    except Exception as e:
+        if isinstance(info, dict):
+            try:
+                info['unreadable'] = type(e).__name__
+            except Exception:
+                pass
         return {}
     return out
 
@@ -156,6 +165,14 @@ def _ac_latch_save(path, latches, now: float, ttl: float) -> bool:
             tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{os.urandom(3).hex()}"
             with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(data, f)
+                # R3 review (AC1-LATCH-FILE-NOT-DURABLE): force the bytes to disk
+                # BEFORE the rename. Without it a hard freeze (Kernel-Power 41)
+                # could leave the renamed file empty and no latch restored.
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
             for _try in range(_AC_REPLACE_TRIES):
                 try:
                     os.replace(tmp, path)
@@ -2994,7 +3011,24 @@ class BulletproofPurchaseManager:
             self._ac_latch_path = _ac_latch_file()
             _now = time.time()
             _ttl = _ac_latch_ttl_s()
-            _restored = _ac_latch_load(self._ac_latch_path, _now, _ttl)
+            _info: Dict[str, str] = {}
+            _restored = _ac_latch_load(self._ac_latch_path, _now, _ttl, info=_info)
+            if _info.get('unreadable'):
+                # R3 review (AC1-LATCH-FILE-NOT-DURABLE): never lose a latch
+                # silently — the operator must check order history.
+                _umsg = (f"[AMBIGUOUS_COMMIT] latch file unreadable ({_info['unreadable']}: "
+                         f"{self._ac_latch_path}) — any latch from the previous process is LOST; "
+                         f"check order history")
+                print(_umsg)
+                try:
+                    _p = getattr(self, '_ac_error_log_path', 'logs/error_log.txt')
+                    _d = os.path.dirname(_p)
+                    if _d:
+                        os.makedirs(_d, exist_ok=True)
+                    with open(_p, 'a', encoding='utf-8') as _f:
+                        _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {_umsg}\n")
+                except Exception:
+                    pass
             if not _restored:
                 return 0
             d, lk = self._ac_state()
@@ -3176,6 +3210,31 @@ class BulletproofPurchaseManager:
             return True
         except Exception:
             return False
+
+    def _stamp_dispatch_skip_rearm_hint(self, states, tcin) -> None:
+        """R3 review (R1-PARK-DISPATCH-STRANDS-LIVE-TCIN): a TCIN skipped by the
+        pre-dispatch sit-out check stays a bare 'ready' row, which the level
+        re-arm never re-publishes (it takes 'failed' rows or 'ready' rows with a
+        fresh rearm_hint_ts), and the resilient checker publishes only OOS->IS
+        edges. A TCIN that stays in stock was then never raced again, even after
+        the latch expired or a relaunching worker came back. Stamp the same
+        breadcrumb the emergency reset uses, on every skipped event, so the
+        re-arm keeps offering it until someone can race it; a real dispatch
+        overwrites the row. Only reachable with a sit-out flag armed (AC-1,
+        park, HS-1, ID-1). Kill-switch: TARGET_REARM_AFTER_EMERGENCY_RESET=0.
+        Caller holds _state_lock. Never raises."""
+        try:
+            if os.environ.get('TARGET_REARM_AFTER_EMERGENCY_RESET', '1') == '0':
+                return
+            cur = dict(states.get(tcin) or {'status': 'ready'})
+            if cur.get('status', 'ready') != 'ready':
+                return
+            cur['status'] = 'ready'
+            cur['rearm_hint_ts'] = time.time()
+            states[tcin] = cur
+            self._save_states_unsafe(states)
+        except Exception:
+            pass
 
     def _record_race_result(self, tcin: str, result: Dict, race_agg: Dict, worker_label: Optional[str]):
         """Merge one racing worker's result into the shared aggregate and write
@@ -3719,6 +3778,7 @@ class BulletproofPurchaseManager:
                         # is latched on a possibly-committed order — do not open an
                         # empty race (each thread would only sit out).
                         if self._all_dispatch_candidates_latched(tcin):
+                            self._stamp_dispatch_skip_rearm_hint(states, tcin)
                             continue
 
                         # Start new purchase attempt.

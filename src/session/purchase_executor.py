@@ -76,6 +76,32 @@ def ambiguous_commit_latch_on() -> bool:
     return os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH', '0').strip() == '1'
 
 
+def po_status_unresolved(status, ticket: bool = False) -> bool:
+    """R3 review (WC-5XX-NOT-AMBIGUOUS): True when a RECEIVED place-order
+    status does not prove that no order was created: 408 or 5xx (a gateway
+    502/504 can come back after the checkout backend committed). Such a status
+    gets the no-response DOUBLE-BUY GUARD (terminal, ambiguous_commit, no
+    retry, no DOM click). A won-cart ticket (WC-1, which refuses to arm
+    without AC-1): always. The fast lane and the legacy API place-order: only
+    with TARGET_AMBIGUOUS_COMMIT_LATCH=1, and TARGET_PO_5XX_AMBIGUOUS=0 turns
+    that part off. AC-1 off = exact prior behaviour. Never raises."""
+    try:
+        if isinstance(status, bool):
+            return False
+        s = int(status)
+    except (TypeError, ValueError):
+        return False
+    if not (s == 408 or 500 <= s <= 599):
+        return False
+    if ticket:
+        return True
+    try:
+        return (ambiguous_commit_latch_on()
+                and os.environ.get('TARGET_PO_5XX_AMBIGUOUS', '1').strip() != '0')
+    except Exception:
+        return False
+
+
 # ── 2026-09-16 hot-sku 0916 plan P1 (WC-1): won-cart direct checkout loop ────
 # 09-11 and 09-16 each produced exactly ONE cart; each got one provably
 # in-stock checkout ticket after a ~26.5 s nav/DOM detour and then 45 s holds.
@@ -85,6 +111,9 @@ def ambiguous_commit_latch_on() -> bool:
 # keeps the proven 45 s place-order-only shape. Every flag defaults OFF.
 
 _FS_KEY = 'FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION'
+# How long one of our own adds (a harvest add whose fail_request failed, or an
+# ATC evaluate that timed out) may still land in the cart (R1-QTY-1 / R3).
+_WONCART_LATE_ADD_WINDOW_S = 300.0
 # Substrings the manager's retry loop treats as "item gone" (BPM retry loop
 # _terminal_tokens) and error-text signatures that make it restart the browser.
 # No reason/error string produced by the loop may contain any of them.
@@ -569,6 +598,15 @@ def woncart_reason_safe(reason: str) -> str:
     return r
 
 
+def _del_ok(r) -> bool:
+    """R3 review: the ok half of a _delete_cart_items (ok, n) result; False
+    for anything else. Never raises."""
+    try:
+        return bool(r[0]) if isinstance(r, (tuple, list)) and r else False
+    except Exception:
+        return False
+
+
 _SAFE_ID_RE = re.compile(r'^[A-Za-z0-9-]{8,64}$')
 
 
@@ -1005,6 +1043,12 @@ class PurchaseExecutor:
         self._woncart_trim_at_exit: bool = False
         self._orphan_atc_ts: float = 0.0
         self._woncart_suspect_cleared_ts: float = 0.0
+        # R3 review (WC-DIRTY-CART-LEGACY-CHECKOUT): {'tcin', 'why', 'ts'} when a
+        # won-cart loop exit may have left its line in the cart with no held
+        # marker (terminal, a skipped/failed delete, a cancelled loop). The next
+        # purchase deletes that line before any ATC (see _woncart_dirty_release).
+        # Only the flag-gated loop sets it.
+        self._woncart_dirty: Optional[Dict[str, Any]] = None
         # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a rolling per-account
         # limiter on the checkout POST, and the 07-21 log is unambiguous about how
         # it behaves: it never once appeared on the FIRST shot of a wave, and once
@@ -1587,19 +1631,25 @@ class PurchaseExecutor:
         ticket buys the whole cart without reading it, so the loop falls back
         to pre_po (strict gate) while any of these holds:
           - 'harvest_add': a harvest click's fail_request failed (its cheap
-            add may have landed) after the last pre_po ticket of this loop;
+            add may have landed) and no cart check has run since the add
+            could still be pending. R3 review (R2-SUSPECT-READ-TOCTOU): a check
+            (cart read or pre_po gate) clears it only when it ran at least
+            _WONCART_LATE_ADD_WINDOW_S after the flag; before that every
+            po_only ticket re-checks, since the add can land after any one
+            check;
           - 'orphan_atc': an ATC evaluate of ours timed out (FL-1 abort at
             stage 'atc' or the legacy 8 s ATC timeout) within the last 300 s;
             the pending add can still land and stack our line.
         Never raises."""
         try:
             now = time.time()
+            hts = float(getattr(self, '_harvest_landed_suspect_ts', 0.0) or 0.0)
             if (getattr(self, '_harvest_landed_suspect', False)
-                    and float(getattr(self, '_harvest_landed_suspect_ts', 0.0) or 0.0)
-                    >= float(getattr(self, '_woncart_suspect_cleared_ts', 0.0) or 0.0)):
+                    and float(getattr(self, '_woncart_suspect_cleared_ts', 0.0) or 0.0)
+                    < hts + _WONCART_LATE_ADD_WINDOW_S):
                 return 'harvest_add'
             ots = float(getattr(self, '_orphan_atc_ts', 0.0) or 0.0)
-            if ots > 0 and 0.0 <= now - ots < 300.0:
+            if ots > 0 and 0.0 <= now - ots < _WONCART_LATE_ADD_WINDOW_S:
                 return 'orphan_atc'
         except Exception:
             return ''
@@ -4208,6 +4258,16 @@ class PurchaseExecutor:
             # the held one is live, otherwise release it (bounded delete) before
             # a normal shot — the legacy path would buy the whole cart.
             # Kill-switch: TARGET_HELD_CART_REENTRY=0 (no marker is ever set).
+            # R3 review (WC-DIRTY-CART-LEGACY-CHECKOUT): first delete a line an
+            # earlier won-cart loop may have left behind with no marker; the
+            # legacy path (taken while the FAST_SELLING cooldown runs) would buy
+            # it with this purchase. Only the flag-gated loop sets the flag.
+            if getattr(self, '_woncart_dirty', None) is not None:
+                _dirty_res = await self._woncart_dirty_release(tab, tcin, start_time)
+                if _dirty_res is not None:
+                    if isinstance(_dirty_res, dict):
+                        _dirty_res['woncart_entry'] = 'held'   # no ATC fired (DX-1 skips it)
+                    return _dirty_res
             if held_cart_reentry_on() and getattr(self, '_held_cart', None) is not None:
                 _held_res = await self._held_cart_entry(tab, tcin, quantity, start_time)
                 if _held_res is not None:
@@ -7361,22 +7421,30 @@ class PurchaseExecutor:
         """
         po = fl.get('po') or {}
         status = po.get('status', 0)
+        # R3 review (WC-5XX-NOT-AMBIGUOUS): a received 408/5xx is unresolved too.
+        _po_5xx = bool(po.get('fired')) and po_status_unresolved(status, ticket=ticket)
 
-        if po.get('fired') and status == 0:
+        if po.get('fired') and (status == 0 or _po_5xx):
             # ── DOUBLE-BUY GUARD ──────────────────────────────────────────────
             # The place-order POST left the browser but no response came back, so
             # it MAY have committed server-side. Target's checkout API has no
             # idempotency key. Never retry — bail terminal, exactly like the
             # _api_place_order no-response guard. A missed buy is free; a
             # double-charge is not.
-            print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got NO response "
-                  f"(skip={fl.get('skip')}) — POST may have committed. "
-                  f"Bailing terminal, NOT retrying.")
+            if _po_5xx:
+                print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got HTTP {status} "
+                      f"(skip={fl.get('skip')}) — a gateway error does not prove the order "
+                      f"failed; POST may have committed. Bailing terminal, NOT retrying.")
+            else:
+                print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got NO response "
+                      f"(skip={fl.get('skip')}) — POST may have committed. "
+                      f"Bailing terminal, NOT retrying.")
             self._po_ambiguous = True       # 2026-09-16 AC-1
             _term = {
                 'success': False, 'tcin': tcin,
                 'reason': 'checkout_navigation_failed',
-                'error': 'fast-lane place-order got no response',
+                'error': ('fast-lane place-order got a server/gateway error (unresolved)' if _po_5xx
+                          else 'fast-lane place-order got no response'),
                 'execution_time': time.time() - start_time,
             }
             if ambiguous_commit_latch_on():
@@ -8067,7 +8135,8 @@ class PurchaseExecutor:
             pst = int(po.get('status') or 0)
         except (TypeError, ValueError):
             pst = 0
-        if fired and pst == 0:
+        if fired and (pst == 0 or po_status_unresolved(pst, ticket=True)):
+            # R3 review (WC-5XX-NOT-AMBIGUOUS): a received 408/5xx is unresolved too.
             self._po_ambiguous = True              # _woncart_po_unresolved stays True
         else:
             self._woncart_po_unresolved = False
@@ -8389,8 +8458,15 @@ class PurchaseExecutor:
                             # read, not the FS-limited pre_checkout) and keep the
                             # 08-04 po_only shape when it shows exactly our TCIN
                             # at qty 1..Q; anything else (read failure included)
-                            # goes through the strict gate. The check-then-post
-                            # gap is the same as pre_po's.
+                            # goes through the strict gate. R3 review
+                            # (R2-SUSPECT-READ-TOCTOU): the read and the
+                            # place-order are two evaluates, so the gap is
+                            # WIDER than pre_po's (where the gate and firePo
+                            # share one JS chain) by two CDP round trips. An add
+                            # landing inside it is bought. That is why the
+                            # suspect stays set and every po_only ticket re-reads
+                            # the cart until the late-add window has passed
+                            # (_woncart_cart_suspect).
                             _rq, _rdesc, _t_rd = None, 'read off', time.time()
                             if cfg.get('suspect_read', True):
                                 _rd = await self._cart_items_read(tab)
@@ -8554,6 +8630,24 @@ class PurchaseExecutor:
             self._woncart_active_until = 0.0
             try:
                 now = time.time()
+                # R3 review (WC-DIRTY-CART-LEGACY-CHECKOUT): the cooldown below
+                # makes the next purchase skip the fast lane (and its cart
+                # gate), and the legacy checkout buys the WHOLE cart. An exit
+                # that may leave our line behind with no held marker (terminal,
+                # a skipped/failed delete, a cancelled loop) flags it; the next
+                # purchase deletes that line before any ATC.
+                _h_now = getattr(self, '_held_cart', None)
+                _marker_kept = isinstance(_h_now, dict) and str(_h_now.get('tcin') or '') == T
+                if (verdict != 'placed' and not st.get('holding') and not _marker_kept
+                        and (verdict == 'terminal' or result is None or st.get('dirty'))):
+                    self._woncart_dirty = {
+                        'tcin': T, 'ts': now,
+                        'why': woncart_reason_safe(st.get('reason')
+                                                   or ('cancelled' if result is None else 'unknown')),
+                    }
+                    print(f"[WON_CART_DIRECT] our line may still be in the cart "
+                          f"(exit={self._woncart_dirty['why']}, verdict={verdict}) — the next "
+                          f"purchase deletes it before any ATC ident={self._ident_tag()}")
                 if L is not None and L.get('fs_seen_ts') and cfg['fs_cooldown_s'] > 0:
                     # Quiet rule for the NEXT fresh race on this identity.
                     self._fast_selling_until = max(
@@ -8607,12 +8701,17 @@ class PurchaseExecutor:
             _ok, _n = ((await self._delete_cart_items(tab, only_tcin=T, budget_s=budget))
                        if budget >= 1.0 else (False, 0))
             self._woncart_drop_marker(L)
+            if not _ok:
+                st['dirty'] = True          # R3 (WC-DIRTY-CART): the next purchase deletes it
             res = dict(base, reason='cart_qty_cleared' if _ok else 'cart_qty_stuck',
                        error='won-cart loop: stacked line ' + ('deleted' if _ok else 'not deleted'))
         elif reason == 'cart_ticket_cap':
+            _ok = False
             if budget >= 1.0:
-                await self._delete_cart_items(tab, only_tcin=T, budget_s=budget)
+                _ok = _del_ok(await self._delete_cart_items(tab, only_tcin=T, budget_s=budget))
             self._woncart_drop_marker(L)
+            if not _ok:
+                st['dirty'] = True          # R3 (WC-DIRTY-CART): the next purchase deletes it
             res = dict(base, reason='won_cart_retired',
                        error='won-cart loop: per-cart ticket cap reached, cart released')
         elif held_on and L is not None:
@@ -8621,11 +8720,14 @@ class PurchaseExecutor:
             res = dict(base, reason='won_cart_held',
                        error=f'won-cart loop ended ({woncart_reason_safe(reason)}); cart held for re-entry')
         else:
+            _ok = False
             if dl - now - 5.0 >= 15.0:
-                await self._delete_cart_items(tab, budget_s=15.0)
+                _ok = _del_ok(await self._delete_cart_items(tab, budget_s=15.0))
             else:
                 print(f"[WON_CART_DIRECT] not clearing the cart ({dl - now:.0f}s left before "
                       f"the deadline) ident={self._ident_tag()}")
+            if not _ok:
+                st['dirty'] = True          # R3 (WC-DIRTY-CART): the next purchase deletes it
             self._woncart_drop_marker(L)
             res = dict(base, reason='checkout_busy_retryable',
                        error=f'won-cart loop ended ({woncart_reason_safe(reason)})')
@@ -8662,11 +8764,92 @@ class PurchaseExecutor:
         ok, n = True, 0                       # no TCIN on the marker = nothing to delete
         if HT:
             ok, n = await self._delete_cart_items(tab, only_tcin=HT, budget_s=15.0)
+            if not ok and await self._cart_line_gone(tab, HT, why):
+                ok = True                     # R3 (CS-R1-TICK-DISPATCH-DOUBLE-DELETE)
         if getattr(self, '_held_cart', None) is h:
             self._held_cart = None
         print(f"[HELD_CART] released ({why}) {self._held_desc(h) if isinstance(h, dict) else ''} "
               f"delete_ok={ok} lines={n} ident={self._ident_tag()}")
         return bool(ok)
+
+    async def _cart_line_gone(self, tab, HT: str, why: str = '') -> bool:
+        """R3 review (CS-R1-TICK-DISPATCH-DOUBLE-DELETE): after a failed delete
+        of HT's line(s), one bounded cart read. True only when the read
+        succeeded and shows no line of HT (another path, e.g. the background
+        retire on warmup tab 0, deleted it first and this DELETE got a 404).
+        Never raises (CancelledError excepted)."""
+        try:
+            r = await self._cart_items_read(tab)
+            if not isinstance(r, dict) or r.get('ok') is not True:
+                return False
+            items = r.get('items') if isinstance(r.get('items'), list) else None
+            if items is None:
+                return False
+            if any(str((it or {}).get('tcin') or '') == str(HT) for it in items
+                   if isinstance(it, dict)):
+                return False
+            if any(not isinstance(it, dict) for it in items):
+                return False
+            print(f"[HELD_CART] delete of {HT} failed ({why or '-'}) but a cart read shows no "
+                  f"{HT} line ({len(items)} other line(s)) — already deleted, continuing "
+                  f"ident={self._ident_tag()}")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    async def _woncart_dirty_release(self, tab, tcin, start_time: float):
+        """R3 review (WC-DIRTY-CART-LEGACY-CHECKOUT): delete (bounded, only that
+        TCIN's lines) the line a won-cart loop exit may have left in the cart
+        with no held marker, before this purchase fires anything. None =
+        continue with the normal shot; a result dict = nothing fired this
+        dispatch (the line could not be deleted; the flag is kept and the next
+        dispatch retries). After TARGET_HELD_CART_TTL_S the flag is dropped
+        anyway (this dispatch still skips): by then the FAST_SELLING cooldown is
+        long over, so the fast lane's cart gate (foreign item / qty over)
+        guards the next shot. Never raises (CancelledError excepted)."""
+        T = str(tcin)
+        d = getattr(self, '_woncart_dirty', None)
+        if not isinstance(d, dict):
+            self._woncart_dirty = None
+            return None
+        DT = str(d.get('tcin') or '')
+        try:
+            ok, n = True, 0
+            if DT:
+                ok, n = await self._delete_cart_items(tab, only_tcin=DT, budget_s=15.0)
+                if not ok and await self._cart_line_gone(tab, DT, 'dirty_release'):
+                    ok = True
+            try:
+                age = time.time() - float(d.get('ts') or 0.0)
+            except (TypeError, ValueError):
+                age = float('inf')
+            if ok:
+                if getattr(self, '_woncart_dirty', None) is d:
+                    self._woncart_dirty = None
+                print(f"[WON_CART_DIRECT] released the line an earlier loop left behind "
+                      f"(tcin={DT or '-'} exit={d.get('why')} age={age:.0f}s) lines={n} "
+                      f"— continuing with the shot on {T} ident={self._ident_tag()}")
+                return None
+            give_up = age > held_cart_ttl_s()
+            if give_up and getattr(self, '_woncart_dirty', None) is d:
+                self._woncart_dirty = None
+            print(f"[WON_CART_DIRECT] could NOT delete the line an earlier loop left behind "
+                  f"(tcin={DT or '-'} exit={d.get('why')} age={age:.0f}s) — nothing fired on {T}"
+                  + (" (flag dropped after the TTL; the fast-lane cart gate applies next)"
+                     if give_up else "; the next dispatch retries")
+                  + f" ident={self._ident_tag()}")
+            return self._held_skip(T, 'held_cart_release_failed',
+                                   'cart line left by an earlier won-cart loop could not be deleted',
+                                   start_time)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[WON_CART_DIRECT] dirty-cart release errored ({type(e).__name__}: {e}) — "
+                  f"nothing fired, flag kept ident={self._ident_tag()}")
+            return self._held_skip(T, 'held_cart_error',
+                                   f'dirty-cart release errored: {type(e).__name__}', start_time)
 
     async def _held_cart_expire_tick(self) -> str:
         """R1 review (R1-ARM-4): retire an expired WC-3 marker (older than
@@ -8881,6 +9064,11 @@ class PurchaseExecutor:
             if getattr(self, '_held_cart', None) is not None:
                 print(f"{tag} skipped — a held-cart marker already exists")
                 return 'marker_exists'
+            if getattr(self, '_woncart_dirty', None) is not None:
+                # R3 review (WC-DIRTY-CART): a loop already ran here and left a
+                # line the next dispatch deletes; never adopt it as held.
+                print(f"{tag} skipped — a won-cart line is pending release ident={self._ident_tag()}")
+                return 'dirty_pending'
             async with self._warmup_pool_lock:
                 wt = await self._ensure_warmup_tab(0)
                 if wt is None:
@@ -8891,7 +9079,8 @@ class PurchaseExecutor:
                 print(f"{tag} cart read failed (status={r.get('status')} err={r.get('error', '-')}) "
                       f"— no action ident={self._ident_tag()}")
                 return 'read_failed'
-            if self._boot_audit_busy() or getattr(self, '_held_cart', None) is not None:
+            if (self._boot_audit_busy() or getattr(self, '_held_cart', None) is not None
+                    or getattr(self, '_woncart_dirty', None) is not None):
                 print(f"{tag} a purchase took the cart during the read — no action")
                 return 'busy'
             items = r.get('items') or []
@@ -9473,10 +9662,16 @@ class PurchaseExecutor:
             # retry; a *no-response* is NOT provable and must bail terminal
             # (→ checkout_navigation_failed, non-retryable). A missed buy is free;
             # a double-charge is not. Rollback: TARGET_DOM_FALLBACK_ON_NO_RESPONSE=1.
-            if api_result.get('status', 0) == 0 \
+            # R3 review (WC-5XX-NOT-AMBIGUOUS): with AC-1 armed a received
+            # 408/5xx is unresolved too (po_status_unresolved; kill-switch
+            # TARGET_PO_5XX_AMBIGUOUS=0). AC-1 off = the status-0 rule only.
+            _legacy_po_5xx = po_status_unresolved(api_result.get('status', 0))
+            if (api_result.get('status', 0) == 0 or _legacy_po_5xx) \
                     and os.environ.get('TARGET_DOM_FALLBACK_ON_NO_RESPONSE', '0') != '1':
-                print(f"[PAYMENT] [DOUBLE-BUY GUARD] place-order got NO response "
-                      f"(reason={api_result.get('reason')}) — POST may have committed; "
+                print(f"[PAYMENT] [DOUBLE-BUY GUARD] place-order got "
+                      + (f"HTTP {api_result.get('status')} (a gateway error does not prove the "
+                         f"order failed) " if _legacy_po_5xx else "NO response ")
+                      + f"(reason={api_result.get('reason')}) — POST may have committed; "
                       f"NOT clicking DOM Place Order. Bailing terminal.")
                 # 2026-09-16 AC-1: the caller's diagnosis must not call this
                 # retryable (stale 429 key / busy copy); the result is tagged.

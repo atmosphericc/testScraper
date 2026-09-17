@@ -72,7 +72,7 @@ reviews; `logs/analysis_2026_09_16/`, plan `wf2/plan_final.md`):
   - business and alt-1 relaunched Chrome in the same second at 37-45 min.
   - A race state without `started_at` was force-completed with elapsed = the Unix epoch.
   - `TARGET_HARVEST_SKIP` did not disable replay (49 x 8 s bank-gate waits).
-**Fix Applied** (stages S1-S8 plus review rounds R1 `7756ab8c` and R2, local commits `50a5727c` .. R2,
+**Fix Applied** (stages S1-S8 plus review rounds R1 `7756ab8c`, R2 `ae7af4f0` and R3, local commits `50a5727c` .. R3,
 NOT pushed; every change is flag-gated with the old behaviour as the code default, armed in the CRLF
 bat; plain-language summary, kill-switches and user decisions in `docs/HOT_SKU_FIX_2026_09_16.md`):
 - AC-1 ambiguous-commit latch; INF-2 `started_at` stamp.
@@ -112,6 +112,19 @@ bat; plain-language summary, kill-switches and user decisions in `docs/HOT_SKU_F
   - `[FS_TICKET] ms_since_201` is measured from the browser's add-to-cart stamp (`-` when there is
     none);
   - a test now covers the FL-1 orphan stamp; the bat REMs and this entry were corrected.
+- Review round R3 (cart and order safety, 7 findings):
+  - a won-cart ticket that gets HTTP 408/5xx is treated like a place-order with no answer
+    (terminal, AC-1 latch). With AC-1 on, the same applies to the first fast-lane shot and the
+    legacy place-order (`TARGET_PO_5XX_AMBIGUOUS=1`, `=0` turns that part off);
+  - a loop exit that may leave our line in the cart with no held marker flags it, and the next
+    purchase deletes that line before any add-to-cart (the FAST_SELLING cooldown path buys the
+    whole cart);
+  - an R1 regression is fixed: a TCIN that every ready account sits out keeps a level re-arm
+    breadcrumb and is raced once an account is free, instead of staying idle while in stock;
+  - a harvest-add suspicion re-reads the cart before every place-order-only ticket for 300 s;
+  - the latch file is fsynced before the rename, and an unreadable file is reported;
+  - a held-line delete that loses to the background retire (404) is confirmed by a read;
+  - any Chrome relaunch clears the relaunch de-sync stamp.
 - Offline suite 24/24 (24 files).
 **Confidence**: high on the diagnosis of our own losses (detour, one ticket per window, hygiene,
 latent double-buy paths); medium on the gate model (limiter precedence, first-arrival effect);

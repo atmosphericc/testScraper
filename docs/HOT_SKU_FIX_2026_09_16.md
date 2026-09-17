@@ -79,7 +79,7 @@ Each fix is off in code and turned on by the bat. **To undo one, set the kill-sw
 
 | Stage / commit | Flag (bat value) | What it does | Kill-switch |
 |---|---|---|---|
-| S1 `50a5727c` AC-1 | `TARGET_AMBIGUOUS_COMMIT_LATCH=1`, `_S=1800`, `_PERSIST=1` (R1) | A place-order POST that got **no answer** (or a manager timeout) locks that account off that TCIN for 30 min, so no retry can place a second order. Since R1 the lock is also kept in `state/ambiguous_commit_latch.json` and restored after a crash and relaunch (boot line `restored N latch(es)`). Logs `[AMBIGUOUS_COMMIT]`. **If you see one, check order history.** | `=0` (the won-cart loop then stays off); `_PERSIST=0` keeps the lock in memory only |
+| S1 `50a5727c` AC-1 | `TARGET_AMBIGUOUS_COMMIT_LATCH=1`, `_S=1800`, `_PERSIST=1` (R1), `TARGET_PO_5XX_AMBIGUOUS=1` (R3) | A place-order POST that got **no answer**, or (since R3) an HTTP 408/5xx answer (or a manager timeout), locks that account off that TCIN for 30 min, so no retry can place a second order. Since R1 the lock is also kept in `state/ambiguous_commit_latch.json` and restored after a crash and relaunch (boot line `restored N latch(es)`). Logs `[AMBIGUOUS_COMMIT]`. **If you see one, check order history.** | `=0` (the won-cart loop then stays off); `_PERSIST=0` keeps the lock in memory only; `TARGET_PO_5XX_AMBIGUOUS=0` stops treating 408/5xx as unanswered on the first fast-lane shot and the legacy place-order (won-cart tickets always do) |
 | S1 INF-2 | `TARGET_RACE_STATE_STARTED_AT_GUARD=1` | Stamps a missing `started_at` instead of force-completing with the epoch. | `=0` |
 | S2b `41f33de4` WC-1 | `TARGET_WONCART_DIRECT=1`, `TARGET_STOCK_PROBE=1`, `TARGET_STOCK_HYST_S=20`, `TARGET_WONCART_SCHEDULE_S=5,15`, `_STEADY_GAP_S=45`, `_OOS_TAIL_TICKETS=1`, `_MAX_TICKETS=14`, `_CALL_MAX_S=120`, `_HEADROOM_S=45`, `_YIELD_FLEET=1` | **Won-cart direct checkout loop** (details below the table). Logs `[WON_CART_DIRECT]`. | `TARGET_WONCART_DIRECT=0` (exact old path). No early probes: `TARGET_WONCART_SCHEDULE_S=0`. |
 | S2c `26836837` WC-3 | `TARGET_HELD_CART_REENTRY=1`, `TARGET_HELD_CART_TTL_S=900` | **Held-cart re-entry and boot cart audit** (details below the table). Logs `[HELD_CART]`, `[BOOT_CART_AUDIT]`. | `=0` |
@@ -256,3 +256,34 @@ A second review confirmed 7 minor findings, fixed in one local commit (`hot-sku(
   - The HV-1 kill-switch now names `TARGET_HARVEST_MISS_PROBE=0` (a park time of 0 still parks for 30 s).
   - The bat's PULSE note no longer says ID-1 is unbuilt.
   - `docs/FAILURES.md` lists R1 and R2, and states that the S6 guards are built but not armed.
+
+## 9. Review round R3 (2026-09-17, cart and order safety)
+
+A third review checked R1 and R2 for cart and order safety. It confirmed 7 findings: 3 major, 4 minor. All are fixed in one local commit (`hot-sku(0916) stage R3: cart-safety review fixes`). Each fix has an offline test, and each test was checked to fail when its fix is reverted.
+
+- **A place-order that gets HTTP 5xx or 408 back no longer counts as "no order" (major).** A gateway 504 can arrive after Target has already placed the order.
+  - Before: a won-cart ticket that got a 5xx ended without the AC-1 latch. A later re-race could then add the item again and place a second order.
+  - Now: a won-cart ticket is handled like a POST that got no answer: it ends at once, the account is latched and nothing is retried.
+  - With AC-1 on, the same applies to the first fast-lane shot and to the legacy place-order (no DOM click).
+  - Log: `[DOUBLE-BUY GUARD] place-order got HTTP 5xx`.
+  - Kill-switch for the fast-lane and legacy part: `TARGET_PO_5XX_AMBIGUOUS=0`.
+  - No 5xx on a place-order appears in any log so far.
+- **A line the loop left in the cart is deleted before the next purchase (major).** Some loop exits leave our line in the cart with no held marker:
+  - a place-order with no answer;
+  - a delete that failed or had no time left;
+  - a loop cancelled by the purchase timeout.
+
+  Before: the 45 s FAST_SELLING cooldown sent the next purchase down the legacy path, which buys the whole cart, leftover line included.
+  Now: those exits set a flag, and the next purchase on that account deletes that line before it fires anything (log `released the line an earlier loop left behind`). If the delete fails, nothing fires and the next dispatch retries. After 15 min the flag is dropped; by then the fast lane's own cart check applies again. The boot audit never adopts such a line.
+- **An account that sits out a live TCIN no longer strands it (major, an R1 regression).**
+  - R1 made alt-1's park count as a sit-out. When every ready account then sat out (for example, primary latched while business was relaunching), the TCIN was left as a plain "ready" row. The level re-arm skips those, so a TCIN that stayed in stock was never raced again.
+  - Now the skip leaves the same re-arm breadcrumb as the emergency reset, so the TCIN is raced as soon as an account is free.
+  - Kill-switch: `TARGET_REARM_AFTER_EMERGENCY_RESET=0`.
+- **Place-order-only after a possible late harvest add (minor).**
+  - Before: one clean cart read cleared the suspicion for good, so an add that landed after that read was bought by a later place-order-only attempt.
+  - Now: for 5 min after the flag, every place-order-only attempt re-reads the cart first. The code comment that called the read-then-post gap "the same as pre_po's" was wrong and is corrected; the gap is two browser round trips wider.
+- **Latch file durability (minor).** The latch file is now forced to disk before it replaces the old one, so a hard freeze cannot leave an empty file. A latch file that exists but cannot be read is now reported (`[AMBIGUOUS_COMMIT] latch file unreadable ... check order history`, also written to `error_log`) instead of being ignored silently.
+- **Two deletes of the same expired held line (minor).** When the background retire and a dispatch both delete the line, the loser's 404 used to skip that account's shot. A failed delete is now followed by one cart read, and "the line is already gone" counts as success.
+- **Relaunch de-sync stamp (minor).** A Chrome relaunched by any path now clears the one-tick deferral stamp, so the next due relaunch checks its peers again.
+
+**Not done:** R2-SUSPECT asked for the cart check to run inside the place-order JS chain. Only the re-read part was built; the in-chain version would change the ticket JS. The latch file gets no `.bak` copy, because forcing it to disk fixes the cause.

@@ -496,6 +496,64 @@ def test_desync_bat_pin():
     assert val == "120" and _smmod._chrome_relaunch_desync_s(val) == 120.0, val
 
 
+def test_initialize_clears_desync_stamp():
+    """R3 review (R1-DESYNC-STAMP-NOT-CLEARED): a Chrome launched by ANY path
+    (restart rung, wedge restart, dead-websocket refresh) starts a new relaunch
+    cycle, so initialize() clears the one-tick deferral stamp; before, a stale
+    stamp made the next due relaunch skip the peer check."""
+    import types
+    with tempfile.TemporaryDirectory() as d:
+        sm = _mk_sm(Path(d), proxy_url="http://127.0.0.1:23002", account_id="business")
+        sm._age_relaunch_deferred_at = time.time() - 30.0     # deferred earlier this cycle
+        sm._browser_launched_at = time.time() - 1900.0
+        sm._initialization_attempts = sm._max_init_attempts  # no retry
+        sm._genuine_wedge_at = 0.0
+        import logging
+        _quiet = logging.getLogger("r3_desync_stamp_test")
+        _quiet.addHandler(logging.NullHandler())
+        _quiet.propagate = False
+        sm.logger = _quiet
+
+        async def _noop():
+            return None
+        sm._safe_cleanup = _noop
+
+        class _Stop(Exception):
+            pass
+
+        class _Browser:
+            _process_pid = None
+
+            @property
+            def tabs(self):
+                raise _Stop("stop right after the launch")
+
+            async def stop(self):
+                return None
+
+        launched = []
+
+        async def _start(cfg):
+            launched.append(cfg)
+            return _Browser()
+
+        saved = _smmod.uc
+        _smmod.uc = types.SimpleNamespace(Config=lambda **kw: types.SimpleNamespace(**kw), start=_start)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                ok = asyncio.run(sm.initialize())
+        finally:
+            _smmod.uc = saved
+        assert ok is False and len(launched) == 1, (ok, launched)
+        assert time.time() - sm._browser_launched_at < 5.0, sm._browser_launched_at
+        assert sm._age_relaunch_deferred_at == 0.0, sm._age_relaunch_deferred_at
+    src = (ROOT / "src" / "session" / "session_manager.py").read_text(encoding="utf-8").replace("\r\n", "\n")
+    i = src.find("            self._browser_launched_at = time.time()\n")
+    j = src.find("self._age_relaunch_deferred_at = 0.0", i)
+    assert i > 0 and 0 < j - i < 600, (i, j)
+
+
 if __name__ == "__main__":
     check("test_proxied_overage_chrome_relaunches", test_proxied_overage_chrome_relaunches)
     check("test_home_ip_chrome_never_proactively_relaunches", test_home_ip_chrome_never_proactively_relaunches)
@@ -517,6 +575,7 @@ if __name__ == "__main__":
           test_desync_deferral_plus_skipped_tick_stays_under_wedge_floor)
     check("test_desync_parse_and_pure_rule", test_desync_parse_and_pure_rule)
     check("test_desync_bat_pin", test_desync_bat_pin)
+    check("test_initialize_clears_desync_stamp", test_initialize_clears_desync_stamp)
     print()
     if FAIL:
         print(f"{len(PASS)}/{len(PASS) + len(FAIL)} passed — {len(FAIL)} FAILED")

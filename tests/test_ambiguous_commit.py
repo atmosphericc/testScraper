@@ -680,6 +680,32 @@ def test_pre_dispatch_all_latched():
     check("predispatch_expired_starts", m.started == [TCIN], m.started)
 
 
+def test_r3_legacy_5xx_unresolved():
+    """R3 review (WC-5XX-NOT-AMBIGUOUS): with AC-1 armed, a received 408/5xx on
+    the legacy API place-order (first shot or an in-place re-shoot) is treated
+    like no response: no DOM click, _po_ambiguous set. AC-1 off or the
+    kill-switch = the prior behaviour."""
+    for st in (500, 502, 503, 504, 408):
+        with flag(True):
+            ex, ok = _place_order_with([{"success": False, "status": st, "reason": f"http_{st}", "body": ""}])
+        check(f"r3_legacy_5xx_ambiguous[{st}]", ok is False and ex._po_ambiguous is True, (ok, ex._po_ambiguous))
+    with flag(True):
+        ex, ok = _place_order_with([
+            {"success": False, "status": 429, "reason": "http_429", "body": ""},
+            {"success": False, "status": 502, "reason": "http_502", "body": ""},
+        ], reject_status=429)
+    check("r3_legacy_reshoot_5xx_ambiguous", ok is False and ex._po_ambiguous is True)
+    with flag(False):
+        ex, ok = _place_order_with([{"success": False, "status": 504, "reason": "http_504", "body": ""}])
+    check("r3_legacy_5xx_flag_off_unchanged", ex._po_ambiguous is False)
+    with flag(True), env(TARGET_PO_5XX_AMBIGUOUS="0"):
+        ex, ok = _place_order_with([{"success": False, "status": 504, "reason": "http_504", "body": ""}])
+    check("r3_legacy_5xx_killswitch", ex._po_ambiguous is False)
+    with flag(True):
+        ex, ok = _place_order_with([{"success": False, "status": 409, "reason": "http_409", "body": ""}])
+    check("r3_legacy_409_not_ambiguous", ex._po_ambiguous is False)
+
+
 def main():
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

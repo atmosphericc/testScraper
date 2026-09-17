@@ -493,6 +493,11 @@ class SessionManager:
             # relaunch a proxied Chrome before the ~68-min CDP wedge window.
             self._browser_launched_at = time.time()
             self._genuine_wedge_at = 0.0   # fresh browser — clear any stale wedge flag
+            # R3 review (R1-DESYNC-STAMP-NOT-CLEARED): a deferral belongs to the
+            # launch it was taken for. A relaunch by any other path (restart
+            # rung, wedge restart, dead-websocket refresh) starts a new cycle,
+            # which must get its own peer check.
+            self._age_relaunch_deferred_at = 0.0
 
             # Store Chrome PID globally so shutdown can kill the whole process tree
             global _chrome_pid

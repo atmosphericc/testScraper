@@ -1360,11 +1360,14 @@ def test_c_loop_exits():
     (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_CALL_MAX_S="280")
     check("e_po401_streak", r.get("won_cart_exit") == "po_401_streak" and len(tab.tickets) == 4
           and [m for _, m, _ in tab.tickets][1] == "pre_po", f"{r} {[m for _, m, _ in tab.tickets]}")
+    # R3: a received 5xx is unresolved (test_r3_po_5xx_unresolved); another
+    # definitive rejection still breaks with its status.
     c = Clock()
     ex = bare(c)
-    tab = TicketTab(ex, [t_prepo(500, "{}")], c)
+    tab = TicketTab(ex, [t_prepo(409, "{}")], c)
     (v, r), _ = loop_run(ex, tab, c, FL_PRE429)
-    check("e_po_other_breaks", r.get("won_cart_exit") == "po_500", r)
+    check("e_po_other_breaks", r.get("won_cart_exit") == "po_409" and v == "done"
+          and not r.get("ambiguous_commit"), r)
     # 400 with MISSING_CREDIT_CARD_CVV -> continue (latched); other keyed 400 -> break.
     c = Clock()
     ex = bare(c)
@@ -1961,7 +1964,9 @@ def test_f_held_cart_reentry():
         check(f"f_other_released[{live}]", ex.deletes == [{"only": OTHER, "keep": None, "budget": 15.0}]
               and ex._held_cart is None and ex.fl_calls == [2] and "[HELD_CART] released" in run.last_out,
               f"{r} {ex.deletes}")
-    ex, tab = held_impl(c, mk_held(tcin=OTHER), probes={OTHER: False})
+    # R3: the failed delete is confirmed by a read that still shows the line.
+    ex, tab = held_impl(c, mk_held(tcin=OTHER), probes={OTHER: False},
+                        read={"ok": True, "status": 200, "items": [{"id": "CI-9", "tcin": OTHER, "qty": 2}]})
     ex.delete_result = (False, 0)
     r = run_impl(ex, HELD)
     check("f_other_release_failed", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == []
@@ -2643,7 +2648,10 @@ def test_r1_po_only_suspect_fallback():
     tab = TicketTab(ex, [t_prepo(429, FS_BODY), t_po(429, FS_BODY), t_po(429, FS_BODY)], c)
     (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
     modes = [m for _, m, _ in tab.tickets]
-    check("r1q_harvest_suspect_forces_one_pre_po", modes == ["pre_po", "po_only", "po_only"]
+    # R3 (R2-SUSPECT-READ-TOCTOU): inside the 300 s late-add window a pre_po
+    # gate no longer clears the suspicion; the (empty) cart read keeps every
+    # ticket on the strict gate.
+    check("r1q_harvest_suspect_forces_pre_po_in_window", modes == ["pre_po", "pre_po", "pre_po"]
           and "late add of ours (harvest_add)" in run.last_out, modes)
     # A new harvest suspicion mid-loop re-arms the fallback once.
     c = Clock()
@@ -2667,7 +2675,7 @@ def test_r1_po_only_suspect_fallback():
     tab = _FlagTab(ex, steps, c)
     loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
     modes = [m for _, m, _ in tab.tickets]
-    check("r1q_mid_loop_suspect", modes == ["po_only", "pre_po", "po_only"], modes)
+    check("r1q_mid_loop_suspect", modes == ["po_only", "pre_po", "pre_po"], modes)
     # An orphaned ATC (FL-1 atc abort / legacy 8 s timeout) within 300 s: pre_po only.
     for age, want in ((10.0, ["pre_po", "pre_po"]), (301.0, ["po_only", "po_only"])):
         c = Clock()
@@ -2794,25 +2802,35 @@ def test_r2_po_only_suspect_read():
     loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2")
     check("r2q_no_suspect_no_read", [m for _, m, _ in tab.tickets] == ["po_only"] * 2 and not tab.read_ts,
           (tab.tickets, tab.read_ts))
-    # A harvest suspicion cleared by an exact read: one read, then plain po_only.
+    # R3 (R2-SUSPECT-READ-TOCTOU): a fresh harvest suspicion is re-read before
+    # EVERY po_only ticket (the add may land after any one read)...
     c = Clock()
     ex = _r2_suspect_ex(c, orphan_age=301.0)
     ex._harvest_landed_suspect = True
     ex._harvest_landed_suspect_ts = c.t
     tab = ReadTab(ex, [t_po(429, FS_BODY)] * 3, c, [R2_EXACT])
     loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
-    check("r2q_harvest_suspect_one_read", [m for _, m, _ in tab.tickets] == ["po_only"] * 3
+    check("r2q_harvest_suspect_read_every_ticket", [m for _, m, _ in tab.tickets] == ["po_only"] * 3
+          and len(tab.read_ts) == 3, (tab.tickets, tab.read_ts, ex._woncart_suspect_cleared_ts))
+    # ...and one read after the late-add window clears it: then plain po_only.
+    c = Clock()
+    ex = _r2_suspect_ex(c, orphan_age=301.0)
+    ex._harvest_landed_suspect = True
+    ex._harvest_landed_suspect_ts = c.t - 400.0
+    tab = ReadTab(ex, [t_po(429, FS_BODY)] * 3, c, [R2_EXACT])
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    check("r2q_harvest_suspect_one_read_after_window", [m for _, m, _ in tab.tickets] == ["po_only"] * 3
           and len(tab.read_ts) == 1 and ex._woncart_suspect_cleared_ts == tab.read_ts[0],
           (tab.tickets, tab.read_ts, ex._woncart_suspect_cleared_ts))
-    # ...a failed read leaves the harvest suspicion to the strict gate.
+    # ...a failed read leaves the harvest suspicion to the strict gate (every ticket in the window).
     c = Clock()
     ex = _r2_suspect_ex(c, orphan_age=301.0)
     ex._harvest_landed_suspect = True
     ex._harvest_landed_suspect_ts = c.t
     tab = ReadTab(ex, [t_prepo(429, FS_BODY), t_po(429, FS_BODY)], c, [{"ok": False, "status": 503, "items": []}])
     loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2")
-    check("r2q_harvest_failed_read_pre_po_once", [m for _, m, _ in tab.tickets] == ["pre_po", "po_only"]
-          and len(tab.read_ts) == 1, (tab.tickets, tab.read_ts))
+    check("r2q_harvest_failed_read_pre_po_in_window", [m for _, m, _ in tab.tickets] == ["pre_po", "pre_po"]
+          and len(tab.read_ts) == 2, (tab.tickets, tab.read_ts))
     # Pure helper.
     ex_ = pe_mod.woncart_read_exact
     check("r2q_exact_unit", ex_(R2_EXACT, TCIN, 2) == 2 and ex_(R2_EXACT, int(TCIN), 2) == 2
@@ -3235,6 +3253,395 @@ def test_r1_node_missing_fails():
           and any(f.startswith("b_node_available") for f in new), new)
 
 
+# ─────────────── review round R3 (2026-09-17, cart-safety review) ───────────────
+
+FL_PO_503 = dict(FL_PO_FS, po={"status": 503, "body": "<html>gateway</html>", "fired": True})
+
+
+def test_r3_po_5xx_unresolved():
+    """WC-5XX-NOT-AMBIGUOUS: a received 408/5xx on a place-order does not prove
+    'no order' (a gateway 504 can come back after the backend committed). A
+    won-cart ticket that gets one ends terminal + ambiguous_commit (AC-1 latch),
+    never held, never deleted, never re-raced."""
+    for st in (500, 502, 503, 504, 408):
+        for mode in ("pre_po", "po_only"):
+            c = Clock()
+            ex = bare(c)
+            ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+            step = t_prepo(st, "<html>gw</html>") if mode == "pre_po" else t_po(st, "")
+            tab = TicketTab(ex, [step, t_prepo(200, ORDER_BODY)], c)
+            (v, r), _ = loop_run(ex, tab, c, FL_PRE429 if mode == "pre_po" else FL_PO_FS,
+                                 TARGET_HELD_CART_REENTRY="1")
+            check(f"r3p_5xx_terminal[{st},{mode}]",
+                  v == "terminal" and r.get("ambiguous_commit") is True
+                  and r.get("reason") == "checkout_navigation_failed" and r.get("success") is False
+                  and [m for _, m, _ in tab.tickets] == [mode] and ex._po_ambiguous is True
+                  and ex._woncart_po_unresolved is True and ex._held_cart is None and not ex.deletes
+                  and not re.search(r"\d", str(r.get("error"))),
+                  (v, r, [m for _, m, _ in tab.tickets], ex._held_cart, ex.deletes))
+    # _api_checkout_ticket on its own: 504 keeps the place-order unresolved; 429 resolves it.
+    for st, want in ((504, True), (429, False), (409, False)):
+        c = Clock()
+        ex = bare(c)
+        tab = TicketTab(ex, [t_po(st, "")], c)
+        L = ex._woncart_new_ledger(TCIN, 2, FL_PO_FS, c.t)
+        with in_tmp_cwd(), env(**ARMED), fake_time(c):
+            run(ex._api_checkout_ticket(tab, TCIN, 2, ex._ticket_headers_js(), "po_only", L))
+        check(f"r3p_ticket_unresolved_flag[{st}]",
+              ex._woncart_po_unresolved is want and ex._po_ambiguous is want,
+              (ex._woncart_po_unresolved, ex._po_ambiguous))
+    # The first fast-lane chain: AC-1 armed -> terminal + tagged; kill-switch or
+    # AC-1 off -> the old fallthrough (flags-off behaviour unchanged).
+    for label, e, want in (("ac1_on", {"TARGET_AMBIGUOUS_COMMIT_LATCH": "1", "TARGET_PO_5XX_AMBIGUOUS": None},
+                            "terminal"),
+                           ("killswitch", {"TARGET_AMBIGUOUS_COMMIT_LATCH": "1", "TARGET_PO_5XX_AMBIGUOUS": "0"},
+                            "fallthrough"),
+                           ("ac1_off", {"TARGET_AMBIGUOUS_COMMIT_LATCH": None, "TARGET_PO_5XX_AMBIGUOUS": None},
+                            "fallthrough")):
+        c = Clock()
+        ex = bare(c)
+        with env(**e), contextlib.redirect_stdout(io.StringIO()) as buf:
+            v, term = ex._apply_fast_lane_result(json.loads(json.dumps(FL_PO_503)), TCIN, c.t)
+        ok = v == want
+        if want == "terminal":
+            ok = ok and term.get("ambiguous_commit") is True and ex._po_ambiguous is True \
+                and "place-order got HTTP 503" in buf.getvalue()
+        else:
+            ok = ok and term is None and ex._po_ambiguous is False
+        check(f"r3p_fast_lane_5xx[{label}]", ok, (v, term, buf.getvalue()[-200:]))
+    # The real call site: armed -> the loop never runs and the legacy path never runs.
+    c = Clock()
+    ex, tab = impl_ex(c, FL_PO_503)
+    r = run_impl(ex, ARMED)
+    check("r3p_call_site_5xx_terminal", r.get("reason") == "checkout_navigation_failed"
+          and r.get("ambiguous_commit") is True and not ex.loop_calls and "checking_out" not in ex.statuses,
+          f"{r} {ex.statuses}")
+    ex, tab = impl_ex(c, FL_PO_503)
+    try:
+        run_impl(ex, {})
+    except LegacyReached:
+        pass
+    check("r3p_call_site_flags_off_unchanged", "checking_out" in ex.statuses and not ex.loop_calls,
+          ex.statuses)
+    # Pure helper.
+    u = pe_mod.po_status_unresolved
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_PO_5XX_AMBIGUOUS=None):
+        check("r3p_unit_unresolved", all(u(s) for s in (500, 502, 503, 504, 599, 408, "504")))
+        check("r3p_unit_resolved", not any(u(s) for s in (0, 200, 201, 400, 401, 403, 404, 409, 424, 429,
+                                                          499, 600, None, "x", True)))
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH=None, TARGET_PO_5XX_AMBIGUOUS=None):
+        check("r3p_unit_ac1_off", u(504) is False and u(504, ticket=True) is True and u(429, ticket=True) is False)
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_PO_5XX_AMBIGUOUS="0"):
+        check("r3p_unit_killswitch", u(504) is False and u(504, ticket=True) is True)
+
+
+def test_r3_dirty_cart_flag_and_release():
+    """WC-DIRTY-CART-LEGACY-CHECKOUT: an exit that may leave our line in the
+    cart with no held marker flags it, and the next purchase deletes that line
+    before anything fires (the FAST_SELLING cooldown sends it down the legacy
+    path, which buys the whole cart)."""
+    dirty = lambda e: getattr(e, "_woncart_dirty", None)  # noqa: E731
+    # Terminal (no response): flagged, cart untouched, marker dropped, cooldown open.
+    c = Clock()
+    ex = bare(c)
+    tab = TicketTab(ex, [t_prepo(0, "")], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+    d0 = dirty(ex)
+    check("r3d_terminal_flagged", v == "terminal" and isinstance(d0, dict) and d0["tcin"] == TCIN
+          and d0["why"] == "po_unresolved" and ex._held_cart is None and not ex.deletes
+          and ex._fast_selling_until > c.t and "the next purchase deletes it" in run.last_out,
+          (v, d0, ex._fast_selling_until - c.t))
+    # qty_over: failed delete -> flagged; deleted -> clean.
+    for ok_del in (True, False):
+        c = Clock()
+        ex = bare(c)
+        ex.delete_result = (ok_del, 1 if ok_del else 0)
+        tab = TicketTab(ex, [t_skip("cart_qty_over", qty=4)], c)
+        (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+        check(f"r3d_qty_over[{ok_del}]", (dirty(ex) is not None) == (not ok_del)
+              and r.get("reason") == ("cart_qty_cleared" if ok_del else "cart_qty_stuck"), (r, dirty(ex)))
+    # cart_ticket_cap through the loop: failed delete -> flagged.
+    for ok_del in (True, False):
+        c = Clock()
+        ex = bare(c)
+        ex.delete_result = (ok_del, 1 if ok_del else 0)
+        tab = TicketTab(ex, [t_pre(429)], c)
+        (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1", TARGET_WONCART_MAX_TICKETS="1")
+        check(f"r3d_cap[{ok_del}]", r.get("won_cart_exit") == "cart_ticket_cap"
+              and (dirty(ex) is not None) == (not ok_del), (r, dirty(ex)))
+    # _woncart_exit on its own (budget / WC-3 off / held / evicted).
+    for reason, dl_off, ok_del, held, want in (
+            ("cart_ticket_cap", 200.0, True, True, False),
+            ("cart_ticket_cap", 200.0, False, True, True),
+            ("cart_ticket_cap", 3.0, True, True, True),      # no budget: delete skipped
+            ("qty_over", 3.0, True, True, True),
+            ("tail_spent", 200.0, True, True, False),        # held for re-entry
+            ("tail_spent", 200.0, True, False, False),       # WC-3 off: whole cart deleted
+            ("tail_spent", 200.0, False, False, True),       # WC-3 off: delete failed
+            ("tail_spent", 10.0, True, False, True),         # WC-3 off: no time to clear
+            ("cart_evicted", 200.0, True, True, False)):
+        c = Clock()
+        ex = bare(c)
+        ex.delete_result = (ok_del, 1 if ok_del else 0)
+        st = {"reason": reason, "dl": c.t + dl_off}
+        with in_tmp_cwd(), fake_time(c):
+            run(ex._woncart_exit(TicketTab(ex, [], c), TCIN, {"tcin": TCIN, "tickets": 1}, st, c.t, held))
+        check(f"r3d_exit[{reason},{dl_off:.0f},{ok_del},{held}]", bool(st.get("dirty")) == want, st)
+    # Placed / held exits never flag.
+    c = Clock()
+    ex = bare(c)
+    tab = TicketTab(ex, [t_prepo(200, ORDER_BODY)], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+    check("r3d_placed_clean", v == "placed" and dirty(ex) is None, (v, dirty(ex)))
+    c = Clock()
+    ex = bare(c)
+    tab = TicketTab(ex, [t_pre(401)] * 3, c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1", TARGET_WONCART_CALL_MAX_S="280")
+    check("r3d_held_clean", r.get("reason") == "won_cart_held" and dirty(ex) is None
+          and isinstance(ex._held_cart, dict), (r, dirty(ex)))
+    # A first-entry loop cancelled by the purchase timeout -> flagged.
+    c = Clock()
+    ex = bare(c)
+    tab = TicketTab(ex, [t_pre(429)] * 3, c)
+    try:
+        loop_run(ex, tab, c, FL_PRE429, stop_after=0, TARGET_HELD_CART_REENTRY="1")
+    except REAL_ASYNCIO.CancelledError:
+        pass
+    check("r3d_cancelled_first_flagged", not tab.tickets and isinstance(dirty(ex), dict)
+          and dirty(ex)["why"] == "cancelled", dirty(ex))
+    # ...a cancelled HELD entry keeps its marker and is not flagged.
+    c = Clock()
+    ex = bare(c)
+    ex._held_cart = {"tcin": TCIN, "tickets": 2, "sched_used": 2, "verified": True,
+                     "last_ticket_ts": c.t, "fs_seen_ts": 0.0, "cvv_put": "none", "created": c.t - 60}
+    tab = TicketTab(ex, [t_po(429)], c)
+    try:
+        loop_run(ex, tab, c, None, entry="held", stop_after=0, TARGET_HELD_CART_REENTRY="1")
+    except REAL_ASYNCIO.CancelledError:
+        pass
+    check("r3d_cancelled_held_not_flagged", isinstance(ex._held_cart, dict) and dirty(ex) is None,
+          (ex._held_cart, dirty(ex)))
+
+    # The review's repro: after the terminal exit above, the next purchase on
+    # ANOTHER TCIN runs while the cooldown is open (legacy path). The left-over
+    # line is deleted BEFORE the legacy ATC fires.
+    def next_purchase(flag, delete_result=(True, 1), read=None, cooldown=True, flags=None):
+        ex, tab = impl_ex(Clock(), FL_PRE429)
+        ex._woncart_dirty = dict(flag) if flag is not None else None
+        ex.delete_result = delete_result
+        if cooldown:
+            ex._fast_selling_until = real_time.time() + 30.0
+        order = []
+        orig_del = ex._delete_cart_items
+
+        async def _del(t, **kw):
+            order.append(("delete", kw.get("only_tcin")))
+            return await orig_del(t, **kw)
+
+        ex._delete_cart_items = _del
+        ex.reads = []
+
+        async def _read(t, timeout=2.5):
+            ex.reads.append(timeout)
+            return json.loads(json.dumps(read if read is not None else {"ok": True, "status": 200, "items": [
+                {"id": "CI-1", "tcin": TCIN, "qty": 2}]}))
+
+        ex._cart_items_read = _read
+
+        async def _eval(js, await_promise=False):
+            if "cart_items?field_groups" in js and "method: 'POST'" in js:
+                order.append(("atc", None))
+                return {"status": 201, "body": "{}", "cart_items": [{"tcin": OTHER, "quantity": 2}]}
+            return None
+
+        tab.evaluate = _eval
+        e = dict(IMPL_ENV)
+        e.update(HELD if flags is None else flags)
+        res = None
+        with in_tmp_cwd(), env(**e):
+            try:
+                res = run(ex._execute_purchase_impl(OTHER, quantity=2))
+            except LegacyReached:
+                res = None
+        if "checking_out" in ex.statuses:
+            res = "legacy"          # the stub raises there; the generic handler may swallow it
+        return ex, res, order
+
+    flag0 = dict(d0, ts=real_time.time())
+    ex, res, order = next_purchase(flag0)
+    check("r3d_release_before_legacy_atc", order[:2] == [("delete", TCIN), ("atc", None)]
+          and res == "legacy" and ex.fl_calls == [] and dirty(ex) is None, (order, res, ex.fl_calls))
+    # Cooldown over: released, then the fast lane (its cart gate) runs.
+    ex, res, order = next_purchase(flag0, cooldown=False)
+    check("r3d_release_before_fast_lane", order[:1] == [("delete", TCIN)] and ex.fl_calls == [2]
+          and dirty(ex) is None, (order, ex.fl_calls))
+    # Delete fails and the line is still there -> nothing fires, flag kept, tagged as no shot.
+    ex, res, order = next_purchase(flag0, delete_result=(False, 0))
+    check("r3d_release_failed_skips", isinstance(res, dict) and res.get("reason") == "held_cart_release_failed"
+          and res.get("woncart_entry") == "held" and ("atc", None) not in order and ex.fl_calls == []
+          and "checking_out" not in ex.statuses and dirty(ex) is not None
+          and not re.search(r"\d", str(res.get("error"))), (res, order, dirty(ex)))
+    # ...after the TTL the flag is dropped (this dispatch still skips).
+    old = dict(flag0, ts=real_time.time() - 1000.0)
+    ex, res, order = next_purchase(old, delete_result=(False, 0))
+    check("r3d_release_failed_ttl_drops_flag", isinstance(res, dict)
+          and res.get("reason") == "held_cart_release_failed" and dirty(ex) is None
+          and ("atc", None) not in order, (res, dirty(ex)))
+    # Delete fails but a read shows no line of ours (already deleted) -> continue.
+    ex, res, order = next_purchase(flag0, delete_result=(False, 0),
+                                   read={"ok": True, "status": 200, "items": [{"id": "CI-7", "tcin": OTHER,
+                                                                               "qty": 1}]})
+    check("r3d_release_already_gone_continues", ("atc", None) in order and dirty(ex) is None
+          and res == "legacy", (res, order))
+    # Works with WC-3 off too (WC-1 alone can leave a line behind).
+    ex, res, order = next_purchase(flag0, flags=ARMED)
+    check("r3d_release_wc3_off", order[:2] == [("delete", TCIN), ("atc", None)] and dirty(ex) is None, order)
+    # No flag -> no read, no delete (flags-off path unchanged).
+    ex, res, order = next_purchase(None)
+    check("r3d_no_flag_no_delete", order[:1] == [("atc", None)] and not ex.reads, (order, ex.reads))
+    # The boot audit never adopts a line that is pending release.
+    c = Clock()
+    one = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+    ex, wt = boot_ex(c, one)
+    ex._woncart_dirty = dict(flag0)
+    out, _ = boot_run(ex, c)
+    check("r3d_boot_audit_skips_dirty", out == "dirty_pending" and ex._held_cart is None
+          and not ex.reads and not ex.deletes, (out, ex._held_cart))
+    ex, wt = boot_ex(c, lambda: (setattr(ex, "_woncart_dirty", dict(flag0)) or one))
+    out, _ = boot_run(ex, c)
+    check("r3d_boot_audit_dirty_during_read", out == "busy" and ex._held_cart is None, (out, ex._held_cart))
+
+
+def test_r3_suspect_rereads_in_window():
+    """R2-SUSPECT-READ-TOCTOU: a harvest add that lands AFTER a clean read is
+    caught by the next po_only ticket's read (it used to be bought unread)."""
+    c = Clock()
+    ex = _r2_suspect_ex(c, orphan_age=301.0)
+    ex._harvest_landed_suspect = True
+    ex._harvest_landed_suspect_ts = c.t
+    landed = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+                                                   {"id": "CI-H", "tcin": "12345678", "qty": 1}]}
+    tab = ReadTab(ex, [t_po(429, FS_BODY), t_skip("foreign_cart_item")], c, [R2_EXACT, landed])
+    ex.delete_result = (True, 0)
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    modes = [m for _, m, _ in tab.tickets]
+    check("r3s_late_harvest_add_never_bought_unread", modes == ["po_only", "pre_po"]
+          and len(tab.read_ts) == 2 and r.get("won_cart_exit") == "foreign_stuck"
+          and all("const MODE = 'po_only'" not in js for _, _, js in tab.tickets[1:]),
+          (modes, tab.read_ts, r))
+    # Unit: the window rule.
+    ex = bare(Clock())
+    now = real_time.time()
+    ex._harvest_landed_suspect = True
+    for hts, cleared, want in ((now - 10, now - 5, "harvest_add"),       # read inside the window
+                               (now - 10, 0.0, "harvest_add"),
+                               (now - 400, now - 350, "harvest_add"),   # read at +50 s: still suspect
+                               (now - 400, now - 50, ""),               # read at +350 s clears it
+                               (now - 400, now - 100, "")):             # read exactly at +300 s
+        ex._harvest_landed_suspect_ts = hts
+        ex._woncart_suspect_cleared_ts = cleared
+        ex._orphan_atc_ts = 0.0
+        check(f"r3s_window_unit[{now - hts:.0f},{(cleared - hts) if cleared else -1:.0f}]",
+              ex._woncart_cart_suspect() == want, ex._woncart_cart_suspect())
+    ex._harvest_landed_suspect = False
+    ex._woncart_suspect_cleared_ts = 0.0
+    check("r3s_unset_flag_not_suspect", ex._woncart_cart_suspect() == "")
+    src = Path(pe_mod.__file__).read_text(encoding="utf-8")
+    check("r3s_comment_corrected", "The check-then-post\n" not in src.replace("\r\n", "\n")
+          and "gap is the same as pre_po's" not in src)
+
+
+class _Srv:
+    """Fake cart server for the tick/dispatch race: DELETE of an id that is
+    already gone answers 404."""
+
+    def __init__(self, items):
+        self.items = dict(items)
+        self.log = []
+
+
+class _SrvTab:
+    def __init__(self, srv, name, lat_read=0.05, lat_delete=0.5):
+        self.srv, self.name = srv, name
+        self.lat_read, self.lat_delete = lat_read, lat_delete
+        self.url = "https://www.target.com/"
+
+    async def evaluate(self, js, await_promise=False, **kw):
+        if "method: 'DELETE'" in js:
+            cid = re.search(r"cart_items/([A-Za-z0-9_-]+)'", js).group(1)
+            await REAL_ASYNCIO.sleep(self.lat_delete)
+            st = 204 if self.srv.items.pop(cid, None) is not None else 404
+            self.srv.log.append((self.name, "DELETE", cid, st))
+            return st
+        if "web_checkouts/v1/cart?cart_type=REGULAR" in js:
+            await REAL_ASYNCIO.sleep(self.lat_read)
+            its = [{"id": k, "tcin": v, "qty": 2} for k, v in self.srv.items.items()]
+            self.srv.log.append((self.name, "READ", [i["id"] for i in its]))
+            return {"ok": True, "status": 200, "items": its}
+        raise AssertionError("unexpected evaluate: " + js[:80])
+
+
+def test_r3_release_tolerates_double_delete():
+    """CS-R1-TICK-DISPATCH-DOUBLE-DELETE: the background retire (warmup tab 0)
+    and the dispatch-time retire delete the same expired line concurrently; the
+    loser's 404 no longer skips that identity's shot."""
+    def mk(srv, wt, fast_lane_calls):
+        c = Clock(real_time.time())
+        ex = bare(c)
+        del ex._delete_cart_items                    # the real bounded delete
+        ex._page_lock = None
+        ex._warmup_pool_lock = None
+
+        async def _ens(idx):
+            return wt
+
+        ex._ensure_warmup_tab = _ens
+        ex.session_manager.live = False
+        ex._held_cart = {"tcin": TCIN, "qty": 2, "created": real_time.time() - 1000.0,
+                         "tickets": 3, "verified": True, "source": "first"}
+        return ex
+
+    async def race(ex, mt, start_delay):
+        ex._page_lock = REAL_ASYNCIO.Lock()
+        ex._warmup_pool_lock = REAL_ASYNCIO.Lock()
+        tick = REAL_ASYNCIO.ensure_future(ex._held_cart_expire_tick())
+        await REAL_ASYNCIO.sleep(start_delay)
+        async with ex._page_lock:
+            ex.session_manager.live = True
+            res = await ex._held_cart_entry(mt, TCIN, 2, real_time.time())
+            ex.session_manager.live = False
+        return res, await tick
+
+    srv = _Srv({"X1abc": TCIN})
+    wt, mt = _SrvTab(srv, "tick"), _SrvTab(srv, "main")
+    ex = mk(srv, wt, [])
+    with in_tmp_cwd(), env(**dict(IMPL_ENV, **HELD)):
+        res, tick = run(race(ex, mt, 0.10))
+    dels = [e for e in srv.log if e[1] == "DELETE"]
+    check("r3t_race_happened", len(dels) == 2 and sorted(d[3] for d in dels) == [204, 404], srv.log)
+    check("r3t_dispatch_continues", res is None and ex._held_cart is None and not srv.items
+          and "already deleted, continuing" in run.last_out, (res, run.last_out[-400:]))
+    # A 404 while the line is really still there (read shows it) stays a failure.
+    c = Clock()
+    ex, tab = held_impl(c, mk_held(age=1000.0), read=EXACT_READ, probes={TCIN: True})
+    ex.delete_result = (False, 0)
+    r = run_impl(ex, HELD)
+    check("r3t_line_still_there_fails", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == []
+          and len(ex.reads) == 1, (r, ex.reads))
+    # A failed confirm read stays a failure.
+    ex, tab = held_impl(c, mk_held(age=1000.0), read={"ok": False, "status": 503, "items": []},
+                        probes={TCIN: True})
+    ex.delete_result = (False, 0)
+    r = run_impl(ex, HELD)
+    check("r3t_read_failed_fails", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == [], r)
+    # Delete failed, read shows no line of ours -> the normal shot fires.
+    ex, tab = held_impl(c, mk_held(age=1000.0), read={"ok": True, "status": 200, "items": []},
+                        probes={TCIN: True})
+    ex.delete_result = (False, 0)
+    r = run_impl(ex, HELD)
+    check("r3t_already_gone_shot_fires", ex.fl_calls == [2] and ex._held_cart is None, (r, ex.fl_calls))
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
@@ -3249,7 +3656,10 @@ def main():
              test_r1_node_missing_fails,
              # review round R2 (2026-09-17)
              test_r2_po_only_suspect_read, test_r2_fl1_orphan_stamp_feeds_loop,
-             test_r2_held_entry_tagged, test_r2_fs_ticket_ms_since_201)
+             test_r2_held_entry_tagged, test_r2_fs_ticket_ms_since_201,
+             # review round R3 (2026-09-17, cart safety)
+             test_r3_po_5xx_unresolved, test_r3_dirty_cart_flag_and_release,
+             test_r3_suspect_rereads_in_window, test_r3_release_tolerates_double_delete)
     for fn in tests:
         try:
             fn()

@@ -828,6 +828,12 @@ REM The latch is also kept in state\ambiguous_commit_latch.json, so a crash and
 REM wrapper relaunch cannot re-race a possibly-placed order (boot line
 REM "restored N latch(es)"). Kill: TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=0.
 set TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=1
+REM R3 review: a place-order that got HTTP 408/5xx back is treated like one
+REM that got no answer (a gateway 504 can arrive after the order was placed):
+REM no retry, no DOM click, the AC-1 latch applies. Won-cart tickets always
+REM do this. Kill (first fast-lane shot + legacy place-order only):
+REM TARGET_PO_5XX_AMBIGUOUS=0.
+set TARGET_PO_5XX_AMBIGUOUS=1
 REM INF-2: a race state without started_at is stamped, never force-completed
 REM with the Unix epoch as its age. Kill: TARGET_RACE_STATE_STARTED_AT_GUARD=0.
 set TARGET_RACE_STATE_STARTED_AT_GUARD=1
