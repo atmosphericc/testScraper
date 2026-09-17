@@ -684,7 +684,8 @@ REM      (ticket doctrine unchanged there). Rollback: set TARGET_401_PULSE=0
 REM      2026-09-17: TARGET_401_PULSE is INERT under TARGET_WAVE_FIRST_ONLY=1
 REM      (below): a 401 takes the wave-first cold re-entry first, which also
 REM      resets the streak. Superseded by TARGET_IDENTITY_REST (per identity,
-REM      across races; enforcement not built yet). Kept armed and pinned.
+REM      across races; built 2026-09-17 in review round R1, NOT armed).
+REM      TARGET_401_PULSE itself is kept armed and pinned.
 set TARGET_401_PULSE=1
 set TARGET_401_PULSE_STREAK=3
 set TARGET_401_PULSE_SLEEP_MIN=15
@@ -891,7 +892,10 @@ REM run) and a PerimeterX page parks that harvester 300 s (no nav, no click);
 REM the bank gate stops waiting while the harvest is stuck; a relaunch
 REM flushes the bank. Live re-nav on a miss stays OFF until probe data exists.
 REM grep MISS-PROBE, [PX-CHALLENGE/harvest], [BANK_GATE] skipped.
-REM Kill: each =0.
+REM Kill: each flag =0, except the PX park. Turn the PX park off with
+REM TARGET_HARVEST_MISS_PROBE=0 (that also stops the probe). PX_PARK_S is
+REM clamped to 30..3600 s, so PX_PARK_S=0 still parks 30 s.
+REM MISS_SHOTS_MAX=0 means no screenshots.
 set TARGET_HARVEST_SKIP_DISABLES_REPLAY=1
 set TARGET_HARVEST_MISS_PROBE=1
 set TARGET_HARVEST_MISS_SHOTS_MAX=10

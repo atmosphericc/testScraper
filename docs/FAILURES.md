@@ -72,9 +72,9 @@ reviews; `logs/analysis_2026_09_16/`, plan `wf2/plan_final.md`):
   - business and alt-1 relaunched Chrome in the same second at 37-45 min.
   - A race state without `started_at` was force-completed with elapsed = the Unix epoch.
   - `TARGET_HARVEST_SKIP` did not disable replay (49 x 8 s bank-gate waits).
-**Fix Applied** (stages S1-S8, local commits `50a5727c` .. S8, NOT pushed; every change is flag-gated
-with the old behaviour as the code default, armed in the CRLF bat; plain-language summary,
-kill-switches and user decisions in `docs/HOT_SKU_FIX_2026_09_16.md`):
+**Fix Applied** (stages S1-S8 plus review rounds R1 `7756ab8c` and R2, local commits `50a5727c` .. R2,
+NOT pushed; every change is flag-gated with the old behaviour as the code default, armed in the CRLF
+bat; plain-language summary, kill-switches and user decisions in `docs/HOT_SKU_FIX_2026_09_16.md`):
 - AC-1 ambiguous-commit latch; INF-2 `started_at` stamp.
 - WC-1 won-cart direct checkout loop:
   - separate ticket JS with a strict cart gate and atomic abort;
@@ -87,9 +87,32 @@ kill-switches and user decisions in `docs/HOT_SKU_FIX_2026_09_16.md`):
 - FL-1 fast-lane timeout stage tracking.
 - INF-1: sentinel skip logs, `business:-300` relaunch offset.
 - U1 = (c): alt-1 parked on the 13 hot TCINs (`TARGET_PARK_ACCOUNT_TCINS`, built in S8).
-- Offline suite 24/24.
-- NOT built: stage S6 (home-IP share guard HS-1, background volume cap BG-1, identity-rest
-  enforcement ID-1), so U1 options (a) and (b) are not available yet.
+- Review round R1 (`7756ab8c`, 15 findings):
+  - the AC-1 latch is also saved to `state/ambiguous_commit_latch.json` and restored after a
+    crash and relaunch (`TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=1`);
+  - business and alt-1 no longer relaunch Chrome on the same sentinel tick
+    (`TARGET_CHROME_RELAUNCH_DESYNC_S=120`);
+  - a place-order-only ticket falls back to the strict cart check while one of our own adds may
+    still land;
+  - yield-fleet no longer locks out held-cart re-entries; the ride deadline holds through the
+    success tail; at most one CVV PUT per cart; the boot audit deletes only the lines it read;
+    expired held carts are retired in the background; parked or latched fleets open no empty
+    races.
+- **Built in R1, NOT armed, offline-tested only:** the S6 guards, i.e. the home-IP share guard
+  HS-1 (`TARGET_HOME_SHARE_GUARD`), the background volume cap BG-1 (`TARGET_BG_SLOW_ACCOUNTS` /
+  `TARGET_BG_SLOW_FACTOR`) and identity-rest enforcement ID-1 (`TARGET_IDENTITY_REST`). U1 options
+  (a) and (b) are therefore available; the steps are in the bat and in the hot-SKU doc, section 3.
+- Review round R2 (7 findings):
+  - simultaneous AC-1 latches from several race threads could garble the latch file (a relaunch
+    then restored none); writes are now serialized, with a temp file per write and retries;
+  - while an orphaned add may land, a place-order-only ticket first reads the cart and keeps the
+    08-04 place-order-only shape when the read shows only our item at qty 1..Q
+    (`TARGET_WONCART_SUSPECT_READ`, default on; `=0` restores the R1 fallback);
+  - held-cart re-entries no longer count as passing shots in `[IDENT_CENSUS]` / `[EXPOSURE]`;
+  - `[FS_TICKET] ms_since_201` is measured from the browser's add-to-cart stamp (`-` when there is
+    none);
+  - a test now covers the FL-1 orphan stamp; the bat REMs and this entry were corrected.
+- Offline suite 24/24 (24 files).
 **Confidence**: high on the diagnosis of our own losses (detour, one ticket per window, hygiene,
 latent double-buy paths); medium on the gate model (limiter precedence, first-arrival effect);
 unknown on the payoff: per-ticket admission through FAST_SELLING has one data point (08-04).

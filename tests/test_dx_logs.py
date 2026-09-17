@@ -162,6 +162,22 @@ def test_ir_classify():
         "home_share_guard", "account_parked_hot"} <= set(ir.NOT_RECORDED_REASONS))
     # The manager's in-thread skip reason really is the one we skip.
     check("ir_skip_reason_matches_manager", "return 'ambiguous_commit_latched'" in MGR_SRC)
+    # R2 review (R2-DX-HELD-PASS): a held-cart re-entry fired no add-to-cart, so
+    # none of its results (a placed order included) is a shot.
+    for res in ({"success": True, "reason": "ok"}, {"success": False, "reason": "won_cart_held"},
+                {"success": False, "reason": "checkout_busy_retryable"},
+                {"success": False, "reason": "won_cart_retired"},
+                {"success": False, "reason": "checkout_navigation_failed", "ambiguous_commit": True},
+                {"success": False, "reason": "held_cart_idle_skip"}):
+        tagged = dict(res, woncart_entry="held")
+        check(f"ir_held_entry_not_recorded[{res.get('reason')}]", C(tagged) is None, C(tagged))
+        check(f"ir_held_entry_case_space[{res.get('reason')}]",
+              C(dict(res, woncart_entry=" Held ")) is None)
+    check("ir_first_entry_still_pass", C({"success": False, "reason": "won_cart_held",
+                                          "woncart_entry": "first"}) == "pass")
+    check("ir_untagged_still_pass", C({"success": False, "reason": "won_cart_held"}) == "pass")
+    check("ir_held_tag_set_by_executor",
+          "_held_res['woncart_entry'] = 'held'" in Path(pe_mod.__file__).read_text(encoding="utf-8"))
 
 
 def test_ir_flags():
@@ -361,6 +377,36 @@ def test_mgr_exposure():
         o1 = capture(REC, me, "W1/primary", "primary", TCIN, REDGE, sm)
         o2 = capture(REC, me, "W1/primary", "primary", TCIN, REDGE, sm)
     check("mgr_tracker_error_logged_once", "[DX1] record error" in o1 and o2 == "", (o1, o2))
+
+
+def test_r2_held_reentry_not_a_shot():
+    """R2-DX-HELD-PASS, the finding's scenario: 10 edge 429s, 1 real pass (the
+    won cart), then 8 held re-entries while the TCIN stays live. The census
+    must read shots=11 pass=1 (it read shots=19 pass=9 before the fix)."""
+    m = _mgr(_status(time.time()))
+    held = {"success": False, "tcin": TCIN, "reason": "won_cart_held", "woncart_entry": "held"}
+    real_pass = {"success": False, "tcin": TCIN, "reason": "won_cart_held", "woncart_entry": "first"}
+    with env(TARGET_EXPOSURE_LOG="1", TARGET_IDENT_CENSUS="1"):
+        for _ in range(10):
+            capture(REC, m, "W1/primary", "primary", TCIN, REDGE, None)
+        capture(REC, m, "W1/primary", "primary", TCIN, real_pass, None)
+        outs = [capture(REC, m, "W1/primary", "primary", TCIN, held, None) for _ in range(8)]
+    c = m._ident_tracker.counters("W1/primary", TCIN)
+    check("r2h_census_counts", ir.format_census("W1/primary", TCIN, c) ==
+          f"[IDENT_CENSUS] ident=W1/primary tcin={TCIN} shots=11 p401=0 edge=10 dco=0 pass=1 "
+          f"other=0 pass_per_non401=0.091", ir.format_census("W1/primary", TCIN, c))
+    f = _exp_fields(outs[-1])
+    check("r2h_exposure_kind_dash", f is not None and f[2] == "-", f)
+    # A held re-entry between shots never closes (resets) the identity's run.
+    m2 = _mgr(_status(time.time()))
+    with env(TARGET_EXPOSURE_LOG="1"):
+        for _ in range(3):
+            capture(REC, m2, "W3/alt-1", "alt-1", TCIN, R401, None)
+        capture(REC, m2, "W3/alt-1", "alt-1", TCIN, held, None)
+        f = _exp_fields(capture(REC, m2, "W3/alt-1", "alt-1", TCIN, R401, None))
+    check("r2h_run_not_closed_by_held", f is not None and f[2] == "auth401" and f[3] == "4", f)
+    check("r2h_run_kinds", m2._ident_tracker.run_kinds("W3/alt-1", TCIN)[-4:] == ["auth401"] * 4,
+          m2._ident_tracker.run_kinds("W3/alt-1", TCIN))
 
 
 def _race_mgr():
@@ -1203,7 +1249,7 @@ def test_scr_ingest():
 
 def main():
     tests = (test_ir_classify, test_ir_flags, test_ir_runs_and_counters, test_ir_census_format,
-             test_mgr_exposure, test_mgr_census, test_mgr_source_pins,
+             test_mgr_exposure, test_r2_held_reentry_not_a_shot, test_mgr_census, test_mgr_source_pins,
              test_pe_pure_helpers, test_pe_chain_done_line, test_pe_js_insertion, test_pe_js_node,
              test_pe_interceptor, test_pe_stash_attribution, test_pe_legacy_fs_ticket,
              test_pe_note_atc, test_pe_impl_wiring,

@@ -573,6 +573,7 @@ def test_hold_cart_for_fast_selling():
 
 import contextlib  # noqa: E402
 import re  # noqa: E402
+import time  # noqa: E402
 
 STAGE_HARNESS = r"""
 const S = %s;
@@ -966,6 +967,7 @@ def _fl1_timeout(read=None, stage_track=True, extra_env=None, **tab_kw):
     ex = _bare_executor()
     ex._po_inflight = False
     ex._po_ambiguous = False
+    ex._orphan_atc_ts = 0.0      # R2 review: the stamp only the 'atc' relabel may set
     tab = _HangThenReadTab(ex, read=read, **tab_kw)
     real_wait_for = asyncio.wait_for
 
@@ -997,7 +999,16 @@ def test_fl1_python_timeout_branch():
     # Aborted at the ATC (qty guard on) -> evaluate_timeout_atc, not fired,
     # not terminal.
     QG = {"TARGET_FASTLANE_QTY_GUARD": "1"}
+    t_before = time.time()
     res, ex, tab, out = _fl1_timeout({"s": "atc", "aborted": True, "atc": 0}, extra_env=QG)
+    t_after = time.time()
+    # R2 review (R2-TEST-FL1-ORPHAN): the relabelled ATC-stage abort stamps
+    # _orphan_atc_ts (the pending add may still land), which is the only input
+    # the won-cart po_only -> read / pre_po fallback gets on the armed path.
+    check("fl1_py_atc_aborted_stamps_orphan", t_before <= ex._orphan_atc_ts <= t_after,
+          (t_before, ex._orphan_atc_ts, t_after))
+    check("fl1_py_atc_aborted_orphan_is_suspect", ex._woncart_cart_suspect() == "orphan_atc",
+          ex._woncart_cart_suspect())
     k = re.search(r"const _SK = '(__[0-9a-f]{12})'", tab.js[0]).group(1)
     nn = re.search(r"const _SN = '(f\d+)'", tab.js[0]).group(1)
     check("fl1_py_read_uses_chain_key_and_id",
@@ -1017,12 +1028,15 @@ def test_fl1_python_timeout_branch():
         res, ex, tab, out = _fl1_timeout({"s": "atc", "aborted": True, "atc": 0}, extra_env={flag: "1"})
         check(f"fl1_py_atc_aborted_qg_forced_by[{flag}]", res["skip"] == "evaluate_timeout_atc"
               and res["po"]["fired"] is False, str(res))
+        check(f"fl1_py_atc_aborted_stamps_orphan[{flag}]", ex._orphan_atc_ts > 0
+              and ex._woncart_cart_suspect() == "orphan_atc", ex._orphan_atc_ts)
     # Qty guard OFF: a landed orphan add plus a re-race could stack -> the
     # ATC-stage abort is NOT relabelled (today's terminal; the chain is still
     # aborted, so nothing more fires in the page).
     res, ex, tab, out = _fl1_timeout({"s": "atc", "aborted": True, "atc": 0})
     check("fl1_py_atc_aborted_qg_off_stays_terminal", _is_today_terminal(res) and len(tab.js) == 2
           and "NOT relabelled (qty guard off" in out and ex._po_inflight is False, f"{res} {out}")
+    check("fl1_py_qg_off_terminal_no_orphan_stamp", ex._orphan_atc_ts == 0.0, ex._orphan_atc_ts)
 
     # Aborted at pre / cvv after a 2xx ATC -> synthesized pre_0 (won-cart eligible).
     for stage, atc in (("pre", 201), ("cvv", 201), ("pre", 200), ("cvv", 200)):
@@ -1036,6 +1050,8 @@ def test_fl1_python_timeout_branch():
               and ex._woncart_new_ledger(TCIN, 2, res, 1.0)["verified"] is False)
         v, term = ex._apply_fast_lane_result(res, TCIN, 0.0)
         check(f"fl1_py_{stage}_aborted_falls_through[{atc}]", v == "fallthrough" and not ex._po_ambiguous, v)
+        check(f"fl1_py_{stage}_aborted_no_orphan_stamp[{atc}]", ex._orphan_atc_ts == 0.0
+              and ex._woncart_cart_suspect() == "", ex._orphan_atc_ts)
 
     # Everything else stays today's terminal dict (+ ambiguous via AC-1).
     others = (
@@ -1056,6 +1072,7 @@ def test_fl1_python_timeout_branch():
         check(f"fl1_py_terminal[{label}]", _is_today_terminal(res) and len(tab.js) == 2
               and ex._po_inflight is False and "treating as no-response (non-retryable)" in out,
               f"{res} js={len(tab.js)}")
+        check(f"fl1_py_terminal_no_orphan_stamp[{label}]", ex._orphan_atc_ts == 0.0, ex._orphan_atc_ts)
         with _env(TARGET_AMBIGUOUS_COMMIT_LATCH="1"):
             v, term = ex._apply_fast_lane_result(res, TCIN, 0.0)
         check(f"fl1_py_terminal_ambiguous[{label}]", v == "terminal"
@@ -1067,12 +1084,14 @@ def test_fl1_python_timeout_branch():
     check("fl1_py_off_no_read", len(tab.js) == 1 and _is_today_terminal(res)
           and "stage read" not in out and "_SE." not in tab.js[0], f"{res} {len(tab.js)}")
     check("fl1_py_off_no_seq_bump", getattr(ex, "_fl_stage_seq", 0) == 0)
+    check("fl1_py_off_no_orphan_stamp", ex._orphan_atc_ts == 0.0, ex._orphan_atc_ts)
 
     # A non-timeout evaluate error keeps today's terminal path (no read).
     res, ex, tab, out = _fl1_timeout({"s": "atc", "aborted": True, "atc": 0},
                                      chain_raises=RuntimeError("Inspected target navigated or closed"))
     check("fl1_py_raise_path_unchanged", len(tab.js) == 1 and res["po"]["fired"] is True
           and res["skip"].startswith("evaluate_threw:"), str(res))
+    check("fl1_py_raise_path_no_orphan_stamp", ex._orphan_atc_ts == 0.0, ex._orphan_atc_ts)
 
     # A purchase-timeout cancel during the read propagates and leaves
     # _po_inflight True (the hang branch then latches ambiguous).

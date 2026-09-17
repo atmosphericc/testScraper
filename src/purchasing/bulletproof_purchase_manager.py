@@ -128,22 +128,44 @@ def _ac_latch_load(path, now: float, ttl: float) -> Dict[tuple, float]:
     return out
 
 
+# R2 review (R2-AC1-PERSIST-RACE, 2026-09-17): several race threads can latch in
+# the same millisecond (all three accounts hitting execution_timeout together).
+# Every file write is serialized by this lock, and _ac_latch_mark takes its
+# snapshot inside it, so the last writer always saves the newest superset. Each
+# call writes its own temp file, and os.replace is retried on a transient Windows
+# PermissionError (antivirus / indexer handles). Before this, two threads shared
+# one temp name: a garbled file restored NO latch after a crash.
+_AC_SAVE_LOCK = threading.RLock()
+_AC_REPLACE_TRIES = 4
+
+
 def _ac_latch_save(path, latches, now: float, ttl: float) -> bool:
-    """Atomically write the unexpired latches. Never raises."""
+    """Atomically write the unexpired latches (serialized by _AC_SAVE_LOCK; a
+    unique temp file per call, removed on failure). Never raises."""
+    tmp = None
     try:
         if not path:
             return False
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        data = {'written_at': now, 'ttl_s': ttl,
-                'latches': {f"{i}|{t}": float(ts) for (i, t), ts in dict(latches).items()
-                            if float(ts) + ttl > now}}
-        tmp = f"{path}.tmp.{os.getpid()}"
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(data, f)
-        os.replace(tmp, path)
-        return True
+        with _AC_SAVE_LOCK:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            data = {'written_at': now, 'ttl_s': ttl,
+                    'latches': {f"{i}|{t}": float(ts) for (i, t), ts in dict(latches).items()
+                                if float(ts) + ttl > now}}
+            tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{os.urandom(3).hex()}"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+            for _try in range(_AC_REPLACE_TRIES):
+                try:
+                    os.replace(tmp, path)
+                    tmp = None
+                    return True
+                except PermissionError:
+                    if _try + 1 >= _AC_REPLACE_TRIES:
+                        raise
+                    time.sleep(0.05 * (_try + 1))
+            return False
     except Exception as e:
         try:
             print(f"[AMBIGUOUS_COMMIT] could not persist the latch file ({type(e).__name__}: {e}) "
@@ -151,6 +173,12 @@ def _ac_latch_save(path, latches, now: float, ttl: float) -> bool:
         except Exception:
             pass
         return False
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
 
 
 # R1 review (PC-1, 2026-09-17): the plan's S6 guards, built but NOT armed.
@@ -3001,10 +3029,14 @@ class BulletproofPurchaseManager:
             d, lk = self._ac_state()
             with lk:
                 d[(str(ident), str(tcin))] = time.time()
-                _snap = dict(d)
             _path = getattr(self, '_ac_latch_path', None)
             if _path and _ac_persist_on():
-                _ac_latch_save(_path, _snap, time.time(), _ac_latch_ttl_s())
+                # R2 review: snapshot INSIDE the save lock (lock order: save
+                # lock, then the latch lock; nothing takes them the other way).
+                with _AC_SAVE_LOCK:
+                    with lk:
+                        _snap = dict(d)
+                    _ac_latch_save(_path, _snap, time.time(), _ac_latch_ttl_s())
             msg = (f"[AMBIGUOUS_COMMIT] {ident} {tcin} latched {_ac_latch_ttl_s():.0f}s — "
                    f"check order history (why={why or 'unknown'})")
             print(msg)

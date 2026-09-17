@@ -859,6 +859,125 @@ def test_ac_latch_persist_and_restore():
     check("acpersist_init_calls_restore", "self._ac_restore_latches()" in src[i:j])
 
 
+# ───── 8. R2 review (R2-AC1-PERSIST-RACE): simultaneous latches all persist ─────
+
+def _latch_race_round(path, idents, tcins, jitter_s=0.0):
+    """One round: len(idents) threads behind a barrier call the real
+    _ac_latch_mark on ONE manager; returns what a relaunch would restore."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    m = bare_mgr()
+    m._ac_latch_path = path
+    bar = threading.Barrier(len(idents))
+    errs = []
+
+    def go(k):
+        try:
+            bar.wait(timeout=10)
+            if jitter_s:
+                time.sleep(((k * 7919) % 5) / 5.0 * jitter_s)
+            m._ac_latch_mark(idents[k], tcins[k], "execution_timeout")
+        except Exception as e:  # noqa: BLE001
+            errs.append(e)
+
+    ths = [threading.Thread(target=go, args=(k,)) for k in range(len(idents))]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join(timeout=20)
+    got = bpm_mod._ac_latch_load(path, time.time(), 1800.0)
+    return got, buf.getvalue(), errs
+
+
+def test_ac_latch_concurrent_marks_all_persist():
+    d = tempfile.mkdtemp(dir=_TMP)
+    path = os.path.join(d, "state", "ambiguous_commit_latch.json")
+    idents = ["W1/primary", "W2/business", "W3/alt-1"]
+    bad, noisy, errs_all = [], 0, []
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=None):
+        for rnd in range(60):
+            tcins = [HOT_TCIN] * 3 if rnd % 2 == 0 else [HOT_TCIN, REG_TCIN, "1011407490"]
+            got, out, errs = _latch_race_round(path, idents, tcins, jitter_s=0.002 if rnd % 3 == 2 else 0.0)
+            errs_all += errs
+            if set(got) != set(zip(idents, tcins)):
+                bad.append((rnd, sorted(got)))
+            if "could not persist" in out:
+                noisy += 1
+        check("aclatch_race_every_round_restores_all", not bad, bad[:5])
+        check("aclatch_race_no_persist_errors", noisy == 0, noisy)
+        check("aclatch_race_threads_clean", not errs_all, errs_all[:3])
+        left = [n for n in os.listdir(os.path.dirname(path)) if ".tmp" in n]
+        check("aclatch_race_no_temp_files_left", not left, left)
+        # Two managers-worth of rounds on one file: the newest superset wins.
+        m = bare_mgr()
+        m._ac_latch_path = path
+        quiet(m._ac_latch_mark, "W1/primary", HOT_TCIN, "a")
+        quiet(m._ac_latch_mark, "W2/business", REG_TCIN, "b")
+        got = bpm_mod._ac_latch_load(path, time.time(), 1800.0)
+        check("aclatch_sequential_superset",
+              set(got) == {("W1/primary", HOT_TCIN), ("W2/business", REG_TCIN)}, got)
+    src = Path(bpm_mod.__file__).read_text(encoding="utf-8")
+    check("aclatch_save_lock_defined", "_AC_SAVE_LOCK = threading.RLock()" in src)
+
+
+def test_ac_latch_save_replace_retry():
+    """os.replace hitting a transient Windows PermissionError (antivirus /
+    indexer handle) is retried; a persistent one fails loudly and leaves no
+    temp file behind."""
+    d = tempfile.mkdtemp(dir=_TMP)
+    path = os.path.join(d, "latch.json")
+    real_replace = os.replace
+    calls = []
+
+    def flaky(src_p, dst_p):
+        calls.append(src_p)
+        if len(calls) <= 2:
+            raise PermissionError(13, "The process cannot access the file")
+        return real_replace(src_p, dst_p)
+
+    os.replace = flaky
+    try:
+        ok, out = quiet(bpm_mod._ac_latch_save, path, {("W1/primary", HOT_TCIN): 9_000.0}, 10_000.0, 1800.0)
+    finally:
+        os.replace = real_replace
+    check("aclatch_replace_retried_ok", ok is True and len(calls) == 3 and out == "", (ok, calls, out))
+    check("aclatch_replace_retried_content",
+          bpm_mod._ac_latch_load(path, 10_000.0, 1800.0) == {("W1/primary", HOT_TCIN): 9_000.0})
+    check("aclatch_tmp_names_unique", len(set(calls)) == 1 and ".tmp." in calls[0]
+          and calls[0].count(".") >= 4, calls)
+
+    def always(src_p, dst_p):
+        raise PermissionError(13, "denied")
+
+    os.replace = always
+    try:
+        ok, out = quiet(bpm_mod._ac_latch_save, path, {("W2/business", HOT_TCIN): 9_500.0}, 10_000.0, 1800.0)
+    finally:
+        os.replace = real_replace
+    check("aclatch_replace_fails_loudly", ok is False and "could not persist" in out, (ok, out))
+    check("aclatch_replace_fail_no_temp_left", not [n for n in os.listdir(d) if ".tmp" in n], os.listdir(d))
+    check("aclatch_replace_fail_keeps_old_file",
+          bpm_mod._ac_latch_load(path, 10_000.0, 1800.0) == {("W1/primary", HOT_TCIN): 9_000.0})
+    # Two saves never share a temp name.
+    seen = []
+
+    def spy(src_p, dst_p):
+        seen.append(src_p)
+        return real_replace(src_p, dst_p)
+
+    os.replace = spy
+    try:
+        quiet(bpm_mod._ac_latch_save, path, {}, 10_000.0, 1800.0)
+        quiet(bpm_mod._ac_latch_save, path, {}, 10_000.0, 1800.0)
+    finally:
+        os.replace = real_replace
+    check("aclatch_tmp_name_per_call", len(seen) == 2 and seen[0] != seen[1], seen)
+
+
 def main():
     tests = [v for k, v in list(globals().items()) if k.startswith("test_") and callable(v)]
     for t in tests:

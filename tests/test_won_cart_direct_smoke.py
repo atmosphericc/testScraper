@@ -2652,9 +2652,14 @@ def test_r1_po_only_suspect_fallback():
     steps = [t_po(429, FS_BODY), t_prepo(429, FS_BODY), t_po(429, FS_BODY)]
 
     class _FlagTab(TicketTab):
+        flagged = False
+
         async def evaluate(self, js, await_promise=False, **kw):
             res = await super().evaluate(js, await_promise, **kw)
-            if len(self.tickets) == 1:
+            # One-shot (R2: the suspect cart READ is another evaluate at the
+            # same fake time and must not re-raise the flag).
+            if len(self.tickets) == 1 and not self.flagged:
+                self.flagged = True
                 self.ex._harvest_landed_suspect = True
                 self.ex._harvest_landed_suspect_ts = self.clock.t
             return res
@@ -2690,6 +2695,340 @@ def test_r1_po_only_suspect_fallback():
           "                    self._orphan_atc_ts = time.time()" in src.replace("\r\n", "\n"))
     check("r1q_harvest_suspect_stamps", "self._harvest_landed_suspect = True\n"
           "            self._harvest_landed_suspect_ts = time.time()" in src.replace("\r\n", "\n"))
+
+
+class ReadTab(TicketTab):
+    """TicketTab whose cart READ answer is scripted: `reads` is a list of
+    read results (dict = returned as is; Exception = raised); the last one
+    repeats. Records the fake-clock time of every read."""
+
+    def __init__(self, ex, script, clock, reads):
+        super().__init__(ex, script, clock)
+        self.reads = list(reads)
+        self.read_ts = []
+
+    async def evaluate(self, js, await_promise=False, **kw):
+        if "web_checkouts/v1/cart?cart_type=REGULAR" in js:
+            self.read_ts.append(self.clock.t)
+            r = self.reads.pop(0) if len(self.reads) > 1 else self.reads[0]
+            if isinstance(r, BaseException):
+                raise r
+            return json.loads(json.dumps(r))
+        return await super().evaluate(js, await_promise, **kw)
+
+
+R2_EXACT = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+
+
+def _r2_suspect_ex(c, orphan_age=10.0):
+    ex = bare(c)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    ex._orphan_atc_ts = c.t - orphan_age
+    ex._woncart_suspect_cleared_ts = 0.0
+    return ex
+
+
+def test_r2_po_only_suspect_read():
+    """R2-QTY1-PO-SHAPE: while an orphaned add of ours may land, a verified
+    cart keeps its po_only tickets (the 08-04 shape) when a cart READ shows
+    exactly our TCIN at qty 1..Q; anything else goes through the strict gate."""
+    # Orphan suspect + exact read -> po_only, a read before EVERY ticket, and a
+    # place-order goes out even while pre_checkout would answer FAST_SELLING.
+    c = Clock()
+    ex = _r2_suspect_ex(c)
+    tab = ReadTab(ex, [t_po(429, FS_BODY)] * 3, c, [R2_EXACT])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    modes = [m for _, m, _ in tab.tickets]
+    check("r2q_exact_read_keeps_po_only", modes == ["po_only"] * 3 and len(tab.read_ts) == 3
+          and "po_only kept" in run.last_out and "pre_po instead" not in run.last_out, (modes, run.last_out[-400:]))
+    check("r2q_read_right_before_each_ticket",
+          [round(t, 3) for t in tab.read_ts] == [round(t, 3) for t, _, _ in tab.tickets], (tab.read_ts, tab.tickets))
+    check("r2q_exact_read_three_place_orders", r.get("reason") == "won_cart_retired"
+          and r.get("won_cart_exit") == "cart_ticket_cap"
+          and all("const MODE = 'po_only'" in js for _, _, js in tab.tickets), r)
+    # A 1-unit line (qty below Q) is exact too.
+    c = Clock()
+    ex = _r2_suspect_ex(c)
+    one = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1}]}
+    tab = ReadTab(ex, [t_po(429, FS_BODY)], c, [one])
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="1")
+    check("r2q_qty1_exact", [m for _, m, _ in tab.tickets] == ["po_only"], tab.tickets)
+    # Anything but exact -> pre_po (strict gate), with the read described.
+    bad_reads = (
+        ("stacked", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]},
+         "1 line(s) 1010892069x4"),
+        ("two_lines_over", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+                                                                 {"id": "CI-2", "tcin": TCIN, "qty": 2}]}, "2 line(s)"),
+        ("foreign", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+                                                          {"id": "CI-9", "tcin": OTHER, "qty": 1}]}, "2 line(s)"),
+        ("empty", {"ok": True, "status": 200, "items": []}, "0 line(s)"),
+        ("qty_unknown", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]},
+         "1010892069xNone"),
+        ("read_429", {"ok": False, "status": 429, "items": []}, "failed status=429"),
+        ("read_raises", RuntimeError("websocket closed"), "failed status=0 err=RuntimeError"),
+        ("read_hangs", REAL_ASYNCIO.TimeoutError(), "failed status=0 err=TimeoutError"),
+    )
+    for label, rd, desc in bad_reads:
+        c = Clock()
+        ex = _r2_suspect_ex(c)
+        tab = ReadTab(ex, [t_skip("cart_qty_over", qty=4)] if label == "stacked" else [t_pre(429, FS_BODY)],
+                      c, [rd])
+        (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="1")
+        check(f"r2q_not_exact_pre_po[{label}]", [m for _, m, _ in tab.tickets] == ["pre_po"]
+              and len(tab.read_ts) == 1 and "pre_po instead of po_only (cart read: " in run.last_out
+              and desc in run.last_out, (tab.tickets, run.last_out[-300:]))
+        if label == "stacked":
+            check("r2q_stacked_never_bought", r.get("reason") == "cart_qty_cleared"
+                  and ex.deletes and ex.deletes[-1]["only"] == TCIN, r)
+    # Kill-switch: TARGET_WONCART_SUSPECT_READ=0 -> R1 behaviour (no read, pre_po).
+    c = Clock()
+    ex = _r2_suspect_ex(c)
+    tab = ReadTab(ex, [t_pre(429, FS_BODY)], c, [R2_EXACT])
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="1", TARGET_WONCART_SUSPECT_READ="0")
+    check("r2q_killswitch_r1_behaviour", [m for _, m, _ in tab.tickets] == ["pre_po"] and not tab.read_ts
+          and "(cart read: read off)" in run.last_out, (tab.tickets, tab.read_ts))
+    # No suspicion -> no read at all (the verified po_only path is unchanged).
+    c = Clock()
+    ex = _r2_suspect_ex(c, orphan_age=301.0)
+    tab = ReadTab(ex, [t_po(429, FS_BODY)] * 2, c, [R2_EXACT])
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2")
+    check("r2q_no_suspect_no_read", [m for _, m, _ in tab.tickets] == ["po_only"] * 2 and not tab.read_ts,
+          (tab.tickets, tab.read_ts))
+    # A harvest suspicion cleared by an exact read: one read, then plain po_only.
+    c = Clock()
+    ex = _r2_suspect_ex(c, orphan_age=301.0)
+    ex._harvest_landed_suspect = True
+    ex._harvest_landed_suspect_ts = c.t
+    tab = ReadTab(ex, [t_po(429, FS_BODY)] * 3, c, [R2_EXACT])
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    check("r2q_harvest_suspect_one_read", [m for _, m, _ in tab.tickets] == ["po_only"] * 3
+          and len(tab.read_ts) == 1 and ex._woncart_suspect_cleared_ts == tab.read_ts[0],
+          (tab.tickets, tab.read_ts, ex._woncart_suspect_cleared_ts))
+    # ...a failed read leaves the harvest suspicion to the strict gate.
+    c = Clock()
+    ex = _r2_suspect_ex(c, orphan_age=301.0)
+    ex._harvest_landed_suspect = True
+    ex._harvest_landed_suspect_ts = c.t
+    tab = ReadTab(ex, [t_prepo(429, FS_BODY), t_po(429, FS_BODY)], c, [{"ok": False, "status": 503, "items": []}])
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2")
+    check("r2q_harvest_failed_read_pre_po_once", [m for _, m, _ in tab.tickets] == ["pre_po", "po_only"]
+          and len(tab.read_ts) == 1, (tab.tickets, tab.read_ts))
+    # Pure helper.
+    ex_ = pe_mod.woncart_read_exact
+    check("r2q_exact_unit", ex_(R2_EXACT, TCIN, 2) == 2 and ex_(R2_EXACT, int(TCIN), 2) == 2
+          and ex_({"ok": True, "items": [{"tcin": TCIN, "qty": 1.0}]}, TCIN, 2) == 1)
+    for label, rd, q in (("over_q", R2_EXACT, 1), ("ok_truthy_not_true", dict(R2_EXACT, ok=1), 2),
+                         ("zero", {"ok": True, "items": [{"tcin": TCIN, "qty": 0}]}, 2),
+                         ("fraction", {"ok": True, "items": [{"tcin": TCIN, "qty": 1.5}]}, 2),
+                         ("nan", {"ok": True, "items": [{"tcin": TCIN, "qty": float("nan")}]}, 2),
+                         ("inf", {"ok": True, "items": [{"tcin": TCIN, "qty": float("inf")}]}, 2),
+                         ("bool", {"ok": True, "items": [{"tcin": TCIN, "qty": True}]}, 2),
+                         ("str_qty", {"ok": True, "items": [{"tcin": TCIN, "qty": "2"}]}, 2),
+                         ("bad_item", {"ok": True, "items": ["x"]}, 2),
+                         ("items_not_list", {"ok": True, "items": "x"}, 2),
+                         ("not_dict", None, 2), ("blank_tcin", {"ok": True, "items": [{"tcin": "", "qty": 1}]}, 2)):
+        check(f"r2q_exact_unit_none[{label}]", ex_(rd, TCIN, q) is None, ex_(rd, TCIN, q))
+    check("r2q_desc_never_raises", isinstance(pe_mod.woncart_read_desc({"ok": True, "items": [None, 3]}), str)
+          and pe_mod.woncart_read_desc(None) == "no result")
+    check("r2q_cfg_default_on", pe_mod.woncart_cfg({})["suspect_read"] is True
+          and pe_mod.woncart_cfg({"TARGET_WONCART_SUSPECT_READ": " 0 "})["suspect_read"] is False)
+
+
+def test_r2_held_entry_tagged():
+    """R2-DX-HELD-PASS: every final result of a held-cart re-entry (no ATC
+    fired) is tagged woncart_entry='held' and is not a DX-1 shot; a normal shot
+    after the marker is dropped is untagged and still counts."""
+    from src.purchasing import identity_rest as ir
+    c = Clock()
+    cases = (
+        ("loop_held", dict(read=EXACT_READ, probes={TCIN: True}), None, "won_cart_held"),
+        ("placed", dict(read=EXACT_READ, probes={TCIN: True}, loop_result=("placed", None)), None, None),
+        ("terminal", dict(read=EXACT_READ, probes={TCIN: True},
+                          loop_result=("terminal", {"success": False, "tcin": TCIN, "ambiguous_commit": True,
+                                                    "reason": "checkout_navigation_failed"})),
+         None, "checkout_navigation_failed"),
+        ("retired_loop", dict(read=EXACT_READ, probes={TCIN: True},
+                              loop_result=("done", {"success": False, "tcin": TCIN,
+                                                    "reason": "won_cart_retired"})), None, "won_cart_retired"),
+        ("idle_skip", dict(read=EXACT_READ, probes={TCIN: False}), None, "held_cart_idle_skip"),
+        ("other_live", dict(probes={OTHER: True, TCIN: True}), OTHER, "held_cart_other_tcin"),
+    )
+    for label, kw, htcin, reason in cases:
+        ex, tab = held_impl(c, mk_held(tcin=htcin or TCIN), **kw)
+        r = run_impl(ex, HELD)
+        check(f"r2h_tagged[{label}]", r.get("woncart_entry") == "held" and ex.fl_calls == []
+              and (r.get("success") is True if reason is None else r.get("reason") == reason), r)
+        check(f"r2h_not_a_shot[{label}]", ir.classify_result(r) is None, ir.classify_result(r))
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True},
+                        loop_result=("terminal", {"success": False, "tcin": TCIN, "ambiguous_commit": True,
+                                                  "reason": "checkout_navigation_failed"}))
+    r = run_impl(ex, HELD)
+    check("r2h_terminal_keeps_ambiguous", r.get("ambiguous_commit") is True, r)
+    # Marker dropped (empty cart) -> a normal shot: untagged, a recorded pass.
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "items": []}, probes={TCIN: True})
+    r = run_impl(ex, HELD)
+    check("r2h_normal_shot_untagged", "woncart_entry" not in r and ex.fl_calls == [2]
+          and ir.classify_result(r) == "pass", r)
+    # Retired marker (TTL) -> released, then a normal shot: untagged.
+    ex, tab = held_impl(c, mk_held(age=10_000.0), read=EXACT_READ, probes={TCIN: True})
+    r = run_impl(ex, HELD)
+    check("r2h_retired_then_shot_untagged", "woncart_entry" not in r and ex.fl_calls == [2], r)
+    # Re-entry flag off: no marker path, untagged.
+    ex, tab = held_impl(c, mk_held(), read=EXACT_READ, probes={TCIN: True})
+    r = run_impl(ex, ARMED)
+    check("r2h_flag_off_untagged", "woncart_entry" not in r, r)
+
+
+def test_r2_fs_ticket_ms_since_201():
+    """R2-DX-201TS: [FS_TICKET] ms_since_201 is measured from the browser's ATC
+    2xx stamp (out.atc.t1), not from loop entry; '-' when no such stamp exists
+    (FL-1 pre_0 entry, stamps off, stale/garbage stamp) and for a boot marker."""
+    def _ms(out):
+        return [re.search(r"ms_since_201=(\S+)", l).group(1)
+                for l in out.splitlines() if l.startswith("[FS_TICKET]")]
+
+    def _run(fl0, label):
+        c = Clock()
+        ex = bare(c)
+        tab = TicketTab(ex, [t_pre(429, FS_BODY)] * 2, c)
+        fl = json.loads(json.dumps(fl0)) if fl0 is not None else None
+        if isinstance(fl, dict) and isinstance(fl.get("atc"), dict) and "t1_age" in fl["atc"]:
+            age = fl["atc"].pop("t1_age")
+            fl["atc"]["t1"] = age if isinstance(age, (str, bool)) else int((c.t - age) * 1000)
+        (v, r), _ = loop_run(ex, tab, c, fl, TARGET_WONCART_MAX_TICKETS="2", TARGET_FS_TICKET_LOG="1")
+        return _ms(run.last_out), ex
+
+    fl_ok = dict(FL_PRE429, atc=dict(FL_PRE429["atc"], t0=0, t1_age=1.5))
+    ms, ex = _run(fl_ok, "t1")
+    # Chain came back 1.5 s after the 201; tickets at +5 s and +20 s of entry.
+    check("r2t_seeded_from_atc_t1", ms == ["6500", "21500"], ms)
+    L = ex._woncart_new_ledger(TCIN, 2, dict(FL_PRE429, atc={"status": 201, "t1": 1_799_999_998_500}),
+                               1_800_000_000.0)
+    check("r2t_ledger_src", L["first_201_src"] == "atc_t1" and L["first_201_ts"] == 1_799_999_998.5, L)
+    for label, age in (("stale_61s", 61.0), ("future", -2.0), ("bool", True), ("string", "123")):
+        ms, _ = _run(dict(FL_PRE429, atc=dict(FL_PRE429["atc"], t1_age=age)), label)
+        check(f"r2t_unmeasured_dash[{label}]", ms == ["-", "-"], ms)
+    ms, _ = _run(FL_PRE429, "no_stamp")
+    check("r2t_no_stamp_dash", ms == ["-", "-"], ms)
+    syn = pe_mod.fast_lane_timeout_outcome({"s": "pre", "aborted": True, "atc": 201})
+    ms, _ = _run(syn, "fl1_pre0")
+    check("r2t_fl1_pre0_dash", ms == ["-", "-"], ms)
+    # A boot marker (no 201 ever seen) re-entered as held -> '-'.
+    c = Clock()
+    ex = bare(c)
+    ex._held_cart = mk_held(source="boot", first_201_src="boot", verified=False, last_ticket_ts=0.0,
+                            tickets=0)
+    tab = TicketTab(ex, [t_pre(429, FS_BODY)], c)
+    loop_run(ex, tab, c, None, entry="held", TARGET_HELD_CART_REENTRY="1",
+             TARGET_WONCART_MAX_TICKETS="1", TARGET_FS_TICKET_LOG="1")
+    check("r2t_boot_marker_dash", _ms(run.last_out) == ["-"], run.last_out[-400:])
+    # The held re-entry of a stamped cart keeps measuring from that 201.
+    c = Clock()
+    ex = bare(c)
+    ex._held_cart = mk_held(first_201_src="atc_t1", first_201_ts=c.t - 100.0, last_ticket_ts=c.t - 50.0,
+                            tickets=3)
+    tab = TicketTab(ex, [t_po(429, FS_BODY)], c)
+    loop_run(ex, tab, c, None, entry="held", TARGET_HELD_CART_REENTRY="1",
+             TARGET_WONCART_MAX_TICKETS="4", TARGET_FS_TICKET_LOG="1")
+    got = _ms(run.last_out)
+    check("r2t_held_keeps_201", len(got) == 1 and got[0].isdigit() and int(got[0]) >= 100_000, got)
+    # The boot audit's marker is labelled.
+    src = Path(pe_mod.__file__).read_text(encoding="utf-8")
+    check("r2t_boot_marker_src", "'first_201_src': 'boot', 'tickets': 0," in src)
+
+
+class _QuickWaitShim(AsyncioShim):
+    """AsyncioShim whose wait_for budgets are scaled x0.005 (12 s -> 60 ms,
+    8 s -> 40 ms, 2 s -> 10 ms); sleep() still advances the fake clock."""
+
+    async def wait_for(self, aw, timeout=None):
+        return await REAL_ASYNCIO.wait_for(aw, None if timeout is None else timeout * 0.005)
+
+
+@contextlib.contextmanager
+def quick_fake_time(clock):
+    shim = _QuickWaitShim(clock)
+    saved = (pe_mod.time, pe_mod.asyncio)
+    pe_mod.time = TimeShim(clock)
+    pe_mod.asyncio = shim
+    try:
+        yield shim
+    finally:
+        pe_mod.time, pe_mod.asyncio = saved
+
+
+class FlHangTab(ReadTab):
+    """The fast-lane chain (or the legacy 8 s ATC evaluate) hangs; the FL-1
+    read-and-abort answers `fl_abort`; tickets / cart reads as ReadTab."""
+
+    def __init__(self, ex, script, clock, reads, fl_abort=None):
+        super().__init__(ex, script, clock, reads)
+        self.fl_abort = fl_abort
+        self.hung = 0
+        self.fl_reads = 0
+
+    async def evaluate(self, js, await_promise=False, **kw):
+        if "atc: e.atc" in js and "e.abort = true" in js:
+            self.fl_reads += 1
+            return self.fl_abort
+        if "const MODE = '" not in js and "web_checkouts/v1/cart?" not in js and (
+                "const _SK = '" in js or "cart_items" in js):
+            self.hung += 1
+            await REAL_ASYNCIO.sleep(30)
+            return {}
+        return await super().evaluate(js, await_promise, **kw)
+
+
+def test_r2_fl1_orphan_stamp_feeds_loop():
+    """R2-TEST-FL1-ORPHAN: the REAL FL-1 timeout branch (armed: stage tracking +
+    WC-1 forcing the qty guard) stamps _orphan_atc_ts on an 'atc'-stage abort,
+    and a won-cart loop entered right after reads the cart before any po_only
+    ticket (pre_po when the read is not exact). Replacing the stamp with `pass`
+    fails this test."""
+    for label, rd, want in (("empty_read", {"ok": True, "status": 200, "items": []}, "pre_po"),
+                            ("stacked_read", {"ok": True, "status": 200,
+                                              "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]}, "pre_po"),
+                            ("exact_read", R2_EXACT, "po_only")):
+        c = Clock()
+        ex = bare(c)
+        ex._orphan_atc_ts = 0.0
+        ex._woncart_suspect_cleared_ts = 0.0
+        tab = FlHangTab(ex, [t_skip("cart_qty_over", qty=4) if want == "pre_po" else t_po(429, FS_BODY)],
+                        c, [rd], fl_abort={"s": "atc", "aborted": True, "atc": 0})
+        e = dict(ARMED, TARGET_FASTLANE_STAGE_TRACK="1")
+        with in_tmp_cwd(), env(**e), quick_fake_time(c):
+            res = run(ex._api_fast_lane(tab, TCIN, 2, "{}"))
+        check(f"r2o_real_fl1_atc_abort[{label}]", res.get("skip") == "evaluate_timeout_atc"
+              and tab.hung == 1 and tab.fl_reads == 1, (res, tab.hung, tab.fl_reads))
+        check(f"r2o_real_fl1_stamp[{label}]", ex._orphan_atc_ts == c.t, (ex._orphan_atc_ts, c.t))
+        c.t += 20.0                                   # the re-race wins a cart 20 s later
+        ex._execute_started_at = ex._mgr_submit_ts = c.t
+        ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="1")
+        modes = [m for _, m, _ in tab.tickets]
+        check(f"r2o_loop_reads_before_po_only[{label}]", modes == [want] and len(tab.read_ts) == 1
+              and "late add of ours (orphan_atc)" in run.last_out, (modes, tab.read_ts))
+        if label == "stacked_read":
+            check("r2o_stacked_orphan_never_bought", r.get("reason") == "cart_qty_cleared", r)
+    # Legacy path (fast lane off): the 8 s ATC evaluate timeout stamps too.
+    c = Clock()
+    ex, _itab = impl_ex(c, FL_PRE429)
+    ex._orphan_atc_ts = 0.0
+    tab = FlHangTab(ex, [], c, [R2_EXACT])
+    for name in ("url", "handlers", "enabled_domains", "gets"):
+        setattr(tab, name, getattr(_itab, name))
+    tab.get = _itab.get
+    tab.send = _itab.send
+
+    async def _get_page():
+        return tab
+
+    ex.session_manager.get_page = _get_page
+    with in_tmp_cwd(), env(**dict(IMPL_ENV, TARGET_FAST_LANE="0")), quick_fake_time(c):
+        r = run(ex._execute_purchase_impl(TCIN, quantity=2))
+    check("r2o_legacy_atc_timeout_stamps", r.get("reason") == "atc_evaluate_timeout"
+          and tab.hung == 1 and ex._orphan_atc_ts == c.t and not ex.fl_calls,
+          (r, tab.hung, ex._orphan_atc_ts, c.t, run.last_out[-300:]))
 
 
 GLOBAL_HARNESS = r"""
@@ -2907,7 +3246,10 @@ def main():
              test_r1_yield_fleet_never_locks_out_held_reentry, test_r1_ride_kept_through_success_tail,
              test_r1_cvv_ledger_seed, test_r1_po_only_suspect_fallback, test_r1_page_global_removed,
              test_r1_boot_audit_delete_race, test_r1_held_marker_background_retire,
-             test_r1_node_missing_fails)
+             test_r1_node_missing_fails,
+             # review round R2 (2026-09-17)
+             test_r2_po_only_suspect_read, test_r2_fl1_orphan_stamp_feeds_loop,
+             test_r2_held_entry_tagged, test_r2_fs_ticket_ms_since_201)
     for fn in tests:
         try:
             fn()

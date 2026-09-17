@@ -408,6 +408,24 @@ def test_bat_hot_sku_0916_pins():
     i = lines.index("set TARGET_401_PULSE=1")
     check("bat_0916_pulse_inert_rem",
           any("TARGET_401_PULSE is INERT under TARGET_WAVE_FIRST_ONLY=1" in l for l in lines[i - 6:i]))
+    # R2 review (R2-DOC-STALE-ID1-REM): the note must not say ID-1 is unbuilt.
+    k = max(j for j in range(i) if "TARGET_401_PULSE is INERT" in lines[j])
+    note = " ".join(lines[k:i])
+    check("bat_0916_pulse_note_not_stale", "not built" not in note
+          and "built 2026-09-17 in review round R1, NOT armed" in note)
+    # R2 review (R2-DOC-PXPARK-KILL): the HV-1 kill REM names the real PX-park
+    # kill-switch; PX_PARK_S=0 is clamped to a 30 s park, not "off".
+    a = next(j for j, l in enumerate(lines) if l.startswith("REM HV-1 harvest:"))
+    b = lines.index("set TARGET_HARVEST_SKIP_DISABLES_REPLAY=1")
+    hv1 = " ".join(lines[a:b])
+    check("bat_0916_hv1_kill_rem", "Kill: each =0." not in hv1
+          and "Turn the PX park off with REM TARGET_HARVEST_MISS_PROBE=0" in hv1
+          and "PX_PARK_S=0 still parks 30 s" in hv1 and all(l.startswith("REM") for l in lines[a:b]))
+    from src.session import shape_harvest as _sh
+    _c0 = _sh.config({"TARGET_HARVEST_MISS_PROBE": "1", "TARGET_HARVEST_PX_PARK_S": "0"})
+    check("bat_0916_hv1_kill_rem_matches_code", _c0["px_park_s"] == 30.0 and _c0["miss_probe"] is True
+          and _sh.config({"TARGET_HARVEST_MISS_PROBE": "0"})["miss_probe"] is False
+          and _sh.config({"TARGET_HARVEST_MISS_SHOTS_MAX": "0"})["miss_shots_max"] == 0)
     # The new block: REM-or-set lines only, no trailing whitespace, cmd-safe REMs.
     s = next(k for k, l in enumerate(lines) if l.startswith("REM 2026-09-17 HOT-SKU FIX ARMING"))
     e = next(k for k in range(s, len(lines)) if lines[k].startswith("REM U2 per-TCIN qty pin"))

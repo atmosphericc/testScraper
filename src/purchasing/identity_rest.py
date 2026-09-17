@@ -67,6 +67,12 @@ NOT_RECORDED_REASONS = frozenset({
     'tcin_throttled_cooldown',
 })
 NOT_RECORDED_PREFIXES = ('held_cart_',)
+# R2 review (R2-DX-HELD-PASS, 2026-09-17): a held-cart re-entry fires checkout
+# tickets only, never an add-to-cart, and returns the loop's own result
+# (won_cart_held, checkout_busy_retryable, won_cart_retired, even a placed
+# order). The executor tags every such result woncart_entry='held'; it is not a
+# shot, so it is never recorded (it would count as a pass and close the run).
+NOT_RECORDED_ENTRIES = frozenset({'held'})
 
 # gate_kind values the executor emits (purchase_executor ATC bail branches).
 GATE_KINDS = ('auth401', 'edge', 'dco')
@@ -167,6 +173,8 @@ def classify_result(result) -> Optional[str]:
     try:
         if not isinstance(result, dict):
             return 'other'
+        if str(result.get('woncart_entry') or '').strip().lower() in NOT_RECORDED_ENTRIES:
+            return None
         if result.get('success'):
             return 'pass'
         reason = str(result.get('reason') or '').strip().lower()

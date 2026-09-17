@@ -459,7 +459,56 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
         'ride_on': ride_raw == '1',
         'ride_max_s': _num('TARGET_WON_CART_RIDE_MAX_S', 300, 0.0, 100000.0),
         'fs_cooldown_s': _num('TARGET_FAST_SELLING_COOLDOWN_S', 45, 0.0, 3600.0),
+        # R2 review (R2-QTY1-PO-SHAPE): while one of our own adds may still land
+        # (_woncart_cart_suspect), a po_only ticket first READS the cart and
+        # keeps the po_only shape only when the read shows exactly our TCIN at
+        # qty 1..Q. Kill-switch '0' = R1 behaviour (always fall back to pre_po).
+        'suspect_read': str(env.get('TARGET_WONCART_SUSPECT_READ', '1')).strip() != '0',
     }
+
+
+def woncart_read_exact(read, tcin, qty) -> Optional[int]:
+    """R2 review (R2-QTY1-PO-SHAPE): the summed quantity when a
+    _cart_items_read result proves the cart holds ONLY lines of our TCIN with a
+    finite whole quantity totalling 1..Q (the ticket JS strict gate's rule);
+    None otherwise (read failed, empty, a foreign or unknown line, unknown or
+    over qty). Never raises."""
+    try:
+        if not isinstance(read, dict) or read.get('ok') is not True:
+            return None
+        items = read.get('items')
+        if not isinstance(items, list) or not items:
+            return None
+        T = str(tcin)
+        total = 0.0
+        for it in items:
+            if not isinstance(it, dict) or str(it.get('tcin') or '') != T:
+                return None
+            q = it.get('qty')
+            if (isinstance(q, bool) or not isinstance(q, (int, float)) or q != q
+                    or q in (float('inf'), float('-inf'))):
+                return None
+            total += q
+        if total == int(total) and 1 <= total <= max(1, int(qty)):
+            return int(total)
+    except Exception:
+        return None
+    return None
+
+
+def woncart_read_desc(read) -> str:
+    """Short log description of a _cart_items_read result. Never raises."""
+    try:
+        if not isinstance(read, dict):
+            return 'no result'
+        if read.get('ok') is not True:
+            return f"failed status={read.get('status')} err={read.get('error', '-')}"
+        its = read.get('items') or []
+        return (f"{len(its)} line(s)"
+                + (' ' + ','.join(f"{i.get('tcin') or '?'}x{i.get('qty')}"
+                                  for i in its[:4] if isinstance(i, dict)) if its else ''))
+    except Exception:
+        return '?'
 
 
 def woncart_eligible(fl, reject_status: int = 0, reject_key: str = '') -> bool:
@@ -4162,6 +4211,11 @@ class PurchaseExecutor:
             if held_cart_reentry_on() and getattr(self, '_held_cart', None) is not None:
                 _held_res = await self._held_cart_entry(tab, tcin, quantity, start_time)
                 if _held_res is not None:
+                    if isinstance(_held_res, dict):
+                        # R2 review (R2-DX-HELD-PASS): no add-to-cart was fired
+                        # on this attempt, so the DX-1 tracker must not count it
+                        # as a shot (identity_rest.classify_result skips it).
+                        _held_res['woncart_entry'] = 'held'
                     return _held_res
             # 2026-09-16 plan P1 (S-B1): an order this purchase already placed
             # must never reach the fast lane / legacy ATC below.
@@ -8042,6 +8096,7 @@ class PurchaseExecutor:
         T = str(tcin)
         L: Dict[str, Any] = {
             'tcin': T, 'qty': int(qty), 'cart_id': '', 'created': now, 'first_201_ts': now,
+            'first_201_src': 'loop_entry',
             'tickets': 0, 'sched_used': 0, 'verified': False, 'pi_id': '',
             'cvv_put': 'none', 'last_ticket_ts': 0.0, 'fs_seen_ts': 0.0, 'source': 'first',
         }
@@ -8050,6 +8105,16 @@ class PurchaseExecutor:
             atc = fl0.get('atc') or {}
             pre = fl0.get('pre') or {}
             po = fl0.get('po') or {}
+            # R2 review (R2-DX-201TS): the loop starts only after the whole
+            # chain (pre_checkout, place-order, re-shoot, an FL-1 abort read)
+            # came back, so `now` is NOT when the add got its 2xx. Use the
+            # browser stamp out.atc.t1 (TARGET_FASTLANE_T_STAMPS) when it is
+            # within the last minute, as the legacy line does; otherwise the
+            # [FS_TICKET] line prints ms_since_201=- (see _log_fs_ticket).
+            _t1 = _dx_epoch_ms(atc.get('t1')) if isinstance(atc, dict) else None
+            if _t1 is not None and 0.0 <= now - _t1 / 1000.0 <= 60.0:
+                L['first_201_ts'] = _t1 / 1000.0
+                L['first_201_src'] = 'atc_t1'
             L['cart_id'] = _woncart_safe_id(pre.get('cart_id')) or _woncart_safe_id(atc.get('cart_id'))
             pis = pre.get('pi') or []
             if isinstance(pis, list) and pis and isinstance(pis[0], dict):
@@ -8099,7 +8164,15 @@ class PurchaseExecutor:
         ws = float(snap.get('window_start') or 0.0) if isinstance(snap, dict) else 0.0
         now = time.time()
         win_age = f"{now - ws:.0f}s" if ws else '-'
-        since_201 = int((now - float(L.get('first_201_ts') or now)) * 1000)
+        # R2 review (R2-DX-201TS): only a browser-stamped 2xx time is printed;
+        # a boot-audit marker has no 201 and a loop-entry fallback is not one
+        # ('-'). A ledger without first_201_src keeps the old reading.
+        _f201 = float(L.get('first_201_ts') or 0.0)
+        if (_f201 > 0 and L.get('source') != 'boot'
+                and str(L.get('first_201_src') or 'atc_t1') == 'atc_t1'):
+            since_201 = int((now - _f201) * 1000)
+        else:
+            since_201 = '-'
         # 2026-09-16 DX-1: envoy only from a stash that belongs to THIS
         # place-order (same status, written after it was fired).
         _envoy = '-'
@@ -8309,10 +8382,32 @@ class PurchaseExecutor:
                         # pending in the page), re-read it through the strict gate.
                         _sus = self._woncart_cart_suspect()
                         if _sus:
-                            L['verified'] = False
-                            mode = 'pre_po'
-                            print(f"[WON_CART_DIRECT] cart may hold a late add of ours ({_sus}) — "
-                                  f"pre_po instead of po_only ident={self._ident_tag()}")
+                            # R2 review (R2-QTY1-PO-SHAPE): a pre_po ticket stops
+                            # at a FAST_SELLING pre_checkout, so falling back
+                            # blindly sent NO place-order for the whole suspect
+                            # window. Read the cart first (Endpoint 6 GET: a
+                            # read, not the FS-limited pre_checkout) and keep the
+                            # 08-04 po_only shape when it shows exactly our TCIN
+                            # at qty 1..Q; anything else (read failure included)
+                            # goes through the strict gate. The check-then-post
+                            # gap is the same as pre_po's.
+                            _rq, _rdesc, _t_rd = None, 'read off', time.time()
+                            if cfg.get('suspect_read', True):
+                                _rd = await self._cart_items_read(tab)
+                                _rq = woncart_read_exact(_rd, T, Q)
+                                _rdesc = woncart_read_desc(_rd)
+                            if _rq is not None:
+                                # The read covers any harvest add flagged before it.
+                                self._woncart_suspect_cleared_ts = _t_rd
+                                print(f"[WON_CART_DIRECT] cart may hold a late add of ours ({_sus}) — "
+                                      f"cart read shows only {T} x{_rq}: po_only kept "
+                                      f"ident={self._ident_tag()}")
+                            else:
+                                L['verified'] = False
+                                mode = 'pre_po'
+                                print(f"[WON_CART_DIRECT] cart may hold a late add of ours ({_sus}) — "
+                                      f"pre_po instead of po_only (cart read: {_rdesc}) "
+                                      f"ident={self._ident_tag()}")
                     t_fire = time.time()
                     fl = await self._api_checkout_ticket(tab, T, Q, self._ticket_headers_js(), mode, L)
                     st['tickets_call'] += 1
@@ -8816,7 +8911,7 @@ class PurchaseExecutor:
                 now = time.time()
                 self._held_cart = {
                     'tcin': tc, 'qty': int(q), 'cart_id': '', 'created': now, 'first_201_ts': now,
-                    'tickets': 0, 'sched_used': 0, 'verified': False, 'pi_id': '',
+                    'first_201_src': 'boot', 'tickets': 0, 'sched_used': 0, 'verified': False, 'pi_id': '',
                     'cvv_put': 'none', 'last_ticket_ts': 0.0, 'fs_seen_ts': 0.0, 'source': 'boot',
                 }
                 print(f"{tag} single line tcin={tc} qty={int(q)} -> HELD (re-entered only while it "
