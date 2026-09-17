@@ -34,6 +34,52 @@ else:
     HAS_MSVCRT = False
     HAS_FCNTL = True
 
+
+# ── 2026-09-16 hot-sku 0916 plan: pure helpers (module-level so stub-based
+# tests that call BulletproofPurchaseManager methods on a stand-in object work).
+def _race_started_at_guard_on() -> bool:
+    """INF-2 (plan P10): TARGET_RACE_STATE_STARTED_AT_GUARD=1 stamps a missing
+    'started_at' on an in-flight purchase state instead of (a) force-completing
+    it with elapsed = the Unix epoch ("REAL purchase timeout after 1789548887s",
+    CA-8) or (b) letting the concurrency gate treat it as fresh forever.
+    Default '0' = exact prior behaviour. Kill-switch: =0."""
+    return os.environ.get('TARGET_RACE_STATE_STARTED_AT_GUARD', '0').strip() == '1'
+
+
+def _valid_started_at(v) -> bool:
+    """True for a usable epoch stamp (positive finite int/float, not bool)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    try:
+        return v > 0 and v == v and v != float('inf')
+    except Exception:
+        return False
+
+
+def _ac_latch_on() -> bool:
+    """AC-1 (plan P2): TARGET_AMBIGUOUS_COMMIT_LATCH=1 latches an (identity, TCIN)
+    for TARGET_AMBIGUOUS_COMMIT_LATCH_S after any result tagged
+    'ambiguous_commit' (a place-order POST with no received response) and after
+    every manager-side execution_timeout, so no re-race path (retry loop, level
+    re-arm) can fire a second order on a possibly-committed one. Default '0' =
+    exact prior behaviour. Kill-switch: =0."""
+    return os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH', '0').strip() == '1'
+
+
+def _ac_latch_ttl_s() -> float:
+    """Latch lifetime in seconds (default 1800, clamped to [60, 86400])."""
+    try:
+        v = float(str(os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH_S', '1800')).strip())
+    except (TypeError, ValueError):
+        v = 1800.0
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        v = 1800.0
+    return min(86400.0, max(60.0, v))
+
+
+_AC_INIT_LOCK = threading.Lock()
+
+
 class _PurchaseLogTee:
     """Tees sys.stdout to a purchase log file so every attempt is saved regardless of console scroll.
 
@@ -216,6 +262,11 @@ class BulletproofPurchaseManager:
         self._file_lock = threading.Lock()
         self._state_lock = threading.RLock()  # CRITICAL: RLock allows same thread to acquire multiple times
         self._active_purchases = {}  # Track active purchase threads
+        # 2026-09-16 AC-1: (worker label, tcin) -> epoch latched. Read/written
+        # only under TARGET_AMBIGUOUS_COMMIT_LATCH=1 (see _ac_latch_on).
+        self._ac_latch: Dict[tuple, float] = {}
+        self._ac_latch_lock = threading.Lock()
+        self._ac_skip_log_ts: Dict[str, float] = {}
         self._purchase_tee: Optional['_PurchaseLogTee'] = None  # Active purchase log tee
         self._warmup_cycle_counter: int = 0
         # Per-account Session Sentinel: periodically validates each worker is
@@ -582,6 +633,18 @@ class BulletproofPurchaseManager:
                     if is_real_purchase:
                         # Real purchase - only check for timeout (no force-completion on timer)
                         started_time = state.get('started_at', 0)
+                        # 2026-09-16 INF-2: a race record re-written without
+                        # 'started_at' used to be force-completed with elapsed =
+                        # the Unix epoch. Stamp it now and let the normal
+                        # _force_s window run from here instead.
+                        if _race_started_at_guard_on() and not _valid_started_at(started_time):
+                            state['started_at'] = current_time
+                            states[tcin] = state
+                            self._save_states_unsafe(states)
+                            print(f"[RACE_STATE] {tcin}: REAL purchase in '{state.get('status')}' had no "
+                                  f"started_at ({started_time!r}) — stamped now; force-complete clock "
+                                  f"starts here (TARGET_RACE_STATE_STARTED_AT_GUARD)")
+                            continue
                         elapsed_time = current_time - started_time
 
                         status = state.get('status')
@@ -1330,8 +1393,25 @@ class BulletproofPurchaseManager:
                     _consec_401 = 0
 
                     _attempt_n = 0
+                    # 2026-09-16 (plan P2/P9): identity for the in-thread skip.
+                    _skip_ident = self._ac_ident(worker)
+                    _skip_acct = str(getattr(getattr(worker, 'cfg', None), 'account_id', '') or '')
                     while True:
                         _attempt_n += 1
+                        # 2026-09-16 in-thread skip (AC-1 latch today). Attempt 1:
+                        # nothing fires and the race records the skip reason.
+                        # Later attempts: stop and keep the real prior result.
+                        # Returns '' (no-op) whenever every gating flag is off.
+                        _skip_why = self._thread_skip_reason(_skip_ident, _skip_acct, tcin)
+                        if _skip_why:
+                            if _attempt_n == 1:
+                                result = {'success': False, 'tcin': tcin, 'reason': _skip_why}
+                                print(f"[REAL_PURCHASE_THREAD] {_skip_ident} sits out {tcin}: "
+                                      f"{_skip_why} — nothing fired")
+                            else:
+                                print(f"[REAL_PURCHASE_THREAD] {_skip_ident} stops re-racing {tcin}: "
+                                      f"{_skip_why} — keeping attempt {_attempt_n - 1}'s result")
+                            break
                         # Submit to the Worker's own loop so N workers run concurrently.
                         if worker is not None:
                             future = worker.run_async(
@@ -1349,6 +1429,10 @@ class BulletproofPurchaseManager:
 
                         print(f"[REAL_PURCHASE_THREAD] [OK] Purchase execution completed "
                               f"(attempt {_attempt_n}): {result}")
+                        # 2026-09-16 AC-1: a possibly-committed place-order latches
+                        # this identity off the TCIN before any state write.
+                        if _ac_latch_on() and isinstance(result, dict) and result.get('ambiguous_commit'):
+                            self._ac_latch_mark(_skip_ident, tcin, str(result.get('reason') or ''))
 
                         if not _retry_on or result.get('success'):
                             break
@@ -1632,6 +1716,10 @@ class BulletproofPurchaseManager:
                 except TimeoutError:
                     print(f"[REAL_PURCHASE_THREAD] [ERROR] Purchase execution timed out after 150s — cancelling coroutine")
                     future.cancel()  # CRITICAL: cancels the asyncio Task, releasing _page_lock
+                    # 2026-09-16 AC-1: the manager cannot know whether a
+                    # place-order was in flight — always latch.
+                    if _ac_latch_on():
+                        self._ac_latch_mark(self._ac_ident(worker), tcin, 'execution_timeout')
                     failed_result = {
                         'success': False,
                         'tcin': tcin,
@@ -1755,6 +1843,7 @@ class BulletproofPurchaseManager:
                 'finished': 0,
                 'results': {},   # worker_label -> result dict
                 'units': 0,      # total units bought across accounts
+                't0': time.time(),   # 2026-09-16 INF-2: race start (read only under the guard flag)
             }
             print(f"[RACE] {tcin}: racing {len(ready_workers)} accounts → "
                   f"{[w.label() for w in ready_workers]}")
@@ -2208,6 +2297,141 @@ class BulletproofPurchaseManager:
             return ceiling, f"RedSky limit unreported — optimistic ceiling={ceiling} (executor 422/409 self-heals true limit-1)"
         return 1, "RedSky limit unreported, optimistic disabled"
 
+    # ── 2026-09-16 AC-1: ambiguous-commit latch (hot-sku 0916 plan P2) ────────
+    # Several paths can re-race a TCIN after a place-order POST that may have
+    # committed: the level re-arm (app.py) re-races every 'failed' TCIN, a
+    # fast-lane / legacy no-response returns checkout_navigation_failed, and
+    # purchase_impl_hang / execution_timeout can follow an in-flight POST.
+    # Target's checkout API has no idempotency key. So a tagged result (or any
+    # manager-side execution_timeout) latches that (identity, TCIN) for
+    # TARGET_AMBIGUOUS_COMMIT_LATCH_S: its thread sits out the TCIN (in-thread
+    # skip — no fan-out / race_agg change) and a race where EVERY candidate is
+    # latched is not opened at all. Cost: a genuinely failed identity loses its
+    # second chance on that TCIN for 30 min. Kill-switch: the flag =0.
+    _ac_error_log_path = 'logs/error_log.txt'
+
+    @staticmethod
+    def _ac_ident(worker) -> str:
+        """Latch/skip identity of a worker: its log label ('W1/primary'), or
+        'legacy' when no Worker object exists. Never raises."""
+        try:
+            if worker is not None:
+                return str(worker.label())
+        except Exception:
+            pass
+        return 'legacy'
+
+    def _ac_state(self):
+        """(latch dict, lock), created on first use for stand-in objects."""
+        d = getattr(self, '_ac_latch', None)
+        lk = getattr(self, '_ac_latch_lock', None)
+        if d is None or lk is None:
+            with _AC_INIT_LOCK:
+                if getattr(self, '_ac_latch', None) is None:
+                    self._ac_latch = {}
+                if getattr(self, '_ac_latch_lock', None) is None:
+                    self._ac_latch_lock = threading.Lock()
+                d, lk = self._ac_latch, self._ac_latch_lock
+        return d, lk
+
+    def _ac_latch_mark(self, ident, tcin, why: str = '') -> None:
+        """Latch (ident, tcin) now. Logs [AMBIGUOUS_COMMIT] + one error_log line.
+        Never raises."""
+        try:
+            d, lk = self._ac_state()
+            with lk:
+                d[(str(ident), str(tcin))] = time.time()
+            msg = (f"[AMBIGUOUS_COMMIT] {ident} {tcin} latched {_ac_latch_ttl_s():.0f}s — "
+                   f"check order history (why={why or 'unknown'})")
+            print(msg)
+            try:
+                _p = getattr(self, '_ac_error_log_path', 'logs/error_log.txt')
+                _d = os.path.dirname(_p)
+                if _d:
+                    os.makedirs(_d, exist_ok=True)
+                with open(_p, 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+            except Exception:
+                pass
+        except Exception as _e:
+            try:
+                print(f"[AMBIGUOUS_COMMIT] latch error (ignored): {_e}")
+            except Exception:
+                pass
+
+    def _ac_latched_left(self, ident, tcin, now: Optional[float] = None) -> float:
+        """Seconds left on the (ident, tcin) latch; 0.0 when none or expired
+        (expired entries are dropped). Never raises."""
+        try:
+            d, lk = self._ac_state()
+            now = time.time() if now is None else float(now)
+            key = (str(ident), str(tcin))
+            with lk:
+                ts = d.get(key)
+                if ts is None:
+                    return 0.0
+                left = float(ts) + _ac_latch_ttl_s() - now
+                if left <= 0:
+                    d.pop(key, None)
+                    return 0.0
+                return left
+        except Exception as _e:
+            try:
+                print(f"[AMBIGUOUS_COMMIT] latch read error (ignored): {_e}")
+            except Exception:
+                pass
+            return 0.0
+
+    def _thread_skip_reason(self, ident, acct, tcin) -> str:
+        """In-thread skip for one dispatched (identity, TCIN), checked at the top
+        of every retry-loop attempt. '' = fire normally. AC-1 only for now; the
+        plan's later stages add their own reasons here. `acct` is the bare
+        account id (unused by AC-1). Never raises; '' while the flags are off."""
+        try:
+            if _ac_latch_on() and self._ac_latched_left(ident, tcin) > 0:
+                return 'ambiguous_commit_latched'
+        except Exception:
+            pass
+        return ''
+
+    def _all_dispatch_candidates_latched(self, tcin) -> bool:
+        """True when EVERY identity a dispatch of `tcin` could use is latched:
+        the ready workers (race fan-out), else the pool primary, else the
+        legacy worker. Logged at most once a minute per TCIN. Never raises
+        (False = dispatch normally; the in-thread skip still applies)."""
+        try:
+            pool = getattr(self, 'worker_pool', None)
+            cands = []
+            if pool is not None:
+                try:
+                    cands = list(pool.ready_workers())
+                except Exception:
+                    cands = []
+                if not cands:
+                    try:
+                        cands = [pool.primary]
+                    except Exception:
+                        cands = []
+            if not cands:
+                cands = [getattr(self, 'worker', None)]
+            idents = [self._ac_ident(w) for w in cands]
+            lefts = [self._ac_latched_left(i, tcin) for i in idents]
+            if not lefts or not all(v > 0 for v in lefts):
+                return False
+            now = time.time()
+            logts = getattr(self, '_ac_skip_log_ts', None)
+            if logts is None:
+                logts = {}
+                self._ac_skip_log_ts = logts
+            if now - logts.get(str(tcin), 0.0) >= 60.0:
+                logts[str(tcin)] = now
+                _who = ', '.join(f"{i} {v:.0f}s" for i, v in zip(idents, lefts))
+                print(f"[AMBIGUOUS_COMMIT] {tcin} in stock but every candidate identity is "
+                      f"latched ({_who}) — not dispatching; check order history")
+            return True
+        except Exception:
+            return False
+
     def _record_race_result(self, tcin: str, result: Dict, race_agg: Dict, worker_label: Optional[str]):
         """Merge one racing worker's result into the shared aggregate and write
         the combined TCIN state. Called once per worker (one terminal result each).
@@ -2268,6 +2492,14 @@ class BulletproofPurchaseManager:
                 'final_outcome': ('purchased' if (all_done and any_success)
                                   else ('failed' if all_done else 'unknown')),
             }
+            # 2026-09-16 INF-2: the 60 s concurrency gate can reset this TCIN to a
+            # bare {'status': 'ready'} while racers are still in flight; the
+            # merge above then writes 'attempting' WITHOUT started_at, which
+            # check_and_complete_purchases read as elapsed = the Unix epoch.
+            if (status == 'attempting' and _race_started_at_guard_on()
+                    and not _valid_started_at(cur.get('started_at'))):
+                _t0 = race_agg.get('t0')
+                final_state['started_at'] = _t0 if _valid_started_at(_t0) else now
             if all_done:
                 final_state['completed_at'] = now
                 if orders:
@@ -2486,6 +2718,16 @@ class BulletproofPurchaseManager:
             for tcin, state in states.items():
                 if state.get('status') in ['attempting', 'queued']:
                     started_at = state.get('started_at', 0)
+                    # 2026-09-16 INF-2: a missing started_at read as elapsed 0,
+                    # so the record blocked every dispatch forever. Stamp it
+                    # now; the 60 s stuck rule below then applies normally.
+                    if _race_started_at_guard_on() and not _valid_started_at(started_at):
+                        started_at = time.time()
+                        state['started_at'] = started_at
+                        states[tcin] = state
+                        self._save_states_unsafe(states)
+                        print(f"[PURCHASE_CONCURRENCY] {tcin} in '{state.get('status')}' had no "
+                              f"started_at — stamped now; the 60 s stuck rule applies from here")
                     elapsed = time.time() - started_at if started_at else 0
 
                     # If active purchase is stuck (>60s), force-reset and allow new purchase
@@ -2651,6 +2893,12 @@ class BulletproofPurchaseManager:
                                       f"distinct hot SKU not pursued this cycle.")
                             else:
                                 print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
+                            continue
+
+                        # 2026-09-16 AC-1: every identity that would race this TCIN
+                        # is latched on a possibly-committed order — do not open an
+                        # empty race (each thread would only sit out).
+                        if _ac_latch_on() and self._all_dispatch_candidates_latched(tcin):
                             continue
 
                         # Start new purchase attempt.

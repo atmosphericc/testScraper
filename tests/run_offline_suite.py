@@ -39,6 +39,10 @@ OFFLINE = [
     "test_purchase_log_tee",
     "test_wedge_recovery_smoke",
     "test_session_sentinel_smoke",
+    # 2026-09-16 hot-sku 0916 plan (stage S1): flags-off fast-lane JS golden
+    # snapshot + AC-1 ambiguous-commit latch.
+    "test_fast_lane_golden",
+    "test_ambiguous_commit",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

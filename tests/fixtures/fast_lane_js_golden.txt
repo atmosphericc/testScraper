@@ -1,0 +1,712 @@
+##### VARIANT plain #####
+(async () => {
+            const H = {"X-GyJwza5Z-a": "tokA", "X-GyJwza5Z-b": "tokB", "x-application-name": "web"};
+            const mk = (ref) => Object.assign({}, H, {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Origin': 'https://www.target.com',
+                'Referer': ref,
+                'x-application-name': 'web',
+            });
+            const out = {
+                atc: {status: 0, body: '', cart_items: [], cart_id: '', wr: false},
+                pre: {status: 0, n: 0, tcins: [], pi: [], cart_id: ''},
+                po:  {status: 0, body: '', fired: false},
+                cvv: {put: -1, first: false, reshot: false, po1: 0},
+                skip: ''
+            };
+
+            // ── 1. Add to cart ────────────────────────────────────────────────
+            try {
+                const r = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+                    method: 'POST', credentials: 'include', 
+                    headers: mk('https://www.target.com/p/-/A-1010892069'),
+                    body: JSON.stringify({cart_item: {tcin: '1010892069', quantity: 2, item_channel_id: '10', fulfillment_type: 'SHIPPING', fulfillment_type_code: '02'}, cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'})
+                });
+                const t = await r.text();
+                out.atc.status = r.status;
+                out.atc.body = t.slice(0, 500);
+                out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);
+                try {
+                    const p = JSON.parse(t);
+                    if (p && p.cart_id) out.atc.cart_id = p.cart_id;
+                    if (p && p.tcin && p.cart_item_id) {
+                        out.atc.cart_items = [{tcin: p.tcin, quantity: p.quantity}];
+                    } else if (p && Array.isArray(p.cart_items)) {
+                        out.atc.cart_items = p.cart_items.map(
+                            it => ({tcin: it && it.tcin, quantity: it && it.quantity}));
+                    }
+                } catch(_) {}
+            } catch(e) {
+                out.atc.status = 0; out.atc.body = String(e);
+                out.skip = 'atc_threw'; return out;
+            }
+            if (out.atc.status !== 201 && out.atc.status !== 200) {
+                out.skip = 'atc_' + out.atc.status; return out;
+            }
+
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──
+            try {
+                const r2 = await fetch('https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/cart'),
+                    body: JSON.stringify({cart_type: 'REGULAR'})
+                });
+                const t2 = await r2.text();
+                out.pre.status = r2.status;
+                // 2026-09-11: keep the head of a NON-2xx body so a pre_checkout
+                // 429 can be attributed (FAST_SELLING vs other). The only ATC
+                // 201 of the 09-11 drop died on pre=429 with no key logged.
+                if (r2.status < 200 || r2.status > 299) {
+                    out.pre.body = String(t2 || '').slice(0, 300);
+                }
+                try {
+                    const p2 = JSON.parse(t2);
+                    if (p2 && p2.cart_id) out.pre.cart_id = p2.cart_id;
+                    const items = (p2 && p2.cart_items) || [];
+                    out.pre.n = items.length;
+                    out.pre.tcins = items.map(i => i && i.tcin);
+                    // Payment-instruction shape — intel for putting the CVV
+                    // challenge on the API fast path (Endpoint 8). Small fields
+                    // only; the full pre_checkout body is ~19KB and must not
+                    // cross the CDP boundary on the hot path.
+                    const pis = (p2 && p2.payment_instructions) || [];
+                    out.pre.pi = pis.slice(0, 3).map(pi => ({
+                        id: pi && (pi.payment_instruction_id || pi.id),
+                        type: pi && pi.payment_type,
+                        cvv: pi && (pi.cvv_required !== undefined ? pi.cvv_required
+                             : pi.requires_cvv !== undefined ? pi.requires_cvv : null)
+                    }));
+                } catch(_) {}
+            } catch(e) {
+                out.pre.status = 0;
+            }
+            if (out.pre.status !== 200 && out.pre.status !== 201) {
+                // Un-hydrated cart ⇒ a place-order now would 424
+                // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
+                // to the nav path, which hydrates by loading the page.
+                out.skip = 'pre_' + out.pre.status; return out;
+            }
+            // Cart-contents guard: place-order buys the WHOLE cart. If anything
+            // that is not our TCIN leaked in from a prior failed attempt, do not
+            // fire — let the legacy path run its cart-state checks first.
+            if (out.pre.tcins.some(t => t && t !== '1010892069')) {
+                out.skip = 'foreign_cart_item'; return out;
+            }
+
+            // ── 2.5 CVV PUT (Endpoint 8 — captured 07-24 + 07-28, identical) ──
+            // Exactly what the checkout page's CVV modal fires. The real-browser
+            // capture shows NO Shape X-headers on this endpoint, so none are
+            // sent — mimic the page, don't improve on it.
+            const CVV = '';
+            const cvvPut = async () => {
+                const pi0 = out.pre.pi && out.pre.pi[0];
+                const piId = pi0 && pi0.id;
+                if (!CVV || !piId) return -1;
+                try {
+                    const rc = await fetch(
+                        'https://carts.target.com/checkout_payments/v1/payment_instructions/'
+                        + piId + '?key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14',
+                        {
+                            method: 'PUT', credentials: 'include',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'x-application-name': 'web'
+                            },
+                            body: JSON.stringify({
+                                card_details: {cvv: CVV},
+                                cart_id: out.pre.cart_id || out.atc.cart_id || undefined,
+                                payment_type: 'CARD',
+                                wallet_mode: 'NONE'
+                            })
+                        });
+                    await rc.text();
+                    return rc.status;
+                } catch(e) { return 0; }
+            };
+            if (out.cvv.first) {
+                out.cvv.put = await cvvPut();
+            }
+
+            // ── 3. Place order ────────────────────────────────────────────────
+            // `fired` is set BEFORE the await: if the fetch throws or the
+            // evaluate is torn down, the POST may still have committed
+            // server-side and the caller must treat it as non-retryable.
+            out.po.fired = true;
+            try {
+                const r3 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/checkout'),
+                    body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                });
+                const t3 = await r3.text();
+                out.po.status = r3.status;
+                out.po.body = t3.slice(0, 2000);
+            } catch(e) {
+                out.po.status = 0; out.po.body = String(e);
+            }
+
+            // ── 3b. In-lane CVV recovery (2026-07-28) ─────────────────────────
+            // CORS hides tgt-cart-error-key from page JS, but a 400 at
+            // place-order has only ever been MISSING_CREDIT_CARD_CVV (07-21 ×4,
+            // 07-28 ×1). One PUT + one re-shoot, only when no PUT ran yet this
+            // chain. A received 400 is a definitive rejection ⇒ no order
+            // committed ⇒ the re-fire is double-buy-safe.
+            if (out.po.status === 400 && CVV && out.cvv.put === -1) {
+                out.cvv.po1 = out.po.status;
+                out.cvv.put = await cvvPut();
+                if (out.cvv.put >= 200 && out.cvv.put < 300) {
+                    out.cvv.reshot = true;
+                    try {
+                        const r4 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                            method: 'POST', credentials: 'include',
+                            headers: mk('https://www.target.com/checkout'),
+                            body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                        });
+                        const t4 = await r4.text();
+                        out.po.status = r4.status;
+                        out.po.body = t4.slice(0, 2000);
+                    } catch(e) {
+                        out.po.status = 0; out.po.body = String(e);
+                    }
+                }
+            }
+            return out;
+        })()
+##### END plain #####
+##### VARIANT bytematch #####
+(async () => {
+            const H = {"X-GyJwza5Z-a": "tokA", "X-GyJwza5Z-b": "tokB", "x-application-name": "web"};
+            const mk = (ref) => Object.assign({}, H, {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Origin': 'https://www.target.com',
+                'Referer': ref,
+                'x-application-name': 'web',
+            });
+            const out = {
+                atc: {status: 0, body: '', cart_items: [], cart_id: '', wr: false},
+                pre: {status: 0, n: 0, tcins: [], pi: [], cart_id: ''},
+                po:  {status: 0, body: '', fired: false},
+                cvv: {put: -1, first: false, reshot: false, po1: 0},
+                skip: ''
+            };
+
+            // ── 1. Add to cart ────────────────────────────────────────────────
+            try {
+                const r = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART%2CCART_ITEMS%2CSUMMARY&key=9f36aeafbe60771e321a7cc95a78140772ab3e96', {
+                    method: 'POST', credentials: 'include', 
+                    headers: mk('https://www.target.com/p/-/A-1010892069'),
+                    body: JSON.stringify({cart_item: {item_channel_id: '10', tcin: '1010892069', quantity: 2}, cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'})
+                });
+                const t = await r.text();
+                out.atc.status = r.status;
+                out.atc.body = t.slice(0, 500);
+                out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);
+                try {
+                    const p = JSON.parse(t);
+                    if (p && p.cart_id) out.atc.cart_id = p.cart_id;
+                    if (p && p.tcin && p.cart_item_id) {
+                        out.atc.cart_items = [{tcin: p.tcin, quantity: p.quantity}];
+                    } else if (p && Array.isArray(p.cart_items)) {
+                        out.atc.cart_items = p.cart_items.map(
+                            it => ({tcin: it && it.tcin, quantity: it && it.quantity}));
+                    }
+                } catch(_) {}
+            } catch(e) {
+                out.atc.status = 0; out.atc.body = String(e);
+                out.skip = 'atc_threw'; return out;
+            }
+            if (out.atc.status !== 201 && out.atc.status !== 200) {
+                out.skip = 'atc_' + out.atc.status; return out;
+            }
+
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──
+            try {
+                const r2 = await fetch('https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/cart'),
+                    body: JSON.stringify({cart_type: 'REGULAR'})
+                });
+                const t2 = await r2.text();
+                out.pre.status = r2.status;
+                // 2026-09-11: keep the head of a NON-2xx body so a pre_checkout
+                // 429 can be attributed (FAST_SELLING vs other). The only ATC
+                // 201 of the 09-11 drop died on pre=429 with no key logged.
+                if (r2.status < 200 || r2.status > 299) {
+                    out.pre.body = String(t2 || '').slice(0, 300);
+                }
+                try {
+                    const p2 = JSON.parse(t2);
+                    if (p2 && p2.cart_id) out.pre.cart_id = p2.cart_id;
+                    const items = (p2 && p2.cart_items) || [];
+                    out.pre.n = items.length;
+                    out.pre.tcins = items.map(i => i && i.tcin);
+                    // Payment-instruction shape — intel for putting the CVV
+                    // challenge on the API fast path (Endpoint 8). Small fields
+                    // only; the full pre_checkout body is ~19KB and must not
+                    // cross the CDP boundary on the hot path.
+                    const pis = (p2 && p2.payment_instructions) || [];
+                    out.pre.pi = pis.slice(0, 3).map(pi => ({
+                        id: pi && (pi.payment_instruction_id || pi.id),
+                        type: pi && pi.payment_type,
+                        cvv: pi && (pi.cvv_required !== undefined ? pi.cvv_required
+                             : pi.requires_cvv !== undefined ? pi.requires_cvv : null)
+                    }));
+                } catch(_) {}
+            } catch(e) {
+                out.pre.status = 0;
+            }
+            if (out.pre.status !== 200 && out.pre.status !== 201) {
+                // Un-hydrated cart ⇒ a place-order now would 424
+                // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
+                // to the nav path, which hydrates by loading the page.
+                out.skip = 'pre_' + out.pre.status; return out;
+            }
+            // Cart-contents guard: place-order buys the WHOLE cart. If anything
+            // that is not our TCIN leaked in from a prior failed attempt, do not
+            // fire — let the legacy path run its cart-state checks first.
+            if (out.pre.tcins.some(t => t && t !== '1010892069')) {
+                out.skip = 'foreign_cart_item'; return out;
+            }
+
+            // ── 2.5 CVV PUT (Endpoint 8 — captured 07-24 + 07-28, identical) ──
+            // Exactly what the checkout page's CVV modal fires. The real-browser
+            // capture shows NO Shape X-headers on this endpoint, so none are
+            // sent — mimic the page, don't improve on it.
+            const CVV = '';
+            const cvvPut = async () => {
+                const pi0 = out.pre.pi && out.pre.pi[0];
+                const piId = pi0 && pi0.id;
+                if (!CVV || !piId) return -1;
+                try {
+                    const rc = await fetch(
+                        'https://carts.target.com/checkout_payments/v1/payment_instructions/'
+                        + piId + '?key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14',
+                        {
+                            method: 'PUT', credentials: 'include',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'x-application-name': 'web'
+                            },
+                            body: JSON.stringify({
+                                card_details: {cvv: CVV},
+                                cart_id: out.pre.cart_id || out.atc.cart_id || undefined,
+                                payment_type: 'CARD',
+                                wallet_mode: 'NONE'
+                            })
+                        });
+                    await rc.text();
+                    return rc.status;
+                } catch(e) { return 0; }
+            };
+            if (out.cvv.first) {
+                out.cvv.put = await cvvPut();
+            }
+
+            // ── 3. Place order ────────────────────────────────────────────────
+            // `fired` is set BEFORE the await: if the fetch throws or the
+            // evaluate is torn down, the POST may still have committed
+            // server-side and the caller must treat it as non-retryable.
+            out.po.fired = true;
+            try {
+                const r3 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/checkout'),
+                    body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                });
+                const t3 = await r3.text();
+                out.po.status = r3.status;
+                out.po.body = t3.slice(0, 2000);
+            } catch(e) {
+                out.po.status = 0; out.po.body = String(e);
+            }
+
+            // ── 3b. In-lane CVV recovery (2026-07-28) ─────────────────────────
+            // CORS hides tgt-cart-error-key from page JS, but a 400 at
+            // place-order has only ever been MISSING_CREDIT_CARD_CVV (07-21 ×4,
+            // 07-28 ×1). One PUT + one re-shoot, only when no PUT ran yet this
+            // chain. A received 400 is a definitive rejection ⇒ no order
+            // committed ⇒ the re-fire is double-buy-safe.
+            if (out.po.status === 400 && CVV && out.cvv.put === -1) {
+                out.cvv.po1 = out.po.status;
+                out.cvv.put = await cvvPut();
+                if (out.cvv.put >= 200 && out.cvv.put < 300) {
+                    out.cvv.reshot = true;
+                    try {
+                        const r4 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                            method: 'POST', credentials: 'include',
+                            headers: mk('https://www.target.com/checkout'),
+                            body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                        });
+                        const t4 = await r4.text();
+                        out.po.status = r4.status;
+                        out.po.body = t4.slice(0, 2000);
+                    } catch(e) {
+                        out.po.status = 0; out.po.body = String(e);
+                    }
+                }
+            }
+            return out;
+        })()
+##### END bytematch #####
+##### VARIANT cvv_unlatched #####
+(async () => {
+            const H = {"X-GyJwza5Z-a": "tokA", "X-GyJwza5Z-b": "tokB", "x-application-name": "web"};
+            const mk = (ref) => Object.assign({}, H, {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Origin': 'https://www.target.com',
+                'Referer': ref,
+                'x-application-name': 'web',
+            });
+            const out = {
+                atc: {status: 0, body: '', cart_items: [], cart_id: '', wr: false},
+                pre: {status: 0, n: 0, tcins: [], pi: [], cart_id: ''},
+                po:  {status: 0, body: '', fired: false},
+                cvv: {put: -1, first: false, reshot: false, po1: 0},
+                skip: ''
+            };
+
+            // ── 1. Add to cart ────────────────────────────────────────────────
+            try {
+                const r = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY', {
+                    method: 'POST', credentials: 'include', 
+                    headers: mk('https://www.target.com/p/-/A-1010892069'),
+                    body: JSON.stringify({cart_item: {tcin: '1010892069', quantity: 2, item_channel_id: '10', fulfillment_type: 'SHIPPING', fulfillment_type_code: '02'}, cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'})
+                });
+                const t = await r.text();
+                out.atc.status = r.status;
+                out.atc.body = t.slice(0, 500);
+                out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);
+                try {
+                    const p = JSON.parse(t);
+                    if (p && p.cart_id) out.atc.cart_id = p.cart_id;
+                    if (p && p.tcin && p.cart_item_id) {
+                        out.atc.cart_items = [{tcin: p.tcin, quantity: p.quantity}];
+                    } else if (p && Array.isArray(p.cart_items)) {
+                        out.atc.cart_items = p.cart_items.map(
+                            it => ({tcin: it && it.tcin, quantity: it && it.quantity}));
+                    }
+                } catch(_) {}
+            } catch(e) {
+                out.atc.status = 0; out.atc.body = String(e);
+                out.skip = 'atc_threw'; return out;
+            }
+            if (out.atc.status !== 201 && out.atc.status !== 200) {
+                out.skip = 'atc_' + out.atc.status; return out;
+            }
+
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──
+            try {
+                const r2 = await fetch('https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/cart'),
+                    body: JSON.stringify({cart_type: 'REGULAR'})
+                });
+                const t2 = await r2.text();
+                out.pre.status = r2.status;
+                // 2026-09-11: keep the head of a NON-2xx body so a pre_checkout
+                // 429 can be attributed (FAST_SELLING vs other). The only ATC
+                // 201 of the 09-11 drop died on pre=429 with no key logged.
+                if (r2.status < 200 || r2.status > 299) {
+                    out.pre.body = String(t2 || '').slice(0, 300);
+                }
+                try {
+                    const p2 = JSON.parse(t2);
+                    if (p2 && p2.cart_id) out.pre.cart_id = p2.cart_id;
+                    const items = (p2 && p2.cart_items) || [];
+                    out.pre.n = items.length;
+                    out.pre.tcins = items.map(i => i && i.tcin);
+                    // Payment-instruction shape — intel for putting the CVV
+                    // challenge on the API fast path (Endpoint 8). Small fields
+                    // only; the full pre_checkout body is ~19KB and must not
+                    // cross the CDP boundary on the hot path.
+                    const pis = (p2 && p2.payment_instructions) || [];
+                    out.pre.pi = pis.slice(0, 3).map(pi => ({
+                        id: pi && (pi.payment_instruction_id || pi.id),
+                        type: pi && pi.payment_type,
+                        cvv: pi && (pi.cvv_required !== undefined ? pi.cvv_required
+                             : pi.requires_cvv !== undefined ? pi.requires_cvv : null)
+                    }));
+                } catch(_) {}
+            } catch(e) {
+                out.pre.status = 0;
+            }
+            if (out.pre.status !== 200 && out.pre.status !== 201) {
+                // Un-hydrated cart ⇒ a place-order now would 424
+                // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
+                // to the nav path, which hydrates by loading the page.
+                out.skip = 'pre_' + out.pre.status; return out;
+            }
+            // Cart-contents guard: place-order buys the WHOLE cart. If anything
+            // that is not our TCIN leaked in from a prior failed attempt, do not
+            // fire — let the legacy path run its cart-state checks first.
+            if (out.pre.tcins.some(t => t && t !== '1010892069')) {
+                out.skip = 'foreign_cart_item'; return out;
+            }
+
+            // ── 2.5 CVV PUT (Endpoint 8 — captured 07-24 + 07-28, identical) ──
+            // Exactly what the checkout page's CVV modal fires. The real-browser
+            // capture shows NO Shape X-headers on this endpoint, so none are
+            // sent — mimic the page, don't improve on it.
+            const CVV = '4567';
+            const cvvPut = async () => {
+                const pi0 = out.pre.pi && out.pre.pi[0];
+                const piId = pi0 && pi0.id;
+                if (!CVV || !piId) return -1;
+                try {
+                    const rc = await fetch(
+                        'https://carts.target.com/checkout_payments/v1/payment_instructions/'
+                        + piId + '?key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14',
+                        {
+                            method: 'PUT', credentials: 'include',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'x-application-name': 'web'
+                            },
+                            body: JSON.stringify({
+                                card_details: {cvv: CVV},
+                                cart_id: out.pre.cart_id || out.atc.cart_id || undefined,
+                                payment_type: 'CARD',
+                                wallet_mode: 'NONE'
+                            })
+                        });
+                    await rc.text();
+                    return rc.status;
+                } catch(e) { return 0; }
+            };
+            if (out.cvv.first) {
+                out.cvv.put = await cvvPut();
+            }
+
+            // ── 3. Place order ────────────────────────────────────────────────
+            // `fired` is set BEFORE the await: if the fetch throws or the
+            // evaluate is torn down, the POST may still have committed
+            // server-side and the caller must treat it as non-retryable.
+            out.po.fired = true;
+            try {
+                const r3 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/checkout'),
+                    body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                });
+                const t3 = await r3.text();
+                out.po.status = r3.status;
+                out.po.body = t3.slice(0, 2000);
+            } catch(e) {
+                out.po.status = 0; out.po.body = String(e);
+            }
+
+            // ── 3b. In-lane CVV recovery (2026-07-28) ─────────────────────────
+            // CORS hides tgt-cart-error-key from page JS, but a 400 at
+            // place-order has only ever been MISSING_CREDIT_CARD_CVV (07-21 ×4,
+            // 07-28 ×1). One PUT + one re-shoot, only when no PUT ran yet this
+            // chain. A received 400 is a definitive rejection ⇒ no order
+            // committed ⇒ the re-fire is double-buy-safe.
+            if (out.po.status === 400 && CVV && out.cvv.put === -1) {
+                out.cvv.po1 = out.po.status;
+                out.cvv.put = await cvvPut();
+                if (out.cvv.put >= 200 && out.cvv.put < 300) {
+                    out.cvv.reshot = true;
+                    try {
+                        const r4 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                            method: 'POST', credentials: 'include',
+                            headers: mk('https://www.target.com/checkout'),
+                            body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                        });
+                        const t4 = await r4.text();
+                        out.po.status = r4.status;
+                        out.po.body = t4.slice(0, 2000);
+                    } catch(e) {
+                        out.po.status = 0; out.po.body = String(e);
+                    }
+                }
+            }
+            return out;
+        })()
+##### END cvv_unlatched #####
+##### VARIANT prod_armed #####
+(async () => {
+            const H = {"X-GyJwza5Z-a": "tokA", "X-GyJwza5Z-b": "tokB", "x-application-name": "web"};
+            const mk = (ref) => Object.assign({}, H, {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Origin': 'https://www.target.com',
+                'Referer': ref,
+                'x-application-name': 'web',
+            });
+            const out = {
+                atc: {status: 0, body: '', cart_items: [], cart_id: '', wr: false},
+                pre: {status: 0, n: 0, tcins: [], pi: [], cart_id: ''},
+                po:  {status: 0, body: '', fired: false},
+                cvv: {put: -1, first: true, reshot: false, po1: 0},
+                skip: ''
+            };
+
+            // ── 1. Add to cart ────────────────────────────────────────────────
+            try {
+                const r = await fetch('https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART%2CCART_ITEMS%2CSUMMARY&key=9f36aeafbe60771e321a7cc95a78140772ab3e96', {
+                    method: 'POST', credentials: 'include', referrer: 'https://www.target.com/p/-/A-1010892069', referrerPolicy: 'no-referrer-when-downgrade',
+                    headers: mk('https://www.target.com/p/-/A-1010892069'),
+                    body: JSON.stringify({cart_item: {item_channel_id: '10', tcin: '1010892069', quantity: 2}, cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'})
+                });
+                const t = await r.text();
+                out.atc.status = r.status;
+                out.atc.body = t.slice(0, 500);
+                out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);
+                try {
+                    const p = JSON.parse(t);
+                    if (p && p.cart_id) out.atc.cart_id = p.cart_id;
+                    if (p && p.tcin && p.cart_item_id) {
+                        out.atc.cart_items = [{tcin: p.tcin, quantity: p.quantity}];
+                    } else if (p && Array.isArray(p.cart_items)) {
+                        out.atc.cart_items = p.cart_items.map(
+                            it => ({tcin: it && it.tcin, quantity: it && it.quantity}));
+                    }
+                } catch(_) {}
+            } catch(e) {
+                out.atc.status = 0; out.atc.body = String(e);
+                out.skip = 'atc_threw'; return out;
+            }
+            if (out.atc.status !== 201 && out.atc.status !== 200) {
+                out.skip = 'atc_' + out.atc.status; return out;
+            }
+
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──
+            try {
+                const r2 = await fetch('https://carts.target.com/web_checkouts/v1/pre_checkout?cart_type=REGULAR&field_groups=CART,CART_ITEMS,DELIVERY_WINDOWS,PAYMENT_INSTRUCTIONS,PROMOTION_CODES,SUMMARY,ADDRESSES', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/cart'),
+                    body: JSON.stringify({cart_type: 'REGULAR'})
+                });
+                const t2 = await r2.text();
+                out.pre.status = r2.status;
+                // 2026-09-11: keep the head of a NON-2xx body so a pre_checkout
+                // 429 can be attributed (FAST_SELLING vs other). The only ATC
+                // 201 of the 09-11 drop died on pre=429 with no key logged.
+                if (r2.status < 200 || r2.status > 299) {
+                    out.pre.body = String(t2 || '').slice(0, 300);
+                }
+                try {
+                    const p2 = JSON.parse(t2);
+                    if (p2 && p2.cart_id) out.pre.cart_id = p2.cart_id;
+                    const items = (p2 && p2.cart_items) || [];
+                    out.pre.n = items.length;
+                    out.pre.tcins = items.map(i => i && i.tcin);
+                    // Payment-instruction shape — intel for putting the CVV
+                    // challenge on the API fast path (Endpoint 8). Small fields
+                    // only; the full pre_checkout body is ~19KB and must not
+                    // cross the CDP boundary on the hot path.
+                    const pis = (p2 && p2.payment_instructions) || [];
+                    out.pre.pi = pis.slice(0, 3).map(pi => ({
+                        id: pi && (pi.payment_instruction_id || pi.id),
+                        type: pi && pi.payment_type,
+                        cvv: pi && (pi.cvv_required !== undefined ? pi.cvv_required
+                             : pi.requires_cvv !== undefined ? pi.requires_cvv : null)
+                    }));
+                } catch(_) {}
+            } catch(e) {
+                out.pre.status = 0;
+            }
+            if (out.pre.status !== 200 && out.pre.status !== 201) {
+                // Un-hydrated cart ⇒ a place-order now would 424
+                // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
+                // to the nav path, which hydrates by loading the page.
+                out.skip = 'pre_' + out.pre.status; return out;
+            }
+            // Cart-contents guard: place-order buys the WHOLE cart. If anything
+            // that is not our TCIN leaked in from a prior failed attempt, do not
+            // fire — let the legacy path run its cart-state checks first.
+            if (out.pre.tcins.some(t => t && t !== '1010892069')) {
+                out.skip = 'foreign_cart_item'; return out;
+            }
+
+            // ── 2.5 CVV PUT (Endpoint 8 — captured 07-24 + 07-28, identical) ──
+            // Exactly what the checkout page's CVV modal fires. The real-browser
+            // capture shows NO Shape X-headers on this endpoint, so none are
+            // sent — mimic the page, don't improve on it.
+            const CVV = '123';
+            const cvvPut = async () => {
+                const pi0 = out.pre.pi && out.pre.pi[0];
+                const piId = pi0 && pi0.id;
+                if (!CVV || !piId) return -1;
+                try {
+                    const rc = await fetch(
+                        'https://carts.target.com/checkout_payments/v1/payment_instructions/'
+                        + piId + '?key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14',
+                        {
+                            method: 'PUT', credentials: 'include',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Origin': 'https://www.target.com',
+                                'x-application-name': 'web'
+                            },
+                            body: JSON.stringify({
+                                card_details: {cvv: CVV},
+                                cart_id: out.pre.cart_id || out.atc.cart_id || undefined,
+                                payment_type: 'CARD',
+                                wallet_mode: 'NONE'
+                            })
+                        });
+                    await rc.text();
+                    return rc.status;
+                } catch(e) { return 0; }
+            };
+            if (out.cvv.first) {
+                out.cvv.put = await cvvPut();
+            }
+
+            // ── 3. Place order ────────────────────────────────────────────────
+            // `fired` is set BEFORE the await: if the fetch throws or the
+            // evaluate is torn down, the POST may still have committed
+            // server-side and the caller must treat it as non-retryable.
+            out.po.fired = true;
+            try {
+                const r3 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                    method: 'POST', credentials: 'include',
+                    headers: mk('https://www.target.com/checkout'),
+                    body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                });
+                const t3 = await r3.text();
+                out.po.status = r3.status;
+                out.po.body = t3.slice(0, 2000);
+            } catch(e) {
+                out.po.status = 0; out.po.body = String(e);
+            }
+
+            // ── 3b. In-lane CVV recovery (2026-07-28) ─────────────────────────
+            // CORS hides tgt-cart-error-key from page JS, but a 400 at
+            // place-order has only ever been MISSING_CREDIT_CARD_CVV (07-21 ×4,
+            // 07-28 ×1). One PUT + one re-shoot, only when no PUT ran yet this
+            // chain. A received 400 is a definitive rejection ⇒ no order
+            // committed ⇒ the re-fire is double-buy-safe.
+            if (out.po.status === 400 && CVV && out.cvv.put === -1) {
+                out.cvv.po1 = out.po.status;
+                out.cvv.put = await cvvPut();
+                if (out.cvv.put >= 200 && out.cvv.put < 300) {
+                    out.cvv.reshot = true;
+                    try {
+                        const r4 = await fetch('https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_groups=ADDRESSES%2CCART%2CCART_ITEMS%2CFINANCE_PROVIDERS%2CPAYMENT_INSTRUCTIONS%2CPICKUP_INSTRUCTIONS%2CPROMOTION_CODES%2CSUMMARY&key=e59ce3b531b2c39afb2e2b8a71ff10113aac2a14', {
+                            method: 'POST', credentials: 'include',
+                            headers: mk('https://www.target.com/checkout'),
+                            body: JSON.stringify({cart_type: 'REGULAR', channel_id: '10'})
+                        });
+                        const t4 = await r4.text();
+                        out.po.status = r4.status;
+                        out.po.body = t4.slice(0, 2000);
+                    } catch(e) {
+                        out.po.status = 0; out.po.body = String(e);
+                    }
+                }
+            }
+            return out;
+        })()
+##### END prod_armed #####

@@ -67,6 +67,15 @@ def fast_lane_atc_body_literal(tcin, quantity, bytematch: bool) -> str:
             "cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'}")
 
 
+def ambiguous_commit_latch_on() -> bool:
+    """2026-09-16 AC-1 (hot-sku 0916 plan P2): TARGET_AMBIGUOUS_COMMIT_LATCH=1
+    tags every result that follows a place-order POST with no received response
+    ('ambiguous_commit': True) and forces the legacy diagnosis non-retryable, so
+    the manager can latch that (identity, TCIN) and never re-race a possibly
+    committed order. Default '0' = exact prior result dicts. Kill-switch: =0."""
+    return os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH', '0').strip() == '1'
+
+
 class PurchaseExecutor:
     """Executes real purchases using persistent session and buy_bot logic"""
 
@@ -166,6 +175,15 @@ class PurchaseExecutor:
         # 150 s timeout to extend the wait instead of cancelling + restarting
         # the browser. 0.0 = not holding. Reset per purchase.
         self._won_cart_ride_until: float = 0.0
+        # 2026-09-16 AC-1 (ambiguous-commit latch). _po_inflight is True only
+        # while a place-order-capable evaluate is awaiting (left True if that
+        # await is cancelled, so the 140 s hang branch can tell); _po_ambiguous
+        # is set when a place-order POST left the browser and no response came
+        # back. _woncart_po_unresolved is the won-cart loop's copy (WC-1). All
+        # reset per purchase; read only under TARGET_AMBIGUOUS_COMMIT_LATCH=1.
+        self._po_inflight: bool = False
+        self._po_ambiguous: bool = False
+        self._woncart_po_unresolved: bool = False
         self._purchase_timeout_ctx = None      # live asyncio.Timeout while a purchase runs
         self._execute_started_at: float = 0.0  # epoch of the current execute_purchase()
         # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a rolling per-account
@@ -544,12 +562,19 @@ class PurchaseExecutor:
             # text includes 'websocket' on purpose — the manager's post-result
             # dead-websocket check keys on it and restarts this worker's
             # browser, so the NEXT trigger starts on a live session.
-            return {
+            _hang = {
                 'success': False,
                 'tcin': tcin,
                 'reason': 'purchase_impl_hang',
                 'error': 'purchase impl hung >140s — CDP websocket likely dead/wedged'
             }
+            if ambiguous_commit_latch_on():
+                # 2026-09-16 AC-1: a place-order evaluate was cancelled mid-await
+                # (or an earlier no-response POST is on record) — the manager
+                # latches this identity off the TCIN.
+                _hang['ambiguous_commit'] = bool(getattr(self, '_po_inflight', False)
+                                                 or getattr(self, '_po_ambiguous', False))
+            return _hang
         finally:
             self._purchase_timeout_ctx = None
 
@@ -2454,6 +2479,10 @@ class PurchaseExecutor:
         # MUST reset per purchase: a stale True would make the next attempt skip
         # the checkout+payment phases and report a phantom success.
         self._fastlane_placed = False
+        # 2026-09-16 AC-1: per-purchase ambiguous-commit state (see __init__).
+        self._po_inflight = False
+        self._po_ambiguous = False
+        self._woncart_po_unresolved = False
         # MUST reset per purchase: a stale ride deadline would let the manager
         # extend its wait for a purchase that is not holding any cart.
         self._won_cart_ride_until = 0.0
@@ -3701,6 +3730,15 @@ class PurchaseExecutor:
                     # Belt-and-suspenders vs double-buy: if any order_id was captured, never retry.
                     if self._api_order_id:
                         _precommit_retryable = False
+                    # 2026-09-16 AC-1: a place-order POST this purchase got NO
+                    # response (may have committed). A stale 429/424 from an
+                    # earlier shot, or busy copy on the page, must not turn that
+                    # into a retryable re-race. Kill: TARGET_AMBIGUOUS_COMMIT_LATCH=0.
+                    if ambiguous_commit_latch_on() and self._po_ambiguous:
+                        if _precommit_retryable:
+                            print("[PURCHASE] DIAGNOSIS override: a place-order POST got no "
+                                  "response this purchase (ambiguous commit) — NOT retryable")
+                        _precommit_retryable = False
                     import os as _os, datetime as _dt
                     _os.makedirs('logs', exist_ok=True)
                     with open('logs/error_log.txt', 'a', encoding='utf-8') as _f:
@@ -3722,12 +3760,15 @@ class PurchaseExecutor:
                 except Exception:
                     pass
                 _final_reason = 'checkout_busy_retryable' if _precommit_retryable else 'checkout_navigation_failed'
-                return {
+                _co_fail = {
                     'success': False,
                     'tcin': tcin,
                     'reason': _final_reason,
                     'execution_time': time.time() - start_time
                 }
+                if ambiguous_commit_latch_on() and self._po_ambiguous:
+                    _co_fail['ambiguous_commit'] = True     # 2026-09-16 AC-1
+                return _co_fail
 
             print(f"[PURCHASE] Checkout complete (t={time.time() - start_time:.1f}s)")
 
@@ -5794,12 +5835,16 @@ class PurchaseExecutor:
             print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got NO response "
                   f"(skip={fl.get('skip')}) — POST may have committed. "
                   f"Bailing terminal, NOT retrying.")
-            return 'terminal', {
+            self._po_ambiguous = True       # 2026-09-16 AC-1
+            _term = {
                 'success': False, 'tcin': tcin,
                 'reason': 'checkout_navigation_failed',
                 'error': 'fast-lane place-order got no response',
                 'execution_time': time.time() - start_time,
             }
+            if ambiguous_commit_latch_on():
+                _term['ambiguous_commit'] = True
+            return 'terminal', _term
 
         if status in (200, 201):
             # ORDER PLACED. Parse the validated shape
@@ -6141,10 +6186,15 @@ class PurchaseExecutor:
         t0 = time.time()
         print(f"[FAST_LANE] Firing ATC→pre_checkout→place-order chain "
               f"(tcin={tcin}, qty={quantity})")
+        # 2026-09-16 AC-1: True for the await only. Deliberately NOT cleared in a
+        # `finally`: if the 140 s purchase timeout cancels this await, the flag
+        # must still be True when execute_purchase's hang branch reads it.
+        self._po_inflight = True
         try:
             res = await asyncio.wait_for(
                 tab.evaluate(js, await_promise=True), timeout=12.0)
         except asyncio.TimeoutError:
+            self._po_inflight = False
             # Cannot prove the place-order POST did not commit ⇒ terminal.
             print("[FAST_LANE] evaluate timed out after 12s — place-order state "
                   "UNKNOWN, treating as no-response (non-retryable)")
@@ -6152,10 +6202,12 @@ class PurchaseExecutor:
                     'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
                     'skip': 'evaluate_timeout', 'elapsed': time.time() - t0}
         except Exception as e:
+            self._po_inflight = False
             print(f"[FAST_LANE] evaluate raised: {e} — place-order state UNKNOWN")
             return {'atc': {'status': 0, 'body': '', 'cart_items': []},
                     'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
                     'skip': f'evaluate_threw:{e}', 'elapsed': time.time() - t0}
+        self._po_inflight = False
 
         if not isinstance(res, dict):
             print(f"[FAST_LANE] unexpected result type {type(res)} — treating as unknown")
@@ -6258,6 +6310,9 @@ class PurchaseExecutor:
 
         t0 = time.time()
         print(f"[API_PLACE_ORDER] Firing checkout POST")
+        # 2026-09-16 AC-1: see _api_fast_lane — cleared on every return path,
+        # left True only when the await is cancelled.
+        self._po_inflight = True
         try:
             resp = await tab.evaluate(f"""(async () => {{
                 try {{
@@ -6288,10 +6343,12 @@ class PurchaseExecutor:
                 }}
             }})()""", await_promise=True)
         except Exception as fetch_err:
+            self._po_inflight = False
             print(f"[API_PLACE_ORDER] tab.evaluate raised: {fetch_err}")
             return {'success': False, 'status': 0, 'body': '',
                     'reason': f'fetch_threw:{fetch_err}',
                     'order_id': None, 'confirmation_url': None}
+        self._po_inflight = False
 
         elapsed = time.time() - t0
         status = resp.get('status', 0) if isinstance(resp, dict) else 0
@@ -6659,6 +6716,11 @@ class PurchaseExecutor:
                 print(f"[PAYMENT] [DOUBLE-BUY GUARD] place-order got NO response "
                       f"(reason={api_result.get('reason')}) — POST may have committed; "
                       f"NOT clicking DOM Place Order. Bailing terminal.")
+                # 2026-09-16 AC-1: the caller's diagnosis must not call this
+                # retryable (stale 429 key / busy copy); the result is tagged.
+                # capture_flag_active is a status-0 refusal that never fired.
+                if api_result.get('reason') != 'capture_flag_active':
+                    self._po_ambiguous = True
                 return False
             # Some failure reasons should NOT be retried via DOM — the order would
             # double-place if the API actually committed but we mis-parsed. Only
