@@ -80,6 +80,53 @@ def _ac_latch_ttl_s() -> float:
 _AC_INIT_LOCK = threading.Lock()
 
 
+def _qty_guard_on() -> bool:
+    """QG (plan P1 step 1b), mirrored from purchase_executor.fastlane_qty_guard_on:
+    on with TARGET_FASTLANE_QTY_GUARD=1 and forced on by TARGET_WONCART_DIRECT=1 /
+    TARGET_HELD_CART_REENTRY=1. Only effect here: 'cart_qty_cleared' (the fast
+    lane deleted a stacked line of our TCIN and bought nothing) is re-raced."""
+    return any(os.environ.get(k, '0').strip() == '1' for k in
+               ('TARGET_FASTLANE_QTY_GUARD', 'TARGET_WONCART_DIRECT', 'TARGET_HELD_CART_REENTRY'))
+
+
+def _stock_probe_on() -> bool:
+    """Plan P1 step 0: TARGET_STOCK_PROBE (default 1) — read-only stock probe for
+    the won-cart loop; =0 makes stock_snapshot() report live=None (unknown)."""
+    return os.environ.get('TARGET_STOCK_PROBE', '1').strip() != '0'
+
+
+def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        v = float(str(os.environ.get(name, str(default))).strip())
+    except (TypeError, ValueError):
+        v = float(default)
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        v = float(default)
+    return min(hi, max(lo, v))
+
+
+def _stock_status_snapshot(s, now: float) -> Dict:
+    """Pure: probe view of one TcinStatus. live is None when the status is
+    missing or older than TARGET_STOCK_PROBE_FRESH_S (15); otherwise True while
+    the last in_stock=True read is within TARGET_STOCK_HYST_S (20)."""
+    out = {'live': None, 'window_start': 0.0, 'last_true': 0.0,
+           'last_false': 0.0, 'age': None}
+    if s is None:
+        return out
+    lc = float(getattr(s, 'last_checked_at', 0.0) or 0.0)
+    lt = float(getattr(s, 'last_true_at', 0.0) or 0.0)
+    out['window_start'] = float(getattr(s, 'window_start_at', 0.0) or 0.0)
+    out['last_true'] = lt
+    out['last_false'] = float(getattr(s, 'last_false_at', 0.0) or 0.0)
+    if not lc:
+        return out
+    out['age'] = now - lc
+    if now - lc > _env_float_clamped('TARGET_STOCK_PROBE_FRESH_S', 15.0, 2.0, 120.0):
+        return out
+    out['live'] = bool(lt) and (now - lt) <= _env_float_clamped('TARGET_STOCK_HYST_S', 20.0, 5.0, 120.0)
+    return out
+
+
 class _PurchaseLogTee:
     """Tees sys.stdout to a purchase log file so every attempt is saved regardless of console scroll.
 
@@ -1263,6 +1310,14 @@ class BulletproofPurchaseManager:
                 worker = assigned_worker or self.worker
                 target_session_manager = worker.session_manager if worker else self.session_manager
                 target_purchase_executor = worker.purchase_executor if worker else self.purchase_executor
+                # 2026-09-16 plan P1 step 0: read-only stock probe for the
+                # flag-gated won-cart loop (attribute writes only).
+                if target_purchase_executor is not None:
+                    try:
+                        target_purchase_executor._stock_live_fn = self.stock_snapshot
+                        target_purchase_executor._other_live_fn = self.any_stock_live
+                    except Exception:
+                        pass
 
                 if worker is not None:
                     print(f"[DISPATCH] {tcin} → {worker.label()}")
@@ -1365,6 +1420,11 @@ class BulletproofPurchaseManager:
                     # Kill-switch: TARGET_RETRY_CHECKOUT_BUSY=0 restores one-shot.
                     if os.environ.get('TARGET_RETRY_CHECKOUT_BUSY', '1') != '0':
                         _transient_reasons.add('checkout_busy_retryable')
+                    # 2026-09-16 plan P1 step 1b (QG): the fast lane found MORE
+                    # than the requested qty of our TCIN in the cart, bought
+                    # nothing and deleted that line — re-race a clean ATC.
+                    if _qty_guard_on():
+                        _transient_reasons.add('cart_qty_cleared')
                     # Substrings that mean the item is genuinely gone — stop now.
                     _terminal_tokens = ('oos', 'out_of_stock', 'sold_out', 'reservation', 'unavailable')
 
@@ -1412,6 +1472,12 @@ class BulletproofPurchaseManager:
                                 print(f"[REAL_PURCHASE_THREAD] {_skip_ident} stops re-racing {tcin}: "
                                       f"{_skip_why} — keeping attempt {_attempt_n - 1}'s result")
                             break
+                        # 2026-09-16 plan P1: the won-cart loop caps its last
+                        # ticket by the manager's own wait deadline (stamp only).
+                        try:
+                            target_purchase_executor._mgr_submit_ts = time.time()
+                        except Exception:
+                            pass
                         # Submit to the Worker's own loop so N workers run concurrently.
                         if worker is not None:
                             future = worker.run_async(
@@ -2625,6 +2691,58 @@ class BulletproofPurchaseManager:
                 except Exception as _re:
                     print(f"[WON_CART_RIDE] could not stamp ride_until: {_re}")
                 timeout = max(1.0, min(30.0, left))
+
+    # ── 2026-09-16 hot-sku plan P1 step 0: read-only stock probe ────────────
+    # The executor has no stock state of its own; the RedSky sweep is 0-1 s
+    # fresh in 710/712 drop-hour STOCK WATCH lines. These are injected into
+    # every dispatched executor (_stock_live_fn / _other_live_fn) and only the
+    # flag-gated won-cart loop consumes them. Kill-switch: TARGET_STOCK_PROBE=0.
+    def stock_snapshot(self, tcin, now=None) -> Dict:
+        """{'live': True|False|None, 'window_start', 'last_true', 'last_false',
+        'age'} for one TCIN. Never raises (live None = unknown)."""
+        try:
+            now = time.time() if now is None else float(now)
+            if not _stock_probe_on():
+                return _stock_status_snapshot(None, now)
+            checker = getattr(getattr(self, 'stock_monitor', None), '_resilient_checker', None)
+            statuses = getattr(checker, '_tcin_status', None) if checker is not None else None
+            s = statuses.get(str(tcin)) if statuses is not None else None
+            return _stock_status_snapshot(s, now)
+        except Exception:
+            return {'live': None, 'window_start': 0.0, 'last_true': 0.0,
+                    'last_false': 0.0, 'age': None}
+
+    def any_stock_live(self, exclude_tcin=None, now=None) -> list:
+        """TCINs (other than exclude_tcin) whose probe reads live=True. The
+        checker mutates its dict on another loop, so the copy is retried once;
+        two failures return [] (logged at most once a minute). Never raises."""
+        try:
+            if not _stock_probe_on():
+                return []
+            checker = getattr(getattr(self, 'stock_monitor', None), '_resilient_checker', None)
+            statuses = getattr(checker, '_tcin_status', None) if checker is not None else None
+            if statuses is None:
+                return []
+            items = None
+            for _ in range(2):
+                try:
+                    items = list(statuses.items())
+                    break
+                except RuntimeError:
+                    continue
+            if items is None:
+                _now = time.time()
+                if _now - float(getattr(self, '_any_live_err_log_ts', 0.0) or 0.0) >= 60.0:
+                    self._any_live_err_log_ts = _now
+                    print("[STOCK_PROBE] any_stock_live: status dict changed during both copies — "
+                          "reporting no other live TCIN this tick")
+                return []
+            now = time.time() if now is None else float(now)
+            ex = None if exclude_tcin is None else str(exclude_tcin)
+            return [str(t) for t, s in items
+                    if str(t) != ex and _stock_status_snapshot(s, now)['live'] is True]
+        except Exception:
+            return []
 
     def get_all_states(self) -> Dict:
         """Get all purchase states for dashboard display (thread-safe)"""

@@ -108,6 +108,45 @@ class TcinStatus:
     title: str = ""
     consecutive_non_200: int = 0
     max_qty: int = 1
+    # 2026-09-16 hot-sku plan P1 step 0 (stock probe with hysteresis). Written by
+    # note_stock_read() only; read by the purchase manager's stock_snapshot().
+    # Nothing in this module branches on them.
+    last_true_at: float = 0.0
+    last_false_at: float = 0.0
+    window_start_at: float = 0.0
+    pickup: str = ""
+
+
+def stock_hyst_s() -> float:
+    """TARGET_STOCK_HYST_S (default 20, clamped 5..120): a live stock window
+    stays open this long after its last in_stock=True read, so one flickering
+    False read cannot end it and window_start_at is not reset by a flicker."""
+    try:
+        v = float(str(os.environ.get('TARGET_STOCK_HYST_S', '20')).strip())
+    except (TypeError, ValueError):
+        v = 20.0
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        v = 20.0
+    return min(120.0, max(5.0, v))
+
+
+def note_stock_read(s, fresh_in, now: float, hyst_s: float) -> None:
+    """Pure bookkeeping for one stock read of TcinStatus `s` (plan P1 step 0).
+
+    True read: a new window starts (window_start_at = now) only when there was
+    no True read within `hyst_s`; last_true_at = now. False read: last_false_at
+    = now. Never raises and never touches in_stock / last_checked_at."""
+    try:
+        now = float(now)
+        if fresh_in:
+            lt = float(getattr(s, 'last_true_at', 0.0) or 0.0)
+            if not lt or now - lt > float(hyst_s):
+                s.window_start_at = now
+            s.last_true_at = now
+        else:
+            s.last_false_at = now
+    except Exception:
+        pass
 
 
 class ResilientStockChecker:
@@ -581,6 +620,7 @@ class ResilientStockChecker:
 
         in_stock_transitions = []
         now = time.time()
+        _hyst = stock_hyst_s()
         async with self._status_lock:
             for tcin, info in parsed.items():
                 self._last_seen_at[str(tcin)] = now   # TCIN-VISIBILITY (2026-08-25)
@@ -592,6 +632,7 @@ class ResilientStockChecker:
                 s.in_stock = bool(info.get("in_stock"))
                 s.last_status_code = 200
                 s.last_checked_at = time.time()
+                note_stock_read(s, s.in_stock, s.last_checked_at, _hyst)
                 s.availability_status = info.get("availability_status", "UNKNOWN")
                 s.title = info.get("title", s.title)
                 s.max_qty = int(info.get("max_qty", s.max_qty or 1))
@@ -749,6 +790,7 @@ class ResilientStockChecker:
                     s.availability_status = avail
                     s.last_status_code = 200
                     s.last_checked_at = time.time()
+                    note_stock_read(s, True, s.last_checked_at, stock_hyst_s())
                     s.title = info.get("title", s.title)
                     s.max_qty = int(info.get("max_qty", s.max_qty or 1))
                     self._ever_seen_in_stock.add(tcin)
@@ -893,6 +935,7 @@ class ResilientStockChecker:
                             s.availability_status = info.get("availability_status", s.availability_status)
                             s.last_status_code = 200
                             s.last_checked_at = time.time()
+                            note_stock_read(s, True, s.last_checked_at, stock_hyst_s())
                             s.title = info.get("title", s.title)
                             s.max_qty = int(info.get("max_qty", s.max_qty or 1))
                             self._ever_seen_in_stock.add(t)

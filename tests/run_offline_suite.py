@@ -43,6 +43,11 @@ OFFLINE = [
     # snapshot + AC-1 ambiguous-commit latch.
     "test_fast_lane_golden",
     "test_ambiguous_commit",
+    # 2026-09-16 hot-sku 0916 plan P1 (stage S2b): won-cart direct checkout loop
+    # (+ stock probe, ticket JS, qty guard) and the fast-lane chain it builds on
+    # (node subprocess + stub tabs only; CVV flag persistence stubbed).
+    "test_won_cart_direct_smoke",
+    "test_fast_lane_checkout",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
