@@ -310,6 +310,110 @@ def test_bat_is_crlf():
     check("bat_pure_crlf", crlf > 0 and bare_lf == 0)
 
 
+# 2026-09-17 hot-sku 0916 stage S8: every newly armed flag, EXACT value. A
+# substring pin would let 'set X=5,15' pass on 'set X=5,150', so each pin must
+# be a whole bat line, appear once, carry no trailing whitespace, and be the
+# LAST assignment of that variable (cmd: the last set wins).
+HOT_0916 = ("1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,"
+            "1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279")
+BAT_0916_PINS = (
+    ("TARGET_AMBIGUOUS_COMMIT_LATCH", "1"),
+    ("TARGET_AMBIGUOUS_COMMIT_LATCH_S", "1800"),
+    ("TARGET_RACE_STATE_STARTED_AT_GUARD", "1"),
+    ("TARGET_STOCK_PROBE", "1"),
+    ("TARGET_STOCK_HYST_S", "20"),
+    ("TARGET_WONCART_DIRECT", "1"),
+    ("TARGET_WONCART_SCHEDULE_S", "5,15"),
+    ("TARGET_WONCART_STEADY_GAP_S", "45"),
+    ("TARGET_WONCART_OOS_TAIL_TICKETS", "1"),
+    ("TARGET_WONCART_MAX_TICKETS", "14"),
+    ("TARGET_WONCART_CALL_MAX_S", "120"),
+    ("TARGET_WONCART_HEADROOM_S", "45"),
+    ("TARGET_WONCART_YIELD_FLEET", "1"),
+    ("TARGET_HELD_CART_REENTRY", "1"),
+    ("TARGET_HELD_CART_TTL_S", "900"),
+    ("TARGET_RESHOOT_FORCE_REWARM", "0"),
+    ("TARGET_HOLD_QUIET_WARMUP", "1"),
+    ("TARGET_WARMUP_CYCLE_SKIP_ON_STOCK", "1"),
+    ("TARGET_FASTLANE_SKIP_DUP_PRE", "1"),
+    ("TARGET_WON_CART_RIDE_CLEAN_EXIT", "1"),
+    ("TARGET_FASTLANE_STAGE_TRACK", "1"),
+    ("TARGET_EXPOSURE_LOG", "1"),
+    ("TARGET_FASTLANE_T_STAMPS", "1"),
+    ("TARGET_FS_TICKET_LOG", "1"),
+    ("TARGET_IDENT_CENSUS", "1"),
+    ("TARGET_FASTLANE_LOG_CART_QTY", "1"),
+    ("TARGET_REDSKY_STORE_OPTIONS_LOG", "1"),
+    ("TARGET_HARVEST_SKIP_DISABLES_REPLAY", "1"),
+    ("TARGET_HARVEST_MISS_PROBE", "1"),
+    ("TARGET_HARVEST_MISS_SHOTS_MAX", "10"),
+    ("TARGET_HARVEST_PX_PARK_S", "300"),
+    ("TARGET_HARVEST_MISS_RENAV_LIVE", "0"),
+    ("TARGET_BANK_GATE_ADAPTIVE", "1"),
+    ("TARGET_HARVEST_FLUSH_ON_RELAUNCH", "1"),
+    ("TARGET_SENTINEL_LOG_SKIPS", "1"),
+    ("TARGET_CHROME_MAX_AGE_OFFSETS", "business:-300"),
+    ("TARGET_IDENTITY_REST", "0"),
+)
+# Built but deliberately NOT armed (U1=(a)/(b) code not built; U2 keeps qty 2;
+# live re-nav waits for probe data; quiet level 2 is an experiment).
+BAT_0916_UNARMED = ("TARGET_HOME_SHARE_GUARD", "TARGET_BG_SLOW_ACCOUNTS", "TARGET_BG_SLOW_FACTOR",
+                    "TARGET_QTY_PER_TCIN", "TARGET_BOOT_CART_AUDIT", "TARGET_FASTLANE_QTY_GUARD",
+                    "TARGET_HARVEST_BADLOAD_BACKOFF_S", "TARGET_IDENTITY_REST_S")
+
+
+def _bat_lines():
+    return BAT_PATH.read_bytes().decode('utf-8', 'replace').split('\r\n')
+
+
+def _bat_last_value(lines, name):
+    """Last cmd assignment of `name` (bare `set N=v` or quoted `set "N=v"`)."""
+    val = None
+    for line in lines:
+        s = line.strip()
+        low = s.lower()
+        if low.startswith(f'set "{name.lower()}='):
+            val = s[len(f'set "{name}='):]
+            val = val[:-1] if val.endswith('"') else val
+        elif low.startswith(f'set {name.lower()}='):
+            val = s[len(f'set {name}='):]
+    return val
+
+
+def test_bat_hot_sku_0916_pins():
+    lines = _bat_lines()
+    for name, value in BAT_0916_PINS:
+        pin = f"set {name}={value}"
+        check(f"bat_0916_exact[{pin}]", lines.count(pin) == 1)
+        check(f"bat_0916_last[{name}]", _bat_last_value(lines, name) == value)
+    park = f'set "TARGET_PARK_ACCOUNT_TCINS=alt-1:{HOT_0916}"'
+    check("bat_0916_park_exact_quoted", lines.count(park) == 1)
+    check("bat_0916_park_last", _bat_last_value(lines, "TARGET_PARK_ACCOUNT_TCINS") == f"alt-1:{HOT_0916}")
+    check("bat_0916_park_no_pipes", not any('TARGET_PARK_ACCOUNT_TCINS' in l and '|' in l for l in lines))
+    for name in BAT_0916_UNARMED:
+        check(f"bat_0916_unarmed[{name}]", _bat_last_value(lines, name) is None)
+    # Kept values (plan P13) and the PULSE-inert note beside the pulse pin.
+    for pin in ("set TARGET_FAST_SELLING_COOLDOWN_S=45", "set TARGET_401_PULSE=1",
+                "set TARGET_CHROME_MAX_AGE_S=2100", "set TARGET_WON_CART_RIDE=1",
+                "set TARGET_WAVE_FIRST_ONLY=1"):
+        check(f"bat_0916_kept[{pin}]", lines.count(pin) == 1)
+    i = lines.index("set TARGET_401_PULSE=1")
+    check("bat_0916_pulse_inert_rem",
+          any("TARGET_401_PULSE is INERT under TARGET_WAVE_FIRST_ONLY=1" in l for l in lines[i - 6:i]))
+    # The new block: REM-or-set lines only, no trailing whitespace, cmd-safe REMs.
+    s = next(k for k, l in enumerate(lines) if l.startswith("REM 2026-09-17 HOT-SKU FIX ARMING"))
+    e = next(k for k in range(s, len(lines)) if lines[k].startswith("REM U2 per-TCIN qty pin"))
+    blk = lines[s - 1:e + 6]
+    check("bat_0916_block_bounded", blk[0].startswith("REM =====") and blk[-1].startswith("REM ====="))
+    check("bat_0916_block_rem_or_set", all(l.startswith(("REM", "set ")) for l in blk))
+    check("bat_0916_block_no_trailing_ws", all(l == l.rstrip() for l in blk))
+    check("bat_0916_block_ascii", all(all(32 <= ord(c) < 127 for c in l) for l in blk))
+    check("bat_0916_rem_cmd_safe",
+          all(not (set('%!|&<>^') & set(l)) for l in blk if l.startswith("REM")))
+    check("bat_0916_block_before_launch",
+          e < next(k for k, l in enumerate(lines) if l.strip() == '"%PYTHON%" app.py'))
+
+
 # ---------------------------------------------------------------------------
 # 9. Modules still import/parse
 # ---------------------------------------------------------------------------
@@ -348,6 +452,7 @@ if __name__ == '__main__':
     test_referrer_pdp_wiring()
     test_bat_arming_pins()
     test_bat_is_crlf()
+    test_bat_hot_sku_0916_pins()
     test_executor_imports()
     test_manager_parses()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")

@@ -59,6 +59,10 @@ OFFLINE = [
     # (read before listing: node subprocess + fixtures + stubs only).
     "test_dx_logs",
     "test_redsky_apps_channel",
+    # 2026-09-17 hot-sku 0916 plan P5 option (c) (stage S8): per-account hot-TCIN
+    # park + its bat pin (stub workers only; checked against LIVE_MARKERS). The
+    # HS-1 / BG-1 / ID-1 enforcement tests join this file when that code lands.
+    "test_identity_rest",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

@@ -681,6 +681,10 @@ REM      0.9%% conversion on 07-31; the 401 is velocity-flat so hammering into
 REM      it is ~1%% EV). Edge-429s neither count nor reset the streak -- an
 REM      edge-lottery window never accumulates 3 and keeps FULL ticket cadence
 REM      (ticket doctrine unchanged there). Rollback: set TARGET_401_PULSE=0
+REM      2026-09-17: TARGET_401_PULSE is INERT under TARGET_WAVE_FIRST_ONLY=1
+REM      (below): a 401 takes the wave-first cold re-entry first, which also
+REM      resets the streak. Superseded by TARGET_IDENTITY_REST (per identity,
+REM      across races; enforcement not built yet). Kept armed and pinned.
 set TARGET_401_PULSE=1
 set TARGET_401_PULSE_STREAK=3
 set TARGET_401_PULSE_SLEEP_MIN=15
@@ -804,6 +808,136 @@ set TARGET_HARVEST_FRESH_PAGE=1
 set TARGET_HARVEST_FRESH_PAGE_LIVE=1
 set TARGET_HARVEST_FRESH_PAGE_MIN_GAP_S=15
 set TARGET_HARVEST_PREFER_NO_A0=1
+REM ===========================================================================
+REM 2026-09-17 HOT-SKU FIX ARMING (the 09-16 0-for). Why and what, in plain
+REM words: docs\HOT_SKU_FIX_2026_09_16.md. Plan with evidence:
+REM logs\analysis_2026_09_16\wf2\plan_final.md. Every flag below defaults to the
+REM prior behaviour in code, so each line's kill-switch is the value named in
+REM its note (or deleting the line).
+REM ---------------------------------------------------------------------------
+REM AC-1 ambiguous-commit latch: a place-order POST that got NO answer (or a
+REM manager execution_timeout) latches that identity off that TCIN for 30 min,
+REM so no retry or level re-arm can place a second order on a possibly-placed
+REM one. grep [AMBIGUOUS_COMMIT] (expect 0) and CHECK ORDER HISTORY if it shows.
+REM Kill: TARGET_AMBIGUOUS_COMMIT_LATCH=0 (the won-cart loop below then refuses
+REM to arm and stays inert).
+set TARGET_AMBIGUOUS_COMMIT_LATCH=1
+set TARGET_AMBIGUOUS_COMMIT_LATCH_S=1800
+REM INF-2: a race state without started_at is stamped, never force-completed
+REM with the Unix epoch as its age. Kill: TARGET_RACE_STATE_STARTED_AT_GUARD=0.
+set TARGET_RACE_STATE_STARTED_AT_GUARD=1
+REM WC-1 won-cart direct checkout loop: when an ATC 2xx cart hits
+REM FAST_SELLING at checkout, fire checkout tickets straight away (first at
+REM +5 s, two probe gaps 5 and 15 s once per cart, then one place-order-only
+REM ticket every 45 s while RedSky reads in stock) instead of the ~26 s
+REM nav/DOM detour and 45 s holds. 45 s place-order-only is the shape of the
+REM only through-FAST_SELLING win ever (08-04). STOCK_PROBE/HYST = RedSky
+REM freshness; MAX_TICKETS per cart; CALL_MAX caps one loop call (it holds
+REM the fleet); YIELD_FLEET ends it early when another armed TCIN is live.
+REM grep [WON_CART_DIRECT] and [FS_TICKET].
+REM Kill: TARGET_WONCART_DIRECT=0 (exact legacy path). Probes off (pure 45 s):
+REM TARGET_WONCART_SCHEDULE_S=0 -- an empty set X= UNSETS the variable, which
+REM restores the 5,15 default.
+set TARGET_STOCK_PROBE=1
+set TARGET_STOCK_HYST_S=20
+set TARGET_WONCART_DIRECT=1
+set TARGET_WONCART_SCHEDULE_S=5,15
+set TARGET_WONCART_STEADY_GAP_S=45
+set TARGET_WONCART_OOS_TAIL_TICKETS=1
+set TARGET_WONCART_MAX_TICKETS=14
+set TARGET_WONCART_CALL_MAX_S=120
+set TARGET_WONCART_HEADROOM_S=45
+set TARGET_WONCART_YIELD_FLEET=1
+REM WC-3 held-cart re-entry: a cart the loop still holds is re-entered with
+REM no new ATC when its TCIN reads live again (up to 15 min, 14 tickets per
+REM cart); a one-shot boot cart audit keeps or clears a leftover cart.
+REM grep [HELD_CART] and [BOOT_CART_AUDIT]. Kill: TARGET_HELD_CART_REENTRY=0.
+set TARGET_HELD_CART_REENTRY=1
+set TARGET_HELD_CART_TTL_S=900
+REM WC-2 hygiene on a held cart: no forced /cart re-warm before a legacy
+REM re-shoot, no warmup /cart nav while a cart is held, no fleet cycle-warm
+REM while stock is live, no duplicate pre_checkout, and a ride that ends as
+REM won_cart_ride_timeout instead of a false purchase_impl_hang browser
+REM restart. Kill: TARGET_RESHOOT_FORCE_REWARM=1, the other four =0.
+set TARGET_RESHOOT_FORCE_REWARM=0
+set TARGET_HOLD_QUIET_WARMUP=1
+set TARGET_WARMUP_CYCLE_SKIP_ON_STOCK=1
+set TARGET_FASTLANE_SKIP_DUP_PRE=1
+set TARGET_WON_CART_RIDE_CLEAN_EXIT=1
+REM FL-1: on a 12 s fast-lane evaluate timeout, one 2 s read aborts the page
+REM chain unless the place-order already started, so a stuck ATC or
+REM pre_checkout is retried instead of being treated as a possible
+REM double-buy. Armed because the node abort tests pass (stage S5).
+REM Kill: TARGET_FASTLANE_STAGE_TRACK=0.
+set TARGET_FASTLANE_STAGE_TRACK=1
+REM DX-1 log-only diagnostics for the next audit: [EXPOSURE] per shot,
+REM [IDENT_CENSUS] per race, atc_t0= atc_rt= arrival stamps, envoy_ms=,
+REM [FS_TICKET], cart_qty=, RedSky pickup fields ([STOCK WATCH] pickup= and
+REM [STOCK PICKUP]). Kill: each =0.
+set TARGET_EXPOSURE_LOG=1
+set TARGET_FASTLANE_T_STAMPS=1
+set TARGET_FS_TICKET_LOG=1
+set TARGET_IDENT_CENSUS=1
+set TARGET_FASTLANE_LOG_CART_QTY=1
+set TARGET_REDSKY_STORE_OPTIONS_LOG=1
+REM HV-1 harvest: a SKIPped account also turns replay off; a buttonless
+REM harvest load is probed once per nav (MISS-PROBE, at most 10 screenshots a
+REM run) and a PerimeterX page parks that harvester 300 s (no nav, no click);
+REM the bank gate stops waiting while the harvest is stuck; a relaunch
+REM flushes the bank. Live re-nav on a miss stays OFF until probe data exists.
+REM grep MISS-PROBE, [PX-CHALLENGE/harvest], [BANK_GATE] skipped.
+REM Kill: each =0.
+set TARGET_HARVEST_SKIP_DISABLES_REPLAY=1
+set TARGET_HARVEST_MISS_PROBE=1
+set TARGET_HARVEST_MISS_SHOTS_MAX=10
+set TARGET_HARVEST_PX_PARK_S=300
+set TARGET_HARVEST_MISS_RENAV_LIVE=0
+set TARGET_BANK_GATE_ADAPTIVE=1
+set TARGET_HARVEST_FLUSH_ON_RELAUNCH=1
+REM INF-1: print the sentinel ticks skipped while a purchase is in flight.
+REM Kill: TARGET_SENTINEL_LOG_SKIPS=0.
+set TARGET_SENTINEL_LOG_SKIPS=1
+REM ---------------------------------------------------------------------------
+REM U1 = (c), chosen 2026-09-17: PARK alt-1 on the hot TCINs. On 09-16 alt-1
+REM (BD 168.158.x) drew 61/181 carts-401s and 0/120 limiter passes there, and
+REM its shots add our own volume to the per-TCIN limiter that primary (the
+REM only hot-SKU converter) must pass. alt-1 keeps racing every other SKU.
+REM Boot line [PARK]; per race: sits out ... account_parked_hot.
+REM Format acct:tcin,tcin;acct2:tcin -- keep the quotes, never use pipes. Add
+REM each new hot TCIN you arm here. Kill: delete the line (nobody parked).
+set "TARGET_PARK_ACCOUNT_TCINS=alt-1:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279"
+REM business relaunches at 1800 s instead of 2100 s, so the two BD Chromes
+REM stop relaunching in the same second. Kill: delete the line.
+set TARGET_CHROME_MAX_AGE_OFFSETS=business:-300
+REM Identity-rest enforcement (ID-1) stays off under (c).
+set TARGET_IDENTITY_REST=0
+REM ---------------------------------------------------------------------------
+REM U1 = (a), alt-1 on the HOME IP: NOT READY. Its in-drop guard HS-1
+REM (TARGET_HOME_SHARE_GUARD) and volume cap BG-1 (TARGET_BG_SLOW_ACCOUNTS,
+REM TARGET_BG_SLOW_FACTOR) are NOT BUILT yet (stage S6 did not land), so those
+REM lines would do nothing today. After that code lands, and only once you
+REM have confirmed alt-1 and primary use a different address, card and phone:
+REM  1. stop the bot;
+REM  2. in config\target_accounts.json set alt-1 proxy_url to an empty string
+REM     and timezone to America/Chicago (commit the config first);
+REM  3. run hand_login_all.bat AFTER the edit (the tz change is a new device
+REM     seed), then check_session_readiness.py (3/3 MEMBER) and
+REM     preflight_fp_drop.py (its shared-IP WARN is expected);
+REM  4. in this file delete the TARGET_PARK_ACCOUNT_TCINS and
+REM     TARGET_CHROME_MAX_AGE_OFFSETS lines and add
+REM       set TARGET_HOME_SHARE_GUARD=1
+REM       set TARGET_BG_SLOW_ACCOUNTS=alt-1
+REM       set TARGET_BG_SLOW_FACTOR=2
+REM  5. launch once. Revert: restore proxy_url and timezone, hand-login again.
+REM U1 = (b), keep alt-1 on BD and run the rest experiment, needs ID-1
+REM enforcement (TARGET_IDENTITY_REST=1), also not built yet.
+REM ---------------------------------------------------------------------------
+REM U2 per-TCIN qty pin (NOT armed; hot SKUs stay qty 2): commit
+REM config\product_config.json, add a qty of 1 to the hot entries, then add
+REM set TARGET_QTY_PER_TCIN=1 here. A pin of 1 holds only while
+REM TARGET_PDP_QTY_LOOKUP stays off (the default). Zero-code alternative:
+REM set TARGET_QTY_OPTIMISTIC=0.
+REM ===========================================================================
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

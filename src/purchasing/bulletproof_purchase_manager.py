@@ -178,6 +178,99 @@ def _sentinel_log_skips_on() -> bool:
     return os.environ.get('TARGET_SENTINEL_LOG_SKIPS', '0').strip() == '1'
 
 
+# ── 2026-09-16 hot-sku plan P5 option (c) (U1=c): per-account hot-TCIN park ──
+# On 09-16 alt-1 (BD 168.158.x) drew 61/181 carts-401s and 0/120 limiter passes
+# on the hot TCINs, while its shots added own-volume to Target's per-TCIN
+# limiter that home-IP primary (the only hot-SKU converter) must pass.
+# TARGET_PARK_ACCOUNT_TCINS makes a listed account sit out the listed TCINs:
+# an in-thread skip (reason 'account_parked_hot') at the top of the race
+# thread's retry loop, before anything fires, so the account keeps racing every
+# other SKU. Format (cmd-safe, no pipes): 'acct:tcin,tcin;acct2:tcin'. Account
+# match is case-insensitive on the worker's account_id. Default '' = nobody
+# parked (prior behaviour). A malformed value parks NOBODY (fail-open to prior
+# behaviour) and prints one loud line. Kill-switch: set the variable empty
+# (a cmd `set X=` unsets it = the same). Race fan-out only
+# (TARGET_RACE_ALL_WORKERS, default 1); with the race off a parked sticky
+# worker just sits out and the level re-arm re-dispatches.
+_PARK_ENV = 'TARGET_PARK_ACCOUNT_TCINS'
+_PARK_LOCK = threading.Lock()
+_PARK_CACHE: Dict[str, object] = {'raw': None, 'map': {}}
+
+
+def _park_parse(raw) -> Dict[str, frozenset]:
+    """Pure: park value -> {account_id_lower: frozenset(tcin strings)}.
+    Raises ValueError on a malformed value (entry without ':', empty account,
+    empty TCIN list, non-digit TCIN). '' / None -> {}."""
+    s = str(raw or '').strip()
+    if not s:
+        return {}
+    out: Dict[str, set] = {}
+    for entry in s.split(';'):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ':' not in entry:
+            raise ValueError(f"entry {entry!r} has no ':'")
+        acct, _, tl = entry.partition(':')
+        acct = acct.strip().lower()
+        if not acct:
+            raise ValueError(f"entry {entry!r} has an empty account")
+        tcins = [t.strip() for t in tl.split(',') if t.strip()]
+        if not tcins:
+            raise ValueError(f"entry {entry!r} lists no TCIN")
+        for t in tcins:
+            if not t.isdigit():
+                raise ValueError(f"TCIN {t!r} in entry {entry!r} is not numeric")
+        out.setdefault(acct, set()).update(tcins)
+    return {a: frozenset(ts) for a, ts in out.items()}
+
+
+def _park_map() -> Dict[str, frozenset]:
+    """The parsed TARGET_PARK_ACCOUNT_TCINS, re-parsed only when the raw value
+    changes. Malformed -> {} plus one [PARK] line per distinct raw value.
+    Never raises."""
+    try:
+        raw = os.environ.get(_PARK_ENV, '')
+        with _PARK_LOCK:
+            if _PARK_CACHE['raw'] == raw:
+                return _PARK_CACHE['map']  # type: ignore[return-value]
+            try:
+                m = _park_parse(raw)
+            except ValueError as e:
+                m = {}
+                print(f"[PARK] {_PARK_ENV} is malformed ({e}) — IGNORED, no account is parked. "
+                      f"Format: acct:tcin,tcin;acct2:tcin")
+            _PARK_CACHE['raw'] = raw
+            _PARK_CACHE['map'] = m
+            return m
+    except Exception:
+        return {}
+
+
+def _park_hit(acct, tcin) -> bool:
+    """True when `acct` is parked on `tcin`. Never raises."""
+    try:
+        m = _park_map()
+        if not m:
+            return False
+        return str(tcin).strip() in m.get(str(acct or '').strip().lower(), frozenset())
+    except Exception:
+        return False
+
+
+def _park_banner() -> str:
+    """One boot line describing the active park, '' when nobody is parked."""
+    try:
+        m = _park_map()
+        if not m:
+            return ''
+        parts = ', '.join(f"{a} on {len(ts)} TCIN(s)" for a, ts in sorted(m.items()))
+        return (f"[PARK] {_PARK_ENV}: {parts} — those accounts sit out those TCINs "
+                f"(reason account_parked_hot) and keep racing every other SKU")
+    except Exception:
+        return ''
+
+
 # ── 2026-09-16 hot-sku plan P7 (DX-1) + P9 recorder: exposure / census ───────
 # The 09-16 401 wall tracked per-identity EXPOSURE on the hot TCIN; the next
 # audit needs it per shot, plus per-identity P(401) / pass per non-401 shot /
@@ -477,6 +570,11 @@ class BulletproofPurchaseManager:
         self._ac_latch: Dict[tuple, float] = {}
         self._ac_latch_lock = threading.Lock()
         self._ac_skip_log_ts: Dict[str, float] = {}
+        # 2026-09-16 plan P5 (c): print the active hot-TCIN park once at boot
+        # (nothing when TARGET_PARK_ACCOUNT_TCINS is empty/unset).
+        _pb = _park_banner()
+        if _pb:
+            print(_pb)
         # 2026-09-16 HV-1 (TARGET_BANK_GATE_ADAPTIVE): consecutive bank-gate
         # timeouts per worker label (see _bank_gate_skip_reason).
         self._bank_gate_timeouts: Dict[str, int] = {}
@@ -1613,6 +1711,12 @@ class BulletproofPurchaseManager:
                     # windows (429-dominant) almost never accumulate the streak
                     # and keep full ticket cadence — the doctrine there is
                     # unchanged. Kill-switch: TARGET_401_PULSE=0 (default).
+                    # 2026-09-16 (plan P9): INERT under TARGET_WAVE_FIRST_ONLY=1 (the
+                    # bat default) — a 401 takes the wave-first cold re-entry
+                    # branch first (it resets _consec_401), so the pulse elif
+                    # never runs.
+                    # Superseded by the cross-race TARGET_IDENTITY_REST (not built
+                    # yet). Kept armed + pinned (tests/test_0828_phase2_fixes.py).
                     _pulse_on = os.environ.get('TARGET_401_PULSE', '0') == '1'
                     _pulse_streak_n = max(1, int(os.environ.get('TARGET_401_PULSE_STREAK', '3')))
                     _pulse_lo = float(os.environ.get('TARGET_401_PULSE_SLEEP_MIN', '15'))
@@ -1626,7 +1730,7 @@ class BulletproofPurchaseManager:
                     _skip_acct = str(getattr(getattr(worker, 'cfg', None), 'account_id', '') or '')
                     while True:
                         _attempt_n += 1
-                        # 2026-09-16 in-thread skip (AC-1 latch today). Attempt 1:
+                        # 2026-09-16 in-thread skip (AC-1 latch, P5 park). Attempt 1:
                         # nothing fires and the race records the skip reason.
                         # Later attempts: stop and keep the real prior result.
                         # Returns '' (no-op) whenever every gating flag is off.
@@ -2697,14 +2801,19 @@ class BulletproofPurchaseManager:
 
     def _thread_skip_reason(self, ident, acct, tcin) -> str:
         """In-thread skip for one dispatched (identity, TCIN), checked at the top
-        of every retry-loop attempt. '' = fire normally. AC-1 only for now; the
-        plan's later stages add their own reasons here. `acct` is the bare
-        account id (unused by AC-1). Never raises; '' while the flags are off."""
+        of every retry-loop attempt. '' = fire normally. AC-1 latch first, then
+        the P5 (c) hot-TCIN park; ID-1 / HS-1 reasons are not built yet. `acct`
+        is the bare account id (the park key; unused by AC-1). Never raises;
+        '' while the flags are off."""
         try:
             if _ac_latch_on() and self._ac_latched_left(ident, tcin) > 0:
                 return 'ambiguous_commit_latched'
         except Exception:
             pass
+        # 2026-09-16 plan P5 (c): account parked on this hot TCIN
+        # (TARGET_PARK_ACCOUNT_TCINS; empty = nobody parked).
+        if _park_hit(acct, tcin):
+            return 'account_parked_hot'
         return ''
 
     def _all_dispatch_candidates_latched(self, tcin) -> bool:

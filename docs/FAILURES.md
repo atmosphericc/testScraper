@@ -31,11 +31,77 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
-### [2026-09-13] - 09-11 per-shot forensics: the richer real-click Shape sets (a0=yes) went 0/14 on limiter-passing shots; every win in history rode a small FIRST-CLICK set — fresh-page harvest - TARGET
+### [2026-09-16] - 09-16 drop 0-for (30th Celebration): one cart in the whole night, lost to checkout FAST_SELLING after a ~26.5 s self-inflicted detour; Bright Data accounts 0/292 at the edge limiter; alt-1 walled by 401s - TARGET
+**Symptom**: 4 hot TCINs live 02:15-04:46 CT (the Tin for 75 min). 544 fast-lane add-to-cart
+shots: 469 empty-body edge 429s (`ERR_A2C_TCIN_RATE_LIMITED`), 71 carts-401s, ONE 201 (home-IP
+primary, 03:29:43). That cart got FAST_SELLING on its pre_checkout (+~0.5 s) and on all 6 checkout
+POSTs, and the order was never placed. When the Tin came back at 03:44:55, primary re-fired qty-2
+add-to-carts without reading its cart. The ride ended as a false `purchase_impl_hang` (browser
+restart). alt-1's harvest page came back buttonless on 25/166 drop-hour loads.
+**Root Cause** (6 analysts + 31 verifiers, 0 refuted; then a design pass with two adversarial
+reviews; `logs/analysis_2026_09_16/`, plan `wf2/plan_final.md`):
+- **Edge limiter.** Home IP passed 4/181, BD 0/292 (Fisher p=0.021). September on these SKUs: home
+  9/206 vs BD 0/331. The BD hot pass rate fell 3.4% (Jul) -> 1.6% (mid-Aug) -> 0% (Sep), while BD
+  passed 31.3% on REGULAR SKUs in July. Every order in 13 run logs was a regular SKU. It is not a
+  pure lottery: 9/9 multi-identity passes went to the first-arriving shot (p=2.6e-4), and the
+  favoured identity was always the lowest-latency exit, so reputation vs latency is UNKNOWN.
+- **401 wall.** alt-1 61/181, business 10/182, primary 0/181. It tracks per-identity exposure
+  (unbroken shooting on the hot TCIN), NOT Chrome age (refuted on 3 nights). Whether a deliberate
+  pause resets it is unknown.
+- **Wording correction.** A 401 is NOT "a shot that got past the limiter". The 401 most likely
+  takes precedence over the limiter (plan L5: under the other model alt-1 would pass the limiter 34%
+  while primary passed 2.2% in the same instants, p=1.8e-16, and 401s come back 0.08-0.18 s slower,
+  i.e. deeper in the stack). From now on report per identity: P(401) over ALL shots, passes per
+  non-401 shot, and P(edge429).
+- **Checkout FAST_SELLING** answers in 5-14 ms, before the cart is evaluated, and it is not sticky
+  on a cart. The ONLY through-FS order in history (08-04, business) was business's OWN cart:
+  FS on its first place-order at +1.65 s -> a 42 s pre-shot hold -> ONE place-order-only POST
+  (`_api_place_order`) -> 200 (order 94f186c1, execution 47.6 s). The FS logged ~1 s before that
+  200 was a DIFFERENT executor's in-place re-shoot 2/4
+  (`logs/purchases/purchase_1011483414_20260804_020616.log`:469-531, 950-1003). Rapid re-shoots
+  have gone 0/~36.
+- **Self-inflicted.**
+  - After `skip=pre_429` the fast lane fell through to the legacy nav/DOM path: ~26.5 s before the
+    first checkout POST, so one provably in-stock checkout ticket in a 66 s window.
+  - Forced re-warms put a /cart nav and a `PUT cart ADDRESSES` on the held cart, and a duplicate
+    pre_checkout fired.
+  - The ride exit was mislabelled as a hang.
+  - The held cart was never read before a re-race.
+  - Latent re-race paths after a no-response place-order (double-buy exposure; never observed).
+- **Infra.**
+  - business and alt-1 relaunched Chrome in the same second at 37-45 min.
+  - A race state without `started_at` was force-completed with elapsed = the Unix epoch.
+  - `TARGET_HARVEST_SKIP` did not disable replay (49 x 8 s bank-gate waits).
+**Fix Applied** (stages S1-S8, local commits `50a5727c` .. S8, NOT pushed; every change is flag-gated
+with the old behaviour as the code default, armed in the CRLF bat; plain-language summary,
+kill-switches and user decisions in `docs/HOT_SKU_FIX_2026_09_16.md`):
+- AC-1 ambiguous-commit latch; INF-2 `started_at` stamp.
+- WC-1 won-cart direct checkout loop:
+  - separate ticket JS with a strict cart gate and atomic abort;
+  - probes at +5/+15 s once per cart, then 45 s place-order-only;
+  - read-only RedSky stock probe; qty guard.
+- WC-3 held-cart re-entry + boot cart audit.
+- WC-2 held-cart hygiene + ride clean exit.
+- DX-1 diagnostics: `[EXPOSURE]`, `[IDENT_CENSUS]`, arrival stamps, `[FS_TICKET]`, pickup fields.
+- HV-1 harvest: miss probe + PX park, SKIP-disables-replay, adaptive bank gate, relaunch flush.
+- FL-1 fast-lane timeout stage tracking.
+- INF-1: sentinel skip logs, `business:-300` relaunch offset.
+- U1 = (c): alt-1 parked on the 13 hot TCINs (`TARGET_PARK_ACCOUNT_TCINS`, built in S8).
+- Offline suite 24/24.
+- NOT built: stage S6 (home-IP share guard HS-1, background volume cap BG-1, identity-rest
+  enforcement ID-1), so U1 options (a) and (b) are not available yet.
+**Confidence**: high on the diagnosis of our own losses (detour, one ticket per window, hygiene,
+latent double-buy paths); medium on the gate model (limiter precedence, first-arrival effect);
+unknown on the payoff: per-ticket admission through FAST_SELLING has one data point (08-04).
+**Outcome**: pending the next drop (30th Celebration waves reportedly Oct 2, Oct 30 / Nov 6). First-run
+grep checklist and readouts: `docs/HOT_SKU_FIX_2026_09_16.md` sections 5-6.
+
+### [2026-09-13] - 09-11 per-shot forensics: the richer real-click Shape sets (a0=yes) went 0/14 on non-edge-429 shots; every win in history rode a small FIRST-CLICK set — fresh-page harvest - TARGET
 **Symptom**: run_20260911_010759, 80 fast-lane chains rebuilt shot by shot (chain-done line + the
 preceding `[HARVEST/x] REPLAY` line): 63×429 (edge lottery), 13×401, 2×431, 1×503, 1×201. 75/80
 shots REPLAYED a real-click banked set (tokens=7, a0=yes, ages 2-91 s) — the harvester works. Of the
-shots that got PAST the limiter: business 0/6 (all 401), alt-1 0/7 (all 401), primary 503 + 431 +
+shots that did NOT draw an edge 429 (CORRECTED 2026-09-17: a 401 is not "past the limiter" — see the
+2026-09-16 entry): business 0/6 (all 401), alt-1 0/7 (all 401), primary 503 + 431 +
 **201**. Sets carrying the `-a0` chunk: 0/14 (12×401 on the two Bright Data accounts, 431 + 503 on
 home-IP primary). Sets WITHOUT `-a0`: 1/2 — the 201 at 05:19:54 (age 2 s, tokens=6) and one 67-s-old
 business set (401). Every order in the repo's history (07-14 … 08-04) was signed by a set without
@@ -291,7 +357,9 @@ re-POSTs are lottery tickets.
 **Root Cause / Evidence** (census over 92 run logs, Jun 4 → Sep 8: 21,684 raw `cart_items`
 POSTs, 1,609 windows, 14,107 attempts, 20 orders; scripts `scratchpad/census/*.py`):
 - **19 of 20 orders landed on attempt #1 at t+0 s**; the 20th (08-04 02:07, business) was a
-  re-shot CHECKOUT on a cart that attempt 2's ATC 201 had already won and held. **No re-POSTed
+  re-shot CHECKOUT on a cart that attempt 2's ATC 201 had already won and held (CORRECTED
+  2026-09-17: that re-shot checkout was ONE place-order-only POST after a 42 s FAST_SELLING hold on
+  business's own cart, not a rapid in-place re-shoot; see the 2026-09-16 entry). **No re-POSTed
   ATC has ever produced an order** (0 / 13,244 shots at attempt ≥2; 95% UB 0.023%).
 - Cart rate by attempt: **6.14% → 1.38% → 0.37% → 0.00% → 0.07%** for k = 1, 2, 3-5, 6-10
   (n=3,064, 0 carts), 11+ (Fisher k=1 vs k≥6: p = 1.4e-54). Wave-first (first shot after a ≥15 s
@@ -603,6 +671,12 @@ TWO GATES IN SERIES, and both were shut for us:
    rest. The hot-vs-regular "401 share" split (54-73% vs 5-8%) is the
    limiter's pass rate in disguise, NOT differential Shape strictness.
    Measure P(401|not 429) in every future audit.
+   CORRECTED 2026-09-17 (see the 2026-09-16 entry): this item assumed the
+   limiter answers first, so that a 401 proves the shot passed it. The
+   09-16 analysis (plan L5) finds the 401 most likely takes precedence over
+   the limiter, so a 401 is NOT "past the limiter" and "P(401 | passed)"
+   cannot be read this way. Report per identity: P(401) over all shots,
+   passes per non-401 shot, and P(edge429).
 WHAT SEPARATES WINNING NIGHTS (F2, decisive): the Shape verdict on
 WAVE-FIRST shots (first shot per identity on a TCIN after a >=15 s own
 pause). 07-31: wave-first-3 limiter-passers converted 32.6% (REG) / 9.1%
@@ -948,7 +1022,13 @@ Follow-up fixes applied from the review (flag-gated, tests green 64/64 breaker,
   9. login_profile_dir now receives account_id at all 3 login sites (latent:
      only bit if login-fp were enabled with SKIP).
 Explicitly NOT changed (judgment calls, documented): the FAST_SELLING in-place
-re-shoot still force-warms /cart (proven-converting on 08-04, out of scope);
+re-shoot still force-warms /cart (proven-converting on 08-04, out of scope;
+CORRECTED 2026-09-17: NOT proven-converting. The only through-FAST_SELLING
+order, 08-04 business, was its OWN cart: FS on the first place-order -> a
+42 s pre-shot hold -> ONE place-order-only POST (_api_place_order) -> 200.
+The FS logged ~1 s before that 200 was a different executor's in-place
+re-shoot 2/4. The bat now sets TARGET_RESHOOT_FORCE_REWARM=0 - see the
+2026-09-16 entry);
 business kept as the real-Chrome control though it is the noisiest signal
 (needs a hand-login anyway; the Chrome-151 fix makes the control coherent).
 Open recommendation for the next audit: capture the `Tgt-Cart-Error-Key`
