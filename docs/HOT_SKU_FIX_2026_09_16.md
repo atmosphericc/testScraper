@@ -79,7 +79,7 @@ Each fix is off in code and turned on by the bat. **To undo one, set the kill-sw
 
 | Stage / commit | Flag (bat value) | What it does | Kill-switch |
 |---|---|---|---|
-| S1 `50a5727c` AC-1 | `TARGET_AMBIGUOUS_COMMIT_LATCH=1`, `_S=1800` | A place-order POST that got **no answer** (or a manager timeout) locks that account off that TCIN for 30 min, so no retry can place a second order. Logs `[AMBIGUOUS_COMMIT]`. **If you see one, check order history.** | `=0` (the won-cart loop then stays off) |
+| S1 `50a5727c` AC-1 | `TARGET_AMBIGUOUS_COMMIT_LATCH=1`, `_S=1800`, `_PERSIST=1` (R1) | A place-order POST that got **no answer** (or a manager timeout) locks that account off that TCIN for 30 min, so no retry can place a second order. Since R1 the lock is also kept in `state/ambiguous_commit_latch.json` and restored after a crash and relaunch (boot line `restored N latch(es)`). Logs `[AMBIGUOUS_COMMIT]`. **If you see one, check order history.** | `=0` (the won-cart loop then stays off); `_PERSIST=0` keeps the lock in memory only |
 | S1 INF-2 | `TARGET_RACE_STATE_STARTED_AT_GUARD=1` | Stamps a missing `started_at` instead of force-completing with the epoch. | `=0` |
 | S2b `41f33de4` WC-1 | `TARGET_WONCART_DIRECT=1`, `TARGET_STOCK_PROBE=1`, `TARGET_STOCK_HYST_S=20`, `TARGET_WONCART_SCHEDULE_S=5,15`, `_STEADY_GAP_S=45`, `_OOS_TAIL_TICKETS=1`, `_MAX_TICKETS=14`, `_CALL_MAX_S=120`, `_HEADROOM_S=45`, `_YIELD_FLEET=1` | **Won-cart direct checkout loop** (details below the table). Logs `[WON_CART_DIRECT]`. | `TARGET_WONCART_DIRECT=0` (exact old path). No early probes: `TARGET_WONCART_SCHEDULE_S=0`. |
 | S2c `26836837` WC-3 | `TARGET_HELD_CART_REENTRY=1`, `TARGET_HELD_CART_TTL_S=900` | **Held-cart re-entry and boot cart audit** (details below the table). Logs `[HELD_CART]`, `[BOOT_CART_AUDIT]`. | `=0` |
@@ -87,7 +87,7 @@ Each fix is off in code and turned on by the bat. **To undo one, set the kill-sw
 | S3 `5ce61ca2` DX-1 | `TARGET_EXPOSURE_LOG=1`, `TARGET_IDENT_CENSUS=1`, `TARGET_FASTLANE_T_STAMPS=1`, `TARGET_FS_TICKET_LOG=1`, `TARGET_FASTLANE_LOG_CART_QTY=1`, `TARGET_REDSKY_STORE_OPTIONS_LOG=1` | **Logging only**, for the next audit: `[EXPOSURE]`, `[IDENT_CENSUS]`, browser-side arrival stamps (`atc_t0=` `atc_rt=`), `envoy_ms=`, `[FS_TICKET]`, `cart_qty=`, and RedSky pickup fields (`pickup=`, `[STOCK PICKUP]`). | each `=0` |
 | S4 `0aef5f84` HV-1 | `TARGET_HARVEST_SKIP_DISABLES_REPLAY=1`, `TARGET_HARVEST_MISS_PROBE=1`, `_MISS_SHOTS_MAX=10`, `_PX_PARK_S=300`, `TARGET_BANK_GATE_ADAPTIVE=1`, `TARGET_HARVEST_FLUSH_ON_RELAUNCH=1`; `TARGET_HARVEST_MISS_RENAV_LIVE=0` | **Harvester fixes** (details below the table). | each `=0` |
 | S5 `887e074b` FL-1 | `TARGET_FASTLANE_STAGE_TRACK=1` | On a 12 s fast-lane timeout, one 2 s read stops the page chain unless the place-order already started. A stuck add-to-cart or pre_checkout is then retried instead of being treated as a possible double-buy. Armed because the node abort tests pass. | `=0` |
-| S7 `ee5c202d` INF-1 | `TARGET_SENTINEL_LOG_SKIPS=1`, `TARGET_CHROME_MAX_AGE_OFFSETS=business:-300` | Logs the sentinel ticks skipped during a purchase. business relaunches at 1800 s and alt-1 at 2100 s, so they no longer relaunch together. | `=0`; delete the offsets line |
+| S7 `ee5c202d` INF-1 | `TARGET_SENTINEL_LOG_SKIPS=1`, `TARGET_CHROME_MAX_AGE_OFFSETS=business:-300`, `TARGET_CHROME_RELAUNCH_DESYNC_S=120` (R1) | Logs the sentinel ticks skipped during a purchase. business relaunches at 1800 s and alt-1 at 2100 s. **The offset alone does not stop them relaunching together**: relaunches only happen on the 300 s sentinel tick, so the two cycles (7 and 8 ticks) still meet about every 4.7 h. Since R1, business waits one tick whenever alt-1 is due on the same tick or relaunched in the last 120 s (log `relaunch deferred one sentinel tick`). | `=0`; delete the offsets line; `DESYNC_S=0` |
 | S8 (this commit) park | `set "TARGET_PARK_ACCOUNT_TCINS=alt-1:<13 hot TCINs>"` | **alt-1 sits out the 13 hot TCINs** (reason `account_parked_hot`, nothing fires) and keeps racing every other SKU. Prints `[PARK]` at boot. | Delete the line |
 | S8 | `TARGET_IDENTITY_REST=0` | Explicitly off (see U1). | n/a |
 
@@ -96,11 +96,13 @@ Each fix is off in code and turned on by the bat. **To undo one, set the kill-sw
 - Two early probes go at +5 s and +15 s, once per cart.
 - After that, one place-order-only attempt goes every 45 s while RedSky still shows stock.
 
-A strict cart check runs before every place-order: the exact TCIN, and a quantity that is known and not above the order qty. At most 14 attempts per cart. One loop call lasts at most 120 s and ends early if another armed TCIN goes live.
+A strict cart check runs before every place-order: the exact TCIN, and a quantity that is known and not above the order qty. At most 14 attempts per cart. One loop call lasts at most 120 s and ends early if another armed TCIN goes live, but only after that call has fired at least one attempt (R1: before that fix, every re-entry of a held cart gave up before firing while any other TCIN was live). A place-order-only attempt switches back to the full cart check while one of our own add-to-carts may still land (a stuck harvest block or a timed-out add in the last 5 min). At most one CVV PUT per cart, counting the one the first fast-lane shot may already have sent.
 
 **WC-3, held-cart re-entry and boot cart audit.**
 - **Re-entry:** a cart the loop still holds is re-entered, with no new add-to-cart, when its TCIN shows stock again. This lasts up to 15 min.
-- **Boot audit:** about 30 to 60 s after start, the bot reads each account's cart once. A cart holding exactly one line at qty 1 or 2 is kept as a held cart (re-entered only while that TCIN shows stock, retired after 15 min). **Anything else is deleted**: several lines, too many units, or an unknown qty.
+- **Retirement:** once a held cart is older than 15 min (or has had 14 attempts), the background warmup loop deletes its line within about 90 s (R1). If that delete fails, the next add-to-cart for that account deletes it first.
+- **Boot audit:** about 30 to 60 s after start, the bot reads each account's cart once. A cart holding exactly one line at qty 1 or 2 is kept as a held cart (re-entered only while that TCIN shows stock, retired as above). **Anything else is deleted**: several lines, too many units, or an unknown qty. Since R1 it deletes only the lines it read, and stops the moment a purchase starts.
+- While a cart is held, the warmup tabs never load /cart: not on a relaunch (the tab opens on the homepage) and not after a token repair (R1).
 
 **HV-1, harvester fixes.**
 - A skipped harvester also turns replay off, so no wasted 8 s bank-gate waits.
@@ -121,12 +123,12 @@ A strict cart check runs before every place-order: the exact TCIN, and a quantit
 - quiet-warmup level 2;
 - the stand-alone qty guard (`TARGET_FASTLANE_QTY_GUARD`). It is forced on anyway by WC-1 / WC-3.
 
-**NOT built yet:** stage S6 produced nothing. Missing:
-- the home-IP share guard HS-1 (`TARGET_HOME_SHARE_GUARD`);
-- the background volume cap BG-1 (`TARGET_BG_SLOW_ACCOUNTS`, `TARGET_BG_SLOW_FACTOR`);
-- identity-rest *enforcement* ID-1 (`TARGET_IDENTITY_REST=1`). Its recorder half exists and feeds `[EXPOSURE]` / `[IDENT_CENSUS]`.
+**Built in review round R1 (2026-09-17), NOT armed** (stage S6 had produced nothing; offline-tested only):
+- the home-IP share guard HS-1 (`TARGET_HOME_SHARE_GUARD=1`; knobs `_GUEST=alt-1`, `_PROTECT=primary`, `_P401=2`, `_TTL_S=3600`): 2 carts-401s or PerimeterX add-to-cart 403s on primary for one TCIN within 30 min park alt-1 on every TCIN for 1 h (reason `home_share_guard`, logs `[HOME_SHARE_GUARD]`);
+- the background volume cap BG-1 (`TARGET_BG_SLOW_ACCOUNTS=alt-1`, `TARGET_BG_SLOW_FACTOR=2`, clamped 1 to 4): stretches that account's warmup refill delay and its idle harvest interval;
+- identity-rest *enforcement* ID-1 (`TARGET_IDENTITY_REST=1`; knobs `_S=150` (125 to 900), `_K=2`, `_M=3`, `_PROXIED_ONLY=1`, `_STAGGER=1`, `_NEVER=primary`): 2 of an account's last 3 shots on a TCIN being carts-401s rests it there for 150 s (reason `identity_resting`, logs `[IDENT_REST]`). Its recorder half feeds `[EXPOSURE]` / `[IDENT_CENSUS]` either way.
 
-The alt-1 park, which U1 (c) needs, was built in S8.
+A boot line `[GUARDS]` lists any of these that is switched on. The alt-1 park, which U1 (c) needs, was built in S8.
 
 ---
 
@@ -144,14 +146,14 @@ The alt-1 park, which U1 (c) needs, was built in S8.
   - never use `|`.
 
 **How to switch to (a), alt-1 on the home IP (the plan's upside option), safely.**
-It is **not available yet**: its in-drop guard (HS-1) and volume cap (BG-1) are not built. Do it only after that code lands **and** you have confirmed alt-1 and primary use a different shipping address, card and phone.
+Its in-drop guard (HS-1) and volume cap (BG-1) were built in review round R1 but have only been tested offline. Do it only once you have confirmed alt-1 and primary use a different shipping address, card and phone.
 1. Stop the bot.
 2. Commit `config/target_accounts.json`. Then set alt-1's `proxy_url` to `""` and its `timezone` to `"America/Chicago"`.
 3. Run `hand_login_all.bat` **after** the edit. The timezone change gives alt-1 a new device seed, so watch for login friction.
 4. Run `check_session_readiness.py` (expect 3/3 MEMBER).
 5. Run `preflight_fp_drop.py`. Its shared-IP WARN is expected.
 6. In the bat:
-   - delete the `TARGET_PARK_ACCOUNT_TCINS` line and the `TARGET_CHROME_MAX_AGE_OFFSETS` line;
+   - delete the `TARGET_PARK_ACCOUNT_TCINS` line and the `TARGET_CHROME_MAX_AGE_OFFSETS` line (`TARGET_CHROME_RELAUNCH_DESYNC_S` can stay);
    - add `set TARGET_HOME_SHARE_GUARD=1`, `set TARGET_BG_SLOW_ACCOUNTS=alt-1`, `set TARGET_BG_SLOW_FACTOR=2`.
 7. Launch once. **Never run a second bot on the home IP.**
 8. **To revert:** restore `proxy_url` and `timezone`, then hand-login again.
@@ -162,7 +164,7 @@ What it risks:
 - It puts load on primary's exit: roughly 1,660 dummy POSTs, 300 re-probes and 850 harvest loads per night, plus about 180 drop add-to-carts.
 - In 06-30 notes, alt-1 on the home IP "ate a 24x instant-429 storm". That was before wave-first, so it is weak evidence.
 
-**(b), keep alt-1 on BD and run the rest experiment:** needs ID-1 enforcement, which is not built yet. It has about zero conversion value; its value is answering whether a pause resets the 401 wall.
+**(b), keep alt-1 on BD and run the rest experiment:** ID-1 enforcement was built in R1 (not armed). Delete the park line and change `set TARGET_IDENTITY_REST=0` to `1`. It has about zero conversion value; its value is answering whether a pause resets the 401 wall. Readout: alt-1's 401 rate after each rest compared with its own rate before, at the same window age.
 
 ### U2: qty for hot SKUs. Chosen: keep qty = 2.
 - qty never affected admission. Every hot shot was qty 2, and both 201s were qty 2. PROVEN.
@@ -217,7 +219,8 @@ Some lines are written twice; count only lines that start with a timestamp.
 - `[EXPOSURE]`, `[IDENT_CENSUS]`
 - chain-done `atc_t0=` / `atc_rt=` / `cart_qty=`; `[ATC_RESP] … envoy_ms=`
 - `[HARVEST/…] MISS-PROBE`, `[PX-CHALLENGE/harvest]`, `[BANK_GATE] skipped`
-- `[SENTINEL] … tick skipped`; `[CHROME-AGE]` lines for business with `via TARGET_CHROME_MAX_AGE_OFFSETS`
+- `[SENTINEL] … tick skipped`; `[CHROME-AGE]` lines for business with `via TARGET_CHROME_MAX_AGE_OFFSETS`; `relaunch deferred one sentinel tick` about every 4.7 h, and never business and alt-1 relaunching on the same tick
+- `[HELD_CART] retired in the background` (only after a held cart aged past 15 min); `[DISPATCH_SKIP]` when every account sits out a TCIN
 - `[WARMUP#…] won-cart held — no /cart nav`
 - `pickup=` on `[STOCK WATCH]`, and `[STOCK PICKUP]`
 - **Should NOT appear:** a `purchase_impl_hang` right after a ride, or `REAL purchase timeout after 17…s`
@@ -231,3 +234,11 @@ Some lines are written twice; count only lines that start with a timestamp.
 - The harvest miss labels (PerimeterX vs other).
 - Pickup fields on the hot TCINs.
 - Primary's hot-SKU pass rate with alt-1 parked, compared with 09-16's 4/181.
+
+## 7. Review round R1 (2026-09-17)
+
+An adversarial review of stages S1 to S8 confirmed 15 findings; all were fixed in one local commit (`hot-sku(0916) stage R1: review fixes`), each with an offline test that fails when the fix is reverted.
+
+- **Blocker, yield lockout:** with `YIELD_FLEET=1` and held-cart re-entry, every re-entry gave up before firing while another TCIN was live, and the account sat out every other live TCIN until the cart expired. Fixed in code (a loop call yields only after it has fired an attempt); the flag stays on.
+- **Double-buy exposure after an order:** the loop shortened its deadline right after a placed order, so a stall while saving the session could end in the manager's timeout (re-race) instead of the executor's success report. The deadline now holds until the purchase's cleanup is done.
+- **Second CVV PUT on a won cart**, **place-order-only after one of our own late adds**, **the boot audit deleting a fresh add**, **the stage-tracking page global left behind**, **the latch lost on a crash**, **a parked or latched fleet still opening empty races** (and the dashboard showing `account_parked_hot` as the failure reason), **offsets not preventing same-tick relaunches**, **node-less test runs passing**, **expired held carts deleted in front of a drop shot**, **/cart loads during a hold**, and **S6 never built**: all fixed as described in the sections above.

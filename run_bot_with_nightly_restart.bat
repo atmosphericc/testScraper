@@ -823,6 +823,10 @@ REM Kill: TARGET_AMBIGUOUS_COMMIT_LATCH=0 (the won-cart loop below then refuses
 REM to arm and stays inert).
 set TARGET_AMBIGUOUS_COMMIT_LATCH=1
 set TARGET_AMBIGUOUS_COMMIT_LATCH_S=1800
+REM The latch is also kept in state\ambiguous_commit_latch.json, so a crash and
+REM wrapper relaunch cannot re-race a possibly-placed order (boot line
+REM "restored N latch(es)"). Kill: TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=0.
+set TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=1
 REM INF-2: a race state without started_at is stamped, never force-completed
 REM with the Unix epoch as its age. Kill: TARGET_RACE_STATE_STARTED_AT_GUARD=0.
 set TARGET_RACE_STATE_STARTED_AT_GUARD=1
@@ -833,7 +837,8 @@ REM ticket every 45 s while RedSky reads in stock) instead of the ~26 s
 REM nav/DOM detour and 45 s holds. 45 s place-order-only is the shape of the
 REM only through-FAST_SELLING win ever (08-04). STOCK_PROBE/HYST = RedSky
 REM freshness; MAX_TICKETS per cart; CALL_MAX caps one loop call (it holds
-REM the fleet); YIELD_FLEET ends it early when another armed TCIN is live.
+REM the fleet); YIELD_FLEET ends it early when another armed TCIN is live,
+REM but only after that call fired a ticket (a held re-entry always fires one).
 REM grep [WON_CART_DIRECT] and [FS_TICKET].
 REM Kill: TARGET_WONCART_DIRECT=0 (exact legacy path). Probes off (pure 45 s):
 REM TARGET_WONCART_SCHEDULE_S=0 -- an empty set X= UNSETS the variable, which
@@ -906,17 +911,24 @@ REM Boot line [PARK]; per race: sits out ... account_parked_hot.
 REM Format acct:tcin,tcin;acct2:tcin -- keep the quotes, never use pipes. Add
 REM each new hot TCIN you arm here. Kill: delete the line (nobody parked).
 set "TARGET_PARK_ACCOUNT_TCINS=alt-1:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279"
-REM business relaunches at 1800 s instead of 2100 s, so the two BD Chromes
-REM stop relaunching in the same second. Kill: delete the line.
+REM business relaunches at 1800 s instead of 2100 s. On its own that only
+REM gives the two BD Chromes different cycles (7 and 8 sentinel ticks), which
+REM still land on the same tick about every 4.7 h. DESYNC_S therefore defers
+REM business by one tick whenever alt-1 is due on the same tick or relaunched
+REM in the last 120 s, so the two never relaunch together.
+REM grep "relaunch deferred one sentinel tick".
+REM Kill: delete the OFFSETS line; TARGET_CHROME_RELAUNCH_DESYNC_S=0.
 set TARGET_CHROME_MAX_AGE_OFFSETS=business:-300
+set TARGET_CHROME_RELAUNCH_DESYNC_S=120
 REM Identity-rest enforcement (ID-1) stays off under (c).
 set TARGET_IDENTITY_REST=0
 REM ---------------------------------------------------------------------------
-REM U1 = (a), alt-1 on the HOME IP: NOT READY. Its in-drop guard HS-1
-REM (TARGET_HOME_SHARE_GUARD) and volume cap BG-1 (TARGET_BG_SLOW_ACCOUNTS,
-REM TARGET_BG_SLOW_FACTOR) are NOT BUILT yet (stage S6 did not land), so those
-REM lines would do nothing today. After that code lands, and only once you
-REM have confirmed alt-1 and primary use a different address, card and phone:
+REM U1 = (a), alt-1 on the HOME IP: NOT ARMED. Its in-drop guard HS-1
+REM (TARGET_HOME_SHARE_GUARD: 2 primary carts-401s on one TCIN in 30 min park
+REM alt-1 on every TCIN for 1 h) and volume cap BG-1 (TARGET_BG_SLOW_ACCOUNTS,
+REM TARGET_BG_SLOW_FACTOR) were built 2026-09-17 (review round R1) and are
+REM offline-tested only. Only once you have confirmed alt-1 and primary use a
+REM different address, card and phone:
 REM  1. stop the bot;
 REM  2. in config\target_accounts.json set alt-1 proxy_url to an empty string
 REM     and timezone to America/Chicago (commit the config first);
@@ -924,13 +936,16 @@ REM  3. run hand_login_all.bat AFTER the edit (the tz change is a new device
 REM     seed), then check_session_readiness.py (3/3 MEMBER) and
 REM     preflight_fp_drop.py (its shared-IP WARN is expected);
 REM  4. in this file delete the TARGET_PARK_ACCOUNT_TCINS and
-REM     TARGET_CHROME_MAX_AGE_OFFSETS lines and add
+REM     TARGET_CHROME_MAX_AGE_OFFSETS lines (DESYNC_S may stay) and add
 REM       set TARGET_HOME_SHARE_GUARD=1
 REM       set TARGET_BG_SLOW_ACCOUNTS=alt-1
 REM       set TARGET_BG_SLOW_FACTOR=2
 REM  5. launch once. Revert: restore proxy_url and timezone, hand-login again.
-REM U1 = (b), keep alt-1 on BD and run the rest experiment, needs ID-1
-REM enforcement (TARGET_IDENTITY_REST=1), also not built yet.
+REM U1 = (b), keep alt-1 on BD and run the rest experiment: ID-1 enforcement
+REM was built 2026-09-17 (review round R1), NOT armed. To run it, delete the
+REM park line and change the TARGET_IDENTITY_REST line above to 1 (defaults:
+REM rest 150 s after 2 of the last 3 shots are carts-401s, BD accounts only,
+REM never primary, never two accounts at once on one TCIN). grep [IDENT_REST].
 REM ---------------------------------------------------------------------------
 REM U2 per-TCIN qty pin (NOT armed; hot SKUs stay qty 2): commit
 REM config\product_config.json, add a qty of 1 to the hot entries, then add

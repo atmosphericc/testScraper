@@ -319,6 +319,7 @@ HOT_0916 = ("1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,"
 BAT_0916_PINS = (
     ("TARGET_AMBIGUOUS_COMMIT_LATCH", "1"),
     ("TARGET_AMBIGUOUS_COMMIT_LATCH_S", "1800"),
+    ("TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST", "1"),     # review round R1 (R1-AC1-1)
     ("TARGET_RACE_STATE_STARTED_AT_GUARD", "1"),
     ("TARGET_STOCK_PROBE", "1"),
     ("TARGET_STOCK_HYST_S", "20"),
@@ -353,13 +354,20 @@ BAT_0916_PINS = (
     ("TARGET_HARVEST_FLUSH_ON_RELAUNCH", "1"),
     ("TARGET_SENTINEL_LOG_SKIPS", "1"),
     ("TARGET_CHROME_MAX_AGE_OFFSETS", "business:-300"),
+    ("TARGET_CHROME_RELAUNCH_DESYNC_S", "120"),          # review round R1 (R1-ARM-2)
     ("TARGET_IDENTITY_REST", "0"),
 )
-# Built but deliberately NOT armed (U1=(a)/(b) code not built; U2 keeps qty 2;
-# live re-nav waits for probe data; quiet level 2 is an experiment).
+# Built but deliberately NOT armed (U1=(a)/(b) guards built in review round R1
+# but U1=(c) is the choice; U2 keeps qty 2; live re-nav waits for probe data;
+# quiet level 2 is an experiment).
 BAT_0916_UNARMED = ("TARGET_HOME_SHARE_GUARD", "TARGET_BG_SLOW_ACCOUNTS", "TARGET_BG_SLOW_FACTOR",
                     "TARGET_QTY_PER_TCIN", "TARGET_BOOT_CART_AUDIT", "TARGET_FASTLANE_QTY_GUARD",
-                    "TARGET_HARVEST_BADLOAD_BACKOFF_S", "TARGET_IDENTITY_REST_S")
+                    "TARGET_HARVEST_BADLOAD_BACKOFF_S", "TARGET_IDENTITY_REST_S",
+                    "TARGET_IDENTITY_REST_K", "TARGET_IDENTITY_REST_M", "TARGET_IDENTITY_REST_NEVER",
+                    "TARGET_IDENTITY_REST_PROXIED_ONLY", "TARGET_IDENTITY_REST_STAGGER",
+                    "TARGET_HOME_SHARE_GUARD_GUEST", "TARGET_HOME_SHARE_GUARD_PROTECT",
+                    "TARGET_HOME_SHARE_GUARD_P401", "TARGET_HOME_SHARE_GUARD_TTL_S",
+                    "TARGET_AMBIGUOUS_COMMIT_LATCH_FILE")
 
 
 def _bat_lines():

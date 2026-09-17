@@ -11,6 +11,7 @@ import asyncio
 import logging
 import threading
 import random
+import weakref
 import os
 import sys
 from pathlib import Path
@@ -89,6 +90,71 @@ def _effective_chrome_max_age(base, account_id, raw=None):
                    max(_CHROME_AGE_EFFECTIVE_MIN_S, b + offs[key]))
     except Exception:
         return base
+
+
+# ── R1 review (R1-ARM-2, 2026-09-17): relaunch de-sync guard ─────────────────
+# The offsets alone do not remove the lockstep: relaunches only happen on the
+# fixed 300 s sentinel tick, so business (1800 s -> every 7 ticks) and alt-1
+# (2100 s -> every 8 ticks) still meet on the same tick every 56 ticks
+# (~4.7 h; simulated same-tick relaunches at 4.6 h and 9.3 h after boot, i.e.
+# inside a 02:00-05:30 drop window for a 23:00 launch). With
+# TARGET_CHROME_RELAUNCH_DESYNC_S=<s> (clamped 30..280; default 0 = off) a due
+# proactive relaunch is deferred by one tick when another proxied Chrome
+# either relaunched within the last <s> seconds or is due on this same tick
+# and outranks it (larger effective max age first, then account id). The
+# decision does not depend on which worker's check runs first, a relaunch is
+# deferred at most once per cycle, and the account with the smaller max age
+# (business) is the one that yields, so its worst case (~2092 + 300 s, plus one
+# skipped tick) stays under the 2940 s earliest wedge. Kill-switch: unset / 0.
+_AGE_PEERS = weakref.WeakSet()
+_AGE_PEERS_LOCK = threading.Lock()
+
+
+def _chrome_relaunch_desync_s(raw=None) -> float:
+    """TARGET_CHROME_RELAUNCH_DESYNC_S: 0 = off; else clamped to [30, 280]
+    (below the 300 s tick, so a deferred relaunch never re-defers on the peer
+    it just yielded to). Never raises."""
+    try:
+        if raw is None:
+            raw = os.environ.get('TARGET_CHROME_RELAUNCH_DESYNC_S', '0')
+        v = float(str(raw).strip() or '0')
+    except (TypeError, ValueError):
+        return 0.0
+    if not (v > 0) or v == float('inf'):
+        return 0.0
+    return float(min(280.0, max(30.0, v)))
+
+
+def _relaunch_rank(max_age, account_id):
+    """Sort key: a HIGHER key keeps its relaunch on a shared tick."""
+    return (float(max_age), [-ord(c) for c in str(account_id or '').lower()])
+
+
+def _desync_defer_reason(me, peers, now, window_s) -> str:
+    """Pure: '' = relaunch now, else why this due relaunch waits one tick.
+    me / peers: dicts {id, max_age, launched_at, relaunch_at, busy} (peers
+    exclude me). A peer collides when it relaunched within window_s, or when
+    it is due now itself (not busy, age past its own max age and its own
+    rate limit) and outranks me."""
+    for pr in peers:
+        try:
+            if float(pr.get('relaunch_at') or 0.0) > 0 and now - float(pr['relaunch_at']) < window_s:
+                return f"{pr.get('id')} relaunched {now - float(pr['relaunch_at']):.0f}s ago"
+        except Exception:
+            continue
+    my_rank = _relaunch_rank(me.get('max_age') or 0.0, me.get('id'))
+    for pr in peers:
+        try:
+            ma = float(pr.get('max_age') or 0.0)
+            la = float(pr.get('launched_at') or 0.0)
+            if (ma > 0 and la > 0 and not pr.get('busy')
+                    and now - la > ma
+                    and now - float(pr.get('relaunch_at') or 0.0) > ma
+                    and _relaunch_rank(ma, pr.get('id')) > my_rank):
+                return f"{pr.get('id')} is due on this tick too (max_age {ma:.0f}s)"
+        except Exception:
+            continue
+    return ''
 
 
 class SessionManager:
@@ -210,6 +276,13 @@ class SessionManager:
         self._browser_launched_at = 0.0
         self._genuine_wedge_at = 0.0
         self._proactive_relaunch_at = 0.0   # last age-based relaunch (rate-limit)
+        self._age_relaunch_deferred_at = 0.0   # R1-ARM-2: one-tick deferral stamp (0 = none this cycle)
+        if self.proxy_url is not None:
+            try:
+                with _AGE_PEERS_LOCK:
+                    _AGE_PEERS.add(self)   # R1-ARM-2 peer registry (weak refs; read only when armed)
+            except Exception:
+                pass
 
         # Configuration
         self.max_validation_failures = 3
@@ -2161,6 +2234,48 @@ class SessionManager:
         except Exception:
             return False
 
+    def _age_relaunch_deferred(self, max_age) -> bool:
+        """R1-ARM-2: True when this DUE proactive relaunch waits one sentinel
+        tick (TARGET_CHROME_RELAUNCH_DESYNC_S; 0 = never). Registers this
+        proxied manager as a peer; at most one deferral per relaunch cycle.
+        Never raises (False = relaunch now)."""
+        try:
+            window = _chrome_relaunch_desync_s()
+            if window <= 0:
+                return False
+            now = time.time()
+            with _AGE_PEERS_LOCK:
+                _AGE_PEERS.add(self)
+                if float(getattr(self, '_age_relaunch_deferred_at', 0.0) or 0.0) > 0:
+                    return False
+                base = float(os.environ.get('TARGET_CHROME_MAX_AGE_S', '2100'))
+                peers = []
+                for pm in list(_AGE_PEERS):
+                    if pm is self or getattr(pm, 'proxy_url', None) is None:
+                        continue
+                    peers.append({
+                        'id': getattr(pm, 'account_id', ''),
+                        'max_age': _effective_chrome_max_age(base, getattr(pm, 'account_id', None)),
+                        'launched_at': float(getattr(pm, '_browser_launched_at', 0.0) or 0.0),
+                        'relaunch_at': float(getattr(pm, '_proactive_relaunch_at', 0.0) or 0.0),
+                        'busy': bool(getattr(pm, 'purchase_in_progress', False)),
+                    })
+                me = {'id': self.account_id, 'max_age': float(max_age)}
+                why = _desync_defer_reason(me, peers, now, window)
+                if not why:
+                    return False
+                self._age_relaunch_deferred_at = now
+            msg = (f"[CHROME-AGE] {self.account_id}: relaunch deferred one sentinel tick "
+                   f"({why}; TARGET_CHROME_RELAUNCH_DESYNC_S={window:.0f})")
+            print(msg)
+            try:
+                self.logger.info(msg)
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
     async def ensure_logged_in(self) -> bool:
         """Escalation ladder that GUARANTEES a valid logged-in session or reports
         failure. Used by the per-account Session Sentinel:
@@ -2197,13 +2312,17 @@ class SessionManager:
             # (TARGET_CHROME_MAX_AGE_OFFSETS; empty = unchanged).
             _base_max_age = _max_age
             _max_age = _effective_chrome_max_age(_max_age, self.account_id)
-            if (_max_age > 0 and self.proxy_url is not None
+            _due = (_max_age > 0 and self.proxy_url is not None
                     and not self.purchase_in_progress
                     and self._browser_launched_at > 0
                     and (time.time() - self._browser_launched_at) > _max_age
-                    and (time.time() - self._proactive_relaunch_at) > _max_age):
+                    and (time.time() - self._proactive_relaunch_at) > _max_age)
+            if _due and self._age_relaunch_deferred(_max_age):
+                _due = False
+            if _due:
                 _age_min = (time.time() - self._browser_launched_at) / 60.0
                 self._proactive_relaunch_at = time.time()
+                self._age_relaunch_deferred_at = 0.0
                 self.logger.warning(
                     f"[CHROME-AGE] {self.account_id}: proxied Chrome is {_age_min:.0f} min old "
                     f"(> {_max_age/60:.0f} min) — proactively relaunching BEFORE the ~68-min CDP "

@@ -80,6 +80,175 @@ def _ac_latch_ttl_s() -> float:
 
 _AC_INIT_LOCK = threading.Lock()
 
+# R1 review (R1-AC1-1, 2026-09-17): the AC-1 latch lived only in process memory,
+# and run_bot_with_nightly_restart.bat relaunches app.py after any non-zero
+# exit — a crash right after an [AMBIGUOUS_COMMIT] let the relaunched process
+# re-race (and possibly re-buy) the same (identity, TCIN). With the latch on,
+# every mark is also written (atomically) to TARGET_AMBIGUOUS_COMMIT_LATCH_FILE
+# (default state/ambiguous_commit_latch.json) and a new manager loads the
+# unexpired entries at init. Expired entries are dropped on load, so the TTL
+# bounds how long a stale file can matter. Only a manager built by __init__
+# persists (stand-in test objects never touch the file).
+# Kill-switch: TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST=0 (memory only).
+_AC_LATCH_FILE_DEFAULT = os.path.join('state', 'ambiguous_commit_latch.json')
+
+
+def _ac_persist_on() -> bool:
+    return os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST', '1').strip() != '0'
+
+
+def _ac_latch_file() -> str:
+    return (os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH_FILE', '') or '').strip() or _AC_LATCH_FILE_DEFAULT
+
+
+def _ac_latch_load(path, now: float, ttl: float) -> Dict[tuple, float]:
+    """Unexpired {(ident, tcin): ts} from the latch file; {} when the file is
+    missing or unreadable. Never raises."""
+    out: Dict[tuple, float] = {}
+    try:
+        if not path or not os.path.exists(path):
+            return out
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        items = raw.get('latches', {}) if isinstance(raw, dict) else {}
+        if not isinstance(items, dict):
+            return out
+        for k, ts in items.items():
+            ident, sep, tcin = str(k).rpartition('|')
+            if not sep or not ident or not tcin:
+                continue
+            if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                continue
+            ts = float(ts)
+            if not (ts == ts) or ts > now + 60.0 or ts + ttl <= now:
+                continue
+            out[(ident, tcin)] = ts
+    except Exception:
+        return {}
+    return out
+
+
+def _ac_latch_save(path, latches, now: float, ttl: float) -> bool:
+    """Atomically write the unexpired latches. Never raises."""
+    try:
+        if not path:
+            return False
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        data = {'written_at': now, 'ttl_s': ttl,
+                'latches': {f"{i}|{t}": float(ts) for (i, t), ts in dict(latches).items()
+                            if float(ts) + ttl > now}}
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        try:
+            print(f"[AMBIGUOUS_COMMIT] could not persist the latch file ({type(e).__name__}: {e}) "
+                  f"— the in-memory latch still applies")
+        except Exception:
+            pass
+        return False
+
+
+# R1 review (PC-1, 2026-09-17): the plan's S6 guards, built but NOT armed.
+# HS-1 (TARGET_HOME_SHARE_GUARD=1) and ID-1 (TARGET_IDENTITY_REST=1) are
+# in-thread skips via _thread_skip_reason; see src/purchasing/identity_rest.py.
+# BG-1 (TARGET_BG_SLOW_ACCOUNTS / TARGET_BG_SLOW_FACTOR) lives in the executor.
+def _hs1_guard_of(mgr):
+    g = getattr(mgr, '_hs1_guard', None)
+    if g is None:
+        with _AC_INIT_LOCK:
+            g = getattr(mgr, '_hs1_guard', None)
+            if g is None:
+                g = _ident_rest.HomeShareGuard.from_env()
+                mgr._hs1_guard = g
+    return g
+
+
+def _hs1_note(mgr, ident, acct, tcin, result, executor=None) -> None:
+    """HS-1 record point: a PROTECT main-shot carts-401 (gate_kind auth401) or
+    PX-block ATC 403 counts toward parking the guest. Logs + one error_log
+    line when it trips. No-op while TARGET_HOME_SHARE_GUARD is off. Never
+    raises."""
+    try:
+        if not _ident_rest.home_share_guard_on():
+            return
+        g = _hs1_guard_of(mgr)
+        if not g.is_protect(acct):
+            return
+        r = result if isinstance(result, dict) else {}
+        px = bool(getattr(executor, '_atc_px_block_seen', False)) if executor is not None else False
+        if str(r.get('gate_kind') or '') != 'auth401' and not px:
+            return
+        trig = g.note(acct, tcin)
+        if not trig:
+            return
+        msg = (f"[HOME_SHARE_GUARD] {ident} ({acct}) drew {trig['count']} carts-401/PX-403 on {tcin} "
+               f"within {g.WINDOW_S / 60:.0f} min — parking guest '{g.guest}' on EVERY TCIN for "
+               f"{trig['ttl_s']:.0f}s (reason home_share_guard)")
+        print(msg)
+        try:
+            _p = getattr(mgr, '_ac_error_log_path', 'logs/error_log.txt')
+            _d = os.path.dirname(_p)
+            if _d:
+                os.makedirs(_d, exist_ok=True)
+            with open(_p, 'a', encoding='utf-8') as _f:
+                _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
+    except Exception as e:
+        _dx_log_error(mgr, 'hs1', e)
+
+
+def _ident_rest_left(mgr, ident, tcin) -> float:
+    """ID-1: seconds left on (ident, tcin)'s rest; 0.0 while
+    TARGET_IDENTITY_REST is off or no tracker exists. Never raises."""
+    try:
+        if not _ident_rest.identity_rest_on():
+            return 0.0
+        trk = getattr(mgr, '_ident_tracker', None)
+        if trk is None:
+            return 0.0
+        return float(trk.rest_left(ident, tcin))
+    except Exception:
+        return 0.0
+
+
+def _guards_banner() -> str:
+    """One boot line for any armed S6 guard ('' when none is set)."""
+    try:
+        parts = []
+        if _ident_rest.home_share_guard_on():
+            g = _ident_rest.HomeShareGuard.from_env()
+            parts.append(f"HS-1 home-share guard ON (guest={g.guest} protect={g.protect} "
+                         f"trigger={g.p401} per TCIN/30min ttl={g.ttl_s:.0f}s)")
+        if _ident_rest.identity_rest_on():
+            c = _ident_rest.rest_cfg()
+            parts.append(f"ID-1 identity rest ON ({c['k']}of{c['m']} auth401 -> {c['rest_s']:.0f}s, "
+                         f"proxied_only={c['proxied_only']} stagger={c['stagger']} "
+                         f"never={','.join(sorted(c['never'])) or '-'})")
+        _bg = os.environ.get('TARGET_BG_SLOW_ACCOUNTS', '').strip()
+        if _bg:
+            parts.append(f"BG-1 background slow-down for {_bg} "
+                         f"(factor {os.environ.get('TARGET_BG_SLOW_FACTOR', '2').strip() or '2'})")
+        return ('[GUARDS] ' + '; '.join(parts)) if parts else ''
+    except Exception:
+        return ''
+
+
+# Sit-out reasons: an identity that fired nothing (R1 review: never the race's
+# headline failure_reason while a real attempt exists).
+_SIT_OUT_REASONS = frozenset({'account_parked_hot', 'ambiguous_commit_latched',
+                              'identity_resting', 'home_share_guard'})
+
+
+def _is_sit_out_reason(reason) -> bool:
+    r = str(reason or '')
+    return r in _SIT_OUT_REASONS or r.startswith('held_cart_')
+
 
 def _qty_guard_on() -> bool:
     """QG (plan P1 step 1b), mirrored from purchase_executor.fastlane_qty_guard_on:
@@ -325,6 +494,19 @@ def _dx_record_attempt(mgr, ident, acct, tcin, result, session_manager=None) -> 
             exp = trk.record(ident, acct, tcin, kind, now=now, proxied=proxied)
         else:
             exp = trk.exposure(ident, tcin, now=now)
+        _rest = exp.get('rest') if isinstance(exp, dict) else None
+        if _rest:
+            # ID-1 (TARGET_IDENTITY_REST=1 only; the tracker never rests otherwise).
+            if _rest.get('deferred'):
+                print(f"[IDENT_REST] {ident} {tcin} trigger={_rest.get('trigger')} "
+                      f"deferred (stagger: {_rest.get('by')} rests on this TCIN for "
+                      f"{float(_rest.get('left') or 0.0):.0f}s more)")
+            else:
+                print(f"[IDENT_REST] {ident} {tcin} trigger={_rest.get('trigger')} "
+                      f"run_shots={int(_rest.get('run_shots') or 0)} "
+                      f"run_s={float(_rest.get('run_s') or 0.0):.0f} "
+                      f"rest={float(_rest.get('rest_s') or 0.0):.0f}s "
+                      f"until={datetime.fromtimestamp(float(_rest.get('until') or now)).strftime('%H:%M:%S')}")
         if not _ident_rest.exposure_log_on():
             return
         try:
@@ -570,11 +752,18 @@ class BulletproofPurchaseManager:
         self._ac_latch: Dict[tuple, float] = {}
         self._ac_latch_lock = threading.Lock()
         self._ac_skip_log_ts: Dict[str, float] = {}
+        # R1 review (R1-AC1-1): restore unexpired latches written by a previous
+        # process (crash -> wrapper relaunch). Latch flag + persist flag only.
+        self._ac_latch_path = None
+        self._ac_restore_latches()
         # 2026-09-16 plan P5 (c): print the active hot-TCIN park once at boot
         # (nothing when TARGET_PARK_ACCOUNT_TCINS is empty/unset).
         _pb = _park_banner()
         if _pb:
             print(_pb)
+        _gb = _guards_banner()
+        if _gb:
+            print(_gb)
         # 2026-09-16 HV-1 (TARGET_BANK_GATE_ADAPTIVE): consecutive bank-gate
         # timeouts per worker label (see _bank_gate_skip_reason).
         self._bank_gate_timeouts: Dict[str, int] = {}
@@ -1715,8 +1904,9 @@ class BulletproofPurchaseManager:
                     # bat default) — a 401 takes the wave-first cold re-entry
                     # branch first (it resets _consec_401), so the pulse elif
                     # never runs.
-                    # Superseded by the cross-race TARGET_IDENTITY_REST (not built
-                    # yet). Kept armed + pinned (tests/test_0828_phase2_fixes.py).
+                    # Superseded by the cross-race TARGET_IDENTITY_REST (built in
+                    # review round R1, not armed). Kept armed + pinned
+                    # (tests/test_0828_phase2_fixes.py).
                     _pulse_on = os.environ.get('TARGET_401_PULSE', '0') == '1'
                     _pulse_streak_n = max(1, int(os.environ.get('TARGET_401_PULSE_STREAK', '3')))
                     _pulse_lo = float(os.environ.get('TARGET_401_PULSE_SLEEP_MIN', '15'))
@@ -1776,6 +1966,10 @@ class BulletproofPurchaseManager:
                         # TARGET_IDENT_CENSUS / TARGET_IDENTITY_REST is 1. Never raises.
                         _dx_record_attempt(self, _skip_ident, _skip_acct, tcin, result,
                                            target_session_manager)
+                        # R1 review (PC-1): HS-1 record point (TARGET_HOME_SHARE_GUARD=1
+                        # only; not armed). Never raises.
+                        _hs1_note(self, _skip_ident, _skip_acct, tcin, result,
+                                  target_purchase_executor)
 
                         if not _retry_on or result.get('success'):
                             break
@@ -1963,6 +2157,14 @@ class BulletproofPurchaseManager:
                                 print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} with {_remaining:.0f}s of window left — "
                                       f"no warm re-POST; ending the window (re-arm opens a fresh one) "
                                       f"ident={_race_wlbl or 'auto'}")
+                                break
+                            # R1 review (PC-1, plan P9): an identity that just started an
+                            # ID-1 rest ends this window instead of sleeping into a cold
+                            # re-entry it may not take (0.0 while TARGET_IDENTITY_REST=0).
+                            _rest_left = _ident_rest_left(self, _skip_ident, tcin)
+                            if _rest_left > 0:
+                                print(f"[IDENT_REST] {_skip_ident} {tcin}: resting {_rest_left:.0f}s — "
+                                      f"no cold re-entry this window (keeping this attempt's result)")
                                 break
                             _re_s = random.uniform(_re_lo, min(_re_hi, _remaining - _bw_est - 20.0))
                             print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} — no re-POST; cold re-entry in "
@@ -2751,6 +2953,47 @@ class BulletproofPurchaseManager:
                 d, lk = self._ac_latch, self._ac_latch_lock
         return d, lk
 
+    def _ac_restore_latches(self) -> int:
+        """R1 review (R1-AC1-1): at manager init, with the latch and its
+        persistence on, point _ac_latch_path at the latch file and load its
+        unexpired entries (a crash + wrapper relaunch must not forget an
+        ambiguous commit). Logs one [AMBIGUOUS_COMMIT] restored line + one
+        error_log line when anything was restored. Returns the count; never
+        raises."""
+        if not (_ac_latch_on() and _ac_persist_on()):
+            return 0
+        try:
+            self._ac_latch_path = _ac_latch_file()
+            _now = time.time()
+            _ttl = _ac_latch_ttl_s()
+            _restored = _ac_latch_load(self._ac_latch_path, _now, _ttl)
+            if not _restored:
+                return 0
+            d, lk = self._ac_state()
+            with lk:
+                d.update(_restored)
+            _who = ', '.join(f"{i} {t} ({ts + _ttl - _now:.0f}s left)"
+                             for (i, t), ts in sorted(_restored.items()))
+            _msg = (f"[AMBIGUOUS_COMMIT] restored {len(_restored)} latch(es) from the previous "
+                    f"process: {_who} — check order history")
+            print(_msg)
+            try:
+                _p = getattr(self, '_ac_error_log_path', 'logs/error_log.txt')
+                _d = os.path.dirname(_p)
+                if _d:
+                    os.makedirs(_d, exist_ok=True)
+                with open(_p, 'a', encoding='utf-8') as _f:
+                    _f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {_msg}\n")
+            except Exception:
+                pass
+            return len(_restored)
+        except Exception as _le:
+            try:
+                print(f"[AMBIGUOUS_COMMIT] latch file restore skipped ({type(_le).__name__})")
+            except Exception:
+                pass
+            return 0
+
     def _ac_latch_mark(self, ident, tcin, why: str = '') -> None:
         """Latch (ident, tcin) now. Logs [AMBIGUOUS_COMMIT] + one error_log line.
         Never raises."""
@@ -2758,6 +3001,10 @@ class BulletproofPurchaseManager:
             d, lk = self._ac_state()
             with lk:
                 d[(str(ident), str(tcin))] = time.time()
+                _snap = dict(d)
+            _path = getattr(self, '_ac_latch_path', None)
+            if _path and _ac_persist_on():
+                _ac_latch_save(_path, _snap, time.time(), _ac_latch_ttl_s())
             msg = (f"[AMBIGUOUS_COMMIT] {ident} {tcin} latched {_ac_latch_ttl_s():.0f}s — "
                    f"check order history (why={why or 'unknown'})")
             print(msg)
@@ -2799,12 +3046,13 @@ class BulletproofPurchaseManager:
                 pass
             return 0.0
 
-    def _thread_skip_reason(self, ident, acct, tcin) -> str:
+    def _thread_skip_reason(self, ident, acct, tcin, log: bool = True) -> str:
         """In-thread skip for one dispatched (identity, TCIN), checked at the top
-        of every retry-loop attempt. '' = fire normally. AC-1 latch first, then
-        the P5 (c) hot-TCIN park; ID-1 / HS-1 reasons are not built yet. `acct`
-        is the bare account id (the park key; unused by AC-1). Never raises;
-        '' while the flags are off."""
+        of every retry-loop attempt. '' = fire normally. Order: AC-1 latch, the
+        P5 (c) hot-TCIN park, the P5 (a) HS-1 home-share guard, the P9 ID-1
+        rest. `acct` is the bare account id (park / HS-1 / ID-1 key). log=False
+        (the pre-dispatch check) prints nothing. Never raises; '' while every
+        flag is off."""
         try:
             if _ac_latch_on() and self._ac_latched_left(ident, tcin) > 0:
                 return 'ambiguous_commit_latched'
@@ -2814,14 +3062,45 @@ class BulletproofPurchaseManager:
         # (TARGET_PARK_ACCOUNT_TCINS; empty = nobody parked).
         if _park_hit(acct, tcin):
             return 'account_parked_hot'
+        # R1 review (PC-1): HS-1 (TARGET_HOME_SHARE_GUARD=1, not armed).
+        try:
+            if _ident_rest.home_share_guard_on():
+                _left = _hs1_guard_of(self).guest_left(acct)
+                if _left > 0:
+                    if log:
+                        print(f"[HOME_SHARE_GUARD] {ident} sits out {tcin} "
+                              f"(guest parked {_left:.0f}s more)")
+                    return 'home_share_guard'
+        except Exception:
+            pass
+        # R1 review (PC-1): ID-1 (TARGET_IDENTITY_REST=1, not armed).
+        try:
+            if _ident_rest.identity_rest_on():
+                trk = getattr(self, '_ident_tracker', None)
+                if trk is not None:
+                    if log:
+                        for _i, _t, _s in trk.pop_expired():
+                            print(f"[IDENT_REST] {_i} back on {_t} after {_s:.0f}s")
+                    _left = float(trk.rest_left(ident, tcin))
+                    if _left > 0:
+                        if log:
+                            print(f"[IDENT_REST] {ident} sits out {tcin} (rest ends in {_left:.0f}s)")
+                        return 'identity_resting'
+        except Exception:
+            pass
         return ''
 
     def _all_dispatch_candidates_latched(self, tcin) -> bool:
-        """True when EVERY identity a dispatch of `tcin` could use is latched:
-        the ready workers (race fan-out), else the pool primary, else the
-        legacy worker. Logged at most once a minute per TCIN. Never raises
-        (False = dispatch normally; the in-thread skip still applies)."""
+        """True when EVERY identity a dispatch of `tcin` could use would sit
+        out: the ready workers (race fan-out), else the pool primary, else the
+        legacy worker. R1 review (R1-PARK-VS-ALL-LATCHED): every in-thread skip
+        reason counts (AC-1 latch, P5 park, HS-1, ID-1), not just the latch.
+        Logged at most once a minute per TCIN. Never raises (False = dispatch
+        normally; the in-thread skip still applies)."""
         try:
+            if not (_ac_latch_on() or _park_map() or _ident_rest.home_share_guard_on()
+                    or _ident_rest.identity_rest_on()):
+                return False
             pool = getattr(self, 'worker_pool', None)
             cands = []
             if pool is not None:
@@ -2837,8 +3116,14 @@ class BulletproofPurchaseManager:
             if not cands:
                 cands = [getattr(self, 'worker', None)]
             idents = [self._ac_ident(w) for w in cands]
-            lefts = [self._ac_latched_left(i, tcin) for i in idents]
-            if not lefts or not all(v > 0 for v in lefts):
+            accts = []
+            for w in cands:
+                try:
+                    accts.append(str(getattr(getattr(w, 'cfg', None), 'account_id', '') or ''))
+                except Exception:
+                    accts.append('')
+            whys = [self._thread_skip_reason(i, a, tcin, log=False) for i, a in zip(idents, accts)]
+            if not whys or not all(whys):
                 return False
             now = time.time()
             logts = getattr(self, '_ac_skip_log_ts', None)
@@ -2847,9 +3132,15 @@ class BulletproofPurchaseManager:
                 self._ac_skip_log_ts = logts
             if now - logts.get(str(tcin), 0.0) >= 60.0:
                 logts[str(tcin)] = now
-                _who = ', '.join(f"{i} {v:.0f}s" for i, v in zip(idents, lefts))
-                print(f"[AMBIGUOUS_COMMIT] {tcin} in stock but every candidate identity is "
-                      f"latched ({_who}) — not dispatching; check order history")
+                if all(w == 'ambiguous_commit_latched' for w in whys):
+                    lefts = [self._ac_latched_left(i, tcin) for i in idents]
+                    _who = ', '.join(f"{i} {v:.0f}s" for i, v in zip(idents, lefts))
+                    print(f"[AMBIGUOUS_COMMIT] {tcin} in stock but every candidate identity is "
+                          f"latched ({_who}) — not dispatching; check order history")
+                else:
+                    _who = ', '.join(f"{i} {w}" for i, w in zip(idents, whys))
+                    print(f"[DISPATCH_SKIP] {tcin} in stock but every candidate identity sits "
+                          f"out ({_who}) — not dispatching")
             return True
         except Exception:
             return False
@@ -2929,7 +3220,13 @@ class BulletproofPurchaseManager:
                     final_state['order_numbers'] = orders
                 if not any_success:
                     reasons = [r.get('reason') for r in results_snapshot.values() if r.get('reason')]
-                    final_state['failure_reason'] = reasons[0] if reasons else 'all_accounts_failed'
+                    # R1 review: a sit-out (parked / latched / resting / held)
+                    # finishes first because it fires nothing; headline the
+                    # first identity that really attempted. Unchanged when no
+                    # sit-out reason exists (every gating flag off).
+                    _real = [x for x in reasons if not _is_sit_out_reason(x)]
+                    final_state['failure_reason'] = ((_real or reasons)[0] if reasons
+                                                     else 'all_accounts_failed')
             states[tcin] = final_state
             self._save_states_unsafe(states)
             if all_done and self.status_callback:
@@ -3389,7 +3686,7 @@ class BulletproofPurchaseManager:
                         # 2026-09-16 AC-1: every identity that would race this TCIN
                         # is latched on a possibly-committed order — do not open an
                         # empty race (each thread would only sit out).
-                        if _ac_latch_on() and self._all_dispatch_candidates_latched(tcin):
+                        if self._all_dispatch_candidates_latched(tcin):
                             continue
 
                         # Start new purchase attempt.

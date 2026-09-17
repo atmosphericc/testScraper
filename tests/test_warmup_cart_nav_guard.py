@@ -324,6 +324,157 @@ def test_cycle_warm_skipped_when_stock_is_in():
     assert q == ["warm-coro"], f"malformed row never skips: {q}"
 
 
+# ── R1 review (PC-3, 2026-09-17): the two other /cart loads during a hold ─────
+# (a) _ensure_warmup_tab re-opened the warmup tab straight on /cart (e.g. after
+#     a CHROME-AGE relaunch while a WC-3 cart was held);
+# (b) the background token repair navigated the repaired tab back to /cart.
+# Both now follow the nav rule above: held marker / won-cart loop at any
+# level, the legacy ride with TARGET_HOLD_QUIET_WARMUP>=1.
+class _OpenBrowser:
+    def __init__(self):
+        self.opened = []
+
+    async def get(self, url, new_tab=False):
+        self.opened.append(url)
+        return type("T", (), {"url": url})()
+
+
+def _open_ex():
+    ex = object.__new__(PurchaseExecutor)
+    br = _OpenBrowser()
+    ex.session_manager = type("SM", (), {"browser": br})()
+    ex._warmup_browser_ref = br
+    ex._warmup_tabs = [None]
+    ex._warmup_pool_size = 1
+    ex._warmup_tab_cart_ts = {}
+
+    async def _setup(tab, persistent=False):
+        return None
+
+    ex._setup_cdp_fetch_interceptor = _setup
+    return ex, br
+
+
+def _open(ex):
+    import contextlib
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        tab = asyncio.run(ex._ensure_warmup_tab(0))
+    return tab, buf.getvalue()
+
+
+def test_pc3_warmup_tab_opens_on_homepage_while_held():
+    import time as _t
+    _quiet_clear()
+    try:
+        ex, br = _open_ex()
+        tab, _ = _open(ex)
+        assert br.opened == ["https://www.target.com/cart"] and 0 in ex._warmup_tab_cart_ts, br.opened
+        ex, br = _open_ex()
+        ex._held_cart = {"tcin": "1010892069", "created": _t.time() - 10}
+        tab, out = _open(ex)
+        assert br.opened == ["https://www.target.com/"], br.opened
+        assert 0 not in ex._warmup_tab_cart_ts and ex._warmup_tabs[0] is tab, ex._warmup_tab_cart_ts
+        assert "on the homepage" in out and "(held)" in out, out
+        ex, br = _open_ex()
+        ex._held_cart = {"tcin": "1010892069", "created": _t.time() - 1000}   # expired (900 s)
+        _open(ex)
+        assert br.opened == ["https://www.target.com/cart"], br.opened
+        ex, br = _open_ex()
+        ex._woncart_active_until = _t.time() + 60
+        _open(ex)
+        assert br.opened == ["https://www.target.com/"], br.opened
+        # The legacy ride only with TARGET_HOLD_QUIET_WARMUP>=1 (same as the nav rule).
+        ex, br = _open_ex()
+        ex._won_cart_ride_until = _t.time() + 60
+        _open(ex)
+        assert br.opened == ["https://www.target.com/cart"], br.opened
+        os.environ["TARGET_HOLD_QUIET_WARMUP"] = "1"
+        ex, br = _open_ex()
+        ex._won_cart_ride_until = _t.time() + 60
+        _open(ex)
+        assert br.opened == ["https://www.target.com/"], br.opened
+    finally:
+        _quiet_clear()
+
+
+class _RepairTab:
+    def __init__(self, counters):
+        self.url = "https://www.target.com/cart"
+        self._c = counters
+        self.navs = []
+
+    async def get(self, url):
+        self._c["nav"] += 1
+        self.navs.append(url)
+        return None
+
+    async def evaluate(self, script, await_promise=False):
+        if "readyState" in script:
+            return "complete"
+        self._c["dummy"] += 1
+        return 401                        # heartbeat 401
+
+
+def _repair_ex(held):
+    import time as _t
+    c = {"nav": 0, "dummy": 0, "repair": 0}
+    ex = object.__new__(PurchaseExecutor)
+    sm = _FakeSM(False)
+    sm.account_id = "business"
+
+    async def _fresh(tab=None, allow_nav=True, force=False):
+        c["repair"] += 1
+        return True
+
+    sm.ensure_fresh_access_token = _fresh
+    ex.session_manager = sm
+    ex._warmup_pool_lock = asyncio.Lock()
+    ex._cached_cart_headers = {"x": "1"}
+    ex._cached_cart_headers_ts = 0.0
+    ex._warmup_tabs = {0: None}
+    ex._warmup_pool_size = 1
+    ex._warmup_tab_cart_ts = {0: _t.time() - 999.0}
+    ex._last_bg_token_repair_ts = 0.0
+    ex._bg_token_repair_times = []
+    ex._churn_alerted_ts = 0.0
+    ex._atc_dead_token_midwindow_repair = True
+    if held:
+        ex._held_cart = {"tcin": "1010892069", "created": _t.time() - 10}
+    tab = _RepairTab(c)
+
+    async def fake_ensure(idx):
+        return tab
+
+    async def _confirm(t, idx, acct):
+        return 401
+
+    ex._ensure_warmup_tab = fake_ensure
+    ex._confirm_write_auth_401 = _confirm
+    return ex, c, tab
+
+
+def test_pc3_token_repair_stays_off_cart_while_held():
+    import contextlib
+    import io
+    _quiet_clear()
+    try:
+        ex, c, tab = _repair_ex(held=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            asyncio.run(ex._refresh_on_tab(0))
+        assert c["repair"] == 1 and tab.navs == ["https://www.target.com/cart"] * 2, (c, tab.navs)
+        ex, c, tab = _repair_ex(held=True)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            asyncio.run(ex._refresh_on_tab(0))
+        out = buf.getvalue()
+        assert c["repair"] == 1 and tab.navs == [], (c, tab.navs)
+        assert "token repaired — staying off /cart (won cart held: held)" in out, out[-400:]
+    finally:
+        _quiet_clear()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

@@ -24,9 +24,22 @@ Run model (one "run" per (identity, TCIN)):
   * run_shots is the 1-based index of the shot in its run; run_s is the time
     since the run's first shot.
 
-Enforcement hook (ID-1, plan P9, stage S6): `_rest_until` is read by
-is_resting()/rest_left(). Nothing in this stage writes it, so with the recorder
-alone is_resting() is always False.
+Enforcement (ID-1, plan P9; built in review round R1, 2026-09-17, NOT armed):
+with TARGET_IDENTITY_REST=1 the tracker is built with a rest config and
+record() starts a rest when K of the last M shots of an identity's open run on
+a TCIN are 'auth401' (default 2 of 3), for eligible identities only (proxied,
+unless TARGET_IDENTITY_REST_PROXIED_ONLY=0, and never an account listed in
+TARGET_IDENTITY_REST_NEVER, default 'primary'). A rest lasts
+TARGET_IDENTITY_REST_S (150, clamped 125..900 so the next shot always opens a
+new run) and closes the run. With TARGET_IDENTITY_REST_STAGGER=1 (default) a
+second identity's trigger on the same TCIN is deferred while another identity
+rests there. The manager enforces it (in-thread skip 'identity_resting' and
+the wave-first break). Default '0' = recorder only, is_resting() always False.
+
+HS-1 (plan P5 option a; built in R1, NOT armed): HomeShareGuard parks the GUEST
+account (alt-1) on every TCIN for TTL once the PROTECT account (primary)
+collects P401 carts-401s / PX-block ATC 403s on one TCIN within 30 min. Only
+meaningful when both accounts share the home exit. Default off.
 """
 from __future__ import annotations
 
@@ -100,6 +113,54 @@ def reset_gap_s(env=None) -> float:
     return min(900.0, max(30.0, v))
 
 
+def identity_rest_on(env=None) -> bool:
+    """TARGET_IDENTITY_REST=1: ID-1 enforcement (default 0 = recorder only)."""
+    return _flag(env, 'TARGET_IDENTITY_REST')
+
+
+def _num(env, name: str, default: float, lo: float, hi: float) -> float:
+    env = os.environ if env is None else env
+    try:
+        v = float(str(env.get(name, str(default))).strip())
+    except (TypeError, ValueError):
+        v = float(default)
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        v = float(default)
+    return float(min(float(hi), max(float(lo), v)))
+
+
+def _names(raw) -> frozenset:
+    """'Primary, business;x' -> frozenset({'primary', 'business', 'x'})."""
+    out = set()
+    for part in str(raw or '').replace(';', ',').replace(' ', ',').split(','):
+        part = part.strip().lower()
+        if part:
+            out.add(part)
+    return frozenset(out)
+
+
+def rest_cfg(env=None) -> Dict[str, Any]:
+    """ID-1 knobs, clamped. rest_s >= 125 keeps a rest longer than any reset
+    gap the 401 wall was seen to survive (<= 87 s) and past the default run
+    reset (120 s)."""
+    env = os.environ if env is None else env
+    m = int(_num(env, 'TARGET_IDENTITY_REST_M', 3, 1, IdentityTracker.RUN_KINDS_MAXLEN))
+    k = int(_num(env, 'TARGET_IDENTITY_REST_K', 2, 1, m))
+    return {
+        'rest_s': _num(env, 'TARGET_IDENTITY_REST_S', 150, 125, 900),
+        'k': k,
+        'm': m,
+        'proxied_only': str(env.get('TARGET_IDENTITY_REST_PROXIED_ONLY', '1')).strip() != '0',
+        'stagger': str(env.get('TARGET_IDENTITY_REST_STAGGER', '1')).strip() != '0',
+        'never': _names(env.get('TARGET_IDENTITY_REST_NEVER', 'primary')),
+    }
+
+
+def home_share_guard_on(env=None) -> bool:
+    """TARGET_HOME_SHARE_GUARD=1: HS-1 (default 0)."""
+    return _flag(env, 'TARGET_HOME_SHARE_GUARD')
+
+
 def classify_result(result) -> Optional[str]:
     """Record kind for one executor result: 'pass', a gate_kind ('auth401' /
     'edge' / 'dco'), 'other', or None (not recorded). Never raises."""
@@ -140,18 +201,21 @@ class IdentityTracker:
 
     RUN_KINDS_MAXLEN = 8
 
-    def __init__(self, reset_gap: float = 120.0):
+    def __init__(self, reset_gap: float = 120.0, rest: Optional[Dict[str, Any]] = None):
         self.reset_gap_s = float(reset_gap)
         self._lock = threading.Lock()
         self._runs: Dict[tuple, Dict[str, Any]] = {}
         self._counts: Dict[tuple, Dict[str, Any]] = {}
         self._meta: Dict[str, Dict[str, Any]] = {}
-        # ID-1 enforcement hook (stage S6 writes it; the recorder never does).
+        # ID-1 enforcement: None = recorder only (rests never start).
+        self.rest = dict(rest) if rest else None
         self._rest_until: Dict[tuple, float] = {}
+        self._rest_started: Dict[tuple, float] = {}
 
     @classmethod
     def from_env(cls, env=None) -> "IdentityTracker":
-        return cls(reset_gap=reset_gap_s(env))
+        return cls(reset_gap=reset_gap_s(env),
+                   rest=rest_cfg(env) if identity_rest_on(env) else None)
 
     @staticmethod
     def _key(ident, tcin) -> tuple:
@@ -176,6 +240,10 @@ class IdentityTracker:
             snap = {'run_shots': r['shots'], 'run_s': max(0.0, now - r['start']), 'kind': kind}
             if kind in ('dco', 'pass'):
                 r['closed'] = True
+            if self.rest is not None and kind == 'auth401':
+                rest = self._rest_trigger_locked(key, r, acct, proxied, now)
+                if rest is not None:
+                    snap['rest'] = rest
             c = self._counts.get(key)
             if c is None:
                 c = {k: 0 for k in COUNTER_KEYS}
@@ -217,6 +285,48 @@ class IdentityTracker:
                 out.update(c)
             return out
 
+    def _rest_trigger_locked(self, key, r, acct, proxied, now) -> Optional[Dict[str, Any]]:
+        """ID-1 trigger check for one recorded auth401 (caller holds the lock).
+        Returns None (no trigger), {'deferred': True, 'by': ident, ...} or
+        {'until', 'rest_s', 'trigger', 'run_shots', 'run_s'}."""
+        cfg = self.rest or {}
+        k, m = int(cfg.get('k', 2)), int(cfg.get('m', 3))
+        recent = list(r['kinds'])[-m:]
+        if recent.count('auth401') < k:
+            return None
+        if str(acct or '').strip().lower() in cfg.get('never', frozenset()):
+            return None
+        if cfg.get('proxied_only', True) and proxied is not True:
+            return None
+        if float(self._rest_until.get(key, 0.0)) > now:
+            return None
+        trigger = f"{k}of{m}"
+        if cfg.get('stagger', True):
+            for (oi, ot), until in self._rest_until.items():
+                if ot == key[1] and oi != key[0] and float(until) > now:
+                    return {'deferred': True, 'by': oi, 'trigger': trigger,
+                            'left': float(until) - now}
+        rest_s = float(cfg.get('rest_s', 150.0))
+        self._rest_until[key] = now + rest_s
+        self._rest_started[key] = now
+        snap = {'until': now + rest_s, 'rest_s': rest_s, 'trigger': trigger,
+                'run_shots': r['shots'], 'run_s': max(0.0, now - r['start'])}
+        r['closed'] = True       # the next shot after the rest opens a new run
+        return snap
+
+    def pop_expired(self, now: Optional[float] = None) -> list:
+        """[(ident, tcin, rested_s)] for every rest that has ended since the
+        last call; each ended rest is reported exactly once."""
+        now = time.time() if now is None else float(now)
+        out = []
+        with self._lock:
+            for key, until in list(self._rest_until.items()):
+                if float(until) <= now:
+                    started = float(self._rest_started.pop(key, until))
+                    self._rest_until.pop(key, None)
+                    out.append((key[0], key[1], max(0.0, now - started)))
+        return out
+
     def is_resting(self, ident, tcin, now: Optional[float] = None) -> bool:
         return self.rest_left(ident, tcin, now) > 0.0
 
@@ -224,3 +334,65 @@ class IdentityTracker:
         now = time.time() if now is None else float(now)
         with self._lock:
             return max(0.0, float(self._rest_until.get(self._key(ident, tcin), 0.0)) - now)
+
+
+class HomeShareGuard:
+    """HS-1 (plan P5 option a; default off, NOT armed): while the GUEST account
+    shares the PROTECT account's home exit, PROTECT's carts-401s and PX-block
+    ATC 403s on one TCIN within WINDOW_S are the in-drop signal that the extra
+    volume is hurting the only converting identity. At P401 of them the GUEST
+    sits out every TCIN for TTL (reason 'home_share_guard'); PROTECT is never
+    parked. Pure and thread-safe (own lock, no env reads outside from_env)."""
+
+    WINDOW_S = 1800.0
+
+    def __init__(self, guest: str = 'alt-1', protect: str = 'primary',
+                 p401: int = 2, ttl_s: float = 3600.0):
+        self.guest = str(guest or '').strip().lower()
+        self.protect = str(protect or '').strip().lower()
+        self.p401 = max(1, int(p401))
+        self.ttl_s = float(ttl_s)
+        self._lock = threading.Lock()
+        self._events: Dict[str, deque] = {}
+        self._parked_until = 0.0
+
+    @classmethod
+    def from_env(cls, env=None) -> "HomeShareGuard":
+        env = os.environ if env is None else env
+        return cls(guest=str(env.get('TARGET_HOME_SHARE_GUARD_GUEST', 'alt-1')),
+                   protect=str(env.get('TARGET_HOME_SHARE_GUARD_PROTECT', 'primary')),
+                   p401=int(_num(env, 'TARGET_HOME_SHARE_GUARD_P401', 2, 1, 50)),
+                   ttl_s=_num(env, 'TARGET_HOME_SHARE_GUARD_TTL_S', 3600, 60, 86400))
+
+    def is_protect(self, acct) -> bool:
+        return bool(self.protect) and str(acct or '').strip().lower() == self.protect
+
+    def note(self, acct, tcin, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Count one PROTECT 401 / PX-block 403 on `tcin`. Returns the trigger
+        {'tcin', 'count', 'until', 'ttl_s'} when this event parks the guest,
+        else None. Events of any other account are ignored."""
+        if not self.is_protect(acct):
+            return None
+        now = time.time() if now is None else float(now)
+        t = str(tcin)
+        with self._lock:
+            dq = self._events.setdefault(t, deque())
+            while dq and now - dq[0] > self.WINDOW_S:
+                dq.popleft()
+            dq.append(now)
+            if len(dq) < self.p401:
+                return None
+            count = len(dq)
+            dq.clear()
+            self._parked_until = max(self._parked_until, now + self.ttl_s)
+            return {'tcin': t, 'count': count, 'until': self._parked_until, 'ttl_s': self.ttl_s}
+
+    def guest_left(self, acct, now: Optional[float] = None) -> float:
+        """Seconds the account still sits out (0.0 for anyone but the guest,
+        and always 0.0 for PROTECT, even when misconfigured as the guest)."""
+        a = str(acct or '').strip().lower()
+        if not a or a != self.guest or a == self.protect:
+            return 0.0
+        now = time.time() if now is None else float(now)
+        with self._lock:
+            return max(0.0, self._parked_until - now)

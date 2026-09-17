@@ -60,8 +60,9 @@ OFFLINE = [
     "test_dx_logs",
     "test_redsky_apps_channel",
     # 2026-09-17 hot-sku 0916 plan P5 option (c) (stage S8): per-account hot-TCIN
-    # park + its bat pin (stub workers only; checked against LIVE_MARKERS). The
-    # HS-1 / BG-1 / ID-1 enforcement tests join this file when that code lands.
+    # park + its bat pin (stub workers only; checked against LIVE_MARKERS). Review
+    # round R1 added the HS-1 / BG-1 / ID-1 enforcement tests, the pre-dispatch
+    # sit-out + headline-reason fixes and the AC-1 latch persistence (temp files).
     "test_identity_rest",
 ]
 

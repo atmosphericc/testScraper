@@ -13,8 +13,9 @@ with reason 'account_parked_hot': nothing fires, the other identities race
 normally, the identity tracker does not record it. Empty/unset = nobody parked
 (prior behaviour). Malformed = nobody parked + one loud [PARK] line.
 
-This file is also the plan's home for the HS-1 / BG-1 / ID-1 enforcement tests;
-that code is not built yet (stage S6 left nothing), so only the park is tested.
+This file is also the plan's home for the HS-1 / BG-1 / ID-1 enforcement tests
+(built in review round R1, 2026-09-17, NOT armed), the R1 pre-dispatch /
+headline-reason fixes and the AC-1 latch persistence across a relaunch.
 
 Offline: no browser, no network. Stub workers only.
 Run: python tests/test_identity_rest.py
@@ -216,8 +217,11 @@ def test_banner():
 def test_banner_printed_at_init():
     src = Path(bpm_mod.__file__).read_text(encoding="utf-8")
     i = src.find("self._ac_skip_log_ts: Dict[str, float] = {}")
-    region = src[i:i + 400]
-    check("init_prints_banner", "_pb = _park_banner()" in region and "print(_pb)" in region, region)
+    j = src.find("self._bank_gate_timeouts: Dict[str, int] = {}", i)
+    region = src[i:j] if (i >= 0 and j > i) else ""
+    check("init_prints_banner", "_pb = _park_banner()" in region and "print(_pb)" in region, region[:300])
+    check("init_prints_guards_banner", "_gb = _guards_banner()" in region and "print(_gb)" in region,
+          region[:300])
 
 
 # ─────────────────────────────── 3. race thread ───────────────────────────────
@@ -419,6 +423,440 @@ def test_bat_park_line():
         m = {"error": str(e)}
     check("bat_park_parses_to_lead_list", m == {"alt-1": HOT_SET}, m)
     check("bat_park_cmd_safe", val is not None and not any(c in val for c in '|&<>^%!()"'), val)
+
+
+# ───────────── 5. R1 review (2026-09-17): the S6 guards, built NOT armed ─────────────
+# PC-1: HS-1 (home-share guard), BG-1 (background slow-down) and ID-1 (identity
+# rest) were never delivered by stage S6. These pin the plan's P5 / P9 tests.
+
+_S6_FLAGS = ("TARGET_IDENTITY_REST", "TARGET_IDENTITY_REST_S", "TARGET_IDENTITY_REST_K",
+             "TARGET_IDENTITY_REST_M", "TARGET_IDENTITY_REST_PROXIED_ONLY",
+             "TARGET_IDENTITY_REST_STAGGER", "TARGET_IDENTITY_REST_NEVER",
+             "TARGET_IDENTITY_REST_RESET_GAP_S", "TARGET_HOME_SHARE_GUARD",
+             "TARGET_HOME_SHARE_GUARD_GUEST", "TARGET_HOME_SHARE_GUARD_PROTECT",
+             "TARGET_HOME_SHARE_GUARD_P401", "TARGET_HOME_SHARE_GUARD_TTL_S",
+             "TARGET_BG_SLOW_ACCOUNTS", "TARGET_BG_SLOW_FACTOR",
+             "TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST", "TARGET_AMBIGUOUS_COMMIT_LATCH_FILE")
+for _k in _S6_FLAGS:
+    os.environ.pop(_k, None)
+
+REST_ON = {"TARGET_IDENTITY_REST": "1"}
+
+
+def _trk(**env_kv):
+    e = dict(REST_ON)
+    e.update(env_kv)
+    return ident_rest.IdentityTracker.from_env(e)
+
+
+def _feed(trk, kinds, ident="W3/alt-1", acct="alt-1", tcin=HOT_TCIN, t0=1000.0, gap=3.0,
+          proxied=True):
+    out = []
+    for i, k in enumerate(kinds):
+        out.append(trk.record(ident, acct, tcin, k, now=t0 + i * gap, proxied=proxied))
+    return out
+
+
+def test_id1_trigger_k_of_m():
+    t = _trk()
+    snaps = _feed(t, ["auth401", "edge", "auth401"])
+    r = snaps[-1].get("rest") or {}
+    check("id1_401_edge_401_rests", r.get("trigger") == "2of3" and r.get("rest_s") == 150.0
+          and r.get("run_shots") == 3 and "rest" not in snaps[0] and "rest" not in snaps[1], snaps)
+    check("id1_is_resting", t.is_resting("W3/alt-1", HOT_TCIN, now=1010.0)
+          and abs(t.rest_left("W3/alt-1", HOT_TCIN, now=1010.0) - 146.0) < 1e-6)
+    check("id1_other_tcin_free", not t.is_resting("W3/alt-1", REG_TCIN, now=1010.0))
+    t = _trk()
+    snaps = _feed(t, ["auth401", "edge", "edge"])
+    check("id1_401_edge_edge_none", not any("rest" in x for x in snaps)
+          and not t.is_resting("W3/alt-1", HOT_TCIN, now=1010.0), snaps)
+    t = _trk()
+    snaps = _feed(t, ["auth401", "auth401"])
+    check("id1_two_401_rests", "rest" in snaps[-1], snaps)
+    # A trigger closes the run: the first shot after the rest is run_shots=1.
+    nxt = t.record("W3/alt-1", "alt-1", HOT_TCIN, "edge", now=1003.0 + 151.0, proxied=True)
+    check("id1_run_closed_after_trigger", nxt["run_shots"] == 1, nxt)
+    # K=3 M=3: two 401s are not enough.
+    t = _trk(TARGET_IDENTITY_REST_K="3")
+    snaps = _feed(t, ["auth401", "auth401", "edge"])
+    check("id1_k3_needs_three", not any("rest" in x for x in snaps), snaps)
+
+
+def test_id1_resets():
+    # 125 s gap (> the 120 s run reset): the second 401 opens a new run.
+    t = _trk()
+    a = t.record("W3/alt-1", "alt-1", HOT_TCIN, "auth401", now=1000.0, proxied=True)
+    b = t.record("W3/alt-1", "alt-1", HOT_TCIN, "auth401", now=1125.0, proxied=True)
+    check("id1_125s_gap_resets", "rest" not in b and b["run_shots"] == 1, (a, b))
+    for closer in ("dco", "pass"):
+        t = _trk()
+        snaps = _feed(t, ["auth401", closer, "auth401"])
+        check(f"id1_{closer}_resets", not any("rest" in x for x in snaps)
+              and snaps[-1]["run_shots"] == 1, snaps)
+
+
+def test_id1_eligibility():
+    t = _trk()
+    s = _feed(t, ["auth401", "auth401"], ident="W1/primary", acct="primary")
+    check("id1_never_primary", "rest" not in s[-1], s)
+    t = _trk(TARGET_IDENTITY_REST_NEVER="Business", TARGET_IDENTITY_REST_PROXIED_ONLY="0")
+    s1 = _feed(t, ["auth401", "auth401"], ident="W2/business", acct="business")
+    s2 = _feed(t, ["auth401", "auth401"], ident="W1/primary", acct="primary", proxied=False)
+    check("id1_never_custom", "rest" not in s1[-1] and "rest" in s2[-1], (s1, s2))
+    for prox in (False, None):
+        t = _trk()
+        s = _feed(t, ["auth401", "auth401"], proxied=prox)
+        check(f"id1_proxied_only[{prox}]", "rest" not in s[-1], s)
+    t = _trk(TARGET_IDENTITY_REST_PROXIED_ONLY="0")
+    s = _feed(t, ["auth401", "auth401"], proxied=False)
+    check("id1_proxied_only_off", "rest" in s[-1], s)
+
+
+def test_id1_stagger_and_pop():
+    t = _trk()
+    _feed(t, ["auth401", "auth401"], ident="W3/alt-1", acct="alt-1", t0=1000.0)
+    s = _feed(t, ["auth401", "auth401"], ident="W2/business", acct="business", t0=1010.0)
+    r = s[-1].get("rest") or {}
+    check("id1_stagger_defers_second", r.get("deferred") is True and r.get("by") == "W3/alt-1"
+          and not t.is_resting("W2/business", HOT_TCIN, now=1020.0), s)
+    s = _feed(t, ["auth401", "auth401"], ident="W2/business", acct="business", tcin=REG_TCIN, t0=1010.0)
+    check("id1_stagger_per_tcin", "until" in (s[-1].get("rest") or {}), s)
+    t = _trk(TARGET_IDENTITY_REST_STAGGER="0")
+    _feed(t, ["auth401", "auth401"], ident="W3/alt-1", acct="alt-1", t0=1000.0)
+    s = _feed(t, ["auth401", "auth401"], ident="W2/business", acct="business", t0=1010.0)
+    check("id1_stagger_off_both_rest", t.is_resting("W2/business", HOT_TCIN, now=1020.0)
+          and t.is_resting("W3/alt-1", HOT_TCIN, now=1020.0), s)
+    # pop_expired: each ended rest reported exactly once.
+    t = _trk()
+    _feed(t, ["auth401", "auth401"], t0=1000.0)
+    check("id1_pop_before_end", t.pop_expired(now=1100.0) == [])
+    got = t.pop_expired(now=1160.0)
+    check("id1_pop_once", len(got) == 1 and got[0][:2] == ("W3/alt-1", HOT_TCIN)
+          and abs(got[0][2] - 157.0) < 1e-6 and t.pop_expired(now=1200.0) == [], got)
+    check("id1_not_resting_after_pop", not t.is_resting("W3/alt-1", HOT_TCIN, now=1160.0))
+
+
+def test_id1_from_env_clamps_and_flag_off():
+    c = ident_rest.rest_cfg({"TARGET_IDENTITY_REST_S": "10", "TARGET_IDENTITY_REST_K": "9",
+                             "TARGET_IDENTITY_REST_M": "3"})
+    check("id1_clamp_low", c["rest_s"] == 125.0 and c["k"] == 3 and c["m"] == 3, c)
+    c = ident_rest.rest_cfg({"TARGET_IDENTITY_REST_S": "5000", "TARGET_IDENTITY_REST_M": "99",
+                             "TARGET_IDENTITY_REST_K": "x"})
+    check("id1_clamp_high_and_bad", c["rest_s"] == 900.0 and c["m"] == 8 and c["k"] == 2, c)
+    c = ident_rest.rest_cfg({"TARGET_IDENTITY_REST_M": "0", "TARGET_IDENTITY_REST_S": "nan"})
+    check("id1_clamp_m_min_nan", c["m"] == 1 and c["k"] == 1 and c["rest_s"] == 150.0, c)
+    c = ident_rest.rest_cfg({})
+    check("id1_defaults", c == {"rest_s": 150.0, "k": 2, "m": 3, "proxied_only": True, "stagger": True,
+                                "never": frozenset({"primary"})}, c)
+    check("id1_flag_off_no_rest_cfg",
+          ident_rest.IdentityTracker.from_env({"TARGET_EXPOSURE_LOG": "1"}).rest is None)
+    t = ident_rest.IdentityTracker.from_env({"TARGET_EXPOSURE_LOG": "1"})
+    s = _feed(t, ["auth401"] * 4)
+    check("id1_flag_off_counts_but_never_rests",
+          not any("rest" in x for x in s) and t.counters("W3/alt-1", HOT_TCIN)["p401"] == 4
+          and not t.is_resting("W3/alt-1", HOT_TCIN, now=1005.0), s)
+
+
+def test_hs1_guard_unit():
+    g = ident_rest.HomeShareGuard.from_env({})
+    check("hs1_defaults", (g.guest, g.protect, g.p401, g.ttl_s) == ("alt-1", "primary", 2, 3600.0),
+          (g.guest, g.protect, g.p401, g.ttl_s))
+    check("hs1_one_401_no_trigger", g.note("primary", HOT_TCIN, now=1000.0) is None
+          and g.guest_left("alt-1", now=1000.0) == 0.0)
+    trig = g.note("Primary", HOT_TCIN, now=1500.0)
+    check("hs1_two_401s_trigger", trig is not None and trig["count"] == 2
+          and abs(g.guest_left("alt-1", now=1500.0) - 3600.0) < 1e-6, trig)
+    check("hs1_guest_any_tcin", g.guest_left("ALT-1", now=2000.0) > 0)
+    check("hs1_protect_never_parked", g.guest_left("primary", now=2000.0) == 0.0
+          and g.guest_left("business", now=2000.0) == 0.0 and g.guest_left("", now=2000.0) == 0.0)
+    check("hs1_ttl_expiry", g.guest_left("alt-1", now=1500.0 + 3600.0 + 1) == 0.0)
+    g = ident_rest.HomeShareGuard.from_env({})
+    g.note("primary", HOT_TCIN, now=1000.0)
+    check("hs1_window_30min", g.note("primary", HOT_TCIN, now=1000.0 + 1801.0) is None)
+    g = ident_rest.HomeShareGuard.from_env({})
+    g.note("primary", HOT_TCIN, now=1000.0)
+    check("hs1_per_tcin", g.note("primary", REG_TCIN, now=1001.0) is None)
+    check("hs1_other_account_ignored", g.note("alt-1", HOT_TCIN, now=1002.0) is None
+          and g.note("business", HOT_TCIN, now=1003.0) is None)
+    g = ident_rest.HomeShareGuard(guest="primary", protect="primary")
+    g.note("primary", HOT_TCIN, now=1.0)
+    g.note("primary", HOT_TCIN, now=2.0)
+    check("hs1_misconfig_never_parks_protect", g.guest_left("primary", now=3.0) == 0.0)
+    g = ident_rest.HomeShareGuard.from_env({"TARGET_HOME_SHARE_GUARD_P401": "0",
+                                            "TARGET_HOME_SHARE_GUARD_TTL_S": "5"})
+    check("hs1_clamps", g.p401 == 1 and g.ttl_s == 60.0, (g.p401, g.ttl_s))
+
+
+def test_hs1_manager_skip_and_note():
+    m = bare_mgr()
+    with env(TARGET_HOME_SHARE_GUARD="1"):
+        ex = type("X", (), {"_atc_px_block_seen": False})()
+        _, out = quiet(bpm_mod._hs1_note, m, "W1/primary", "primary", HOT_TCIN,
+                       {"success": False, "reason": "atc_failed_api_mode", "gate_kind": "auth401"}, ex)
+        check("hs1_mgr_one_no_park", m._thread_skip_reason("W3/alt-1", "alt-1", HOT_TCIN) == ""
+              and "[HOME_SHARE_GUARD]" not in out, out)
+        # edge 429s and other accounts' 401s do not count
+        quiet(bpm_mod._hs1_note, m, "W1/primary", "primary", HOT_TCIN,
+              {"success": False, "reason": "rate_limited_429", "gate_kind": "edge"}, ex)
+        quiet(bpm_mod._hs1_note, m, "W2/business", "business", HOT_TCIN,
+              {"success": False, "reason": "atc_failed_api_mode", "gate_kind": "auth401"}, ex)
+        check("hs1_mgr_still_free", m._thread_skip_reason("W3/alt-1", "alt-1", HOT_TCIN) == "")
+        # a PX-block ATC 403 (no gate_kind) counts
+        ex._atc_px_block_seen = True
+        _, out = quiet(bpm_mod._hs1_note, m, "W1/primary", "primary", HOT_TCIN,
+                       {"success": False, "reason": "atc_failed_api_mode"}, ex)
+        check("hs1_mgr_px_counts_and_logs", "[HOME_SHARE_GUARD] W1/primary (primary) drew 2" in out, out)
+        with open(m._ac_error_log_path, encoding="utf-8") as f:
+            check("hs1_error_log_line", "[HOME_SHARE_GUARD]" in f.read())
+        r, out = quiet(m._thread_skip_reason, "W3/alt-1", "alt-1", REG_TCIN)
+        check("hs1_guest_skipped_all_tcins", r == "home_share_guard" and "sits out" in out, (r, out))
+        check("hs1_protect_never_skipped", m._thread_skip_reason("W1/primary", "primary", HOT_TCIN) == "")
+        check("hs1_business_free", m._thread_skip_reason("W2/business", "business", HOT_TCIN) == "")
+        check("hs1_quiet_mode", quiet(m._thread_skip_reason, "W3/alt-1", "alt-1", HOT_TCIN, log=False)[1] == "")
+    check("hs1_flag_off_no_skip", m._thread_skip_reason("W3/alt-1", "alt-1", HOT_TCIN) == "")
+    m2 = bare_mgr()
+    with env(TARGET_HOME_SHARE_GUARD=None):
+        for _ in range(3):
+            bpm_mod._hs1_note(m2, "W1/primary", "primary", HOT_TCIN,
+                              {"success": False, "gate_kind": "auth401"}, None)
+    check("hs1_flag_off_no_guard_built", getattr(m2, "_hs1_guard", None) is None)
+    for reason in ("home_share_guard", "identity_resting"):
+        check(f"s6_reason_not_recorded[{reason}]",
+              ident_rest.classify_result({"success": False, "reason": reason}) is None)
+        check(f"s6_reason_safe[{reason}]", not any(c.isdigit() for c in reason) and not any(
+            t in reason for t in ("oos", "out_of_stock", "sold_out", "reservation", "unavailable")))
+
+
+def test_bg1_factor():
+    import src.session.purchase_executor as pe_mod
+    f = pe_mod.bg_slow_factor
+    check("bg1_unset_is_1", f("alt-1", {}) == 1.0 and f("alt-1", {"TARGET_BG_SLOW_ACCOUNTS": " "}) == 1.0)
+    e = {"TARGET_BG_SLOW_ACCOUNTS": "Alt-1; business"}
+    check("bg1_default_factor_2", f("alt-1", e) == 2.0 and f("BUSINESS", e) == 2.0)
+    check("bg1_unlisted_1", f("primary", e) == 1.0 and f(None, e) == 1.0)
+    for raw, want in (("3", 3.0), ("9", 4.0), ("0.5", 1.0), ("x", 1.0), ("nan", 1.0), ("inf", 1.0), (" 2.5 ", 2.5)):
+        got = f("alt-1", dict(e, TARGET_BG_SLOW_FACTOR=raw))
+        check(f"bg1_clamp[{raw}]", got == want, got)
+    src = Path(pe_mod.__file__).read_text(encoding="utf-8")
+    check("bg1_wired_refill", "_bgf = bg_slow_factor(getattr(self.session_manager, 'account_id', None))" in src)
+    check("bg1_wired_harvest_idle", "_bgf = bg_slow_factor(self._harvest_acct())" in src)
+
+
+class _ProxWSM(_WSM):
+    proxy_url = "http://127.0.0.1:23003"
+    _browser_launched_at = 0.0
+
+
+class _ProxWorker(_Worker):
+    def __init__(self, wid, acct, script):
+        super().__init__(wid, acct, script)
+        self.session_manager = _ProxWSM()
+
+
+_A401 = {"success": False, "reason": "atc_failed_api_mode", "gate_kind": "auth401"}
+_EDGE = {"success": False, "reason": "rate_limited_429", "gate_kind": "edge"}
+
+
+def test_id1_race_thread():
+    # Attempt 2's 401 starts the rest; attempt 3 stops and keeps attempt 2's result.
+    ws = [_Worker(1, "primary", [_EDGE]), _ProxWorker(3, "alt-1", [_A401])]
+    m = race_mgr(ws)
+    with env(**dict(FAST_RETRY, TARGET_RETRY_WHILE_IN_STOCK_MAX="4"), **REST_ON):
+        ok, out = quiet(_race, m, HOT_TCIN)
+    rec = dict(m.recorded)
+    check("id1_race_finished", ok, m.recorded)
+    check("id1_race_two_shots_then_stop", ws[1].purchase_executor.calls == 2
+          and rec.get("W3/alt-1", {}).get("reason") == "atc_failed_api_mode", (ws[1].purchase_executor.calls, rec))
+    check("id1_race_logs", "[IDENT_REST] W3/alt-1 1010892069 trigger=2of3" in out
+          and "W3/alt-1 stops re-racing 1010892069: identity_resting" in out, out[-800:])
+    check("id1_race_primary_unaffected", ws[0].purchase_executor.calls == 4, ws[0].purchase_executor.calls)
+    # The next dispatch while resting: attempt 1 sits out, nothing fires.
+    m.recorded.clear()
+    m.done.clear()
+    ws[1].purchase_executor.calls = 0
+    with env(**FAST_RETRY, **REST_ON):
+        ok, out = quiet(_race, m, HOT_TCIN)
+    rec = dict(m.recorded)
+    check("id1_race_sits_out", ok and ws[1].purchase_executor.calls == 0
+          and rec.get("W3/alt-1", {}).get("reason") == "identity_resting"
+          and "[IDENT_REST] W3/alt-1 sits out 1010892069 (rest ends in" in out, (rec, out[-600:]))
+    check("id1_headline_is_real_attempt",
+          m._states.get(HOT_TCIN, {}).get("failure_reason") == "rate_limited_429",
+          m._states.get(HOT_TCIN))
+    # Rest over -> 'back on' once, and the identity fires again.
+    trk = m._ident_tracker
+    with trk._lock:
+        for k in list(trk._rest_until):
+            trk._rest_until[k] = time.time() - 1.0
+    m.recorded.clear()
+    m.done.clear()
+    with env(**FAST_RETRY, **REST_ON):
+        ok, out = quiet(_race, m, HOT_TCIN)
+    check("id1_back_on_logged_once", out.count("[IDENT_REST] W3/alt-1 back on 1010892069 after") == 1, out[-600:])
+    check("id1_fires_after_rest", ws[1].purchase_executor.calls == 1, ws[1].purchase_executor.calls)
+    # Flag off: nothing rests, everyone keeps firing.
+    ws = [_Worker(1, "primary", [_EDGE]), _ProxWorker(3, "alt-1", [_A401])]
+    m = race_mgr(ws)
+    with env(**dict(FAST_RETRY, TARGET_RETRY_WHILE_IN_STOCK_MAX="4"), TARGET_IDENTITY_REST=None,
+             TARGET_EXPOSURE_LOG="1"):
+        ok, out = quiet(_race, m, HOT_TCIN)
+    check("id1_flag_off_race_unchanged", ok and ws[1].purchase_executor.calls == 4
+          and "[IDENT_REST]" not in out, (ws[1].purchase_executor.calls, out[-400:]))
+
+
+def test_id1_wave_first_break():
+    # One 401 already on record -> this attempt's 401 starts a rest -> the
+    # wave-first branch ends the window instead of sleeping 55-70 s.
+    ws = [_ProxWorker(3, "alt-1", [_A401])]
+    m = race_mgr(ws)
+    with env(**dict(FAST_RETRY, TARGET_WAVE_FIRST_ONLY="1", TARGET_RETRY_WHILE_IN_STOCK_MAX="4"),
+             **REST_ON):
+        bpm_mod._dx_tracker_of(m).record("W3/alt-1", "alt-1", HOT_TCIN, "auth401", proxied=True)
+        t0 = time.time()
+        ok, out = quiet(_race, m, HOT_TCIN)
+        el = time.time() - t0
+    check("id1_wf_break_no_sleep", ok and el < 10.0 and ws[0].purchase_executor.calls == 1, (ok, el))
+    check("id1_wf_break_log", "[IDENT_REST] W3/alt-1 1010892069: resting" in out
+          and "no cold re-entry this window" in out and "cold re-entry in" not in out, out[-600:])
+    # One worker = the non-race path (label None); the attempt's own result is kept.
+    check("id1_wf_keeps_result", len(m.recorded) == 1
+          and m.recorded[0][1].get("reason") == "atc_failed_api_mode", m.recorded)
+    src = Path(bpm_mod.__file__).read_text(encoding="utf-8")
+    i = src.find("_rest_left = _ident_rest_left(self, _skip_ident, tcin)")
+    j = src.find("time.sleep(_re_s)")
+    check("id1_wf_check_before_sleep", 0 < i < j, (i, j))
+
+
+def test_hs1_race_guest_sits_out():
+    ws = _fleet()
+    m = race_mgr(ws)
+    with env(**FAST_RETRY, TARGET_HOME_SHARE_GUARD="1"):
+        g = bpm_mod._hs1_guard_of(m)
+        g.note("primary", HOT_TCIN)
+        g.note("primary", HOT_TCIN)
+        ok, out = quiet(_race, m, REG_TCIN)
+    rec = dict(m.recorded)
+    check("hs1_race_guest_skipped", ok and ws[2].purchase_executor.calls == 0
+          and rec.get("W3/alt-1", {}).get("reason") == "home_share_guard", rec)
+    check("hs1_race_others_fire", ws[0].purchase_executor.calls == 1 and ws[1].purchase_executor.calls == 1)
+
+
+def test_guards_banner():
+    with env(TARGET_HOME_SHARE_GUARD=None, TARGET_IDENTITY_REST=None, TARGET_BG_SLOW_ACCOUNTS=None):
+        check("banner_guards_empty", bpm_mod._guards_banner() == "")
+    with env(TARGET_HOME_SHARE_GUARD="1", TARGET_IDENTITY_REST="1", TARGET_BG_SLOW_ACCOUNTS="alt-1"):
+        b = bpm_mod._guards_banner()
+    check("banner_guards_text", b.startswith("[GUARDS] HS-1 home-share guard ON")
+          and "ID-1 identity rest ON (2of3 auth401 -> 150s" in b and "BG-1 background slow-down for alt-1" in b, b)
+
+
+# ───────────── 6. R1 review: pre-dispatch sit-outs + headline reason ─────────────
+
+def test_predispatch_counts_every_sit_out():
+    ws = _fleet()
+    m = race_mgr(ws)
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1"), park(f"alt-1:{HOT}"):
+        now = time.time()
+        m._ac_latch[("W1/primary", HOT_TCIN)] = now
+        m._ac_latch[("W2/business", HOT_TCIN)] = now
+        r, out = quiet(m._all_dispatch_candidates_latched, HOT_TCIN)
+        check("predispatch_latch_plus_park", r is True and "[DISPATCH_SKIP] 1010892069" in out
+              and "W3/alt-1 account_parked_hot" in out, out)
+        check("predispatch_regular_sku_free", m._all_dispatch_candidates_latched(REG_TCIN) is False)
+        m._ac_latch.pop(("W2/business", HOT_TCIN))
+        check("predispatch_one_free", m._all_dispatch_candidates_latched(HOT_TCIN) is False)
+    ws = [_Worker(3, "alt-1", [{}])]
+    m = race_mgr(ws)
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH=None), park(f"alt-1:{HOT}"):
+        check("predispatch_park_without_latch_flag", quiet(m._all_dispatch_candidates_latched, HOT_TCIN)[0] is True)
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH=None), park(None):
+        check("predispatch_all_flags_off", m._all_dispatch_candidates_latched(HOT_TCIN) is False)
+    src = Path(bpm_mod.__file__).read_text(encoding="utf-8")
+    check("predispatch_call_site_ungated", "if self._all_dispatch_candidates_latched(tcin):" in src
+          and "if _ac_latch_on() and self._all_dispatch_candidates_latched(tcin):" not in src)
+
+
+def test_headline_failure_reason():
+    ws = _fleet()
+    m = race_mgr(ws)
+    with env(**FAST_RETRY), park(f"alt-1:{HOT}"):
+        ok, _ = quiet(_race, m, HOT_TCIN)
+    check("headline_skips_sit_out", ok and m._states.get(HOT_TCIN, {}).get("failure_reason") == "rate_limited_429",
+          m._states.get(HOT_TCIN))
+    ws = [_Worker(3, "alt-1", [{}])]
+    m = race_mgr(ws)
+    with env(**FAST_RETRY), park(f"alt-1:{HOT}"):
+        ok, _ = quiet(_race, m, HOT_TCIN)
+    check("headline_all_sit_out_falls_back",
+          ok and m._states.get(HOT_TCIN, {}).get("failure_reason") == "account_parked_hot", m._states.get(HOT_TCIN))
+    for r in ("account_parked_hot", "ambiguous_commit_latched", "identity_resting",
+              "home_share_guard", "held_cart_idle_skip", "held_cart_other_tcin"):
+        check(f"sit_out_reason[{r}]", bpm_mod._is_sit_out_reason(r))
+    for r in ("rate_limited_429", "won_cart_held", "execution_timeout", "", None):
+        check(f"not_sit_out_reason[{r}]", not bpm_mod._is_sit_out_reason(r))
+
+
+# ───────────── 7. R1 review (R1-AC1-1): the AC-1 latch survives a relaunch ─────────────
+
+def test_ac_latch_file_roundtrip():
+    d = tempfile.mkdtemp(dir=_TMP)
+    path = os.path.join(d, "state", "ambiguous_commit_latch.json")
+    now = 10_000.0
+    ok = bpm_mod._ac_latch_save(path, {("W1/primary", HOT_TCIN): now - 100.0,
+                                       ("W2/business", REG_TCIN): now - 5000.0}, now, 1800.0)
+    check("acfile_saved", ok and os.path.exists(path) and not any(
+        n.startswith("ambiguous_commit_latch.json.tmp") for n in os.listdir(os.path.dirname(path))))
+    got = bpm_mod._ac_latch_load(path, now, 1800.0)
+    check("acfile_roundtrip_drops_expired", got == {("W1/primary", HOT_TCIN): now - 100.0}, got)
+    check("acfile_expired_on_load", bpm_mod._ac_latch_load(path, now + 1800.0, 1800.0) == {})
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{not json")
+    check("acfile_malformed_empty", bpm_mod._ac_latch_load(path, now, 1800.0) == {})
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('{"latches": {"no-pipe": 9999, "W1/primary|1": true, "W1/primary|2": "x", '
+                '"W1/primary|3": 99999999, "|4": 9999, "W1/primary|5": 9999}}')
+    check("acfile_bad_entries_skipped",
+          bpm_mod._ac_latch_load(path, now, 1800.0) == {("W1/primary", "5"): 9999.0},
+          bpm_mod._ac_latch_load(path, now, 1800.0))
+    check("acfile_missing_empty", bpm_mod._ac_latch_load(os.path.join(d, "nope.json"), now, 1800.0) == {})
+
+
+def test_ac_latch_persist_and_restore():
+    d = tempfile.mkdtemp(dir=_TMP)
+    path = os.path.join(d, "latch.json")
+    m = bare_mgr()
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_AMBIGUOUS_COMMIT_LATCH_FILE=path):
+        # A stand-in (no __init__) never touches the file.
+        quiet(m._ac_latch_mark, "W1/primary", HOT_TCIN, "test")
+        check("acpersist_standin_no_file", not os.path.exists(path))
+        # The init-time restore points the manager at the file.
+        n, _ = quiet(m._ac_restore_latches)
+        check("acpersist_restore_empty", n == 0 and m._ac_latch_path == path)
+        quiet(m._ac_latch_mark, "W1/primary", HOT_TCIN, "po_unresolved")
+        check("acpersist_mark_writes", os.path.exists(path))
+        # "Crash + relaunch": a fresh manager restores the latch.
+        m2 = bare_mgr()
+        n, out = quiet(m2._ac_restore_latches)
+        check("acpersist_restored", n == 1 and "[AMBIGUOUS_COMMIT] restored 1 latch(es)" in out
+              and "W1/primary 1010892069" in out, out)
+        check("acpersist_restored_skips", m2._thread_skip_reason("W1/primary", "primary", HOT_TCIN)
+              == "ambiguous_commit_latched")
+        with open(m2._ac_error_log_path, encoding="utf-8") as f:
+            check("acpersist_error_log", "restored 1 latch(es)" in f.read())
+        with env(TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST="0"):
+            m3 = bare_mgr()
+            n, _ = quiet(m3._ac_restore_latches)
+            check("acpersist_killswitch", n == 0 and not m3._ac_latch)
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH=None, TARGET_AMBIGUOUS_COMMIT_LATCH_FILE=path):
+        m4 = bare_mgr()
+        n, _ = quiet(m4._ac_restore_latches)
+        check("acpersist_latch_off_no_restore", n == 0 and not m4._ac_latch)
+    with env(TARGET_AMBIGUOUS_COMMIT_LATCH="1", TARGET_AMBIGUOUS_COMMIT_LATCH_FILE=None):
+        check("acpersist_default_path", bpm_mod._ac_latch_file() == os.path.join("state", "ambiguous_commit_latch.json"))
+    src = Path(bpm_mod.__file__).read_text(encoding="utf-8")
+    i = src.find("self._ac_skip_log_ts: Dict[str, float] = {}")
+    j = src.find("self._bank_gate_timeouts: Dict[str, int] = {}", i)
+    check("acpersist_init_calls_restore", "self._ac_restore_latches()" in src[i:j])
 
 
 def main():

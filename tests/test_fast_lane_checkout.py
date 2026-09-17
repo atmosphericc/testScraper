@@ -720,10 +720,13 @@ def _rules(atc=None, pre=None, put=None, po=None):
 
 
 def _clean_after(res):
-    """Entry deleted in finally, key never enumerable, late read = null."""
-    return (res["entriesAfter"] == [] and res["enumAfter"] is False
-            and res["lateRead"] is None and res["hasKeyAfter"] is True
-            and res["keysBefore"] == [])
+    """Entry deleted in finally, key never enumerable, late read = null, and
+    (R1 review, R1-PAGE-GLOBAL-PERSISTS) the container itself is gone once its
+    last entry is: no stage-key global is left on the page at all, not even
+    for Object.getOwnPropertyNames / the 'in' operator."""
+    return (res["entriesAfter"] is None and res["enumAfter"] is False
+            and res["lateRead"] is None and res["hasKeyAfter"] is False
+            and res["stageKeysAfter"] == [] and res["keysBefore"] == [])
 
 
 def test_fl1_js_structure_and_flag_off():

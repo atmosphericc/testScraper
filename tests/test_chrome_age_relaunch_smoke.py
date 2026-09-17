@@ -325,6 +325,177 @@ def test_sentinel_skip_line():
     assert n == 1 and out == "", "a label error never breaks the tick"
 
 
+# ── R1 review (R1-ARM-2, 2026-09-17): offsets alone do not de-lockstep ─────────
+# Relaunches only happen on the fixed 300 s sentinel tick: business (1800 s)
+# relaunches every 7 ticks, alt-1 (2100 s) every 8, so they still meet on the
+# same tick every 56 ticks (~4.7 h). TARGET_CHROME_RELAUNCH_DESYNC_S defers the
+# lower-ranked due relaunch by one tick. Simulated with the REAL
+# ensure_logged_in on a fake clock over 12 h.
+_DESYNC_ENV = "TARGET_CHROME_RELAUNCH_DESYNC_S"
+
+
+import logging  # noqa: E402
+
+_SILENT_LOG = logging.getLogger("chrome_age_desync_sim")
+_SILENT_LOG.addHandler(logging.NullHandler())
+_SILENT_LOG.propagate = False
+
+
+class _SimTime:
+    def __init__(self, t):
+        self.t = float(t)
+
+    def time(self):
+        return self.t
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def _sim(desync, hours=12.0, boot=(0.0, 40.0), latency=8.0, first_tick=90.0,
+         busy=(), order_flip=True, accounts=("business", "alt-1")):
+    _clear_p12_env()
+    os.environ.pop(_DESYNC_ENV, None)
+    os.environ["TARGET_CHROME_MAX_AGE_S"] = "2100"
+    os.environ["TARGET_CHROME_MAX_AGE_OFFSETS"] = "business:-300"
+    if desync is not None:
+        os.environ[_DESYNC_ENV] = desync
+    T0 = 1_800_000_000.0
+    clk = _SimTime(T0)
+    saved_time = _smmod.time
+    with _smmod._AGE_PEERS_LOCK:
+        for p in list(_smmod._AGE_PEERS):
+            _smmod._AGE_PEERS.discard(p)
+    relaunches = []
+    buf = io.StringIO()
+    try:
+        _smmod.time = clk
+        with tempfile.TemporaryDirectory() as d:
+            sms = {}
+            for i, acct in enumerate(accounts):
+                (Path(d) / acct).mkdir(parents=True, exist_ok=True)
+                sm = _mk_sm(Path(d) / acct, proxy_url=f"http://127.0.0.1:2300{i}", account_id=acct)
+
+                async def _relaunch(_sm=sm, _a=acct):
+                    relaunches.append((_a, _sm._sim_tick, clk.t - _sm._browser_launched_at))
+                    _sm._browser_launched_at = clk.t + latency
+                    return True
+
+                async def _ok(*a, **k):
+                    return True
+
+                sm._relaunch_browser = _relaunch
+                sm.ensure_fresh_access_token = _ok
+                sm.save_session_state = _ok
+                sm.logger = _SILENT_LOG            # 288 ticks of [CHROME-AGE] warnings
+                sm._browser_launched_at = T0 + boot[i]
+                sms[acct] = sm
+            k = 0
+            while first_tick + 300.0 * k < hours * 3600.0:
+                names = list(accounts)
+                if order_flip and k % 2:
+                    names.reverse()
+                for j, acct in enumerate(names):
+                    sm = sms[acct]
+                    sm._sim_tick = k
+                    clk.t = T0 + first_tick + 300.0 * k + 0.5 * j
+                    sm.purchase_in_progress = (acct, k) in busy
+                    with contextlib.redirect_stdout(buf):
+                        asyncio.run(sm.ensure_logged_in())
+                    sm.purchase_in_progress = False
+                k += 1
+    finally:
+        _smmod.time = saved_time
+        os.environ.pop(_DESYNC_ENV, None)
+        _clear_p12_env()
+    return relaunches, buf.getvalue()
+
+
+def _same_tick(relaunches):
+    by = {}
+    for acct, tick, _ in relaunches:
+        by.setdefault(tick, set()).add(acct)
+    return sorted(t for t, s in by.items() if len(s) > 1)
+
+
+def test_desync_offsets_alone_still_lockstep():
+    rel, out = _sim(None)
+    ticks = _same_tick(rel)
+    assert ticks, "the finding's lockstep must reproduce with offsets alone"
+    assert (90.0 + 300.0 * ticks[0]) / 3600.0 < 5.0, ticks
+    assert "deferred one sentinel tick" not in out, out[-300:]
+
+
+def test_desync_removes_same_tick_relaunches():
+    for flip in (True, False):
+        for boot in ((0.0, 40.0), (0.0, 0.0), (35.0, 5.0), (0.0, 250.0)):
+            rel, out = _sim("120", boot=boot, order_flip=flip)
+            assert not _same_tick(rel), (flip, boot, _same_tick(rel))
+            ages = {}
+            for acct, _, age in rel:
+                ages.setdefault(acct, []).append(age)
+            assert len(ages.get("business", [])) >= 15 and len(ages.get("alt-1", [])) >= 15, ages
+            # alt-1 never yields; business yields at most one tick per cycle.
+            assert max(ages["alt-1"]) <= 2100 + 300 + 1, max(ages["alt-1"])
+            assert max(ages["business"]) <= 1800 + 600 + 1, max(ages["business"])
+            if boot == (0.0, 40.0):
+                assert "[CHROME-AGE] business: relaunch deferred one sentinel tick" in out, out[-400:]
+                assert "alt-1: relaunch deferred" not in out, out[-400:]
+
+
+def test_desync_deferral_plus_skipped_tick_stays_under_wedge_floor():
+    # Worst case: the deferred business tick is followed by a tick skipped
+    # under a purchase. Find the first deferral, then mark business busy on
+    # the next tick.
+    same = _same_tick(_sim(None)[0])
+    k = same[0]
+    rel, out = _sim("120", busy={("business", k + 1)})
+    assert not _same_tick(rel), _same_tick(rel)
+    worst = max(age for acct, _, age in rel)
+    assert worst < 2940.0, worst
+
+
+def test_desync_parse_and_pure_rule():
+    f = _smmod._chrome_relaunch_desync_s
+    got = {v: f(v) for v in ("0", "", " ", "x", "-5", "nan", "inf", "10", "120", " 120 ", "299", "280")}
+    assert got == {"0": 0.0, "": 0.0, " ": 0.0, "x": 0.0, "-5": 0.0, "nan": 0.0, "inf": 0.0,
+                   "10": 30.0, "120": 120.0, " 120 ": 120.0, "299": 280.0, "280": 280.0}, got
+    os.environ.pop(_DESYNC_ENV, None)
+    assert f() == 0.0, "unset = off"
+    r = _smmod._desync_defer_reason
+    me_b = {"id": "business", "max_age": 1800.0}
+    me_a = {"id": "alt-1", "max_age": 2100.0}
+    due_a = {"id": "alt-1", "max_age": 2100.0, "launched_at": 1000.0, "relaunch_at": 0.0, "busy": False}
+    due_b = {"id": "business", "max_age": 1800.0, "launched_at": 1000.0, "relaunch_at": 0.0, "busy": False}
+    now = 1000.0 + 2500.0
+    assert "alt-1 is due" in r(me_b, [due_a], now, 120.0)
+    assert r(me_a, [due_b], now, 120.0) == "", "the larger max age keeps its tick"
+    assert r(me_b, [dict(due_a, busy=True)], now, 120.0) == "", "a busy peer will not relaunch"
+    assert r(me_b, [dict(due_a, launched_at=now - 100)], now, 120.0) == "", "a young peer is not due"
+    assert r(me_b, [dict(due_a, relaunch_at=now - 60)], now, 120.0).startswith("alt-1 relaunched 60s ago")
+    assert r(me_a, [dict(due_b, relaunch_at=now - 60)], now, 120.0).startswith("business relaunched"), \
+        "a relaunch that already happened is spaced regardless of rank"
+    assert r(me_b, [dict(due_a, relaunch_at=now - 200)], now, 120.0) == ""
+    assert r(me_b, [], now, 120.0) == ""
+    tie_x = {"id": "x", "max_age": 2100.0}
+    tie_y = dict(due_a, id="y")
+    assert (r(tie_x, [tie_y], now, 120.0) == "") != (r({"id": "y", "max_age": 2100.0},
+                                                       [dict(tie_y, id="x")], now, 120.0) == ""), \
+        "an equal max age is broken deterministically (exactly one side yields)"
+
+
+def test_desync_bat_pin():
+    bat = (ROOT / "run_bot_with_nightly_restart.bat").read_bytes().decode("utf-8", "replace")
+    lines = bat.split("\r\n")
+    assert lines.count("set TARGET_CHROME_RELAUNCH_DESYNC_S=120") == 1, \
+        [ln for ln in lines if "DESYNC" in ln]
+    val = None
+    for ln in lines:
+        if ln.strip().lower().startswith("set target_chrome_relaunch_desync_s="):
+            val = ln.strip().split("=", 1)[1]
+    assert val == "120" and _smmod._chrome_relaunch_desync_s(val) == 120.0, val
+
+
 if __name__ == "__main__":
     check("test_proxied_overage_chrome_relaunches", test_proxied_overage_chrome_relaunches)
     check("test_home_ip_chrome_never_proactively_relaunches", test_home_ip_chrome_never_proactively_relaunches)
@@ -340,6 +511,12 @@ if __name__ == "__main__":
     check("test_offset_flag_empty_is_unchanged", test_offset_flag_empty_is_unchanged)
     check("test_offset_never_revives_killswitch", test_offset_never_revives_killswitch)
     check("test_sentinel_skip_line", test_sentinel_skip_line)
+    check("test_desync_offsets_alone_still_lockstep", test_desync_offsets_alone_still_lockstep)
+    check("test_desync_removes_same_tick_relaunches", test_desync_removes_same_tick_relaunches)
+    check("test_desync_deferral_plus_skipped_tick_stays_under_wedge_floor",
+          test_desync_deferral_plus_skipped_tick_stays_under_wedge_floor)
+    check("test_desync_parse_and_pure_rule", test_desync_parse_and_pure_rule)
+    check("test_desync_bat_pin", test_desync_bat_pin)
     print()
     if FAIL:
         print(f"{len(PASS)}/{len(PASS) + len(FAIL)} passed — {len(FAIL)} FAILED")

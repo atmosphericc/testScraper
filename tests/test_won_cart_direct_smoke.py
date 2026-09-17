@@ -27,7 +27,13 @@ Covers (plan P1 tests a-e):
       every new reason through the manager classifier (digit-free errors: the
       manager restarts the browser on '1011', a hot-TCIN prefix);
   (g) stage S2c, plan P4 (WC-2) impl pieces: ride trim at purchase exit and the
-      duplicate pre_checkout skip.
+      duplicate pre_checkout skip;
+  (r1) review round R1 fixes: held re-entry never yields before a ticket, the
+      ride survives a placed order's success tail, <= 1 CVV PUT per cart incl.
+      the fast lane's own PUT, po_only falls back to pre_po on a possible late
+      add, the page global leaves with its last entry, the boot audit deletes
+      only what it read, expired held markers retire in the background, and a
+      missing node FAILS the file.
 
 Offline: no browser, no network (node subprocess only). Anything that could
 append to logs/error_log.txt runs in a temp cwd.
@@ -261,8 +267,13 @@ def bare(clock, cvv="", cvv_required=False):
     ex.deletes = []
     ex.delete_result = (True, 1)
 
-    async def _del(tab, only_tcin=None, keep_tcin=None, budget_s=15.0):
-        ex.deletes.append({"only": only_tcin, "keep": keep_tcin, "budget": budget_s})
+    async def _del(tab, only_tcin=None, keep_tcin=None, budget_s=15.0, ids=None, abort_fn=None):
+        d = {"only": only_tcin, "keep": keep_tcin, "budget": budget_s}
+        if ids is not None:
+            d["ids"] = list(ids)
+        if abort_fn is not None:
+            d["abort"] = abort_fn
+        ex.deletes.append(d)
         return ex.delete_result
 
     ex._delete_cart_items = _del
@@ -447,7 +458,9 @@ EXACT = [{"cart_item_id": "CI-1", "tcin": TCIN, "quantity": 2}]
 
 def test_a_ticket_js_node():
     if not NODE:
-        print("[SKIP] node not found — ticket JS tests skipped")
+        # R1 review (R1-TEST-3): the armed ticket JS must never go untested
+        # silently — a missing node is a FAILURE, like test_fast_lane_checkout.
+        check("a_node_available", False, "node not on PATH — ticket JS tests cannot run")
         return
     # Every mode x CVV_FIRST x CVV_REACTIVE on an exact cart: exactly one
     # checkout POST, PUT only when CVV_FIRST, never the ATC URL.
@@ -564,10 +577,11 @@ def test_a_ticket_js_node():
     # the fetch); pending po_only -> refused.
     r = node_run(ticket_js("po_only"), [{"match": PO_M, "status": 429, "body": FS_BODY, "hang": True}], abort=True)
     check("a_po_only_pending_refused", r["abortRead"] == {"s": "po", "aborted": False})
-    # Stage key: non-enumerable while running and after; entry deleted after
-    # completion; the late read returns null (outcome unknown -> terminal).
+    # Stage key: non-enumerable while running; entry deleted after completion
+    # and (R1 review) the container with it, so no page global survives; the
+    # late read returns null (outcome unknown -> terminal).
     check("a_stage_key_non_enumerable", r["enumDuring"] is False and r["enumAfter"] is False
-          and r["hasKeyAfter"] is True and r["hadKeyDuring"] is True, str(r))
+          and r["hasKeyAfter"] is False and r["hadKeyDuring"] is True, str(r))
     check("a_stage_entry_deleted", r["entryAfter"] is False and r["lateAbort"] is None, str(r))
     # Reactive CVV: po 400 -> one PUT -> one re-shoot; put failure -> no re-shoot.
     r = node_run(ticket_js(cvv="123", reactive=True),
@@ -744,7 +758,7 @@ def test_b_qg_fast_lane():
     on = fast_lane_js(TARGET_FASTLANE_QTY_GUARD="1")
     check("b_qg_only_adds_lines", all(line in on.split("\n") for line in off.split("\n")))
     if not NODE:
-        print("[SKIP] node not found — QG node tests skipped")
+        check("b_node_available", False, "node not on PATH — QG node tests cannot run")
         return
     null_item = [None, {"cart_item_id": "CI-1", "tcin": TCIN, "quantity": 2}]
     r = fl_node(on, null_item)
@@ -1697,6 +1711,7 @@ def test_c_cart_read_delete():
     check("r_delete_no_budget", run(ex._delete_cart_items(t, budget_s=0.1)) == (False, 0))
     js = pe_mod._CART_ITEM_DELETE_JS.replace("@@CID@@", "A").replace("@@HEADERS@@", "{}")
     check("r_delete_js_no_token_repair", "token" not in js.lower() and "@@" not in js)
+    check("r_node_available", bool(NODE), "node not on PATH — JS parse checks cannot run")
     if NODE:
         for name, src in (("read", pe_mod._CART_ITEMS_READ_JS), ("delete", js)):
             with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8", dir=_TMP) as f:
@@ -2162,8 +2177,12 @@ def test_f_boot_audit():
     for label, read in cases:
         ex, wt = boot_ex(c, read)
         out, _ = boot_run(ex, c)
+        # R1 review: only the ids this read saw, with a busy re-check per DELETE.
+        d0 = ex.deletes[0] if len(ex.deletes) == 1 else {}
         check(f"b_not_clean_deleted[{label}]", out == "deleted" and ex._held_cart is None
-              and ex.deletes == [{"only": None, "keep": None, "budget": 15.0}], f"{out} {ex.deletes}")
+              and {k: d0.get(k) for k in ("only", "keep", "budget")} == {"only": None, "keep": None, "budget": 15.0}
+              and d0.get("ids") == [i["id"] for i in read["items"]]
+              and callable(d0.get("abort")) and d0["abort"]() is False, f"{out} {ex.deletes}")
     with env(TARGET_QTY_CEILING="3"):
         ex, wt = boot_ex(c, cases[0][1])
         out, _ = boot_run(ex, c)
@@ -2406,13 +2425,489 @@ def test_h_fl1_call_site():
           pe_mod.fast_lane_timeout_outcome({"s": "po", "aborted": False, "atc": 201}) is None)
 
 
+# ───────────────────── (r1) review round R1 fixes (2026-09-17) ─────────────────────
+
+def _held_rerun(ex, tab, c, gap_s, **flags):
+    """One held re-entry `gap_s` after the previous call (fresh purchase)."""
+    c.t += gap_s
+    ex._execute_started_at = c.t
+    ex._mgr_submit_ts = c.t
+    ex.ride_return = c.t + 290
+    return loop_run(ex, tab, c, None, entry="held", TARGET_HELD_CART_REENTRY="1", **flags)
+
+
+def test_r1_yield_fleet_never_locks_out_held_reentry():
+    """R1-ARM-1: TARGET_WONCART_YIELD_FLEET=1 + TARGET_HELD_CART_REENTRY=1 used to
+    yield every held re-entry before its first ticket (the schedule is spent),
+    while held_cart_other_tcin kept the identity off every other live TCIN."""
+    c = Clock()
+    ex = bare(c)
+    ex._other_live_fn = lambda t: [OTHER]
+    tab = TicketTab(ex, [t_pre(429)] * 20, c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+    check("r1y_first_entry_still_yields_after_probes", len(tab.tickets) == 2
+          and r.get("won_cart_exit") == "yield_fleet" and ex._held_cart is not None, f"{len(tab.tickets)} {r}")
+    counts = []
+    for _ in range(3):
+        before = len(tab.tickets)
+        (v, r), _ = _held_rerun(ex, tab, c, 70.0)
+        counts.append((len(tab.tickets) - before, r.get("won_cart_exit"), r.get("reason")))
+    check("r1y_each_held_reentry_fires_one_steady_then_yields",
+          counts == [(1, "yield_fleet", "won_cart_held")] * 3 and ex._held_cart is not None
+          and ex._held_cart["tickets"] == 5 and all(m == "pre_po" for _, m, _ in tab.tickets), counts)
+    # Re-entered before the steady slot is due: waits for it, fires, then yields.
+    before = len(tab.tickets)
+    t_call = c.t + 10.0
+    (v, r), shim = _held_rerun(ex, tab, c, 10.0)
+    check("r1y_held_reentry_waits_for_due_slot", len(tab.tickets) - before == 1
+          and r.get("won_cart_exit") == "yield_fleet" and len(shim.sleeps) == 1
+          and 20.0 <= shim.sleeps[0] <= 40.0 and tab.tickets[-1][0] > t_call, f"{shim.sleeps} {r}")
+    # Empty schedule (kill-switch): the first entry fires its steady ticket too.
+    c = Clock()
+    ex = bare(c)
+    ex._other_live_fn = lambda t: [OTHER]
+    tab = TicketTab(ex, [t_pre(429)] * 5, c)
+    with env(TARGET_WONCART_SCHEDULE_S="0"):
+        (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+    check("r1y_no_schedule_first_entry_fires", len(tab.tickets) == 1
+          and r.get("won_cart_exit") == "yield_fleet", f"{len(tab.tickets)} {r}")
+    # No other TCIN live: the held call keeps its 45 s cadence up to the call cap.
+    c = Clock()
+    ex = bare(c)
+    ex._other_live_fn = lambda t: []
+    tab = TicketTab(ex, [t_pre(429)] * 20, c)
+    loop_run(ex, tab, c, FL_PRE429, TARGET_HELD_CART_REENTRY="1")
+    before = len(tab.tickets)
+    (v, r), _ = _held_rerun(ex, tab, c, 70.0)
+    check("r1y_no_other_live_no_yield", len(tab.tickets) - before >= 2
+          and r.get("won_cart_exit") in ("call_cap", "budget_spent"), f"{len(tab.tickets) - before} {r}")
+
+
+class _FakeTimeoutCtx:
+    def __init__(self):
+        self.whens = []
+
+    def reschedule(self, when):
+        self.whens.append(when)
+
+
+def test_r1_ride_kept_through_success_tail():
+    """R1-DB-1: a placed / unresolved loop keeps the ride (and the executor
+    timeout 10 s inside it) until _execute_purchase_impl's cleanup is done, so
+    a stall after the order ends in the executor's own hang branch (success),
+    never in the manager's execution_timeout."""
+    # Real _begin_won_cart_ride + _extend_purchase_timeout on the fake clock.
+    c = Clock()
+    t0 = c.t
+    ex = bare(c)
+    del ex._begin_won_cart_ride                  # the real method
+    ex._purchase_timeout_ctx = _FakeTimeoutCtx()
+    tab = TicketTab(ex, [t_prepo(429, FS_BODY), t_po(200, ORDER_BODY)], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429)
+    ru = ex._won_cart_ride_until
+    check("r1d_placed_keeps_ride", v == "placed" and abs(ru - (t0 + 300.0)) < 1e-6
+          and ex._woncart_trim_at_exit is True, f"{v} ride_in={ru - c.t:.1f}")
+    check("r1d_exec_timeout_inside_ride", len(ex._purchase_timeout_ctx.whens) == 1, ex._purchase_timeout_ctx.whens)
+    # The manager at its 150 s wall (and again at +285 s) keeps waiting, so the
+    # executor's own timeout (t0+290) fires first.
+    allow = BulletproofPurchaseManager._ride_extension_allowed
+    check("r1d_manager_keeps_waiting", allow(ru, t0 + 150.0, 150.0, 300.0, True)
+          and allow(ru, t0 + 289.0, 289.0, 300.0, True), ru - t0)
+    # Unresolved place-order: same, and the hang branch would still latch.
+    c = Clock()
+    t0 = c.t
+    ex = bare(c)
+    tab = TicketTab(ex, [t_po(0)], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS)
+    check("r1d_terminal_keeps_ride", v == "terminal" and ex._won_cart_ride_until == t0 + 1000.0
+          and ex._woncart_trim_at_exit is True and ex._po_ambiguous is True, f"{v} {ex._won_cart_ride_until - t0}")
+    # A non-placed, non-held exit still trims (unchanged).
+    c = Clock()
+    ex = bare(c)
+    tab = TicketTab(ex, [t_skip("cart_empty")], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429)
+    check("r1d_done_exit_still_trims", v == "done" and ex._won_cart_ride_until <= c.t + 20.0 + 1e-6
+          and not getattr(ex, "_woncart_trim_at_exit", False), ex._won_cart_ride_until - c.t)
+    # The impl's finally trims after the cleanup when the loop handed it over,
+    # even with TARGET_WON_CART_RIDE_CLEAN_EXIT off; a fresh purchase resets it.
+    for label, loop_v, want_trim in (("placed", "placed", True), ("terminal", "terminal", True),
+                                     ("held", "done", False)):
+        ex, tab = impl_ex(c, FL_PRE429)
+
+        async def _loop(t, tcin, qty, fl, start_time, entry="first", _e=ex, _v=loop_v):
+            _e._won_cart_ride_until = real_time.time() + 500.0
+            if _v == "placed":
+                _e._fastlane_placed = True
+                _e._api_order_id = "OID-R1"
+            if _v in ("placed", "terminal"):
+                _e._woncart_trim_at_exit = True
+                return _v, (None if _v == "placed" else {"success": False, "tcin": tcin,
+                                                         "reason": "checkout_navigation_failed",
+                                                         "ambiguous_commit": True})
+            return "done", {"success": False, "tcin": tcin, "reason": "won_cart_held"}
+
+        ex._won_cart_ticket_loop = _loop
+        res = run_impl(ex, dict(ARMED, TARGET_WON_CART_RIDE_CLEAN_EXIT="0"))
+        left = ex._won_cart_ride_until - real_time.time()
+        ok = (0 < left <= 20.5) if want_trim else (left > 400)
+        check(f"r1d_impl_exit_trim[{label}]", ok and (res.get("success") is (label == "placed")),
+              f"left={left:.1f} {res}")
+        # The next purchase starts with the hand-over flag cleared.
+
+        async def _held_loop(t, tcin, qty, fl, start_time, entry="first"):
+            return "done", {"success": False, "tcin": tcin, "reason": "won_cart_held"}
+
+        ex._won_cart_ticket_loop = _held_loop
+        run_impl(ex, dict(ARMED))
+        check(f"r1d_trim_flag_reset[{label}]", ex._woncart_trim_at_exit is False)
+    src = Path(pe_mod.__file__).read_text(encoding="utf-8")
+    j = src.find("if ride_clean_exit_on() or getattr(self, '_woncart_trim_at_exit', False):")
+    i = src.rfind("await tab.send(cdp.fetch.disable())", 0, j)
+    check("r1d_trim_after_cleanup", j > 0 and 0 < j - i < 2500, (i, j))
+
+
+def test_r1_cvv_ledger_seed():
+    """R1-CVV-1 / R1-WONCART-CVV-DOUBLE-PUT / PC-2: <= 1 CVV PUT per cart,
+    counting the fast-lane chain's own PUT and a PUT that may be on the wire."""
+    seed = pe_mod.woncart_cvv_seed
+    for fl, want in (({"cvv": {"put": 200, "first": True}}, "ok"),
+                     ({"cvv": {"put": 204}}, "ok"),
+                     ({"cvv": {"put": 400, "first": True}}, "failed"),
+                     ({"cvv": {"put": 0}}, "failed"),
+                     ({"cvv": {"put": -1, "reshot": True}}, "ok"),
+                     ({"cvv": {"put": -1, "first": False}}, "none"),
+                     ({"cvv": {"put": -2, "first": True}}, "none"),
+                     ({"cvv": {"put": True}}, "none"),
+                     ({"skip": "pre_0", "stage": "cvv"}, "unknown"),
+                     ({"skip": "pre_0", "stage": "pre"}, "none"),
+                     ({}, "none"), (None, "none"), ({"cvv": "junk"}, "none")):
+        check(f"r1c_seed[{json.dumps(fl, sort_keys=True)}]", seed(fl) == want, seed(fl))
+    c = Clock()
+    ex = bare(c)
+    fl_b = dict(FL_PO_FS, cvv={"put": 200, "first": True, "reshot": False})
+    L = ex._woncart_new_ledger(TCIN, 2, fl_b, c.t, 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION")
+    check("r1c_ledger_b_seeded", L["cvv_put"] == "ok" and L["verified"] is True, L)
+    # Latched account, entry (B) after a pre-PUT: the first ticket sends no PUT.
+    ex = bare(c, cvv="123", cvv_required=True)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    tab = TicketTab(ex, [t_po(429, FS_BODY)] * 3, c)
+    loop_run(ex, tab, c, fl_b, TARGET_WONCART_MAX_TICKETS="1")
+    js0 = tab.tickets[0][2]
+    check("r1c_latched_b_no_second_put", "const CVV_FIRST = false;" in js0
+          and "const CVV_REACTIVE = false;" in js0 and tab.tickets[0][1] == "po_only", js0[:0])
+    # Unlatched account, (B) after the in-lane 3b PUT + re-shoot: no reactive PUT.
+    ex = bare(c, cvv="123", cvv_required=False)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    fl_3b = dict(FL_PO_FS, cvv={"put": 200, "first": False, "reshot": True, "po1": 400})
+    tab = TicketTab(ex, [t_po(429, FS_BODY)] * 3, c)
+    loop_run(ex, tab, c, fl_3b, TARGET_WONCART_MAX_TICKETS="1")
+    js0 = tab.tickets[0][2]
+    check("r1c_3b_no_reactive_put", "const CVV_REACTIVE = false;" in js0 and "const CVV_FIRST = false;" in js0)
+    # No PUT yet on the cart (unchanged): the latched account still pre-PUTs once.
+    ex = bare(c, cvv="123", cvv_required=True)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    tab = TicketTab(ex, [t_po(429, FS_BODY)] * 3, c)
+    loop_run(ex, tab, c, dict(FL_PO_FS, cvv={"put": -1, "first": False}), TARGET_WONCART_MAX_TICKETS="1")
+    check("r1c_no_prior_put_unchanged", "const CVV_FIRST = true;" in tab.tickets[0][2])
+    # FL-1 synthesized pre_0 aborted at stage 'cvv': no PUT from the first ticket.
+    ex = bare(c, cvv="123", cvv_required=True)
+    syn = pe_mod.fast_lane_timeout_outcome({"s": "cvv", "aborted": True, "atc": 201})
+    tab = TicketTab(ex, [t_pre(429)] * 3, c)
+    loop_run(ex, tab, c, syn, TARGET_WONCART_MAX_TICKETS="1")
+    js0 = tab.tickets[0][2]
+    check("r1c_fl1_cvv_stage_no_put", "const CVV_FIRST = false;" in js0 and tab.tickets[0][1] == "pre_po")
+    # A ticket aborted at stage 'cvv' may have sent its PUT: the next one does not.
+    ex = bare(c, cvv="123", cvv_required=True)
+    tab = TicketTab(ex, [{"raise": REAL_ASYNCIO.TimeoutError(), "abort_read": {"s": "cvv", "aborted": True}},
+                         t_pre(429), t_pre(429)], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="2")
+    check("r1c_ticket_cvv_abort_marks_unknown",
+          "const CVV_FIRST = true;" in tab.tickets[0][2] and "const CVV_FIRST = false;" in tab.tickets[1][2]
+          and "const CVV_REACTIVE = false;" in tab.tickets[1][2], [m for _, m, _ in tab.tickets])
+    # ...but an abort before the PUT stage (pre) leaves the one PUT available.
+    ex = bare(c, cvv="123", cvv_required=True)
+    tab = TicketTab(ex, [{"raise": REAL_ASYNCIO.TimeoutError(), "abort_read": {"s": "pre", "aborted": True}},
+                         t_pre(429), t_pre(429)], c)
+    loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="2")
+    check("r1c_ticket_pre_abort_keeps_put", "const CVV_FIRST = true;" in tab.tickets[1][2])
+
+
+def test_r1_po_only_suspect_fallback():
+    """R1-QTY-1: a po_only ticket buys the cart unread; it falls back to pre_po
+    while one of our own adds may have landed after the cart was verified."""
+    c = Clock()
+    ex = bare(c)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    ex._harvest_landed_suspect = True
+    ex._harvest_landed_suspect_ts = c.t          # flagged as the loop starts
+    tab = TicketTab(ex, [t_prepo(429, FS_BODY), t_po(429, FS_BODY), t_po(429, FS_BODY)], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    modes = [m for _, m, _ in tab.tickets]
+    check("r1q_harvest_suspect_forces_one_pre_po", modes == ["pre_po", "po_only", "po_only"]
+          and "late add of ours (harvest_add)" in run.last_out, modes)
+    # A new harvest suspicion mid-loop re-arms the fallback once.
+    c = Clock()
+    ex = bare(c)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    steps = [t_po(429, FS_BODY), t_prepo(429, FS_BODY), t_po(429, FS_BODY)]
+
+    class _FlagTab(TicketTab):
+        async def evaluate(self, js, await_promise=False, **kw):
+            res = await super().evaluate(js, await_promise, **kw)
+            if len(self.tickets) == 1:
+                self.ex._harvest_landed_suspect = True
+                self.ex._harvest_landed_suspect_ts = self.clock.t
+            return res
+
+    tab = _FlagTab(ex, steps, c)
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    modes = [m for _, m, _ in tab.tickets]
+    check("r1q_mid_loop_suspect", modes == ["po_only", "pre_po", "po_only"], modes)
+    # An orphaned ATC (FL-1 atc abort / legacy 8 s timeout) within 300 s: pre_po only.
+    for age, want in ((10.0, ["pre_po", "pre_po"]), (301.0, ["po_only", "po_only"])):
+        c = Clock()
+        ex = bare(c)
+        ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+        ex._orphan_atc_ts = c.t - age
+        tab = TicketTab(ex, [t_prepo(429, FS_BODY), t_prepo(429, FS_BODY)] if want[0] == "pre_po"
+                        else [t_po(429, FS_BODY)] * 2, c)
+        loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2")
+        modes = [m for _, m, _ in tab.tickets]
+        check(f"r1q_orphan_atc[{age:.0f}s]", modes == want, modes)
+    # The strict gate then refuses a stacked cart (qty 4 of Q 2).
+    c = Clock()
+    ex = bare(c)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    ex._orphan_atc_ts = c.t
+    tab = TicketTab(ex, [t_skip("cart_qty_over", qty=4)], c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS)
+    check("r1q_orphan_stack_never_bought", [m for _, m, _ in tab.tickets] == ["pre_po"]
+          and r.get("reason") == "cart_qty_cleared" and ex.deletes and ex.deletes[-1]["only"] == TCIN, r)
+    # Stamps.
+    src = Path(pe_mod.__file__).read_text(encoding="utf-8")
+    check("r1q_legacy_atc_timeout_stamps",
+          "ATC fetch evaluate timed out after 8s — CDP wedged, aborting purchase\")\n"
+          "                    self._orphan_atc_ts = time.time()" in src.replace("\r\n", "\n"))
+    check("r1q_harvest_suspect_stamps", "self._harvest_landed_suspect = True\n"
+          "            self._harvest_landed_suspect_ts = time.time()" in src.replace("\r\n", "\n"))
+
+
+GLOBAL_HARNESS = r"""
+const K = '__0123456789ab';
+Object.defineProperty(globalThis, K, {value: {other: {s: 'pre', abort: false}}, enumerable: false,
+                                      configurable: true, writable: true});
+globalThis.fetch = (url, opts) => Promise.resolve({status: 429, text: async () => '{}'});
+(async () => {
+  await (%s);
+  const kept = Object.prototype.hasOwnProperty.call(globalThis, K);
+  const entries = kept ? Object.getOwnPropertyNames(globalThis[K]) : null;
+  const inOp = K in globalThis;
+  delete globalThis[K].other;
+  await (%s);
+  const gone = !Object.getOwnPropertyNames(globalThis).includes(K) && !(K in globalThis);
+  console.log(JSON.stringify({kept, entries, inOp, gone}));
+})().catch(e => console.log(JSON.stringify({error: String(e)})));
+"""
+
+
+def test_r1_page_global_removed():
+    """R1-PAGE-GLOBAL-PERSISTS: the stage container leaves the page with its
+    last entry, and never while another run still has an entry in it."""
+    check("r1g_node_available", bool(NODE), "node not on PATH")
+    if not NODE:
+        return
+    js1 = ticket_js("po_only", n="t1")
+    js2 = ticket_js("po_only", n="t2")
+    src = GLOBAL_HARNESS % (js1, js2)
+    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False, encoding="utf-8", dir=_TMP) as f:
+        f.write(src)
+    p = subprocess.run([NODE, f.name], capture_output=True, text=True, timeout=30)
+    res = json.loads((p.stdout.strip().splitlines() or ['{"error": "no output"}'])[-1])
+    check("r1g_container_kept_while_other_entry", res.get("kept") is True and res.get("entries") == ["other"]
+          and res.get("inOp") is True, res)
+    check("r1g_container_removed_when_empty", res.get("gone") is True, res)
+
+
+def test_r1_boot_audit_delete_race():
+    """R1-BOOTAUDIT-DELETE-RACE: the boot audit deletes only the lines its own
+    read saw, and stops the moment a purchase owns the cart."""
+    c = Clock()
+    ex = bare(c)
+    del ex._delete_cart_items                  # the real bounded delete
+
+    class RTab:
+        def __init__(self, on_delete=None):
+            self.deleted = []
+            self.reads = 0
+            self.on_delete = on_delete
+
+        async def evaluate(self, js, await_promise=False):
+            if "method: 'DELETE'" in js:
+                self.deleted.append(re.search(r"cart_items/([A-Za-z0-9_-]+)'", js).group(1))
+                if self.on_delete:
+                    self.on_delete(self)
+                return 204
+            self.reads += 1
+            return {"ok": True, "status": 200, "items": [{"id": "staleA", "tcin": OTHER, "qty": 4},
+                                                         {"id": "WON201", "tcin": TCIN, "qty": 2}]}
+
+    t = RTab()
+    res = run(ex._delete_cart_items(t, ids=["staleA", "staleB"]))
+    check("r1b_ids_no_second_read", res == (True, 2) and t.reads == 0 and t.deleted == ["staleA", "staleB"],
+          f"{res} {t.deleted}")
+    t = RTab()
+    res = run(ex._delete_cart_items(t, ids=["ok-1", "bad id!"]))
+    check("r1b_ids_validated", res == (False, 0) and t.deleted == [], f"{res} {t.deleted}")
+    flips = {"busy": False}
+    t = RTab(on_delete=lambda _t: flips.__setitem__("busy", True))
+    res = run(ex._delete_cart_items(t, ids=["s1", "s2", "s3"], abort_fn=lambda: flips["busy"]))
+    check("r1b_abort_between_deletes", res == (False, 1) and t.deleted == ["s1"], f"{res} {t.deleted}")
+    t = RTab()
+    res = run(ex._delete_cart_items(t, ids=["s1"], abort_fn=lambda: 1 / 0))
+    check("r1b_abort_fn_error_stops", res == (False, 0) and t.deleted == [], res)
+    # End to end: a purchase starts right after the audit's read.
+    ex, wt = boot_ex(c, {"ok": True, "status": 200, "items": [{"id": "staleA", "tcin": OTHER, "qty": 4},
+                                                              {"id": "staleB", "tcin": TCIN, "qty": 1}]})
+    del ex._delete_cart_items
+    tab = RTab(on_delete=lambda _t: setattr(ex.session_manager, "live", True))
+
+    async def _ens(idx):
+        return tab
+
+    ex._ensure_warmup_tab = _ens
+    out, _ = boot_run(ex, c)
+    check("r1b_audit_stops_when_purchase_starts", out == "busy" and tab.deleted == ["staleA"]
+          and "WON201" not in tab.deleted and tab.reads == 0, f"{out} {tab.deleted}")
+    # The finding's sequence: a purchase's fast-lane ATC lands (WON201) between
+    # the audit's read and the delete. A second read would include it.
+    base = [{"id": "staleA", "tcin": OTHER, "qty": 4}, {"id": "staleB", "tcin": TCIN, "qty": 1}]
+    reads = iter([base, base + [{"id": "WON201", "tcin": TCIN, "qty": 2}]])
+
+    def _read_then_add():
+        items = next(reads, base + [{"id": "WON201", "tcin": TCIN, "qty": 2}])
+        return {"ok": True, "status": 200, "items": [dict(i) for i in items]}
+
+    ex, wt = boot_ex(c, _read_then_add)
+    del ex._delete_cart_items
+    tab = RTab()
+
+    async def _ens2(idx):
+        return tab
+
+    ex._ensure_warmup_tab = _ens2
+    out, _ = boot_run(ex, c)
+    check("r1b_audit_deletes_only_what_it_read", out == "deleted" and tab.deleted == ["staleA", "staleB"]
+          and "WON201" not in tab.deleted and len(ex.reads) == 1, f"{out} {tab.deleted} {len(ex.reads)}")
+
+
+def test_r1_held_marker_background_retire():
+    """R1-ARM-4: an expired held marker is retired by the refill loop (warmup
+    tab 0), not lazily in front of the next drop's ATC."""
+    c = Clock()
+
+    def mk(**kw):
+        ex = bare(c)
+        ex._warmup_pool_lock = None
+        ex.ensured = []
+        wt = types.SimpleNamespace(name="warmup0")
+
+        async def _ens(idx):
+            ex.ensured.append(idx)
+            return wt
+
+        ex._ensure_warmup_tab = _ens
+        ex.session_manager.live = False
+        ex._held_cart = dict({"tcin": TCIN, "qty": 2, "created": real_time.time() - 1000.0,
+                              "tickets": 3, "verified": True}, **kw)
+        return ex
+
+    async def go(ex):
+        ex._warmup_pool_lock = REAL_ASYNCIO.Lock()
+        return await ex._held_cart_expire_tick()
+
+    def tick(ex, flags=HELD):
+        with in_tmp_cwd(), env(**flags):
+            return run(go(ex))
+
+    ex = mk()
+    out = tick(ex)
+    check("r1h_expired_retired", out == "retired" and ex._held_cart is None and ex.ensured == [0]
+          and len(ex.deletes) == 1 and ex.deletes[0]["only"] == TCIN and callable(ex.deletes[0].get("abort"))
+          and "[HELD_CART] retired in the background (ttl" in run.last_out, f"{out} {ex.deletes}")
+    ex = mk(created=real_time.time() - 10.0)
+    check("r1h_fresh_kept", tick(ex) == "" and ex._held_cart is not None and not ex.deletes)
+    ex = mk(created=real_time.time() - 10.0, tickets=14)
+    check("r1h_ticket_cap_retired", tick(ex) == "retired" and ex._held_cart is None)
+    ex = mk()
+    ex.delete_result = (False, 0)
+    check("r1h_failed_delete_keeps_marker", tick(ex) == "release_failed" and ex._held_cart is not None
+          and "marker kept" in run.last_out)
+    ex = mk()
+    ex.session_manager.live = True
+    check("r1h_busy_no_action", tick(ex) == "busy" and not ex.deletes and ex._held_cart is not None)
+    ex = mk()
+    check("r1h_flag_off_no_action", tick(ex, flags=ARMED) == "" and not ex.deletes)
+    # Refill loop wiring: tab 0 only, WC-3 only; BG-1 stretches the delay.
+    for idx, flags, want_calls in ((0, HELD, 1), (1, HELD, 0), (0, ARMED, 0)):
+        ex = bare(c)
+        ex._warmup_pool_size = 2
+        ex._warmup_in_progress = False
+        ex._held_cart = {"tcin": TCIN, "created": 1.0}
+        calls = []
+
+        async def _refresh(i, force_fresh=False):
+            return True
+
+        async def _tick(_c=calls):
+            _c.append(1)
+            return "retired"
+
+        ex._refresh_on_tab = _refresh
+        ex._held_cart_expire_tick = _tick
+        with env(**flags), fake_time(c, stop_after=1) as shim:
+            run(ex._background_refill_loop(idx))
+        check(f"r1h_refill_wiring[{idx},{len(flags)}]", len(calls) == want_calls, calls)
+    for accounts, lo, hi in ((None, 60.0, 90.0), ("primary", 180.0, 270.0), ("alt-1", 60.0, 90.0)):
+        ex = bare(c)
+        ex._warmup_pool_size = 1
+        ex._warmup_in_progress = True
+        with env(TARGET_BG_SLOW_ACCOUNTS=accounts, TARGET_BG_SLOW_FACTOR="3"), fake_time(c, stop_after=1) as shim:
+            run(ex._background_refill_loop(0))
+        d = shim.sleeps[1] if len(shim.sleeps) > 1 else -1
+        check(f"r1h_bg1_refill_delay[{accounts}]", lo <= d <= hi, shim.sleeps)
+
+
+def test_r1_node_missing_fails():
+    """R1-TEST-3: without node the ticket-JS / QG tests must FAIL, not skip."""
+    global NODE
+    saved = NODE
+    n_failed = len(FAILED)
+    NODE = None
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            test_a_ticket_js_node()
+            test_b_qg_fast_lane()
+    finally:
+        NODE = saved
+    new = FAILED[n_failed:]
+    del FAILED[n_failed:]
+    check("r1t_missing_node_is_a_failure",
+          any(f.startswith("a_node_available") for f in new)
+          and any(f.startswith("b_node_available") for f in new), new)
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
              test_c_reason_classification, test_c_quiet_mode, test_c_helpers, test_c_cart_read_delete,
              test_d_stock_snapshot, test_e_note_stock_read, test_f_held_cart_reentry,
              test_f_held_protections, test_f_boot_audit, test_f_new_reason_classification,
-             test_g_wc2_impl, test_h_fl1_call_site)
+             test_g_wc2_impl, test_h_fl1_call_site,
+             # review round R1 (2026-09-17)
+             test_r1_yield_fleet_never_locks_out_held_reentry, test_r1_ride_kept_through_success_tail,
+             test_r1_cvv_ledger_seed, test_r1_po_only_suspect_fallback, test_r1_page_global_removed,
+             test_r1_boot_audit_delete_race, test_r1_held_marker_background_retire,
+             test_r1_node_missing_fails)
     for fn in tests:
         try:
             fn()
