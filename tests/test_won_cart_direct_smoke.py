@@ -71,6 +71,8 @@ _ALL_FLAGS = (
     "TARGET_BOOT_CART_AUDIT", "TARGET_HELD_CART_TTL_S", "TARGET_RESHOOT_FORCE_REWARM",
     "TARGET_HOLD_QUIET_WARMUP", "TARGET_WARMUP_CYCLE_SKIP_ON_STOCK", "TARGET_FASTLANE_SKIP_DUP_PRE",
     "TARGET_WON_CART_RIDE_CLEAN_EXIT",
+    # stage S5 (FL-1)
+    "TARGET_FASTLANE_STAGE_TRACK",
 )
 for _k in _ALL_FLAGS:
     os.environ.pop(_k, None)
@@ -2359,13 +2361,58 @@ def test_g_wc2_impl():
     check("g_dup_pre_fires_when_fast_lane_had_no_pre", n == 1, n)
 
 
+# ─────── (h) stage S5, plan P6 (FL-1): timeout outcomes at the call site ───────
+
+def test_h_fl1_call_site():
+    """The dicts FL-1's timeout branch synthesizes (built by the real pure
+    fast_lane_timeout_outcome) through the real _execute_purchase_impl."""
+    classify, _ = _bpm_classifier()
+    c = Clock()
+    fl_atc = pe_mod.fast_lane_timeout_outcome({"s": "atc", "aborted": True, "atc": 0})
+    fl_pre0 = pe_mod.fast_lane_timeout_outcome({"s": "pre", "aborted": True, "atc": 201})
+    fl_cvv0 = pe_mod.fast_lane_timeout_outcome({"s": "cvv", "aborted": True, "atc": 201})
+    # Aborted during the ATC -> the transient legacy reason, no error text, no
+    # loop, no legacy checkout, no "chain stopped" line — armed or not.
+    for label, e in (("armed", ARMED), ("off", {})):
+        ex, tab = impl_ex(c, fl_atc)
+        r = run_impl(ex, e)
+        check(f"fl1_site_atc_timeout_transient[{label}]",
+              r.get("reason") == "atc_evaluate_timeout" and r.get("success") is False
+              and "error" not in r and not r.get("ambiguous_commit")
+              and not ex.loop_calls and "checking_out" not in ex.statuses
+              and classify(r) == "transient" and ex.fl_calls == [2]
+              and "chain stopped before place-order" not in run.last_out,
+              f"{r} loop={ex.loop_calls} st={ex.statuses}")
+        check(f"fl1_site_atc_timeout_no_cart_writes[{label}]", not ex.deletes and not ex._po_ambiguous)
+    # Aborted at pre / cvv after a 2xx ATC -> won-cart loop (first entry) when
+    # armed; today's pre_0 legacy fallthrough when not.
+    for label, fl0 in (("pre", fl_pre0), ("cvv", fl_cvv0)):
+        ex, tab = impl_ex(c, fl0)
+        r = run_impl(ex, ARMED)
+        check(f"fl1_site_{label}_abort_enters_loop", ex.loop_calls == [(TCIN, 2, "first")]
+              and r.get("reason") == "won_cart_held" and "checking_out" not in ex.statuses,
+              f"{r} {ex.loop_calls} {ex.statuses}")
+        ex, tab = impl_ex(c, fl0)
+        run_impl(ex, {})
+        check(f"fl1_site_{label}_abort_legacy_when_off", not ex.loop_calls and "checking_out" in ex.statuses,
+              f"{ex.loop_calls} {ex.statuses}")
+    # The loop seeds an UNVERIFIED ledger from it (first ticket = pre_po).
+    ex = bare(c)
+    L = ex._woncart_new_ledger(TCIN, 2, fl_pre0, c.t)
+    check("fl1_site_pre0_ledger_unverified", L["verified"] is False and L["fs_seen_ts"] == 0.0
+          and L["cart_id"] == "" and L["pi_id"] == "", L)
+    # The not-aborted outcome (None) keeps today's terminal no-response dict.
+    check("fl1_site_po_stage_not_synthesized",
+          pe_mod.fast_lane_timeout_outcome({"s": "po", "aborted": False, "atc": 201}) is None)
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
              test_c_reason_classification, test_c_quiet_mode, test_c_helpers, test_c_cart_read_delete,
              test_d_stock_snapshot, test_e_note_stock_read, test_f_held_cart_reentry,
              test_f_held_protections, test_f_boot_audit, test_f_new_reason_classification,
-             test_g_wc2_impl)
+             test_g_wc2_impl, test_h_fl1_call_site)
     for fn in tests:
         try:
             fn()

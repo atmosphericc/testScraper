@@ -180,6 +180,127 @@ def fastlane_qty_guard_on() -> bool:
                ('TARGET_FASTLANE_QTY_GUARD', 'TARGET_WONCART_DIRECT', 'TARGET_HELD_CART_REENTRY'))
 
 
+# ── 2026-09-16 plan P6 (FL-1): fast-lane evaluate-timeout stage tracking ─────
+# 09-16 03:46:01: one alt-1 shot was ended as a possible double-buy although no
+# place-order had gone out — the 12 s evaluate timeout cannot tell where the
+# in-page chain is. With the flag on, the chain registers {s, atc, abort} under a
+# per-run random NON-enumerable page global and, immediately before each fetch
+# (pre_checkout, CVV PUT, place-order), checks `abort` and writes its stage in
+# the same synchronous run. On a timeout ONE bounded evaluate reads the stage and
+# sets abort unless the stage is already 'po' (read-and-abort is atomic: page JS
+# is single-threaded). Only an aborted read before the place-order is relabelled;
+# 'po', a missing entry, a read error or a read timeout stay terminal (today).
+def fastlane_stage_track_on() -> bool:
+    """TARGET_FASTLANE_STAGE_TRACK=1 (default '0'). With it off nothing is
+    created in the page and the fast-lane JS is byte-identical to 11797839
+    (golden fixture). Kill-switch: =0."""
+    return os.environ.get('TARGET_FASTLANE_STAGE_TRACK', '0').strip() == '1'
+
+
+_FL_STAGE_N_RE = re.compile(r'^f[0-9]{1,9}$')
+
+# Fragments spliced into the fast-lane f-string (literal JS: no f-string braces).
+# @@KEY@@ / @@N@@ are validated before substitution.
+_FL_STAGE_OPEN_JS = r"""
+            const _SK = '@@KEY@@';
+            const _SN = '@@N@@';
+            const _SE = {s: 'atc', atc: 0, abort: false};
+            let _ST = null;
+            try {
+                if (!Object.prototype.hasOwnProperty.call(globalThis, _SK)) {
+                    Object.defineProperty(globalThis, _SK, {value: {}, enumerable: false, configurable: true, writable: true});
+                }
+                _ST = globalThis[_SK];
+                _ST[_SN] = _SE;
+            } catch (_) { _ST = null; }
+            try {"""
+_FL_STAGE_CLOSE_JS = r"""
+            } finally {
+                try { if (_ST && _ST[_SN] === _SE) delete _ST[_SN]; } catch (_) {}
+            }"""
+_FL_STAGE_ATC_JS = r"""
+                _SE.atc = r.status;"""
+_FL_STAGE_PRE_JS = r"""
+            if (_SE.abort) { out.skip = 'aborted'; return out; }
+            _SE.s = 'pre';"""
+# Inside cvvPut: the in-lane 3b recovery runs after stage 'po' and is never
+# aborted or re-staged. -2 = not fired (aborted); the place-order check below
+# then returns 'aborted' because abort is sticky.
+_FL_STAGE_CVV_JS = r"""
+                if (_SE.s !== 'po') {
+                    if (_SE.abort) return -2;
+                    _SE.s = 'cvv';
+                }"""
+_FL_STAGE_PO_JS = r"""
+            if (_SE.abort) { out.skip = 'aborted'; return out; }
+            _SE.s = 'po';"""
+_FL_STAGE_OFF = {'open': '', 'close': '', 'atc': '', 'pre': '', 'cvv': '', 'po': ''}
+
+# Read-and-abort for the fast lane (one evaluate); also reports the ATC status
+# the chain recorded after the ATC response was read.
+_FL_STAGE_ABORT_JS = r"""(() => {
+    const S = globalThis['@@KEY@@'];
+    const e = S && S['@@N@@'];
+    if (!e) return null;
+    if (e.s !== 'po') { e.abort = true; return {s: e.s, aborted: true, atc: e.atc}; }
+    return {s: e.s, aborted: false, atc: e.atc};
+})()"""
+
+
+def _fl_stage_check(key: str, n: str) -> None:
+    if not re.fullmatch(r'__[0-9a-f]{12}', str(key)) or not _FL_STAGE_N_RE.match(str(n)):
+        raise ValueError('bad fast-lane stage key/id')
+
+
+def render_fast_lane_stage_fragments(key: str, n: str) -> Dict[str, str]:
+    """Pure: the six JS fragments FL-1 splices into the fast-lane chain."""
+    _fl_stage_check(key, n)
+    return {
+        'open': _FL_STAGE_OPEN_JS.replace('@@KEY@@', str(key)).replace('@@N@@', str(n)),
+        'close': _FL_STAGE_CLOSE_JS, 'atc': _FL_STAGE_ATC_JS, 'pre': _FL_STAGE_PRE_JS,
+        'cvv': _FL_STAGE_CVV_JS, 'po': _FL_STAGE_PO_JS,
+    }
+
+
+def render_fast_lane_abort_js(key: str, n: str) -> str:
+    _fl_stage_check(key, n)
+    return _FL_STAGE_ABORT_JS.replace('@@KEY@@', str(key)).replace('@@N@@', str(n))
+
+
+def fast_lane_timeout_outcome(ab):
+    """Pure: map the read-and-abort result of a timed-out fast-lane evaluate to a
+    synthesized chain result, or None = keep today's terminal no-response dict.
+
+    - aborted at stage 'atc' -> skip 'evaluate_timeout_atc' (nothing after the
+      ATC can fire; the caller returns the transient 'atc_evaluate_timeout').
+      _api_fast_lane uses it only while the qty guard is on (a landed add plus
+      a re-race would otherwise stack);
+    - aborted at 'pre'/'cvv' after a 2xx ATC -> skip 'pre_0', po not fired (the
+      cart holds our add; the won-cart loop is eligible, unverified);
+    - anything else ('po', not aborted, null, non-dict, other stage) -> None."""
+    if not isinstance(ab, dict) or ab.get('aborted') is not True:
+        return None
+    s = ab.get('s')
+    atc = ab.get('atc')
+    if isinstance(atc, bool) or not isinstance(atc, (int, float)) or atc != atc:
+        atc = 0
+    try:
+        atc = int(atc)
+    except (OverflowError, ValueError):
+        atc = 0
+    if s == 'atc':
+        return {'atc': {'status': 0, 'body': '', 'cart_items': []},
+                'pre': {'status': 0},
+                'po': {'status': 0, 'body': '', 'fired': False},
+                'skip': 'evaluate_timeout_atc', 'stage': 'atc', 'stage_atc': atc}
+    if s in ('pre', 'cvv') and atc in (200, 201):
+        return {'atc': {'status': atc, 'body': '', 'cart_items': [], 'cart_id': '', 'wr': False},
+                'pre': {'status': 0, 'n': 0, 'tcins': [], 'pi': [], 'cart_id': ''},
+                'po': {'status': 0, 'body': '', 'fired': False},
+                'skip': 'pre_0', 'stage': s, 'stage_atc': atc}
+    return None
+
+
 # ── 2026-09-16 plan P7 (DX-1): diagnostics for the next audit, log-only ──────
 # Every flag defaults OFF; with all of them off the fast-lane JS is byte-identical
 # to 11797839 (golden fixture) and every existing log line is unchanged.
@@ -756,6 +877,7 @@ class PurchaseExecutor:
         # line (set only under TARGET_FS_TICKET_LOG=1; None = off).
         self._fs_legacy_ctx: Optional[Dict[str, Any]] = None
         self._fl_stage_key: str = ''
+        self._fl_stage_seq: int = 0          # 2026-09-16 FL-1 fast-lane entry ids ('f<n>')
         self._woncart_ticket_seq: int = 0
         self._woncart_refusal_logged: bool = False
         # 2026-09-16 plan P3 (WC-3): one-shot boot cart audit (spawned from
@@ -3910,6 +4032,14 @@ class PurchaseExecutor:
                     print(f"[WAITING_ROOM] Target queue interstitial on the ATC response "
                           f"(http={atc_result.get('status')}, hit #{self._waiting_room_hits}) — "
                           f"hold and retry, do not re-navigate ident={self._ident_tag()}")
+                # 2026-09-16 plan P6 (FL-1): the evaluate timed out while the ATC
+                # was pending and the read-and-abort stopped the chain, so no
+                # pre_checkout / place-order can fire. Same transient reason (and
+                # no error text) as the legacy ATC evaluate timeout below. Only
+                # TARGET_FASTLANE_STAGE_TRACK=1 produces this skip.
+                if _fl.get('skip') == 'evaluate_timeout_atc':
+                    return {'success': False, 'tcin': tcin, 'reason': 'atc_evaluate_timeout',
+                            'execution_time': time.time() - start_time}
                 _verdict, _terminal = self._apply_fast_lane_result(_fl, tcin, start_time)
                 if _verdict == 'terminal':
                     return _terminal
@@ -7233,7 +7363,26 @@ class PurchaseExecutor:
         _ts_pre_js = "\n                out.atc.t0 = Date.now();" if _t_stamps else ''
         _ts_post_js = "\n                out.atc.t1 = Date.now();" if _t_stamps else ''
 
-        js = f"""(async () => {{
+        # 2026-09-16 plan P6 (FL-1, TARGET_FASTLANE_STAGE_TRACK=1): stage entry +
+        # synchronous abort checks before each post-ATC fetch (see
+        # fast_lane_timeout_outcome). Every fragment is '' when the flag is off,
+        # so nothing is created in the page and the JS is byte-identical.
+        _stage_track = fastlane_stage_track_on()
+        _st_key = _st_n = ''
+        _stf = _FL_STAGE_OFF
+        if _stage_track:
+            try:
+                _st_key = self._ticket_stage_key()
+                self._fl_stage_seq = (int(getattr(self, '_fl_stage_seq', 0) or 0) + 1) % 1000000000
+                _st_n = f"f{self._fl_stage_seq}"
+                _stf = render_fast_lane_stage_fragments(_st_key, _st_n)
+            except Exception as _st_e:
+                print(f"[FAST_LANE] stage tracking unavailable ({type(_st_e).__name__}) — "
+                      f"chain runs untracked (timeout stays terminal)")
+                _stage_track = False
+                _stf = _FL_STAGE_OFF
+
+        js = f"""(async () => {{{_stf['open']}
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{
                 'Content-Type': 'application/json',
@@ -7258,7 +7407,7 @@ class PurchaseExecutor:
                     body: JSON.stringify({_atc_body_js})
                 }});{_ts_post_js}
                 const t = await r.text();
-                out.atc.status = r.status;
+                out.atc.status = r.status;{_stf['atc']}
                 out.atc.body = t.slice(0, 500);
                 out.atc.wr = /busier than we expected|sorry for the wait/i.test(t);
                 try {{
@@ -7279,7 +7428,7 @@ class PurchaseExecutor:
                 out.skip = 'atc_' + out.atc.status; return out;
             }}
 
-            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──{_stf['pre']}
             try {{
                 const r2 = await fetch('{pre_url}', {{
                     method: 'POST', credentials: 'include',
@@ -7336,7 +7485,7 @@ class PurchaseExecutor:
             const cvvPut = async () => {{
                 const pi0 = out.pre.pi && out.pre.pi[0];
                 const piId = pi0 && pi0.id;
-                if (!CVV || !piId) return -1;
+                if (!CVV || !piId) return -1;{_stf['cvv']}
                 try {{
                     const rc = await fetch(
                         'https://carts.target.com/checkout_payments/v1/payment_instructions/'
@@ -7367,7 +7516,7 @@ class PurchaseExecutor:
             // ── 3. Place order ────────────────────────────────────────────────
             // `fired` is set BEFORE the await: if the fetch throws or the
             // evaluate is torn down, the POST may still have committed
-            // server-side and the caller must treat it as non-retryable.
+            // server-side and the caller must treat it as non-retryable.{_stf['po']}
             out.po.fired = true;
             try {{
                 const r3 = await fetch('{po_url}', {{
@@ -7407,7 +7556,7 @@ class PurchaseExecutor:
                     }}
                 }}
             }}
-            return out;
+            return out;{_stf['close']}
         }})()"""
 
         t0 = time.time()
@@ -7421,6 +7570,28 @@ class PurchaseExecutor:
             res = await asyncio.wait_for(
                 tab.evaluate(js, await_promise=True), timeout=12.0)
         except asyncio.TimeoutError:
+            if _stage_track:
+                # 2026-09-16 FL-1: one bounded read-and-abort. _po_inflight stays
+                # True across it (a purchase-timeout cancel here still latches).
+                _ab = await self._fast_lane_read_and_abort(tab, _st_key, _st_n)
+                self._po_inflight = False
+                _syn = fast_lane_timeout_outcome(_ab)
+                if (_syn is not None and _syn.get('skip') == 'evaluate_timeout_atc'
+                        and not fastlane_qty_guard_on()):
+                    # The pending add may still land; a transient re-race would
+                    # then stack our TCIN, and only QG refuses a stacked cart
+                    # (it is forced on by WC-1 / WC-3). Without it: terminal.
+                    print("[FAST_LANE] evaluate timed out after 12s — ATC-stage abort NOT "
+                          "relabelled (qty guard off: a re-race could stack a landed add)")
+                    _syn = None
+                if _syn is not None:
+                    _syn['elapsed'] = time.time() - t0
+                    print(f"[FAST_LANE] evaluate timed out after 12s — stage={_syn.get('stage')} "
+                          f"atc={_syn.get('stage_atc')} ABORTED before any place-order "
+                          f"(skip={_syn['skip']}) ident={self._ident_tag()}")
+                    return _syn
+                print(f"[FAST_LANE] evaluate timed out after 12s — stage read {repr(_ab)[:200]} "
+                      f"(not relabelled) ident={self._ident_tag()}")
             self._po_inflight = False
             # Cannot prove the place-order POST did not commit ⇒ terminal.
             print("[FAST_LANE] evaluate timed out after 12s — place-order state "
@@ -7555,6 +7726,18 @@ class PurchaseExecutor:
         except Exception as e:
             print(f"[WON_CART_DIRECT] cart delete ({tag}) errored: {type(e).__name__}")
             return False, n
+
+    async def _fast_lane_read_and_abort(self, tab, key: str, n: str):
+        """FL-1: one bounded (2 s) evaluate of the fast-lane read-and-abort.
+        dict or None (None = outcome unknown -> terminal)."""
+        try:
+            js = render_fast_lane_abort_js(key, n)
+            r = await asyncio.wait_for(tab.evaluate(js), timeout=2.0)
+            return r if isinstance(r, dict) else None
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
 
     async def _ticket_read_and_abort(self, tab, key: str, n: str):
         """One bounded (2 s) evaluate of the atomic read-and-abort. dict or None."""
