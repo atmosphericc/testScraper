@@ -287,3 +287,25 @@ A third review checked R1 and R2 for cart and order safety. It confirmed 7 findi
 - **Relaunch de-sync stamp (minor).** A Chrome relaunched by any path now clears the one-tick deferral stamp, so the next due relaunch checks its peers again.
 
 **Not done:** R2-SUSPECT asked for the cart check to run inside the place-order JS chain. Only the re-read part was built; the in-chain version would change the ticket JS. The latch file gets no `.bak` copy, because forcing it to disk fixes the cause.
+
+## 10. Verification round R4 (2026-09-17, after the machine restart)
+
+No code changed in this round. The build was re-verified from a cold machine and the R3 diff was read by hand, because the automated fourth round was refused by the auto-mode classifier (see the note in section 9).
+
+**Re-verified:** offline suite 24/24 (134 s); working tree clean at `e8328256`; the bat is CRLF with 1152/1152 lines; all 140 environment flags set in the bat are actually read by a `.py` under `src/` or `app.py` (no typo'd flag silently disarming a feature, which is how the 09-11 level re-arm died); the S6 guards (`TARGET_HOME_SHARE_GUARD`, `TARGET_BG_SLOW_ACCOUNTS`, `TARGET_IDENTITY_REST_S`) are present in code and absent from the bat, as decided; `TARGET_IDENTITY_REST=0`; the park list is 13 TCINs on alt-1; CVV is configured for all three accounts; no stale `state/ambiguous_commit_latch.json`; no orphaned repo Chrome holding a profile lock.
+
+**R3 read by hand, four things checked that a test would not catch:**
+
+- `st['dirty']` is written by `_woncart_exit` (called in the `try` body) and read in the `finally`, so the flag is visible — the ordering the whole dirty-cart fix depends on.
+- The `cart_evicted` exit deliberately sets no dirty flag; the cart was emptied server-side, so there is no line to delete.
+- `_stamp_dispatch_skip_rearm_hint` runs under `_state_lock` as its docstring claims. The lock is taken by the caller and the one release/acquire inside the dispatch loop is `try`/`finally`-balanced, so it is held at the call site.
+- `_woncart_dirty_release` is called before the fast-lane gate, so it also covers the legacy path — which is the path the fix exists for.
+
+Nothing blocking was found.
+
+### Two measurements taken from the 09-16 log in this round
+
+- **Single-purchase dispatch cost 13 skipped cycles.** `[MULTI_SKU_MISS]` fired 13 times between 03:48:07 and 04:01:30, 8 of them on the Tin (1010892069) while the Tech Sticker (1010892078) held the fleet. This is the deliberate limitation noted in the dispatch code: doing better needs synchronous worker reservation. Nothing was stranded permanently, because the edge publisher kept re-firing (109 in-stock edges on 1010892069 in 02:00-04:50).
+- **8.6% of the night's shots were fired at a TCIN the monitor read as out of stock.** Of 544 main shots, 47 were fired when the freshest `[STOCK WATCH]` for that TCIN said `in_stock=False` (alt-1 15, business 16, primary 16). Of those 47: 42 edge-429, 5 x 401, **zero 2xx** — the night's only 201 came from a live read. So flicker dispatches never converted, but they spent roughly 9% of the per-identity attempt budget that drives the 401 wall (which trips at 13-41 attempts on a TCIN in one unbroken stretch).
+
+  **Deliberately not fixed.** A "skip the dispatch when the last watch line says out of stock" gate would also kill the first shot of a real restock: `[STOCK WATCH]` prints on a 30 s cadence, and a genuine edge is published before the next watch line. The accepted mitigation is the probe hysteresis (S-m, `TARGET_STOCK_PROBE=1`, armed). Re-measure this ratio after the next drop before spending anything else on it.
