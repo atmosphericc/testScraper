@@ -13,7 +13,10 @@ REM  bot manually each morning, so a MAX_RUNTIME cutoff would never fire.
 REM  This wrapper exists purely to survive crashes while unattended.
 REM
 REM  Usage:  double-click, or run from a cmd window in the repo root.
-REM  Stop:   press Ctrl+C, then answer Y to "Terminate batch job".
+REM  Stop:   press Ctrl+C once. app.py shuts down cleanly (exit code 0) and the
+REM          wrapper then STOPS instead of relaunching (2026-09-15 fix). If the
+REM          batch's own "Terminate batch job (Y/N)?" prompt also appears, answer Y.
+REM          Restart by re-running this script (a fresh top-of-file run).
 REM ===========================================================================
 
 setlocal EnableExtensions EnableDelayedExpansion
@@ -101,6 +104,14 @@ REM captcha, apps_raw = HTTP 200 product data. Same parser shape. The pool
 REM Chromes stay up (park/backoff logic is shared); grep "[STOCK STATS]" for
 REM 200= climbing and "[STOCK][CAPTCHA-PARK]" staying quiet. Kill: =web.
 set RESILIENT_REDSKY_CHANNEL=apps_raw
+REM 2026-09-15: home-IP CANARY OFF. _canary_loop is raw urllib from the HOME IP
+REM (primary's purchase exit) every 30 s with a mismatched TLS/UA -- the exact
+REM bot-shaped hit HUMAN/Shape score -- and its 403-only self-retire never fires
+REM now that Target answers HTTP 435 (run_20260914: ~1,700 rejections / 62 OKs,
+REM zero signal; the cloak theory it guards was refuted 06-09). The app-channel
+REM pool + ground-truth cache-bust (still ON) are the detectors. Re-enable: =1.
+set STOCK_CANARY=0
+
 REM 2026-09-09 audit of run_20260907: FRESH_PROFILES=1 did NOT help -- all 16 fresh
 REM sessions were captcha-walled within 3.5 min of boot (~33 reads each), the pool
 REM was blind 94% of 19 h, and the only recovery (4 sessions, 14:51-15:26, 98%
@@ -924,6 +935,27 @@ echo [%date% %time%] app.py exited code=%EXITCODE% >> "%RUNLOG%"
 echo.
 
 REM ---------------------------------------------------------------------------
+REM  Clean exit = operator stop, NOT a crash (2026-09-15 fix). app.py only ever
+REM  reaches exit code 0 through its SIGINT/SIGTERM/SIGBREAK handler (os._exit(0))
+REM  -- someone pressed Ctrl+C to stop for the morning, or the OS is logging off.
+REM  A real crash never exits 0 (uncaught -> 1, access violation -> 0xC0000005,
+REM  not-logged-in -> 87, deadman -> 2). Auto-relaunching after a clean stop was
+REM  the 2026-09-11 footgun: the Ctrl+C reached app.py (exit 0) but not this batch,
+REM  the loop relaunched, launch #2 died 0xC0000005 on the not-yet-released Chrome
+REM  --user-data-dir lock, and launch #3 ran on as an unsupervised orphan. So a
+REM  clean exit ENDS the wrapper; the crash-restart loop below still catches every
+REM  genuine crash. Kill-switch (pre-09-15 always-relaunch): set WRAPPER_RELAUNCH_ON_CLEAN_EXIT=1
+if "%EXITCODE%"=="0" if not "%WRAPPER_RELAUNCH_ON_CLEAN_EXIT%"=="1" (
+    echo [%date% %time%] clean exit ^(operator stop^) -- wrapper done, not relaunching >> "%RUNLOG%"
+    echo.
+    echo app.py shut down cleanly ^(operator stop^). Wrapper done -- not relaunching.
+    echo To run again, re-run this script.
+    ping -n 6 127.0.0.1 >nul
+    goto :done
+)
+
+
+REM ---------------------------------------------------------------------------
 REM  Exit code 87 = app.py booted but the Target session was NOT logged in
 REM  (2026-07-03 fix: it used to idle forever as a dashboard-only zombie).
 REM  Recover the PROVEN way: re-run relogin_one.py all (home IP, validate-first)
@@ -956,3 +988,6 @@ REM (STATUS_DLL_INIT_FAILED). `ping` is the reliable batch-sleep idiom:
 REM 11 pings at 1s intervals = ~10s, no console dependency.
 ping -n 11 127.0.0.1 >nul
 goto loop
+
+:done
+endlocal & exit /b 0

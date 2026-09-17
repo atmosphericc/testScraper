@@ -1125,6 +1125,15 @@ class ResilientStockChecker:
         (host-direct, no BD proxy / no pool cookies). If the clean channel sees
         IN_STOCK while the pool sweep sees OOS => the pool is being served
         CLOAKED data. LOG ONLY."""
+        # 2026-09-15 kill-switch. This read is raw urllib from the HOME IP (the
+        # primary purchase account's exit) every 30 s with a mismatched TLS/UA —
+        # the exact bot-shaped hit Shape/HUMAN score — and it has never produced
+        # a true cloak positive (06-09 H3 refuted). run_20260914: ~1,700 HTTP 435
+        # rejections vs 62 OKs. STOCK_CANARY=0 retires ONLY this loop; the
+        # ground-truth cache-bust probe stays ON.
+        if os.environ.get("STOCK_CANARY", "1") in ("0", "false", "False"):
+            logger.info("[CANARY] disabled (STOCK_CANARY=0) — ground-truth probe still ON")
+            return
         INTERVAL_S = 30.0
         tcins_csv = ",".join(self.tcins)
         cycle = 0
@@ -1147,10 +1156,13 @@ class ResilientStockChecker:
                     # 403=100% across the 07-06 and 07-08 overnights while the
                     # browser-native pool read the same endpoint at ~99% 200.
                     # Zero signal + a misleading alarm -> retire it for the run.
-                    fail_403_streak = fail_403_streak + 1 if http_status == 403 else 0
+                    # 2026-09-15: any HTTP-level rejection counts, not just 403 —
+                    # Target now answers 435 to this transport and the 403-only
+                    # rule let it spam all night (run_20260914: 188 WARNs).
+                    fail_403_streak = fail_403_streak + 1 if http_status >= 400 else 0
                     if fail_403_streak >= 20:
                         logger.warning(
-                            "[CANARY] 20 consecutive 403s — raw-urllib TLS is "
+                            f"[CANARY] 20 consecutive HTTP {http_status} rejections — raw-urllib TLS is "
                             "Shape-flagged (known false positive, 2026-05-14 audit); "
                             "canary disabled for this run. A trustworthy clean-channel "
                             "canary needs a browser-native host-direct read."
