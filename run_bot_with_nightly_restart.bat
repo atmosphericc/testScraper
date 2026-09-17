@@ -838,25 +838,41 @@ REM INF-2: a race state without started_at is stamped, never force-completed
 REM with the Unix epoch as its age. Kill: TARGET_RACE_STATE_STARTED_AT_GUARD=0.
 set TARGET_RACE_STATE_STARTED_AT_GUARD=1
 REM WC-1 won-cart direct checkout loop: when an ATC 2xx cart hits
-REM FAST_SELLING at checkout, fire checkout tickets straight away (first at
-REM +5 s, two probe gaps 5 and 15 s once per cart, then one place-order-only
-REM ticket every 45 s while RedSky reads in stock) instead of the ~26 s
-REM nav/DOM detour and 45 s holds. 45 s place-order-only is the shape of the
-REM only through-FAST_SELLING win ever (08-04). STOCK_PROBE/HYST = RedSky
-REM freshness; MAX_TICKETS per cart; CALL_MAX caps one loop call (it holds
-REM the fleet); YIELD_FLEET ends it early when another armed TCIN is live,
-REM but only after that call fired a ticket (a held re-entry always fires one).
-REM grep [WON_CART_DIRECT] and [FS_TICKET].
-REM Kill: TARGET_WONCART_DIRECT=0 (exact legacy path). Probes off (pure 45 s):
+REM FAST_SELLING at checkout, fire checkout tickets straight away instead of
+REM the ~26 s nav/DOM detour and 45 s holds.
+REM
+REM 2026-09-17 CADENCE RE-TUNE (R5) -- read docs/HOT_SKU_FIX_2026_09_16.md #11.
+REM The old 45 s gap came from the 07-21 note that re-shooting into
+REM FAST_SELLING went 0-for-~20. That sample was confounded: a third of
+REM 07-21's checkout responses were MISSING_CREDIT_CARD_CVV 400s (Endpoint 8
+REM landed 07-28), so those re-shoots could not convert whatever the limiter
+REM did. The only two drops with ZERO CVV failures are the only two that
+REM converted: 07-31 (9 orders, median checkout gap 5.9 s) and 08-04 (4
+REM orders, median 5.3 s); 08-04's 02:07:21 order was placed ~2 s after a
+REM FAST_SELLING 429 on the same cart. The two hot-SKU carts we have ever
+REM won (09-11, 09-16) fired 2 and 6 checkout POSTs at a ~50 s median and
+REM converted neither -- on 09-16 only TWO landed while the TCIN still read
+REM in stock. So: probe gaps 3,4,5 then one place-order-only ticket every
+REM 5 s (+/- jitter) while RedSky reads in stock, which is the 07-31/08-04
+REM shape. OOS_TAIL=1 still stops it one ticket after the TCIN goes out of
+REM stock (09-16 wasted four POSTs after the Tin was gone).
+REM REVERT to the pre-R5 behaviour: TARGET_WONCART_SCHEDULE_S=5,15 +
+REM TARGET_WONCART_STEADY_GAP_S=45 + TARGET_WONCART_MAX_TICKETS=14.
+REM
+REM STOCK_PROBE/HYST = RedSky freshness; MAX_TICKETS per cart; CALL_MAX caps
+REM one loop call (it holds the fleet); YIELD_FLEET ends it early when
+REM another armed TCIN is live, but only after that call fired a ticket (a
+REM held re-entry always fires one). grep [WON_CART_DIRECT] and [FS_TICKET].
+REM Kill: TARGET_WONCART_DIRECT=0 (exact legacy path). Probes off:
 REM TARGET_WONCART_SCHEDULE_S=0 -- an empty set X= UNSETS the variable, which
 REM restores the 5,15 default.
 set TARGET_STOCK_PROBE=1
 set TARGET_STOCK_HYST_S=20
 set TARGET_WONCART_DIRECT=1
-set TARGET_WONCART_SCHEDULE_S=5,15
-set TARGET_WONCART_STEADY_GAP_S=45
+set TARGET_WONCART_SCHEDULE_S=3,4,5
+set TARGET_WONCART_STEADY_GAP_S=5
 set TARGET_WONCART_OOS_TAIL_TICKETS=1
-set TARGET_WONCART_MAX_TICKETS=14
+set TARGET_WONCART_MAX_TICKETS=40
 set TARGET_WONCART_CALL_MAX_S=120
 set TARGET_WONCART_HEADROOM_S=45
 set TARGET_WONCART_YIELD_FLEET=1

@@ -1656,8 +1656,30 @@ def test_c_helpers():
     cfg = pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": " 1 ,90, x, nan, 7, 8, 9",
                               "TARGET_WONCART_STEADY_GAP_S": "5", "TARGET_WONCART_MAX_TICKETS": "junk",
                               "TARGET_WONCART_YIELD_FLEET": " 0 ", "TARGET_WON_CART_RIDE": " 1 "})
-    check("h_cfg_clamps", cfg["schedule"] == [3.0, 60.0, 7.0] and cfg["steady_s"] == 20.0
+    # R5 (2026-09-17 cadence re-tune): schedule floor 3 -> 2 s, cap 3 -> 6
+    # entries, steady floor 20 -> 3 s, so the 07-31/08-04 winning cadence is
+    # reachable. Junk/NaN still dropped, 90 still clamped to the 60 s ceiling.
+    check("h_cfg_clamps", cfg["schedule"] == [2.0, 60.0, 7.0, 8.0, 9.0] and cfg["steady_s"] == 5.0
           and cfg["max_tickets"] == 14 and cfg["yield_fleet"] is False and cfg["ride_on"] is True, cfg)
+    # R5: the widened range, and that the DEFAULTS did not move with it.
+    check("h_cfg_r5_sched_cap6",
+          pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "2,3,4,5,6,7,8,9"})["schedule"]
+          == [2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
+    check("h_cfg_r5_sched_floor",
+          pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "0.5,1"})["schedule"] == [2.0, 2.0])
+    check("h_cfg_r5_steady_floor",
+          pe_mod.woncart_cfg({"TARGET_WONCART_STEADY_GAP_S": "1"})["steady_s"] == 3.0
+          and pe_mod.woncart_cfg({"TARGET_WONCART_STEADY_GAP_S": "999"})["steady_s"] == 120.0)
+    check("h_cfg_r5_defaults_unmoved",
+          pe_mod.woncart_cfg({})["steady_s"] == 45.0
+          and pe_mod.woncart_cfg({})["schedule"] == [5.0, 15.0])
+    # R5: the armed bat cadence must survive parsing exactly as written.
+    _armed = pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "3,4,5",
+                                 "TARGET_WONCART_STEADY_GAP_S": "5",
+                                 "TARGET_WONCART_MAX_TICKETS": "40"})
+    check("h_cfg_r5_armed_values",
+          _armed["schedule"] == [3.0, 4.0, 5.0] and _armed["steady_s"] == 5.0
+          and _armed["max_tickets"] == 40, _armed)
     # _begin_won_cart_ride now returns the effective deadline (0.0 with no ctx).
     ex2 = bare(c)
     del ex2._begin_won_cart_ride

@@ -443,8 +443,23 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
     """Pure, clamped knobs for the won-cart loop. Every value is .strip()ed.
 
     TARGET_WONCART_SCHEDULE_S: once-per-cart probe gaps (default '5,15'; at most
-    3 entries, each clamped 3..60). '0' / 'none' / 'off' / '' = no probes (note:
-    cmd `set NAME=` UNSETS the variable, which restores the default)."""
+    6 entries, each clamped 2..60). '0' / 'none' / 'off' / '' = no probes (note:
+    cmd `set NAME=` UNSETS the variable, which restores the default).
+
+    2026-09-17 cadence re-tune (R5). The 45 s steady gap and the 20 s floor came
+    from the 07-21 reading that re-shooting into FAST_SELLING went 0-for-~20.
+    That sample was confounded: a third of 07-21's checkout responses were
+    MISSING_CREDIT_CARD_CVV 400s (Endpoint 8 did not land until 07-28), so those
+    re-shoots could not have converted whatever the limiter did. The two drops
+    with ZERO CVV failures are exactly the two that converted: 07-31 (9 orders,
+    median checkout gap 5.9 s, 20 gaps <= 10 s) and 08-04 (4 orders, median
+    5.3 s, 21 gaps <= 10 s) -- and the 08-04 02:07:21 order was placed ~2 s
+    after a FAST_SELLING 429 on the same cart. Against that, 09-11 and 09-16
+    (the only hot-SKU carts we have ever won) fired 2 and 6 checkout POSTs at a
+    ~50 s median and converted neither; on 09-16 only TWO of the six landed
+    while the TCIN still read in stock. So the floors are widened to let the
+    winning cadence be armed. Defaults are unchanged: with nothing set, this
+    function returns exactly the pre-R5 values."""
     env = os.environ if env is None else env
 
     def _num(name, default, lo, hi):
@@ -469,13 +484,15 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
                 continue
             if not (v == v) or v in (float('inf'), float('-inf')):
                 continue
-            sched.append(min(60.0, max(3.0, v)))
-            if len(sched) >= 3:
+            sched.append(min(60.0, max(2.0, v)))
+            if len(sched) >= 6:
                 break
     ride_raw = str(env.get('TARGET_WON_CART_RIDE', '1')).strip()
     return {
         'schedule': sched,
-        'steady_s': _num('TARGET_WONCART_STEADY_GAP_S', 45, 20.0, 120.0),
+        # R5: floor 20 -> 3 s. The default stays 45 s; only the reachable range
+        # widens, so an unset environment behaves exactly as before.
+        'steady_s': _num('TARGET_WONCART_STEADY_GAP_S', 45, 3.0, 120.0),
         'jitter_s': _num('TARGET_WONCART_JITTER_S', 3, 0.0, 10.0),
         'oos_tail': int(_num('TARGET_WONCART_OOS_TAIL_TICKETS', 1, 0, 5)),
         'max_tickets': int(_num('TARGET_WONCART_MAX_TICKETS', 14, 1, 50)),

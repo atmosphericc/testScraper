@@ -309,3 +309,61 @@ Nothing blocking was found.
 - **8.6% of the night's shots were fired at a TCIN the monitor read as out of stock.** Of 544 main shots, 47 were fired when the freshest `[STOCK WATCH]` for that TCIN said `in_stock=False` (alt-1 15, business 16, primary 16). Of those 47: 42 edge-429, 5 x 401, **zero 2xx** — the night's only 201 came from a live read. So flicker dispatches never converted, but they spent roughly 9% of the per-identity attempt budget that drives the 401 wall (which trips at 13-41 attempts on a TCIN in one unbroken stretch).
 
   **Deliberately not fixed.** A "skip the dispatch when the last watch line says out of stock" gate would also kill the first shot of a real restock: `[STOCK WATCH]` prints on a 30 s cadence, and a genuine edge is published before the next watch line. The accepted mitigation is the probe hysteresis (S-m, `TARGET_STOCK_PROBE=1`, armed). Re-measure this ratio after the next drop before spending anything else on it.
+
+## 11. How close we were, and the checkout cadence re-tune (R5, 2026-09-17)
+
+### How close
+
+We have won a cart on a hot SKU exactly twice, and both are recent: 09-11 (1010892071) and 09-16 (1010892069, the Tin, on primary/home IP at 03:29:43). Between 08-06 and 08-27 we did not produce a single checkout POST on any drop, hot or regular, because nothing ever got past the ATC edge limiter. So the hard gate is no longer the wall it was in August.
+
+The 09-16 cart then died like this:
+
+| time | event |
+|---|---|
+| 03:29:43 | ATC 201 — cart won, TCIN reads in stock |
+| 03:30:09 | checkout POST 1 → 429 FAST_SELLING (26 s of that gap was the legacy nav/DOM detour) |
+| 03:30:49 | TCIN still reads in stock |
+| 03:31:00 | checkout POST 2 → 429 FAST_SELLING |
+| 03:31:19 | TCIN reads OUT_OF_STOCK |
+| 03:31:51 … 03:34:22 | checkout POSTs 3-6, all after the item was gone |
+
+**We held a won cart on a hot SKU for roughly 85 seconds of live window and spent it firing two checkout tickets.** That is the whole distance between us and an order.
+
+### What the winning drops did instead
+
+Every order this bot has ever placed came from a much denser checkout cadence. Measured over every run log we have:
+
+| drop | checkout POSTs | orders | FS 429 | CVV 400 | median gap | gaps ≤ 10 s |
+|---|---|---|---|---|---|---|
+| 07-21 | 30 | 0 | 16 | **10** | 4.1 s | 23 |
+| 07-24 | 10 | 4 | 3 | 4 | 0.0 s | 6 |
+| 07-28 | 10 | 0 | 4 | 4 | 1.9 s | 8 |
+| 07-31 | 37 | **9** | 6 | **0** | 5.9 s | 20 |
+| 08-04 | 34 | **4** | 10 | **0** | 5.3 s | 21 |
+| 09-11 | 2 | 0 | 2 | 0 | **49.7 s** | **0** |
+| 09-16 | 6 | 0 | 6 | 0 | **50.9 s** | **0** |
+
+Two things fall out of that table.
+
+**The 45 s hold rests on a confounded sample.** It was set from the 07-21 reading that re-shooting into FAST_SELLING went 0-for-~20. But a third of 07-21's checkout responses were `MISSING_CREDIT_CARD_CVV` 400s — the in-lane CVV answer (Endpoint 8) did not land until 07-28. Those re-shoots could not have converted whatever the limiter was doing. The two drops with **zero** CVV failures are exactly the two drops that converted, and both of them re-shot fast. The 45 s rule was never re-validated after the CVV fix.
+
+**FAST_SELLING is a throttle, not a door that locks.** It answers in 5-14 ms (a pre-evaluation gate) versus 200-300 ms for a real `RESERVATION_FAILURE`. On 08-04 the 02:07:21 order was placed **about 2 seconds after a FAST_SELLING 429 on the same cart**. On 07-31, two wins landed in the same second as a 429 on a parallel POST. Being rejected by it costs almost nothing and does not spoil the next attempt.
+
+This also matches what the vendor research turned up independently: Refract tells operators to keep submitting and let it ride, retrying around 3.5 s; Stellar retries at ≤3 s. We were retrying at 50 s.
+
+### What changed
+
+`woncart_cfg` clamped the loop cadence to a 20 s floor with at most 3 probe gaps of ≥3 s, so the winning shape was not even reachable by configuration. R5 widens the ranges only — **the defaults are untouched, so an unset environment behaves exactly as it did before**:
+
+- `TARGET_WONCART_STEADY_GAP_S` floor 20 s → 3 s (default still 45)
+- `TARGET_WONCART_SCHEDULE_S` at most 3 entries of ≥3 s → at most 6 entries of ≥2 s (default still `5,15`)
+
+The bat now arms the 07-31/08-04 shape: `TARGET_WONCART_SCHEDULE_S=3,4,5`, `TARGET_WONCART_STEADY_GAP_S=5`, `TARGET_WONCART_MAX_TICKETS=40`. Tickets land at roughly +3, +7, +12 s and then every 5 s (± jitter) while RedSky reads in stock — about 15 tickets in an 85 s window instead of 2. `TARGET_WONCART_OOS_TAIL_TICKETS=1` is unchanged and still stops the loop one ticket after the TCIN goes out of stock, which is what 09-16 wasted four POSTs on.
+
+**Revert:** `TARGET_WONCART_SCHEDULE_S=5,15` + `TARGET_WONCART_STEADY_GAP_S=45` + `TARGET_WONCART_MAX_TICKETS=14` restores the pre-R5 behaviour exactly.
+
+### What this is and is not
+
+It is the best-supported hypothesis we can build from our own data: the cadence that produced all 13 orders, against the cadence that produced none. It is **not** proven on a hot SKU — we have never once fired a fast cadence at one, because both hot carts we have won were spent on the 50 s rule. The double-buy guards this rides on (AC-1 latch, per-cart ledger, stop-on-200, the R3 dirty-cart release) were all built and reviewed before this change.
+
+Read out after the next drop: checkout POSTs fired **inside** the live window per won cart (the number to beat is 2), the gap distribution from `[FS_TICKET]`, and whether a FAST_SELLING 429 was ever followed by a 200 on the same cart.
