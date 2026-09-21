@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 from src.monitoring.proxy_preflight import preflight_validate
 from src.monitoring.tab_dispatcher import (
@@ -343,6 +343,11 @@ class ResilientStockChecker:
         self._last_200_at = 0.0
         self._total_403 = 0
         self._total_other = 0
+        # 2026-09-20 PER-EXIT health. [STOCK STATS] only ever reported pool
+        # TOTALS, so a pool trimmed to 8 could not be ranked: one dead exit
+        # hides inside a healthy aggregate. Keyed by pinned exit IP; log-only,
+        # nothing branches on it. Kill: RESILIENT_EXIT_STATS=0.
+        self._exit_stats: Dict[str, Dict[str, int]] = {}
         self._total_behavioral = 0
         self._outstanding = 0
         self._sweep_count = 0
@@ -583,6 +588,7 @@ class ResilientStockChecker:
             self._total_dispatched += 1
             if result.http_status == 200:
                 self._total_200 += 1
+                self._note_exit(result.pinned_ip, 200)
                 self._last_200_at = time.time()
                 self.proxy_state.record_status(result.pinned_ip, 200)
                 self._clear_captcha_session(result.session_id, result.pinned_ip)
@@ -595,6 +601,7 @@ class ResilientStockChecker:
                     await self._ingest_bulk_response(result)
             elif result.http_status in (401, 403):
                 self._total_403 += 1
+                self._note_exit(result.pinned_ip, result.http_status)
                 _err = (result.error or '')
                 # 2026-09-09: match the DISTINCTIVE RedSky/PX captcha envelope, not a
                 # bare 'captcha' substring — an unrelated 403 body merely containing the
@@ -623,6 +630,7 @@ class ResilientStockChecker:
                                 f"err={(result.error or '')[:80]}")
             else:
                 self._total_other += 1
+                self._note_exit(result.pinned_ip, result.http_status)
                 self.proxy_state.record_status(result.pinned_ip, result.http_status)
                 if self.log_per_request:
                     logger.info(f"  ?? {result.session_id} ({result.pinned_ip}) "
@@ -631,6 +639,37 @@ class ResilientStockChecker:
             logger.exception("[STOCK] dispatch error")
         finally:
             self._outstanding -= 1
+
+    def _note_exit(self, ip: str, status: int) -> None:
+        """2026-09-20, log-only: per-exit sweep tally so a trimmed pool can be
+        RANKED. [STOCK STATS] reports pool totals, in which one dead exit is
+        invisible — and the 8-IP pool needs exactly that answer before the
+        unused IPs are cancelled. Never raises; never affects the sweep."""
+        try:
+            if str(os.environ.get('RESILIENT_EXIT_STATS', '1')).strip() == '0':
+                return
+            k = str(ip or '?')
+            d = self._exit_stats.get(k)
+            if d is None:
+                d = self._exit_stats[k] = {'200': 0, '403': 0, 'other': 0}
+            d['200' if status == 200 else ('403' if status in (401, 403) else 'other')] += 1
+        except Exception:
+            pass
+
+    def _exit_stats_line(self) -> str:
+        """One '[STOCK][EXITS]' line: ip=200/403/other per exit, worst first."""
+        try:
+            if not self._exit_stats:
+                return ''
+            def _rate(d):
+                t = d['200'] + d['403'] + d['other']
+                return (d['200'] / t) if t else 0.0
+            parts = []
+            for ip, d in sorted(self._exit_stats.items(), key=lambda kv: _rate(kv[1])):
+                parts.append(f"{ip}={d['200']}/{d['403']}/{d['other']}({_rate(d)*100:.0f}%)")
+            return "[STOCK][EXITS] ok/403/other per exit, worst first: " + " ".join(parts)
+        except Exception:
+            return ''
 
     def _parse_bulk(self, raw: dict) -> dict:
         """Run a raw RedSky body through StockMonitor._process_response.
@@ -876,6 +915,9 @@ class ResilientStockChecker:
                 f"sessions={ss.get('ready', 0)}r/{ss.get('crashed', 0)}c/{ss.get('recycling', 0)}rc "
                 f"pool A={ps['active']} P={ps['parked']} B={ps['burned']}"
             )
+            _ex = self._exit_stats_line()
+            if _ex:
+                logger.info(_ex)
             # Per-TCIN visibility for the ever-in-stock set — makes a missed
             # restock diagnosable (raw availability + read-age) instead of
             # inferred. Added after the 2026-05-22 audit.

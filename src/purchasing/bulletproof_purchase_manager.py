@@ -15,7 +15,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Callable
+from typing import Dict, List, Optional, Callable
 
 # Import session management components
 from ..session import SessionManager, SessionKeepAlive, PurchaseExecutor
@@ -45,6 +45,54 @@ def _race_started_at_guard_on() -> bool:
     CA-8) or (b) letting the concurrency gate treat it as fresh forever.
     Default '0' = exact prior behaviour. Kill-switch: =0."""
     return os.environ.get('TARGET_RACE_STATE_STARTED_AT_GUARD', '0').strip() == '1'
+
+
+def _multi_sku_cfg() -> Dict[str, int]:
+    """D1 (2026-09-20): dispatch DISTINCT in-stock TCINs concurrently instead of
+    letting one purchase hold the whole fleet.
+
+    Measured motivation (tools/analysis/limiter_key.py, all 104 run logs):
+    Target's edge limiter is a SHARED per-TCIN volume bucket, not a per-identity
+    cooldown. Pass rate vs prior shots on that TCIN in 120 s runs 9.6% (0 prior)
+    -> 1.1% (3-4) -> 0.4% (9+), and OTHER identities suppress ours across
+    DIFFERENT IPs. We raced all 3 accounts at ONE TCIN 36 of 36 times on 09-17
+    while `[MULTI_SKU_MISS]` skipped 13 live hot TCINs on 09-16 — the worst
+    possible allocation against a shared bucket. Refract's documented model is
+    "one task per account per product".
+
+    The old code deliberately did NOT ship this because `_active_purchases`
+    registration happens inside the spawned thread and lags within a cycle, so a
+    naive per-TCIN gate could hand ONE worker to TWO SKUs. This config drives a
+    SYNCHRONOUS reservation taken before any thread is spawned, which is the
+    missing piece.
+
+    Default OFF -> byte-identical dispatch. Kill switch: =0.
+      TARGET_MULTI_SKU_DISPATCH=1        enable
+      TARGET_MULTI_SKU_MAX_CONCURRENT=3  max distinct TCINs in flight (1..8)
+      TARGET_MULTI_SKU_WORKERS_PER_TCIN=1 workers a TCIN may take while another
+                                          TCIN is also live (1..8)
+      TARGET_MULTI_SKU_RESERVE_TTL_S=120 stale-reservation sweep, so a crashed
+                                          thread can never wedge the fleet
+    """
+    if os.environ.get('TARGET_MULTI_SKU_DISPATCH', '0').strip() != '1':
+        return {'on': 0, 'max_tcins': 1, 'per_tcin': 0, 'ttl_s': 120,
+                'cap_always': False}
+
+    def _i(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(float(os.environ.get(name, default)))))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        'on': 1,
+        'max_tcins': _i('TARGET_MULTI_SKU_MAX_CONCURRENT', 3, 1, 8),
+        'per_tcin': _i('TARGET_MULTI_SKU_WORKERS_PER_TCIN', 1, 1, 8),
+        'ttl_s': _i('TARGET_MULTI_SKU_RESERVE_TTL_S', 120, 15, 900),
+        # 2026-09-20: cap EVERY TCIN at per_tcin, including the first to
+        # flip. Default 0 = prior behaviour (first TCIN takes the fleet).
+        'cap_always': str(os.environ.get('TARGET_MULTI_SKU_CAP_ALWAYS', '0')).strip() == '1',
+    }
 
 
 def _valid_started_at(v) -> bool:
@@ -279,6 +327,14 @@ def _guards_banner() -> str:
         if _bg:
             parts.append(f"BG-1 background slow-down for {_bg} "
                          f"(factor {os.environ.get('TARGET_BG_SLOW_FACTOR', '2').strip() or '2'})")
+        # 2026-09-20: dispatch had NO boot line, so a night with one live TCIN
+        # could not be told apart from a night where the flag was never read.
+        _ms = _multi_sku_cfg()
+        if _ms['on']:
+            parts.append(f"D1 multi-SKU dispatch ON (max {_ms['max_tcins']} TCINs, "
+                         f"{_ms['per_tcin']} worker/TCIN, cap_always={'ON' if _ms.get('cap_always') else 'OFF'}"
+                         f"{'' if _ms.get('cap_always') else ' — first TCIN still takes the fleet'}, "
+                         f"reserve ttl {_ms['ttl_s']}s)")
         return ('[GUARDS] ' + '; '.join(parts)) if parts else ''
     except Exception:
         return ''
@@ -875,6 +931,13 @@ class BulletproofPurchaseManager:
         self._file_lock = threading.Lock()
         self._state_lock = threading.RLock()  # CRITICAL: RLock allows same thread to acquire multiple times
         self._active_purchases = {}  # Track active purchase threads
+        # D1 (2026-09-20): worker_label -> (tcin, reserved_at). Taken
+        # SYNCHRONOUSLY in start_purchase BEFORE any thread is spawned, so a
+        # worker can never be handed to two SKUs in one cycle (the exact hazard
+        # that kept multi-SKU dispatch unshipped). Only read/written when
+        # TARGET_MULTI_SKU_DISPATCH=1; see _multi_sku_cfg().
+        self._worker_reservations: Dict[str, tuple] = {}
+        self._reserve_lock = threading.Lock()
         # 2026-09-16 AC-1: (worker label, tcin) -> epoch latched. Read/written
         # only under TARGET_AMBIGUOUS_COMMIT_LATCH=1 (see _ac_latch_on).
         self._ac_latch: Dict[tuple, float] = {}
@@ -1729,6 +1792,68 @@ class BulletproofPurchaseManager:
     def can_start_purchase(self, tcin: str) -> bool:
         """Check if a purchase can be started for this TCIN (thread-safe)"""
         return self.get_purchase_status(tcin) == 'ready'
+
+    # ----- D1: synchronous worker reservation (multi-SKU dispatch) ----------
+    def _reserve_state(self) -> threading.Lock:
+        """Lazily materialise the reservation structures and return the lock.
+
+        Several offline tests build a manager without running __init__ (and a
+        release runs inside a purchase thread's cleanup path, where raising
+        would mask the real purchase result). Missing state therefore degrades
+        to an empty, freshly-created reservation map rather than an
+        AttributeError. In production __init__ always creates both."""
+        lock = getattr(self, '_reserve_lock', None)
+        if lock is None:
+            lock = threading.Lock()
+            self._reserve_lock = lock
+        if getattr(self, '_worker_reservations', None) is None:
+            self._worker_reservations = {}
+        return lock
+
+    def _sweep_stale_reservations(self, ttl_s: int) -> None:
+        """Drop reservations older than ttl_s. A racer thread releases its own
+        worker on exit; this is the safety net for a thread that died without
+        getting there, so a crash can never wedge the fleet permanently."""
+        now = time.time()
+        with self._reserve_state():
+            for lbl, (tcin, ts) in list(self._worker_reservations.items()):
+                if now - ts > ttl_s:
+                    del self._worker_reservations[lbl]
+                    print(f"[MULTI_SKU_DISPATCH] released stale reservation "
+                          f"{lbl} -> {tcin} (held {now - ts:.0f}s > {ttl_s}s TTL)")
+
+    def _free_workers(self, candidates: List) -> List:
+        """Ready workers not currently reserved by another TCIN."""
+        with self._reserve_state():
+            held = set(self._worker_reservations)
+        return [w for w in candidates if w.label() not in held]
+
+    def _reserved_tcins(self) -> set:
+        with self._reserve_state():
+            return {t for (t, _ts) in self._worker_reservations.values()}
+
+    def _reserve_workers_for_tcin(self, tcin: str, candidates: List, limit: int) -> List:
+        """Atomically claim up to `limit` unreserved workers for `tcin`.
+
+        Returns the claimed workers (possibly empty). Caller must not spawn a
+        racer for a worker it did not get back from here."""
+        taken = []
+        now = time.time()
+        with self._reserve_state():
+            for w in candidates:
+                if len(taken) >= limit:
+                    break
+                lbl = w.label()
+                holder = self._worker_reservations.get(lbl)
+                if holder is None or holder[0] == tcin:
+                    self._worker_reservations[lbl] = (tcin, now)
+                    taken.append(w)
+        return taken
+
+    def _release_worker_reservation(self, worker_label: str) -> None:
+        """Release one worker. Called by each racer as it exits."""
+        with self._reserve_state():
+            self._worker_reservations.pop(worker_label, None)
 
     def start_purchase(self, tcin: str, product_title: str, max_qty: int = 1) -> Dict:
         """Start a new purchase attempt with duplicate prevention (assumes caller has lock)
@@ -2590,6 +2715,11 @@ class BulletproofPurchaseManager:
                     else:
                         print(f"[REAL_PURCHASE_THREAD] Note: {state_key} already removed from active purchases")
 
+                # D1: hand this worker back so another in-stock TCIN can take it.
+                # No-op when the flag is off (nothing was ever reserved).
+                if pinned_worker is not None:
+                    self._release_worker_reservation(pinned_worker.label())
+
                 # Close purchase log and restore stdout — LAST racer only.
                 # (2026-08-14) The FIRST finisher used to run this while the
                 # other racers were still printing through the tee: their log
@@ -2620,19 +2750,48 @@ class BulletproofPurchaseManager:
             and len(ready_workers) > 1
         )
 
+        # D1 (2026-09-20): claim this TCIN's workers SYNCHRONOUSLY, before any
+        # thread exists. While another TCIN is live we take only
+        # WORKERS_PER_TCIN (default 1) so distinct SKUs land in distinct
+        # per-TCIN limiter buckets instead of stacking into one; when nothing
+        # else is live we still take the whole fleet, i.e. today's behaviour.
+        # Flag off -> dispatch_workers IS ready_workers and nothing changes.
+        dispatch_workers = ready_workers
+        _ms = _multi_sku_cfg()
+        if _ms['on'] and race_on:
+            self._sweep_stale_reservations(_ms['ttl_s'])
+            _others = self._reserved_tcins() - {tcin}
+            # 2026-09-20 CAP_ALWAYS: without it the FIRST TCIN to flip takes
+            # the whole fleet, so every other TCIN flipping alongside it finds
+            # no unreserved worker and prints [MULTI_SKU_MISS] -- exactly the
+            # simultaneous multi-SKU drop this feature exists for. Measured
+            # over 104 logs: 9-16 shots at ONE hot TCIN per 120 s yields 0.038
+            # admits vs 0.545 at 2 shots, so one worker per TCIN is also the
+            # better allocation when only one TCIN is live.
+            _limit = _ms['per_tcin'] if (_others or _ms.get('cap_always')) else len(ready_workers)
+            dispatch_workers = self._reserve_workers_for_tcin(tcin, ready_workers, _limit)
+            if not dispatch_workers:
+                print(f"[MULTI_SKU_DISPATCH] {tcin}: no unreserved worker "
+                      f"(held by {sorted(_others)}) — not starting this cycle")
+                return {'success': False, 'tcin': tcin, 'reason': 'no_free_worker',
+                        'status': 'ready'}
+            print(f"[MULTI_SKU_DISPATCH] {tcin}: reserved "
+                  f"{[w.label() for w in dispatch_workers]}"
+                  f"{f' (alongside {sorted(_others)})' if _others else ' (fleet idle)'}")
+
         if race_on:
             race_agg = {
                 'lock': threading.Lock(),
-                'total': len(ready_workers),
+                'total': len(dispatch_workers),
                 'started': 0,
                 'finished': 0,
                 'results': {},   # worker_label -> result dict
                 'units': 0,      # total units bought across accounts
                 't0': time.time(),   # 2026-09-16 INF-2: race start (read only under the guard flag)
             }
-            print(f"[RACE] {tcin}: racing {len(ready_workers)} accounts → "
-                  f"{[w.label() for w in ready_workers]}")
-            for w in ready_workers:
+            print(f"[RACE] {tcin}: racing {len(dispatch_workers)} accounts → "
+                  f"{[w.label() for w in dispatch_workers]}")
+            for w in dispatch_workers:
                 sk = f"{tcin}#W{w.cfg.worker_id}"
                 threading.Thread(
                     target=execute_real_purchase,
@@ -2651,7 +2810,7 @@ class BulletproofPurchaseManager:
             'status': 'attempting',
             'real_purchase': True,
             'racing': race_on,
-            'accounts': len(ready_workers) if race_on else 1,
+            'accounts': len(dispatch_workers) if race_on else 1,
         }
 
     def _start_mock_purchase(self, tcin: str, product_title: str, states: Dict) -> Dict:
@@ -3942,16 +4101,41 @@ class BulletproofPurchaseManager:
                                 # worker to two SKUs (worse than this). If this fires often
                                 # on real drops, build the reservation-based version and
                                 # validate it on a multi-SKU night.
-                                try:
-                                    _nready = len(self.worker_pool.ready_workers()) if self.worker_pool else 1
-                                except Exception:
-                                    _nready = 1
-                                print(f"[MULTI_SKU_MISS] {tcin} in-stock but SKIPPED — "
-                                      f"'{active_purchase}' holds the fleet ({_nready} ready worker(s)); "
-                                      f"distinct hot SKU not pursued this cycle.")
+                                # D1 (2026-09-20): with TARGET_MULTI_SKU_DISPATCH=1 a
+                                # DISTINCT in-stock TCIN is pursued alongside the
+                                # active one whenever an unreserved worker exists and
+                                # we are under MAX_CONCURRENT. start_purchase() takes
+                                # the reservation synchronously, so the worker can
+                                # never be handed to two SKUs. Flag off -> the exact
+                                # prior skip below.
+                                _ms_d = _multi_sku_cfg()
+                                _pursue, _free_n, _live_n = False, 0, 0
+                                if _ms_d['on']:
+                                    self._sweep_stale_reservations(_ms_d['ttl_s'])
+                                    try:
+                                        _cands = self.worker_pool.ready_workers() if self.worker_pool else []
+                                    except Exception:
+                                        _cands = []
+                                    _free_n = len(self._free_workers(_cands))
+                                    _live_n = len(self._reserved_tcins() | {active_purchase})
+                                    _pursue = _free_n > 0 and _live_n < _ms_d['max_tcins']
+                                if _pursue:
+                                    print(f"[MULTI_SKU_DISPATCH] {tcin} in-stock — pursuing "
+                                          f"alongside '{active_purchase}' ({_free_n} unreserved "
+                                          f"worker(s), {_live_n}/{_ms_d['max_tcins']} TCINs live)")
+                                    # fall through to start_purchase below
+                                else:
+                                    try:
+                                        _nready = len(self.worker_pool.ready_workers()) if self.worker_pool else 1
+                                    except Exception:
+                                        _nready = 1
+                                    print(f"[MULTI_SKU_MISS] {tcin} in-stock but SKIPPED — "
+                                          f"'{active_purchase}' holds the fleet ({_nready} ready worker(s)); "
+                                          f"distinct hot SKU not pursued this cycle.")
+                                    continue
                             else:
                                 print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
-                            continue
+                                continue
 
                         # 2026-09-16 AC-1: every identity that would race this TCIN
                         # is latched on a possibly-committed order — do not open an

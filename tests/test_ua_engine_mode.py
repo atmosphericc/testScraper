@@ -184,8 +184,14 @@ def test_pins():
     if cfg_path.exists():
         cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
         tz = {a['account_id']: a.get('timezone') for a in cfg.get('accounts', [])}
-        check("config_alt1_phoenix", tz.get('alt-1') == 'America/Phoenix')
-        check("config_primary_business_chicago", tz.get('primary') == 'America/Chicago' and tz.get('business') == 'America/Chicago')
+        # 2026-09-20: alt-1 moved off its Bright Data Phoenix exit onto the HOME
+        # line (proxy_url=""), so America/Phoenix would now be an identity
+        # incoherence against a Chicago residential IP. All three share the exit,
+        # so all three pin to the host's real timezone.
+        check("config_all_chicago",
+              all(tz.get(a) == 'America/Chicago' for a in ('primary', 'business', 'alt-1')))
+        proxies = {a['account_id']: (a.get('proxy_url') or '') for a in cfg.get('accounts', [])}
+        check("config_no_account_proxies", not any(proxies.values()))
     else:
         print("[SKIP] config/target_accounts.json absent on this host (timezone pins not checked)")
     pf = (ROOT / 'preflight_fp_drop.py').read_text(encoding='utf-8')

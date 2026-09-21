@@ -3956,6 +3956,117 @@ def test_r8_review_20260920_presume_dirty_and_pre400_key():
           pe_mod.PurchaseExecutor._pre400_is_evictionish(bare(Clock())) is True)
 
 
+# ── R9 (2026-09-20): in-TICKET pre_checkout retry ────────────────────────────
+# 5e3791b5 gave the fast-lane chain a pre_checkout retry but NOT the won-cart
+# ticket loop, which is where a won cart actually spends its life. Across every
+# run log won-cart tickets went 29x pre=429 / 6x pre=400 and only 7 of 43 ever
+# fired a place-order; on 09-17 primary held cart 1011483413 through 40 tickets
+# and fired zero. These run the REAL ticket JS under node with a stubbed fetch.
+
+def _tkt(n="t1", **kw):
+    return pe_mod.render_checkout_ticket_js(
+        KEY, n, TCIN, 2, "pre_po", json.dumps({"x-application-name": "web"}), **kw)
+
+
+def _npre(r):
+    return len([c for c in r["calls"] if PRE_M in c["url"]])
+
+
+def test_r9_ticket_pre_retry():
+    items = [{"tcin": TCIN, "cart_item_id": "CI-1", "quantity": 2}]
+    ok_po = {"match": PO_M, "status": 200, "body": "{}"}
+
+    # Default (tries=1) must be the EXACT prior behaviour: one 429 ends it.
+    r = node_run(_tkt(pre_tries=1), [
+        {"match": PRE_M, "seq": [{"status": 429, "body": "{}"},
+                                 {"status": 201, "body": pre_body(items)}]}, ok_po])
+    check("r9_default_single_shot", _npre(r) == 1 and r["out"]["skip"] == "pre_429",
+          (_npre(r), r["out"]["skip"]))
+    check("r9_default_no_po", not r["out"]["po"]["fired"])
+
+    # Armed: a transient 429 is retried and the place-order fires in the SAME ticket.
+    r = node_run(_tkt(pre_tries=5, pre_gap_ms=20, pre_budget_ms=5000), [
+        {"match": PRE_M, "seq": [{"status": 429, "body": "{}"},
+                                 {"status": 429, "body": "{}"},
+                                 {"status": 201, "body": pre_body(items)}]}, ok_po])
+    check("r9_retries_until_2xx", _npre(r) == 3, _npre(r))
+    check("r9_tries_reported", r["out"]["pre"].get("tries") == 3, r["out"]["pre"].get("tries"))
+    check("r9_po_fired_same_ticket",
+          r["out"]["po"]["fired"] and r["out"]["po"]["status"] == 200, r["out"]["po"])
+
+    # Only the demand throttle is transient: 401/424/400 hand back immediately.
+    for st in (401, 424, 400):
+        r = node_run(_tkt(pre_tries=5, pre_gap_ms=10),
+                     [{"match": PRE_M, "status": st, "body": "nope"}, ok_po])
+        check(f"r9_not_retried[{st}]",
+              _npre(r) == 1 and r["out"]["skip"] == f"pre_{st}", (_npre(r), r["out"]["skip"]))
+
+    # The wall-clock budget stops the loop before MAX tries.
+    r = node_run(_tkt(pre_tries=10, pre_gap_ms=120, pre_budget_ms=250),
+                 [{"match": PRE_M, "status": 429, "body": "{}"}, ok_po])
+    check("r9_budget_caps_tries", 1 < _npre(r) < 10, _npre(r))
+
+    # Exhausted retries still gate the place-order (never fires on a non-2xx pre).
+    r = node_run(_tkt(pre_tries=3, pre_gap_ms=10),
+                 [{"match": PRE_M, "status": 429, "body": "{}"}, ok_po])
+    check("r9_exhausted_no_po",
+          not r["out"]["po"]["fired"] and r["out"]["skip"] == "pre_429", r["out"]["skip"])
+
+    # The strict cart gate still runs after a RETRIED 2xx — a retry must never
+    # become a way to buy someone else's cart.
+    r = node_run(_tkt(pre_tries=4, pre_gap_ms=10), [
+        {"match": PRE_M, "seq": [
+            {"status": 429, "body": "{}"},
+            {"status": 201, "body": pre_body([{"tcin": "999999999",
+                                               "cart_item_id": "CI-9", "quantity": 1}])}]}, ok_po])
+    check("r9_foreign_cart_still_blocked",
+          not r["out"]["po"]["fired"] and r["out"]["skip"] == "foreign_cart_item", r["out"]["skip"])
+
+    # An empty cart after a retried 2xx still bails (eviction path unchanged).
+    r = node_run(_tkt(pre_tries=4, pre_gap_ms=10), [
+        {"match": PRE_M, "seq": [{"status": 429, "body": "{}"},
+                                 {"status": 201, "body": pre_body([])}]}, ok_po])
+    check("r9_empty_cart_still_bails",
+          not r["out"]["po"]["fired"] and r["out"]["skip"] == "cart_empty", r["out"]["skip"])
+
+    # qty-over guard survives the retry path too.
+    r = node_run(_tkt(pre_tries=4, pre_gap_ms=10), [
+        {"match": PRE_M, "seq": [
+            {"status": 429, "body": "{}"},
+            {"status": 201, "body": pre_body([{"tcin": TCIN, "cart_item_id": "CI-1",
+                                               "quantity": 9}])}]}, ok_po])
+    check("r9_qty_over_still_blocked",
+          not r["out"]["po"]["fired"] and r["out"]["skip"] == "cart_qty_over", r["out"]["skip"])
+
+    # po_only mode never runs the pre leg at all, retries or not.
+    js = pe_mod.render_checkout_ticket_js(KEY, "t1", TCIN, 2, "po_only",
+                                          json.dumps({"x-application-name": "web"}),
+                                          pre_tries=5, pre_gap_ms=10)
+    r = node_run(js, [{"match": PRE_M, "status": 429, "body": "{}"}, ok_po])
+    check("r9_po_only_skips_pre", _npre(r) == 0 and r["out"]["po"]["status"] == 200,
+          (_npre(r), r["out"]["po"]))
+
+    # Renderer clamps (never emits a runaway loop or a bad literal).
+    j = _tkt(pre_tries=99, pre_gap_ms=1, pre_budget_ms=999999)
+    check("r9_renderer_clamps", "_PT_MAX = 10" in j and "_PT_GAP = 50" in j
+          and "_PT_BUDGET = 10000" in j)
+    j = _tkt(pre_tries="junk", pre_gap_ms=None, pre_budget_ms=[])
+    check("r9_renderer_bad_input_safe", "_PT_MAX = 1" in j and "_PT_GAP = 300" in j
+          and "_PT_BUDGET = 1500" in j)
+
+    # The live wiring: pre_retry_cfg drives it, and the .bat arms it.
+    saved = dict(os.environ)
+    try:
+        os.environ["TARGET_FASTLANE_PRE_RETRY"] = "0"
+        check("r9_cfg_off_is_one_try", pe_mod.pre_retry_cfg()["tries"] == 1)
+        os.environ["TARGET_FASTLANE_PRE_RETRY"] = "1"
+        os.environ["TARGET_FASTLANE_PRE_RETRY_MAX"] = "5"
+        check("r9_cfg_on_reads_max", pe_mod.pre_retry_cfg()["tries"] == 5)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
@@ -3977,7 +4088,10 @@ def main():
              # 2026-09-18 live read-out (cart 1011483413 fired at an emptied cart)
              test_r6_eviction_read, test_r7_eviction_presume,
              # review 2026-09-20
-             test_r8_review_20260920_presume_dirty_and_pre400_key)
+             test_r8_review_20260920_presume_dirty_and_pre400_key,
+             # 2026-09-20: the in-TICKET pre_checkout retry (29x pre=429 across
+             # every log; only 7 of 43 tickets ever fired a place-order)
+             test_r9_ticket_pre_retry)
     for fn in tests:
         try:
             fn()

@@ -67,6 +67,7 @@ OFFLINE = [
     # 2026-09-17 evening: ATC-level DCO burst (real manager race loop against stub
     # workers via the test_identity_rest harness; no browser, no network).
     "test_dco_burst",
+    "test_multi_sku_dispatch",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

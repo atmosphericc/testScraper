@@ -764,7 +764,7 @@ _CHECKOUT_TICKET_JS = r"""(async () => {
     });
     const out = {
         mode: MODE,
-        pre: {status: 0, parsed: false, body: '', n: 0, tcins: [], qty: null, items: [], pi: [], cart_id: '', t0: 0, t1: 0},
+        pre: {status: 0, parsed: false, body: '', n: 0, tcins: [], qty: null, items: [], pi: [], cart_id: '', t0: 0, t1: 0, tries: 0},
         po: {status: 0, body: '', fired: false, t0: 0, t1: 0},
         cvv: {put: -1, first: CVV_FIRST, reshot: false, po1: 0},
         skip: ''
@@ -820,17 +820,37 @@ _CHECKOUT_TICKET_JS = r"""(async () => {
             E.s = 'pre';
             out.pre.t0 = Date.now();
             let t2 = '';
-            try {
-                const r2 = await fetch(PRE_URL, {
-                    method: 'POST', credentials: 'include',
-                    headers: mk('https://www.target.com/cart'),
-                    body: JSON.stringify({cart_type: 'REGULAR'})
-                });
-                t2 = String((await r2.text()) || '');
-                out.pre.status = r2.status;
-            } catch (e) {
-                out.pre.status = 0;
-                out.pre.body = String(e).slice(0, 300);
+            // 2026-09-20: the SAME in-chain pre_checkout retry the fast lane
+            // got in 5e3791b5. Without it one 429 ended the ticket -- across
+            // every run log won-cart tickets went 29x pre=429 / 6x pre=400 and
+            // only 7 of 43 ever fired a place-order. @@PRE_TRIES@@==1 restores
+            // the exact prior single-shot behaviour.
+            const _PT_MAX = @@PRE_TRIES@@;
+            const _PT_GAP = @@PRE_GAP_MS@@;
+            const _PT_BUDGET = @@PRE_BUDGET_MS@@;
+            const _PT_T0 = Date.now();
+            for (let _pt = 1; _pt <= _PT_MAX; _pt++) {
+                if (E.abort) { out.skip = 'aborted'; return out; }
+                out.pre.tries = _pt;
+                t2 = '';
+                out.pre.body = '';
+                try {
+                    const r2 = await fetch(PRE_URL, {
+                        method: 'POST', credentials: 'include',
+                        headers: mk('https://www.target.com/cart'),
+                        body: JSON.stringify({cart_type: 'REGULAR'})
+                    });
+                    t2 = String((await r2.text()) || '');
+                    out.pre.status = r2.status;
+                } catch (e) {
+                    out.pre.status = 0;
+                    out.pre.body = String(e).slice(0, 300);
+                }
+                if (out.pre.status >= 200 && out.pre.status <= 299) break;
+                // Only the demand throttle is transient; 401/424/400 hand back.
+                if (out.pre.status !== 429) break;
+                if (_pt >= _PT_MAX || (Date.now() - _PT_T0) >= _PT_BUDGET) break;
+                await new Promise(_r => setTimeout(_r, _PT_GAP));
             }
             out.pre.t1 = Date.now();
             if (out.pre.status < 200 || out.pre.status > 299) {
@@ -969,10 +989,20 @@ _TICKET_KEY_RE = re.compile(r'^__[0-9a-f]{12}$')
 _TICKET_N_RE = re.compile(r'^t[0-9]{1,9}$')
 
 
+def _clamp_int(v, default: int, lo: int, hi: int) -> int:
+    """Validated integer for a ticket-JS substitution (never raises)."""
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        n = int(default)
+    return max(lo, min(hi, n))
+
+
 def render_checkout_ticket_js(key: str, n: str, tcin: str, qty: int, mode: str,
                               headers_js: str, cvv: str = '', cvv_first: bool = False,
                               cvv_reactive: bool = False, pi_id: str = '',
-                              cart_id: str = '') -> str:
+                              cart_id: str = '', pre_tries: int = 1,
+                              pre_gap_ms: int = 300, pre_budget_ms: int = 1500) -> str:
     """Pure renderer for the ticket JS. Every substituted value is validated
     (raises ValueError on a bad key/n/tcin/mode) or normalised."""
     if not _TICKET_KEY_RE.match(str(key)):
@@ -1001,6 +1031,9 @@ def render_checkout_ticket_js(key: str, n: str, tcin: str, qty: int, mode: str,
         '@@CVV_FIRST@@': 'true' if (cvv_first and cvv) else 'false',
         '@@CVV_REACTIVE@@': 'true' if (cvv_reactive and cvv) else 'false',
         '@@PI_ID@@': _woncart_safe_id(pi_id), '@@CART_ID@@': _woncart_safe_id(cart_id),
+        '@@PRE_TRIES@@': str(_clamp_int(pre_tries, 1, 1, 10)),
+        '@@PRE_GAP_MS@@': str(_clamp_int(pre_gap_ms, 300, 50, 3000)),
+        '@@PRE_BUDGET_MS@@': str(_clamp_int(pre_budget_ms, 1500, 100, 10000)),
     }
     js = _CHECKOUT_TICKET_JS
     for k, v in subs.items():
@@ -8339,10 +8372,13 @@ class PurchaseExecutor:
         n = f"t{self._woncart_ticket_seq}"
         err = ''
         try:
+            _prc_t = pre_retry_cfg()
             js = render_checkout_ticket_js(
                 key, n, T, max(1, int(qty or 1)), mode, hdrs_js, cvv=cvv,
                 cvv_first=cvv_first, cvv_reactive=cvv_reactive,
-                pi_id=L.get('pi_id') or '', cart_id=L.get('cart_id') or '')
+                pi_id=L.get('pi_id') or '', cart_id=L.get('cart_id') or '',
+                pre_tries=_prc_t['tries'], pre_gap_ms=_prc_t['gap_ms'],
+                pre_budget_ms=_prc_t['budget_ms'])
         except Exception as e:
             res = _synth('ticket_bad_input', False, error=type(e).__name__)
             print(f"[WON_CART_DIRECT] ticket n={n_cart} NOT fired (bad input: {e}) "
@@ -8398,6 +8434,7 @@ class PurchaseExecutor:
                   f"pre={pre.get('status') if mode == 'pre_po' else '-'} "
                   f"po={pst if fired else '-'} skip={res.get('skip') or 'none'} "
                   f"js_ms={res['js_ms']}"
+                  + (f" pre_tries={pre.get('tries')}" if mode == 'pre_po' else '')
                   + (f" cvv=put:{put},first:{cv.get('first')},reshot:{cv.get('reshot')}"
                      if put not in (-1, None) else '')
                   + (f" err={err} stage={res.get('stage')}" if err else '')

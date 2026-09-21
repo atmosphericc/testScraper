@@ -744,6 +744,41 @@ set TARGET_ATC_DCO_BURST=1
 set TARGET_ATC_DCO_BURST_MAX=2
 set TARGET_ATC_DCO_BURST_MIN_S=1.0
 set TARGET_ATC_DCO_BURST_MAX_S=1.5
+REM ---------------------------------------------------------------------
+REM D1 MULTI-SKU DISPATCH (2026-09-20, BUILT and TESTED, NOT ARMED)
+REM Measured over all 104 run logs (tools/analysis/limiter_key.py): Target's
+REM edge limiter is a SHARED per-TCIN VOLUME bucket, not a per-identity
+REM cooldown. Pass rate vs prior shots on that TCIN in 120 s: 9.6 pct at 0
+REM prior, 1.1 pct at 3-4, 0.4 pct at 9 or more -- and OTHER identities
+REM suppress ours across DIFFERENT IPs. A re-shot under 10 s after our own
+REM last shot still passes 4/25, so volume is the constraint, not recency.
+REM We raced all 3 accounts at ONE TCIN 36 of 36 times on 09-17 while
+REM MULTI_SKU_MISS skipped 13 live hot TCINs on 09-16 -- the worst possible
+REM allocation against a shared bucket. Refract's documented model is one
+REM task per account per product.
+REM WITH THIS ON: a single live TCIN behaves EXACTLY as today (the fleet
+REM takes every ready worker). A SECOND live TCIN gets 1 worker instead of
+REM being skipped outright. The reservation is taken SYNCHRONOUSLY before
+REM any thread spawns -- that is the piece whose absence kept this
+REM unshipped (a lagging _active_purchases could hand one worker to two
+REM SKUs). A stale sweep releases a crashed racer after RESERVE_TTL_S.
+REM Tests: tests/test_multi_sku_dispatch.py, 19 checks, in the offline suite.
+REM UNPROVEN LIVE. Readout: grep MULTI_SKU_DISPATCH and MULTI_SKU_MISS.
+REM Arm by setting the next line to 1. Kill: set it back to 0.
+set TARGET_MULTI_SKU_DISPATCH=1
+set TARGET_MULTI_SKU_MAX_CONCURRENT=3
+set TARGET_MULTI_SKU_WORKERS_PER_TCIN=1
+set TARGET_MULTI_SKU_RESERVE_TTL_S=120
+REM 2026-09-20 CAP_ALWAYS -- dispatch is a LIE without this. The reservation
+REM cap was `per_tcin if another TCIN is already held else the whole fleet`, so
+REM on a drop where a dozen TCINs flip within seconds the FIRST one takes all 3
+REM accounts and every other TCIN prints [MULTI_SKU_MISS] exactly as before.
+REM =1 caps EVERY TCIN at WORKERS_PER_TCIN. Measured over 104 logs: 9-16 shots
+REM at one hot TCIN per 120 s yields 0.038 admits vs 0.545 at 2 shots, so one
+REM worker per TCIN is the better allocation even when only one TCIN is live.
+REM Kill (prior behaviour): =0
+set TARGET_MULTI_SKU_CAP_ALWAYS=1
+REM ---------------------------------------------------------------------
 REM 2026-09-18 first live night: 6 of 7 burst re-POSTs went out PAGE-SIGNED
 REM (log: bank STALE at shot time, past the replay cap -- the flip shot had
 REM eaten the only fresh banked Shape set) and all 6 drew an edge 429; the one
@@ -786,7 +821,16 @@ REM      missing/disabled button and says so. Kill-switch: TARGET_SHAPE_HARVEST=
 REM      (exact prior behaviour); replay-only kill: TARGET_HARVEST_REPLAY=0.
 set TARGET_SHAPE_HARVEST=1
 set TARGET_HARVEST_TCINS=21516452,50225561,53274278
-set TARGET_HARVEST_BANK=3
+REM 2026-09-20: 3 -> 6. The bank held a replayable set only 21-26 pct of the
+REM time, so 6 of 7 DCO burst re-POSTs on 09-18 went out page-signed and all 6
+REM drew an edge 429. A live window spends 3 sets in ~4 s (flip shot + 2 burst
+REM re-POSTs) while the harvester mints one per ~10 s, so the bank is a buffer
+REM filled in quiet time -- at depth 3 it was exactly one burst deep. Refract
+REM runs 3 per RUNNING task, continuously replenished, and warns that stacking
+REM far past that raises flag risk, so 6 is a measured shortage fix, not a
+REM free lunch. Code clamps 1..10. Readout: [HARVEST] bank=N/6 and 'bank STALE
+REM at shot time' should nearly vanish. Rollback: =3
+set TARGET_HARVEST_BANK=6
 set TARGET_HARVEST_TTL_S=300
 set TARGET_HARVEST_INTERVAL_S=40
 set TARGET_HARVEST_REPLAY=1
@@ -1068,7 +1112,18 @@ REM Format acct:tcin,tcin;acct2:tcin -- keep the quotes, never use pipes. Add
 REM each new hot TCIN you arm here (to BOTH entries). Kill: delete the line
 REM (nobody parked); to put business back on the hot TCINs only, delete the
 REM ';business:...' half.
-set "TARGET_PARK_ACCOUNT_TCINS=alt-1:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279;business:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279"
+REM 2026-09-20 UNPARKED. The park existed because alt-1/business fired from
+REM Bright Data exits and their shots only added volume to the per-TCIN bucket
+REM primary had to pass. Both are now on the HOME line (config/target_accounts
+REM .json proxy_url="") and MULTI_SKU_CAP_ALWAYS gives each TCIN exactly one
+REM worker, so they now work OTHER live hot TCINs instead of sitting idle.
+REM Restore the park: git checkout this file, or re-add the set line below.
+REM set "TARGET_PARK_ACCOUNT_TCINS=alt-1:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279;business:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279"
+REM BG-1: halve the background (idle harvest + warmup) volume the two added
+REM accounts put on primary's home exit. Measured: home line goes 0.08 to 0.17
+REM scored req/s, still 5.9x under the 1/s ban floor. Kill: delete both lines.
+set TARGET_BG_SLOW_ACCOUNTS=alt-1,business
+set TARGET_BG_SLOW_FACTOR=2
 REM business relaunches at 1800 s instead of 2100 s. On its own that only
 REM gives the two BD Chromes different cycles (7 and 8 sentinel ticks), which
 REM still land on the same tick about every 4.7 h. DESYNC_S therefore defers
@@ -1076,7 +1131,11 @@ REM business by one tick whenever alt-1 is due on the same tick or relaunched
 REM in the last 120 s, so the two never relaunch together.
 REM grep "relaunch deferred one sentinel tick".
 REM Kill: delete the OFFSETS line; TARGET_CHROME_RELAUNCH_DESYNC_S=0.
-set TARGET_CHROME_MAX_AGE_OFFSETS=business:-300
+REM 2026-09-20: inert now -- TARGET_CHROME_MAX_AGE_S only relaunches PROXIED
+REM Chromes and all three accounts are on the home line. The 09-10 soak showed
+REM the wedge hit ONLY the two proxied Chromes (home-IP primary ran 18 h clean),
+REM so moving them home should retire the wedge itself. Restore with the proxies.
+REM set TARGET_CHROME_MAX_AGE_OFFSETS=business:-300
 set TARGET_CHROME_RELAUNCH_DESYNC_S=120
 REM Identity-rest enforcement (ID-1) stays off under (c).
 set TARGET_IDENTITY_REST=0

@@ -458,16 +458,21 @@ def _bat_value(name):
 
 def test_bat_park_line():
     lines = BAT_PATH.read_bytes().decode("utf-8", "replace").split("\r\n")
-    check("bat_park_line_exact", lines.count(BAT_PARK_LINE) == 1,
+    # 2026-09-20: the park is UNARMED (alt-1 + business moved to the home line and
+    # MULTI_SKU_CAP_ALWAYS spreads one worker per TCIN). It is kept as a REM line
+    # so re-parking is a one-character edit; the parser itself is still exercised
+    # below against that preserved value.
+    check("bat_park_unarmed", lines.count(BAT_PARK_LINE) == 0,
           [l for l in lines if _PARK in l and not l.upper().startswith("REM")])
-    val = _bat_value(_PARK)
-    check("bat_park_last_value", val == f"alt-1:{HOT};business:{HOT}", val)
+    check("bat_park_rollback_kept", lines.count("REM " + BAT_PARK_LINE) == 1)
+    check("bat_park_not_set", _bat_value(_PARK) is None, _bat_value(_PARK))
+    val = f"alt-1:{HOT};business:{HOT}"
     try:
         m = bpm_mod._park_parse(val)
     except ValueError as e:
         m = {"error": str(e)}
     check("bat_park_parses_to_lead_list", m == {"alt-1": HOT_SET, "business": HOT_SET}, m)
-    check("bat_park_cmd_safe", val is not None and not any(c in val for c in '|&<>^%!()"'), val)
+    check("bat_park_cmd_safe", not any(c in val for c in '|&<>^%!()"'), val)
 
 
 # ───────────── 5. R1 review (2026-09-17): the S6 guards, built NOT armed ─────────────

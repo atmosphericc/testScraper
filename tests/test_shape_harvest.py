@@ -649,7 +649,11 @@ def test_bat_pins():
     check("bat_harvest_on", _bat_val('TARGET_SHAPE_HARVEST') == '1')
     tc = _bat_val('TARGET_HARVEST_TCINS')
     check("bat_harvest_tcins_digits", bool(tc) and all(t.strip().isdigit() for t in tc.split(',')))
-    check("bat_harvest_knobs", _bat_val('TARGET_HARVEST_BANK') == '3' and _bat_val('TARGET_HARVEST_TTL_S') == '300'
+    # 2026-09-20: bank 3 -> 6. The bank held a replayable set only 21-26% of the
+    # time, so 6 of 7 DCO burst re-POSTs on 09-18 went out page-signed. A live
+    # window spends 3 sets in ~4 s while the harvester mints one per ~10 s, so
+    # depth is the buffer that matters. Code clamps 1..10.
+    check("bat_harvest_knobs", _bat_val('TARGET_HARVEST_BANK') == '6' and _bat_val('TARGET_HARVEST_TTL_S') == '300'
           and _bat_val('TARGET_HARVEST_REPLAY') == '1' and _bat_val('TARGET_HARVEST_SELFTEST') == '1')
     check("bat_crlf_only", BAT_RAW.count(b'\n') == BAT_RAW.count(b'\r\n') and BAT_RAW.count(b'\r\n') > 100)
     check("bat_changelog_dated", "2026-09-03" in BAT_SRC and "HARVEST" in BAT_SRC)

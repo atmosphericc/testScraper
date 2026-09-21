@@ -356,14 +356,32 @@ BAT_0916_PINS = (
     ("TARGET_BANK_GATE_ADAPTIVE", "1"),
     ("TARGET_HARVEST_FLUSH_ON_RELAUNCH", "1"),
     ("TARGET_SENTINEL_LOG_SKIPS", "1"),
-    ("TARGET_CHROME_MAX_AGE_OFFSETS", "business:-300"),
+    # 2026-09-20: TARGET_CHROME_MAX_AGE_OFFSETS retired. MAX_AGE_S only relaunches
+    # PROXIED Chromes and all three accounts are now on the home line, so the
+    # offset is inert (the 09-10 soak showed the wedge hit only the two proxied
+    # Chromes; home-IP primary ran 18 h on one launch).
     ("TARGET_CHROME_RELAUNCH_DESYNC_S", "120"),          # review round R1 (R1-ARM-2)
     ("TARGET_IDENTITY_REST", "0"),
+    # 2026-09-20 arming: all accounts on the home line, dispatch spreading.
+    ("TARGET_BG_SLOW_ACCOUNTS", "alt-1,business"),
+    ("TARGET_BG_SLOW_FACTOR", "2"),
+    ("TARGET_MULTI_SKU_DISPATCH", "1"),
+    ("TARGET_MULTI_SKU_MAX_CONCURRENT", "3"),
+    ("TARGET_MULTI_SKU_WORKERS_PER_TCIN", "1"),
+    ("TARGET_MULTI_SKU_CAP_ALWAYS", "1"),
+    ("TARGET_HARVEST_BANK", "6"),
+    ("TARGET_FASTLANE_PRE_RETRY", "1"),
 )
 # Built but deliberately NOT armed (U1=(a)/(b) guards built in review round R1
 # but U1=(c) is the choice; U2 keeps qty 2; live re-nav waits for probe data;
 # quiet level 2 is an experiment).
-BAT_0916_UNARMED = ("TARGET_HOME_SHARE_GUARD", "TARGET_BG_SLOW_ACCOUNTS", "TARGET_BG_SLOW_FACTOR",
+BAT_0916_UNARMED = ("TARGET_HOME_SHARE_GUARD",
+                    # BG_SLOW_* moved to the ARMED pins 2026-09-20 (U1=(a) for
+                    # BOTH alt-1 and business). HOME_SHARE_GUARD stays off on
+                    # purpose: its trigger (2 primary carts-401s on one TCIN in
+                    # 30 min) is easy to hit in a live hot window and its penalty
+                    # is parking an identity on EVERY TCIN for an hour, which
+                    # defeats the point of spreading three accounts over three SKUs.
                     "TARGET_BOOT_CART_AUDIT", "TARGET_FASTLANE_QTY_GUARD",
                     "TARGET_HARVEST_BADLOAD_BACKOFF_S", "TARGET_IDENTITY_REST_S",
                     "TARGET_IDENTITY_REST_K", "TARGET_IDENTITY_REST_M", "TARGET_IDENTITY_REST_NEVER",
@@ -397,11 +415,14 @@ def test_bat_hot_sku_0916_pins():
         pin = f"set {name}={value}"
         check(f"bat_0916_exact[{pin}]", lines.count(pin) == 1)
         check(f"bat_0916_last[{name}]", _bat_last_value(lines, name) == value)
-    # 2026-09-17 evening: business parked on the same list (see HOT_SKU doc #12).
+    # 2026-09-20 UNPARKED. The park existed because alt-1/business fired from
+    # Bright Data exits, so their shots only added own-volume in front of primary.
+    # Both are on the home line now and MULTI_SKU_CAP_ALWAYS gives each TCIN
+    # exactly one worker, so they work OTHER live hot TCINs instead of idling.
+    # The line is kept as a REM so re-parking is a one-character edit.
     park = f'set "TARGET_PARK_ACCOUNT_TCINS=alt-1:{HOT_0916};business:{HOT_0916}"'
-    check("bat_0916_park_exact_quoted", lines.count(park) == 1)
-    check("bat_0916_park_last",
-          _bat_last_value(lines, "TARGET_PARK_ACCOUNT_TCINS") == f"alt-1:{HOT_0916};business:{HOT_0916}")
+    check("bat_0916_park_unarmed", _bat_last_value(lines, "TARGET_PARK_ACCOUNT_TCINS") is None)
+    check("bat_0916_park_rollback_kept", lines.count("REM " + park) == 1)
     check("bat_0916_park_no_pipes", not any('TARGET_PARK_ACCOUNT_TCINS' in l and '|' in l for l in lines))
     for name in BAT_0916_UNARMED:
         check(f"bat_0916_unarmed[{name}]", _bat_last_value(lines, name) is None)
