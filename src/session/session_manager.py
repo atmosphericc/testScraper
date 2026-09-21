@@ -565,7 +565,7 @@ class SessionManager:
             # object, not a string — passing the string raised
             # "'str' object is not an iterator" every startup and Network
             # was effectively never enabled. Use the proper command (same
-            # pattern walmart/session_manager.py uses).
+            # pattern the since-removed Walmart session manager used).
             try:
                 await self._active_tab.send(uc.cdp.network.enable())
             except Exception as e:

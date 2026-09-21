@@ -410,8 +410,9 @@ def bezier_path(x0: float, y0: float, x1: float, y1: float,
                 rng: Optional[random.Random] = None) -> List[Tuple[float, float, float]]:
     """Quadratic-Bezier pointer path from (x0,y0) to (x1,y1) as
     [(x, y, dt_seconds_before_this_move), ...]; last point == target.
-    Ported from walmart/purchase_executor._realistic_click (velocity-weighted
-    sin(pi*t) timing, perpendicular control-point bend, gaussian jitter)."""
+    Originally ported from the (since-removed) Walmart executor's
+    _realistic_click: velocity-weighted sin(pi*t) timing, perpendicular
+    control-point bend, gaussian jitter."""
     rng = rng or random
     dx, dy = x1 - x0, y1 - y0
     dist = math.hypot(dx, dy)

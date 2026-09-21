@@ -4018,12 +4018,6 @@ def api_set_manual_stock_data():
             'timestamp': datetime.now().isoformat()
         }), 500
 
-@app.route('/dashboard')
-def unified_dashboard():
-    """Unified single-page dashboard — all retailers in one tab-based view."""
-    return render_template('unified_dashboard.html')
-
-
 def _release_sleep_lock():
     if platform.system() == "Windows":
         ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)

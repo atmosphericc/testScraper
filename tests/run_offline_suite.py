@@ -76,8 +76,7 @@ LIVE_MARKERS = re.compile(r"Launching browser|Real StockMonitor|overnight simula
 
 # Known live tests, for the record (never add these to OFFLINE):
 #   test_idle_then_detect_then_purchase, test_long_idle_then_purchase,
-#   test_real_api_overnight_simulation, test_target_bot_full_suite,
-#   test_walmart_e2e_purchase_with_queue, test_mitm_sim_smoke
+#   test_real_api_overnight_simulation, test_target_bot_full_suite
 
 
 def main() -> int:

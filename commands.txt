@@ -1,219 +1,150 @@
 ================================================================
-  AIO BOT — COMMANDS REFERENCE
-  Last updated: 2026-04-06
+  TARGET BOT — COMMANDS REFERENCE
+  Last updated: 2026-09-21  (Walmart removed; Target-only repo)
 ================================================================
+
+  Authoritative docs live in CLAUDE.md and docs/. This file is the
+  quick reference for "what do I type".
 
 ----------------------------------------------------------------
   HOW TO RUN
 ----------------------------------------------------------------
 
-  python unified_app.py
-  Unified dashboard  →  http://localhost:5000/dashboard    ← USE THIS
+  Production (what you actually launch):
+    run_bot_with_nightly_restart.bat
+    → The crash-restart wrapper. Arms every env flag, relaunches on
+      crash, and restarts nightly. Launch it EXACTLY ONCE.
+    → Dashboard: http://localhost:5001/v2
+
+  Production, bare (no wrapper — flags are NOT armed):
+    USE_RESILIENT_STACK=1 python app.py   → http://localhost:5001/v2
+
+  Test env (stops before the real purchase):
+    python test_app.py                    → http://localhost:5001/
+
+  RULE: never launch the bot unprompted, and never run two instances
+  at once — two concurrent app.py instances burned the whole 16-IP
+  sweep pool to 100% captcha on 2026-09-04.
 
 ----------------------------------------------------------------
-  SESSION SETUP (do this before first run)
+  SESSION SETUP (before a drop window)
 ----------------------------------------------------------------
 
-  Target login:
-    python relogin.py
-    → Opens browser, log in manually, saves to nodriver-profile/ + target.json
-    → Re-run when Target session expires
+  Hand-login all accounts:
+    hand_login_all.bat
+    → Opens a browser per account; sign in manually. Scripted relogin
+      is Shape-burned (~0/25), so hand-login is the only path.
 
-  Walmart login:
-    python walmart_relogin.py
-    → Opens browser, log in manually, saves to walmart-profile/cookies.json
-    → Re-run when Walmart session expires
+  Verify readiness (want 3/3 MEMBER):
+    python check_session_readiness.py
+
+  Restart the wrapper nightly — never let it run past 24h. Login
+  sessions rot at 32-46h.
 
 ----------------------------------------------------------------
-  STANDALONE APPS (debug / one-off use)
+  STANDALONE TOOLS (no browser, no automation)
 ----------------------------------------------------------------
 
-  Standalone Walmart only:
-    python -m walmart.walmart_app  → http://localhost:5001/
-
-  Standalone Target only:
-    python app.py                  → http://localhost:5001/
-
-  Target test mode (stops before purchase):
-    python test_app.py             → http://localhost:5001/
-
-  Product config manager (no automation):
+  Product config manager:
     python configureProducts.py    → http://localhost:5002/
     → Edit Target TCINs + catalog without starting a browser
 
   Pokemon price comparison:
     python compareInventory.py     → http://localhost:5003/
-    → Compare CSV inventory against TCGPlayer market prices
-
-----------------------------------------------------------------
-  DEBUGGING / ONE-SHOT CHECKS
-----------------------------------------------------------------
-
-  Check Walmart stock (all configured SKUs):
-    python -m walmart.stock_monitor
+    → Compare CSV inventory against TCGdex/TCGPlayer market prices
 
   Kill a stuck port:
     python clearPort.py <port>
-    → e.g. python clearPort.py 5000
+
+----------------------------------------------------------------
+  TESTS
+----------------------------------------------------------------
+
+  Offline suite (the gate — 26 files, ~3.5 min):
+    python tests/run_offline_suite.py
+
+  NEVER blanket-run tests/ — it contains live tests that launch
+  browsers and can fire real purchases. Use the suite runner.
+
+  Resilient-stack smoke (live traffic, uses real proxies):
+    RESILIENT_TEST_DURATION_S=120 RESILIENT_TEST_NUM_IPS=1 python test_resilient_stack.py
+    python test_resilient_stack.py     (default 30 min)
 
 ----------------------------------------------------------------
   CONFIGURING PRODUCTS
 ----------------------------------------------------------------
 
-  Target products:
-    → Use dashboard at http://localhost:5000/dashboard (Product Catalog tab)
-    → Or use standalone config tool: python configureProducts.py
-    → Or edit config/product_config.json directly
-    → Field: "tcin" (8-10 digit Target item number from URL)
-    → Example: target.com/p/-/A-94724987 → tcin = "94724987"
+  → Dashboard at http://localhost:5001/v2, or configureProducts.py,
+    or edit config/product_config.json directly.
+  → Field: "tcin" (8-10 digit Target item number from the URL)
+  → Example: target.com/p/-/A-94724987 → tcin = "94724987"
 
-  Walmart products:
-    → Use dashboard at http://localhost:5000/dashboard (Walmart tab)
-    → Or edit walmart/walmart_config.json directly
-    → Field: "item_id" (numeric ID from walmart.com/ip/.../XXXXXXXXX)
-    → Example: walmart.com/ip/some-product/15042474261 → item_id = "15042474261"
+  config/product_config.json fields:
+    "tcin"      required  8-10 digit Target item ID
+    "name"      required  display name
+    "enabled"   required  true/false
+    "priority"  required  1 = highest priority (checked first)
+    "url"       optional  direct product link
 
-  Product config fields:
-    Target (config/product_config.json):
-      "tcin"      required  8-10 digit Target item ID
-      "name"      required  display name
-      "enabled"   required  true/false
-      "priority"  required  1 = highest priority (checked first)
-      "url"       optional  direct product link
-
-    Walmart (walmart/walmart_config.json):
-      "item_id"   required  numeric Walmart item ID
-      "name"      required  display name
-      "enabled"   required  true/false
-      "priority"  required  1 = highest priority
-      "max_price" optional  skip if price exceeds this
-      "url"       optional  direct product link
-
-----------------------------------------------------------------
-  SET THESE ENV VARS BEFORE RUNNING
-----------------------------------------------------------------
-
-  Mac (Terminal):
-    export WALMART_EMAIL="your@email.com"
-    export WALMART_PASSWORD="yourpassword"
-    export WALMART_CVV="123"
-    export TARGET_CVV="123"
-    export CHECKOUT_MODE="TEST"           # change to PRODUCTION when ready
-    export FINAL_PURCHASE="NO"            # change to YES to actually buy
-
-  Windows (PowerShell):
-    $env:WALMART_EMAIL    = "your@email.com"
-    $env:WALMART_PASSWORD = "yourpassword"
-    $env:WALMART_CVV      = "123"
-    $env:TARGET_CVV       = "123"
-    $env:CHECKOUT_MODE    = "TEST"
-    $env:FINAL_PURCHASE   = "NO"
-
-----------------------------------------------------------------
-  SAFETY CHECKLIST — before going LIVE
-----------------------------------------------------------------
-
-  1. Set CHECKOUT_MODE=PRODUCTION
-  2. Set FINAL_PURCHASE=YES
-  3. Set WALMART_CVV and TARGET_CVV to your actual card CVVs
-  4. Confirm saved shipping address on Target.com and Walmart.com
-  5. Confirm saved payment method on both accounts
-  6. Run relogin.py + walmart_relogin.py to ensure fresh sessions
-  7. Make sure the computer WON'T sleep (unified_app handles this,
-     but double-check System Settings → Displays/Energy on Mac,
-     or Power & Sleep on Windows)
-
-----------------------------------------------------------------
-  API ENDPOINTS (while unified_app.py is running)
-----------------------------------------------------------------
-
-  -- Unified --
-  GET  http://localhost:5000/dashboard               unified tab dashboard
-
-  -- Target --
-  GET  http://localhost:5000/api/status              state JSON
-  GET  http://localhost:5000/api/stream              SSE live feed
-  POST http://localhost:5000/api/test/enable         enable test mode
-  POST http://localhost:5000/api/test/disable        live mode
-  GET  http://localhost:5000/health                  health check
-  GET  http://localhost:5000/metrics                 performance metrics
-
-  -- Walmart --
-  GET  http://localhost:5000/walmart/api/status      state JSON
-  GET  http://localhost:5000/walmart/api/stream      SSE live feed
-  POST http://localhost:5000/walmart/api/test/enable enable test mode
-  POST http://localhost:5000/walmart/api/test/disable live mode
-  GET  http://localhost:5000/walmart/health          health check
+  Commit arming/config changes BEFORE switching branches (08-18).
 
 ----------------------------------------------------------------
   FILE LOCATIONS
 ----------------------------------------------------------------
 
-  Entry point:         unified_app.py
-  Target app:          app.py (Flask app + Target routes)
-  Target test mode:    test_app.py
-  Target logic:        src/
-    src/monitoring/      stock_monitor.py
-    src/purchasing/      bulletproof_purchase_manager.py
-    src/session/         session_manager.py, purchase_executor.py, session_keepalive.py
-    src/utils/           save_login.py, target_login.py
-  Walmart logic:       walmart/
-    walmart/blueprint.py       Flask blueprint (routes at /walmart/)
-    walmart/purchase_manager.py
-    walmart/purchase_executor.py
-    walmart/session_manager.py
-    walmart/stock_monitor.py
-    walmart/stock_check.py
-    walmart/proxy_manager.py
-    walmart/queue_handler.py
-    walmart/self_healing_agent.py
-    walmart/config.py
-    walmart/walmart_app.py     standalone Walmart server
+  Entry points:
+    run_bot_with_nightly_restart.bat   production wrapper (arms flags)
+    app.py                             Target app (port 5001)
+    test_app.py                        test env
 
-  Key scripts:
-    relogin.py              Target manual login / session save
-    walmart_relogin.py      Walmart manual login / session save
-    clearPort.py            Kill process on a port
-    configureProducts.py    Standalone product config editor (port 5002)
-    compareInventory.py     TCGPlayer price comparison (port 5003)
+  Target logic:            src/
+    src/monitoring/          stock_check_resilient.py, tab_dispatcher.py,
+                             proxy_preflight.py, stock_monitor.py (legacy)
+    src/session/             purchase_executor.py, session_manager.py,
+                             multi_session_pool.py, account_identity.py,
+                             shape_harvest.py
+    src/purchasing/          bulletproof_purchase_manager.py, identity_rest.py
+    src/proxy/               local_forwarder.py, proxy_state.py
 
-  Dashboard:           dashboard/templates/
-    unified_dashboard.html   ← main dashboard (used by /dashboard route)
-    simple_dashboard.html    ← Target-only dashboard (used by / route)
-    simple_dashboard_v2.html ← Target v2 dashboard (used by /v2 route)
+  Analysis / readouts:     tools/analysis/
+    readout_next_drop.py, readout_multi_sku.py, limiter_key.py,
+    funnel.py, shots.py, windows.py, home_vs_proxied.py, ...
 
-  Config / products:
-    config/product_config.json     Target TCINs + priority
-    config/product_catalog.json    Extended Target product catalog
-    config/proxyIps.json           proxy list (used by Walmart)
-    config/pokemon_price_cache.json  TCGPlayer price cache (used by compareInventory.py)
-    walmart/walmart_config.json    Walmart item IDs + priority
+  Dashboard:               dashboard/templates/
+    simple_dashboard_v2.html   ← current (/v2 route)
+    simple_dashboard.html      ← older (/ route)
 
-  Sessions (gitignored — user-specific, not committed):
-    nodriver-profile/       Target browser profile
-    target.json             Target saved cookies
-    walmart-profile/        Walmart cookies (cookies.json)
-    walmart-profile-login/  Walmart browser profile for relogin
+  Config:
+    config/product_config.json       Target TCINs + priority  (tracked)
+    config/product_catalog.json      extended product catalog (tracked)
+    config/target_accounts.json      accounts + creds   (GITIGNORED)
+    config/proxyIps.json             BD sweep pool      (GITIGNORED)
+    config/pokemon_price_cache.json  price cache
+
+  Sessions (gitignored — user-specific):
+    nodriver-profile*/       Target browser profiles (one per account)
+    target*.json             saved cookies / session tokens
+    state/session_profiles/  resilient-stack session data
 
   Logs (gitignored):
-    logs/                Target logs + purchase states
-    walmart/logs/        Walmart screenshots
-
-  Pokemon data:
-    Pokemon Inventory/   CSV inventory for compareInventory.py
+    logs/                    app logs + purchase states
+    logs/runs/package.log    cross-run source of truth
 
 ----------------------------------------------------------------
   RETAILER STATUS
 ----------------------------------------------------------------
 
-  Target        → ACTIVE  — stock monitoring + checkout
-  Walmart       → ACTIVE  — staggered proxy monitoring + checkout
+  Target   → ACTIVE — the only retailer. Anti-bot: F5 Shape +
+             HUMAN/PerimeterX "Press & Hold". Never call it Akamai.
+  Walmart  → REMOVED 2026-09-21. Code, tests, docs and the unified
+             dashboard are gone; recoverable from git history at
+             commit 679275d9 if ever needed.
 
 ----------------------------------------------------------------
   GIT
 ----------------------------------------------------------------
 
-  Branch: bugFix
-  Run: git add -A && git commit -m "your message"   to save
+  Branch: feat_refract_arch_v1   (master is stale; work happens here)
+  Run: git add -A && git commit -m "your message" && git push
 
 ================================================================

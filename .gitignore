@@ -39,7 +39,6 @@ nodriver-profile/
 nodriver-profile-*/
 playwright-profile/
 chrome_user_data/
-walmart-profile*/
 # Resilient stack runtime state — contains live Target auth tokens
 # (accessToken, idToken, refreshToken). Never commit. The *jar*.json pattern
 # also catches probe-script artifacts (e.g. disabled_probe_jar.json).
@@ -87,9 +86,7 @@ config/target_accounts.json
 
 # Logs (intentionally tracked for post-mortem of early-morning Target drops)
 # logs/
-# walmart/logs/
 # Sim subprocess run logs (transient, regenerated each test run)
-walmart/logs/mitm_sim_*.log
 
 # IDE / OS
 .vscode/
@@ -114,17 +111,13 @@ chat.js
 node_modules/
 package.json
 package-lock.json
-walmart/logs/patches.log
 # Live queue capture JSONL files (regenerated per run, large)
-walmart/logs/live_capture_*.jsonl
-# Queue observability harness output (walmart/queue_events.py) — per-run,
 # may contain auth tokens / ticket data from a real drop. Never commit.
 logs/queue_events_*.jsonl
 logs/queue_capture_*.jsonl
 # Nightly-restart wrapper + capture-dryrun run logs
-logs/walmart_bot_restart_wrapper.log
-logs/walmart_app_*.log
 # Per-run debugging artifacts (screenshots + activity log dumps)
-walmart/logs/*.png
-walmart/logs/activity_log*.pkl
 state/tcin_visibility*
+
+# Stray browser profile dirs (never commit a Chrome profile)
+*-test-profile/
