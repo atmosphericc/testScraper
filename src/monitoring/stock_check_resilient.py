@@ -342,6 +342,14 @@ class ResilientStockChecker:
         # the trusted-browser fallback engages only while the pool is blind).
         self._last_200_at = 0.0
         self._total_403 = 0
+        # 2026-09-21: 429 (edge tarpit) split OUT of `other`. It used to land in
+        # the same bucket as tab-fetch timeouts, so a 43-min pool-wide throttle
+        # (09-21 03:21-04:04, 6,520 of the run's 6,586 `other`) was only visible
+        # as a 6.4% run average — steady state was 0.07%. Log-only; the sweep
+        # does NOT back off on 429. Kill the split: RESILIENT_SPLIT_429=0.
+        self._split_429 = str(
+            os.environ.get('RESILIENT_SPLIT_429', '1')).strip() != '0'
+        self._total_429 = 0
         self._total_other = 0
         # 2026-09-20 PER-EXIT health. [STOCK STATS] only ever reported pool
         # TOTALS, so a pool trimmed to 8 could not be ranked: one dead exit
@@ -469,6 +477,7 @@ class ResilientStockChecker:
                                if self.multi_session_pool else 0),
             "captcha_total": self._captcha_total,
             "total_403": self._total_403,
+            "total_429": self._total_429,
             "total_other": self._total_other,
             "total_behavioral": self._total_behavioral,
             "outstanding": self._outstanding,
@@ -629,7 +638,10 @@ class ResilientStockChecker:
                                 f"http={result.http_status} {result.latency_ms}ms "
                                 f"err={(result.error or '')[:80]}")
             else:
-                self._total_other += 1
+                if result.http_status == 429 and self._split_429:
+                    self._total_429 += 1
+                else:
+                    self._total_other += 1
                 self._note_exit(result.pinned_ip, result.http_status)
                 self.proxy_state.record_status(result.pinned_ip, result.http_status)
                 if self.log_per_request:
@@ -651,8 +663,15 @@ class ResilientStockChecker:
             k = str(ip or '?')
             d = self._exit_stats.get(k)
             if d is None:
-                d = self._exit_stats[k] = {'200': 0, '403': 0, 'other': 0}
-            d['200' if status == 200 else ('403' if status in (401, 403) else 'other')] += 1
+                d = self._exit_stats[k] = {'200': 0, '403': 0, '429': 0, 'other': 0}
+            if status == 200:
+                d['200'] += 1
+            elif status in (401, 403):
+                d['403'] += 1
+            elif status == 429 and self._split_429:
+                d['429'] += 1
+            else:
+                d['other'] += 1
         except Exception:
             pass
 
@@ -662,12 +681,14 @@ class ResilientStockChecker:
             if not self._exit_stats:
                 return ''
             def _rate(d):
-                t = d['200'] + d['403'] + d['other']
+                t = d['200'] + d['403'] + d.get('429', 0) + d['other']
                 return (d['200'] / t) if t else 0.0
             parts = []
             for ip, d in sorted(self._exit_stats.items(), key=lambda kv: _rate(kv[1])):
-                parts.append(f"{ip}={d['200']}/{d['403']}/{d['other']}({_rate(d)*100:.0f}%)")
-            return "[STOCK][EXITS] ok/403/other per exit, worst first: " + " ".join(parts)
+                parts.append(f"{ip}={d['200']}/{d['403']}/{d.get('429', 0)}/{d['other']}"
+                             f"({_rate(d)*100:.0f}%)")
+            return ("[STOCK][EXITS] ok/403/429/other per exit, worst first: "
+                    + " ".join(parts))
         except Exception:
             return ''
 
@@ -910,7 +931,8 @@ class ResilientStockChecker:
             logger.info(
                 f"[STOCK STATS] t={st['elapsed_s']}s "
                 f"sweeps={st['sweep_count']} ({st['actual_sweeps_per_sec']}/s) "
-                f"200={st['total_200']} 403={st['total_403']} other={st['total_other']} "
+                f"200={st['total_200']} 403={st['total_403']} "
+                f"429={st['total_429']} other={st['total_other']} "
                 f"beh={st['total_behavioral']} outstanding={st['outstanding']} "
                 f"sessions={ss.get('ready', 0)}r/{ss.get('crashed', 0)}c/{ss.get('recycling', 0)}rc "
                 f"pool A={ps['active']} P={ps['parked']} B={ps['burned']}"

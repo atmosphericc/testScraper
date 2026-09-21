@@ -155,7 +155,8 @@ async def main() -> int:
     print(f"  TOTALS: healthy={healthy} flaky={flaky} bad/parked/burned={bad} "
           f"no_session={len(missing)}  of {len(proxy_urls)} configured")
     print(f"  RUN: sweeps={st['sweep_count']} 200={st['total_200']} "
-          f"403={st['total_403']} other={st['total_other']} | "
+          f"403={st['total_403']} 429={st.get('total_429', 0)} "
+          f"other={st['total_other']} | "
           f"sessions ready={ss.get('ready', 0)} crashed={ss.get('crashed', 0)}")
     print("=" * 78, flush=True)
 

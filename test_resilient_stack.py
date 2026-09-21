@@ -77,7 +77,8 @@ async def main():
     print(f"[SUMMARY] elapsed={st['elapsed_s']}s  "
           f"actual_sweeps_per_sec={st['actual_sweeps_per_sec']}")
     print(f"  dispatched={st['total_dispatched']}  200={st['total_200']} "
-          f"403={st['total_403']} other={st['total_other']} "
+          f"403={st['total_403']} 429={st.get('total_429', 0)} "
+          f"other={st['total_other']} "
           f"behavioral={st['total_behavioral']}")
     ps = st['proxy_state']
     ss = st['session_state']
