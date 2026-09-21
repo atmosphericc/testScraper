@@ -356,7 +356,7 @@ class TicketTab:
             self.cart_items = [i for i in self.cart_items if i["id"] != cid]
             return 204
         if "web_checkouts/v1/cart?cart_type=REGULAR" in js:
-            return {"ok": True, "status": 200, "items": [dict(i) for i in self.cart_items]}
+            return {"ok": True, "status": 200, "has_items": True, "items": [dict(i) for i in self.cart_items]}
         raise AssertionError("unexpected evaluate: " + js[:80])
 
 
@@ -1659,14 +1659,14 @@ def test_c_helpers():
     # R5 (2026-09-17 cadence re-tune): schedule floor 3 -> 2 s, cap 3 -> 6
     # entries, steady floor 20 -> 3 s, so the 07-31/08-04 winning cadence is
     # reachable. Junk/NaN still dropped, 90 still clamped to the 60 s ceiling.
-    check("h_cfg_clamps", cfg["schedule"] == [2.0, 60.0, 7.0, 8.0, 9.0] and cfg["steady_s"] == 5.0
+    check("h_cfg_clamps", cfg["schedule"] == [1.0, 60.0, 7.0, 8.0, 9.0] and cfg["steady_s"] == 5.0
           and cfg["max_tickets"] == 14 and cfg["yield_fleet"] is False and cfg["ride_on"] is True, cfg)
     # R5: the widened range, and that the DEFAULTS did not move with it.
     check("h_cfg_r5_sched_cap6",
           pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "2,3,4,5,6,7,8,9"})["schedule"]
           == [2.0, 3.0, 4.0, 5.0, 6.0, 7.0])
     check("h_cfg_r5_sched_floor",
-          pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "0.5,1"})["schedule"] == [2.0, 2.0])
+          pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "0.5,1"})["schedule"] == [1.0, 1.0])  # floor 1 s since 09-18
     check("h_cfg_r5_steady_floor",
           pe_mod.woncart_cfg({"TARGET_WONCART_STEADY_GAP_S": "1"})["steady_s"] == 3.0
           and pe_mod.woncart_cfg({"TARGET_WONCART_STEADY_GAP_S": "999"})["steady_s"] == 120.0)
@@ -1674,12 +1674,14 @@ def test_c_helpers():
           pe_mod.woncart_cfg({})["steady_s"] == 45.0
           and pe_mod.woncart_cfg({})["schedule"] == [5.0, 15.0])
     # R5: the armed bat cadence must survive parsing exactly as written.
-    _armed = pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "3,4,5",
-                                 "TARGET_WONCART_STEADY_GAP_S": "5",
+    # 2026-09-18: the armed cadence after the first live read-out.
+    _armed = pe_mod.woncart_cfg({"TARGET_WONCART_SCHEDULE_S": "1,1,1,2,2,3",
+                                 "TARGET_WONCART_STEADY_GAP_S": "3",
+                                 "TARGET_WONCART_JITTER_S": "1",
                                  "TARGET_WONCART_MAX_TICKETS": "40"})
     check("h_cfg_r5_armed_values",
-          _armed["schedule"] == [3.0, 4.0, 5.0] and _armed["steady_s"] == 5.0
-          and _armed["max_tickets"] == 40, _armed)
+          _armed["schedule"] == [1.0, 1.0, 1.0, 2.0, 2.0, 3.0] and _armed["steady_s"] == 3.0
+          and _armed["jitter_s"] == 1.0 and _armed["max_tickets"] == 40, _armed)
     # _begin_won_cart_ride now returns the effective deadline (0.0 with no ctx).
     ex2 = bare(c)
     del ex2._begin_won_cart_ride
@@ -1715,7 +1717,7 @@ def test_c_cart_read_delete():
                 return 204
             return self.read
 
-    t = CTab({"ok": True, "status": 200, "items": [{"id": "A", "tcin": TCIN, "qty": 2},
+    t = CTab({"ok": True, "status": 200, "has_items": True, "items": [{"id": "A", "tcin": TCIN, "qty": 2},
                                                    {"id": "B", "tcin": OTHER, "qty": None},
                                                    {"id": "C", "tcin": OTHER, "qty": True}]})
     r = run(ex._cart_items_read(t))
@@ -1727,9 +1729,9 @@ def test_c_cart_read_delete():
     check("r_delete_keep", ok and n == 2 and t.deleted == ["B", "C"], t.deleted)
     t = CTab({"ok": False, "status": 429, "items": []})
     check("r_delete_read_fail", run(ex._delete_cart_items(t)) == (False, 0) and t.deleted == [])
-    t = CTab({"ok": True, "status": 200, "items": [{"id": "x'); evil(", "tcin": OTHER}]})
+    t = CTab({"ok": True, "status": 200, "has_items": True, "items": [{"id": "x'); evil(", "tcin": OTHER}]})
     check("r_delete_suspicious_id", run(ex._delete_cart_items(t)) == (False, 0) and t.deleted == [])
-    t = CTab({"ok": True, "status": 200, "items": [{"id": "A", "tcin": TCIN}]}, hang_delete=True)
+    t = CTab({"ok": True, "status": 200, "has_items": True, "items": [{"id": "A", "tcin": TCIN}]}, hang_delete=True)
     t0 = real_time.time()
     res = run(ex._delete_cart_items(t, budget_s=1.0))
     check("r_delete_bounded", res == (False, 0) and real_time.time() - t0 < 3.0, f"{res} {real_time.time() - t0:.2f}")
@@ -1868,7 +1870,7 @@ def test_e_note_stock_read():
 # ─────────── (f) WC-3 held-cart re-entry + boot cart audit (stage S2c) ────────
 
 HELD = dict(ARMED, TARGET_HELD_CART_REENTRY="1")
-EXACT_READ = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+EXACT_READ = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
 NEW_REASON_RESULTS: list = []
 
 
@@ -1889,7 +1891,7 @@ def held_impl(c, marker, read=None, probes=None, loop_result=None, **kw):
 
     async def _read(t, timeout=2.5):
         ex.reads.append(timeout)
-        return json.loads(json.dumps(read if read is not None else {"ok": True, "status": 200, "items": []}))
+        return json.loads(json.dumps(read if read is not None else {"ok": True, "status": 200, "has_items": True, "items": []}))
 
     ex._cart_items_read = _read
     probes = dict(probes or {})
@@ -1908,7 +1910,7 @@ def test_f_held_cart_reentry():
           and "[HELD_CART] re-entering the won-cart loop" in run.last_out, f"{r} fl={ex.fl_calls} {ex.statuses}")
     check("f_exact_keeps_verified", ex._held_cart["verified"] is True)
     # A held line of qty 1 reports quantity 1 (read), not the requested 2.
-    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1}]},
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1}]},
                         probes={TCIN: True}, loop_result=("placed", None))
     r = run_impl(ex, HELD)
     check("f_placed_quantity_from_read", r.get("success") is True and r.get("quantity") == 1, r)
@@ -1931,7 +1933,7 @@ def test_f_held_cart_reentry():
               and ex.reads == [] and ex.fl_calls == [] and ex.loop_calls == [] and not ex.deletes
               and isinstance(ex._held_cart, dict) and tab.gets == [], f"{r} {ex.reads} {tab.gets}")
     # Empty cart -> marker dropped, normal shot (fast lane called).
-    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "items": []}, probes={TCIN: True})
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "has_items": True, "items": []}, probes={TCIN: True})
     r = run_impl(ex, HELD)
     check("f_empty_normal_shot", ex._held_cart is None and ex.fl_calls == [2]
           and ex.loop_calls == [(TCIN, 2, "first")] and not ex.deletes, f"{r} {ex.loop_calls}")
@@ -1947,7 +1949,7 @@ def test_f_held_cart_reentry():
     run_impl(ex, HELD)
     check("f_unknown_qty_demotes", ex.loop_calls == [(TCIN, 2, "held")] and ex._held_cart["verified"] is False)
     # Foreign line beside the held one -> selective delete (keep T), loop entered.
-    two = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+    two = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
                                                 {"id": "CI-F", "tcin": OTHER, "qty": 1}]}
     ex, tab = held_impl(c, mk_held(), read=two, probes={TCIN: True})
     run_impl(ex, HELD)
@@ -1988,7 +1990,7 @@ def test_f_held_cart_reentry():
               f"{r} {ex.deletes}")
     # R3: the failed delete is confirmed by a read that still shows the line.
     ex, tab = held_impl(c, mk_held(tcin=OTHER), probes={OTHER: False},
-                        read={"ok": True, "status": 200, "items": [{"id": "CI-9", "tcin": OTHER, "qty": 2}]})
+                        read={"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-9", "tcin": OTHER, "qty": 2}]})
     ex.delete_result = (False, 0)
     r = run_impl(ex, HELD)
     check("f_other_release_failed", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == []
@@ -2182,7 +2184,7 @@ def boot_run(ex, c, flags=None, delay_s=0.0):
 
 def test_f_boot_audit():
     c = Clock()
-    one = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+    one = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
     ex, wt = boot_ex(c, one)
     out, _ = boot_run(ex, c)
     h = ex._held_cart
@@ -2192,14 +2194,14 @@ def test_f_boot_audit():
           and ex.ensured == [0] and ex.reads == [(wt, 5.0, True)]
           and "[BOOT_CART_AUDIT] single line" in run.last_out, f"{out} {h} {ex.reads}")
     cases = [
-        ("over_ceiling", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 3}]}),
-        ("two_lines", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1},
+        ("over_ceiling", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 3}]}),
+        ("two_lines", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1},
                                                              {"id": "CI-2", "tcin": OTHER, "qty": 1}]}),
-        ("same_tcin_two_lines", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1},
+        ("same_tcin_two_lines", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1},
                                                                        {"id": "CI-2", "tcin": TCIN, "qty": 1}]}),
-        ("unknown_qty", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]}),
-        ("zero_qty", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 0}]}),
-        ("bad_tcin", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": "", "qty": 1}]}),
+        ("unknown_qty", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]}),
+        ("zero_qty", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 0}]}),
+        ("bad_tcin", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": "", "qty": 1}]}),
     ]
     for label, read in cases:
         ex, wt = boot_ex(c, read)
@@ -2218,7 +2220,7 @@ def test_f_boot_audit():
     ex.delete_result = (False, 0)
     out, _ = boot_run(ex, c)
     check("b_delete_failed", out == "delete_failed" and ex._held_cart is None)
-    ex, wt = boot_ex(c, {"ok": True, "status": 200, "items": []})
+    ex, wt = boot_ex(c, {"ok": True, "status": 200, "has_items": True, "items": []})
     out, _ = boot_run(ex, c)
     check("b_empty", out == "empty" and not ex.deletes and ex._held_cart is None)
     ex, wt = boot_ex(c, {"ok": False, "status": 429, "items": []})
@@ -2747,7 +2749,7 @@ class ReadTab(TicketTab):
         return await super().evaluate(js, await_promise, **kw)
 
 
-R2_EXACT = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+R2_EXACT = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
 
 
 def _r2_suspect_ex(c, orphan_age=10.0):
@@ -2779,20 +2781,20 @@ def test_r2_po_only_suspect_read():
     # A 1-unit line (qty below Q) is exact too.
     c = Clock()
     ex = _r2_suspect_ex(c)
-    one = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1}]}
+    one = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 1}]}
     tab = ReadTab(ex, [t_po(429, FS_BODY)], c, [one])
     loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="1")
     check("r2q_qty1_exact", [m for _, m, _ in tab.tickets] == ["po_only"], tab.tickets)
     # Anything but exact -> pre_po (strict gate), with the read described.
     bad_reads = (
-        ("stacked", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]},
+        ("stacked", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]},
          "1 line(s) 1010892069x4"),
-        ("two_lines_over", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+        ("two_lines_over", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
                                                                  {"id": "CI-2", "tcin": TCIN, "qty": 2}]}, "2 line(s)"),
-        ("foreign", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+        ("foreign", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
                                                           {"id": "CI-9", "tcin": OTHER, "qty": 1}]}, "2 line(s)"),
-        ("empty", {"ok": True, "status": 200, "items": []}, "0 line(s)"),
-        ("qty_unknown", {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]},
+        ("empty", {"ok": True, "status": 200, "has_items": True, "items": []}, "0 line(s)"),
+        ("qty_unknown", {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": None}]},
          "1010892069xNone"),
         ("read_429", {"ok": False, "status": 429, "items": []}, "failed status=429"),
         ("read_raises", RuntimeError("websocket closed"), "failed status=0 err=RuntimeError"),
@@ -2905,7 +2907,7 @@ def test_r2_held_entry_tagged():
     r = run_impl(ex, HELD)
     check("r2h_terminal_keeps_ambiguous", r.get("ambiguous_commit") is True, r)
     # Marker dropped (empty cart) -> a normal shot: untagged, a recorded pass.
-    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "items": []}, probes={TCIN: True})
+    ex, tab = held_impl(c, mk_held(), read={"ok": True, "status": 200, "has_items": True, "items": []}, probes={TCIN: True})
     r = run_impl(ex, HELD)
     check("r2h_normal_shot_untagged", "woncart_entry" not in r and ex.fl_calls == [2]
           and ir.classify_result(r) == "pass", r)
@@ -3025,7 +3027,7 @@ def test_r2_fl1_orphan_stamp_feeds_loop():
     and a won-cart loop entered right after reads the cart before any po_only
     ticket (pre_po when the read is not exact). Replacing the stamp with `pass`
     fails this test."""
-    for label, rd, want in (("empty_read", {"ok": True, "status": 200, "items": []}, "pre_po"),
+    for label, rd, want in (("empty_read", {"ok": True, "status": 200, "has_items": True, "items": []}, "pre_po"),
                             ("stacked_read", {"ok": True, "status": 200,
                                               "items": [{"id": "CI-1", "tcin": TCIN, "qty": 4}]}, "pre_po"),
                             ("exact_read", R2_EXACT, "po_only")):
@@ -3127,7 +3129,7 @@ def test_r1_boot_audit_delete_race():
                     self.on_delete(self)
                 return 204
             self.reads += 1
-            return {"ok": True, "status": 200, "items": [{"id": "staleA", "tcin": OTHER, "qty": 4},
+            return {"ok": True, "status": 200, "has_items": True, "items": [{"id": "staleA", "tcin": OTHER, "qty": 4},
                                                          {"id": "WON201", "tcin": TCIN, "qty": 2}]}
 
     t = RTab()
@@ -3145,7 +3147,7 @@ def test_r1_boot_audit_delete_race():
     res = run(ex._delete_cart_items(t, ids=["s1"], abort_fn=lambda: 1 / 0))
     check("r1b_abort_fn_error_stops", res == (False, 0) and t.deleted == [], res)
     # End to end: a purchase starts right after the audit's read.
-    ex, wt = boot_ex(c, {"ok": True, "status": 200, "items": [{"id": "staleA", "tcin": OTHER, "qty": 4},
+    ex, wt = boot_ex(c, {"ok": True, "status": 200, "has_items": True, "items": [{"id": "staleA", "tcin": OTHER, "qty": 4},
                                                               {"id": "staleB", "tcin": TCIN, "qty": 1}]})
     del ex._delete_cart_items
     tab = RTab(on_delete=lambda _t: setattr(ex.session_manager, "live", True))
@@ -3164,7 +3166,7 @@ def test_r1_boot_audit_delete_race():
 
     def _read_then_add():
         items = next(reads, base + [{"id": "WON201", "tcin": TCIN, "qty": 2}])
-        return {"ok": True, "status": 200, "items": [dict(i) for i in items]}
+        return {"ok": True, "status": 200, "has_items": True, "items": [dict(i) for i in items]}
 
     ex, wt = boot_ex(c, _read_then_add)
     del ex._delete_cart_items
@@ -3465,7 +3467,7 @@ def test_r3_dirty_cart_flag_and_release():
 
         async def _read(t, timeout=2.5):
             ex.reads.append(timeout)
-            return json.loads(json.dumps(read if read is not None else {"ok": True, "status": 200, "items": [
+            return json.loads(json.dumps(read if read is not None else {"ok": True, "status": 200, "has_items": True, "items": [
                 {"id": "CI-1", "tcin": TCIN, "qty": 2}]}))
 
         ex._cart_items_read = _read
@@ -3511,7 +3513,7 @@ def test_r3_dirty_cart_flag_and_release():
           and ("atc", None) not in order, (res, dirty(ex)))
     # Delete fails but a read shows no line of ours (already deleted) -> continue.
     ex, res, order = next_purchase(flag0, delete_result=(False, 0),
-                                   read={"ok": True, "status": 200, "items": [{"id": "CI-7", "tcin": OTHER,
+                                   read={"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-7", "tcin": OTHER,
                                                                                "qty": 1}]})
     check("r3d_release_already_gone_continues", ("atc", None) in order and dirty(ex) is None
           and res == "legacy", (res, order))
@@ -3523,7 +3525,7 @@ def test_r3_dirty_cart_flag_and_release():
     check("r3d_no_flag_no_delete", order[:1] == [("atc", None)] and not ex.reads, (order, ex.reads))
     # The boot audit never adopts a line that is pending release.
     c = Clock()
-    one = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+    one = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
     ex, wt = boot_ex(c, one)
     ex._woncart_dirty = dict(flag0)
     out, _ = boot_run(ex, c)
@@ -3541,7 +3543,7 @@ def test_r3_suspect_rereads_in_window():
     ex = _r2_suspect_ex(c, orphan_age=301.0)
     ex._harvest_landed_suspect = True
     ex._harvest_landed_suspect_ts = c.t
-    landed = {"ok": True, "status": 200, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
+    landed = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2},
                                                    {"id": "CI-H", "tcin": "12345678", "qty": 1}]}
     tab = ReadTab(ex, [t_po(429, FS_BODY), t_skip("foreign_cart_item")], c, [R2_EXACT, landed])
     ex.delete_result = (True, 0)
@@ -3599,7 +3601,7 @@ class _SrvTab:
             await REAL_ASYNCIO.sleep(self.lat_read)
             its = [{"id": k, "tcin": v, "qty": 2} for k, v in self.srv.items.items()]
             self.srv.log.append((self.name, "READ", [i["id"] for i in its]))
-            return {"ok": True, "status": 200, "items": its}
+            return {"ok": True, "status": 200, "has_items": True, "items": its}
         raise AssertionError("unexpected evaluate: " + js[:80])
 
 
@@ -3657,11 +3659,301 @@ def test_r3_release_tolerates_double_delete():
     r = run_impl(ex, HELD)
     check("r3t_read_failed_fails", r.get("reason") == "held_cart_release_failed" and ex.fl_calls == [], r)
     # Delete failed, read shows no line of ours -> the normal shot fires.
-    ex, tab = held_impl(c, mk_held(age=1000.0), read={"ok": True, "status": 200, "items": []},
+    ex, tab = held_impl(c, mk_held(age=1000.0), read={"ok": True, "status": 200, "has_items": True, "items": []},
                         probes={TCIN: True})
     ex.delete_result = (False, 0)
     r = run_impl(ex, HELD)
     check("r3t_already_gone_shot_fires", ex.fl_calls == [2] and ex._held_cart is None, (r, ex.fl_calls))
+
+
+def test_r6_eviction_read():
+    """2026-09-18 live (run_20260917_232400, cart 1011483413): a place-order
+    424 RESERVATION_FAILURE empties the cart, but the loop only learned that
+    from a later pre_checkout 2xx that the FS gate never let through, so it
+    fired 30 tickets and two held re-entries at an empty cart while the TCIN
+    was back in stock. TARGET_WONCART_EVICTION_READ=1 reads the cart right after
+    a po 424 and after a keyless pre 400; a read that proves our line gone ends
+    the loop as cart_evicted (no hold; the race re-ATCs). Default 0 = prior."""
+    RF = (424, "RESERVATION_FAILURE")
+    EMPTY = {"ok": True, "status": 200, "has_items": True, "items": []}
+    OURS = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+    FOREIGN_ONLY = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-9", "tcin": OTHER, "qty": 1}]}
+    FAILED_READ = {"ok": False, "status": 503, "items": []}
+    ON = dict(TARGET_WONCART_EVICTION_READ="1")
+
+    # (a) po 424 + empty read -> cart_evicted after ONE ticket, no hold, race re-ATCs.
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [EMPTY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **ON)
+    check("r6_424_empty_read_evicted", v == "done" and r.get("won_cart_exit") == "cart_evicted"
+          and r.get("reason") == "checkout_busy_retryable" and len(tab.tickets) == 1
+          and len(tab.read_ts) == 1 and getattr(ex, "_held_cart", None) is None, (v, r, tab.tickets, tab.read_ts))
+    check("r6_424_empty_read_logged", "Target emptied the cart, ending the loop as cart_evicted" in run.last_out,
+          run.last_out[-500:])
+    # (a2) a read that shows only a foreign line also proves our line gone.
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [FOREIGN_ONLY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **ON)
+    check("r6_424_foreign_only_evicted", r.get("won_cart_exit") == "cart_evicted" and len(tab.tickets) == 1,
+          (r, tab.tickets))
+
+    # (b) po 424 + our line still there -> prior behaviour (next ticket re-verifies, pre_po).
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_prepo(429, FS_BODY)], c, [OURS])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2", **ON)
+    check("r6_424_line_present_continues", [m for _, m, _ in tab.tickets] == ["po_only", "pre_po"]
+          and r.get("won_cart_exit") == "cart_ticket_cap" and len(tab.read_ts) == 1
+          and "our line is still there" in run.last_out, (tab.tickets, r, run.last_out[-400:]))
+
+    # (c) po 424 + failed read -> prior behaviour too (never evict on a failed read).
+    for label, rd in (("read_503", FAILED_READ), ("read_raises", RuntimeError("websocket closed")),
+                      ("read_hangs", REAL_ASYNCIO.TimeoutError())):
+        c = Clock()
+        ex = bare(c)
+        tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_prepo(429, FS_BODY)], c, [rd])
+        (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2", **ON)
+        check(f"r6_424_failed_read_continues[{label}]",
+              [m for _, m, _ in tab.tickets] == ["po_only", "pre_po"] and r.get("won_cart_exit") == "cart_ticket_cap"
+              and "unreadable, keeping the loop" in run.last_out, (tab.tickets, r, run.last_out[-400:]))
+
+    # (d) keyless pre 400 + empty read -> cart_evicted (the unverified-cart shape).
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_pre(400, "{}"), t_pre(429, FS_BODY)], c, [EMPTY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6", **ON)
+    check("r6_pre400_empty_read_evicted", r.get("won_cart_exit") == "cart_evicted" and len(tab.tickets) == 1
+          and len(tab.read_ts) == 1, (r, tab.tickets, tab.read_ts))
+    # (d2) pre 400 with our line present -> the pre_400 streak logic as before.
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_pre(400, "{}")] * 4, c, [OURS])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6", **ON)
+    check("r6_pre400_line_present_streak", r.get("won_cart_exit") == "pre_400_streak" and len(tab.tickets) == 3
+          and len(tab.read_ts) == 3, (r, tab.tickets, tab.read_ts))
+    # (d3) a pre 429 (FS gate) never triggers a read.
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_pre(429, FS_BODY)] * 3, c, [EMPTY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="3", **ON)
+    check("r6_pre429_no_read", len(tab.tickets) == 3 and not tab.read_ts, (tab.tickets, tab.read_ts))
+
+    # (e) flag off (default): no read at all, exact prior behaviour.
+    c = Clock()
+    ex = bare(c)
+    # (424 -> re-verify pre_po; its pre 200 re-verifies the cart -> po_only again: the pre-existing shape.)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_prepo(429, FS_BODY), t_po(429, FS_BODY)], c, [EMPTY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    check("r6_flag_off_no_read", [m for _, m, _ in tab.tickets] == ["po_only", "pre_po", "po_only"]
+          and not tab.read_ts and r.get("won_cart_exit") == "cart_ticket_cap",
+          ([m for _, m, _ in tab.tickets], tab.read_ts, r.get("won_cart_exit")))
+    # ...and a keyless pre 400 with the flag off: no read, the streak logic only.
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_pre(400, "{}")] * 4, c, [EMPTY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6")
+    check("r6_flag_off_pre400_no_read", not tab.read_ts and r.get("won_cart_exit") == "pre_400_streak"
+          and len(tab.tickets) == 3, (tab.read_ts, r.get("won_cart_exit"), len(tab.tickets)))
+
+    # (f) config + pure helper.
+    check("r6_cfg_default_off", pe_mod.woncart_cfg({})["eviction_read"] is False
+          and pe_mod.woncart_cfg({"TARGET_WONCART_EVICTION_READ": " 1 "})["eviction_read"] is True
+          and pe_mod.woncart_cfg({"TARGET_WONCART_EVICTION_READ": "0"})["eviction_read"] is False)
+    h = pe_mod.woncart_read_has_tcin
+    check("r6_has_tcin_unit", h(OURS, TCIN) is True and h(OURS, int(TCIN)) is True and h(EMPTY, TCIN) is False
+          and h(FOREIGN_ONLY, TCIN) is False and h(FAILED_READ, TCIN) is None and h(None, TCIN) is None
+          and h({"ok": True, "items": "x"}, TCIN) is None and h({"ok": 1, "items": []}, TCIN) is None
+          and h({"ok": True, "has_items": True, "items": ["x", {"tcin": TCIN}]}, TCIN) is True)
+    # Review 2026-09-20 (F5): a 2xx whose payload carried NO cart_items array is
+    # unreadable, never proof of an empty cart (a changed body shape must not end
+    # the loop); an older JS build without the key reads the same way.
+    check("r6_has_tcin_needs_items_key",
+          h({"ok": True, "status": 200, "items": []}, TCIN) is None
+          and h({"ok": True, "status": 200, "has_items": False, "items": []}, TCIN) is None
+          and h({"ok": True, "status": 200, "has_items": True, "items": []}, TCIN) is False)
+    # (g) the arming line in the bat.
+    bat = (ROOT / "run_bot_with_nightly_restart.bat").read_bytes().decode("utf-8", "replace").split("\r\n")
+    check("r6_bat_armed", bat.count("set TARGET_WONCART_EVICTION_READ=1") == 1)
+
+
+def test_r7_eviction_presume():
+    """2026-09-18 second pass: the cart GET is throttled in hot windows too (the
+    02:43:40 held re-entry's read came back 429 and the loop went in blind).
+    The eviction read now retries once; with TARGET_WONCART_EVICTION_PRESUME=1
+    a cart that is unreadable twice after a po 424 / keyless pre 400 is treated
+    as evicted, and a held marker idle > 20 s whose read fails twice is dropped
+    for a normal shot. Default 0 = the read result only."""
+    RF = (424, "RESERVATION_FAILURE")
+    EMPTY = {"ok": True, "status": 200, "has_items": True, "items": []}
+    OURS = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "CI-1", "tcin": TCIN, "qty": 2}]}
+    BAD = {"ok": False, "status": 429, "items": []}
+    ON = dict(TARGET_WONCART_EVICTION_READ="1")
+    PRES = dict(ON, TARGET_WONCART_EVICTION_PRESUME="1")
+
+    # unreadable twice + presume -> evicted after ONE ticket, two reads 0.6 s apart
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [BAD])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r7_unreadable_presumed_evicted", r.get("won_cart_exit") == "cart_evicted" and len(tab.tickets) == 1
+          and len(tab.read_ts) == 2 and round(tab.read_ts[1] - tab.read_ts[0], 1) == 0.6
+          and "presuming evicted" in run.last_out, (r, tab.read_ts, run.last_out[-300:]))
+    # unreadable twice WITHOUT presume -> prior behaviour (still two reads)
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_prepo(429, FS_BODY)], c, [BAD])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2", **ON)
+    check("r7_unreadable_no_presume_continues", [m for _, m, _ in tab.tickets] == ["po_only", "pre_po"]
+          and len(tab.read_ts) == 2 and "presuming evicted" not in run.last_out, (tab.tickets, tab.read_ts))
+    # first read fails, the retry proves the line gone -> evicted (no presume needed)
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [BAD, EMPTY])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **ON)
+    check("r7_retry_proves_gone", r.get("won_cart_exit") == "cart_evicted" and len(tab.read_ts) == 2
+          and "Target emptied the cart" in run.last_out, (r, tab.read_ts))
+    # first read fails, the retry shows our line -> continue, even with presume on
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_prepo(429, FS_BODY)], c, [BAD, OURS])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2", **PRES)
+    check("r7_retry_shows_line_continues", [m for _, m, _ in tab.tickets] == ["po_only", "pre_po"]
+          and r.get("won_cart_exit") == "cart_ticket_cap" and "our line is still there" in run.last_out,
+          (tab.tickets, r))
+    # presume without the read flag is inert (no read, no presume)
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_prepo(429, FS_BODY)], c, [BAD])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="2",
+                         TARGET_WONCART_EVICTION_PRESUME="1")
+    check("r7_presume_needs_read_flag", not tab.read_ts and r.get("won_cart_exit") == "cart_ticket_cap",
+          (tab.read_ts, r))
+    # keyless pre 400, unreadable twice, presume -> evicted
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_pre(400, "{}"), t_pre(429, FS_BODY)], c, [BAD])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r7_pre400_unreadable_presumed", r.get("won_cart_exit") == "cart_evicted" and len(tab.tickets) == 1,
+          (r, tab.tickets))
+    check("r7_cfg", pe_mod.woncart_cfg({})["eviction_presume"] is False
+          and pe_mod.woncart_cfg({"TARGET_WONCART_EVICTION_PRESUME": " 1 "})["eviction_presume"] is True)
+
+    # ---- held re-entry ----
+    def scripted(ex_, results):
+        seq = list(results)
+        ex_.reads = []
+
+        async def _read(t, timeout=2.5):
+            ex_.reads.append(timeout)
+            r_ = seq.pop(0) if len(seq) > 1 else seq[0]
+            return json.loads(json.dumps(r_))
+        ex_._cart_items_read = _read
+
+    HELD_PRES = dict(HELD, TARGET_WONCART_EVICTION_PRESUME="1")
+    c = Clock()
+    # idle 50 s (mk_held default), read fails twice, presume on -> marker dropped, normal shot
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})
+    scripted(ex, [BAD])
+    r = run_impl(ex, HELD_PRES)
+    check("r7_held_unreadable_presumed_normal_shot", ex._held_cart is None and ex.fl_calls == [2]
+          and ex.loop_calls == [(TCIN, 2, "first")] and len(ex.reads) == 2
+          and "presuming the held" in run.last_out, (ex.loop_calls, ex.fl_calls, ex.reads, run.last_out[-300:]))
+    # second read proves the line gone -> same outcome, different line
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})
+    scripted(ex, [BAD, EMPTY])
+    r = run_impl(ex, HELD_PRES)
+    check("r7_held_second_read_gone", ex._held_cart is None and ex.fl_calls == [2]
+          and "line is gone from the cart (second read)" in run.last_out, (ex.loop_calls, run.last_out[-300:]))
+    # second read shows our line -> the loop is entered as before (verified demoted)
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})
+    scripted(ex, [BAD, OURS])
+    r = run_impl(ex, HELD_PRES)
+    check("r7_held_second_read_present_enters_loop", ex.loop_calls == [(TCIN, 2, "held")] and ex.fl_calls == []
+          and isinstance(ex._held_cart, dict) and ex._held_cart["verified"] is False, (ex.loop_calls, ex.fl_calls))
+    # a marker touched in the last 20 s (call_cap / yield re-entry) is never presumed gone
+    ex, tab = held_impl(c, mk_held(last_ticket_ts=real_time.time() - 5.0), probes={TCIN: True})
+    scripted(ex, [BAD])
+    r = run_impl(ex, HELD_PRES)
+    check("r7_held_fresh_marker_enters_loop", ex.loop_calls == [(TCIN, 2, "held")] and ex.fl_calls == []
+          and len(ex.reads) == 1 and "cart read failed" in run.last_out, (ex.loop_calls, ex.reads))
+    # presume off -> exact prior behaviour (one read, the loop)
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})
+    scripted(ex, [BAD])
+    r = run_impl(ex, HELD)
+    check("r7_held_presume_off_prior", ex.loop_calls == [(TCIN, 2, "held")] and len(ex.reads) == 1
+          and "cart read failed" in run.last_out, (ex.loop_calls, ex.reads))
+    bat = (ROOT / "run_bot_with_nightly_restart.bat").read_bytes().decode("utf-8", "replace").split("\r\n")
+    check("r7_bat_armed", bat.count("set TARGET_WONCART_EVICTION_PRESUME=1") == 1)
+
+
+def test_r8_review_20260920_presume_dirty_and_pre400_key():
+    """Review 2026-09-20. F3: a PRESUMED eviction after a read that failed for a
+    LOCAL reason (evaluate error / status 0) also marks the cart dirty, so the
+    next purchase deletes any leftover line before it adds; a 429 (Target
+    throttling the read) presumes without the dirty flag. F4: the pre-400
+    eviction read fires only on a keyless / reservation-shaped 400, never on a
+    payment or CVV one."""
+    RF = (424, "RESERVATION_FAILURE")
+    BAD429 = {"ok": False, "status": 429, "items": []}
+    BAD0 = {"ok": False, "status": 0, "items": [], "error": "TimeoutError"}
+    PRES = dict(TARGET_WONCART_EVICTION_READ="1", TARGET_WONCART_EVICTION_PRESUME="1")
+    DIRTY_LINE = "our line may still be in the cart"
+
+    # 429 twice -> presume, NO dirty flag
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [BAD429])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r8_429_presume_not_dirty", r.get("won_cart_exit") == "cart_evicted"
+          and getattr(ex, "_woncart_dirty", None) is None and DIRTY_LINE not in run.last_out,
+          (r, getattr(ex, "_woncart_dirty", None)))
+    # a LOCAL failure (status 0) twice -> presume AND dirty
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [BAD0])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r8_local_failure_presume_dirty", r.get("won_cart_exit") == "cart_evicted"
+          and isinstance(getattr(ex, "_woncart_dirty", None), dict)
+          and ex._woncart_dirty.get("tcin") == TCIN and DIRTY_LINE in run.last_out,
+          (r, getattr(ex, "_woncart_dirty", None), run.last_out[-300:]))
+    check("r8_local_failure_logged", "read failed for a LOCAL reason" in run.last_out, run.last_out[-400:])
+    # an exception from the read is a local failure too
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_po(424, "{}", rej=RF), t_po(429, FS_BODY)], c, [RuntimeError("websocket closed")])
+    (v, r), _ = loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r8_raise_presume_dirty", r.get("won_cart_exit") == "cart_evicted"
+          and isinstance(getattr(ex, "_woncart_dirty", None), dict), r)
+
+    # F4: a pre 400 carrying a CVV key must NOT trigger the eviction read
+    c = Clock()
+    ex = bare(c)
+    # the loop resets the interceptor fields before every ticket, so the key has
+    # to arrive with the ticket itself (the tab applies step['rej'] when it fires)
+    _cvv400 = dict(t_pre(400, "{}"), rej=(400, "MISSING_CREDIT_CARD_CVV"))
+    tab = ReadTab(ex, [_cvv400] * 4, c, [{"ok": True, "status": 200, "has_items": True, "items": []}])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r8_pre400_cvv_key_no_read", not tab.read_ts and r.get("won_cart_exit") == "pre_400_streak",
+          (tab.read_ts, r.get("won_cart_exit")))
+    # ...while a keyless 400 still does
+    c = Clock()
+    ex = bare(c)
+    tab = ReadTab(ex, [t_pre(400, "{}")] * 4, c, [{"ok": True, "status": 200, "has_items": True, "items": []}])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r8_pre400_keyless_reads", len(tab.read_ts) == 1 and r.get("won_cart_exit") == "cart_evicted",
+          (tab.read_ts, r.get("won_cart_exit")))
+    # ...and a RESERVATION-shaped 400 does
+    c = Clock()
+    ex = bare(c)
+    _rf400 = dict(t_pre(400, "{}"), rej=(400, "RESERVATION_FAILURE"))
+    tab = ReadTab(ex, [_rf400] * 4, c, [{"ok": True, "status": 200, "has_items": True, "items": []}])
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_MAX_TICKETS="6", **PRES)
+    check("r8_pre400_reservation_key_reads", len(tab.read_ts) == 1
+          and r.get("won_cart_exit") == "cart_evicted", (tab.read_ts, r.get("won_cart_exit")))
+    check("r8_pre400_helper_unit",
+          pe_mod.PurchaseExecutor._pre400_is_evictionish(bare(Clock())) is True)
 
 
 def main():
@@ -3681,7 +3973,11 @@ def main():
              test_r2_held_entry_tagged, test_r2_fs_ticket_ms_since_201,
              # review round R3 (2026-09-17, cart safety)
              test_r3_po_5xx_unresolved, test_r3_dirty_cart_flag_and_release,
-             test_r3_suspect_rereads_in_window, test_r3_release_tolerates_double_delete)
+             test_r3_suspect_rereads_in_window, test_r3_release_tolerates_double_delete,
+             # 2026-09-18 live read-out (cart 1011483413 fired at an emptied cart)
+             test_r6_eviction_read, test_r7_eviction_presume,
+             # review 2026-09-20
+             test_r8_review_20260920_presume_dirty_and_pre400_key)
     for fn in tests:
         try:
             fn()

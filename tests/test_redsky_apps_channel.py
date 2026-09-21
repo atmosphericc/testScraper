@@ -262,8 +262,10 @@ def test_replay_merge_guard_allows_shorter_token_set():
 
 def test_bank_gate():
     MGR = (ROOT / 'src' / 'purchasing' / 'bulletproof_purchase_manager.py').read_text(encoding='utf-8', errors='replace')
-    check("exe_harvest_set_ready_defined", "def harvest_set_ready(self) -> bool:" in EXE_SRC
-          and "async def harvest_wait_for_set(self, max_wait_s: float) -> bool:" in EXE_SRC)
+    check("exe_harvest_set_ready_defined", "def harvest_set_ready(self, margin_s: float = 0.0) -> bool:" in EXE_SRC   # 2026-09-18: optional cap headroom
+          # 2026-09-20 (F1): the wait takes the caller's readiness margin
+          and "async def harvest_wait_for_set(self, max_wait_s: float, margin_s: float = 0.0) -> bool:" in EXE_SRC
+          and "if self.harvest_set_ready(margin_s):" in EXE_SRC)
     check("mgr_bank_gate_flag_default_off", "os.environ.get('TARGET_SHOT_BANK_GATE', '0') == '1' and _gk in _gate_kinds" in MGR)
     check("mgr_bank_gate_only_after_401", "_gk == 'auth401'" in MGR and "TARGET_SHOT_BANK_WAIT_S" in MGR)
     check("mgr_bank_gate_pauses_instead_of_page_signed", "[BANK_GATE] no fresh set within" in MGR
@@ -281,7 +283,10 @@ def test_bank_gate():
     # (behaviour pinned in tests/test_won_cart_ride_smoke.py).
     check("mgr_watchdog_tracks_budget", "_force_s = max(120.0, float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110')) + 90.0)" in MGR
           and "self._force_complete_due(elapsed_time, _force_s," in MGR)
-    check("mgr_cadence_print_silenced_under_wave_first", "and not _wf_takes:" in MGR)
+    # 2026-09-17 evening: the same guard also silences it for a DCO-burst re-POST
+    # (tests/test_dco_burst.py pins the behaviour).
+    check("mgr_cadence_print_silenced_under_wave_first",
+          "and not _wf_takes and not _dco_burst_take:" in MGR)
     check("mgr_wave_first_cold_reentry", "TARGET_WAVE_REENTRY_MIN_S" in MGR and "_re_lo = max(15.0, _re_lo)" in MGR
           and "cold re-entry in" in MGR)
     check("mgr_wave_first_ends_window_when_no_room", "if _remaining < _re_lo_needed:" in MGR and "ending the window (re-arm opens a fresh one)" in MGR)

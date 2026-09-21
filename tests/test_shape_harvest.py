@@ -930,6 +930,38 @@ def test_hv1_skip_disables_replay():
     check("hv1_skip_flag_other_account_untouched", ex3._harvest_replay_on is True and ex3.harvest_set_ready() is True)
 
 
+def test_quiet_recheck_mid_run():
+    """2026-09-18: quiet mode is re-checked INSIDE a harvest run (before the
+    fulfillment-cell click and before the real Add-to-cart click) when
+    TARGET_HARVEST_QUIET_RECHECK=1; default 0 = prior behaviour."""
+    _saved = os.environ.pop('TARGET_HARVEST_QUIET_RECHECK', None)
+    try:
+        ex, _ = _hv1_stub({})
+        ex._woncart_active_until = time.time() + 60
+        check("quiet_recheck_default_off", ex._harvest_quiet_now('x') is False)
+        os.environ['TARGET_HARVEST_QUIET_RECHECK'] = '1'      # the helper reads the process env
+        ex._woncart_active_until = 0.0
+        check("quiet_recheck_not_quiet", ex._harvest_quiet_now('x') is False)
+        ex._woncart_active_until = time.time() + 60
+        r, out = _captured(lambda: ex._harvest_quiet_now('Add-to-cart click'))
+        check("quiet_recheck_stands_down", r is True and 'quiet mode began mid-run' in out
+              and 'Add-to-cart click' in out)
+        os.environ['TARGET_HARVEST_QUIET_RECHECK'] = '0'
+        check("quiet_recheck_kill_switch", ex._harvest_quiet_now('x') is False)
+    finally:
+        os.environ.pop('TARGET_HARVEST_QUIET_RECHECK', None)
+        if _saved is not None:
+            os.environ['TARGET_HARVEST_QUIET_RECHECK'] = _saved
+    src = EXE_SRC
+    i_def = src.find("async def _harvest_once(self) -> bool:")
+    i_ship = src.find("if self._harvest_quiet_now('fulfillment-cell click'):", i_def)
+    i_sel = src.find("SELECT_SHIPPING_JS", i_def)
+    i_clk = src.find("if self._harvest_quiet_now('Add-to-cart click'):", i_def)
+    i_hc = src.find("_shape_harvest.human_click(tab, x, y", i_def)
+    check("quiet_recheck_before_shipping_select", 0 < i_def < i_ship < i_sel)
+    check("quiet_recheck_before_real_click", 0 < i_sel < i_clk < i_hc)
+
+
 def test_hv1_miss_probe_and_park():
     ex, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
     tab = ProbeTab(dict(PX_INFO))
@@ -1398,7 +1430,8 @@ if __name__ == '__main__':
                test_executor_wiring, test_bat_pins, test_compiles,
                # 2026-09-16 HV-1
                test_hv1_env_clean, test_hv1_config, test_hv1_bank_clear, test_hv1_probe_js,
-               test_hv1_probe_fields, test_hv1_skip_disables_replay, test_hv1_miss_probe_and_park,
+               test_hv1_probe_fields, test_hv1_skip_disables_replay, test_quiet_recheck_mid_run,
+               test_hv1_miss_probe_and_park,
                test_hv1_harvest_once_px_integration, test_hv1_renav_live, test_hv1_backoff,
                test_hv1_harvest_stuck, test_hv1_flush_on_relaunch, test_hv1_bank_gate_adaptive,
                test_hv1_wiring):

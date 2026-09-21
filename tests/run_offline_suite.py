@@ -64,6 +64,9 @@ OFFLINE = [
     # round R1 added the HS-1 / BG-1 / ID-1 enforcement tests, the pre-dispatch
     # sit-out + headline-reason fixes and the AC-1 latch persistence (temp files).
     "test_identity_rest",
+    # 2026-09-17 evening: ATC-level DCO burst (real manager race loop against stub
+    # workers via the test_identity_rest harness; no browser, no network).
+    "test_dco_burst",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

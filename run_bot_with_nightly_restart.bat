@@ -714,6 +714,47 @@ set TARGET_WAVE_REENTRY_MIN_S=55
 set TARGET_WAVE_REENTRY_MAX_S=70
 set TARGET_SHOT_BANK_GATE=1
 set TARGET_SHOT_BANK_WAIT_S=8
+REM 2026-09-17 evening -- ATC-level DCO BURST (docs/HOT_SKU_FIX_2026_09_16.md #13).
+REM A DCO-body 429 on the cart_items POST ("Request throttled due to high
+REM demand item") means the EDGE LIMITER ADMITTED THE SHOT and the cart
+REM service's demand throttle rejected the add. Wave-first treated it like an
+REM edge 429 and slept 55-70 s -- walking away from the only moment the edge
+REM is open. Every run log: the next ATC by the same identity on the same
+REM TCIN within 5 s of a DCO 429 got past the edge again 15/48 times (3 x
+REM 201); after 45-90 s, 0/7. On 09-11 primary was admitted at 4 flips, got
+REM DCO each time, slept ~60 s and got edge-429 on all 4 re-entries; same at
+REM the 09-16 Tin flip. So: after a DCO 429 re-POST every 1.0-1.5 s, up to 2
+REM times per race thread (since 09-18 only with a banked Shape set, see
+REM below); the first edge-429 or 401 ends
+REM the burst through the unchanged wave-first branch. Checkout-level
+REM FAST_SELLING (the won-cart loop) is untouched. grep [DCO_BURST].
+REM Fresh-context code review (same evening): the burst is SHORT on purpose.
+REM The census gradient (tools/analysis/census_density.py, CLAIMS C-0917-06)
+REM puts our 2nd-3rd own shot on a TCIN in its best bucket (20 pct edge-pass)
+REM and the 6th+ in its worst (2 pct); the harvest bank holds 3 real-click
+REM sets; a long burst would push the later cold re-entry into the 0/438
+REM bucket. So MAX=2 (both re-POSTs land within ~5 s, both carry banked
+REM sets). CART_HOLD_CHECK_INTERVAL 4 to 1 s so the silent-hold read is not
+REM skipped between burst re-POSTs (a late-landing add + a re-POST 201 would
+REM otherwise be a qty-over cart the guard deletes). Readout:
+REM tools/analysis/readout_next_drop.py R2.
+REM Kill: TARGET_ATC_DCO_BURST=0 (exact prior behaviour); the interval line
+REM can stay (a 0.2 s GET at most once per second, only while re-POSTing).
+set TARGET_ATC_DCO_BURST=1
+set TARGET_ATC_DCO_BURST_MAX=2
+set TARGET_ATC_DCO_BURST_MIN_S=1.0
+set TARGET_ATC_DCO_BURST_MAX_S=1.5
+REM 2026-09-18 first live night: 6 of 7 burst re-POSTs went out PAGE-SIGNED
+REM (log: bank STALE at shot time, past the replay cap -- the flip shot had
+REM eaten the only fresh banked Shape set) and all 6 drew an edge 429; the one
+REM re-POST that carried a banked set got back through the edge. So a burst
+REM re-POST now fires ONLY with a replayable banked set: 0 s check, then up to
+REM BANK_WAIT_S for the in-window harvest (one set per 8-10 s); none in time =
+REM no re-POST, wave-first decides. grep "no replayable banked set".
+REM Kill: TARGET_ATC_DCO_BURST_REQUIRE_BANK=0 (the 09-17 behaviour).
+set TARGET_ATC_DCO_BURST_REQUIRE_BANK=1
+set TARGET_ATC_DCO_BURST_BANK_WAIT_S=6
+set TARGET_CART_HOLD_CHECK_INTERVAL_S=1.0
 REM  15) Real PDP referrer on the fast-lane ATC via fetch's `referrer` INIT
 REM      option (the headers-object Referer is a forbidden name and never hit
 REM      the wire -- shots actually carried the parked homepage//account URL; a
@@ -869,13 +910,53 @@ REM restores the 5,15 default.
 set TARGET_STOCK_PROBE=1
 set TARGET_STOCK_HYST_S=20
 set TARGET_WONCART_DIRECT=1
-set TARGET_WONCART_SCHEDULE_S=3,4,5
-set TARGET_WONCART_STEADY_GAP_S=5
+REM 2026-09-18 verified read-out (two fresh-context agents, docs CLAIMS C-0918):
+REM both won carts got ONE checkout draw in their first 3 s (the chain's own
+REM pre_checkout, FAST_SELLING at +0.1-0.3 s) then waited 3.1-3.4 s for ticket 1;
+REM about 22 pct of gate-facing requests pass; cart 1011960739's line lived at
+REM most 13 s and never got a place-order; cart 1011483413's first real
+REM reservation attempt came at +17.5 s (a retryable 429 RESERVATION_FAILURE --
+REM on 08-04 such a cart won after re-shoots 2.6-2.9 s apart) and its next three
+REM draws over 21 s hit the gate, one after a 7.5 s jitter gap. Across every log
+REM none of the 8 carts whose chain pre_checkout was FS-rejected converted; all
+REM 14 orders were one chain done in about 3 s. So: draws at +1,+2,+3,+5,+7,+10 s
+REM then every 3 s with 1 s jitter (2-4 s). With the eviction read a dead cart now
+REM ends the loop, so the total POST count per cart falls (last night: 40).
+REM REVERT to R5: SCHEDULE_S=3,4,5 + STEADY_GAP_S=5 and delete the JITTER_S line.
+set TARGET_WONCART_SCHEDULE_S=1,1,1,2,2,3
+set TARGET_WONCART_STEADY_GAP_S=3
+set TARGET_WONCART_JITTER_S=1
 set TARGET_WONCART_OOS_TAIL_TICKETS=1
 set TARGET_WONCART_MAX_TICKETS=40
 set TARGET_WONCART_CALL_MAX_S=120
 set TARGET_WONCART_HEADROOM_S=45
 set TARGET_WONCART_YIELD_FLEET=1
+REM 2026-09-18 live read-out (run_20260917_232400, cart 1011483413): a
+REM place-order 424 RESERVATION_FAILURE EMPTIES the cart, but the loop only
+REM learned that from a later pre_checkout 2xx that the FAST_SELLING gate
+REM never let through, so 30 tickets and two held re-entries fired at an
+REM empty cart while the TCIN was back in stock. Now the loop reads the
+REM cart (Endpoint 6 GET, ~0.3 s) right after a po 424 and after a keyless
+REM pre 400; a read that proves our line gone ends the loop as cart_evicted
+REM (no hold) and the race re-ATCs. grep "Target emptied the cart".
+REM Kill: TARGET_WONCART_EVICTION_READ=0 (exact prior behaviour).
+set TARGET_WONCART_EVICTION_READ=1
+REM Second pass on the same log: the cart GET is throttled in hot windows too
+REM (the 02:43:40 held re-entry read came back 429 and the loop went in blind,
+REM 17 tickets at a cart a 424 had emptied two minutes earlier). PRESUME=1: the
+REM eviction read retries once after 0.6 s; unreadable twice after a po 424 or
+REM a keyless pre 400 = evicted (every 424 on record, 6 of 6, emptied the cart;
+REM the qty guard covers a stacked line), and a held marker idle more than 20 s
+REM whose read fails twice is dropped for a normal shot. grep "presuming".
+REM Kill: TARGET_WONCART_EVICTION_PRESUME=0 (the read result only).
+set TARGET_WONCART_EVICTION_PRESUME=1
+REM Quiet mode leaked on cart 1011960739 (verified read-out): a harvest run that
+REM was already in flight when the cart was won clicked the fulfillment cell at
+REM +3.9 s and did a real Add-to-cart click at +5.3-6.0 s of a cart line that
+REM lived at most 13 s (quiet mode was checked only at the entry of a run). Now
+REM the run re-checks before each of those two actions and stands down.
+REM grep "quiet mode began mid-run". Kill: TARGET_HARVEST_QUIET_RECHECK=0.
+set TARGET_HARVEST_QUIET_RECHECK=1
 REM WC-3 held-cart re-entry: a cart the loop still holds is re-entered with
 REM no new ATC when its TCIN reads live again (up to 15 min, 14 tickets per
 REM cart); a one-shot boot cart audit keeps or clears a leftover cart.
@@ -933,10 +1014,23 @@ REM U1 = (c), chosen 2026-09-17: PARK alt-1 on the hot TCINs. On 09-16 alt-1
 REM (BD 168.158.x) drew 61/181 carts-401s and 0/120 limiter passes there, and
 REM its shots add our own volume to the per-TCIN limiter that primary (the
 REM only hot-SKU converter) must pass. alt-1 keeps racing every other SKU.
+REM 2026-09-17 evening (log re-read, docs/HOT_SKU_FIX_2026_09_16.md #12):
+REM business is parked on the same TCINs. Its hot-SKU record in September is
+REM 0/331 limiter passes (0/182 on 09-16, 0/16 on 09-11) and every one of its
+REM flip shots lost to primary's, which arrives first from the home IP. Its
+REM shots only added volume: on 09-16 primary's shots on the Tin saw a median
+REM of 9 of OUR OWN shots on that TCIN in the previous 120 s (3 accounts x 2
+REM shots per ~65 s race) and passed 4/180; on 09-11 (sparse, re-arm dead)
+REM primary passed 7/20. The 09-09 census: 5 or more own shots in 120 s went
+REM 0/438 vs 10 pct cold. With both parked, primary alone fires 2 shots per
+REM ~65 s race on a hot TCIN (own prior count 1-2 = cold). business keeps
+REM racing every regular SKU, where BD still converts.
 REM Boot line [PARK]; per race: sits out ... account_parked_hot.
 REM Format acct:tcin,tcin;acct2:tcin -- keep the quotes, never use pipes. Add
-REM each new hot TCIN you arm here. Kill: delete the line (nobody parked).
-set "TARGET_PARK_ACCOUNT_TCINS=alt-1:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279"
+REM each new hot TCIN you arm here (to BOTH entries). Kill: delete the line
+REM (nobody parked); to put business back on the hot TCINs only, delete the
+REM ';business:...' half.
+set "TARGET_PARK_ACCOUNT_TCINS=alt-1:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279;business:1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279"
 REM business relaunches at 1800 s instead of 2100 s. On its own that only
 REM gives the two BD Chromes different cycles (7 and 8 sentinel ticks), which
 REM still land on the same tick about every 4.7 h. DESYNC_S therefore defers
@@ -973,11 +1067,25 @@ REM park line and change the TARGET_IDENTITY_REST line above to 1 (defaults:
 REM rest 150 s after 2 of the last 3 shots are carts-401s, BD accounts only,
 REM never primary, never two accounts at once on one TCIN). grep [IDENT_REST].
 REM ---------------------------------------------------------------------------
-REM U2 per-TCIN qty pin (NOT armed; hot SKUs stay qty 2): commit
-REM config\product_config.json, add a qty of 1 to the hot entries, then add
-REM set TARGET_QTY_PER_TCIN=1 here. A pin of 1 holds only while
-REM TARGET_PDP_QTY_LOOKUP stays off (the default). Zero-code alternative:
-REM set TARGET_QTY_OPTIMISTIC=0.
+REM U2 per-TCIN qty pin -- ARMED 2026-09-18 after the first live read-out
+REM (run_20260917_232400): primary won two carts; on 1011483413 the checkout
+REM FAST_SELLING gate opened twice inside 40 s and BOTH real reservation
+REM attempts failed at qty 2 (RESERVATION_FAILURE, then the 424 emptied the
+REM cart). At the instant that gate opens inventory is at its scarcest; one
+REM unit can be reserved whenever two can, not the reverse.
+REM 2026-09-20 review finding 10 -- read this before adding TCINs: the SKU
+REM that produced that evidence, 1011483413 (Pitch Black BB), is deliberately
+REM NOT pinned and NOT parked. It belongs to the 1011483xxx family that
+REM produced EVERY order this bot has ever placed, all at qty 2 (07-24, 07-31
+REM x9, 08-04 x4). Pinning it would halve the units on the only family that
+REM converts, on evidence of n=2 with no proof the quantity mattered. The pin
+REM covers only the 13 hot 30th-Celebration TCINs, where we have never
+REM converted at ANY quantity, so a pin of 1 costs nothing there.
+REM config\product_config.json carries "qty": 1 on the 13 parked hot TCINs
+REM (regular SKUs keep the qty-2 policy). A pin of 1 holds only while
+REM TARGET_PDP_QTY_LOOKUP stays off (the default). grep "per-TCIN pin qty=1".
+REM Kill: TARGET_QTY_PER_TCIN=0 (the "qty" keys are then ignored).
+set TARGET_QTY_PER_TCIN=1
 REM ===========================================================================
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the

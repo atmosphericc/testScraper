@@ -485,6 +485,89 @@ def _park_banner() -> str:
         return ''
 
 
+# ── 2026-09-17 evening: ATC-level DCO burst knobs ────────────────────────────
+# Pure, clamped. Read once per race thread. TARGET_ATC_DCO_BURST=1 turns the
+# burst on (default 0 = exact prior behaviour: a DCO 429 takes the wave-first
+# cold re-entry like an edge 429). MAX = re-POSTs per race thread after DCO
+# 429s (clamped 1..12, default 2 — short on purpose, see the [DCO_BURST] block;
+# MAX=0 clamps to 1, the flag is the only kill); MIN/MAX_S = the inter-shot
+# sleep (MIN floor 1.0 s = the per-IP floor the edge cadence enforces, MAX >=
+# MIN; defaults 1.0/1.5). Evidence: docs/HOT_SKU_FIX_2026_09_16.md section 13,
+# docs/CLAIMS.md C-0917-03.
+def _dco_burst_cfg(env=None) -> Dict[str, object]:
+    env = os.environ if env is None else env
+
+    def _num(name, default, lo, hi):
+        try:
+            v = float(str(env.get(name, default)).strip())
+        except (TypeError, ValueError):
+            v = float(default)
+        if not (v == v) or v in (float('inf'), float('-inf')):
+            v = float(default)
+        return min(hi, max(lo, v))
+    on = str(env.get('TARGET_ATC_DCO_BURST', '0')).strip() == '1'
+    lo = _num('TARGET_ATC_DCO_BURST_MIN_S', 1.0, 1.0, 30.0)
+    hi = max(lo, _num('TARGET_ATC_DCO_BURST_MAX_S', 1.5, 1.0, 30.0))
+    return {
+        'on': on,
+        'max': int(_num('TARGET_ATC_DCO_BURST_MAX', 2, 1, 12)),
+        'lo': lo,
+        'hi': hi,
+        # 2026-09-18 first live night: 6 of 7 burst re-POSTs went out PAGE-SIGNED
+        # ("bank STALE at shot time (past the replay cap)": the flip shot had
+        # consumed the only fresh banked set) and all 6 drew an edge 429; the one
+        # that carried a banked real-click set got back through the edge. So a
+        # burst re-POST now fires only with a replayable banked set: a 0-s check,
+        # then up to BANK_WAIT_S for the in-window harvest (one set per ~8-10 s);
+        # none in time = no re-POST, wave-first decides. REQUIRE_BANK=0 restores
+        # the 09-17 behaviour (fire regardless). MARGIN = headroom under the
+        # replay cap so a set cannot go stale between the check and the shot.
+        'require_bank': str(env.get('TARGET_ATC_DCO_BURST_REQUIRE_BANK', '1')).strip() != '0',
+        'bank_wait_s': _num('TARGET_ATC_DCO_BURST_BANK_WAIT_S', 6.0, 0.0, 15.0),
+        'bank_margin_s': _num('TARGET_ATC_DCO_BURST_BANK_MARGIN_S', 5.0, 0.0, 30.0),
+    }
+
+
+def _dco_burst_bank_ready(executor, worker, session_manager, wait_s, margin_s):
+    """(ready, waited_s): is a replayable banked Shape set available for a burst
+    re-POST, waiting up to `wait_s` for the in-window harvest to bank one.
+    Uses only the executor's public harvest API; an executor without it (or with
+    the harvest off) is never ready. Never raises."""
+    t0 = time.time()
+    try:
+        ready_fn = getattr(executor, 'harvest_set_ready', None)
+        if ready_fn is None:
+            return False, 0.0
+
+        def _rdy():
+            try:
+                return bool(ready_fn(margin_s))
+            except TypeError:                 # an older/stub signature without margin_s
+                return bool(ready_fn())
+        if _rdy():
+            return True, 0.0
+        wait_fn = getattr(executor, 'harvest_wait_for_set', None)
+        if wait_s <= 0 or wait_fn is None:
+            return False, 0.0
+        # Review 2026-09-20 (F1): the wait must poll with the SAME margin this
+        # function re-checks with, or a set inside the cap but inside the margin
+        # ends the wait at t=0 and the re-check then rejects it (the 95-100 s dead
+        # band). An older executor without the parameter falls back to the 09-09
+        # signature.
+        def _wait_coro():
+            try:
+                return wait_fn(wait_s, margin_s)
+            except TypeError:
+                return wait_fn(wait_s)
+        if worker is not None:
+            worker.run_async(_wait_coro()).result(timeout=wait_s + 2.0)
+        else:
+            session_manager.submit_async_task(_wait_coro()).result(timeout=wait_s + 2.0)
+        return _rdy(), time.time() - t0
+    except Exception:
+        return False, time.time() - t0
+
+
 # ── 2026-09-16 hot-sku plan P7 (DX-1) + P9 recorder: exposure / census ───────
 # The 09-16 401 wall tracked per-identity EXPOSURE on the hot TCIN; the next
 # audit needs it per shot, plus per-identity P(401) / pass per non-401 shot /
@@ -1958,6 +2041,12 @@ class BulletproofPurchaseManager:
                     _pulse_hi = float(os.environ.get('TARGET_401_PULSE_SLEEP_MAX', '25'))
                     _pulse_hi = max(_pulse_hi, _pulse_lo)
                     _consec_401 = 0
+                    # 2026-09-17 evening: ATC-level DCO burst (see the [DCO_BURST]
+                    # block inside the loop). Parsed once per race thread.
+                    _dco_burst = _dco_burst_cfg()
+                    _dco_burst_n = 0
+                    _dco_burst_capped = False
+                    _dco_burst_waited = 0.0
 
                     _attempt_n = 0
                     # 2026-09-16 (plan P2/P9): identity for the in-thread skip.
@@ -2139,6 +2228,82 @@ class BulletproofPurchaseManager:
                         _wf_kinds = (('auth401', 'edge', 'dco')
                                      if os.environ.get('TARGET_WAVE_FIRST_EDGE', '1') == '1'
                                      else ('auth401',))
+                        # 2026-09-17 evening — ATC-level DCO burst (TARGET_ATC_DCO_BURST=1;
+                        # default 0 = exact prior behaviour). A DCO-body 429
+                        # ("Request throttled due to high demand item",
+                        # FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION on the cart_items POST)
+                        # is NOT an edge-lottery loss: the edge limiter has just
+                        # ADMITTED this shot and the cart service's demand throttle
+                        # rejected the add. Treating it like an edge 429 (wave-first
+                        # cold re-entry 55-70 s later) walks away from the only moment
+                        # the edge is open: across every run log, the next ATC by the
+                        # same identity on the same TCIN within 5 s of a DCO 429 got
+                        # past the edge again 15/48 times (3 x 201); after 45-90 s,
+                        # 0/7. On 09-11 primary was admitted at 4 flips, got DCO on
+                        # each, slept ~60 s each time and got edge-429 on all 4
+                        # re-entries; 09-16 the same at the Tin flip. So on a DCO,
+                        # re-POST at TARGET_ATC_DCO_BURST_MIN/MAX_S (defaults 1.0/1.5,
+                        # floor 1.0 = the per-IP floor the edge cadence also enforces)
+                        # up to TARGET_ATC_DCO_BURST_MAX (default 2) times per race
+                        # thread, and only with a replayable banked Shape set (see
+                        # _dco_burst_cfg); the first edge-429 (bucket closed) or 401
+                        # ends the burst through the unchanged
+                        # wave-first branch. Checkout-level FS is untouched (won-cart
+                        # loop). grep [DCO_BURST]. Kill: TARGET_ATC_DCO_BURST=0.
+                        # Review 2026-09-17 (fresh-context code review): the burst is
+                        # SHORT on purpose. The census density gradient
+                        # (tools/analysis/census_density.py, docs/CLAIMS.md C-0917-06)
+                        # puts the 2nd/3rd own shot on a TCIN in its best bucket
+                        # (prior 1-2: 20% edge-pass) and the 6th+ in its worst
+                        # (5-8: 2%); the harvest bank holds 3 real-click sets, so
+                        # shots beyond the 2nd re-POST would fire page-signed; and a
+                        # long burst would push the later cold re-entry into the
+                        # 0/438 bucket. A burst re-POST also needs room for itself
+                        # plus a checkout leg before the retry deadline (the
+                        # wave-first branch has the same guard), else wave-first.
+                        # Review 2026-09-20 (F2): gate_kind 'dco' is set for ANY
+                        # non-empty ATC 429 body, so it alone does not prove the carts
+                        # service answered. The burst's whole premise is "the edge
+                        # limiter admitted this shot", so it additionally requires the
+                        # demand-throttle body. A 429 carrying the per-TCIN edge key
+                        # (our own volume; 0 orders from 13,244 re-POSTs) is excluded.
+                        # TARGET_ATC_DCO_BURST_ANY_BODY=1 restores the looser test.
+                        _gb = str((result or {}).get('gate_body', '') or '').upper()
+                        _dco_body = ('DCO_RATE_LIMITED' in _gb or 'FAST_SELLING' in _gb
+                                     or 'HIGH DEMAND' in _gb
+                                     or os.environ.get('TARGET_ATC_DCO_BURST_ANY_BODY', '0').strip() == '1'
+                                     or not _gb)          # no body head (older executor) = prior behaviour
+                        _dco_burst_take = False
+                        if _gk == 'dco' and _dco_burst['on'] and _dco_body:
+                            _room = _retry_deadline - time.time()
+                            if _dco_burst_n >= _dco_burst['max']:
+                                if not _dco_burst_capped:
+                                    _dco_burst_capped = True
+                                    print(f"[DCO_BURST] cap {_dco_burst['max']} spent on {tcin} — back to "
+                                          f"wave-first ident={_race_wlbl or 'auto'}")
+                            elif _room < _dco_burst['hi'] + _dco_burst['bank_wait_s'] + 20.0:
+                                print(f"[DCO_BURST] {_room:.0f}s of window left on {tcin} — no burst "
+                                      f"re-POST, wave-first decides ident={_race_wlbl or 'auto'}")
+                            else:
+                                # 2026-09-18: never a page-signed burst re-POST (6/6 edge
+                                # 429 on the first live night). bank= / waited= feed the
+                                # readout.
+                                _bank_ready, _dco_burst_waited = _dco_burst_bank_ready(
+                                    target_purchase_executor, worker, target_session_manager,
+                                    _dco_burst['bank_wait_s'], _dco_burst['bank_margin_s'])
+                                if _dco_burst['require_bank'] and not _bank_ready:
+                                    print(f"[DCO_BURST] no replayable banked set within "
+                                          f"{_dco_burst['bank_wait_s']:.0f}s on {tcin} — no page-signed "
+                                          f"re-POST, wave-first decides ident={_race_wlbl or 'auto'}")
+                                else:
+                                    _dco_burst_n += 1
+                                    _dco_burst_take = True
+                                    _wf_kinds = tuple(k for k in _wf_kinds if k != 'dco')
+                                    print(f"[DCO_BURST] ATC-level FAST_SELLING on {tcin} — the edge admitted "
+                                          f"this shot; re-POST {_dco_burst_n}/{_dco_burst['max']} in "
+                                          f"{_dco_burst['lo']:.1f}-{_dco_burst['hi']:.1f}s instead of the cold "
+                                          f"re-entry bank={_bank_ready} waited={_dco_burst_waited:.1f}s "
+                                          f"ident={_race_wlbl or 'auto'}")
                         _wf_takes = _wf_only and _gk in _wf_kinds
                         # 2026-08-31: an ATC-LEVEL DCO/FAST_SELLING 429 is the same
                         # demand-throttle class as the edge lottery (zyn maps all
@@ -2156,9 +2321,23 @@ class BulletproofPurchaseManager:
                             _edge_hi = max(_edge_hi, _edge_lo)
                             _std_lo, _std_hi = _atc_lo, _atc_hi
                             _atc_lo, _atc_hi = _edge_lo, _edge_hi
-                            if (_edge_lo, _edge_hi) != (_std_lo, _std_hi) and not _wf_takes:
+                            if (_edge_lo, _edge_hi) != (_std_lo, _std_hi) and not _wf_takes and not _dco_burst_take:
                                 print(f"[RETRY_CADENCE] edge-429 lottery cadence "
                                       f"{_edge_lo:.1f}-{_edge_hi:.1f}s (std {_std_lo:.1f}-{_std_hi:.1f}s)")
+                        if _dco_burst_take:
+                            # DCO burst cadence wins over the std/edge ranges above;
+                            # time spent waiting for the banked set counts toward it.
+                            # Review 2026-09-20 (F6): never below the cart-hold read
+                            # interval — _check_cart_hold returns without reading
+                            # inside it, so a silently landed add would go unseen and
+                            # the re-POST would stack on it.
+                            try:
+                                _hold_iv = float(os.environ.get('TARGET_CART_HOLD_CHECK_INTERVAL_S', '4'))
+                            except (TypeError, ValueError):
+                                _hold_iv = 4.0
+                            _hold_iv = max(0.0, min(_hold_iv, _dco_burst['hi']))
+                            _atc_lo = max(_hold_iv, _dco_burst['lo'] - _dco_burst_waited)
+                            _atc_hi = max(_atc_lo, _dco_burst['hi'] - _dco_burst_waited)
                         # Wave-first pulse bookkeeping (knobs + evidence above the
                         # loop): consecutive carts-401s trigger a 15-25s pause in
                         # place of ONE cadence sleep; edge-429s neither count nor

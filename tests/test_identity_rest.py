@@ -53,7 +53,9 @@ BAT_PATH = ROOT / "run_bot_with_nightly_restart.bat"
 HOT = ("1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,"
        "1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279")
 HOT_SET = frozenset(HOT.split(","))
-BAT_PARK_LINE = f'set "{_PARK}=alt-1:{HOT}"'
+# 2026-09-17 evening: business is parked on the same hot list (0/331 September
+# hot-SKU limiter passes; its shots only added own-volume in front of primary).
+BAT_PARK_LINE = f'set "{_PARK}=alt-1:{HOT};business:{HOT}"'
 HOT_TCIN = "1010892069"      # the 09-16 Tin (the night's only 201)
 REG_TCIN = "95290385"        # a regular SKU alt-1 keeps racing
 
@@ -384,6 +386,48 @@ def test_race_flag_off_everyone_fires():
     check("off_no_park_output", "[PARK]" not in out and "sits out" not in out, out[-400:])
 
 
+def test_race_two_parked_only_primary_fires():
+    """2026-09-17 evening bat value: alt-1 AND business parked on the hot list.
+    Only primary fires; both sit-outs are recorded; the race still closes."""
+    ws = _fleet()
+    m = race_mgr(ws)
+    with env(**FAST_RETRY), park(f"alt-1:{HOT};business:{HOT}"):
+        ok, out = quiet(_race, m, HOT_TCIN)
+    check("two_parked_race_finished", ok, m.recorded)
+    rec = dict(m.recorded)
+    check("two_parked_alt1_reason", rec.get("W3/alt-1", {}).get("reason") == "account_parked_hot", rec)
+    check("two_parked_business_reason",
+          rec.get("W2/business", {}).get("reason") == "account_parked_hot", rec)
+    check("two_parked_only_primary_fired",
+          [w.purchase_executor.calls for w in ws] == [1, 0, 0],
+          [w.purchase_executor.calls for w in ws])
+    check("two_parked_business_sits_out_log",
+          f"W2/business sits out {HOT_TCIN}: account_parked_hot — nothing fired" in out, out[-600:])
+    check("two_parked_race_final_failed", m._states.get(HOT_TCIN, {}).get("status") == "failed",
+          m._states.get(HOT_TCIN))
+    # Regular SKUs are untouched: everyone fires.
+    ws2 = _fleet()
+    m2 = race_mgr(ws2)
+    with env(**FAST_RETRY), park(f"alt-1:{HOT};business:{HOT}"):
+        ok2, out2 = quiet(_race, m2, REG_TCIN)
+    check("two_parked_regular_all_fire", ok2 and [w.purchase_executor.calls for w in ws2] == [1, 1, 1],
+          [w.purchase_executor.calls for w in ws2])
+
+
+def test_two_parked_primary_win_still_purchased():
+    fail = [{"success": False, "reason": "rate_limited_429"}]
+    win = [{"success": True, "order_number": "X2", "quantity": 1}]
+    ws = [_Worker(1, "primary", win), _Worker(2, "business", fail), _Worker(3, "alt-1", fail)]
+    m = race_mgr(ws)
+    with env(**FAST_RETRY), park(f"alt-1:{HOT};business:{HOT}"):
+        ok, _ = quiet(_race, m, HOT_TCIN)
+    check("two_parked_win_finished", ok, m.recorded)
+    check("two_parked_win_purchased", m._states.get(HOT_TCIN, {}).get("status") == "purchased",
+          m._states.get(HOT_TCIN))
+    check("two_parked_win_nothing_else_fired",
+          [w.purchase_executor.calls for w in ws] == [1, 0, 0], [w.purchase_executor.calls for w in ws])
+
+
 def test_parked_win_elsewhere_still_purchased():
     fail = [{"success": False, "reason": "rate_limited_429"}]
     win = [{"success": True, "order_number": "X1", "quantity": 1}]
@@ -417,12 +461,12 @@ def test_bat_park_line():
     check("bat_park_line_exact", lines.count(BAT_PARK_LINE) == 1,
           [l for l in lines if _PARK in l and not l.upper().startswith("REM")])
     val = _bat_value(_PARK)
-    check("bat_park_last_value", val == f"alt-1:{HOT}", val)
+    check("bat_park_last_value", val == f"alt-1:{HOT};business:{HOT}", val)
     try:
         m = bpm_mod._park_parse(val)
     except ValueError as e:
         m = {"error": str(e)}
-    check("bat_park_parses_to_lead_list", m == {"alt-1": HOT_SET}, m)
+    check("bat_park_parses_to_lead_list", m == {"alt-1": HOT_SET, "business": HOT_SET}, m)
     check("bat_park_cmd_safe", val is not None and not any(c in val for c in '|&<>^%!()"'), val)
 
 

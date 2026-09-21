@@ -443,7 +443,7 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
     """Pure, clamped knobs for the won-cart loop. Every value is .strip()ed.
 
     TARGET_WONCART_SCHEDULE_S: once-per-cart probe gaps (default '5,15'; at most
-    6 entries, each clamped 2..60). '0' / 'none' / 'off' / '' = no probes (note:
+    6 entries, each clamped 1..60 since 2026-09-18; 2..60 in R5). '0' / 'none' / 'off' / '' = no probes (note:
     cmd `set NAME=` UNSETS the variable, which restores the default).
 
     2026-09-17 cadence re-tune (R5). The 45 s steady gap and the 20 s floor came
@@ -484,7 +484,15 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
                 continue
             if not (v == v) or v in (float('inf'), float('-inf')):
                 continue
-            sched.append(min(60.0, max(2.0, v)))
+            # 2026-09-18 (verified read-out of run_20260917_232400): both won carts
+            # got ONE checkout draw in their first 3 s (the chain's own pre_checkout,
+            # FAST_SELLING at +0.1-0.3 s) and then waited 3.1-3.4 s for ticket 1;
+            # ~22% of gate-facing requests pass; cart 1011960739's line lived <= 13 s;
+            # across every log none of the 8 carts whose chain pre_checkout was
+            # FS-rejected converted, and all 14 orders were a chain done in ~3 s.
+            # Floor 2 -> 1 s (the per-IP floor the ATC cadence also enforces) so the
+            # first seconds can hold several draws. Defaults unchanged.
+            sched.append(min(60.0, max(1.0, v)))
             if len(sched) >= 6:
                 break
     ride_raw = str(env.get('TARGET_WON_CART_RIDE', '1')).strip()
@@ -510,6 +518,24 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
         # keeps the po_only shape only when the read shows exactly our TCIN at
         # qty 1..Q. Kill-switch '0' = R1 behaviour (always fall back to pre_po).
         'suspect_read': str(env.get('TARGET_WONCART_SUSPECT_READ', '1')).strip() != '0',
+        # 2026-09-18 live (run_20260917_232400, cart 1011483413): a 424
+        # RESERVATION_FAILURE at place-order EMPTIES the cart (every 424 in the
+        # Jul/Aug logs did the same), but the loop only learned that from a later
+        # pre_checkout 2xx that never came: on a hot SKU the FAST_SELLING gate
+        # answers 429 before Target looks at the cart, so 30 tickets and two
+        # held re-entries fired at an empty cart while the TCIN was back in stock.
+        # With '1' the loop READS the cart (Endpoint 6 GET) right after a po 424
+        # and after a keyless pre 400; a read that shows our line gone ends the
+        # loop as cart_evicted (no hold, the race re-ATCs). Default '0' = prior.
+        'eviction_read': str(env.get('TARGET_WONCART_EVICTION_READ', '0')).strip() == '1',
+        # 2026-09-18 (second pass on the same log): the cart GET is throttled in hot
+        # windows too — the 02:43:40 held re-entry's read came back 429 and the loop
+        # went in blind. With '1', a read that fails TWICE (0.6 s apart) after a po
+        # 424 / keyless pre 400 is treated as an eviction (every 424 on record, 6/6,
+        # emptied the cart; the qty guard covers the unlikely stacked line), and a
+        # held re-entry whose read fails twice on a marker idle > 20 s drops the
+        # marker and takes a normal shot. Default '0' = read result only.
+        'eviction_presume': str(env.get('TARGET_WONCART_EVICTION_PRESUME', '0')).strip() == '1',
     }
 
 
@@ -540,6 +566,34 @@ def woncart_read_exact(read, tcin, qty) -> Optional[int]:
     except Exception:
         return None
     return None
+
+
+def woncart_read_has_tcin(read, tcin) -> Optional[bool]:
+    """2026-09-18: True when a _cart_items_read result proves the cart still
+    holds a line of our TCIN, False when it proves the cart holds NO line of
+    our TCIN (evicted / emptied), None when the read failed or is unreadable.
+    Never raises.
+
+    Review 2026-09-20 (F5): 'no line of our TCIN' is proof ONLY when the payload
+    actually carried a cart_items array (`has_items`). A 2xx whose body shape
+    changed would otherwise read as an empty cart and end the loop. A read from
+    an older JS build (no has_items key) is treated as unreadable rather than as
+    proof."""
+    try:
+        if not isinstance(read, dict) or read.get('ok') is not True:
+            return None
+        items = read.get('items')
+        if not isinstance(items, list):
+            return None
+        if read.get('has_items') is not True:
+            return None
+        T = str(tcin)
+        for it in items:
+            if isinstance(it, dict) and str(it.get('tcin') or '') == T:
+                return True
+        return False
+    except Exception:
+        return None
 
 
 def woncart_read_desc(read) -> str:
@@ -837,10 +891,11 @@ _CART_ITEMS_READ_JS = r"""(async () => {
         const r = await fetch(
             'https://carts.target.com/web_checkouts/v1/cart?cart_type=REGULAR&field_groups=CART,CART_ITEMS',
             {credentials: 'include', headers: {'Accept': 'application/json'}});
-        if (!r.ok) return {ok: false, status: r.status, items: []};
+        if (!r.ok) return {ok: false, status: r.status, items: [], has_items: false};
         const d = await r.json();
-        const its = (d && Array.isArray(d.cart_items)) ? d.cart_items : [];
-        return {ok: true, status: r.status, items: its.slice(0, 50).map(i => {
+        const present = !!(d && Array.isArray(d.cart_items));
+        const its = present ? d.cart_items : [];
+        return {ok: true, status: r.status, has_items: present, items: its.slice(0, 50).map(i => {
             const q = Number(i && i.quantity);
             const tc = !i ? null : ((i.tcin !== undefined && i.tcin !== null) ? i.tcin
                                    : (i.item ? i.item.tcin : null));
@@ -1551,6 +1606,24 @@ class PurchaseExecutor:
         repair all stand down. Only the flag-gated loop sets the deadline."""
         try:
             return float(getattr(self, '_woncart_active_until', 0.0) or 0.0) > time.time()
+        except Exception:
+            return False
+
+    def _harvest_quiet_now(self, where: str) -> bool:
+        """2026-09-18 (verified read-out, cart 1011960739): quiet mode was checked
+        only at the ENTRY of a harvest run, so a run already in flight when the
+        cart was won went on to click the fulfillment cell at +3.9 s and do a real
+        Add-to-cart click at +5.3-6.0 s of a cart line that lived <= 13 s. With
+        TARGET_HARVEST_QUIET_RECHECK=1 the run re-checks before each of those two
+        actions and stands down. Default 0 = prior behaviour. Never raises."""
+        try:
+            if os.environ.get('TARGET_HARVEST_QUIET_RECHECK', '0').strip() != '1':
+                return False
+            if not self._woncart_quiet():
+                return False
+            self._harvest_log(f"quiet mode began mid-run — standing down before the {where} "
+                              f"(a won-cart loop is firing tickets)")
+            return True
         except Exception:
             return False
 
@@ -3001,15 +3074,22 @@ class PurchaseExecutor:
         except (TypeError, ValueError):
             return 3
 
-    def harvest_set_ready(self) -> bool:
+    def harvest_set_ready(self, margin_s: float = 0.0) -> bool:
         """True when a banked Shape set is present AND inside the replay cap, i.e.
-        the next main-tab ATC will carry a real-click-signed set."""
+        the next main-tab ATC will carry a real-click-signed set. `margin_s`
+        (2026-09-18, default 0 = prior behaviour) asks for that much headroom
+        under the cap: on 09-18 02:05:14 a 99 s-old set read "ready" and was
+        discarded as STALE (101 s) when the shot fired 1.8 s later."""
         try:
             if not (self._harvest_cfg.get('enabled') and self._harvest_replay_on):
                 return False
             age = self._shape_bank.newest_age()
             cap = self._shape_bank.max_replay_age()
-            return age is not None and (cap <= 0 or age <= cap)
+            try:
+                m = max(0.0, float(margin_s or 0.0))
+            except (TypeError, ValueError):
+                m = 0.0
+            return age is not None and (cap <= 0 or age <= max(0.0, cap - m))
         except Exception:
             return False
 
@@ -3130,15 +3210,21 @@ class PurchaseExecutor:
             pass
         return False
 
-    async def harvest_wait_for_set(self, max_wait_s: float) -> bool:
+    async def harvest_wait_for_set(self, max_wait_s: float, margin_s: float = 0.0) -> bool:
         """2026-09-09 fresh-set gate: poll (0.25 s) up to `max_wait_s` for a replayable
         banked set. Used by the purchase manager between re-POSTs after a carts-401
         so a retry carries a real-click-signed set (the in-window harvest refills
         one set per ~8-10 s) instead of going page-signed — the class that
-        converted 0.0% on hot items and 0.9% on regular ones (08-28 census)."""
+        converted 0.0% on hot items and 0.9% on regular ones (08-28 census).
+
+        Review 2026-09-20 (F1): `margin_s` (default 0 = the 2026-09-09 behaviour)
+        must match what the CALLER will re-check with, or the wait returns True on
+        a set the caller then rejects. With margin 0 and a 97 s-old set under a
+        100 s cap this returned instantly and the DCO burst — which re-checks with
+        a 5 s margin — skipped its whole wait."""
         deadline = time.time() + max(0.0, float(max_wait_s))
         while True:
-            if self.harvest_set_ready():
+            if self.harvest_set_ready(margin_s):
                 return True
             if time.time() >= deadline:
                 return False
@@ -3577,6 +3663,8 @@ class PurchaseExecutor:
         # defaulted to the profile's store) while the shot replays a SHIPPING add.
         # Select the Shipping fulfillment cell once per nav -- a JS click on a UI
         # toggle, never the Add-to-cart button. Kill: TARGET_HARVEST_PREFER_SHIPPING=0.
+        if self._harvest_quiet_now('fulfillment-cell click'):
+            return False
         if self._harvest_cfg.get('prefer_shipping', True) and self._harvest_ship_nav_ts != self._harvest_tab_nav_ts:
             self._harvest_ship_nav_ts = self._harvest_tab_nav_ts
             try:
@@ -3622,6 +3710,8 @@ class PurchaseExecutor:
                                           f"the harvest tab so the next cycle re-opens fresh (in the foreground)")
                         await self._harvest_drop_tab("hidden after activate")
                 return False
+        if self._harvest_quiet_now('Add-to-cart click'):
+            return False
         self._harvest_capture_evt.clear()
         # TARGET_HARVEST_CLICK_TIMEOUT_S bounds the whole click; a painting tab
         # completes a 9-move click in well under a second (09-07: 0.57-0.74 s).
@@ -4532,8 +4622,14 @@ class PurchaseExecutor:
                     # gate_kind feeds the breaker (2026-08-21): 'edge' = empty body
                     # (dropped before the carts service, the global demand lottery),
                     # 'dco' = a carts-service DCO_RATE_LIMITED body.
+                    # Review 2026-09-20 (F2): gate_kind 'dco' is really "ANY non-empty
+                    # body", so it cannot by itself prove the carts service answered.
+                    # gate_body carries a short, whitespace-collapsed head of the body
+                    # so a consumer that needs the real class (the DCO burst) can test
+                    # it. Log/consumer-only; gate_kind is unchanged.
                     return {'success': False, 'tcin': tcin, 'reason': 'rate_limited_429',
                             'gate_kind': 'dco' if (atc_body or '').strip() else 'edge',
+                            'gate_body': ' '.join(str(atc_body or '').split())[:160],
                             'error': f'ATC rate-limited ({atc_status})',
                             'execution_time': time.time() - start_time}
             elif atc_status == 401 and not getattr(self, '_atc_401_ladder_on', False):
@@ -7943,6 +8039,72 @@ class PurchaseExecutor:
         return res
 
     # ── 2026-09-16 plan P1 (WC-1): won-cart direct checkout loop ─────────────
+    def _pre400_is_evictionish(self) -> bool:
+        """Review 2026-09-20 (F4): True when the interceptor's last rejection for a
+        400 carries no error key, or a reservation/cart-shaped one — the shape an
+        emptied cart answers. A payment/CVV-shaped 400 returns False so the
+        eviction read never fires on it. No stash at all = keyless = True (the
+        09-18 dead-cart 400s logged no key). Never raises."""
+        try:
+            if int(getattr(self, '_checkout_reject_status', 0) or 0) != 400:
+                return True
+            key = str(getattr(self, '_checkout_reject_reason', '') or '').strip().upper()
+            if not key:
+                return True
+            return any(tok in key for tok in ('RESERVATION', 'CART', 'ITEM', 'EMPTY'))
+        except Exception:
+            return True
+
+    async def _woncart_eviction_read(self, tab, tcin, presume: bool = False) -> Optional[bool]:
+        """2026-09-18: after a place-order 424 RESERVATION_FAILURE or a keyless
+        pre_checkout 400, read the cart (one retry after 0.6 s when the read
+        fails: the cart GET is throttled in hot windows too). True = our line is
+        GONE (Target emptied the cart) or, with `presume`, unreadable twice;
+        False = still there; None = read failed and not presuming. Never raises."""
+        has, desc = None, 'no read'
+        _all_429 = True
+        self._woncart_presume_dirty = False
+        for _try in (1, 2):
+            try:
+                rd = await self._cart_items_read(tab)
+                has = woncart_read_has_tcin(rd, tcin)
+                desc = woncart_read_desc(rd)
+                if has is None and not (isinstance(rd, dict) and rd.get('status') == 429):
+                    _all_429 = False
+            except Exception as e:
+                has, desc = None, f"read raised {type(e).__name__}"
+                _all_429 = False
+            if has is not None or _try == 2:
+                break
+            try:
+                await asyncio.sleep(0.6)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+        if has is None and presume:
+            # Review 2026-09-20 (F3): a 429 is Target throttling the cart GET — the
+            # cart itself is almost surely gone (every 424 on record emptied it), so
+            # presume and let the race re-add. Any OTHER failure (status 0, an
+            # evaluate error) points at OUR tab, not at Target, so presume but also
+            # mark the cart dirty: the next purchase deletes any leftover line before
+            # it adds. _woncart_presume_dirty is read by the loop right after this.
+            self._woncart_presume_dirty = not _all_429
+            print(f"[WON_CART_DIRECT] cart unreadable twice after the rejection ({desc}) — every "
+                  f"424 on record emptied the cart: presuming evicted, the race re-adds (the qty "
+                  f"guard covers a stacked line){'' if _all_429 else '; read failed for a LOCAL reason, '
+                  'so the cart is also marked dirty'} ident={self._ident_tag()}")
+            return True
+        if has is False:
+            print(f"[WON_CART_DIRECT] cart read after the rejection shows NO line of {tcin} "
+                  f"({desc}) — Target emptied the cart, ending the loop as cart_evicted "
+                  f"ident={self._ident_tag()}")
+            return True
+        print(f"[WON_CART_DIRECT] cart read after the rejection: {desc} — "
+              f"{'our line is still there' if has else 'unreadable, keeping the loop'} "
+              f"ident={self._ident_tag()}")
+        return False if has else None
+
     async def _cart_items_read(self, tab, timeout: float = 2.5) -> Dict[str, Any]:
         """Endpoint 6 GET (a read, not a Shape-scored write):
         {ok, status, items: [{id, tcin, qty|None}]}. Bounded; never raises
@@ -7968,7 +8130,11 @@ class PurchaseExecutor:
             status = int(res.get('status') or 0)
         except (TypeError, ValueError):
             status = 0
-        return {'ok': bool(res.get('ok')), 'status': status, 'items': items}
+        # Review 2026-09-20 (F5): carry the JS's "the payload really had a
+        # cart_items array" flag through the normalisation, so an empty `items`
+        # from a CHANGED body shape is never read as proof of an empty cart.
+        return {'ok': bool(res.get('ok')), 'status': status, 'items': items,
+                'has_items': res.get('has_items') is True}
 
     async def _delete_cart_items(self, tab, only_tcin=None, keep_tcin=None,
                                  budget_s: float = 15.0, ids=None, abort_fn=None):
@@ -8278,6 +8444,18 @@ class PurchaseExecutor:
               f"gap_s={gap_s:.1f} ms_since_201={since_201} live={live} win_age={win_age} "
               f"layer={'po' if fired else 'pre'} mode={mode} status={status} key={key} "
               f"envoy_ms={_envoy} js_ms={fl.get('js_ms', '-')}")
+        # 2026-09-18 first live night: two RESERVATION_FAILUREs on a won hot cart
+        # and no way to tell WHY (requested qty? node? sold out?) — the response
+        # body was never logged. One extra line, only for evaluated rejections
+        # (424 / 400 / RESERVATION_FAILURE), flattened and capped. Log-only; same
+        # TARGET_FS_TICKET_LOG gate; the [FS_TICKET] line format is unchanged.
+        try:
+            _b = str((po if fired else pre).get('body') or '')
+            if _b and (status in (424, 400) or 'RESERVATION' in str(key).upper()):
+                print(f"[FS_TICKET_BODY] n={L.get('tickets')} layer={'po' if fired else 'pre'} "
+                      f"status={status} body={' '.join(_b.split())[:240]}")
+        except Exception:
+            pass
 
     def _checkout_stash_for(self, status, since_ts: float, slack: float = 0.05):
         """The interceptor's last place-order response stash (DX-1) when it
@@ -8589,6 +8767,17 @@ class PurchaseExecutor:
                                 L['fs_seen_ts'] = time.time()
                             pre_streak = 0
                             continue
+                        if pst == 400 and cfg.get('eviction_read') and self._pre400_is_evictionish():
+                            # 2026-09-18: a pre_checkout 400 is what an emptied
+                            # cart answers when the FS gate happens to be open.
+                            # Review 2026-09-20 (F4): only for a keyless / reservation
+                            # -shaped 400 — a payment or CVV 400 says nothing about
+                            # the cart and must not end the loop.
+                            if await self._woncart_eviction_read(tab, T, cfg.get('eviction_presume')) is True:
+                                if getattr(self, '_woncart_presume_dirty', False):
+                                    st['dirty'] = True
+                                st['reason'] = 'cart_evicted'
+                                break
                         pre_streak += 1
                         if pre_streak >= cfg['pre_streak_max']:
                             st['reason'] = f'pre_{pst}_streak'
@@ -8608,6 +8797,15 @@ class PurchaseExecutor:
                             po_streak = 0
                             continue
                         if pst2 == 424:
+                            if cfg.get('eviction_read'):
+                                # 2026-09-18: a 424 RESERVATION_FAILURE empties the
+                                # cart; read it now instead of waiting for a pre 2xx
+                                # that the FS gate will not let through.
+                                if await self._woncart_eviction_read(tab, T, cfg.get('eviction_presume')) is True:
+                                    if getattr(self, '_woncart_presume_dirty', False):
+                                        st['dirty'] = True       # F3: local read failure
+                                    st['reason'] = 'cart_evicted'
+                                    break
                             L['verified'] = False              # the next pre re-verifies
                             po_streak = 0
                             continue
@@ -8994,6 +9192,33 @@ class PurchaseExecutor:
                 if foreign_ok and qsum is not None and qsum >= 1:
                     exact_qty = int(qsum)
             else:
+                # 2026-09-18: on 02:43:40 this read came back 429, the loop went in
+                # blind and fired 17 tickets at a cart a 424 had emptied two minutes
+                # earlier, through a live window. With the presume knob on, a marker
+                # that has been idle > 20 s (it sat through an out-of-stock gap) and
+                # whose read fails twice is dropped: a normal shot is worth more than
+                # tickets at a cart that is almost surely gone (the qty guard covers
+                # stacking). A marker touched in the last 20 s (call_cap / yield
+                # re-entry) keeps the prior behaviour.
+                _idle = time.time() - float(h.get('last_ticket_ts') or h.get('first_201_ts') or 0.0)
+                _presume = False
+                if woncart_cfg().get('eviction_presume') and _idle > 20.0:
+                    await asyncio.sleep(0.6)
+                    r2 = await self._cart_items_read(tab)
+                    if r2.get('ok'):
+                        if not [it for it in (r2.get('items') or []) if str(it.get('tcin') or '') == T]:
+                            self._held_cart = None
+                            print(f"[HELD_CART] {T} line is gone from the cart (second read) — marker "
+                                  f"dropped, normal shot (QG covers stacking) ident={self._ident_tag()}")
+                            return None
+                    else:
+                        _presume = True
+                if _presume:
+                    self._held_cart = None
+                    print(f"[HELD_CART] cart unreadable twice (status={r.get('status')}) on a marker idle "
+                          f"{_idle:.0f}s — presuming the held {T} line is gone: marker dropped, normal "
+                          f"shot (QG covers stacking) ident={self._ident_tag()}")
+                    return None
                 print(f"[HELD_CART] cart read failed (status={r.get('status')} "
                       f"err={r.get('error', '-')}) — entering the loop; the ticket's "
                       f"pre_checkout re-verifies the cart")

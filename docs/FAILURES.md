@@ -31,6 +31,69 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-18] - First live night of the hot-SKU fixes: two carts won by primary, both lost at RESERVATION (qty 2) / cart eviction; the won-cart loop fired 30 tickets at a cart Target had emptied - TARGET
+**Symptom**: run_20260917_232400. Cart 1011483413 02:40:47: checkout FAST_SELLING gate opened at +9 s
+(pre 201), +18 s and +39 s (RESERVATION_FAILURE 429 then 424, envoy 218/292 ms); both reservations
+failed at qty 2; the 424 emptied the cart; the loop then fired 30 tickets and two held re-entries
+(02:43:40, 02:45:43) at an empty cart while RedSky read the TCIN back in stock from 02:43:20. Cart
+1011960739 02:50:10: line evicted by Target 13 s after the add (pre_checkout 201, empty cart) - the
+loop exited correctly. Primary drew its first home-IP carts-401s (8, one TCIN, 02:49-02:58). 0 orders.
+**Root Cause**: (1) the loop learned of an eviction only from a pre_checkout 2xx, which the FS gate
+never lets through on a hot SKU; (2) two units requested at the instant inventory is scarcest.
+**Fix Applied**: `TARGET_WONCART_EVICTION_READ=1` - cart read after a po 424 / keyless pre 400, a
+proven-gone line ends the loop as cart_evicted (no hold, race re-adds); `test_r6_eviction_read`
+(4 mutants caught). `"qty": 1` on the 13 hot TCINs + `TARGET_QTY_PER_TCIN=1`. Both take effect at
+the next launch. Docs: HOT_SKU_FIX_2026_09_16.md #14, CLAIMS.md C-0918-01/02.
+**Confidence**: high on the eviction mechanism (live + 5/5 historical 424s); medium on qty (n=2).
+**Outcome**: UNPROVEN LIVE (next launch). Readout: any RESERVATION_FAILURE at qty 1; "Target emptied
+the cart" lines; tickets fired after an eviction (should be 0).
+
+### [2026-09-17] - Log re-read: the 09-11 level-rearm fix re-created the shot density the 09-09 census warned about; business added only own-volume on hot TCINs; the R5 cadence commit misattributed the 08-04 order - TARGET
+**Symptom**: On 09-16 primary's shots on the Tin had a median of 9 of OUR OWN shots on that TCIN
+in the previous 120 s (3 accounts x 2 shots per ~65 s race, races chained by the level re-arm) and
+passed the edge limiter 4/180; on 09-11 (level re-arm dead, ~2 waves per window) the median was 2
+and primary passed 7/20. By gap since primary's own previous shot on the TCIN: >200 s idle 7/18
+(39%), 40-80 s 0/102, <10 s 0/30. business on hot TCINs in September: 0/198, every flip shot
+losing to primary's on arrival order. Separately, commit 541f8742 (R5) says the 08-04 02:07:21
+order was placed ~2 s after a FAST_SELLING 429 on the same cart; the log shows that 429 was another
+thread's cart (`In-place re-shoot 2/4 ... clearing cart`) and the winning thread went FS -> 42 s
+hold -> one place-order -> 200. All 9 07-31 orders were first-POST wins; the two 08-04 re-shoot
+wins followed RESERVATION_FAILURE, not FS.
+**Root Cause**: (1) the 09-09 census finding (>=5 own shots on a TCIN in 120 s -> 0/438 vs ~10%
+cold) was never re-checked after the 09-11 level-rearm fix restored back-to-back races; (2) the R5
+cross-drop table measured gaps between different threads' checkout POSTs, not same-cart re-shoots.
+**Fix Applied**: bat only: `TARGET_PARK_ACCOUNT_TCINS` now parks business as well as alt-1 on the
+13 hot TCINs (primary alone: own prior count 1-2). R5 stays armed (hot-SKU 45-50 s holds are 0/8
+and mostly landed after OOS; the FS gate has opened 7 s after an FS; no escalation seen) with the
+corrected rationale in docs/HOT_SKU_FIX_2026_09_16.md #12. Test pins updated; new
+`test_race_two_parked_only_primary_fires`. Offline suite green.
+**Confidence**: medium (density vs night-to-night demand is confounded across 09-11/09-16; the
+census across 92 logs is the tie-breaker)
+**Outcome**: UNPROVEN LIVE. Read out primary's hot-TCIN pass rate by own prior count after the
+next drop (doc #12d). Revert: delete the `;business:...` half of the park value.
+
+### [2026-09-17] - Hot-SKU flip shots that PASSED the edge limiter were thrown away: an ATC-level DCO_RATE_LIMITED ("high demand item") was treated like the edge lottery and the thread slept 55-70 s - TARGET
+**Symptom**: On 09-11 primary got past the edge limiter at four flips and on 09-16 at the Tin flip;
+every one of those adds came back `429 DCO_RATE_LIMITED` / `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION`
+("Request throttled due to high demand item"). Wave-first (TARGET_WAVE_FIRST_EDGE=1 puts 'dco' in
+its kinds) took the 55-70 s cold re-entry each time; all five re-entries got edge-429. Across every
+run log, the next ATC within 5 s of a DCO 429 got past the edge again 15/48 times (3 x 201); after
+45-90 s, 0/7.
+**Root Cause**: the 09-09 census that produced wave-first was dominated by empty-body edge 429s
+(2,233/2,236); a DCO 429 is the opposite case (the edge has just admitted the shot; the cart
+service's per-item demand throttle rejected the add) and was never separated out.
+**Fix Applied**: `TARGET_ATC_DCO_BURST=1` (bat): after a DCO 429 the race thread re-POSTs every
+1.0-1.5 s up to 2 times (cut from 6 by a fresh-context code review: 7 own shots in 18 s is the
+density bucket we park business to avoid, and the harvest bank holds 3 sets), no bank-gate wait,
+only with >= 21.5 s of budget left; an edge-429/401 during the burst takes the unchanged
+wave-first branch. `TARGET_CART_HOLD_CHECK_INTERVAL_S=1.0` so the silent-hold read is not skipped
+between re-POSTs. `_dco_burst_cfg` + the `[DCO_BURST]` block in bulletproof_purchase_manager.py;
+tests/test_dco_burst.py (real race loop, stub workers; 4 mutants caught); offline suite 25/25.
+Doc: docs/HOT_SKU_FIX_2026_09_16.md #13. Kill: TARGET_ATC_DCO_BURST=0.
+**Confidence**: medium-high on the mechanism (direct measurement); the hot-SKU burst pass rate is
+unmeasured (July bursts were on regular SKUs at their flips).
+**Outcome**: UNPROVEN LIVE. Read out `[DCO_BURST]` lines and the burst shots' outcomes next drop.
+
 ### [2026-09-16] - 09-16 drop 0-for (30th Celebration): one cart in the whole night, lost to checkout FAST_SELLING after a ~26.5 s self-inflicted detour; Bright Data accounts 0/292 at the edge limiter; alt-1 walled by 401s - TARGET
 **Symptom**: 4 hot TCINs live 02:15-04:46 CT (the Tin for 75 min). 544 fast-lane add-to-cart
 shots: 469 empty-body edge 429s (`ERR_A2C_TCIN_RATE_LIMITED`), 71 carts-401s, ONE 201 (home-IP

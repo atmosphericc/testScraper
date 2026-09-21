@@ -317,6 +317,7 @@ def test_bat_is_crlf():
 HOT_0916 = ("1010892078,1010892076,1010892069,1010892067,1010892068,1010892065,"
             "1012422107,1011407490,1010892075,1010892071,1012055696,1011960739,1011209279")
 BAT_0916_PINS = (
+    ("TARGET_QTY_PER_TCIN", "1"),          # armed 2026-09-18 (first live read-out)
     ("TARGET_AMBIGUOUS_COMMIT_LATCH", "1"),
     ("TARGET_AMBIGUOUS_COMMIT_LATCH_S", "1800"),
     ("TARGET_AMBIGUOUS_COMMIT_LATCH_PERSIST", "1"),     # review round R1 (R1-AC1-1)
@@ -325,8 +326,9 @@ BAT_0916_PINS = (
     ("TARGET_STOCK_HYST_S", "20"),
     ("TARGET_WONCART_DIRECT", "1"),
     # R5 (2026-09-17): cadence re-tuned to the 07-31/08-04 winning shape.
-    ("TARGET_WONCART_SCHEDULE_S", "3,4,5"),
-    ("TARGET_WONCART_STEADY_GAP_S", "5"),
+    ("TARGET_WONCART_SCHEDULE_S", "1,1,1,2,2,3"),   # 2026-09-18 verified read-out
+    ("TARGET_WONCART_STEADY_GAP_S", "3"),
+    ("TARGET_WONCART_JITTER_S", "1"),
     ("TARGET_WONCART_OOS_TAIL_TICKETS", "1"),
     ("TARGET_WONCART_MAX_TICKETS", "40"),
     ("TARGET_WONCART_CALL_MAX_S", "120"),
@@ -362,7 +364,7 @@ BAT_0916_PINS = (
 # but U1=(c) is the choice; U2 keeps qty 2; live re-nav waits for probe data;
 # quiet level 2 is an experiment).
 BAT_0916_UNARMED = ("TARGET_HOME_SHARE_GUARD", "TARGET_BG_SLOW_ACCOUNTS", "TARGET_BG_SLOW_FACTOR",
-                    "TARGET_QTY_PER_TCIN", "TARGET_BOOT_CART_AUDIT", "TARGET_FASTLANE_QTY_GUARD",
+                    "TARGET_BOOT_CART_AUDIT", "TARGET_FASTLANE_QTY_GUARD",
                     "TARGET_HARVEST_BADLOAD_BACKOFF_S", "TARGET_IDENTITY_REST_S",
                     "TARGET_IDENTITY_REST_K", "TARGET_IDENTITY_REST_M", "TARGET_IDENTITY_REST_NEVER",
                     "TARGET_IDENTITY_REST_PROXIED_ONLY", "TARGET_IDENTITY_REST_STAGGER",
@@ -395,9 +397,11 @@ def test_bat_hot_sku_0916_pins():
         pin = f"set {name}={value}"
         check(f"bat_0916_exact[{pin}]", lines.count(pin) == 1)
         check(f"bat_0916_last[{name}]", _bat_last_value(lines, name) == value)
-    park = f'set "TARGET_PARK_ACCOUNT_TCINS=alt-1:{HOT_0916}"'
+    # 2026-09-17 evening: business parked on the same list (see HOT_SKU doc #12).
+    park = f'set "TARGET_PARK_ACCOUNT_TCINS=alt-1:{HOT_0916};business:{HOT_0916}"'
     check("bat_0916_park_exact_quoted", lines.count(park) == 1)
-    check("bat_0916_park_last", _bat_last_value(lines, "TARGET_PARK_ACCOUNT_TCINS") == f"alt-1:{HOT_0916}")
+    check("bat_0916_park_last",
+          _bat_last_value(lines, "TARGET_PARK_ACCOUNT_TCINS") == f"alt-1:{HOT_0916};business:{HOT_0916}")
     check("bat_0916_park_no_pipes", not any('TARGET_PARK_ACCOUNT_TCINS' in l and '|' in l for l in lines))
     for name in BAT_0916_UNARMED:
         check(f"bat_0916_unarmed[{name}]", _bat_last_value(lines, name) is None)
@@ -430,7 +434,9 @@ def test_bat_hot_sku_0916_pins():
     # The new block: REM-or-set lines only, no trailing whitespace, cmd-safe REMs.
     s = next(k for k, l in enumerate(lines) if l.startswith("REM 2026-09-17 HOT-SKU FIX ARMING"))
     e = next(k for k in range(s, len(lines)) if lines[k].startswith("REM U2 per-TCIN qty pin"))
-    blk = lines[s - 1:e + 6]
+    # 2026-09-18: the U2 block grew when the pin was armed; find its closing rule.
+    e2 = next(k for k in range(e, len(lines)) if lines[k].startswith("REM ====="))
+    blk = lines[s - 1:e2 + 1]
     check("bat_0916_block_bounded", blk[0].startswith("REM =====") and blk[-1].startswith("REM ====="))
     check("bat_0916_block_rem_or_set", all(l.startswith(("REM", "set ")) for l in blk))
     check("bat_0916_block_no_trailing_ws", all(l == l.rstrip() for l in blk))
