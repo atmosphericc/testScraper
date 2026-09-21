@@ -45,6 +45,12 @@ NEW_FLAGS = (
     "TARGET_AMBIGUOUS_COMMIT_LATCH_S",
     "TARGET_FS_TICKET_LOG",
     "TARGET_EXPOSURE_LOG",
+    # 2026-09-20 in-chain pre_checkout retry: with it off the JS must stay
+    # byte-identical to 11797839.
+    "TARGET_FASTLANE_PRE_RETRY",
+    "TARGET_FASTLANE_PRE_RETRY_MAX",
+    "TARGET_FASTLANE_PRE_RETRY_GAP_MS",
+    "TARGET_FASTLANE_PRE_RETRY_BUDGET_MS",
 )
 # Pre-existing knobs that change the JS; pinned per variant below.
 OLD_KNOBS = ("TARGET_ATC_BYTEMATCH", "TARGET_FAST_LANE_CVV")

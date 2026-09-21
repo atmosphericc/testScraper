@@ -219,6 +219,47 @@ def fastlane_skip_dup_pre_on() -> bool:
     return os.environ.get('TARGET_FASTLANE_SKIP_DUP_PRE', '0').strip() == '1'
 
 
+def pre_retry_cfg(env=None) -> Dict[str, int]:
+    """2026-09-20 — in-chain pre_checkout retry (TARGET_FASTLANE_PRE_RETRY=1).
+
+    THE hot-SKU failure mode, measured over every run log: an add-to-cart that
+    returns 201 and then a pre_checkout the demand throttle rejects. Carts whose
+    IN-CHAIN pre_checkout was FAST_SELLING-rejected are **0 for 8**; carts whose
+    in-chain pre returned 2xx converted 41% of the time (14/34). All four
+    September hot carts read `atc=201 pre=429 po=0 skip=pre_429`.
+
+    The gate is transient, not a wall: on 09-18 the same pre_checkout came back
+    201 at +7.5 s on one cart and +12.4 s on the other — but by then the
+    place-order got RESERVATION_FAILURE, i.e. the units were gone. Every order
+    this bot ever placed completed in 2.3-4.0 s end to end.
+
+    Today a rejected pre drops out of the JS chain into the Python ticket loop,
+    so the first place-order leaves ~9-13 s after the cart. With this on, the
+    chain retries pre_checkout itself every GAP_MS (default 300) up to MAX
+    attempts (default 4) inside BUDGET_MS (default 1500), and fires the
+    place-order in the SAME chain on the first 2xx — target ~1.5 s from cart to
+    order. Only a 429 is retried (the demand throttle is the transient one); a
+    401/424/400 hands back to the legacy path exactly as before.
+
+    pre_checkout buys nothing, carries no Shape headers, and the throttle
+    answers it in 5-14 ms, so a retry is cheap. Default OFF = the JS is
+    byte-identical to the golden fixture."""
+    env = os.environ if env is None else env
+
+    def _int(name, default, lo, hi):
+        try:
+            v = int(float(str(env.get(name, default)).strip()))
+        except (TypeError, ValueError):
+            v = int(default)
+        return max(lo, min(hi, v))
+    on = str(env.get('TARGET_FASTLANE_PRE_RETRY', '0')).strip() == '1'
+    return {
+        'tries': _int('TARGET_FASTLANE_PRE_RETRY_MAX', 4, 1, 10) if on else 1,
+        'gap_ms': _int('TARGET_FASTLANE_PRE_RETRY_GAP_MS', 300, 50, 3000),
+        'budget_ms': _int('TARGET_FASTLANE_PRE_RETRY_BUDGET_MS', 1500, 100, 10000),
+    }
+
+
 def ride_clean_exit_on() -> bool:
     """TARGET_WON_CART_RIDE_CLEAN_EXIT=1 (default '0'): the legacy FAST_SELLING
     hold budget ends 60 s before the ride cap (room for the final re-shoot), a
@@ -7781,6 +7822,24 @@ class PurchaseExecutor:
                 _stage_track = False
                 _stf = _FL_STAGE_OFF
 
+        # 2026-09-20 in-chain pre_checkout retry (see pre_retry_cfg). Emitted as
+        # two fragments so that with the flag OFF both are '' and the JS stays
+        # byte-identical to tests/fixtures/fast_lane_js_golden.txt.
+        _prc = pre_retry_cfg()
+        _pre_retry_open = _pre_retry_close = ''
+        if _prc['tries'] > 1:
+            _pre_retry_open = f"""
+            const _PRE_T0 = Date.now();
+            for (let _pt = 1; _pt <= {_prc['tries']}; _pt++) {{
+            out.pre.tries = _pt;"""
+            _pre_retry_close = f"""
+            if (out.pre.status === 200 || out.pre.status === 201) break;
+            // Only the demand throttle is transient; 401/424/400 hand back now.
+            if (out.pre.status !== 429) break;
+            if (_pt >= {_prc['tries']} || (Date.now() - _PRE_T0) >= {_prc['budget_ms']}) break;
+            await new Promise(_r => setTimeout(_r, {_prc['gap_ms']}));
+            }}"""
+
         js = f"""(async () => {{{_stf['open']}
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{
@@ -7827,7 +7886,7 @@ class PurchaseExecutor:
                 out.skip = 'atc_' + out.atc.status; return out;
             }}
 
-            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──{_stf['pre']}
+            // ── 2. pre_checkout — AWAITED (this is what the page nav was for) ──{_stf['pre']}{_pre_retry_open}
             try {{
                 const r2 = await fetch('{pre_url}', {{
                     method: 'POST', credentials: 'include',
@@ -7862,7 +7921,7 @@ class PurchaseExecutor:
                 }} catch(_) {{}}{_qg_capture_js}
             }} catch(e) {{
                 out.pre.status = 0;
-            }}
+            }}{_pre_retry_close}
             if (out.pre.status !== 200 && out.pre.status !== 201) {{
                 // Un-hydrated cart ⇒ a place-order now would 424
                 // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
@@ -8028,9 +8087,16 @@ class PurchaseExecutor:
         _dx_cq = fastlane_log_cart_qty_on()
         if _t_stamps or _dx_cq:
             _dx_note = fl_chain_dx_note(_atc, tcin, _t_stamps, _dx_cq)
+        # 2026-09-20: how many in-chain pre_checkout attempts it took. Printed only
+        # when the retry actually ran (>1), so every existing log-shape pin holds.
+        try:
+            _pt = int(_pre.get('tries') or 1)
+        except (TypeError, ValueError):
+            _pt = 1
+        _pt_note = f" pre_tries={_pt}" if _pt > 1 else ''
         print(f"[FAST_LANE] chain done in {res['elapsed']:.2f}s — "
               f"atc={_atc.get('status')} pre={_pre.get('status')} "
-              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_cv_note}"
+              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_pt_note}{_cv_note}"
               f" ident={self._ident_tag()}{_dx_note}")
         if _pre.get('pi'):
             # One-line intel record: the payment-instruction id + any cvv flag is

@@ -147,12 +147,26 @@ globalThis.fetch = async (url, opts) => {
 """
 
 
-def run_js(scenario, cvv_required=False):
-    """Run the executor's real fast-lane JS under Node with stubbed fetch."""
+def run_js(scenario, cvv_required=False, env=None):
+    """Run the executor's real fast-lane JS under Node with stubbed fetch.
+
+    `env` temporarily overrides os.environ while the JS is RENDERED, so
+    flag-gated fragments (e.g. the 2026-09-20 in-chain pre_checkout retry) can be
+    exercised through the real renderer rather than a replica.
+    """
     ex = _bare_executor(cvv_required=cvv_required)
     tab = _CapturingTab(result={})
-    asyncio.get_event_loop().run_until_complete(
-        ex._api_fast_lane(tab, TCIN, 2, json.dumps({"X-GyJwza5Z-a": "tok"})))
+    _saved = {k: os.environ.get(k) for k in (env or {})}
+    try:
+        os.environ.update(env or {})
+        asyncio.get_event_loop().run_until_complete(
+            ex._api_fast_lane(tab, TCIN, 2, json.dumps({"X-GyJwza5Z-a": "tok"})))
+    finally:
+        for k, v in _saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     js = tab.js
     assert js, "no JS captured"
     src = JS_HARNESS % (json.dumps(scenario), js)
@@ -1163,6 +1177,117 @@ def test_fl1_outcome_table():
     check("fl1_flag_parse_strip_and_strict", on is True and tr is False)
 
 
+# ── 2026-09-20: in-chain pre_checkout retry (TARGET_FASTLANE_PRE_RETRY) ───────
+# Measured over every run log: carts whose IN-CHAIN pre_checkout was
+# FAST_SELLING-rejected are 0-for-8; carts whose in-chain pre returned 2xx
+# converted 14/34. All four September hot carts read `atc=201 pre=429 po=0`.
+# The gate is transient (the same pre came back 201 at +7.5 s and +12.4 s on
+# 09-18), so the chain now retries it itself instead of dropping out to the
+# Python ticket loop ~9-13 s later.
+
+PRE_RETRY_ON = {"TARGET_FASTLANE_PRE_RETRY": "1", "TARGET_FASTLANE_PRE_RETRY_MAX": "4",
+                "TARGET_FASTLANE_PRE_RETRY_GAP_MS": "50",
+                "TARGET_FASTLANE_PRE_RETRY_BUDGET_MS": "5000"}
+_FS_BODY = json.dumps({"message": "Rate Limited", "code": "DCO_RATE_LIMITED"})
+
+
+def _ok_pre_body():
+    return json.dumps({"cart_items": [{"tcin": TCIN, "quantity": 2}],
+                       "payment_instructions": [{"payment_instruction_id": "PI-1",
+                                                 "payment_type": "CARD",
+                                                 "cvv_required": False}]})
+
+
+def _atc_ok():
+    return {"match": ATC, "status": 201,
+            "body": json.dumps({"tcin": TCIN, "cart_item_id": "CI-1", "quantity": 2})}
+
+
+def _po_ok():
+    return {"match": PO, "status": 200,
+            "body": json.dumps({"orders": [{"order_id": "OID-R", "reference_id": "1"}]})}
+
+
+def test_pre_retry_recovers_and_places_in_the_same_chain():
+    """Two FAST_SELLING rejections then a 2xx: the chain retries pre_checkout
+    itself and fires the place-order WITHOUT handing back to Python."""
+    r = run_js([_atc_ok(),
+                {"match": PRE, "seq": [{"status": 429, "body": _FS_BODY},
+                                       {"status": 429, "body": _FS_BODY},
+                                       {"status": 200, "body": _ok_pre_body()}]},
+                _po_ok()], env=PRE_RETRY_ON)
+    out = r["out"]
+    check("pre_retry_three_pres_then_checkout",
+          urls(r) == ["cart_items", "pre_checkout", "pre_checkout", "pre_checkout", "checkout"],
+          str(urls(r)))
+    check("pre_retry_order_placed_in_chain",
+          out["po"]["status"] == 200 and out["po"]["fired"] is True and out["skip"] == "",
+          str(out["po"]) + str(out.get("skip")))
+    check("pre_retry_counts_attempts", out["pre"].get("tries") == 3, str(out["pre"].get("tries")))
+
+
+def test_pre_retry_gives_up_after_max_and_never_places():
+    """Every attempt rejected: exactly MAX pre_checkouts, no place-order, and the
+    same skip the caller already handles."""
+    r = run_js([_atc_ok(),
+                {"match": PRE, "status": 429, "body": _FS_BODY},
+                _po_ok()], env=PRE_RETRY_ON)
+    out = r["out"]
+    check("pre_retry_max_four_pres", urls(r) == ["cart_items"] + ["pre_checkout"] * 4, str(urls(r)))
+    check("pre_retry_max_no_place_order", out["po"]["fired"] is False and out["skip"] == "pre_429",
+          str(out["po"]) + " " + str(out["skip"]))
+    check("pre_retry_max_tries_recorded", out["pre"].get("tries") == 4, str(out["pre"].get("tries")))
+
+
+def test_pre_retry_only_retries_429():
+    """A 401/424/400 pre is NOT the transient demand throttle — hand back at once,
+    exactly as before, so nothing new is hammered."""
+    for st in (401, 424, 400):
+        r = run_js([_atc_ok(),
+                    {"match": PRE, "status": st, "body": "{}"},
+                    _po_ok()], env=PRE_RETRY_ON)
+        check(f"pre_retry_no_retry_on_{st}",
+              urls(r) == ["cart_items", "pre_checkout"] and r["out"]["skip"] == f"pre_{st}",
+              str(urls(r)) + " " + str(r["out"]["skip"]))
+
+
+def test_pre_retry_budget_stops_early():
+    """The wall-clock budget bounds the loop even when attempts remain."""
+    r = run_js([_atc_ok(),
+                {"match": PRE, "status": 429, "body": _FS_BODY},
+                _po_ok()],
+               env={**PRE_RETRY_ON, "TARGET_FASTLANE_PRE_RETRY_GAP_MS": "120",
+                    "TARGET_FASTLANE_PRE_RETRY_BUDGET_MS": "150"})
+    n = urls(r).count("pre_checkout")
+    check("pre_retry_budget_bounds_tries", 1 <= n < 4, f"{n} pre_checkouts")
+
+
+def test_pre_retry_flag_off_is_single_shot():
+    """Default: one pre_checkout, prior behaviour (the golden fixture covers the
+    JS text; this covers the runtime shape)."""
+    r = run_js([_atc_ok(),
+                {"match": PRE, "status": 429, "body": _FS_BODY},
+                _po_ok()])
+    check("pre_retry_off_single_pre",
+          urls(r) == ["cart_items", "pre_checkout"] and r["out"]["skip"] == "pre_429", str(urls(r)))
+    check("pre_retry_off_no_tries_field", "tries" not in r["out"]["pre"], str(r["out"]["pre"]))
+
+
+def test_pre_retry_cfg_clamps():
+    from src.session.purchase_executor import pre_retry_cfg
+    check("pre_retry_cfg_default_off", pre_retry_cfg({})["tries"] == 1)
+    c = pre_retry_cfg({"TARGET_FASTLANE_PRE_RETRY": "1"})
+    check("pre_retry_cfg_defaults", c == {"tries": 4, "gap_ms": 300, "budget_ms": 1500}, str(c))
+    c = pre_retry_cfg({"TARGET_FASTLANE_PRE_RETRY": "1", "TARGET_FASTLANE_PRE_RETRY_MAX": "99",
+                       "TARGET_FASTLANE_PRE_RETRY_GAP_MS": "1",
+                       "TARGET_FASTLANE_PRE_RETRY_BUDGET_MS": "999999"})
+    check("pre_retry_cfg_clamped", c == {"tries": 10, "gap_ms": 50, "budget_ms": 10000}, str(c))
+    c = pre_retry_cfg({"TARGET_FASTLANE_PRE_RETRY": "1", "TARGET_FASTLANE_PRE_RETRY_MAX": "junk",
+                       "TARGET_FASTLANE_PRE_RETRY_GAP_MS": "nan"})
+    check("pre_retry_cfg_garbage_falls_back", c["tries"] == 4 and c["gap_ms"] == 300, str(c))
+    check("pre_retry_cfg_zero_is_off", pre_retry_cfg({"TARGET_FASTLANE_PRE_RETRY": "0"})["tries"] == 1)
+
+
 def main():
     if not NODE:
         print("[SKIP] node not found — JS chain tests skipped")
@@ -1177,6 +1302,12 @@ def main():
         test_js_latched_account_pre_puts_before_po()
         test_js_cvv_put_failure_no_reshoot()
         test_js_po_429_does_not_trigger_cvv_put()
+        # 2026-09-20 in-chain pre_checkout retry
+        test_pre_retry_recovers_and_places_in_the_same_chain()
+        test_pre_retry_gives_up_after_max_and_never_places()
+        test_pre_retry_only_retries_429()
+        test_pre_retry_budget_stops_early()
+        test_pre_retry_flag_off_is_single_shot()
 
     test_success_marks_placed_and_parses_order_id()
     test_success_with_unparseable_body_still_succeeds()
@@ -1191,6 +1322,7 @@ def main():
     test_fast_lane_cvv_source_and_validation()
     test_placed_via_cvv_reshoot_latches_for_pre_put()
     test_hold_cart_for_fast_selling()
+    test_pre_retry_cfg_clamps()
 
     # Part 3: FL-1 (TARGET_FASTLANE_STAGE_TRACK). Node is REQUIRED for the
     # abort-protocol proof: without it the FL-1 tests fail rather than skip.

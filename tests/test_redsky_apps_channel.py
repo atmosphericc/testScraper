@@ -339,7 +339,11 @@ def test_bat_pins():
           and _bat_val('RESILIENT_READ_CADENCE_MAX_S') == '5.0')
     check("bat_trusted_reader_park", _bat_val('RESILIENT_TRUSTED_READER_PARK_S') == '600')
     check("bat_harvest_all_accounts", _bat_val('TARGET_HARVEST_SKIP') == '')
-    check("bat_replay_age_pinned", _bat_val('TARGET_HARVEST_MAX_REPLAY_AGE_S') == '100')
+    # 2026-09-20: raised 100 -> 300 s to match the bank TTL. The 100 s cap was an
+    # untested assumption; primary's passes show no decay with set age inside it,
+    # while the bank held a replayable set only 21-26% of the time.
+    check("bat_replay_age_pinned", _bat_val('TARGET_HARVEST_MAX_REPLAY_AGE_S') == '300'
+          and _bat_val('TARGET_HARVEST_TTL_S') == '300')
     check("bat_prefer_shipping", _bat_val('TARGET_HARVEST_PREFER_SHIPPING') == '1')
     check("bat_bytematch", _bat_val('TARGET_ATC_BYTEMATCH') == '1')
     check("bat_per_ip_cap_half", _bat_val('RESILIENT_PER_IP_MAX_RPS') == '0.5')

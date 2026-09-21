@@ -826,9 +826,47 @@ REM    every 300 s cycle); the loop also re-clicks past half the cap.
 REM  - PREFER_SHIPPING selects the Shipping fulfillment cell once per PDP nav
 REM    (every 09-07 capture was a STORE_PICKUP add).
 REM  - ATC_BYTEMATCH sends the page's own ATC URL (%%2C + key=) on the fast lane.
-set TARGET_HARVEST_MAX_REPLAY_AGE_S=100
+REM 2026-09-20: 100 to 300 s. The 100 s cap was an ASSUMPTION (a set older than
+REM the Shape token-rotation window is likely dead), never measured -- we throw
+REM those sets away, so we could never see whether they work. What IS measured:
+REM primary's edge passes show NO decay with set age inside the cap (0-10 s 4/20,
+REM 11-30 s 2/20, 31-60 s 3/23, 61-100 s 2/5), while the bank holds a replayable
+REM set only 21-26 pct of the time -- which is why 5 of 7 DCO burst re-POSTs on
+REM 09-18 went out page-signed. Two independent vendors publish far longer lives
+REM (Refract "10-15 minutes, 10 minutes is our safe maximum"; Stellar ships a
+REM 300000 ms ATC-cookie expiry), and our own bank TTL is already 300 s. So the
+REM cap now matches the TTL. Readout: [HARVEST] "bank STALE at shot time" should
+REM nearly vanish and REPLAY lines should show ages above 100 s; if pass rates
+REM fall at those ages, put this back to 100.
+set TARGET_HARVEST_MAX_REPLAY_AGE_S=300
 set TARGET_HARVEST_PREFER_SHIPPING=1
 set TARGET_ATC_BYTEMATCH=1
+REM ===========================================================================
+REM 2026-09-20 IN-CHAIN pre_checkout RETRY -- the hot-SKU conversion fix.
+REM Measured over all 104 run logs: a cart whose IN-CHAIN pre_checkout was
+REM FAST_SELLING-rejected is 0 for 8; a cart whose in-chain pre returned 2xx
+REM converted 14 of 34. ALL FOUR September hot carts read
+REM   atc=201 pre=429 po=0 skip=pre_429
+REM i.e. the add-to-cart WORKED and the place-order never fired. The gate is
+REM transient, not a wall: on 09-18 the same pre_checkout came back 201 at
+REM +7.5 s on one cart and +12.4 s on the other -- but by then the
+REM place-order drew RESERVATION_FAILURE, i.e. the units were gone. Every
+REM order this bot ever placed finished in 2.3-4.0 s end to end.
+REM Until now a rejected pre dropped out of the JS chain into the Python
+REM ticket loop, so the first place-order left 9-13 s after the cart. Now
+REM the chain retries pre_checkout ITSELF every GAP_MS up to MAX attempts
+REM inside BUDGET_MS and fires the place-order in the SAME chain on the
+REM first 2xx: 5 draws inside the first second. Only a 429 is retried; a
+REM 401/424/400 hands back to the legacy path exactly as before.
+REM pre_checkout buys nothing and carries no Shape headers, and the
+REM throttle answers it in 5-14 ms, so a retry is cheap.
+REM grep: "pre_tries=" on the chain-done line.
+REM Kill: TARGET_FASTLANE_PRE_RETRY=0 (JS byte-identical to the golden).
+set TARGET_FASTLANE_PRE_RETRY=1
+set TARGET_FASTLANE_PRE_RETRY_MAX=5
+set TARGET_FASTLANE_PRE_RETRY_GAP_MS=250
+set TARGET_FASTLANE_PRE_RETRY_BUDGET_MS=1500
+REM ===========================================================================
 REM 2026-09-13 (docs/FAILURES.md 2026-09-13, run_20260911 per-shot forensics):
 REM  EVERY win in history rode a SMALL first-click Shape set (no -a0 chunk). The
 REM  harvest tab clicked the same PDP document for ~15 min between reloads, so the
