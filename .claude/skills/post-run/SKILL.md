@@ -45,6 +45,28 @@ If a regime change is detected:
 Also watch for **recovery**. Something starting to work again is as informative as
 a collapse, and just as easy to miss.
 
+## Phase 0.5 — Was there anything to buy? (30 seconds, before you spawn anything)
+
+```
+grep -c 'in_stock=True' <run log>     # the number that decides the whole shape
+grep -c '\[RACE\]' <run log>
+```
+
+**If that count is zero, the purchase chain was never exercised** and "0% success"
+is 0-for-**zero**, not 0-for-N. Three of Phase 1's four default agents then have
+nothing to analyse — `purchase-flow-engineer` would be tracing carts that do not
+exist. Spawning them anyway burns a lot of tokens to report "n=0".
+
+Redirect the fan-out to the only live question — **did we MISS a restock, or did
+none happen?** — with `stock-pipeline-analyst` on blind windows and per-TCIN
+visibility continuity, and `log-miner` on the hour-by-hour sweep tally.
+
+And before calling a zero night a regression, check the base rate:
+`for f in logs/runs/run_*.log; do echo "$(grep -c in_stock=True $f) $f"; done`.
+On 2026-09-22 **six of the last nine full runs had zero stock events** — two in a
+row is normal, and treating it as a regression sends a whole investigation at a
+bot that did nothing wrong.
+
 ## Phase 1 — Establish what happened (parallel, cheap where possible)
 
 Fan these out **in one message** so they run concurrently. Do not do this reading

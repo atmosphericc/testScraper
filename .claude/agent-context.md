@@ -106,6 +106,63 @@ confound.
 **Operational note:** long background Python must run with `python -u`, or its
 stdout sits in a pipe buffer and you are blind to progress for the whole run.
 
+### 2C. THE DEFAULT IS THE BUG — silently substituting a guess for a gap
+
+On 2026-09-22 this exact failure appeared **four times in four unrelated places
+in one session**, twice in code and twice in analysis. It is the single most
+productive thing to look for in this repo.
+
+| Where | The gap | The silent guess | What it cost |
+|---|---|---|---|
+| `funnel.py` `is_hot()` | TCIN not in the hot list | bucketed **"ordinary"** | Inverted the headline edge-penalty number; made "all 20 orders were ordinary SKUs" circular |
+| `shots.py` `FIRE`/`START` | `(\d+)` had no upper bound | **invented a TCIN** (`10126446662026`) by swallowing a glued year | Shots attributed to a SKU that does not exist |
+| An orchestrator's own script output | table truncated to top 16 rows | read the visible rows as **the whole set** | A fix proposed on "only 4 of 10 active" when it was 7. REFUTED in verification |
+| A log-miner report | 211 lines, 208 classified | reported the remainder as **"0 FAILED"** | Three real ground-truth failures nearly went unrecorded |
+
+**The rule: when you cannot classify something, emit `unknown` and COUNT it.
+Never let an unclassified item inherit a bucket.** A number computed over a
+population that silently absorbed the unclassifiable is not a measurement.
+
+Three habits that catch it:
+
+- **Reconcile the remainder, always.** If you counted 208 of 211, say what the
+  other 3 are. `total - classified` is the first thing to print, not the last.
+- **Never read a conclusion off a truncated view.** `head`, `tail`, `| head -16`
+  and a sorted top-N are for looking, not for concluding. Re-run unbounded before
+  you assert a count.
+- **A contradiction inside your own output means YOUR PARSER is wrong**, not the
+  world. `last_status=200` next to `successes=0` was a field-name guess, not 20
+  dead proxies.
+
+### 2D. "It has never fired" is not evidence of health
+
+Three diagnostics in this repo have zero occurrences in every run log. They are
+**not** the same thing, and the difference decides whether to spend effort:
+
+| Marker | Why it is silent | So what |
+|---|---|---|
+| `SHAPE_BLOCK` / `PX_BLOCK` (403) | The event genuinely has never happened — 0 across 105 logs | Real negative. **Do not build a handler.** |
+| AC-1 ambiguous-commit latch | Armed, reachable, never triggered | Real negative. Note it, move on. |
+| `[FS_TICKET_BODY]` | The print **postdated** the only run that had qualifying data by 3 days, and nothing has qualified since | **Untested instrument.** Silence says nothing about whether it works. |
+
+**Before concluding a diagnostic is broken, check when its code shipped against
+when the data was recorded** (`git log -S '<the marker string>'`). An orchestrator
+asserted "it existed by then" on 09-22 and was wrong by three days. And before
+concluding it is fine, check whether a *second* code path reaches the same
+outcome without the instrument — the legacy place-order loop logged
+`[FS_TICKET]` but had no body capture at all, and it is the path the one
+historical archetype actually ran through.
+
+### 2E. Scope a fleet failure before you call it a fleet failure
+
+13 of 18 monitor sessions crashed together on 09-22. It read as a cascade,
+resource pressure, or an age-synchronised recycle wave. It was **one Bright Data
+`/16`** — all 13 on `31.105.0.0/16`, the other 5 on different subnets at 0-1
+failures. Partition by exit subnet, by account, by session age and by launch
+order **before** reaching for a mechanism; a clean partition names the cause
+faster than any code read. (It also was not `TARGET_CHROME_MAX_AGE_S`, which is
+not referenced in `multi_session_pool.py` at all — it governs the buyer Chromes.)
+
 ## 3. THE REPO MAP
 
 Target is the only retailer. Walmart was deleted 2026-09-21 (commit `9289edbf`);
