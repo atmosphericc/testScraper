@@ -30,9 +30,13 @@ from dataclasses import dataclass
 from typing import Iterator, List, Optional
 
 TS = re.compile(r"^(\d{4}-\d\d-\d\d) (\d\d):(\d\d):(\d\d),(\d{3})")
-FIRE = re.compile(r"\[FAST_LANE\] Firing ATC.*?\(tcin=(\d+)")
+# 2026-09-22: bounded to 8-10 digits with a glued-logger-line lookahead.
+# A bare (\d+) here swallowed the year off a glued "2026-.." line and
+# produced phantom TCINs like 10126446662026 (see shots.py IDENT, which
+# was already hardened against exactly this).
+FIRE = re.compile(r"\[FAST_LANE\] Firing ATC.*?\(tcin=" + r"(\d{8,10}?)(?=\D|20\d\d-\d\d-\d\d|$)")
 DONE = re.compile(r"\[FAST_LANE\] chain done in ([\d.]+)s — atc=(\d+) pre=(\d+) po=(\d+)")
-START = re.compile(r"\[PURCHASE\] Starting purchase for (\d+)")
+START = re.compile(r"\[PURCHASE\] Starting purchase for " + r"(\d{8,10}?)(?=\D|20\d\d-\d\d-\d\d|$)")
 OUTCOME = re.compile(r"ATC fetch status: (\d+)")
 IDENT = re.compile(r"ident=(primary|business|alt-1|[A-Za-z]+)")   # stops before a glued "2026-..." logger line
 

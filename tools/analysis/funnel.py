@@ -30,19 +30,61 @@ from collections import Counter, defaultdict
 
 from shots import parse_shots, TS
 
-# The hyped families. Everything else counts as ordinary.
+# The hyped families.
+#
+# 2026-09-22: this list is STILL hand-maintained -- there is no hot/hype field in
+# config/product_config.json, so there is no contemporaneous source to derive it
+# from. What changed is the DEFAULT. Until today an unclassified TCIN silently
+# became "ordinary", so every SKU nobody had judged landed in the ordinary bucket
+# and corrupted its rate: 2,184 Mega-Evolution chains fired on one night (08-27)
+# sat in "ordinary" and drove the published ordinary edge-pass rate to
+# 67/2,331 = 2.9%. Classified correctly it is 62/204 = 30.4% -- the quoted
+# "hot takes only a 1.7x edge penalty" inverts into a >26x gap the other way.
+#
+# Now there are THREE classes and an unclassified TCIN is `unknown`, never
+# silently ordinary. `unknown` must be REPORTED, not folded into either side.
 HOT_PREFIXES = ("10108920", "101242210", "101140749")
 HOT_EXACT = {"1012055696", "1011209279", "1011960739", "95274164", "95274160",
-             "1012422107", "1011407490"}
+             "1012422107", "1011407490",
+             # added 2026-09-22 -- hyped by the project's own 09-20 judgment and
+             # previously mis-bucketed as ordinary (CURRENT_STATE.md).
+             "1012644665", "1012644666", "1012644667", "95290385"}
+
+# TCINs positively judged ORDINARY. Membership here is a claim with a source,
+# not an absence of evidence -- that is the whole point of the three-way split.
+ORDINARY_EXACT = {
+    # "The one agreed-ordinary TCIN left is 1011483413" -- CURRENT_STATE.md.
+    # Deliberately NOT qty-pinned and NOT parked (bat:1200-1207): it belongs to
+    # the 1011483xxx family that produced every order this bot has ever placed.
+    "1011483413",
+}
 CHAIN = re.compile(r"\[FAST_LANE\] chain done in ([\d.]+)s — atc=(\d+) pre=(\d+) po=(\d+)")
 ORDER = re.compile(r"(\*\*\* ORDER PLACED \*\*\*|\[API_PLACE_ORDER\] Order placed)")
 API_PO = re.compile(r"\[API_PLACE_ORDER\] HTTP (\d+) in")
 KEY = re.compile(r"tgt-cart-error-key': '([A-Z_,]+)'")
 
 
-def is_hot(tcin: str) -> bool:
+def sku_class(tcin: str) -> str:
+    """'hot' | 'ordinary' | 'unknown'. NEVER guess -- an unlisted TCIN is unknown.
+
+    Silently defaulting the unlisted to 'ordinary' is the bug this replaces; it
+    is undercoverage of the hot list turning into contamination of the ordinary
+    bucket, which is invisible in the output and inverted a headline number."""
     t = str(tcin or "")
-    return t in HOT_EXACT or any(t.startswith(p) for p in HOT_PREFIXES)
+    if t in HOT_EXACT or any(t.startswith(p) for p in HOT_PREFIXES):
+        return "hot"
+    if t in ORDINARY_EXACT:
+        return "ordinary"
+    return "unknown"
+
+
+def is_hot(tcin: str) -> bool:
+    """Back-compat shim for limiter_key / readout_multi_sku / shot_index_yield.
+
+    Note the asymmetry these callers inherit: `not is_hot(t)` means "hot or
+    unknown", NOT "ordinary". Callers that need a real ordinary set must use
+    sku_class() directly."""
+    return sku_class(tcin) == "hot"
 
 
 def main() -> None:
@@ -56,13 +98,16 @@ def main() -> None:
     chains = defaultdict(Counter)     # era -> in-chain pre/po outcomes
     orders = defaultdict(int)
     po_keys = defaultdict(Counter)
+    unknown_tcins = set()             # 2026-09-22: so the list can be maintained
     for path in paths:
         era = "hot" if "hot" in path else None
         shots = parse_shots(path)
         for s in shots:
             if a.hot_only and not is_hot(s.tcin):
                 continue
-            cls = "hot" if is_hot(s.tcin) else "ordinary"
+            cls = sku_class(s.tcin)
+            if cls == "unknown":
+                unknown_tcins.add(str(s.tcin))
             g12[cls][s.cls] += 1
         # in-chain pre/po: only the fast-lane chain-done line carries all three
         last_tcin = None
@@ -84,7 +129,7 @@ def main() -> None:
                         continue      # no cart, G3/G4 never reached
                     if a.hot_only and not is_hot(last_tcin):
                         continue
-                    cls = "hot" if is_hot(last_tcin) else "ordinary"
+                    cls = sku_class(last_tcin)
                     chains[cls]["carts"] += 1
                     if pre.startswith("2"):
                         chains[cls]["pre_2xx"] += 1
@@ -96,10 +141,13 @@ def main() -> None:
                     else:
                         chains[cls][f"pre_{pre}"] += 1
                 if ORDER.search(line):
-                    orders["hot" if is_hot(last_tcin) else "ordinary"] += 1
+                    orders[sku_class(last_tcin)] += 1
 
     print(f"== funnel over {len(paths)} run log(s)\n")
-    for cls in ("ordinary", "hot"):
+    # 2026-09-22: iterate all THREE classes. Printing only hot+ordinary would
+    # hide the unknown bucket entirely, which is the same blind spot in a new
+    # place. The point of the split is that unclassified volume is VISIBLE.
+    for cls in ("ordinary", "hot", "unknown"):
         sh = g12[cls]
         n = sum(sh.values())
         if not n:
@@ -128,6 +176,13 @@ def main() -> None:
             if po_keys[cls]:
                 print(f"      in-chain place-order error keys: {dict(po_keys[cls])}")
         print(f"   ORDERS (any route): {orders[cls]}\n")
+        if cls == "unknown":
+            seen = sorted(unknown_tcins)
+            print(f"   !! {n} shots on {len(seen)} UNCLASSIFIED TCIN(s). Every")
+            print(f"      hot-vs-ordinary number above is INCOMPLETE until these are")
+            print(f"      judged and added to HOT_EXACT or ORDINARY_EXACT in this file.")
+            print(f"      Do not quote a hot-vs-ordinary rate while this is non-empty.")
+            print(f"      {', '.join(seen)}\n")
 
 
 if __name__ == "__main__":
