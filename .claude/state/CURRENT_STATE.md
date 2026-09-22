@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-21 · HEAD `551b1807` · branch `feat_refract_arch_v1`**
+**As of: 2026-09-22 · HEAD `c598366e` · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -348,6 +348,56 @@ must not be used even directionally. — [VERIFIED 09-21]
 - **Retry cadence**: wave-first ~60 s (ours) vs "keep submitting" ~3.5 s (theirs).
   `docs/REFRACT_PARITY.md` §4 states our own throughput evidence is era-confounded:
   *"Our data cannot settle this in-era."*
+
+## 2026-09-22 RUN — NO RESTOCK OCCURRED. The bot did not fail.
+
+`run_20260921_225642.log`, 22:56 → 07:50 (8.84 h), 10 TCINs, 18 exits.
+**Zero `in_stock=True` events. 0 shots, 0 carts, 0 orders — 0-for-ZERO, not 0-for-N.**
+The purchase chain was never exercised. [MEASURED 09-22]
+
+**The monitor was healthy and was never blind.** In the operator's 02:00-05:00
+window: **32,132 sweeps, 200=32,125 (99.98%), 403=0, 429=0, other=6.** All 208
+ground-truth reads returned exactly `(10 TCINs)`; `state/tcin_visibility.json`
+ends with `invisible: []` and all 10 `last_seen == updated_at`. The 09-21
+43-minute 429 tarpit did **not** recur — `429=` read 0 on all 1,060 intervals.
+[VERIFIED 09-22, fresh context]
+
+- **Zero-restock nights are the NORM: 6 of the last 9 full runs had zero stock
+  events.** Two in a row is the base rate, not a regression. [MEASURED 09-22]
+- Whole-run loss 302/93,608 = 0.32%; **excluding the 01:01-01:17 dip it is
+  45/82,888 = 0.054%**, better than the 8-exit baseline of 0.07%. The 18-exit
+  restore is vindicated on steady-state grounds. [MEASURED 09-22]
+- **Detection has no debounce.** `_ingest_bulk_response` fires `on_in_stock` the
+  same cycle on any False→True transition; `TARGET_STOCK_HYST_S=20` is pure
+  bookkeeping and never touches `in_stock`. 10 TCINs = 1 chunk (cap 28), so every
+  sweep reads all 10 — full-catalog refresh every **~0.336 s**. A 5-30 s flip was
+  essentially certain to be caught. [VERIFIED 09-22, code-traced]
+
+## ⚠️ NEW DEFECT: a 13-session cascade recovers at 1 session per 30 s
+
+01:01:25-01:16:55, **~15.5 min degraded (never blind)**. `s13` heartbeat-failed at
+01:04:01, then 13 more sessions crashed near-simultaneously; `ready` fell
+**18 → 8** at 01:05:25. The watchdog recycles **one** crashed session per 30 s tick
+(`multi_session_pool.py:594-610`, `WATCHDOG_INTERVAL_S=30`), so full recovery took
+until 01:13:49. Worst 30 s bucket was 71.1% success (64/90); sweep RATE never
+dropped because even 8 sessions clear the 3.0/s bar. 252 of the run's 302 misses
+(83%) fall in this window. 429=0 and 403=0 throughout — **not** a Target block.
+**A cascade of this shape inside a drop window would mean ~9 minutes at reduced
+capacity.** Cause of the simultaneous crash not established. [MEASURED 09-22]
+
+## ⚠️ STRUCTURAL BLIND SPOT: both channels share one pool
+
+`STOCK_CANARY=0`, so the sweep and the ground-truth probe both draw from the same
+18-session pool. A pool-wide cloaking event (a synchronized false-OOS served to
+every exit) would be caught by nothing. No evidence it has ever occurred, and the
+canary itself is known-broken (~100% rejected, raw urllib TLS). Naming it because
+it is unmonitored, not because it is suspected. [MEASURED 09-22]
+
+- Related correction: with `RESILIENT_REDSKY_CHANNEL=apps_raw` and
+  `RESILIENT_RAW_CACHE_BUST` unset (default 0), the "cache-bust" ground-truth read
+  **is not actually cache-busting** — both channels hit the same uncached endpoint.
+  Its value is a second independent schedule, not cache evasion. Do not describe it
+  as a cache-bust channel. [VERIFIED 09-22]
 
 ## REGIME WATCH — the tripwire
 
