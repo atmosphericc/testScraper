@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-22 · HEAD `c598366e` · branch `feat_refract_arch_v1`**
+**As of: 2026-09-22 · HEAD `adba8061` · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -25,10 +25,19 @@ to be wrong rather than leaving them with a caveat.**
   had judged fell through to "ordinary". So the claim only ever meant *"the order
   SKUs are not in our hot list"* — trivially true, since they were in **no** list.
   It is not evidence about hype and must not be used as such. — [VERIFIED 09-22]
-- **All 20 orders are on 8 SKUs that were never classified at all:**
-  `1011209273`, `1011483406`, `1011483414`, `1012055695`, `95120832`, `95120836`,
-  `95267143`, `95298172`. **None is armed today.** With the three-way classifier
-  (`funnel.py`, fixed 09-22) the whole-history funnel reads:
+- **All 20 orders are on SKUs that were never classified at all.** Two sets that
+  overlap but are NOT identical — do not conflate them, I did once already:
+  - **Order-producing (8), from primary log attribution:** `1011209273`,
+    `1011483406`, `1011483414`, `95042136`, `95120832`, `95120836`, `95267143`,
+    `95298172`. **None is in the config today — absent, not disabled.**
+  - **`funnel.py`'s UNKNOWN shot bucket (8):** the same list except it has
+    `1012055695` (shots, zero orders) and lacks `95042136` (1 order on 06-12 via
+    the legacy API route, whose shots the fast-lane parser never emitted).
+    `unknown_tcins` is collected at the shot site only, so a TCIN can carry orders
+    without appearing there.
+
+  With the three-way classifier (`funnel.py`, fixed 09-22) the whole-history
+  funnel reads:
 
   | class | shots | carts | orders | G2 cart | G3 pre_checkout |
   |---|---|---|---|---|---|
@@ -41,6 +50,51 @@ to be wrong rather than leaving them with a caveat.**
   the exact bug that produced the circular claim. — [MEASURED 09-22]
 - **Zero orders of any kind since 2026-08-04.** — [MEASURED 09-20] same
 - 78 carts won all-time, 58 lost, 20 converted. — [MEASURED 09-20] same
+
+## 🔴 WE STOPPED LOOKING. Commit `a30bc294`, 2026-08-10.
+
+**The single most decision-relevant fact in this file.** [VERIFIED 09-22, fresh
+context, order attribution re-derived from primary logs]
+
+All 20 orders came from **8 TCINs**. On **2026-08-10** — six days after the last
+order — `a30bc294` ("sync product config/catalog to the 08-09 drop-ready TCIN
+list") **wholesale-swapped `config/product_config.json` to a DISJOINT set**,
+sharing zero TCINs with the order-producing list. **It has stayed swapped for 43+
+days. 0 of 8 are in the config today — absent, not merely disabled.**
+
+| TCIN | Product | orders | last MONITORED |
+|---|---|---|---|
+| `1011483414` | Mega Evolution Pitch Black Booster Bundle | 3 | 08-04 |
+| `1011209273` | Mega Greninja ex Premium Collection | 4 | 08-02 |
+| `1011483406` | Mega Evolution Pitch Black Elite Trainer Box | 4 | 08-04 |
+| `95298172` | Mega Evolution Chaos Rising Booster Bundle | 3 | 08-04 |
+| `95267143` | Mega Evolution Chaos Rising Elite Trainer Box | 2 | 08-04 |
+| `95120836` / `95120832` | One Piece Zoro / Kuzan Starter Decks | 2 | 08-02 |
+| `95042136` | One Piece Luffy & Ace Starter Deck ST30 | 1 | 06-12 |
+
+**The "Target stopped restocking them" hypothesis is `[NOT ESTABLISHED]` — it
+failed its own strict test, 0 of 8.** Every one of the 8 stopped producing stock
+lines (True *or* False) on or before its own last-order date. They were not
+watched-and-absent; **they were never watched again.** `stock_monitor.py:360`
+filters to enabled TCINs, so "stopped restocking" and "stopped being monitored"
+are indistinguishable here, with zero exceptions in either direction.
+
+**What IS directly evidenced is the config swap, not Target's behaviour.** Orders
+did not stop because the bot broke or because Target went quiet — as far as the
+data can say, they stopped when we stopped watching the SKUs that produced them.
+
+- ⚠️ **The Pitch Black family is demonstrably still restocking.** Sibling
+  `1011483413` (Pitch Black Booster Box) was in stock as recently as **09-18**,
+  while `1011483406` and `1011483414` — **7 of the 20 orders between them** — have
+  been unwatched for 43 days. This is the cheapest available experiment: the only
+  way to learn whether the order-producing SKUs still restock is to watch them.
+- Correction to `logs/analysis_2026_09_20/winning_shape/SUMMARY.txt`: it lists
+  orders #1 and #2 as account `(pre-ident)`. Both were **W1/primary** —
+  `build_table.py`'s regex requires a parenthetical that June-era lines lack.
+  `[DISPATCH] <tcin> → W1/primary` is present in both purchase logs.
+- n=20 re-confirmed independently: 21 raw hits, one duplicate (a `[RACE]`
+  cycle-completion line re-emitting a winning order id). Three signal families
+  agree file-by-file. Zero orders in any log after 08-04. [MEASURED 09-22]
 
 ## What actually happened after 2026-08-04
 
