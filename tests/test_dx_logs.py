@@ -950,9 +950,9 @@ def _legacy_ex(seq, ctx):
     return ex, c
 
 
-def _R(status, reason="", success=False, order_id=None):
+def _R(status, reason="", success=False, order_id=None, body=""):
     return {"success": success, "status": status, "reason": reason, "order_id": order_id,
-            "confirmation_url": None, "body": ""}
+            "confirmation_url": None, "body": body}
 
 
 LEGACY_SEQ = [
@@ -971,6 +971,64 @@ def _legacy_run(flags, ctx):
     with env(**e):
         out = capture_async(ex._place_order(_UrlTab()))
     return capture_async.result, c["api"], out, ex
+
+
+def _legacy_run_seq(seq, flags, ctx):
+    ex, c = _legacy_ex(seq, ctx)
+    e = dict(LEGACY_ENV)
+    e.update(flags)
+    with env(**e):
+        out = capture_async(ex._place_order(_UrlTab()))
+    return capture_async.result, c["api"], out, ex
+
+
+# 2026-09-22: the legacy in-place re-shoot path had NO [FS_TICKET_BODY] block.
+# A cart whose FIRST place-order returns 424/400 never enters the instrumented
+# ticket loop -- woncart_eligible() admits only "429 with FAST_SELLING" -- so it
+# lands here. The one historical archetype we have (08-04: 429 -> 424
+# RESERVATION_FAILURE, 2.6-2.9 s apart) is THIS loop's cadence, not the ticket
+# loop's, so the body we most need was never captured. Same TARGET_FS_TICKET_LOG
+# gate; flag-off must stay byte-identical.
+_NL = chr(10)   # literal newlines, so the flattening assertion below is real
+BODY_424 = ('{' + _NL + '  "errors": [ {"code": "RESERVATION_FAILURE",'
+            + _NL + '  "message": "could not reserve"} ]' + _NL + '}')
+BODY_429 = '{"code":"FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"}'
+LEGACY_SEQ_BODY = [
+    {"res": _R(424, "http_424", body=BODY_424),
+     "stash": {"status": 424, "key": "RESERVATION_FAILURE", "envoy": "11"}},
+    {"res": _R(429, "http_429", body=BODY_429),
+     "stash": {"status": 429, "key": "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION", "envoy": "9"}},
+    {"res": _R(200, "ok", True, "OID-B"), "stash": {"status": 200, "key": "", "envoy": "13"}},
+]
+
+
+def test_pe_legacy_fs_ticket_body():
+    now = time.time()
+    ctx = {"tcin": TCIN, "atc_ts": now - 2.0, "n": 0, "last_ts": 0.0}
+    r, api, out, _ = _legacy_run_seq(LEGACY_SEQ_BODY, {"TARGET_FS_TICKET_LOG": "1"}, ctx)
+    bl = lines_with(out, "[FS_TICKET_BODY]")
+    check("legacy_body_result_unchanged", r is True and api == 3, (r, api))
+    check("legacy_body_ticket_lines_intact", len(lines_with(out, "[FS_TICKET]")) == 3,
+          lines_with(out, "[FS_TICKET]"))
+    # only the 424 qualifies: 429/FAST_SELLING is the common case and must NOT
+    # be captured, and the 200 must not either.
+    check("legacy_body_one_line_only", len(bl) == 1, bl)
+    if len(bl) == 1:
+        check("legacy_body_fields", bl[0].startswith(
+            "[FS_TICKET_BODY] n=1 layer=po mode=legacy status=424 body="), bl[0])
+        check("legacy_body_carries_reason", "RESERVATION_FAILURE" in bl[0], bl[0])
+        check("legacy_body_flattened",
+              _NL not in bl[0] and "  " not in bl[0].split("body=", 1)[1], bl[0])
+    # flag OFF must be byte-identical: no ticket lines and no body lines at all
+    _, _, out0, _ = _legacy_run_seq(LEGACY_SEQ_BODY, {}, {"tcin": TCIN, "atc_ts": now, "n": 0, "last_ts": 0.0})
+    check("legacy_body_flag_off_silent",
+          "[FS_TICKET_BODY]" not in out0 and "[FS_TICKET]" not in out0, out0[-200:])
+    # a qualifying status with an EMPTY body must print nothing (the `_b and` guard)
+    empty = [{"res": _R(424, "http_424"), "stash": {"status": 424, "key": "RESERVATION_FAILURE", "envoy": "11"}},
+             {"res": _R(200, "ok", True, "OID-E"), "stash": {"status": 200, "key": "", "envoy": "13"}}]
+    _, _, oute, _ = _legacy_run_seq(empty, {"TARGET_FS_TICKET_LOG": "1"},
+                                    {"tcin": TCIN, "atc_ts": now, "n": 0, "last_ts": 0.0})
+    check("legacy_body_empty_body_silent", "[FS_TICKET_BODY]" not in oute, oute[-200:])
 
 
 def test_pe_legacy_fs_ticket():
@@ -1270,6 +1328,7 @@ def main():
              test_mgr_exposure, test_r2_held_reentry_not_a_shot, test_mgr_census, test_mgr_source_pins,
              test_pe_pure_helpers, test_pe_chain_done_line, test_pe_js_insertion, test_pe_js_node,
              test_pe_interceptor, test_pe_stash_attribution, test_pe_legacy_fs_ticket,
+             test_pe_legacy_fs_ticket_body,
              test_pe_note_atc, test_pe_impl_wiring,
              test_smon_fixture, test_smon_malformed, test_scr_ingest)
     for fn in tests:

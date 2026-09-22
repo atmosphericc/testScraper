@@ -474,17 +474,41 @@ ends with `invisible: []` and all 10 `last_seen == updated_at`. The 09-21
   sweep reads all 10 — full-catalog refresh every **~0.336 s**. A 5-30 s flip was
   essentially certain to be caught. [VERIFIED 09-22, code-traced]
 
-## ⚠️ NEW DEFECT: a 13-session cascade recovers at 1 session per 30 s
+## ⚠️ 09-22 CASCADE — a Bright Data `/16` event. Recorded; deliberately NOT fixed.
 
-01:01:25-01:16:55, **~15.5 min degraded (never blind)**. `s13` heartbeat-failed at
-01:04:01, then 13 more sessions crashed near-simultaneously; `ready` fell
-**18 → 8** at 01:05:25. The watchdog recycles **one** crashed session per 30 s tick
-(`multi_session_pool.py:594-610`, `WATCHDOG_INTERVAL_S=30`), so full recovery took
-until 01:13:49. Worst 30 s bucket was 71.1% success (64/90); sweep RATE never
-dropped because even 8 sessions clear the 3.0/s bar. 252 of the run's 302 misses
-(83%) fall in this window. 429=0 and 403=0 throughout — **not** a Target block.
-**A cascade of this shape inside a drop window would mean ~9 minutes at reduced
-capacity.** Cause of the simultaneous crash not established. [MEASURED 09-22]
+**It was one subnet, not the fleet.** All 13 affected sessions are pinned to
+`31.105.0.0/16`; the other 5 (`168.158.x.x` ×4, `72.56.x.x` ×1) logged **0-1**
+failures the whole time — a clean 100% partition. Not host pressure, not age, not
+Target: `403=0`, `429=0`, every failure `http_status=0`, i.e. connection-level.
+True onset **01:01:25**, ~2.5 min *before* s13's heartbeat failure, which was
+itself a symptom rather than the trigger. Usable floor was **7/18** (not 8), and
+only **6** are needed to hold 3.0/s — `[STOCK][RATE]` read
+`sweep 3.00/s (target 3.00/s)` continuously even at the floor. Worst bucket
+71.9%. The subnet cascade fully drained by **01:10:25**; the 01:11 and 01:13
+recycles were s17/s18 on *unaffected* subnets — ordinary churn, not this event.
+252 of the run's 302 misses fall here. [VERIFIED 09-22]
+
+**The 1-per-30 s watchdog pacing is DELIBERATE — do not raise it.** Its own
+docstring (`multi_session_pool.py:594-597`): *"recycle ONE per tick (so we don't
+burst-relaunch the entire pool if everything failed at once)"*. There is **no env
+knob** — `WATCHDOG_INTERVAL_S`, `RECYCLE_COOLDOWN_S` and
+`CONSECUTIVE_ERROR_RECYCLE_THRESHOLD` are hardcoded module constants. Raising it
+would not even help: `_recycle_one` sleeps `random(5,15)` then takes ~8-30 s to
+settle, so the **first** session back is ~20-50 s regardless of parallelism —
+more per tick compresses the tail, not the floor. A burst of simultaneous fresh
+Chrome launches is also exactly what the boot stagger exists to avoid showing
+Shape. **Measured cost of this incident: indistinguishable from zero.**
+
+🔴 **The real gap is that we cannot say WHY.** `log_per_request` is False in
+production, so `BulkResult.error` (`stock_check_resilient.py:647-649`) is never
+printed — **~300 `other` failures a night are completely opaque**, and this log
+cannot distinguish "Bright Data blipped that /16" from "something dropped that
+/16's connections". One line would settle it: log `result.error` the first time a
+session's `consecutive_errors` crosses ~5. [MEASURED 09-22]
+
+**Not the 07-23 wedge** (per-Chrome, age-correlated, needed a leak fix) **and not
+the 09-21 tarpit** (pool-wide, 429-driven). Three different mechanisms on three
+nights — do not merge them.
 
 ## ⚠️ STRUCTURAL BLIND SPOT: both channels share one pool
 

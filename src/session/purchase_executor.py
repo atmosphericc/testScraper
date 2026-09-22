@@ -8639,6 +8639,22 @@ class PurchaseExecutor:
                   f"live={snap.get('live') if isinstance(snap, dict) else None} win_age={win_age} "
                   f"layer=po mode=legacy status={status} key={key} envoy_ms={envoy} "
                   f"js_ms={int((now - t_fire) * 1000)}")
+            # 2026-09-22: mirror the ticket loop's [FS_TICKET_BODY] capture
+            # (:8569-8575). A cart whose FIRST place-order comes back 424/400
+            # never enters the instrumented ticket loop at all — woncart_eligible
+            # (:655-675) admits only "429 with FAST_SELLING" — so it lands here,
+            # and this path had NO body block. That matters because the one
+            # historical archetype we have, 08-04's 429 -> 424 RESERVATION_FAILURE
+            # 2.6-2.9 s apart, is THIS loop's in-place re-shoot cadence
+            # (TARGET_CHECKOUT_INPLACE_DELAY_MIN/MAX = 2.5/3.5 s), not the ticket
+            # loop's 1,1,1,2,2,3. So the exact failure we most need the body for
+            # was running through the uninstrumented path.
+            # Same TARGET_FS_TICKET_LOG gate (the early return above), purely
+            # additive, [FS_TICKET] format unchanged. mode=legacy distinguishes it.
+            _b = str(r.get('body') or '')
+            if _b and (status in (424, 400) or 'RESERVATION' in str(key).upper()):
+                print(f"[FS_TICKET_BODY] n={ctx['n']} layer=po mode=legacy "
+                      f"status={status} body={' '.join(_b.split())[:240]}")
         except Exception:
             pass
 

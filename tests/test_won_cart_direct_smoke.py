@@ -3666,6 +3666,56 @@ def test_r3_release_tolerates_double_delete():
     check("r3t_already_gone_shot_fires", ex.fl_calls == [2] and ex._held_cart is None, (r, ex.fl_calls))
 
 
+def test_r10_fs_ticket_body_ticket_loop():
+    """2026-09-22: [FS_TICKET_BODY] on the TICKET path has never once run in
+    production. The print landed in 75c6707a (09-20), AFTER the only run that
+    ever had qualifying data (run_20260917_232400, 09-17), and no cart has been
+    won since. It also had zero test coverage, so this is the only verification
+    it will get before it matters. Pins: fires on a po 424 RESERVATION_FAILURE,
+    stays silent on the common 429 FAST_SELLING, stays silent on an empty body,
+    and is byte-identical with TARGET_FS_TICKET_LOG unset."""
+    RF = (424, "RESERVATION_FAILURE")
+    BODY = json.dumps({"errors": [{"code": "RESERVATION_FAILURE",
+                                   "message": "could not reserve"}]})
+    ON = dict(TARGET_FS_TICKET_LOG="1")
+
+    def _body_lines():
+        return [ln for ln in run.last_out.splitlines() if ln.startswith("[FS_TICKET_BODY]")]
+
+    # a 424 RESERVATION_FAILURE with a real body -> exactly one body line
+    c = Clock()
+    ex = bare(c)
+    loop_run(ex, TicketTab(ex, [t_po(424, BODY, rej=RF)], c), c, FL_PO_FS,
+             TARGET_WONCART_MAX_TICKETS="2", **ON)
+    bl = _body_lines()
+    check("r10_body_one_line", len(bl) == 1, bl or run.last_out[-400:])
+    if len(bl) == 1:
+        check("r10_body_layer_and_status", "layer=po" in bl[0] and "status=424" in bl[0], bl[0])
+        check("r10_body_carries_reason", "RESERVATION_FAILURE" in bl[0], bl[0])
+        check("r10_body_not_legacy", "mode=legacy" not in bl[0], bl[0])
+
+    # the common case -- 429 FAST_SELLING -- must NOT be captured
+    c2 = Clock()
+    ex2 = bare(c2)
+    loop_run(ex2, TicketTab(ex2, [t_po(429, FS_BODY)], c2), c2, FL_PO_FS,
+             TARGET_WONCART_MAX_TICKETS="2", **ON)
+    check("r10_body_fs429_silent", not _body_lines(), run.last_out[-300:])
+
+    # a qualifying status with an EMPTY body prints nothing (the `_b and` guard)
+    c3 = Clock()
+    ex3 = bare(c3)
+    loop_run(ex3, TicketTab(ex3, [t_po(424, "", rej=RF)], c3), c3, FL_PO_FS,
+             TARGET_WONCART_MAX_TICKETS="2", **ON)
+    check("r10_body_empty_silent", not _body_lines(), run.last_out[-300:])
+
+    # flag OFF -> byte-identical, nothing at all
+    c4 = Clock()
+    ex4 = bare(c4)
+    loop_run(ex4, TicketTab(ex4, [t_po(424, BODY, rej=RF)], c4), c4, FL_PO_FS,
+             TARGET_WONCART_MAX_TICKETS="2")
+    check("r10_body_flag_off_silent", not _body_lines(), run.last_out[-300:])
+
+
 def test_r6_eviction_read():
     """2026-09-18 live (run_20260917_232400, cart 1011483413): a place-order
     424 RESERVATION_FAILURE empties the cart, but the loop only learned that
@@ -4087,6 +4137,7 @@ def main():
              test_r3_suspect_rereads_in_window, test_r3_release_tolerates_double_delete,
              # 2026-09-18 live read-out (cart 1011483413 fired at an emptied cart)
              test_r6_eviction_read, test_r7_eviction_presume,
+             test_r10_fs_ticket_body_ticket_loop,
              # review 2026-09-20
              test_r8_review_20260920_presume_dirty_and_pre400_key,
              # 2026-09-20: the in-TICKET pre_checkout retry (29x pre=429 across
