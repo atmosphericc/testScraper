@@ -289,6 +289,52 @@ An earlier "13 in_stock, 0 races" alarm was entirely this artefact. — [MEASURE
   lowest-latency identity on every night measured, so exit reputation and latency
   cannot be separated in existing data. — [MEASURED 09-16]
 
+## Where hot SKUs actually die — SETTLED 09-21
+
+Of the ~50 hot shots that passed the edge limiter and never became a cart:
+**45 (90%) `429 DCO_RATE_LIMITED`** ("Request throttled due to high demand item"),
+2 `424 INVENTORY_UNAVAILABLE` (`CARTS.FULFILLMENT_AGGREGATOR`), 2 `431`, 1 `503`.
+**0 of 50 were identity, credential or anti-bot rejections.** Across all 105 run
+logs the entire `tgt-cart-error-key` vocabulary is retail-service keys — there is
+no challenge/captcha/bot-detection vocabulary in this bot's history, ever.
+**A credential fix cannot move this gate.** It is Target's cart-service demand
+throttle. — [VERIFIED 09-21, exact reproduction of the funnel counters]
+
+- The two `431`s are **self-inflicted**: the Shape token bundle is ~7,950-8,076 of
+  the request's ~13,900-14,050 header bytes, tripping a generic header-size limit.
+  Shape-adjacent, but not a Shape verdict. — [MEASURED 09-21]
+- **The machine, end to end:** demand throttle rejects -> DCO burst re-POSTs at
+  1.0-1.5 s -> the *edge* limiter closes (09-18: 6 of 7 bursts ended on an
+  edge-429, `caps=0`, the burst cap was never once reached). The two throttles
+  alternate and we lose to both. Raising `TARGET_ATC_DCO_BURST_MAX` is therefore
+  inert. — [MEASURED 09-21]
+
+## ⚠️ THE FUNNEL'S ORDINARY-SIDE NUMBERS ARE WRONG — hot side survives
+
+Recomputed with the classifier defect corrected (the 3 Mega Evolution tins +
+One Piece moved to hot):
+
+| | as published | corrected |
+|---|---|---|
+| HOT g1_pass | 55 | 60 |
+| HOT cart conversion | 9.1% (5/55) | 8.3% (5/60) |
+| ORD g1_pass | 67/2,331 = **2.9%** | 62/204 = **30.4%** |
+
+The defect is **undercoverage, not contamination** — real hyped TCINs land in
+"ordinary"; no ordinary TCIN is ever wrongly tagged hot. So every hot-side number
+survives. **The ordinary side does not:** the widely-quoted "hot takes only a 1.7x
+penalty at the edge limiter" inverts under correction into a **>26x gap**, so it
+must not be used even directionally. — [VERIFIED 09-21]
+
+- **The "5 or 6 hot carts" contradiction is resolved: it is at least 7.** Two
+  legacy-route hot carts (07-16 TCIN 1012055696, 07-23 TCIN 1011209279) are
+  silently dropped by `shots.py:119-120` (an outcome line with no ident tag and no
+  pending fast-lane shot is discarded). Both are WIN-era. Conversion is still 0
+  under every count. — [MEASURED 09-21]
+- Wins vs losses: all 3 identity-tagged wins are `primary` (home IP); credential
+  source is **not** a discriminator (banked replay markers on all 3 wins and on
+  14/21 losses). — [MEASURED 09-21]
+
 ## Open contradictions — do not assert either side
 
 - **What a Target ATC 401 means.** Competitor docs: "A Shape block." This project
