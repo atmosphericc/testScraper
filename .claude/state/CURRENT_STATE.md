@@ -17,8 +17,28 @@ to be wrong rather than leaving them with a caveat.**
 
 ## Outcomes
 
-- **20 orders in the bot's entire history. All ordinary SKUs. Zero hot/hype orders,
-  ever.** — [MEASURED 09-20] `logs/analysis_2026_09_20/winning_shape/SUMMARY.txt`
+- **20 orders in the bot's entire history. Zero hot/hype orders, ever.**
+  — [MEASURED 09-20] `logs/analysis_2026_09_20/winning_shape/SUMMARY.txt`
+- 🔴 **"All ordinary SKUs" has been DELETED from the line above — it was CIRCULAR.**
+  It came from `winning_shape/eras.py:6-7`, which duplicates the same
+  hand-maintained hot list, and under the old two-way classifier any TCIN nobody
+  had judged fell through to "ordinary". So the claim only ever meant *"the order
+  SKUs are not in our hot list"* — trivially true, since they were in **no** list.
+  It is not evidence about hype and must not be used as such. — [VERIFIED 09-22]
+- **All 20 orders are on 8 SKUs that were never classified at all:**
+  `1011209273`, `1011483406`, `1011483414`, `1012055695`, `95120832`, `95120836`,
+  `95267143`, `95298172`. **None is armed today.** With the three-way classifier
+  (`funnel.py`, fixed 09-22) the whole-history funnel reads:
+
+  | class | shots | carts | orders | G2 cart | G3 pre_checkout |
+  |---|---|---|---|---|---|
+  | ordinary (`1011483413` only) | 144 | 1 | **0** | 25.0% | 0% |
+  | hot | 8,164 | 5 | **0** | 8.3% | 20.0% |
+  | **unknown (the 8 above)** | 2,160 | 37 | **20** | **63.8%** | **91.9%** |
+
+  The converting set carts at **7.7x** the hot rate. Those 8 are deliberately left
+  `unknown` — there is no independent evidence of their class, and inventing one is
+  the exact bug that produced the circular claim. — [MEASURED 09-22]
 - **Zero orders of any kind since 2026-08-04.** — [MEASURED 09-20] same
 - 78 carts won all-time, 58 lost, 20 converted. — [MEASURED 09-20] same
 
@@ -45,9 +65,36 @@ to be wrong rather than leaving them with a caveat.**
 > project's own 09-20 conclusion — *"the target list changed, not the bot"* — was
 > correct and survived the challenge.
 
-## ⚠️ KNOWN-BROKEN: the hot/ordinary classifier
+## ✅ FIXED 2026-09-22 — the hot/ordinary classifier (commit `6483a161`)
 
-`tools/analysis/funnel.py:34-36` defines `is_hot()` as a **static, hand-maintained
+**The defect was the DEFAULT, not the list.** `funnel.py` now has
+`sku_class() -> hot | ordinary | unknown`; an unlisted TCIN is **never** guessed,
+and the unknown bucket is printed with its TCINs named and an explicit *"do not
+quote a hot-vs-ordinary rate while this is non-empty"*. `is_hot()` remains as a
+back-compat shim for `limiter_key` / `readout_multi_sku` / `shot_index_yield`,
+documented so callers know `not is_hot(t)` means **"hot or unknown"**, not
+"ordinary". The four mis-bucketed TCINs (`1012644665/666/667`, `95290385`) are in.
+
+**Also fixed in the same commit:** `shots.py` `FIRE`/`START` used a bare `(\d+)`
+for the TCIN, so a `print()` with no trailing newline glued the next logger line
+on and produced phantom 14-digit TCINs like `10126446662026` — those shots were
+attributed to a SKU that does not exist. `IDENT` had already been hardened against
+this same glue; these two had not. Now bounded to 8-10 digits with a glued-date
+lookahead, verified on clean and glued 8- and 10-digit forms.
+
+**Still true and still the constraint:** `config/product_config.json` carries no
+hot/hype field, so there is no contemporaneous source to derive the class from and
+the lists remain hand-maintained. The 8 order-producing TCINs are deliberately
+left `unknown`. **Any analysis output from before 2026-09-22 that quotes a
+hot-vs-ordinary split was produced by the two-way classifier and is suspect** —
+re-run it rather than citing it.
+
+---
+
+**Historical description of the defect, kept because six scripts still carry
+copies of the old list:**
+
+`tools/analysis/funnel.py:34-36` defined `is_hot()` as a **static, hand-maintained
 TCIN list**, duplicated in `logs/analysis_2026_09_20/winning_shape/eras.py:6-7` and
 imported or copied by `limiter_key.py`, `readout_multi_sku.py`,
 `throughput_vs_volume.py`, `home_vs_proxied.py`, `shot_index_yield.py`.
