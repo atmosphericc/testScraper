@@ -59,7 +59,8 @@ DX_FLAGS = (
 )
 OTHER_KNOBS = ("TARGET_ATC_BYTEMATCH", "TARGET_FASTLANE_QTY_GUARD", "TARGET_WONCART_DIRECT",
                "TARGET_HELD_CART_REENTRY", "TARGET_FASTLANE_STAGE_TRACK",
-               "TARGET_CHECKOUT_BODY_CAPTURE", "TARGET_ATC_RESPONSE_HEADER_CAPTURE")
+               "TARGET_CHECKOUT_BODY_CAPTURE", "TARGET_ATC_RESPONSE_HEADER_CAPTURE",
+               "TARGET_ATC_RESP_LABEL")
 for _k in DX_FLAGS + OTHER_KNOBS:
     os.environ.pop(_k, None)
 os.environ["TARGET_API_CAPTURE_CHECKOUT_STEPS"] = "false"   # no capture file writes
@@ -817,6 +818,23 @@ def test_pe_interceptor():
     check("atc_resp_envoy", len(al) == 2 and al[0].endswith("url=cart_items envoy_ms=37")
           and al[1].endswith("url=cart_items envoy_ms=-"), al)
     check("atc_resp_envoy_continued_once_each", tab.continues() == ["a1", "a2"], tab.continues())
+
+    # 2026-09-21 tab label. OFF is asserted byte-identical above; ON must append
+    # at the TAIL only, so the historic prefix and the "url=cart_items envoy_ms="
+    # adjacency that six analysis parsers anchor on both survive.
+    ex, tab, out = _drive({"TARGET_ATC_RESP_LABEL": "1"}, [atc("a1", H429)])
+    al = [l for l in out.splitlines() if "[ATC_RESP]" in l]
+    check("atc_resp_label_on", len(al) == 1
+          and al[0].startswith("[INTERCEPTOR:main] [ATC_RESP] status=429 method=POST "
+                               "tgt-cart-error-key=ERR_A2C_TCIN_RATE_LIMITED "
+                               "x-request-id=RID-1 url=cart_items")
+          and al[0].endswith(" tab=main selftest=off"), al)
+    check("atc_resp_label_continued_once", tab.continues() == ["a1"], tab.continues())
+    ex, tab, out = _drive({"TARGET_ATC_RESP_LABEL": "1", "TARGET_FASTLANE_T_STAMPS": "1"},
+                          [atc("a1", H429)])
+    al = [l for l in out.splitlines() if "[ATC_RESP]" in l]
+    check("atc_resp_label_keeps_envoy_adjacency", len(al) == 1
+          and "url=cart_items envoy_ms=37 tab=main selftest=off" in al[0], al)
 
     def _prep431(e):
         e._last_req_hdr_bytes = {"main": {"total": 9000, "cookie": 5000, "shape": 3000,

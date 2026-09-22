@@ -367,10 +367,22 @@ BAT_0916_PINS = (
     ("TARGET_BG_SLOW_FACTOR", "2"),
     ("TARGET_MULTI_SKU_DISPATCH", "1"),
     ("TARGET_MULTI_SKU_MAX_CONCURRENT", "3"),
-    ("TARGET_MULTI_SKU_WORKERS_PER_TCIN", "1"),
+    # 2026-09-21: 1 -> 2. The measurement that justified the 1-worker cap
+    # (0.038 admits at 9-16 shots vs 0.545 at 2) was re-verified from a fresh
+    # adversarial context and came back NOT ESTABLISHED: reproduces only under
+    # an undisclosed hot-only/post-08-25 scope, decisive cells are 11 and 28
+    # windows, the retry loop breaks on a successful shot so the causal arrow
+    # is reversed, the 17+ bucket rebounds to 1.000, and no window in the
+    # corpus ever fired 1 account. CAP_ALWAYS stays 1 -- setting it to 0 makes
+    # the first live TCIN take all 3 workers and starves every other one.
+    ("TARGET_MULTI_SKU_WORKERS_PER_TCIN", "2"),
     ("TARGET_MULTI_SKU_CAP_ALWAYS", "1"),
     ("TARGET_HARVEST_BANK", "6"),
     ("TARGET_FASTLANE_PRE_RETRY", "1"),
+    # 2026-09-21: tab=/selftest= on [ATC_RESP]. 97.4 pct of those lines are the
+    # warmup heartbeat, so every shot-volume number read off them was inflated
+    # up to ~40x. Pinned here so it cannot silently drift off.
+    ("TARGET_ATC_RESP_LABEL", "1"),
 )
 # Built but deliberately NOT armed (U1=(a)/(b) guards built in review round R1
 # but U1=(c) is the choice; U2 keeps qty 2; live re-nav waits for probe data;

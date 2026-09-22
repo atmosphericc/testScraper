@@ -285,6 +285,15 @@ REM  window finally tells demand-throttle from identity-block. Continue-exactly-
 REM  per the 07-23 leak rule; capture never blocks or mutates the response.
 REM  Kill-switch: set TARGET_ATC_RESPONSE_HEADER_CAPTURE=0
 set TARGET_ATC_RESPONSE_HEADER_CAPTURE=1
+REM  2026-09-21 tab label on [ATC_RESP]. The interceptor label was printed but
+REM  NOT passed to logger.info, so package.log could not tell a real shot from
+REM  the warmup heartbeat. Measured across two nights: 138 main vs 5,144 warmup,
+REM  so any shot-volume number read off [ATC_RESP] was inflated up to some 40x.
+REM  Appends tab=NAME selftest=on/off at the TAIL only, after envoy_ms, so the
+REM  historic prefix and the url=cart_items envoy_ms= adjacency both survive for
+REM  the six analysis parsers that anchor on them.
+REM  Kill-switch: set TARGET_ATC_RESP_LABEL=0  (byte-identical to before)
+set TARGET_ATC_RESP_LABEL=1
 REM ---------------------------------------------------------------------------
 REM  ATC gate-wall circuit breaker (2026-08-09, run_20260806_234205.log audit).
 REM  The 08-06->07 restock went 0-for-0: all 3 identities hit a Shape Device ID+
@@ -767,7 +776,25 @@ REM UNPROVEN LIVE. Readout: grep MULTI_SKU_DISPATCH and MULTI_SKU_MISS.
 REM Arm by setting the next line to 1. Kill: set it back to 0.
 set TARGET_MULTI_SKU_DISPATCH=1
 set TARGET_MULTI_SKU_MAX_CONCURRENT=3
-set TARGET_MULTI_SKU_WORKERS_PER_TCIN=1
+REM  2026-09-21: 1 to 2. The measurement that justified the 1-worker cap --
+REM  0.038 admits at 9-16 shots vs 0.545 at 2 shots -- was re-verified from a
+REM  fresh adversarial context and came back NOT ESTABLISHED:
+REM    - it only reproduces under an UNDISCLOSED hot-only, post-08-25 scope;
+REM      run as the code comments imply, it is 0.486 vs 0.178 (2.7x, not 14x)
+REM    - the two decisive cells are 11 and 28 windows, with 6 and 1 passes
+REM    - the retry loop BREAKS on a successful shot (bulletproof_purchase
+REM      _manager.py:2233), so low-shot windows are partly windows that
+REM      resolved EARLY. The causal arrow is reversed.
+REM    - the 17-plus bucket rebounds to 1.000 admits per window -- the
+REM      opposite of what a depleting shared bucket predicts
+REM    - no window in the whole corpus ever fired 1 account (33/33 and 32/32
+REM      identified high-volume windows were all 3 identities), so the
+REM      comparison condition the cap was armed on has ZERO instances
+REM  2 keeps the reservation discipline CAP_ALWAYS=1 buys -- a second live
+REM  TCIN still gets a worker instead of being starved, which is what
+REM  CAP_ALWAYS=0 would reintroduce -- while doubling shots on the first.
+REM  Revert: set TARGET_MULTI_SKU_WORKERS_PER_TCIN=1
+set TARGET_MULTI_SKU_WORKERS_PER_TCIN=2
 set TARGET_MULTI_SKU_RESERVE_TTL_S=120
 REM 2026-09-20 CAP_ALWAYS -- dispatch is a LIE without this. The reservation
 REM cap was `per_tcin if another TCIN is already held else the whole fleet`, so

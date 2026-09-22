@@ -2107,6 +2107,14 @@ class PurchaseExecutor:
         # response-stage interception. Flag read ONCE here (cheap), stored on self;
         # the handler + pattern below are log-only (never mutate/fulfill/abort).
         self._atc_resp_capture_on = os.environ.get('TARGET_ATC_RESPONSE_HEADER_CAPTURE', '1') != '0'
+        # 2026-09-21: the interceptor label was printed but NOT logged, so
+        # package.log cannot tell a real shot from the warmup heartbeat --
+        # 97.4% of [ATC_RESP] lines are harvester/warmup traffic, so every
+        # shot-volume number ever derived from them was inflated up to ~40x.
+        # Appended at the TAIL of the message so the historic prefix and the
+        # 'url=cart_items envoy_ms=' adjacency both survive for old parsers.
+        # TARGET_ATC_RESP_LABEL=0 (the default) is byte-identical to before.
+        self._atc_resp_label_on = os.environ.get('TARGET_ATC_RESP_LABEL', '0') == '1'
 
         async def _on_request_paused(event: cdp.fetch.RequestPaused):
             # Deduplicate by (request_id + stage) — REQUEST and RESPONSE share the same
@@ -2268,6 +2276,12 @@ class PurchaseExecutor:
                                 _envoy = str(resp_headers.get('x-envoy-upstream-service-time')
                                              or '-').strip()[:12] or '-'
                                 _atc_resp_msg += f" envoy_ms={_envoy}"
+                            if self._atc_resp_label_on:
+                                # Attribute/dict reads only -- the cheap-build
+                                # rule above (continue FIRST, then log) holds.
+                                _atc_resp_msg += (
+                                    f" tab={label} selftest="
+                                    f"{'on' if getattr(self, '_harvest_selftest_armed', False) else 'off'}")
                         except Exception as _atc_resp_err:
                             self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))

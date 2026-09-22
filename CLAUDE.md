@@ -62,11 +62,45 @@ Browser-native dispatcher: N persistent Chromes (one per BD ISP IP) fire bulk Re
 - **Resilient stack / Target work:** Read `src/monitoring/`, `src/session/multi_session_pool.py`, `src/proxy/`.
 - **Never load:** entire repo; use specific paths above.
 
-## Sub-Agents (when applicable)
-- @antibot-analyst → docs/ANTIBOT.md, src/session/purchase_executor.py
-- @purchase-flow-engineer → docs/FLOW.md, src/session/purchase_executor.py, src/purchasing/bulletproof_purchase_manager.py
-- @failure-forensics → docs/FAILURES.md → specific file
-- @retailer-researcher → docs/RETAILERS/
+## Agentic Orchestration
+All botting work — new bugs, post-run fixes, parity questions — runs through the
+agent roster in `.claude/agents/`. **Every agent reads `.claude/agent-context.md`
+first**; that file holds the hard safety rules (never launch the bot, never blanket-run
+`tests/`), the claim-tagging discipline, the repo map and the domain glossary.
+
+| Agent | Model | Beat |
+|---|---|---|
+| `antibot-analyst` | sonnet | Shape / HUMAN-PX / edge limiter; 401s, 403s, 429s, credential quality |
+| `purchase-flow-engineer` | sonnet | ATC → pre_checkout → place-order chain; locks, cadence, timers |
+| `failure-forensics` | sonnet | Drop post-mortems; timelines and funnels from the run logs |
+| `stock-pipeline-analyst` | sonnet | Resilient stack, RedSky sweeps, dispatch latency, proxy pool |
+| `claims-verifier` | sonnet | Adversarial fresh-context verification; assumes the claim is false |
+| `log-miner` | **haiku** | Mechanical counts out of big logs; reports the unmatched remainder |
+| `retailer-researcher` | **haiku** | Competitor docs, retailer APIs, vendor claims; verbatim extraction |
+
+**Model discipline:** extraction (counting, quoting, tallying) goes to haiku;
+reserve sonnet for code comprehension and causal reasoning. Never send a grep to a
+big model. Launch independent agents in a single message so they run concurrently.
+
+**Workflows** (`.claude/skills/`):
+- `/pre-drop [time/TCINs]` — best position before a known drop: readiness, regime
+  check, arming audit, proxy proof, pre-registered readout, boot checklist. Never starts the bot.
+- `/post-run [run]` — post-mortem the last run, verify findings, land flag-gated fixes
+- `/bot-investigate [issue]` — fan-out investigation of a bug or open question
+
+**Always verify before arming.** Hand the bare claim, with none of your reasoning,
+to `claims-verifier`. A `REFUTED` verdict kills the fix.
+
+**Live facts live in `.claude/state/CURRENT_STATE.md` — nowhere else.** Agent
+definitions and `agent-context.md` hold method only, so facts rot in one visible
+place. Check each fact's as-of date against `git log -1` and the wrapper's mtime
+before relying on it; anti-bot facts have a ~2-week half-life. `/post-run` opens
+with a **regime check** against the baselines in that file, because Target changes
+without telling us — a collapse went unnoticed for six weeks once.
+`docs/TARGET_CHANGES.md` is the adversary's changelog, separate from our own.
+
+**Competitor corpus:** `logs/analysis_2026_09_21/research/refract_llms_full_2026_09_21.txt`
+— Refract's complete public doc set (6,040 lines, 43 pages). Target module ≈ L3062-4351.
 
 ## Forbidden
 - /__pycache__, /.git, /venv, /node_modules, /dist, /.pytest_cache
