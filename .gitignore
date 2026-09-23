@@ -94,8 +94,15 @@ config/target_accounts.json
 .DS_Store
 Thumbs.db
 
-# Claude Code
-.claude/
+# Claude Code — track the agent system so it survives a reimage; keep machine-local
+# settings and locks out. NOTE: this repo is PUBLIC, so what is tracked here is
+# visible. These files hold method and doctrine only — no credentials, no IPs.
+.claude/*
+!.claude/agents/
+!.claude/skills/
+!.claude/state/
+!.claude/agent-context.md
+!.claude/settings.json
 # logs/api_capture.log
 
 # Aider

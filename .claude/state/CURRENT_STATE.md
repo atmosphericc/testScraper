@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-22 · HEAD `adba8061` · branch `feat_refract_arch_v1`**
+**As of: 2026-09-22 evening (pre-drop for 09-23 03:00) · HEAD `e07a2c4a` · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -14,6 +14,81 @@ any investigation that changes one of these lines, and **delete lines that turn 
 to be wrong rather than leaving them with a caveat.**
 
 ---
+
+## ARMED FOR THE 2026-09-23 03:00 DROP — set 09-22 evening (`/pre-drop`)
+
+- **Config:** the same 10 enabled TCINs as 09-22, all hot, order unchanged (list
+  position = dispatch priority, `bulletproof_purchase_manager.py:4028-4040`; no entry
+  has a `priority` field, so `1010892076` leads). **All 25 entries now carry
+  `"qty": 2`** — operator decision. Backup:
+  `config/product_config_backup_pre_2026-09-23_drop.json`. — [MEASURED 09-22]
+- 🔴 **The 09-18 U2 qty-1 pin is SUPERSEDED.** Six of the ten were pinned to 1 and
+  four had no key. **Stale doc left in place on purpose:** `run_bot_with_nightly_restart.bat`
+  REM lines ~1194-1211 still say the config pins the hot TCINs to `"qty": 1` — not
+  edited to avoid touching the production .bat on drop night. The flag
+  `TARGET_QTY_PER_TCIN=1` is unchanged; it now pins everything to 2. — [MEASURED 09-22]
+- **Every qty decision ever logged for these 10 TCINs was already qty=2**, "RedSky
+  limit unreported" — 462/462 `[QTY]` lines across all `logs/runs/`. The pin to 2
+  removes the dependence on RedSky and `TARGET_QTY_OPTIMISTIC`. Pin math:
+  `qty = max(1, min(2, cap))`, cap = `TARGET_QTY_CEILING` (unset → 2)
+  (`bulletproof_purchase_manager.py:404-439`); the executor keeps qty>1 without PDP
+  nav (`purchase_executor.py:4283-4284`) and re-clamps to the same ceiling
+  (`:4366-4373`). — [MEASURED 09-22]
+- **qty 2 reaches every REACHABLE add-to-cart POST** — claims-verifier, fresh
+  context: the fast lane plus every legacy retry, wave-first re-entry and DCO-burst
+  re-POST reuse ONE `qty` bound once per race (`bulletproof_purchase_manager.py:2071`,
+  never reassigned in the `:2180-2210` loop). Exceptions drop to exactly 1, never
+  more: the 422/409 `PURCHASE_LIMIT` retry (`purchase_executor.py:5054-5097`) and
+  the 400 `EXCEEDED` self-heal's second try (`:5033-5044`). Held-cart / won-cart
+  re-entry fires NO add-to-cart. Nothing can send >2: the native fallback's
+  `min(qty,3)` clamp (`:7575`) is dead, `TARGET_ATC_NATIVE_FALLBACK=0` (`bat:630`).
+  — [VERIFIED 09-22, PARTIALLY CONFIRMED only for the latent path below]
+- ⚠️ **Latent, unreachable today: the DOM button-click ATC (`purchase_executor.py:5152-5226`)
+  sets NO quantity** (Target's page default). It needs the buyer tab on a PDP, and the
+  only buyer-tab PDP nav is `need_pdp_for_qty` (`:4272-4278`), which needs
+  `TARGET_PDP_QTY_LOOKUP=1` **and** qty ≤ 1 — both, not either (the verifier's
+  summary said "either"; the code and 0 click lines across all logs, including
+  09-18→09-22 with six TCINs pinned to 1, say both). The SESSION_REUSE guard
+  (`:4241-4242`) sweeps confirmation/thank/checkout/cart but **not a PDP**, so a tab
+  that ever lands on one stays there. **Do not arm `TARGET_PDP_QTY_LOOKUP` without
+  closing this.** — [VERIFIED 09-22]
+- **Target has never returned a per-customer purchase-limit rejection** to this bot:
+  0 `PURCHASE_LIMIT`/`MAX_QUANTITY`/`QUANTITY_LIMIT` in any `.log` under `logs/`.
+  If one ever comes, the fast lane has no quantity handling — a 4xx ATC returns
+  `fallthrough` (`purchase_executor.py:7727-7734`) and only the legacy path's
+  self-heal retries at qty 1 (`:5054-5060`), i.e. ~2 extra POSTs. — [MEASURED 09-22]
+- **Arming audit (Phase 2):** 166 wrapper vars, each assigned exactly once, none
+  conditional. 3 not read in `src/`/`app.py` — `LOGDIR` (bat-internal),
+  `RELOGIN_SKIP_*` (read by `relogin_one.py`): no dead flags. 82 `TARGET_*` are
+  read by code but not set by the wrapper; all 82 reconciled (69 plain env reads,
+  13 indirect). Deliberately left OFF: HS-1 `TARGET_HOME_SHARE_GUARD` (its premise
+  is the NOT-ESTABLISHED "extra volume hurts primary" claim), and
+  `TARGET_CHECKOUT_BODY_CAPTURE` (holds the rejected place-order response behind a
+  CDP round-trip on the re-shoot path, `purchase_executor.py:2224-2229`;
+  `[FS_TICKET_BODY]` already covers the body). `TARGET_FASTLANE_QTY_GUARD` is
+  forced on by the armed `WONCART_DIRECT`/`HELD_CART_REENTRY`
+  (`bulletproof_purchase_manager.py:359-360`). — [MEASURED 09-22]
+- **Proxy pool proven through the production path:** `validate_proxies.py`,
+  `VALIDATE_POOL=all` (18 active + 2 reserve), 180 s, **with the wrapper's monitor
+  env** (`RESILIENT_REDSKY_CHANNEL=apps_raw` + the other 15). **20/20 HEALTHY;
+  532 sweeps, 200=532, 403=0, 429=0, other=0; 20 ready, 0 crashed**; warmup 229 s.
+  ⚠️ A bare `validate_proxies.py` run tests the WRONG channel — the code default
+  is `web` (`redsky_channel.py:50`), which is PX-walled on the BD prefixes. —
+  [MEASURED 09-22 22:15]
+- **Cross-TCIN dispatch contention is rare.** 674 `[RACE]` dispatches over 27
+  nights; a second live TCIN was blocked (`[PURCHASE_CONCURRENCY]` skip or
+  `[MULTI_SKU_MISS]`) in **15 distinct TCIN pairs on 7 nights — only 2 pairs in the
+  hot era** (08-18, 09-15). 21 further skip lines are same-TCIN self-blocks
+  (`'<tcin>#W3'` holds), not contention. So `WORKERS_PER_TCIN=2` idles one of three
+  accounts in most lone-TCIN windows to cover a rare second TCIN. **Kept at 2** —
+  whether a 3rd account at the same TCIN adds passes depends on the unsettled
+  limiter key; pinned by `tests/test_0828_phase2_fixes.py:378`. Method note: a
+  `[STOCK WATCH]`-episode overlap count is biased toward "lone" — that line prints
+  every ~30 s, so sub-30 s flickers are invisible to it (09-15 showed 0 episode
+  overlaps but 9 real cross-TCIN MISS lines). — [MEASURED 09-22]
+- Readout pre-registered: `tools/analysis/readout_2026_09_23.py` (T0 qty, T1 label,
+  T2 race width + MISS, T3 blindness + ready floor, T4 outcome, T5 stock events);
+  smoked against 09-18 and 09-22. Offline suite **26/26**. — [MEASURED 09-22]
 
 ## Outcomes
 
@@ -381,7 +456,9 @@ An earlier "13 in_stock, 0 races" alarm was entirely this artefact. — [MEASURE
   list. — [MEASURED 09-21] `config/target_accounts.json`
 - All 3 buyers moved to the home IP in `679275d9` (09-20, pushed 09-21).
   **UNPROVEN LIVE.** — [MEASURED 09-21] git
-- Monitor runs 8 Bright Data ISP IPs (down from 16/20).
+- Monitor runs **18 active + 2 reserve** Bright Data ISP exits (restored from 8 on
+  09-21 evening); **13 of the 18 active share one /16** — the 09-22 cascade subnet.
+  All 20 validated HEALTHY 09-22 22:15. — [MEASURED 09-22] `config/proxyIps.json`
 - BD exit registry: 2 of 5 in AS20012 (Chiller City Corp, a colo) **entered service
   2026-08-07** — one day before the zero-cart window opens; 2 of 5 are broker-leased
   `/17` space (Wookra LLC, netname `US-ISP`); 1 of 5 is unambiguous ISP space. —
@@ -538,7 +615,8 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) | 09-20 |
 | Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798) | 09-20 |
 | Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 | 09-20 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 0.07% | 09-21 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 0.054% (45/82,888, 18 exits, excl. the 01:01-01:17 /16 cascade) | 09-22 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 79.9% / 20.2% / 429 0 (n=2,084, all `tab=warmup`) | 09-22 |
 | ATC 401 rate, home IP | 2.8% | 2.8% | 09-20 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
 

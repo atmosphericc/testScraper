@@ -4,140 +4,152 @@
       "tcin": "1010892076",
       "name": "Pokémon Trading Card Game: 30th Celebration Elite Trainer Box",
       "enabled": true,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892067",
       "name": "Pokémon Trading Card Game: 30th Celebration Poster Collection",
       "enabled": true,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892065",
       "name": "Pokémon Tading Card Game: 30th Celebration Greninja ex Box",
       "enabled": true,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892078",
       "name": "Pokémon Trading Card Game: 30th Celebration Tech Sticker Collection (Lucario or Alolan Exeggutor)- Styles May Vary",
       "enabled": true,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892069",
       "name": "Pokemon Trading Card Game: 30th Celebration Tin (Sylveon or Greninja)- Styles May Vary",
       "enabled": true,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1011960739",
       "name": "Pokémon Trading Card Game: First Partner Illustration Collection—Series 3",
       "enabled": true,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "95120834",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle",
       "enabled": true,
-      "url": "https://www.target.com/p/-/A-95120834"
+      "url": "https://www.target.com/p/-/A-95120834",
+      "qty": 2
     },
     {
       "tcin": "1012644667",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Tin- Mega Emboar ex",
-      "enabled": true
+      "enabled": true,
+      "qty": 2
     },
     {
       "tcin": "1012644666",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Tin- Mega Fraligatr ex",
-      "enabled": true
+      "enabled": true,
+      "qty": 2
     },
     {
       "tcin": "1012644665",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Tin- Mega Meganium ex",
-      "enabled": true
+      "enabled": true,
+      "qty": 2
     },
     {
       "tcin": "1011209279",
       "name": "Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1012055696",
       "name": "Pokémon SV 8.5 Prismatic Evolutions Super Premium Collection",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892068",
       "name": "Pokémon Trading Card Game: 30th Celebration Sylveon ex Box",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "95290385",
       "name": "One Piece Card Game: The World's Strongest Warriors Double Pack Set 12",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "93954446",
       "name": "Pokémon Trading Card Game: Scarlet & Violet—Prismatic Evolutions Booster Bundle",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "94681760",
       "name": "Pokémon Trading Card Game: Scarlet & Violet Destined Rivals Display Box",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "95093982",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Premium Poster Collection Mega Gardevoir",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "95163305",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Meganium ex Box",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "95163306",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Feraligatr ex Box",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "1008581387",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Mega Emboar ex Box",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     },
     {
       "tcin": "1012422107",
       "name": "30th Celebration Mini Tin",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1011407490",
       "name": "30th Celebration Booster Bundle",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892075",
       "name": "30th Celebration Espeon ex Battle Deck",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1010892071",
       "name": "30th Celebration Umbreon ex Battle Deck",
       "enabled": false,
-      "qty": 1
+      "qty": 2
     },
     {
       "tcin": "1011483413",
       "name": "Pitch Black Booster Box",
-      "enabled": false
+      "enabled": false,
+      "qty": 2
     }
   ]
 }

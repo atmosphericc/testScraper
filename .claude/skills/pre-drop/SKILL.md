@@ -83,6 +83,12 @@ Then apply §2B of the agent context to every lever you are tempted to move.
 throwaway state dir, so it cannot park a real exit or touch warmed profiles, and no
 purchase manager is wired.
 
+- **Pass it the wrapper's monitor env, or it validates the wrong path.** The script
+  inherits only your shell's env, and `RESILIENT_REDSKY_CHANNEL` defaults to `web`
+  in code — the in-page channel HUMAN/PX walls on the BD prefixes — while
+  production reads `apps_raw`. Export every `RESILIENT_*` / `STOCK_*` /
+  `TARGET_SWEEPS_PER_SEC` / `USE_RESILIENT_STACK` the .bat sets, plus
+  `CHROME_STAGGER_TOTAL_S=30` (an `app.py` setdefault). Found on 09-22.
 - **Never judge a BD exit with raw Python `requests`.** Shape blocks the Python TLS
   handshake regardless of IP; a 2026-05-14 audit declared 28 IPs burned and all 28
   returned 200 through the production path.
