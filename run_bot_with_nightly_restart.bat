@@ -112,6 +112,14 @@ REM errors and which TCINs came back complete, absent or incomplete. LOG ONLY:
 REM the read still counts as failed and nothing is ingested. grep STOCK][206.
 REM Kill: set it to 0.
 set RESILIENT_206_LOG=1
+REM 2026-09-25 L3 (log-only): one [STOCK][FLIP] line per out-of-stock to in-stock
+REM read, with the read's epoch-ms stamp (read_ms), the last out-of-stock read
+REM (last_oos_ms) and RedSky's raw ATP / purchase-limit fields. Every edge
+REM admission since September was a first-volley shot, and the in-stock read had
+REM only a whole-second stamp, so whether faster detection buys admissions could
+REM not be measured. Written after every dispatch callback; at most 50 lines per
+REM TCIN per run. grep STOCK][FLIP. Kill: set it to 0.
+set RESILIENT_FLIP_LOG=1
 REM 2026-09-15: home-IP CANARY OFF. _canary_loop is raw urllib from the HOME IP
 REM (primary's purchase exit) every 30 s with a mismatched TLS/UA -- the exact
 REM bot-shaped hit HUMAN/Shape score -- and its 403-only self-retire never fires

@@ -15,6 +15,12 @@ ARMED (run_bot_with_nightly_restart.bat), from the 09-25 post-run:
   L1  RESILIENT_206_LOG=1        log-only [STOCK][206] summaries (C-0925-03).
   L2  TARGET_TOKEN_MINT_LOG=1    log-only record of Target's answer to the member-
                                  token mint (C-0925-04).
+  L3  RESILIENT_FLIP_LOG=1       log-only [STOCK][FLIP] line per out->in read: the
+                                 read's epoch-ms stamp and RedSky's raw ATP / purchase-
+                                 limit fields (added later on 09-25, after the first-gate
+                                 investigation: every September admission was a first-
+                                 volley shot, and the read that starts a volley had only
+                                 a whole-second stamp).
   Still armed from 09-23: A2 WORKERS_PER_TCIN=3, A3 RETRY_STOP_WHEN_OOS=1 (8 s),
   G1 STUCK_RESET_LIVE_GUARD=1. readout_arm_2026_09_23.py T2/T3/T5/T6 still apply;
   its T1 and T4 judged A1 and no longer apply.
@@ -47,6 +53,12 @@ TESTS
   L2 MINT: every "mint rung1 token_refresh -> ..." by status, every "mint rung2 ...
      final_url=" by landing (login redirect / account / other) and token class, and
      "could NOT mint" per account. Measured only; it decides C-0925-04 (a) vs (b).
+  L3 FLIP: every [STOCK][FLIP] line. For each new-window flip, the delay from read_ms
+     to the first atc_t0 at or after it (any account, within 3 s; marked ambiguous when
+     another TCIN flipped within 3 s), and the raw atp / max_order_qty / purchase_limit.
+     PASS  every raced TCIN has >= 1 FLIP line.
+     FAIL  a TCIN raced with no FLIP line: the stamp is missing where it matters.
+     NO DATA  no race.
 
 Read-only over the log. Stdlib only.
 """
@@ -77,6 +89,9 @@ R_STATS = re.compile(r'\[STOCK STATS\] t=\S+ sweeps=(\d+) \S+ 200=(\d+) 403=(\d+
 R_M1 = re.compile(r'\[TOKEN\] (\S+): mint rung1 token_refresh -> (status=\d+|error=\S+)')
 R_M2 = re.compile(r'\[TOKEN\] (\S+): mint rung2 after /account reload final_url=(\S+) accessToken=(\w+)')
 R_NOMINT = re.compile(r'\[TOKEN\] (\S+): could NOT mint a member token')
+R_FLIP = re.compile(r'\[STOCK\]\[FLIP\] tcin=(\d+) #(\d+) read_ms=(\d{13}) rt_ms=(\S+) '
+                    r'last_oos_ms=(\d+) since_oos_ms=(\S+) new_window=([01]) via=\S+ \(\S+\) '
+                    r'status=(\S+) atp=(.*?) max_order_qty=(.*?) purchase_limit=(.*?) services=')
 
 
 def main():
@@ -94,6 +109,7 @@ def main():
     wcd_ticket = Counter()
     legacy_at = defaultdict(list)          # ident-agnostic legacy markers by line
     s206, stats, m1, m2, nomint = [], [], Counter(), Counter(), Counter()
+    flips = []                             # (tcin, n, read_ms, since_oos, new_window, atp, mq, pl)
     pending_ident = None
     for i, ln in enumerate(lines):
         for m in R_INSTOCK.finditer(ln):
@@ -143,6 +159,9 @@ def main():
             m2[(m.group(1), where, m.group(3))] += 1
         for m in R_NOMINT.finditer(ln):
             nomint[m.group(1)] += 1
+        for m in R_FLIP.finditer(ln):
+            flips.append((m.group(1), int(m.group(2)), int(m.group(3)), m.group(6), m.group(7) == '1',
+                          m.group(9), m.group(10), m.group(11)))
 
     out = []
     w = out.append
@@ -232,6 +251,33 @@ def main():
     w('    rung1 status by account: %s' % (dict(m1) or '(none)'))
     w('    rung2 landing by account: %s' % (dict(m2) or '(none)'))
     w('    could NOT mint by account: %s' % (dict(nomint) or '(none)'))
+
+    w('')
+    w('L3  FLIP LOG (RESILIENT_FLIP_LOG=1)')
+    t0s = sorted(t0 for ts in shots.values() for t0 in ts)
+    new = [f for f in flips if f[4]]
+    w('    [STOCK][FLIP] lines: %d (new windows %d)' % (len(flips), len(new)))
+    delays = []
+    for f in new:
+        nxt = next((t0 for t0 in t0s if t0 >= f[2]), None)
+        d = (nxt - f[2]) if nxt is not None and nxt - f[2] <= 3000 else None
+        amb = any(g[0] != f[0] and abs(g[2] - f[2]) <= 3000 for g in flips)
+        if d is not None and not amb:
+            delays.append(d)
+        w('      tcin=%s #%d since_oos_ms=%s first_shot_after_ms=%s%s atp=%s max_order_qty=%s purchase_limit=%s' % (
+            f[0], f[1], f[3], '-' if d is None else d, ' (ambiguous)' if amb else '', f[5], f[6], f[7]))
+    if delays:
+        w('    read -> first shot, unambiguous: n=%d median=%dms min=%dms max=%dms' % (
+            len(delays), statistics.median(delays), min(delays), max(delays)))
+    raced = sorted(set(t for t, _ in races))
+    missing = [t for t in raced if t not in set(f[0] for f in flips)]
+    if not raced:
+        l3 = 'NO DATA -- no race'
+    elif missing:
+        l3 = 'FAIL -- raced TCIN(s) with no FLIP line: %s' % missing
+    else:
+        l3 = 'PASS'
+    w('    VERDICT: %s' % l3)
     w('')
     w('=' * 78)
     print('\n'.join(out))

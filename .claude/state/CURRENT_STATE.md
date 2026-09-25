@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-25 ~09:30 (post-run of the 09-25 drop) · HEAD `7e58eac0` + the uncommitted 09-25 post-run arming below · branch `feat_refract_arch_v1`**
+**As of: 2026-09-25 ~11:45 (first-gate investigation after the 09-25 post-run) · HEAD `16cec4ca` (the post-run arming) + the L3 flip log below · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -15,17 +15,57 @@ to be wrong rather than leaving them with a caveat.**
 
 ---
 
+## 2026-09-25 FIRST-GATE INVESTIGATION — what "99% lost at the first gate" really is
+
+Operator, after the post-run: "bots are so successful they must be doing something
+different". Five agents and two fresh-context verifiers; ledger `docs/CLAIMS.md`
+C-0925-07..11. **Nothing here has been tested on a drop.**
+
+- **Only first shots pass, and they pass at 10-30%.** Six restock nights: first shots of
+  flip-opened races 15/142 (10.6%) vs every other shot 14/4,013 (0.35%); home IP 15/65
+  (23%); a TCIN's first window of the night 13/74 vs later windows 2/68. First shots are
+  3.8% of our shots, so ~97% of first-gate failures are re-shots and re-flips.
+  [VERIFIED 09-25, C-0925-07/08]
+- **Not a per-identity or per-IP budget** (two home-IP accounts passed in the same volley
+  twice on 09-25) and not Shape/HUMAN (0 block lines). Whether our own traffic spoils a
+  TCIN's later windows: NOT ESTABLISHED (inseparable from the TCIN's restock state).
+- **We get through the gate; we have never converted what we win.** 9 hot carts in the
+  bot's life (07-14 → 09-25), all qty 2, 0 orders: 4 never reached a place-order, 5 died on
+  the checkout FAST_SELLING throttle (09-25's also saw RESERVATION_FAILURE). The 5 s
+  ticket loop (R5, armed 09-17) has never run on a hot cart; R1 routes the 09-25 case into
+  it. [VERIFIED 09-25, C-0925-09]
+- **qty 2 is not what kills hot carts** (REFUTED). A 1-per-guest online limit is NOT
+  ESTABLISHED: Target accepted all 9 qty-2 hot adds and enforces its limits at add-to-cart.
+- **Firing before the flip: no support** — 0 admissions ever before our read, and shots
+  after an out-of-stock read never became a cart. Not built. [C-0925-10]
+- **Read-to-POST is ~0.1 s; the flip-to-read leg (~0.17 s mean at 0.34 s read spacing) has
+  never been measured**, hence L3. A faster read rate needs a daytime soak first: the 09-21
+  429 tarpit hit at 0.375 reads/s per IP (we run 0.17). [C-0925-11]
+- **Competitors (Refract docs, REPORTED):** 10 tasks on 10 unique accounts from a home IP,
+  fire on monitor detection, "extremely low pass rate for everyone", and keep submitting
+  through a FAST_SELLING checkout. More accounts is the lever that multiplies first-volley
+  draws (scale plan 3 → 5 → 10).
+
+**ARMED 2026-09-25 after the investigation — UNPROVEN LIVE:**
+- **L3 `RESILIENT_FLIP_LOG=1`** — new code, log-only: one `[STOCK][FLIP]` line per
+  out-of-stock → in-stock read (epoch-ms `read_ms`, `last_oos_ms`, the read's round trip, a
+  new-window flag, RedSky's raw ATP / max_order_qty / purchase_limit), written after every
+  dispatch callback, at most 50 per TCIN per run. Readout L3 in
+  `tools/analysis/readout_arm_2026_09_25.py`: FAIL = a raced TCIN with no FLIP line.
+  `tests/test_redsky_flip_log.py` 38 checks; 5 mutations caught. Kill: =0.
+
 ## 2026-09-25 DROP + POST-RUN — 0 orders; what is armed for the next run
 
 **The run** (`run_20260925_004139.log`, 00:41 → ~07:50, stopped by the operator): stock
 windows 03:32-05:41 on all 7 drop SKUs (the ETB twice), 14 races (13 of them 3 accounts
 wide), 1,212 main-tab shots — 1,205 edge 429, 4 FAST_SELLING 429, 2 keyless 401, 1 × 201.
-**0 orders.** Detection to first POST 0.47-1.00 s on every window. [MEASURED 09-25;
+**0 orders.** In-stock read to the first POST ~0.1 s (C-0925-11). [MEASURED 09-25;
 docs/CLAIMS.md C-0925-01..06]
 
 - **The edge limiter is the binding stage (99.6% of shots)** and admitted only a window's
-  FIRST shots, within 0.1 s of the flip: first shots 5/20 vs re-shots 0/663 at window age
-  2-120 s; first-shot rate unchanged vs 09-23 (p=0.33). [VERIFIED 09-25, C-0925-01]
+  FIRST volley (fired 0-11 ms after the window's first shot): first shots 5/20 vs re-shots
+  0/663 at window age 2-120 s; first-shot rate unchanged vs 09-23 (p=0.33). [VERIFIED 09-25,
+  C-0925-01; timing per C-0925-11]
 - **The one cart was lost by OUR checkout routing:** business, AH Meganium tin, 201 at
   05:20:27 → pre_checkout 201 → in-chain place-order 429 `RESERVATION_FAILURE` → the
   won-cart loop's gate refused it (FAST_SELLING only) → 26.7 s legacy DOM detour on a page
@@ -42,7 +82,7 @@ docs/CLAIMS.md C-0925-01..06]
   in-stock read). G1: the Feraligatr raced 2-wide while business held its cart — no
   double race. [MEASURED 09-25]
 
-**ARMED 2026-09-25 post-run (uncommitted at write time) — all UNPROVEN LIVE. Readout,
+**ARMED 2026-09-25 post-run (committed `16cec4ca`) — all UNPROVEN LIVE. Readout,
 pre-registered and smoked on 09-25 and 09-23: `tools/analysis/readout_arm_2026_09_25.py`.**
 - **K1 `TARGET_WAVE_FIRST_EDGE=1`** — A1 killed by its own pre-registered rule; edge and DCO
   429s take the 55-70 s cold re-entry again. A3 stays at 8 s (≈0.13 blind shots per
@@ -593,8 +633,9 @@ PerimeterX block therefore gets the plain 2.5-3.5 s cadence instead of wave-firs
   harvest = 0 (diverted to `Fetch.failRequest` before any response).
   **Combined `main` share: 138/5,282 = 2.6%.** The rest is the warmup heartbeat
   (`_background_refill_loop`, every 60-90 s per tab, forever), the boot selftest,
-  and the write-auth re-probe — all firing `_WARMUP_DUMMY_POST_JS` at decoy TCINs
-  (`21516452`, `50225561`, `53274278`). **None are purchase attempts.**
+  and the write-auth re-probe — all firing `_WARMUP_DUMMY_POST_JS` at the not-launched
+  decoy TCIN `81926151` (`purchase_executor.py:40`; `21516452` / `50225561` / `53274278` are
+  the harvester's click targets, cancelled inside the browser). **None are purchase attempts.**
   Any past or future shot-volume number derived from `[ATC_RESP]` is inflated up
   to ~40x, and the inflation scales with harvester activity, not with stock.
   — [MEASURED 09-21]
@@ -747,9 +788,10 @@ must not be used even directionally. — [VERIFIED 09-21]
   specification; one night is 83% of the sample and flips the sign). The census
   that armed wave-first for the 429 lottery pooled every SKU and does not settle it
   for hot SKUs either. **Tested live 09-25 and KILLED:** at a 2.7 s cadence 0 of 663
-  re-shots (window age 2-120 s) were admitted; all 5 admissions were window-first shots
-  fired within 0.1 s of the flip (C-0925-01). Retries bought nothing at either cadence
-  tried; whether they COST anything is still open.
+  re-shots (window age 2-120 s) were admitted; all 5 admissions were first-volley shots
+  (C-0925-01; over six nights first shots 15/142 vs every other shot 14/4,013, C-0925-07).
+  Retries bought nothing at either cadence tried; whether they COST anything is NOT
+  ESTABLISHED (C-0925-08: inseparable from the TCIN's restock state).
 
 ## 2026-09-23 RUN — 5 hot restock windows, 37 shots, all 429, 0 carts
 
@@ -868,6 +910,8 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) — no ordinary SKU armed since | 09-20 |
 | Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37; 09-25: 1/1,212 (1 cart in 8 windows) | 09-25 |
 | Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change | 09-25 |
+| Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07) | 09-25 |
+| Won hot cart → order | none ever | 0/9 lifetime (07-14 → 09-25): 4 never reached place-order, 5 died on checkout FAST_SELLING. A first conversion is a RECOVERY signal | 09-25 |
 | Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 and 09-25 had stock: 0) | 09-25 |
 | Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25** | 09-25 |
 | Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage) | 09-25 |

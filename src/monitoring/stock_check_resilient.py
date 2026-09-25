@@ -183,6 +183,71 @@ def pickup_change_line(tcin, old, info) -> str:
         return f"[STOCK PICKUP] {tcin}: pickup changed"
 
 
+# ── 2026-09-25 L3: the flip read in milliseconds, log-only ────────────────────
+FLIP_LOG_CAP_PER_TCIN = 50
+_FLIP_MISSING = object()
+
+
+def flip_log_on() -> bool:
+    """RESILIENT_FLIP_LOG=1: one [STOCK][FLIP] line per out->in transition, with the
+    read's epoch-ms stamp and RedSky's raw quantity fields. Until now the only stamp on
+    a flip was the print-only '[STOCK] IN STOCK' plus a whole-second [API_CYCLE], so
+    the edge's admission curve could not be resolved below ~0.5 s (09-25 admission
+    forensics). Default '0' = no new text. Kill-switch: =0."""
+    return os.environ.get('RESILIENT_FLIP_LOG', '0').strip() == '1'
+
+
+def _flip_repr(v, limit: int = 100) -> str:
+    if v is _FLIP_MISSING:
+        return '-'
+    s = repr(v)
+    return s if len(s) <= limit else s[:limit] + '...'
+
+
+def flip_raw_fields(raw, tcin) -> str:
+    """RedSky's quantity fields for one TCIN exactly as sent (repr, so 2.0 stays a
+    float). StockMonitor._process_response keeps only ints and drops the rest, so this
+    is the only place a float ATP or purchase limit is ever seen. Pure; never raises."""
+    try:
+        d = raw.get('data') if isinstance(raw, dict) else None
+        ps = d.get('product_summaries') if isinstance(d, dict) else None
+        if not isinstance(ps, list):
+            return f"raw=product_summaries:{type(ps).__name__}"
+        p = next((x for x in ps if isinstance(x, dict) and str(x.get('tcin')) == str(tcin)), None)
+        if p is None:
+            return "raw=tcin_absent"
+        f = p.get('fulfillment') if isinstance(p.get('fulfillment'), dict) else {}
+        so = f.get('shipping_options') if isinstance(f.get('shipping_options'), dict) else {}
+        svc = so.get('services', _FLIP_MISSING)
+        return (f"atp={_flip_repr(so.get('available_to_promise_quantity', _FLIP_MISSING))} "
+                f"max_order_qty={_flip_repr(f.get('maximum_order_quantity', _FLIP_MISSING))} "
+                f"purchase_limit={_flip_repr(f.get('purchase_limit', _FLIP_MISSING))} "
+                f"services={len(svc) if isinstance(svc, list) else _flip_repr(svc, 40)} "
+                f"ship_keys={','.join(sorted(str(k) for k in so))[:300] or '-'} "
+                f"ful_keys={','.join(sorted(str(k) for k in f))[:300] or '-'}")
+    except Exception as e:
+        return f"raw=unreadable:{type(e).__name__}"
+
+
+def flip_line(tcin, n, read_at, last_false_at, new_window, status, raw,
+              rt_ms, session_id, pinned_ip) -> str:
+    """The [STOCK][FLIP] line (pure; never raises). read_ms is the epoch-ms stamp of
+    this read's ingest (TcinStatus.last_checked_at) and last_oos_ms that of the last
+    out-of-stock read, so Target's flip lies between those two reads' samples; rt_ms
+    is this read's round trip. Both come from this machine's clock, the same one the
+    page's atc_t0 (Date.now()) reads."""
+    try:
+        read_ms = int(round(float(read_at) * 1000))
+        oos_ms = int(round(float(last_false_at) * 1000)) if last_false_at else 0
+        net = '.'.join(str(pinned_ip or '?').split('.')[:2]) + '.x.x'
+        return (f"[STOCK][FLIP] tcin={tcin} #{n} read_ms={read_ms} rt_ms={rt_ms} "
+                f"last_oos_ms={oos_ms} since_oos_ms={read_ms - oos_ms if oos_ms else '-'} "
+                f"new_window={1 if new_window else 0} via={session_id} ({net}) "
+                f"status={status} {flip_raw_fields(raw, tcin)}")
+    except Exception as e:
+        return f"[STOCK][FLIP] tcin={tcin}: could not format: {type(e).__name__}: {e}"
+
+
 class ResilientStockChecker:
     """
     Async stock-check engine. Start with .start(), stop with .stop().
@@ -356,6 +421,9 @@ class ResilientStockChecker:
         # hides inside a healthy aggregate. Keyed by pinned exit IP; log-only,
         # nothing branches on it. Kill: RESILIENT_EXIT_STATS=0.
         self._exit_stats: Dict[str, Dict[str, int]] = {}
+        # 2026-09-25 L3 [STOCK][FLIP]: read once; log-only, nothing branches on it.
+        self._flip_log = flip_log_on()
+        self._flip_counts: Dict[str, int] = {}
         self._total_behavioral = 0
         self._outstanding = 0
         self._sweep_count = 0
@@ -704,6 +772,30 @@ class ResilientStockChecker:
             logger.exception("[STOCK] _process_response failed")
             return {}
 
+    def _log_flips(self, flips, result) -> None:
+        """RESILIENT_FLIP_LOG=1: one [STOCK][FLIP] line per out->in transition, capped
+        at FLIP_LOG_CAP_PER_TCIN per TCIN per run so a flickering TCIN (the 09-25 ETB
+        flipped 46 times in ~256 s) cannot flood the log. Never raises."""
+        counts = getattr(self, '_flip_counts', None)
+        if counts is None:
+            counts = self._flip_counts = {}
+        for item in flips:
+            tcin = '?'
+            try:
+                tcin, read_at, last_false_at, new_window, status = item
+                n = counts.get(tcin, 0) + 1
+                counts[tcin] = n
+                if n > FLIP_LOG_CAP_PER_TCIN:
+                    if n == FLIP_LOG_CAP_PER_TCIN + 1:
+                        logger.info(f"[STOCK][FLIP] tcin={tcin}: {FLIP_LOG_CAP_PER_TCIN} flips "
+                                    f"logged this run; further flips of this TCIN are not logged")
+                    continue
+                logger.info(flip_line(tcin, n, read_at, last_false_at, new_window, status,
+                                      result.raw, result.latency_ms, result.session_id,
+                                      result.pinned_ip))
+            except Exception as e:
+                logger.info(f"[STOCK][FLIP] tcin={tcin}: not logged: {type(e).__name__}: {e}")
+
     async def _ingest_bulk_response(self, result: BulkResult):
         """Parse a 200 bulk response through StockMonitor._process_response
         (reuse — already handles the bulk product_summaries shape correctly),
@@ -714,6 +806,7 @@ class ResilientStockChecker:
 
         in_stock_transitions = []
         _pickup_changes = []      # 2026-09-16 DX-1; stays empty with the flag off
+        _flips = []               # 2026-09-25 L3; stays empty with the flag off
         now = time.time()
         _hyst = stock_hyst_s()
         async with self._status_lock:
@@ -746,6 +839,10 @@ class ResilientStockChecker:
                     self._ever_seen_in_stock.add(tcin)
                 if s.in_stock and not was_in_stock:
                     in_stock_transitions.append(s)
+                    if getattr(self, '_flip_log', False):
+                        _flips.append((tcin, s.last_checked_at, s.last_false_at,
+                                       s.window_start_at == s.last_checked_at,
+                                       s.availability_status))
 
         for _tc, _old, _info in _pickup_changes:
             logger.info(pickup_change_line(_tc, _old, _info))
@@ -766,6 +863,11 @@ class ResilientStockChecker:
                 async with self._status_lock:
                     if s.tcin in self._tcin_status:
                         self._tcin_status[s.tcin].in_stock = False
+
+        # 2026-09-25 L3: only after EVERY on_in_stock callback above has fired, so
+        # formatting and writing these lines can never delay a dispatch.
+        if _flips:
+            self._log_flips(_flips, result)
 
     # ───────── background loops ─────────
 
