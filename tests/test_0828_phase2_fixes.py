@@ -375,7 +375,10 @@ BAT_0916_PINS = (
     # is reversed, the 17+ bucket rebounds to 1.000, and no window in the
     # corpus ever fired 1 account. CAP_ALWAYS stays 1 -- setting it to 0 makes
     # the first live TCIN take all 3 workers and starves every other one.
-    ("TARGET_MULTI_SKU_WORKERS_PER_TCIN", "2"),
+    # 2026-09-23 post-run: 2 -> 3 (docs/CLAIMS.md C-0923-04). alt-1 was logged in
+    # through all 5 windows of the 09-23 restock and fired zero shots; no second
+    # TCIN was ever live (0 MULTI_SKU_MISS). CAP_ALWAYS stays 1.
+    ("TARGET_MULTI_SKU_WORKERS_PER_TCIN", "3"),
     ("TARGET_MULTI_SKU_CAP_ALWAYS", "1"),
     ("TARGET_HARVEST_BANK", "6"),
     ("TARGET_FASTLANE_PRE_RETRY", "1"),

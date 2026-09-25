@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-22 evening (pre-drop for 09-23 03:00) · HEAD `e07a2c4a` · branch `feat_refract_arch_v1`**
+**As of: 2026-09-25 ~00:05 (pre-drop for the 09-25 03:00 drop) · HEAD `66c7a31b` + the uncommitted 09-23 arming below · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -15,18 +15,137 @@ to be wrong rather than leaving them with a caveat.**
 
 ---
 
-## ARMED FOR THE 2026-09-23 03:00 DROP — set 09-22 evening (`/pre-drop`)
+## PRE-DROP 2026-09-24 late evening → drop 2026-09-25 03:00 (`/pre-drop`)
 
-- **Config:** the same 10 enabled TCINs as 09-22, all hot, order unchanged (list
-  position = dispatch priority, `bulletproof_purchase_manager.py:4028-4040`; no entry
-  has a `priority` field, so `1010892076` leads). **All 25 entries now carry
+**Nothing new armed, config unchanged.** Tonight is the **first live night** of the
+four 09-23 changes below (A1/A2/A3/G1).
+
+- **The operator's 7 drop TCINs were already present, enabled, `"qty": 2`:**
+  `1010892076` 30th ETB, `1010892067` 30th Poster, `1010892065` 30th Greninja ex Box,
+  `95120834` Ascended Heroes Booster Bundle, `1012644667` / `1012644666` / `1012644665`
+  Ascended Heroes Tins (Emboar / Feraligatr / Meganium). The other 3 enabled
+  (`1010892078`, `1010892069`, `1011960739`) are kept (operator: "dont delete any
+  skus"). 10 enabled, ≤30. All 10 were visible to RedSky on the 09-23 run. — [MEASURED 09-24]
+- **Accounts:** `check_session_readiness.py` 3/3 MEMBER (persisted state). primary's jar
+  was re-saved 09-24 18:54:50 by an **aborted wrapper start** (relogin_one validate-pass
+  "already logged in ✅", then Ctrl+C / window close at 18:54:51 → `0xC000013A`; app.py
+  never wrote a run log). business/alt-1 jars date from the 09-23 10:27 shutdown (~37 h
+  idle; the script shows 42 h, its +5 h display skew). login-session 13.0 d / 21.0 d,
+  refreshToken ~88 d. — [MEASURED 09-24 23:48]
+- **Monitor details that are easy to get wrong:** production `TARGET_LEVEL_REARM_S` is
+  **3 s** (`[LEVEL_REARM] armed — ... every 3s`, 09-23 log), not the 20 s code default.
+  The buyer `TARGET_CHROME_MAX_AGE_S=2100` relaunch applies only to proxied Chromes
+  (`session_manager.py:2320`, `self.proxy_url is not None`), so with all buyers on the
+  home IP it never fires. The wrapper has no scheduled restart; it relaunches only after a
+  crash. — [MEASURED 09-24]
+- **Arming delta since the 09-22 audit:** the 5 flags changed on 09-23 are each set once
+  and read by `bulletproof_purchase_manager.py`; no flag is set but unread; 82 flags are
+  read by code but not set by the wrapper (same count as 09-22). The one new name,
+  `TARGET_STOCK_PROBE_FRESH_S`, is a default knob (15 s, clamped 2-120; A3 fail-open),
+  not a feature switch. Bat: CRLF, ASCII, 172 vars each set once; the 09-23 REM lines
+  are clean (77 older REM lines carry `->`/`&`/`%%` and have run through every boot). —
+  [MEASURED 09-24]
+- **Offline suite 27/27** (0 failed, 0 skipped, 317 s), and 27/27 again after the bat
+  REM correction (10 suite files parse the bat), on the exact working tree the bat will
+  boot. — [MEASURED 09-25 00:16]
+- 🔴 **A contention-skipped TCIN is not re-raced while it stays in stock (C-0924-01,
+  VERIFIED for the pool-healthy regime).** `[MULTI_SKU_MISS]` leaves it `'ready'` with
+  no rearm hint (`bulletproof_purchase_manager.py:4342-4350`); the sweep fires only on
+  a False→True read and the level re-arm only takes `'failed'` or hinted TCINs
+  (`app.py:1154-1165`). 23 historical distinct-TCIN skips on 7 nights: **0 raced in the
+  same window**; in 11 the holder's race ended with the skipped SKU still in stock
+  (≥1,120 s total) and it got nothing. Exception: the blind-pool tab-fetch fallback
+  re-publishes the whole catalog every 3-5 s (n=0 during a skip). **Deliberately NOT
+  fixed before the 09-25 drop** — the fix (stamp a rearm hint on the skip) would be a
+  fifth unproven behavioural change on the night the first four go live, in the
+  dispatch path, and must first be checked against lead C-0924-03. Cost of declining:
+  if two SKUs' windows overlap tonight, the second gets zero shots unless it flickers.
+  Readout D3 measures it. **First follow-up after tonight's readout.** — [VERIFIED 09-24]
+- **Config order is not the priority lever it was believed to be (C-0924-02,
+  VERIFIED):** every go-live is its own single-TCIN event handled in sweep read order;
+  0 of 906 `[STOCK] IN STOCK:` lines ever named two TCINs. The list-order sort only
+  acts on level re-arm and tab-fetch events. So nothing was reordered. — [VERIFIED 09-24]
+- Lead, unverified (C-0924-03): a single-TCIN event may reset another in-stock
+  `'failed'` TCIN to bare `'ready'` (`bulletproof_purchase_manager.py:1658`, `:1671`,
+  `:1721-1727`), hiding it from the level re-arm. One agent's code read; not measured.
+  — [INFERRED 09-24]
+- Readout, pre-registered: `tools/analysis/readout_2026_09_25.py` runs
+  `readout_arm_2026_09_23.py` (T0-T6), then D1 visibility (every ground-truth read = 10),
+  D2 priority (list order inside one stock update), D3 skipped-SKU coverage, D4 per-TCIN
+  scoreboard. Smoked on 09-23 (reproduces the post-run: 37 shots = 16/8/4/9; D1 PASS on
+  270 reads) and on 09-16 (D3: `1010892069` skipped for `1010892078`, 6 episodes, all 6
+  LOST). — [MEASURED 09-24]
+
+## ARMED FOR THE NEXT RESTOCK — set 2026-09-23 post-run (`/post-run`)
+
+Four flag-gated changes, all armed in `run_bot_with_nightly_restart.bat` on
+**2026-09-23** (they explain nothing before that date). Offline suite **27/27**
+(316 s) with the new `tests/test_retry_oos_stop.py` (77 checks, mutation-checked).
+Readout, pre-registered: `tools/analysis/readout_arm_2026_09_23.py` (T0-T6; smoked
+on the 09-23 log, where T1 FAILs and T2 is INCONCLUSIVE under the old arming, as it
+should). **All UNPROVEN LIVE.**
+
+- **A1 `TARGET_WAVE_FIRST_EDGE=0`** (was 1 since 09-09). Edge and DCO 429s re-fire at
+  the 2.0-3.0 s edge cadence (`TARGET_ATC_EDGE429_RETRY_DELAY_MIN/MAX`, unchanged
+  since 09-01) instead of a 55-70 s cold re-entry: ~35-40 shots per account per
+  110 s race instead of 2. A 401 still takes the 55-70 s cold re-entry and its bank
+  gate; the DCO burst is unchanged; the 40-attempt cap and 110 s deadline still
+  bind; no new path to a place-order retry (fresh-context verifier, CONFIRMED on all
+  five parts). **This is a BET, not a fix** — C-0923-02 is NOT ESTABLISHED in either
+  direction. Kill rule (readout T4): revert to 1 if ≥150 re-shots at window age
+  2-120 s get zero edge passes, or 401s exceed 30% of ≥60 shots. — [ARMED 09-23]
+- **A2 `TARGET_MULTI_SKU_WORKERS_PER_TCIN=3`** (was 2 since 09-21 evening). alt-1 was
+  logged in through every 09-23 window and fired zero shots because of the cap
+  (C-0923-04, VERIFIED). **Cost (corrected 09-24, C-0924-01 VERIFIED):** a second
+  TCIN that goes live while all 3 race the first gets `[MULTI_SKU_MISS]` and is
+  **not** picked up when a racer frees — nothing re-publishes it while it stays in
+  stock; only its own out-then-in flicker does (or the blind-pool tab-fetch
+  fallback). History: 23 such skips, 0 raced in the same window. Contention itself
+  is rare (15 pairs in 27 nights, 2 in the hot era; 0 of 5 windows on 09-23).
+  `CAP_ALWAYS` stays 1. — [ARMED 09-23]
+- **A3 `TARGET_RETRY_STOP_WHEN_OOS=1`, `TARGET_RETRY_OOS_STOP_S=8`** (new code,
+  `_retry_oos_gone_s`). A race thread ends its window instead of firing when the
+  monitor has had no in-stock read of the TCIN for 8 s (raw `last_true_at` /
+  `last_false_at`, not the 20 s-hysteresis `live` flag); fail-open on missing or
+  stale data. Checked before the cadence sleep and again right before the shot.
+  **Exempt after a DCO/FAST_SELLING 429** (the cart service just answered for the
+  TCIN). `grep [RETRY_OOS]`. (C-0923-03, VERIFIED.) — [ARMED 09-23]
+- **G1 `TARGET_STUCK_RESET_LIVE_GUARD=1`** (new code, `_tcin_has_live_racer`,
+  `_reservation_has_live_racer`). "A live racer is never stuck", at four points:
+  the SILENT 60 s reset in `reset_completed_purchases_by_stock_status` (it runs
+  first in `app._handle_stock_update`, on every periodic / edge / re-arm update),
+  the 60 s reset in `process_stock_data` (now keeps scanning past a live race), a
+  catch-all at the only live dispatch point (no race on a TCIN while a racer of its
+  previous race is alive, whatever reset the record), and the 120 s reservation-TTL
+  sweep (a live racer keeps its worker). Without it a race running past 60 s can be
+  joined by a second race on the same TCIN that re-claims the same accounts
+  (C-0923-05). **This path is LIVE-reachable under the 09-22/09-23 arming, not just
+  A1's:** the silent reset has fired on a live race 6 times in production
+  (C-0923-08, 08-27 and 09-15, harmless then because multi-SKU dispatch was off).
+  The first cut guarded only the second copy and was REFUTED as sufficient by an
+  adversarial review the same day; the four-point version reproduces and blocks the
+  production call order offline, and a second fresh-context review CONFIRMED the
+  same-TCIN protection. It also found, and live-reproduced, a pre-existing
+  **cross-TCIN** gap (C-0923-09): with ≤1 session-ready account, dispatch takes the
+  legacy path (no reservation, falls back to primary) and a busy account could be
+  handed a second TCIN mid-purchase. Now also closed under G1: a worker with a live
+  racer is never free for or reserved by a different TCIN, and with ≤1 ready account
+  only one purchase runs at a time. Offline suite 27/27; `test_retry_oos_stop` 112
+  checks, every guard point mutation-checked. — [ARMED 09-23]
+- **Carried unchanged from the 09-22 pre-drop:** the same 10 hot TCINs; `"qty": 2` on
+  every entry (the bat's qty-1 REM was corrected 09-23 to say so).
+
+### Carried from the 09-22 pre-drop — still true
+
+- **Config:** the same 10 enabled TCINs as 09-22, all hot, order unchanged (no entry
+  has a `priority` field; list order only matters for multi-TCIN events, which a real
+  go-live never is — C-0924-02). **All 25 entries now carry
   `"qty": 2`** — operator decision. Backup:
   `config/product_config_backup_pre_2026-09-23_drop.json`. — [MEASURED 09-22]
 - 🔴 **The 09-18 U2 qty-1 pin is SUPERSEDED.** Six of the ten were pinned to 1 and
-  four had no key. **Stale doc left in place on purpose:** `run_bot_with_nightly_restart.bat`
-  REM lines ~1194-1211 still say the config pins the hot TCINs to `"qty": 1` — not
-  edited to avoid touching the production .bat on drop night. The flag
-  `TARGET_QTY_PER_TCIN=1` is unchanged; it now pins everything to 2. — [MEASURED 09-22]
+  four had no key. The flag `TARGET_QTY_PER_TCIN=1` is unchanged; it now pins
+  everything to 2. The bat REM that still described the qty-1 pin was corrected on
+  09-23. — [MEASURED 09-22]
 - **Every qty decision ever logged for these 10 TCINs was already qty=2**, "RedSky
   limit unreported" — 462/462 `[QTY]` lines across all `logs/runs/`. The pin to 2
   removes the dependence on RedSky and `TARGET_QTY_OPTIMISTIC`. Pin math:
@@ -52,11 +171,24 @@ to be wrong rather than leaving them with a caveat.**
   (`:4241-4242`) sweeps confirmation/thank/checkout/cart but **not a PDP**, so a tab
   that ever lands on one stays there. **Do not arm `TARGET_PDP_QTY_LOOKUP` without
   closing this.** — [VERIFIED 09-22]
-- **Target has never returned a per-customer purchase-limit rejection** to this bot:
-  0 `PURCHASE_LIMIT`/`MAX_QUANTITY`/`QUANTITY_LIMIT` in any `.log` under `logs/`.
-  If one ever comes, the fast lane has no quantity handling — a 4xx ATC returns
-  `fallthrough` (`purchase_executor.py:7727-7734`) and only the legacy path's
-  self-heal retries at qty 1 (`:5054-5060`), i.e. ~2 extra POSTs. — [MEASURED 09-22]
+- **Target has returned a per-customer purchase-limit rejection exactly once:**
+  2026-07-14 03:01, TCIN 95267143, qty 2 → `400 MAX_PURCHASE_LIMIT_EXCEEDED`
+  (`logs/runs/run_20260713_234024.log:23604`). The fast lane has no quantity
+  handling — a 4xx ATC returns `fallthrough` (`purchase_executor.py:7727-7734`) and
+  only the legacy path's self-heal retries at qty 1 (`:5054-5060`), i.e. ~2 extra
+  POSTs. **On a hot SKU each of those POSTs has to pass the edge limiter again**, so
+  a limit-1 item at qty 2 would likely throw away the one shot that got through.
+  — [MEASURED 09-23, C-0923-07]
+- **30th Celebration online limit is at least 2 for the Tin:** Target's cart
+  ACCEPTED a qty-2 add of 1010892069 on 2026-09-16 03:29:43 (HTTP 201,
+  `run_20260915_233355.log:46680`; the 07-14 limit hit shows Target rejects an
+  over-limit qty at exactly that step). The other four have never had an add
+  accepted, so theirs is unmeasured. Web sources (low reliability, 2026 articles):
+  "limit of 2 of any one SKU per customer" and "limit one Pokémon TCG product
+  purchase per credit or debit card", with some stores stricter in-store. Items:
+  ...076 ETB $70, ...067 Poster Collection $14.99, ...069 Tin $30, ...078 Tech
+  Sticker Collection $14.99, ...065 Greninja ex Box $30. **Operator keeps qty 2
+  (09-23); the evidence supports it.** — [MEASURED 09-23 + REPORTED]
 - **Arming audit (Phase 2):** 166 wrapper vars, each assigned exactly once, none
   conditional. 3 not read in `src/`/`app.py` — `LOGDIR` (bat-internal),
   `RELOGIN_SKIP_*` (read by `relogin_one.py`): no dead flags. 82 `TARGET_*` are
@@ -69,12 +201,15 @@ to be wrong rather than leaving them with a caveat.**
   forced on by the armed `WONCART_DIRECT`/`HELD_CART_REENTRY`
   (`bulletproof_purchase_manager.py:359-360`). — [MEASURED 09-22]
 - **Proxy pool proven through the production path:** `validate_proxies.py`,
-  `VALIDATE_POOL=all` (18 active + 2 reserve), 180 s, **with the wrapper's monitor
-  env** (`RESILIENT_REDSKY_CHANNEL=apps_raw` + the other 15). **20/20 HEALTHY;
-  532 sweeps, 200=532, 403=0, 429=0, other=0; 20 ready, 0 crashed**; warmup 229 s.
-  ⚠️ A bare `validate_proxies.py` run tests the WRONG channel — the code default
-  is `web` (`redsky_channel.py:50`), which is PX-walled on the BD prefixes. —
-  [MEASURED 09-22 22:15]
+  `VALIDATE_POOL=all` (18 active + 2 reserve), 180 s, **with the wrapper's 16 monitor
+  vars** + `CHROME_STAGGER_TOTAL_S=30`. **20/20 HEALTHY; 535 sweeps, 200=535, 403=0,
+  429=0, other=0; 20 ready, 0 crashed**; warmup 3m46s; per-IP 200s sum to 535; 11
+  tracebacks, all benign `WinError 10054`. The validator never prints its channel;
+  `apps_raw` is inferred (exported in the same statement as `VALIDATE_POOL`, which
+  took effect, and 0 PX walls on the BD prefixes). 09-22 was 532/532. ⚠️ A bare
+  `validate_proxies.py` run tests the WRONG channel — the code default is `web`
+  (`redsky_channel.py:50`), which is PX-walled on the BD prefixes. —
+  [MEASURED 09-24 23:58]
 - **Cross-TCIN dispatch contention is rare.** 674 `[RACE]` dispatches over 27
   nights; a second live TCIN was blocked (`[PURCHASE_CONCURRENCY]` skip or
   `[MULTI_SKU_MISS]`) in **15 distinct TCIN pairs on 7 nights — only 2 pairs in the
@@ -272,7 +407,11 @@ history plus actual publish dates, not from a set literal. — [VERIFIED 09-21]
   is genuinely dead — not imported anywhere. —
   [VERIFIED 09-21] `purchase_executor.py:2111`
 
-## ⚠️ ONE ACCOUNT PER TCIN — superseded 09-21 evening (now 2; see below)
+## ⚠️ ONE ACCOUNT PER TCIN — superseded (2 from 09-21 evening, 3 from 09-23)
+
+**As of 09-23 the cap is 3 (A2 above), so this section is history of how the cap
+was reasoned about.** Its arithmetic still holds: `_limit` is always
+`WORKERS_PER_TCIN` under `CAP_ALWAYS=1`.
 
 `bulletproof_purchase_manager.py:2771`:
 `_limit = per_tcin if (_others or cap_always) else len(ready_workers)`
@@ -296,9 +435,12 @@ run logs, and no `state/ambiguous_commit_latch.json` exists. Theoretical, like
 the 403 handler. — [MEASURED 09-21]
 
 Combined with wave-first (55-70 s between shots), the shot budget for a 60 s hype
-window is **~1-2 shots from one identity**. The competitor's published floor is 10
-tasks at a 3.5 s retry (~170 shots); their local-Windows ceiling is 30 (~510).
-Roughly two orders of magnitude, and the dominant factor is a flag.
+window was **~1-2 shots per identity** — measured on 09-23: 4 per account per
+~2-min window, 37 for the whole night (C-0923-01). The competitor's published floor
+is 10 tasks at a 3.5 s retry (~170 shots a minute); their local-Windows ceiling is
+30. With A1 + A2 armed on 09-23 the budget becomes ~3 accounts x ~20-25 shots per
+60 s — still ~a third of the competitor's starter floor, because we have 3 accounts,
+not 10.
 
 — [VERIFIED 09-21, triple-confirmed by three independent code reads]
 
@@ -404,16 +546,19 @@ files (all TCIN 1012644666, 04:03-04:20). Dispatch happened.
 Use the per-boot `run_*.log` tees, cross-checked against `logs/purchases/`.
 An earlier "13 in_stock, 0 races" alarm was entirely this artefact. — [MEASURED 09-21]
 
-## The single-worker cap has NEVER been observed live
+## The dispatch cap — observed live exactly once (09-23, 2-wide)
 
 - 09-18 raw tee: **36 races, every one `[RACE] ...: racing 3 accounts`.** Zero
   `MULTI_SKU_DISPATCH` reservation lines — the feature was not armed that night.
 - `TARGET_MULTI_SKU_CAP_ALWAYS` first appears in `679275d9` (the 09-20 work,
-  committed 09-21). **There has been no drop since.**
-- Therefore: **all historical shot-volume data, including the "0.038 admits at
-  9-16 shots vs 0.545 at 2 shots" measurement that justified the cap, comes
-  entirely from the 3-wide era.** The 1-wide regime it created is unproven and
-  unobserved. — [MEASURED 09-21]
+  committed 09-21). The 1-wide cap (09-21 night) never met stock.
+- **09-23 is the only night the cap met stock: 9/9 races `racing 2 accounts`
+  (W1/primary + W2/business, "fleet idle"), alt-1 0 shots, 0 `[MULTI_SKU_MISS]`,
+  1 edge pass in 37 shots.** One night, all hot, n too small to say anything about
+  the cap's effect on pass rate. The cap is 3 from 09-23 (A2). — [MEASURED 09-23]
+- All other historical shot-volume data, including the "0.038 admits at 9-16 shots
+  vs 0.545 at 2 shots" measurement that justified the cap, comes from the 3-wide
+  era. — [MEASURED 09-21]
 - 🔴 **That justifying measurement is now `[NOT ESTABLISHED]`** — re-verified
   adversarially from a fresh context on 09-21 evening:
   - It reproduces **only** under an undisclosed `--hot-only` + logs-since-08-25
@@ -523,9 +668,41 @@ must not be used even directionally. — [VERIFIED 09-21]
   401-first. Unresolved.
 - **How many hot carts have ever been won — 5 or 6.** Three of this project's own
   analysis artifacts disagree. Conversion is 0 under every count.
-- **Retry cadence**: wave-first ~60 s (ours) vs "keep submitting" ~3.5 s (theirs).
-  `docs/REFRACT_PARITY.md` §4 states our own throughput evidence is era-confounded:
-  *"Our data cannot settle this in-era."*
+- **Retry cadence**: wave-first ~60 s (ours until 09-23) vs "keep submitting" ~3.5 s
+  (theirs). Re-derived hot-only at matched window age on 09-23 from a fresh context:
+  **NOT ESTABLISHED in either direction** (C-0923-02 — p=0.33-0.40 under every
+  specification; one night is 83% of the sample and flips the sign). The census
+  that armed wave-first for the 429 lottery pooled every SKU and does not settle it
+  for hot SKUs either. **Being tested live from 09-23** by A1
+  (`TARGET_WAVE_FIRST_EDGE=0`) under a pre-registered kill rule.
+
+## 2026-09-23 RUN — 5 hot restock windows, 37 shots, all 429, 0 carts
+
+`run_20260922_232734.log`, 23:27 → 10:27 (10.9 h), same 10 hot TCINs, qty 2.
+**0-for-N, not 0-for-zero.** [MEASURED 09-23; claims C-0923-01..07 in `docs/CLAIMS.md`]
+
+| window | TCIN | in stock (monitor) | shots | outcome |
+|---|---|---|---|---|
+| 02:47:39 | 1010892076 (30th ETB) | ~101-131 s, 3 edges | 8 | 8 edge 429 |
+| 03:37:10 | 1010892076 | ~101-124 s, 4 edges | 8 | 8 edge 429 |
+| 04:03:35 | 1010892067 | ~107-137 s, 3 edges | 8 | 8 edge 429 |
+| 04:41:05 | 1010892069 | ~108-138 s, 3 edges | 9 | 8 edge 429 + 1 FAST_SELLING (primary, first shot) |
+| 05:16:29 | 1010892078 | ~42-54 s, **7 flickers** | 4 | 4 edge 429 |
+
+- **Bot mechanics were fine**: detection to first POST ≤0.08-0.98 s in all 9 races;
+  ready sessions ≥17/18; no 401, no 403, no challenge; qty 2 by pin on every race.
+- **We bought very few tickets**: 2 of 3 accounts (alt-1 capped out), 4 shots per
+  account per window (wave-first), nothing fired 3-55 s into any window, and 8 of
+  37 shots went out after the monitor had already read the TCIN out of stock.
+  Flicker edges during a race are ignored by design (the TCIN is `'attempting'`),
+  so window 5's 7 edges got 1 race. → A1/A2/A3/G1 above.
+- **Target admitted 1 of 37 past the edge** — ordinary variance against hot-SKU
+  history (C-0923-06), and the one that got through was throttled by the cart
+  service. The first shot of each window (after 24-47 min of zero fleet shots on
+  that TCIN) was edge-rejected 9 of 10 times, with both accounts' simultaneous
+  shots (0-5 ms apart) failing together 4 of 5 times: not what an idle-refilled
+  per-account bucket predicts. Account vs IP cannot be separated (all buyers share
+  the home IP). [MEASURED 09-23]
 
 ## 2026-09-22 RUN — NO RESTOCK OCCURRED. The bot did not fail.
 
@@ -612,12 +789,13 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 
 | Metric | Last-known-good | Current regime | As of |
 |---|---|---|---|
-| Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) | 09-20 |
-| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798) | 09-20 |
-| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 | 09-20 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 0.054% (45/82,888, 18 exits, excl. the 01:01-01:17 /16 cascade) | 09-22 |
-| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 79.9% / 20.2% / 429 0 (n=2,084, all `tab=warmup`) | 09-22 |
-| ATC 401 rate, home IP | 2.8% | 2.8% | 09-20 |
+| Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) — no ordinary SKU armed since | 09-20 |
+| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37 | 09-23 |
+| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change | 09-23 |
+| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 had stock: 0) | 09-23 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16 | 09-23 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38) | 09-23 |
+| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%) | 09-23 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
 
 **Declare a regime change and open an investigation when:** a cart rate moves by

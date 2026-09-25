@@ -75,6 +75,12 @@ Entry format:
 Things we would need to see their side to answer. Listed so they are not
 re-litigated from first principles every few weeks:
 
+- Whether one client's own retry rate lowers its admission odds at the high-demand
+  limiter (the wave-first premise). Our hot-SKU data cannot settle it either way
+  (docs/CLAIMS.md C-0923-02, 2026-09-23); being tested live from 09-23 with
+  TARGET_WAVE_FIRST_EDGE=0 and a pre-registered kill rule. 09-23 also showed
+  9 of 10 window-opening shots rejected after 24-47 min of zero fleet shots on the
+  TCIN -- not what an idle-refilled per-account bucket predicts.
 - What fraction of requests the high-demand rate limiter admits. Their own vendor
   docs say nobody outside Target knows.
 - Whether a Target ATC 401 is a Shape block or the write-auth layer. Unresolved,

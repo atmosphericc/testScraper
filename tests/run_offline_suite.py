@@ -68,6 +68,10 @@ OFFLINE = [
     # workers via the test_identity_rest harness; no browser, no network).
     "test_dco_burst",
     "test_multi_sku_dispatch",
+    # 2026-09-23 post-run: out-of-stock stop, the stuck-reset live-racer guard and
+    # the WAVE_FIRST_EDGE=0 branch under the real race loop (stub workers and a
+    # stubbed stock probe only; no browser, no network).
+    "test_retry_oos_stop",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

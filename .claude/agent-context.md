@@ -96,12 +96,17 @@ before you hand the orchestrator a recommendation.
 **Corollary on selection effects.** Two of this project's load-bearing claims rest
 on comparing shot populations. A shot only exists at index k because the shot at
 k-1 failed, and the retry loop breaks on success
-(`bulletproof_purchase_manager.py:2233`). Any "more shots did worse" finding is
-conditioned on prior failure. That confound **destroyed** the volume claim
-(11-window cells, non-monotonic) and **did not** destroy the 09-09 cadence census
-(n=21,684, monotonic 6.1 -> 1.4 -> 0.4 -> 0.0, p=1.4e-54). Sample size and
-monotonicity are what separate them — check both before you reach for the
-confound.
+(`bulletproof_purchase_manager.py`, the `result.get('success')` break in the race
+loop). Any "more shots did worse" finding is conditioned on prior failure. That
+confound **destroyed** the volume claim (11-window cells, non-monotonic). The 09-09
+cadence census (n=21,684, monotonic 6.1 -> 1.4 -> 0.4 -> 0.0, p=1.4e-54) survives
+as a POOLED, all-SKU gradient — **but it does not settle cadence for hot SKUs**:
+re-derived hot-only at matched window age on 2026-09-23 from a fresh context it
+came back NOT ESTABLISHED in either direction (p=0.33-0.40; one night was 83% of
+the sample and flipped the sign when removed). **Large n and monotonicity do not
+rule out a confound** — a selection effect or a window-age effect produces a
+perfectly monotonic gradient too. Control for window age (time since the stock
+edge) and do a leave-one-night-out check before trusting any cadence gradient.
 
 **Operational note:** long background Python must run with `python -u`, or its
 stdout sits in a pipe buffer and you are blind to progress for the whole run.
@@ -133,6 +138,21 @@ Three habits that catch it:
 - **A contradiction inside your own output means YOUR PARSER is wrong**, not the
   world. `last_status=200` next to `successes=0` was a field-name guess, not 20
   dead proxies.
+
+### 2C-bis. Two ways a search silently returns nothing (both hit on 2026-09-23)
+
+- **The Grep tool honours `.gitignore`, and `logs/runs/` + `logs/purchases/` are
+  gitignored.** Rooted at `logs/`, a search for `ERR_A2C_TCIN_RATE_LIMITED` found 35
+  files and **none** from `logs/runs/`; rooted at `logs/runs/` it found 8,751 hits.
+  Root searches at `logs/runs/` (or `logs/purchases/`) directly, or use plain
+  `grep -r`. A "0 across all logs" produced any other way is unverified — one
+  such claim (purchase-limit rejections) was wrong: there is one, on 07-14.
+- **Print-only markers carry no timestamp.** `[RACE]`, `[WAVE_FIRST]`, `[EXPOSURE]`,
+  `[STOCK] IN STOCK`, `[FAST_LANE]` are bare `print()`s. A filter on the
+  `YYYY-MM-DD HH:MM:SS` prefix drops every one of them — a log-miner reported 0
+  `[WAVE_FIRST]` and 0 `[EXPOSURE]` for a night that had 36 and 37. For their time
+  use the self-stamped `[HH:MM:SS] [API_CYCLE]` line or `atc_t0=` (epoch ms); the
+  nearest logger line was 12.9 s early once.
 
 ### 2D. "It has never fired" is not evidence of health
 

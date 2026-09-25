@@ -718,11 +718,53 @@ REM census: 2,233/2,236 ATC 429s = ERR_A2C_TCIN_RATE_LIMITED, share climbing wit
 REM own re-POSTs, 0 orders from 5,292 deep tickets). =0 restores the 2-3 s ticket
 REM cadence for empty-429s only. With WAVE_FIRST_ONLY=1 the 401-PULSE above is
 REM superseded (a 401 now always takes the longer cold re-entry).
-set TARGET_WAVE_FIRST_EDGE=1
+REM 2026-09-23 post-run: 1 to 0 (docs/CLAIMS.md C-0923-01, C-0923-02). On the
+REM 09-23 restock (5 windows, 4 hot 30th Celebration TCINs) every account fired
+REM at t=0, slept 55-70 s, fired once more and the window ended: 37 shots in
+REM about 9 in-stock minutes, NOTHING fired 3-55 s into any window, 1 edge pass.
+REM The census above pooled every SKU and is confounded (the retry loop breaks
+REM on success, so deep shots exist only in windows that kept failing). Re-run
+REM on HOT SKUs only at matched window age, from a fresh context, it is NOT
+REM ESTABLISHED either way (short vs long own-gap p=0.33-0.40; one night is 83
+REM percent of the sample and flips the sign). So this is a BET, not a fix:
+REM edge and DCO 429s re-fire at the 2.0-3.0 s edge cadence (about 40 tickets
+REM per account per race instead of 2); a 401 still takes the 55-70 s cold
+REM re-entry and its bank gate. Refract runs 3.5 s and says keep submitting
+REM (reported, not verified here). Pre-registered readout and kill rule:
+REM tools/analysis/readout_arm_2026_09_23.py -- revert to 1 if 150 re-shots at
+REM window age 2-120 s get ZERO edge passes, or 401s exceed 30 percent of shots.
+REM Needs TARGET_STUCK_RESET_LIVE_GUARD=1 below (a race now runs past 60 s).
+set TARGET_WAVE_FIRST_EDGE=0
 set TARGET_WAVE_REENTRY_MIN_S=55
 set TARGET_WAVE_REENTRY_MAX_S=70
 set TARGET_SHOT_BANK_GATE=1
 set TARGET_SHOT_BANK_WAIT_S=8
+REM 2026-09-23 post-run A3 -- never fire into gone stock (docs/CLAIMS.md
+REM C-0923-03, VERIFIED). Nothing between one failed shot and the next POST
+REM read stock: 8 of the 09-23 night 37 shots went out 0.1-19 s after the
+REM monitor had already read the TCIN out of stock. =1: a race thread ends
+REM its window when the monitor has had no in-stock read of the TCIN for
+REM RETRY_OOS_STOP_S seconds (raw reads, not the 20 s hysteresis flag); the
+REM level re-arm then opens a fresh race on the next flip. Fails open on
+REM missing or stale monitor data. grep RETRY_OOS. Kill: set it to 0.
+set TARGET_RETRY_STOP_WHEN_OOS=1
+set TARGET_RETRY_OOS_STOP_S=8
+REM 2026-09-23 post-run G1 -- a LIVE racer is never treated as stuck
+REM (docs/CLAIMS.md C-0923-05, C-0923-08, C-0923-09). Two 60 s stuck-purchase
+REM resets read only the state file -- a SILENT one that runs first on every
+REM stock update, and one in process_stock_data -- so a race still running
+REM past 60 s went back to ready and the next in-stock cycle could open a
+REM SECOND race on the same TCIN that re-claims the same accounts. The silent
+REM reset already fired on live races 6 times (08-27, 09-15), harmless only
+REM because multi-SKU dispatch was off then. With WAVE_FIRST_EDGE=0 a race
+REM runs to its 110 s budget, so it would be routine. =1 guards both resets,
+REM refuses a race on a TCIN while a racer of its previous race is alive,
+REM keeps a live racer worker past the reservation TTL, never hands an account
+REM that is racing one TCIN to another, and with 1 ready account runs one
+REM purchase at a time. Two adversarial reviews; each guard point is
+REM reproduced and mutation-checked in tests/test_retry_oos_stop.py.
+REM Kill: set it to 0.
+set TARGET_STUCK_RESET_LIVE_GUARD=1
 REM 2026-09-17 evening -- ATC-level DCO BURST (docs/HOT_SKU_FIX_2026_09_16.md #13).
 REM A DCO-body 429 on the cart_items POST ("Request throttled due to high
 REM demand item") means the EDGE LIMITER ADMITTED THE SHOT and the cart
@@ -794,15 +836,28 @@ REM  2 keeps the reservation discipline CAP_ALWAYS=1 buys -- a second live
 REM  TCIN still gets a worker instead of being starved, which is what
 REM  CAP_ALWAYS=0 would reintroduce -- while doubling shots on the first.
 REM  Revert: set TARGET_MULTI_SKU_WORKERS_PER_TCIN=1
-set TARGET_MULTI_SKU_WORKERS_PER_TCIN=2
+REM  2026-09-23 post-run: 2 to 3 (docs/CLAIMS.md C-0923-04, VERIFIED). On the
+REM  09-23 restock alt-1 was logged in and harvesting through all 5 windows
+REM  but fired ZERO shots: the cap took primary and business in all 9 races
+REM  and no second TCIN was ever live (0 MULTI_SKU_MISS). 3 puts every
+REM  account on a lone live TCIN. Cost: a second TCIN that goes live while
+REM  all 3 are racing the first gets MULTI_SKU_MISS and is NOT picked up
+REM  when a racer frees up -- nothing re-publishes it while it stays in
+REM  stock, only its own next out-then-in flip does (docs/CLAIMS.md
+REM  C-0924-01, verified 2026-09-24: 23 such skips in 107 run logs, 0 raced
+REM  in the same window). 15 such pairs in 27 nights, 2 in the hot era.
+REM  Whether a third account
+REM  adds an independent ticket is NOT ESTABLISHED (all 3 share the home IP).
+REM  Revert: set TARGET_MULTI_SKU_WORKERS_PER_TCIN=2
+set TARGET_MULTI_SKU_WORKERS_PER_TCIN=3
 set TARGET_MULTI_SKU_RESERVE_TTL_S=120
 REM 2026-09-20 CAP_ALWAYS -- dispatch is a LIE without this. The reservation
 REM cap was `per_tcin if another TCIN is already held else the whole fleet`, so
 REM on a drop where a dozen TCINs flip within seconds the FIRST one takes all 3
 REM accounts and every other TCIN prints [MULTI_SKU_MISS] exactly as before.
-REM =1 caps EVERY TCIN at WORKERS_PER_TCIN. Measured over 104 logs: 9-16 shots
-REM at one hot TCIN per 120 s yields 0.038 admits vs 0.545 at 2 shots, so one
-REM worker per TCIN is the better allocation even when only one TCIN is live.
+REM =1 caps EVERY TCIN at WORKERS_PER_TCIN. Its original justification (0.038
+REM vs 0.545 admits per window) was re-verified NOT ESTABLISHED on 09-21; the
+REM cap is kept for the reservation discipline, not for that number.
 REM Kill (prior behaviour): =0
 set TARGET_MULTI_SKU_CAP_ALWAYS=1
 REM ---------------------------------------------------------------------
@@ -1205,9 +1260,10 @@ REM x9, 08-04 x4). Pinning it would halve the units on the only family that
 REM converts, on evidence of n=2 with no proof the quantity mattered. The pin
 REM covers only the 13 hot 30th-Celebration TCINs, where we have never
 REM converted at ANY quantity, so a pin of 1 costs nothing there.
-REM config\product_config.json carries "qty": 1 on the 13 parked hot TCINs
-REM (regular SKUs keep the qty-2 policy). A pin of 1 holds only while
-REM TARGET_PDP_QTY_LOOKUP stays off (the default). grep "per-TCIN pin qty=1".
+REM SUPERSEDED 2026-09-22 (operator decision): every product_config.json
+REM entry now carries qty 2, so this pin makes EVERY TCIN qty 2, hot ones
+REM included; the qty-1 rationale above is history. A pin of 1 would hold
+REM only while TARGET_PDP_QTY_LOOKUP stays off (the default). grep QTY.
 REM Kill: TARGET_QTY_PER_TCIN=0 (the "qty" keys are then ignored).
 set TARGET_QTY_PER_TCIN=1
 REM ===========================================================================

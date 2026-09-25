@@ -59,6 +59,10 @@ def _multi_sku_cfg() -> Dict[str, int]:
     while `[MULTI_SKU_MISS]` skipped 13 live hot TCINs on 09-16 — the worst
     possible allocation against a shared bucket. Refract's documented model is
     "one task per account per product".
+    CORRECTION (2026-09-21 / 09-23): the causal reading above -- our own and our
+    other identities' volume suppressing our passes -- is NOT ESTABLISHED: the
+    retry loop breaks on success (reverse causality) and the gradient is
+    confounded with window age (docs/CLAIMS.md C-0923-02).
 
     The old code deliberately did NOT ship this because `_active_purchases`
     registration happens inside the spawned thread and lags within a cycle, so a
@@ -386,6 +390,65 @@ def _env_float_clamped(name: str, default: float, lo: float, hi: float) -> float
     if not (v == v) or v in (float('inf'), float('-inf')):
         v = float(default)
     return min(hi, max(lo, v))
+
+
+# ── 2026-09-23 post-run A3: never fire a scheduled re-shot into gone stock ──
+def _retry_oos_stop_on() -> bool:
+    """TARGET_RETRY_STOP_WHEN_OOS=1 (default 0 = exact prior behaviour): a race
+    thread ends its window instead of firing a scheduled re-shot into stock the
+    monitor has already seen go away. Kill-switch: =0."""
+    return os.environ.get('TARGET_RETRY_STOP_WHEN_OOS', '0').strip() == '1'
+
+
+def _retry_oos_gone_s(mgr, tcin, now=None) -> Optional[float]:
+    """Seconds since the monitor's last in-stock read of `tcin`, when every read
+    since then has been out of stock and that has lasted at least
+    TARGET_RETRY_OOS_STOP_S (default 8, clamped 3..60). Otherwise None.
+
+    Fail-open -- None, i.e. fire exactly as before -- when the flag is off, the
+    probe has no data for the TCIN, the TCIN never read in stock (or never read
+    out of stock) in this process, its last read is older than
+    TARGET_STOCK_PROBE_FRESH_S (the monitor is not reading it, so its silence
+    proves nothing), or anything raises.
+
+    Uses the RAW last_true/last_false read times, not the probe's 'live' flag:
+    'live' holds True for TARGET_STOCK_HYST_S (20 s) after the last in-stock
+    read by design, so it cannot see an 8 s gap.
+
+    Why (docs/CLAIMS.md C-0923-03, verified): on 09-23, 8 of 37 add-to-cart
+    shots went out 0.1-19 s after the monitor had read the TCIN out of stock --
+    nothing between one failed attempt and the next POST reads stock. At the
+    edge cadence (TARGET_WAVE_FIRST_EDGE=0) the same gap would re-fire every
+    ~2.7 s per account until the 110 s budget ran out. 8 s of unbroken
+    out-of-stock reads at ~3 reads/s is ~24 reads across many exits, so a
+    sub-second flicker never trips it."""
+    try:
+        if not _retry_oos_stop_on():
+            return None
+        now = time.time() if now is None else float(now)
+        snap = mgr.stock_snapshot(tcin, now=now) or {}
+        age = snap.get('age')
+        lt = float(snap.get('last_true') or 0.0)
+        lf = float(snap.get('last_false') or 0.0)
+        if age is None or lt <= 0.0 or lf <= 0.0:
+            return None
+        if float(age) > _env_float_clamped('TARGET_STOCK_PROBE_FRESH_S', 15.0, 2.0, 120.0):
+            return None
+        if lf <= lt:
+            return None
+        gone = now - lt
+        if gone < _env_float_clamped('TARGET_RETRY_OOS_STOP_S', 8.0, 3.0, 60.0):
+            return None
+        return gone
+    except Exception:
+        return None
+
+
+def _stuck_reset_live_guard_on() -> bool:
+    """TARGET_STUCK_RESET_LIVE_GUARD=1 (2026-09-23; default 0 = exact prior
+    behaviour): the 60 s stuck-purchase reset in process_stock_data skips a
+    TCIN that still has a LIVE racer thread. Kill-switch: =0."""
+    return os.environ.get('TARGET_STUCK_RESET_LIVE_GUARD', '0').strip() == '1'
 
 
 # ── 2026-09-16 hot-sku plan P11 (CFG-2): per-TCIN quantity pin (U2) ──────────
@@ -1678,6 +1741,15 @@ class BulletproofPurchaseManager:
                 elif current_status == 'attempting':
                     started_at = state.get('started_at', 0)
                     if started_at and (time.time() - started_at) > 60:  # Older than 60 seconds
+                        # 2026-09-23 G1 (TARGET_STUCK_RESET_LIVE_GUARD=1): a race whose racer
+                        # thread is alive is running, not stuck. This silent reset runs FIRST
+                        # in app._handle_stock_update (before process_stock_data), every
+                        # periodic, edge and re-arm update; it is how 6 historical
+                        # [MULTI_SKU_MISS] lines skipped a TCIN on its OWN racer key
+                        # ('<tcin>#W<n>', 08-27 x1, 09-15 x5) -- harmless before multi-SKU
+                        # dispatch, a second race on the same TCIN after it.
+                        if _stuck_reset_live_guard_on() and self._tcin_has_live_racer(tcin):
+                            continue
                         states[tcin] = {'status': 'ready'}
                         reset_count += 1
 
@@ -1818,15 +1890,73 @@ class BulletproofPurchaseManager:
         with self._reserve_state():
             for lbl, (tcin, ts) in list(self._worker_reservations.items()):
                 if now - ts > ttl_s:
+                    # 2026-09-23 G1 (TARGET_STUCK_RESET_LIVE_GUARD=1): the TTL is the net
+                    # for a racer that died without releasing. A LIVE racer past the TTL
+                    # (an edge-cadence race runs to its 110 s budget, then a checkout leg
+                    # or a won-cart ride of up to 300 s) keeps its worker, so another TCIN
+                    # can never claim an account in the middle of a purchase.
+                    if _stuck_reset_live_guard_on() and self._reservation_has_live_racer(lbl, tcin):
+                        continue
                     del self._worker_reservations[lbl]
                     print(f"[MULTI_SKU_DISPATCH] released stale reservation "
                           f"{lbl} -> {tcin} (held {now - ts:.0f}s > {ttl_s}s TTL)")
 
     def _free_workers(self, candidates: List) -> List:
-        """Ready workers not currently reserved by another TCIN."""
+        """Ready workers not currently reserved by another TCIN. Under
+        TARGET_STUCK_RESET_LIVE_GUARD=1 a worker with a live racer thread on any
+        TCIN is not free either -- the legacy single-worker path (<=1 ready
+        worker) takes no reservation, so the reservation map alone is blind to it."""
         with self._reserve_state():
             held = set(self._worker_reservations)
+        if _stuck_reset_live_guard_on():
+            held |= set(self._busy_worker_tcins())
         return [w for w in candidates if w.label() not in held]
+
+    def _busy_worker_tcins(self) -> Dict[str, set]:
+        """{worker label: {TCINs it is racing}} for every live racer thread in
+        _active_purchases (each registers 'worker': <label>). Caller holds
+        self._state_lock. Never raises ({} = nobody known busy)."""
+        out: Dict[str, set] = {}
+        try:
+            for k, info in list((getattr(self, '_active_purchases', None) or {}).items()):
+                th = (info or {}).get('thread')
+                lbl = (info or {}).get('worker')
+                if lbl and th is not None and th.is_alive():
+                    out.setdefault(str(lbl), set()).add(str(k).split('#', 1)[0])
+        except Exception:
+            return {}
+        return out
+
+    def _reservation_has_live_racer(self, lbl, tcin) -> bool:
+        """True when the racer holding reservation `lbl` ('W<n>/<account>') for
+        `tcin` -- registered as '<tcin>#W<n>' in _active_purchases -- is still
+        alive. Never raises (False = the prior sweep behaviour)."""
+        try:
+            wid = str(lbl).split('/', 1)[0]
+            if not wid.startswith('W'):
+                return False
+            info = (getattr(self, '_active_purchases', None) or {}).get(f"{tcin}#{wid}")
+            th = (info or {}).get('thread')
+            return bool(th is not None and th.is_alive())
+        except Exception:
+            return False
+
+    def _tcin_has_live_racer(self, tcin) -> bool:
+        """True when an _active_purchases entry for `tcin` -- keyed '<tcin>' on
+        the single-worker path or '<tcin>#W<n>' per racer -- has a thread that
+        is still alive. Caller holds self._state_lock. Never raises (False =
+        the prior behaviour of the caller)."""
+        try:
+            t = str(tcin)
+            for k, info in list((getattr(self, '_active_purchases', None) or {}).items()):
+                ks = str(k)
+                if ks == t or ks.startswith(t + '#'):
+                    th = (info or {}).get('thread')
+                    if th is not None and th.is_alive():
+                        return True
+            return False
+        except Exception:
+            return False
 
     def _reserved_tcins(self) -> set:
         with self._reserve_state():
@@ -1839,11 +1969,17 @@ class BulletproofPurchaseManager:
         racer for a worker it did not get back from here."""
         taken = []
         now = time.time()
+        # 2026-09-23 G1 (TARGET_STUCK_RESET_LIVE_GUARD=1): never hand a worker that
+        # is racing a DIFFERENT TCIN right now to this one, reserved or not (a
+        # legacy single-worker dispatch holds no reservation).
+        busy = self._busy_worker_tcins() if _stuck_reset_live_guard_on() else {}
         with self._reserve_state():
             for w in candidates:
                 if len(taken) >= limit:
                     break
                 lbl = w.label()
+                if busy.get(lbl, set()) - {str(tcin)}:
+                    continue
                 holder = self._worker_reservations.get(lbl)
                 if holder is None or holder[0] == tcin:
                     self._worker_reservations[lbl] = (tcin, now)
@@ -2193,6 +2329,24 @@ class BulletproofPurchaseManager:
                                 print(f"[REAL_PURCHASE_THREAD] {_skip_ident} stops re-racing {tcin}: "
                                       f"{_skip_why} — keeping attempt {_attempt_n - 1}'s result")
                             break
+                        # 2026-09-23 A3 (TARGET_RETRY_STOP_WHEN_OOS=1; default 0 = exact prior
+                        # behaviour): the scheduled re-shot is about to fire -- after the
+                        # cadence sleep, the cold re-entry or the bank wait -- so check the
+                        # monitor's raw reads first and never fire into stock that has read
+                        # out of stock for TARGET_RETRY_OOS_STOP_S. Ending the window frees
+                        # the TCIN, so the level re-arm opens a fresh race on the next flip.
+                        # Fail-open on missing/stale monitor data (_retry_oos_gone_s). Never
+                        # after a DCO/FAST_SELLING 429: the edge admitted that shot and Target's
+                        # cart service answered for the TCIN ~a second ago -- fresher evidence
+                        # than the monitor, and the DCO burst exists for exactly that moment.
+                        if _attempt_n >= 2 and str((result or {}).get('gate_kind', '')) != 'dco':
+                            _oos_gone = _retry_oos_gone_s(self, tcin)
+                            if _oos_gone is not None:
+                                print(f"[RETRY_OOS] {tcin} no in-stock read for {_oos_gone:.1f}s "
+                                      f"(last_true_age={_oos_gone:.1f}s) — not firing blind; keeping "
+                                      f"attempt {_attempt_n - 1}'s result, ending the window "
+                                      f"(re-arm opens a fresh one) ident={_race_wlbl or 'auto'}")
+                                break
                         # 2026-09-16 plan P1: the won-cart loop caps its last
                         # ticket by the manager's own wait deadline (stamp only).
                         try:
@@ -2244,6 +2398,19 @@ class BulletproofPurchaseManager:
                             print(f"[REAL_PURCHASE_THREAD] Retry-while-in-stock budget spent "
                                   f"(attempts={_attempt_n}, deadline_hit={time.time() >= _retry_deadline}) "
                                   f"— finalizing as '{_reason}'")
+                            break
+                        # 2026-09-23 A3: stock already gone -> end now instead of sleeping
+                        # into a cadence/cold-re-entry wait (a 55-70 s wait holds the TCIN in
+                        # 'attempting' and blocks the re-arm if it flips back). The same check
+                        # runs again right before the next shot fires (top of the loop). A DCO
+                        # result is exempt (see the top-of-loop check).
+                        _oos_gone = (_retry_oos_gone_s(self, tcin)
+                                     if str((result or {}).get('gate_kind', '')) != 'dco' else None)
+                        if _oos_gone is not None:
+                            print(f"[RETRY_OOS] {tcin} no in-stock read for {_oos_gone:.1f}s "
+                                  f"(last_true_age={_oos_gone:.1f}s) — no re-shot; ending the window "
+                                  f"after attempt {_attempt_n} (re-arm opens a fresh one) "
+                                  f"ident={_race_wlbl or 'auto'}")
                             break
                         # Transient failure, presumed still in stock. Force a REAL
                         # warmup-tab reload so Target's app can refresh the expired
@@ -2349,6 +2516,9 @@ class BulletproofPurchaseManager:
                         # own re-POST count while 5,292 deep tickets produced 0 orders. The
                         # "ticket count is the only lever" doctrine below is superseded by that
                         # data; set TARGET_WAVE_FIRST_EDGE=0 to restore the lottery cadence.
+                        # 2026-09-23: restored (=0 in the bat) as a pre-registered BET. The
+                        # census pooled every SKU; re-derived hot-only at matched window age
+                        # it is NOT ESTABLISHED either way (docs/CLAIMS.md C-0923-02).
                         _wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'
                         _wf_kinds = (('auth401', 'edge', 'dco')
                                      if os.environ.get('TARGET_WAVE_FIRST_EDGE', '1') == '1'
@@ -2485,6 +2655,9 @@ class BulletproofPurchaseManager:
                             # opens a fresh window while the item stays in stock). Checkout-leg
                             # retries (cart-hold re-shoots, which DID convert) are untouched.
                             # Kill: TARGET_WAVE_FIRST_ONLY=0 (exact prior cadence).
+                            # 2026-09-23: "our own volume trips the limiter" is NOT ESTABLISHED
+                            # for hot SKUs (docs/CLAIMS.md C-0923-02); with the bat's
+                            # TARGET_WAVE_FIRST_EDGE=0 this branch now handles 401s only.
                             try:
                                 _re_lo = float(os.environ.get('TARGET_WAVE_REENTRY_MIN_S', '55'))
                                 _re_hi = float(os.environ.get('TARGET_WAVE_REENTRY_MAX_S', '70'))
@@ -2764,10 +2937,14 @@ class BulletproofPurchaseManager:
             # 2026-09-20 CAP_ALWAYS: without it the FIRST TCIN to flip takes
             # the whole fleet, so every other TCIN flipping alongside it finds
             # no unreserved worker and prints [MULTI_SKU_MISS] -- exactly the
-            # simultaneous multi-SKU drop this feature exists for. Measured
-            # over 104 logs: 9-16 shots at ONE hot TCIN per 120 s yields 0.038
-            # admits vs 0.545 at 2 shots, so one worker per TCIN is also the
-            # better allocation when only one TCIN is live.
+            # simultaneous multi-SKU drop this feature exists for. (Its other
+            # original justification -- 0.038 vs 0.545 admits per window at 9-16
+            # vs 2 shots -- was re-verified NOT ESTABLISHED on 2026-09-21; the cap
+            # is kept for the reservation discipline. WORKERS_PER_TCIN is 3 in
+            # the bat from 2026-09-23: a lone live TCIN races min(3, ready)
+            # accounts -- every account only while the fleet has 3. Both caps
+            # clamp at 8, so a fleet of 9+ always leaves some accounts idle on
+            # a single-TCIN night.)
             _limit = _ms['per_tcin'] if (_others or _ms.get('cap_always')) else len(ready_workers)
             dispatch_workers = self._reserve_workers_for_tcin(tcin, ready_workers, _limit)
             if not dispatch_workers:
@@ -3934,6 +4111,26 @@ class BulletproofPurchaseManager:
                               f"started_at — stamped now; the 60 s stuck rule applies from here")
                     elapsed = time.time() - started_at if started_at else 0
 
+                    # 2026-09-23 (TARGET_STUCK_RESET_LIVE_GUARD=1; default 0 = exact prior
+                    # behaviour): the 60 s rule below reads only the state file. A race
+                    # whose racer threads are still ALIVE past 60 s (wave-first races end
+                    # at ~56-79 s; an edge-cadence race runs to its 110 s budget) was
+                    # reset to 'ready', and the next in-stock cycle could open a SECOND
+                    # race on the same TCIN: the runtime check further down keys
+                    # active_purchase as '<tcin>#W<n>', which never equals the bare TCIN,
+                    # so the same-TCIN skip never matched, the multi-SKU pursue branch ran
+                    # and _reserve_workers_for_tcin re-claimed the same accounts (a
+                    # same-TCIN reservation is idempotent by design) -- two concurrent
+                    # retry loops on one account and TCIN. Never observed (0 force-resets
+                    # in 107 run logs). With the guard, a TCIN with a live racer thread is
+                    # the active purchase, exactly as it is before 60 s.
+                    if elapsed > 60 and _stuck_reset_live_guard_on() and self._tcin_has_live_racer(tcin):
+                        # A live race is the active purchase. Keep scanning (no break)
+                        # so a genuinely dead record further down is still reset this
+                        # cycle, exactly as it would have been without the guard.
+                        if not active_purchase:
+                            active_purchase = tcin
+                        continue
                     # If active purchase is stuck (>60s), force-reset and allow new purchase
                     if elapsed > 60:
                         print(f"[PURCHASE_CONCURRENCY] ⚠️ Force-resetting stuck purchase: {tcin} ({elapsed:.1f}s in status '{state.get('status')}')")
@@ -4087,6 +4284,18 @@ class BulletproofPurchaseManager:
                 if product_data.get('in_stock'):
                     # CRITICAL STATE RULE: IN STOCK + ready -> IMMEDIATELY go to "attempting"
                     if current_status == 'ready':
+                        # 2026-09-23 G1 catch-all (TARGET_STUCK_RESET_LIVE_GUARD=1): never
+                        # open a race on a TCIN while a racer thread of its previous race
+                        # is alive, whatever path put its record back to 'ready' (a stuck
+                        # reset, the 200 s force-complete, a re-arm). The same-TCIN skip
+                        # below cannot catch it: the live-thread check keys active_purchase
+                        # '<tcin>#W<n>', and the multi-SKU pursue branch then re-claims the
+                        # same TCIN's workers (_reserve_workers_for_tcin is idempotent for a
+                        # same-TCIN re-entry by design).
+                        if _stuck_reset_live_guard_on() and self._tcin_has_live_racer(tcin):
+                            print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} — a racer thread of its "
+                                  f"previous race is still alive (TARGET_STUCK_RESET_LIVE_GUARD)")
+                            continue
                         # BUG FIX #1: Only start if no active purchase
                         if active_purchase:
                             if active_purchase != tcin:
@@ -4119,6 +4328,12 @@ class BulletproofPurchaseManager:
                                     _free_n = len(self._free_workers(_cands))
                                     _live_n = len(self._reserved_tcins() | {active_purchase})
                                     _pursue = _free_n > 0 and _live_n < _ms_d['max_tcins']
+                                    # 2026-09-23 G1: with <=1 ready worker a dispatch takes the
+                                    # legacy single-worker path -- no reservation, and the thread
+                                    # picks its account itself (falling back to primary, busy or
+                                    # not). Never run a second TCIN then: one purchase at a time.
+                                    if _pursue and _stuck_reset_live_guard_on() and len(_cands) <= 1:
+                                        _pursue = False
                                 if _pursue:
                                     print(f"[MULTI_SKU_DISPATCH] {tcin} in-stock — pursuing "
                                           f"alongside '{active_purchase}' ({_free_n} unreserved "

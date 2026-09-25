@@ -69,9 +69,14 @@ Then apply §2B of the agent context to every lever you are tempted to move.
   and had to be restored from a backup.
 - Keep enabled TCINs **at or under 30**. Above that the unchunked ground-truth read
   fails every cycle and visibility is UNKNOWN all night.
-- **Config list order is dispatch priority** (`bulletproof_purchase_manager.py:4025-4040`
-  — explicit `priority` field, else list position). Put the most-wanted first; the
-  TCIN that gets starved when workers run out is the last one listed.
+- **Config list order is NOT a real priority lever** (`docs/CLAIMS.md` C-0924-02,
+  verified 2026-09-24). Every go-live reaches the purchase manager as its own
+  single-TCIN event, in sweep read order (0 of 906 `[STOCK] IN STOCK:` lines ever named
+  two TCINs); the list-order sort (`bulletproof_purchase_manager.py`, the `sorted_tcins`
+  line in `process_stock_data`) only acts on level re-arm and blind-pool tab-fetch
+  events. Whoever flips first takes the accounts, and a TCIN that flips while every
+  account is racing another is **not re-raced while it stays in stock** (C-0924-01).
+  Do not spend pre-drop time reordering.
 - Check the `qty` key per TCIN. Missing/0 = **no pin** = the qty-2 policy, live only
   while `TARGET_QTY_PER_TCIN=1`. Do not assume a hot SKU is pinned.
 - Back up to `config/product_config_backup_pre_<date>_drop.json` first.
