@@ -3,7 +3,7 @@ name: purchase-flow-engineer
 description: Traces and reasons about the Target purchase chain — add-to-cart, cart hold, pre_checkout, customer-info/profile writes, CVV, place-order — plus the locks, retries, timers and cadence policy around it. Use for "why did this cart not convert", checkout timing, and purchase-path code questions. Read-only by default.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: sonnet
+model: opus
 color: blue
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: bot-investigate
-description: Investigate a bot bug, failure, or open question with a parallel multi-agent fan-out — cheap agents for extraction, capable agents for code and data reasoning, adversarial verification before any conclusion is trusted. Use for a new issue, a regression, a mystery in the logs, or a competitor-parity question.
+description: Investigate a bot bug, failure, or open question with a parallel multi-agent fan-out — Sonnet agents for extraction, Opus 5.5 agents for code and data reasoning, adversarial verification before any conclusion is trusted. Use for a new issue, a regression, a mystery in the logs, or a competitor-parity question.
 argument-hint: "[the issue or question]"
 arguments: issue
 ---
@@ -37,16 +37,18 @@ better; each one costs money and dilutes the signal.
 
 | Beat | Agent | Model |
 |---|---|---|
-| Shape / HUMAN-PX / edge limiter / 401s / 403s / 429s | `antibot-analyst` | sonnet |
-| ATC chain, checkout, locks, cadence, timers | `purchase-flow-engineer` | sonnet |
-| Logs, timelines, funnels, post-mortems | `failure-forensics` | sonnet |
-| Monitor, sweeps, proxies, dispatch latency | `stock-pipeline-analyst` | sonnet |
-| Raw counts out of big logs | `log-miner` | **haiku** |
-| Competitor docs, retailer APIs, vendor claims | `retailer-researcher` | **haiku** |
+| Shape / HUMAN-PX / edge limiter / 401s / 403s / 429s | `antibot-analyst` | **opus** |
+| ATC chain, checkout, locks, cadence, timers | `purchase-flow-engineer` | **opus** |
+| Logs, timelines, funnels, post-mortems | `failure-forensics` | **opus** |
+| Monitor, sweeps, proxies, dispatch latency | `stock-pipeline-analyst` | **opus** |
+| Raw counts out of big logs | `log-miner` | sonnet |
+| Competitor docs, retailer APIs, vendor claims | `retailer-researcher` | sonnet |
 
 **Model discipline.** Anything that is extraction — counting, quoting, tallying,
-transcribing — goes to haiku. Reserve sonnet for work that needs real code
-comprehension or causal reasoning across sources. Never send a grep to a big model.
+transcribing — goes to `sonnet` (Sonnet 5). Reserve `opus` (Opus 5.5) for work that
+needs real code comprehension or causal reasoning across sources, and for every
+claims-verifier. Haiku is retired from the roster (2026-09-25): extraction slips cost more
+than the tokens saved.
 
 **Launch every independent agent in a single message** so they run concurrently.
 Give each one its own narrow question, the exact files or line ranges to start
@@ -63,7 +65,7 @@ Tag every conclusion `[MEASURED]` / `[REPORTED]` / `[INFERRED]` /
 ## Step 4 — Verify adversarially
 
 Before anything is treated as settled, hand the bare claim — **with none of your
-reasoning** — to a `claims-verifier` (sonnet). Run several in parallel for several
+reasoning** — to a `claims-verifier` (opus). Run several in parallel for several
 claims.
 
 Take `REFUTED` seriously even when it is inconvenient. That is the entire point of

@@ -74,12 +74,12 @@ yourself; context spent here is context unavailable for the reasoning later.
 
 | Agent | Model | Job |
 |---|---|---|
-| `log-miner` | haiku | Raw tallies: shots, status-code distribution, per-TCIN, per-account, per-IP, timeline. **Must report the unmatched remainder.** |
-| `failure-forensics` | sonnet | Timeline and funnel with n at every stage; name the single highest-loss stage |
-| `purchase-flow-engineer` | sonnet | Every cart won: trace it to its death or its order, with elapsed times per hop |
-| `antibot-analyst` | sonnet | Block classification — Shape vs HUMAN/PX vs edge limiter vs write-auth, with n each |
+| `log-miner` | sonnet | Raw tallies: shots, status-code distribution, per-TCIN, per-account, per-IP, timeline. **Must report the unmatched remainder.** |
+| `failure-forensics` | opus | Timeline and funnel with n at every stage; name the single highest-loss stage |
+| `purchase-flow-engineer` | opus | Every cart won: trace it to its death or its order, with elapsed times per hop |
+| `antibot-analyst` | opus | Block classification — Shape vs HUMAN/PX vs edge limiter vs write-auth, with n each |
 
-Add `stock-pipeline-analyst` (sonnet) only if detection or monitor behaviour is
+Add `stock-pipeline-analyst` (opus) only if detection or monitor behaviour is
 implicated; detection has been measured as not the bottleneck, so it is off the
 critical path by default.
 
@@ -99,7 +99,7 @@ open contradiction. Do not average two agents into a middle answer.
 
 ## Phase 3 — Verify (parallel, fresh context, mandatory)
 
-For every finding you intend to act on, spawn a `claims-verifier` (sonnet) with
+For every finding you intend to act on, spawn a `claims-verifier` (opus) with
 **the claim alone and none of your reasoning**. Run them concurrently.
 
 A `REFUTED` verdict kills the fix. No exceptions, no "but the other evidence

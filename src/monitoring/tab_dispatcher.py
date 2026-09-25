@@ -285,6 +285,14 @@ class TabDispatcher:
                         except Exception:
                             pass
                     res.error = f"raw_404_rate_limited:{(text or '')[:120]}"
+                elif status == 206 and os.environ.get('RESILIENT_206_LOG', '0') == '1':
+                    # 2026-09-25 post-run (docs/CLAIMS.md C-0925-03): RedSky answered 102
+                    # reads with 206 in bursts (02:10-04:49, up to 95% of sweeps) and every
+                    # body was read in full and discarded -- no 206 body has ever been seen.
+                    # LOG ONLY: res, the session and every counter are untouched, so the
+                    # bot behaves identically with this on; it exists to learn the shape
+                    # before any ingest is designed. One line per 60 s, with a count.
+                    self._log_206(s, tcins, body, text)
                 return res
             except asyncio.TimeoutError:
                 s.consecutive_errors += 1
@@ -304,6 +312,55 @@ class TabDispatcher:
                                   error=f"raw:{type(e).__name__}:{e}")
             finally:
                 s.in_flight = False
+
+    def _log_206(self, s, tcins, body, text) -> None:
+        """RESILIENT_206_LOG=1: summarise a 206 body -- its top-level keys, RedSky's own
+        errors, and which requested TCINs came back complete, absent or incomplete
+        (complete = availability_status and relationship_type_code both present, the two
+        fields the parser defaults to out of stock when missing). Rate-limited to one
+        line per 60 s with the count since the last line. Never raises, never mutates."""
+        now = time.time()
+        self._n206 = getattr(self, '_n206', 0) + 1
+        if now - getattr(self, '_last_206_log_at', 0.0) < 60.0:
+            return
+        n, self._n206 = self._n206, 0
+        self._last_206_log_at = now
+        try:
+            keys, errs, summary = '-', '-', 'body=unparsed'
+            if isinstance(body, dict):
+                keys = ','.join(str(k) for k in list(body.keys())[:6])
+                _e = body.get('errors')
+                if isinstance(_e, list):
+                    errs = ' | '.join(
+                        (str(x.get('message', x)) if isinstance(x, dict) else str(x))[:140]
+                        + (f" path={x.get('path')}" if isinstance(x, dict) and x.get('path') else '')
+                        for x in _e[:3]) + (f' (+{len(_e) - 3} more)' if len(_e) > 3 else '')
+                _d = body.get('data')
+                _ps = _d.get('product_summaries') if isinstance(_d, dict) else None
+                if isinstance(_ps, list):
+                    got, complete = [], []
+                    for p in _ps:
+                        if not isinstance(p, dict) or not p.get('tcin'):
+                            continue
+                        t = str(p.get('tcin'))
+                        got.append(t)
+                        _f = p.get('fulfillment') if isinstance(p.get('fulfillment'), dict) else {}
+                        _so = _f.get('shipping_options') if isinstance(_f.get('shipping_options'), dict) else {}
+                        _it = p.get('item') if isinstance(p.get('item'), dict) else {}
+                        if _so.get('availability_status') and _it.get('relationship_type_code'):
+                            complete.append(t)
+                    absent = [str(t) for t in tcins if str(t) not in got]
+                    incomplete = [t for t in got if t not in complete]
+                    summary = (f"product_summaries={len(_ps)} complete={len(complete)}/{len(tcins)} "
+                               f"absent={absent[:10]} incomplete={incomplete[:10]}")
+                else:
+                    summary = f"product_summaries={type(_ps).__name__}"
+            _net = '.'.join(str(getattr(s, 'proxy_ip', '?')).split('.')[:2]) + '.x.x'
+            logger.warning(f"[STOCK][206] {n} partial-content read(s) since the last line; latest "
+                           f"{getattr(s, 'id', '?')} ({_net}) keys={keys} {summary} errors={errs} "
+                           f"head={(text or '')[:200]!r}")
+        except Exception as e:
+            logger.warning(f"[STOCK][206] could not summarise a 206 body: {type(e).__name__}: {e}")
 
     # ───────── internals ─────────
 

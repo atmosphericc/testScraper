@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-25 ~00:05 (pre-drop for the 09-25 03:00 drop) · HEAD `66c7a31b` + the uncommitted 09-23 arming below · branch `feat_refract_arch_v1`**
+**As of: 2026-09-25 ~09:30 (post-run of the 09-25 drop) · HEAD `7e58eac0` + the uncommitted 09-25 post-run arming below · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -15,7 +15,61 @@ to be wrong rather than leaving them with a caveat.**
 
 ---
 
-## PRE-DROP 2026-09-24 late evening → drop 2026-09-25 03:00 (`/pre-drop`)
+## 2026-09-25 DROP + POST-RUN — 0 orders; what is armed for the next run
+
+**The run** (`run_20260925_004139.log`, 00:41 → ~07:50, stopped by the operator): stock
+windows 03:32-05:41 on all 7 drop SKUs (the ETB twice), 14 races (13 of them 3 accounts
+wide), 1,212 main-tab shots — 1,205 edge 429, 4 FAST_SELLING 429, 2 keyless 401, 1 × 201.
+**0 orders.** Detection to first POST 0.47-1.00 s on every window. [MEASURED 09-25;
+docs/CLAIMS.md C-0925-01..06]
+
+- **The edge limiter is the binding stage (99.6% of shots)** and admitted only a window's
+  FIRST shots, within 0.1 s of the flip: first shots 5/20 vs re-shots 0/663 at window age
+  2-120 s; first-shot rate unchanged vs 09-23 (p=0.33). [VERIFIED 09-25, C-0925-01]
+- **The one cart was lost by OUR checkout routing:** business, AH Meganium tin, 201 at
+  05:20:27 → pre_checkout 201 → in-chain place-order 429 `RESERVATION_FAILURE` → the
+  won-cart loop's gate refused it (FAST_SELLING only) → 26.7 s legacy DOM detour on a page
+  with no button → one in-window place-order → 424 `INVENTORY_NOT_AVAILABLE`.
+  [VERIFIED 09-25, C-0925-02]
+- **primary's first shot was a keyless 401 on the only two windows whose first shots were
+  admitted** (Meganium 05:20, Feraligatr 05:23). [MEASURED 09-25, C-0925-06]
+- **Target-side, cause unknown:** RedSky 206 bursts 02:10-04:49 (cost 0 s of detection
+  tonight) and, after the drop, every account's member-token mint failing from 06:01
+  (business dead at stop; primary and alt-1 recovered through a scripted re-login, which
+  went 2/5). [MEASURED 09-25, C-0925-03/04; docs/TARGET_CHANGES.md]
+- A2 3-wide: alt-1 (0 shots on 09-23) earned 3 of the 5 admissions. A3: 22 stops, 0
+  premature (at the 2.7 s cadence ~3 shots per account still went out after the last
+  in-stock read). G1: the Feraligatr raced 2-wide while business held its cart — no
+  double race. [MEASURED 09-25]
+
+**ARMED 2026-09-25 post-run (uncommitted at write time) — all UNPROVEN LIVE. Readout,
+pre-registered and smoked on 09-25 and 09-23: `tools/analysis/readout_arm_2026_09_25.py`.**
+- **K1 `TARGET_WAVE_FIRST_EDGE=1`** — A1 killed by its own pre-registered rule; edge and DCO
+  429s take the 55-70 s cold re-entry again. A3 stays at 8 s (≈0.13 blind shots per
+  account per window end at this cadence).
+- **R1 `TARGET_WONCART_RF_ENTRY=1`** — new code (`woncart_eligible`): a place-order received
+  as 429 RESERVATION_FAILURE enters the ticket loop; 424 stays out. No new double-order
+  path (the loop stops on a 2xx, AC-1 latches on ambiguity). Conversion NOT ESTABLISHED.
+  Kill: =0.
+- **L1 `RESILIENT_206_LOG=1`** — new code, log-only: one `[STOCK][206]` summary a minute
+  (RedSky's errors; which TCINs came back complete / absent / incomplete). No ingest yet:
+  the parser reads missing fulfillment as out of stock.
+- **L2 `TARGET_TOKEN_MINT_LOG=1`** — new code, log-only: rung 1's HTTP status and, on a
+  failed rung 2, where the /account load landed. Decides C-0925-04 (a) vs (b).
+- **Offline suite 29/29** (0 failed, 0 skipped, 354 s) on the final wrapper. New files `tests/test_redsky_206_log.py` (28) and
+  `tests/test_token_mint_log.py` (22), 11 new checks in `test_won_cart_direct_smoke.py`;
+  every new branch mutation-checked.
+- **Deliberately NOT done:** a 206 ingest (needs L1's shape first); a token keep-and-restore
+  (its motivating claim was REFUTED; worth ≤30 min per account); skipping the legacy DOM
+  detour and stopping the legacy hold on OOS (R1 routes the observed case around both —
+  follow-ups); the C-0924-01 MISS re-arm (0 contention skips on 09-25).
+
+**Before the next run:** business needs a forced hand login — run
+`hand_login_business_force.bat` (new 09-25; `relogin_one.py business --manual --force`); check
+all three with `check_session_readiness.py`. Analysis agents now run on Opus 5.5 (reasoning,
+verifiers) and Sonnet 5 (extraction).
+
+## PRE-DROP 2026-09-24 late evening → drop 2026-09-25 03:00 (`/pre-drop`) — history
 
 **Nothing new armed, config unchanged.** Tonight is the **first live night** of the
 four 09-23 changes below (A1/A2/A3/G1).
@@ -65,6 +119,24 @@ four 09-23 changes below (A1/A2/A3/G1).
   VERIFIED):** every go-live is its own single-TCIN event handled in sweep read order;
   0 of 906 `[STOCK] IN STOCK:` lines ever named two TCINs. The list-order sort only
   acts on level re-arm and tab-fetch events. So nothing was reordered. — [VERIFIED 09-24]
+- 🔴 **09-25 00:31-00:41 boot: primary's login had silently degraded to GUEST.** Four
+  launches in a row exited 87 on the homepage probe (`[LOGIN_CHECK] probe error: Timeout
+  (10.0s) waiting for element with text: 'Hi,'`) while every wrapper validate-pass said
+  "already logged in ✅" — that pass only checks the cookie NAMES exist. The read-only
+  readiness check then showed primary `accessToken=guest/none (sut=G)` with a freshly
+  reissued 180-day refreshToken (it read MEMBER `sut=R`, 89.8 d at 23:48). A **forced**
+  hand login (`hand_login_primary_force.bat` = `relogin_one.py primary --manual --force`,
+  new, untracked) at 00:40 → MEMBER, session-typed login-session; the next boot found
+  "'Hi,' greeting found" at the first probe and went **ALL GREEN at 00:46:18** (18/18,
+  10 TCINs, write-auth 3/3, selftests clean). — [MEASURED 09-25]
+  - **The probe was right; it was not a false negative.** An apparent "harvest tab opens
+    before the probe fails" ordering (5/5 boots) is a selection effect: a failing probe
+    always takes ≥12 s, so the harvest line lands first whenever it fails. Do not cite it.
+  - **Procedure:** if the boot loops on exit 87, stop the wrapper and hand-login the
+    account with `--force` (plain `hand_login_all.bat` validates first and skips a guest
+    jar that still has the cookie names). Letting the wrapper cycle is what degraded
+    primary + alt-1 to GUEST on 08-25; 09-17's 4-failure loop likewise ended in an
+    operator stop, not in the cooldown. — [MEASURED 09-25]
 - Lead, unverified (C-0924-03): a single-TCIN event may reset another in-stock
   `'failed'` TCIN to bare `'ready'` (`bulletproof_purchase_manager.py:1658`, `:1671`,
   `:1721-1727`), hiding it from the level re-arm. One agent's code read; not measured.
@@ -85,7 +157,8 @@ Readout, pre-registered: `tools/analysis/readout_arm_2026_09_23.py` (T0-T6; smok
 on the 09-23 log, where T1 FAILs and T2 is INCONCLUSIVE under the old arming, as it
 should). **All UNPROVEN LIVE.**
 
-- **A1 `TARGET_WAVE_FIRST_EDGE=0`** (was 1 since 09-09). Edge and DCO 429s re-fire at
+- **A1 `TARGET_WAVE_FIRST_EDGE=0` — KILLED 2026-09-25 by its own pre-registered rule and set
+  back to 1** (C-0925-01, verified: 0 of 663 re-shots admitted). History: (was 1 since 09-09). Edge and DCO 429s re-fire at
   the 2.0-3.0 s edge cadence (`TARGET_ATC_EDGE429_RETRY_DELAY_MIN/MAX`, unchanged
   since 09-01) instead of a 55-70 s cold re-entry: ~35-40 shots per account per
   110 s race instead of 2. A 401 still takes the 55-70 s cold re-entry and its bank
@@ -673,8 +746,10 @@ must not be used even directionally. — [VERIFIED 09-21]
   **NOT ESTABLISHED in either direction** (C-0923-02 — p=0.33-0.40 under every
   specification; one night is 83% of the sample and flips the sign). The census
   that armed wave-first for the 429 lottery pooled every SKU and does not settle it
-  for hot SKUs either. **Being tested live from 09-23** by A1
-  (`TARGET_WAVE_FIRST_EDGE=0`) under a pre-registered kill rule.
+  for hot SKUs either. **Tested live 09-25 and KILLED:** at a 2.7 s cadence 0 of 663
+  re-shots (window age 2-120 s) were admitted; all 5 admissions were window-first shots
+  fired within 0.1 s of the flip (C-0925-01). Retries bought nothing at either cadence
+  tried; whether they COST anything is still open.
 
 ## 2026-09-23 RUN — 5 hot restock windows, 37 shots, all 429, 0 carts
 
@@ -726,7 +801,8 @@ ends with `invisible: []` and all 10 `last_seen == updated_at`. The 09-21
   same cycle on any False→True transition; `TARGET_STOCK_HYST_S=20` is pure
   bookkeeping and never touches `in_stock`. 10 TCINs = 1 chunk (cap 28), so every
   sweep reads all 10 — full-catalog refresh every **~0.336 s**. A 5-30 s flip was
-  essentially certain to be caught. [VERIFIED 09-22, code-traced]
+  essentially certain to be caught **outside a RedSky 206 burst** — inside one (09-25) the
+  read age reached 25 s, p90 ~8 s (C-0925-03). [VERIFIED 09-22, code-traced; qualified 09-25]
 
 ## ⚠️ 09-22 CASCADE — a Bright Data `/16` event. Recorded; deliberately NOT fixed.
 
@@ -790,13 +866,15 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Metric | Last-known-good | Current regime | As of |
 |---|---|---|---|
 | Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) — no ordinary SKU armed since | 09-20 |
-| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37 | 09-23 |
-| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change | 09-23 |
-| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 had stock: 0) | 09-23 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16 | 09-23 |
-| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38) | 09-23 |
-| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%) | 09-23 |
+| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37; 09-25: 1/1,212 (1 cart in 8 windows) | 09-25 |
+| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change | 09-25 |
+| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 and 09-25 had stock: 0) | 09-25 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25** | 09-25 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage) | 09-25 |
+| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots) | 09-25 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
+| Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54) | **0/62 from 09-25 06:01, all 3 accounts** — REGIME CHANGE candidate, cause NOT ESTABLISHED (C-0925-04) | 09-25 |
+| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03) | 09-25 |
 
 **Declare a regime change and open an investigation when:** a cart rate moves by
 more than ~3x in either direction, a status-code distribution shifts materially, a

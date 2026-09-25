@@ -540,7 +540,10 @@ def _bat_lines():
 
 def test_bat_arming():
     lines = _bat_lines()
-    for name, value in (("TARGET_WAVE_FIRST_EDGE", "0"),
+    # TARGET_WAVE_FIRST_EDGE: 0 armed 09-23, back to 1 on 09-25 (its kill rule
+    # tripped, docs/CLAIMS.md C-0925-01). The A1 branch itself stays tested above
+    # with the flag set explicitly, so it can be re-armed.
+    for name, value in (("TARGET_WAVE_FIRST_EDGE", "1"),
                         ("TARGET_RETRY_STOP_WHEN_OOS", "1"),
                         ("TARGET_RETRY_OOS_STOP_S", "8"),
                         ("TARGET_STUCK_RESET_LIVE_GUARD", "1"),

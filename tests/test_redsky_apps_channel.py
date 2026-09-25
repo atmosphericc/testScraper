@@ -348,11 +348,12 @@ def test_bat_pins():
     check("bat_bytematch", _bat_val('TARGET_ATC_BYTEMATCH') == '1')
     check("bat_per_ip_cap_half", _bat_val('RESILIENT_PER_IP_MAX_RPS') == '0.5')
     check("bat_raw_404_park", _bat_val('RESILIENT_RAW_404_PARK_S') == '900')
-    # 2026-09-23 post-run: 1 -> 0 (docs/CLAIMS.md C-0923-01/02). Edge and DCO 429s
-    # re-fire at the 2.0-3.0 s edge cadence; a 401 keeps the wave-first cold
-    # re-entry (WAVE_FIRST_ONLY stays 1, pinned below). A pre-registered bet with a
-    # kill rule: tools/analysis/readout_arm_2026_09_23.py.
-    check("bat_wave_first_edge_knob", _bat_val('TARGET_WAVE_FIRST_EDGE') == '0')
+    # 2026-09-23 post-run: 1 -> 0, a pre-registered bet (docs/CLAIMS.md C-0923-01/02).
+    # 2026-09-25 post-run: back to 1 -- the bet's own kill rule tripped (readout T4
+    # KILL-A1: 663 re-shots at window age 2-120 s, zero admitted past the edge;
+    # docs/CLAIMS.md C-0925-01, verified). Edge and DCO 429s take the wave-first
+    # cold re-entry again, like 401s (WAVE_FIRST_ONLY stays 1, pinned below).
+    check("bat_wave_first_edge_knob", _bat_val('TARGET_WAVE_FIRST_EDGE') == '1')
     check("bat_wave_first_armed", _bat_val('TARGET_WAVE_FIRST_ONLY') == '1' and _bat_val('TARGET_WAVE_REENTRY_MIN_S') == '55'
           and _bat_val('TARGET_WAVE_REENTRY_MAX_S') == '70' and _bat_val('TARGET_SHOT_BANK_GATE') == '1'
           and _bat_val('TARGET_SHOT_BANK_WAIT_S') == '8')

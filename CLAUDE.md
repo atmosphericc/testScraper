@@ -70,17 +70,21 @@ first**; that file holds the hard safety rules (never launch the bot, never blan
 
 | Agent | Model | Beat |
 |---|---|---|
-| `antibot-analyst` | sonnet | Shape / HUMAN-PX / edge limiter; 401s, 403s, 429s, credential quality |
-| `purchase-flow-engineer` | sonnet | ATC → pre_checkout → place-order chain; locks, cadence, timers |
-| `failure-forensics` | sonnet | Drop post-mortems; timelines and funnels from the run logs |
-| `stock-pipeline-analyst` | sonnet | Resilient stack, RedSky sweeps, dispatch latency, proxy pool |
-| `claims-verifier` | sonnet | Adversarial fresh-context verification; assumes the claim is false |
-| `log-miner` | **haiku** | Mechanical counts out of big logs; reports the unmatched remainder |
-| `retailer-researcher` | **haiku** | Competitor docs, retailer APIs, vendor claims; verbatim extraction |
+| `antibot-analyst` | **opus** | Shape / HUMAN-PX / edge limiter; 401s, 403s, 429s, credential quality |
+| `purchase-flow-engineer` | **opus** | ATC → pre_checkout → place-order chain; locks, cadence, timers |
+| `failure-forensics` | **opus** | Drop post-mortems; timelines and funnels from the run logs |
+| `stock-pipeline-analyst` | **opus** | Resilient stack, RedSky sweeps, dispatch latency, proxy pool |
+| `claims-verifier` | **opus** | Adversarial fresh-context verification; assumes the claim is false |
+| `log-miner` | sonnet | Mechanical counts out of big logs; reports the unmatched remainder |
+| `retailer-researcher` | sonnet | Competitor docs, retailer APIs, vendor claims; verbatim extraction |
 
-**Model discipline:** extraction (counting, quoting, tallying) goes to haiku;
-reserve sonnet for code comprehension and causal reasoning. Never send a grep to a
-big model. Launch independent agents in a single message so they run concurrently.
+**Model discipline (operator, 2026-09-25: "use the new models 5.5"):** reasoning —
+code comprehension, causal analysis, adversarial verification — goes to `opus`
+(= Opus 5.5); extraction — counting, quoting, tallying — goes to `sonnet` (= Sonnet 5),
+not haiku: extraction slips here have been costly (a 208-of-211 remainder reported as
+"0 FAILED", a timestamp filter that reported 0 `[WAVE_FIRST]` for a night with 36).
+Aliases track the newest model of each tier. Launch independent agents in a single
+message so they run concurrently.
 
 **Workflows** (`.claude/skills/`):
 - `/pre-drop [time/TCINs]` — best position before a known drop: readiness, regime

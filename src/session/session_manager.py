@@ -1742,13 +1742,31 @@ class SessionManager:
             refresh_url = os.environ.get(
                 'TARGET_TOKEN_REFRESH_URL',
                 'https://gsp.target.com/gsp/token_refresh?client_id=ecom-web-1.0.0')
-            try:
-                await asyncio.wait_for(tab.evaluate(
-                    f"""(async () => {{
+            # 2026-09-25 post-run (docs/CLAIMS.md C-0925-04): from 06:01 every mint
+            # failed on all three accounts after 80/80 successes, and Target's answer
+            # to the mint was never logged -- rung 1 returned `true` whatever happened.
+            # TARGET_TOKEN_MINT_LOG=1 returns and logs rung 1's HTTP status (or the
+            # error name) and, on a failed rung 2, where the /account load ended up.
+            # Log-only: the requests, their order and every decision are unchanged.
+            _mint_log = os.environ.get('TARGET_TOKEN_MINT_LOG', '0').strip() == '1'
+            _acct = self.account_id or 'session'
+            # The flag-off script is the pre-09-25 literal, byte for byte.
+            _js_r1_quiet = f"""(async () => {{
                         try {{ await fetch({json.dumps(refresh_url)},
                             {{method:'POST', credentials:'include'}}); }} catch(_e) {{}}
                         return true;
-                    }})()""", await_promise=True), timeout=8.0)
+                    }})()"""
+            _js_r1_status = f"""(async () => {{
+                        try {{ const r = await fetch({json.dumps(refresh_url)},
+                            {{method:'POST', credentials:'include'}});
+                            return 'status=' + r.status + ' type=' + r.type + ' redirected=' + r.redirected; }}
+                        catch(_e) {{ return 'error=' + (_e && _e.name) + ':' + String(_e && _e.message).slice(0, 80); }}
+                    }})()"""
+            try:
+                _r1 = await asyncio.wait_for(tab.evaluate(
+                    _js_r1_status if _mint_log else _js_r1_quiet, await_promise=True), timeout=8.0)
+                if _mint_log:
+                    self.logger.info(f"[TOKEN] {_acct}: mint rung1 token_refresh -> {str(_r1)[:160]}")
             except Exception as e:
                 self.logger.warning(f"[TOKEN] refresh endpoint fetch errored: {e}")
             if await _poll_fresh_member(2.0):
@@ -1795,6 +1813,16 @@ class SessionManager:
                     pass
                 return True
             st = await self.get_access_token_status(tab)
+            if _mint_log:
+                # Where the auth-gated /account load ended: a login redirect points at a
+                # dead login-session; staying on /account with no token points at the mint.
+                try:
+                    _url = await asyncio.wait_for(tab.evaluate('location.href'), timeout=3.0)
+                except Exception as _e:
+                    _url = f'?({type(_e).__name__})'
+                _cls = 'none' if not st['present'] else ('member' if st['member'] else 'guest')
+                self.logger.info(f"[TOKEN] {_acct}: mint rung2 after /account reload "
+                                 f"final_url={str(_url)[:120]} accessToken={_cls} ttl={st['ttl_s']:.0f}s")
             self.logger.error(
                 f"[TOKEN] {self.account_id or 'session'}: could NOT mint a member token "
                 f"(present={st['present']} member={st['member']} ttl={st['ttl_s']:.0f}s) — "

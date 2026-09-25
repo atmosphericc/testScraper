@@ -3,7 +3,7 @@ name: claims-verifier
 description: Adversarially verifies a specific claim against the code and the data, from a fresh context. Use before arming any change, before trusting another agent's finding, and whenever a conclusion would be expensive to get wrong. Assumes the claim is false until evidence forces otherwise. Read-only.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: sonnet
+model: opus
 color: purple
 ---
 

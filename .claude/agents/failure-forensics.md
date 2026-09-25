@@ -3,7 +3,7 @@ name: failure-forensics
 description: Post-mortems a drop or an outage from the run logs — what fired, what was admitted, what was blocked, what converted, and where the funnel broke. Use after any drop, for "why did we get zero", and for reconstructing a timeline from logs. Read-only.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: sonnet
+model: opus
 color: orange
 ---
 

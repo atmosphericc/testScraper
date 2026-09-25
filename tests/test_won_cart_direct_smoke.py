@@ -1638,6 +1638,26 @@ def test_c_helpers():
     check("h_elig_424_false", E(FL_PO_424, 424, "RESERVATION_FAILURE") is False)
     check("h_elig_429_rf_false", E(dict(FL_PO_FS, po={"status": 429, "body": "RESERVATION_FAILURE", "fired": True}),
                                    429, "RESERVATION_FAILURE") is False)
+    # 2026-09-25 post-run (C-0925-02): TARGET_WONCART_RF_ENTRY=1 also admits a
+    # place-order RECEIVED as 429 RESERVATION_FAILURE; 424 RF never; off = the
+    # two RF checks above (h_elig_424_false, h_elig_429_rf_false) unchanged.
+    _RF_PO = dict(FL_PO_FS, po={"status": 429, "body": "RESERVATION_FAILURE", "fired": True})
+    _RF_HDR = dict(FL_PO_FS, po={"status": 429, "body": "", "fired": True})
+    with env(TARGET_WONCART_RF_ENTRY="0"):
+        check("h_elig_rf_flag0_body_false", E(_RF_PO, 429, "RESERVATION_FAILURE") is False)
+        check("h_elig_rf_flag0_hdr_false", E(_RF_HDR, 429, "RESERVATION_FAILURE") is False)
+    with env(TARGET_WONCART_RF_ENTRY="1"):
+        check("h_elig_rf_body_true", E(_RF_PO, 0, "") is True)
+        check("h_elig_rf_header_true_when_status_matches", E(_RF_HDR, 429, "RESERVATION_FAILURE") is True)
+        check("h_elig_rf_header_ignored_on_status_mismatch", E(_RF_HDR, 424, "RESERVATION_FAILURE") is False)
+        check("h_elig_rf_424_still_false", E(FL_PO_424, 424, "RESERVATION_FAILURE") is False
+              and E(dict(FL_PO_424, po={"status": 424, "body": "RESERVATION_FAILURE", "fired": True}),
+                    424, "RESERVATION_FAILURE") is False)
+        check("h_elig_rf_needs_atc_2xx", E(dict(_RF_PO, atc={"status": 401}), 429, "RESERVATION_FAILURE") is False)
+        check("h_elig_rf_other_429_false", E(dict(FL_PO_FS, po={"status": 429, "body": "SOMETHING_ELSE",
+                                                                "fired": True}), 429, "SOMETHING_ELSE") is False)
+        check("h_elig_rf_fs_still_true", E(FL_PO_FS) is True)
+        check("h_elig_rf_po0_still_false", E(FL_PO_0) is False)
     check("h_elig_foreign_false", E(dict(FL_PRE429, skip="foreign_cart_item")) is False)
     check("h_elig_qty_over_false", E(FL_QTY_OVER) is False)
     check("h_elig_garbage_false", E(None) is False and E({}) is False)
@@ -3826,6 +3846,8 @@ def test_r6_eviction_read():
     # (g) the arming line in the bat.
     bat = (ROOT / "run_bot_with_nightly_restart.bat").read_bytes().decode("utf-8", "replace").split("\r\n")
     check("r6_bat_armed", bat.count("set TARGET_WONCART_EVICTION_READ=1") == 1)
+    # 2026-09-25 post-run: the 429 RESERVATION_FAILURE entry (C-0925-02) is armed once.
+    check("rf_entry_bat_armed", bat.count("set TARGET_WONCART_RF_ENTRY=1") == 1)
 
 
 def test_r7_eviction_presume():

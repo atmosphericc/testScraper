@@ -104,6 +104,14 @@ REM captcha, apps_raw = HTTP 200 product data. Same parser shape. The pool
 REM Chromes stay up (park/backoff logic is shared); grep "[STOCK STATS]" for
 REM 200= climbing and "[STOCK][CAPTCHA-PARK]" staying quiet. Kill: =web.
 set RESILIENT_REDSKY_CHANNEL=apps_raw
+REM 2026-09-25 post-run (docs/CLAIMS.md C-0925-03): RedSky answered 102 reads
+REM with HTTP 206 (partial content) in 17 bursts, 02:10-04:49, up to 95 percent
+REM of sweeps; every 206 body was read and thrown away, so its shape is
+REM unknown. =1 logs ONE rate-limited [STOCK][206] line a minute: RedSky's
+REM errors and which TCINs came back complete, absent or incomplete. LOG ONLY:
+REM the read still counts as failed and nothing is ingested. grep STOCK][206.
+REM Kill: set it to 0.
+set RESILIENT_206_LOG=1
 REM 2026-09-15: home-IP CANARY OFF. _canary_loop is raw urllib from the HOME IP
 REM (primary's purchase exit) every 30 s with a mismatched TLS/UA -- the exact
 REM bot-shaped hit HUMAN/Shape score -- and its 403-only self-retire never fires
@@ -734,7 +742,15 @@ REM (reported, not verified here). Pre-registered readout and kill rule:
 REM tools/analysis/readout_arm_2026_09_23.py -- revert to 1 if 150 re-shots at
 REM window age 2-120 s get ZERO edge passes, or 401s exceed 30 percent of shots.
 REM Needs TARGET_STUCK_RESET_LIVE_GUARD=1 below (a race now runs past 60 s).
-set TARGET_WAVE_FIRST_EDGE=0
+REM 2026-09-25 post-run: KILLED by its own pre-registered rule (readout T4
+REM KILL-A1), back to 1. The 09-25 drop fired 1,212 shots at a 2.7 s median
+REM gap: 663 re-shots at window age 2-120 s, ZERO admitted past the edge
+REM (docs/CLAIMS.md C-0925-01, verified from a fresh context). All 5 edge
+REM admissions of the night were a window's FIRST shot, fired within 0.1 s of
+REM the flip; first-shot pass rate unchanged vs 09-23 (5/20 vs 1/10). The extra
+REM volume bought nothing. A3 keeps 8 s: at the wave-first cadence it holds
+REM about 0.13 blind shots per account per window end.
+set TARGET_WAVE_FIRST_EDGE=1
 set TARGET_WAVE_REENTRY_MIN_S=55
 set TARGET_WAVE_REENTRY_MAX_S=70
 set TARGET_SHOT_BANK_GATE=1
@@ -1074,6 +1090,19 @@ REM restores the 5,15 default.
 set TARGET_STOCK_PROBE=1
 set TARGET_STOCK_HYST_S=20
 set TARGET_WONCART_DIRECT=1
+REM 2026-09-25 post-run (docs/CLAIMS.md C-0925-02, verified): the gate above
+REM admitted only a FAST_SELLING place-order. The night's one cart (business,
+REM 1012644665) got a 429 RESERVATION_FAILURE on its in-chain place-order about
+REM 1.3 s after the 201, fell to the legacy nav+DOM path, sat 26.7 s in DOM polls
+REM on a page that never rendered a button, and got ONE place-order while the
+REM TCIN still read in stock. =1 admits a 429 RESERVATION_FAILURE too, so the
+REM cart gets the ticket schedule below (about 20 place-order draws a minute)
+REM plus the loop's own out-of-stock stop. A 424 RESERVATION_FAILURE stays out
+REM (0 of 16 ever followed by an order). The loop stops on a 2xx and latches
+REM AC-1 on anything ambiguous, exactly as for a FAST_SELLING entry. Evidence it
+REM converts a hot cart: NOT ESTABLISHED (2 recoveries after a 429 RF, both
+REM 08-04). grep WON_CART_DIRECT. Kill: set it to 0.
+set TARGET_WONCART_RF_ENTRY=1
 REM 2026-09-18 verified read-out (two fresh-context agents, docs CLAIMS C-0918):
 REM both won carts got ONE checkout draw in their first 3 s (the chain's own
 REM pre_checkout, FAST_SELLING at +0.1-0.3 s) then waited 3.1-3.4 s for ticket 1;
@@ -1287,6 +1316,13 @@ REM  concurrent live session (personal Chrome logged into an account) evicting t
 REM  token faster than the relogin cap ? OPERATIONAL fix: sign out / close any
 REM  personal-browser Target tabs before the drop. Kill-switch: set to 0.
 set TARGET_TOKEN_KEEPFRESH=1
+REM 2026-09-25 post-run (docs/CLAIMS.md C-0925-04): the member-token mint went
+REM from 80 of 80 to 0 of 62 at 06:01 on all three accounts and Target's answer
+REM was never logged. =1 logs rung 1's HTTP status and, on a failed rung 2,
+REM where the /account load landed (a login redirect = dead login-session;
+REM /account with no token = the mint itself). LOG ONLY. grep mint rung.
+REM Kill: set it to 0.
+set TARGET_TOKEN_MINT_LOG=1
 
 if not exist "%PYTHON%" (
     echo [ERROR] venv python not found ? checked .venv\Scripts and venv\Scripts

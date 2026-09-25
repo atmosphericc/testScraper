@@ -163,7 +163,7 @@ Three diagnostics in this repo have zero occurrences in every run log. They are
 |---|---|---|
 | `SHAPE_BLOCK` / `PX_BLOCK` (403) | The event genuinely has never happened — 0 across 105 logs | Real negative. **Do not build a handler.** |
 | AC-1 ambiguous-commit latch | Armed, reachable, never triggered | Real negative. Note it, move on. |
-| `[FS_TICKET_BODY]` | The print **postdated** the only run that had qualifying data by 3 days, and nothing has qualified since | **Untested instrument.** Silence says nothing about whether it works. |
+| `[FS_TICKET_BODY]` | The print **postdated** the only run that had qualifying data by 3 days; **it first fired 2026-09-25** (a place-order 424 body: `DEPENDENT_SERVICE_ERROR`, CHECKOUTS) | Was an **untested instrument** until then — silence said nothing about whether it worked. The lesson stands for any instrument younger than its data. |
 
 **Before concluding a diagnostic is broken, check when its code shipped against
 when the data was recorded** (`git log -S '<the marker string>'`). An orchestrator

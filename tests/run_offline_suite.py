@@ -72,6 +72,12 @@ OFFLINE = [
     # the WAVE_FIRST_EDGE=0 branch under the real race loop (stub workers and a
     # stubbed stock probe only; no browser, no network).
     "test_retry_oos_stop",
+    # 2026-09-25 post-run: RESILIENT_206_LOG, log-only summaries of RedSky 206 bodies
+    # (stub session + stubbed urllib; no browser, no network).
+    "test_redsky_206_log",
+    # 2026-09-25 post-run: TARGET_TOKEN_MINT_LOG, log-only record of Target's answer
+    # to the member-token mint (stub tab + SessionManager; no browser, no network).
+    "test_token_mint_log",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

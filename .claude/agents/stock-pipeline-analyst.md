@@ -3,7 +3,7 @@ name: stock-pipeline-analyst
 description: Analyses the stock-detection side — the resilient stack, RedSky sweeps, tab dispatcher, multi-session pool, proxy forwarder and proxy state. Use for monitor latency, sweep reliability, 429/403 on the monitor, IP pool sizing, and detection-to-dispatch timing. Read-only.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: sonnet
+model: opus
 color: green
 ---
 

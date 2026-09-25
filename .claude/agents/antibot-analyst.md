@@ -3,7 +3,7 @@ name: antibot-analyst
 description: Analyses Target's anti-bot layers — F5 Shape, HUMAN/PerimeterX, and the edge rate limiter. Use for questions about 401s, 403s, 429s, Shape credential minting and replay, sensor/fingerprint quality, why shots get blocked, and how hype-SKU security differs from ordinary-SKU security. Read-only.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
-model: sonnet
+model: opus
 color: red
 ---
 

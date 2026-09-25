@@ -129,6 +129,23 @@ def woncart_direct_on() -> bool:
     return os.environ.get('TARGET_WONCART_DIRECT', '0').strip() == '1'
 
 
+_RF_KEY = 'RESERVATION_FAILURE'
+
+
+def woncart_rf_entry_on() -> bool:
+    """TARGET_WONCART_RF_ENTRY=1 (2026-09-25 post-run, docs/CLAIMS.md C-0925-02):
+    a place-order RECEIVED as 429 RESERVATION_FAILURE also enters the won-cart
+    ticket loop. On 09-25 the night's only cart (business, 1012644665) got a 429 RF
+    on its in-chain place-order ~1.3 s after the 201, was refused by the gate below
+    (FAST_SELLING only), spent 26.7 s in the legacy nav+DOM detour on a page that
+    never rendered a button, and got ONE place-order while the TCIN still read in
+    stock. A 429 RF left the cart intact and was followed by an order on a 2.6-3.0 s
+    re-shot twice (08-04); a 424 RF never was (0/16), so 424 stays excluded. The
+    loop stops on a 2xx and latches AC-1 on anything ambiguous, exactly as for an
+    FS entry. Default '0' = the gate is byte-identical. Kill-switch: =0."""
+    return os.environ.get('TARGET_WONCART_RF_ENTRY', '0').strip() == '1'
+
+
 def held_cart_reentry_on() -> bool:
     """TARGET_HELD_CART_REENTRY=1 (plan P3 / WC-3): a loop exit that still holds
     a live cart keeps it (self._held_cart) instead of clearing it, the next
@@ -657,8 +674,10 @@ def woncart_eligible(fl, reject_status: int = 0, reject_key: str = '') -> bool:
     2xx and either (A) the chain stopped at pre_checkout (skip 'pre_*', no
     place-order fired) or (B) the place-order was RECEIVED as 429 with
     FAST_SELLING in the header key (only when the interceptor's status matches)
-    or in the body. Status-0 place-orders, 424 RESERVATION_FAILURE and every
-    other rejection keep today's path."""
+    or in the body. With TARGET_WONCART_RF_ENTRY=1 a place-order received as 429
+    RESERVATION_FAILURE (same header/body rule) is admitted too. Status-0
+    place-orders, every 424 (RESERVATION_FAILURE included) and every other
+    rejection keep today's path."""
     if not isinstance(fl, dict):
         return False
     atc = fl.get('atc') or {}
@@ -671,7 +690,9 @@ def woncart_eligible(fl, reject_status: int = 0, reject_key: str = '') -> bool:
     if po.get('fired') and po.get('status') == 429:
         key = str(reject_key or '').upper() if reject_status == 429 else ''
         body = str(po.get('body') or '').upper()
-        return _FS_KEY in key or _FS_KEY in body
+        if _FS_KEY in key or _FS_KEY in body:
+            return True
+        return woncart_rf_entry_on() and (_RF_KEY in key or _RF_KEY in body)
     return False
 
 
@@ -4516,7 +4537,9 @@ class PurchaseExecutor:
                 # pre_checkout (skip=pre_*) or whose place-order got FAST_SELLING
                 # goes to the won-cart ticket loop instead of the ~26.5 s legacy
                 # nav/DOM detour. It returns a final result (never falls through).
-                # Kill-switch: TARGET_WONCART_DIRECT=0.
+                # Kill-switch: TARGET_WONCART_DIRECT=0. 2026-09-25: with
+                # TARGET_WONCART_RF_ENTRY=1 a 429 RESERVATION_FAILURE place-order
+                # is admitted too (woncart_eligible; docs/CLAIMS.md C-0925-02).
                 if (_verdict == 'fallthrough' and woncart_direct_on() and self._woncart_armed()
                         and not self.test_mode
                         and woncart_eligible(_fl, self._checkout_reject_status,

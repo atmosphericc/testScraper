@@ -68,6 +68,45 @@ Entry format:
 - **Our response:** `551b1807` split 429 out, log-only. No backoff, deliberately.
 - **Confidence:** [MEASURED]
 
+### 2026-09-25 — RedSky answers the monitor's bulk read with HTTP 206 in bursts
+- **Changed:** from 02:10 to 04:49 CDT, 17 bursts of 1.5-18 min in which 40-95% of
+  monitor reads failed (63.9% inside bursts, 8,563/13,402); whole-run loss 11.8%
+  (8,969/75,799) vs 0.05-0.10% on 09-22/09-23. The ground-truth reads, same function
+  and URL as the sweep, failed 94x with **HTTP 206** (1-3 a night on 13 earlier runs).
+  Every exit subnet was hit (17 exits on two /16s at 63-68%, the lone third /16 at 29%).
+  Target-side: the no-proxy canary saw 206 in June, and single-TCIN VERIFY reads got
+  206 too, so it is not one bad TCIN in the batch. Clean after 04:50.
+- **Noticed:** live, within ~1 min (02:11), by the session's log watcher. Detection
+  gap ~1 min.
+- **Cost:** zero tonight: all 8 stock windows fell in clean gaps. Inside a burst the
+  read age reached 25 s (p90 ~8 s), so a burst over a stock flip would have cost seconds.
+- **Evidence:** docs/CLAIMS.md C-0925-03; `logs/analysis_2026_09_25/`.
+  [MEASURED for the ground-truth 206s; INFERRED that the sweep's `other` is 206 — the
+  sweep does not log per-request status]
+- **Our response:** the bot read every 206 body and threw it away, so its shape is
+  unknown. `RESILIENT_206_LOG=1` (armed 2026-09-25) logs one summary a minute. An
+  ingest is deliberately NOT built yet: today's parser reads missing fulfillment as out
+  of stock, so a naive ingest could mark everything out of stock.
+- **Confidence:** [MEASURED] that it happened; cause [NOT ESTABLISHED].
+
+### 2026-09-25 — member-token re-mint stops working for every account
+- **Changed:** the bot's token repair minted a fresh member token 5/5 times
+  00:48-03:54. From 06:01 every attempt failed on all three accounts
+  (`could NOT mint ... present=False`), including a session only 42 min old. The
+  signature is new: 4,241 of 4,368 earlier failure lines were `present=True
+  member=False` on one rotted account while the others minted fine. The narrowest
+  window for the change is 03:54-06:01 (no attempt in between).
+- **Noticed:** live, 06:01, by the log watcher. Gap ~0.
+- **What it is not:** Target did not kill the sessions — its cart service kept
+  accepting each token right up to the moment the BOT'S OWN repair deleted it (the
+  repair deletes the token before a replacement exists). [REFUTED: "sessions killed"]
+- **Evidence:** docs/CLAIMS.md C-0925-04; `logs/runs/run_20260925_004139.log`.
+- **Our response:** see C-0925-04 (repair safety) — the bot turned a mint outage into
+  dead accounts. Target's answer to the mint request itself has never been logged.
+- **Confidence:** [MEASURED] that mints stopped; why [NOT ESTABLISHED] — a Target-side
+  change to the mint path vs re-mint disabled for these accounts or this IP after the
+  drop's volume. The deciding observation is the mint request's own response.
+
 ---
 
 ## Known-unknowns about the opponent
@@ -77,8 +116,12 @@ re-litigated from first principles every few weeks:
 
 - Whether one client's own retry rate lowers its admission odds at the high-demand
   limiter (the wave-first premise). Our hot-SKU data cannot settle it either way
-  (docs/CLAIMS.md C-0923-02, 2026-09-23); being tested live from 09-23 with
-  TARGET_WAVE_FIRST_EDGE=0 and a pre-registered kill rule. 09-23 also showed
+  (docs/CLAIMS.md C-0923-02, 2026-09-23). **Tested live on 09-25**
+  (TARGET_WAVE_FIRST_EDGE=0, 2.7 s median re-shot gap): 0 of 663 re-shots at window
+  age 2-120 s were admitted; all 5 admissions were window-opening shots fired within
+  0.1 s of the flip (first shots 5/20 vs 1/10 on 09-23, p=0.33 — no change). So retries
+  bought no admissions at either cadence tried; whether they COST anything is still
+  unmeasured. The kill rule tripped and the flag went back to 1 (C-0925-01). 09-23 also showed
   9 of 10 window-opening shots rejected after 24-47 min of zero fleet shots on the
   TCIN -- not what an idle-refilled per-account bucket predicts.
 - What fraction of requests the high-demand rate limiter admits. Their own vendor
