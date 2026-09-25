@@ -56,8 +56,10 @@ TESTS
   L3 FLIP: every [STOCK][FLIP] line. For each new-window flip, the delay from read_ms
      to the first atc_t0 at or after it (any account, within 3 s; marked ambiguous when
      another TCIN flipped within 3 s), and the raw atp / max_order_qty / purchase_limit.
-     PASS  every raced TCIN has >= 1 FLIP line.
-     FAIL  a TCIN raced with no FLIP line: the stamp is missing where it matters.
+     PASS  every raced TCIN has >= 1 FLIP line (or was opened by the cache-bust VERIFY or
+           GROUND-TRUTH path, whose own warning line carries a ms log stamp -- those paths
+           set in_stock themselves, so the sweep never logs a FLIP for them).
+     FAIL  a TCIN raced with none of those: the stamp is missing where it matters.
      NO DATA  no race.
 
 Read-only over the log. Stdlib only.
@@ -89,6 +91,8 @@ R_STATS = re.compile(r'\[STOCK STATS\] t=\S+ sweeps=(\d+) \S+ 200=(\d+) 403=(\d+
 R_M1 = re.compile(r'\[TOKEN\] (\S+): mint rung1 token_refresh -> (status=\d+|error=\S+)')
 R_M2 = re.compile(r'\[TOKEN\] (\S+): mint rung2 after /account reload final_url=(\S+) accessToken=(\w+)')
 R_NOMINT = re.compile(r'\[TOKEN\] (\S+): could NOT mint a member token')
+R_ALT_OPEN = re.compile(r'\[STOCK\] VERIFY CONFIRMED IN STOCK: (\d+)|'
+                        r'\[GROUND-TRUTH\] FIRING PURCHASE \(cold/stale catch\): (\d+)')
 R_FLIP = re.compile(r'\[STOCK\]\[FLIP\] tcin=(\d+) #(\d+) read_ms=(\d{13}) rt_ms=(\S+) '
                     r'last_oos_ms=(\d+) since_oos_ms=(\S+) new_window=([01]) via=\S+ \(\S+\) '
                     r'status=(\S+) atp=(.*?) max_order_qty=(.*?) purchase_limit=(.*?) services=')
@@ -110,6 +114,7 @@ def main():
     legacy_at = defaultdict(list)          # ident-agnostic legacy markers by line
     s206, stats, m1, m2, nomint = [], [], Counter(), Counter(), Counter()
     flips = []                             # (tcin, n, read_ms, since_oos, new_window, atp, mq, pl)
+    alt_open = Counter()                   # tcin -> VERIFY / GROUND-TRUTH openings
     pending_ident = None
     for i, ln in enumerate(lines):
         for m in R_INSTOCK.finditer(ln):
@@ -159,6 +164,8 @@ def main():
             m2[(m.group(1), where, m.group(3))] += 1
         for m in R_NOMINT.finditer(ln):
             nomint[m.group(1)] += 1
+        for m in R_ALT_OPEN.finditer(ln):
+            alt_open[m.group(1) or m.group(2)] += 1
         for m in R_FLIP.finditer(ln):
             flips.append((m.group(1), int(m.group(2)), int(m.group(3)), m.group(6), m.group(7) == '1',
                           m.group(9), m.group(10), m.group(11)))
@@ -269,8 +276,10 @@ def main():
     if delays:
         w('    read -> first shot, unambiguous: n=%d median=%dms min=%dms max=%dms' % (
             len(delays), statistics.median(delays), min(delays), max(delays)))
+    if alt_open:
+        w('    opened by VERIFY / GROUND-TRUTH instead (ms log stamp, no FLIP): %s' % dict(alt_open))
     raced = sorted(set(t for t, _ in races))
-    missing = [t for t in raced if t not in set(f[0] for f in flips)]
+    missing = [t for t in raced if t not in set(f[0] for f in flips) and t not in alt_open]
     if not raced:
         l3 = 'NO DATA -- no race'
     elif missing:
