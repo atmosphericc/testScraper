@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-30 ~01:40 (`/pre-drop` for the 09-30 03:00 restock) · HEAD `77e8f72b` (commits the 09-28 arming + tonight's work) · branch `feat_refract_arch_v1`**
+**As of: 2026-09-30 ~11:30 (post-run of the 09-30 03:00 restock, workflow `wf_59c6b397-f34`) · HEAD `2b23a7c5` · branch `feat_refract_arch_v1` · nothing new armed since the 09-30 pre-drop**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -14,6 +14,68 @@ any investigation that changes one of these lines, and **delete lines that turn 
 to be wrong rather than leaving them with a caveat.**
 
 ---
+
+## STATE CARD — read this first (2026-09-30; every line is detailed further down)
+
+| Topic | Now | Source |
+|---|---|---|
+| Target list | the ENABLED TCINs in `config/product_config.json` are the operator's deliberate choice (11, all qty 2); never propose re-adding SKUs | operator 09-30 |
+| Accounts | 3 (primary, business, alt-1), all on the home IP; member tokens re-mint in-bot at the 4 h expiry under `TARGET_TOKEN_KEEPFRESH=0` + `TARGET_RELOGIN_MAX_PER_6H=0`; run `check_session_readiness.py` before a drop | C-0929-01, 09-30 jars |
+| Monitor | 18 Bright Data ISP exits, `apps_raw` channel, every TCIN read ~every 0.34 s, read → first POST ~40 ms | 09-30 readout L3 |
+| Wall 1 — edge limiter | 429 `ERR_A2C_TCIN_RATE_LIMITED`, answers FIRST (~130 ms, no `x-ssx-hop`); per TCIN + network location, NOT trust; home line: flip-race first shots ~12-23% pass, every later shot ~0% | C-0930-03/04, C-0925-07 |
+| Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here: home 13/38 denied, BD exits 514/518 | C-0930-05 |
+| Wall 3 — checkout | place-order FAST_SELLING / RESERVATION_FAILURE lottery (Refract: ~1% of carts → order); our won-cart loop's 40-ticket / 120 s caps ENDED a live verified cart on 09-30 | C-0930-02 |
+| Outcomes | 0 orders since 08-04; 0 hot-SKU orders ever (0/10 hot carts converted) | Outcomes section |
+| Blocked / operator decisions | F1 (caps follow the stock probe; hold the line on OOS) — edit DENIED by the auto-mode classifier, spec in `logs/analysis_2026_09_30/postrun/wf_checkout_fix_specs.json`; E5 second network identity — not built; E4 human control — no code | 09-30 post-run |
+| Process | `/post-run` → saved Workflow `.claude/workflows/post-run.js` (rounds until dry; blind replicator + refuter + judge per claim; canaries); facts from `tools/events/` (SQLite); PreToolUse hook blocks bot/live-test launches | CLAUDE.md |
+
+## POST-RUN 2026-09-30 — real restock, 1 cart, 0 orders (claims C-0930-02..08, `docs/CLAIMS.md`)
+
+Operator: "massive restock", nothing purchased; wants a workflow-based fix, a rebuilt
+bug-fixing process, and "besides rate limiting it's a trust factor". Reports and
+extraction files: `logs/analysis_2026_09_30/postrun/`.
+
+- **The run** (`run_20260930_014647.log`, 01:46:47 → 09:24:52): 12 stock windows on 5 TCINs,
+  02:31-04:54 (1010892076 ×7, 1010892067 ×2, 1010892069, 1010892078, 95082118), 47 races all
+  3 wide, 256 main-tab add-to-carts = 248 × 429 `ERR_A2C_TCIN_RATE_LIMITED` + 3 × 429
+  FAST_SELLING (95082118, every account's first shot) + 3 × 401 + 1 × 503 + **1 × 201**
+  (alt-1, 1010892067, 04:00:06). **0 orders. No regime change** (C-0930-08): flip-race
+  first shots 4/33 (12%) vs 15/65; every other shot 0/219. — [MEASURED]
+- 🔴 **THE GATE ORDER (C-0930-03, VERIFIED for 09-30).** The limiter answers FIRST: every
+  `ERR_A2C` 429 comes back in 111-247 ms with no `x-ssx-hop` / `fastly-restarts` / envoy
+  header, while 201 / FAST_SELLING / 401 carry `x-ssx-hop=1` and take 0.85-6.4 s inside the
+  same volley. Model [INFERRED from latency]: **edge limiter (`ERR_A2C`, ~130 ms) → SSX hop
+  (keyless 401 `_ERR_AUTH_DENIED` = the Shape verdict) → restart → cart service (201 /
+  FAST_SELLING 429 / 424)**. So **a 401 IS a shot that got past the limiter.**
+- 🔴 **THE LIMITER IS NOT TRUST (C-0930-04, counts VERIFIED, mechanism NOT ESTABLISHED).**
+  09-15/16, same 91 races: alt-1 on a Bright Data exit (Shape-denied 61/61, the least
+  trusted client) got past the limiter on 30/90 LATER shots; home-IP primary 0/90. It
+  behaves per network location (IP or CDN POP) + the TCIN's demand state, not per Shape/HUMAN
+  score. All three buyers share ONE home IP since 09-20 → they share one allowance, spent by
+  the first volley. **Trust shows at the SSX wall** (C-0930-05, PARTIALLY CONFIRMED): hot
+  shots past the limiter were 401'd 514/518 on 3 BD exits vs 13/38 on the home IP.
+- 🔴 **THE CART WAS RETIRED BY OUR OWN CAPS (C-0930-02, VERIFIED).** `call_cap` (120 s) at
+  ticket 39, then `cart_ticket_cap` (40) at +128 s — while ticket 40's pre_checkout proved
+  the line was ours and the TCIN read in stock ≥165 s more. The exit's delete read 429 →
+  dirty flag → two in-stock dispatches fired nothing → at 04:13 (window 2, same TCIN) the
+  bot deleted the ~13-minute-old line and fired 4 fresh add-to-carts (all edge 429). The
+  line had survived 13 min in the cart. Refract: keep submitting, no cap stated.
+  **Fix F1 (caps follow the stock probe; hold the line on an out-of-stock read) was DESIGNED
+  but the edit was DENIED by the Claude Code auto-mode classifier; NOTHING ARMED. Operator
+  decision.** Conversion value of more tickets: NOT ESTABLISHED (hot tickets 0/90 ever).
+- **REFUTED today:** "keyless 401 = an unsigned write" (C-0930-06: signed decoys 401 at the
+  same ~20% rate, n=1,775); "the 40-ticket cap is not a lever" (C-0930-02); the gate order
+  "Shape first → limiter → cart" (C-0930-03). **Instrument fault:** `readout_2026_09_30.py`
+  double-counts decoys (W3/M1) and 4 H1 lines (C-0930-07) — use the event store.
+- **Experiments that could discriminate (operator's call; NOT built):** E4 human control —
+  during a window, the operator taps add-to-cart on a phone with a NON-bot account, ~60 s on
+  home Wi-Fi then ~60 s on cellular (no code); E5 one account on a second, Shape-acceptable
+  network identity with two same-window controls. Rejected on evidence: stop decoys (E1,
+  C-0930-06), mimic the page's request shape (E3: the limiter already admits it at the
+  flip). E2 (separate harvester browser) acts only on the SSX wall (~+0.7 carts/night max).
+- **Process:** the post-run ran as a Workflow (15 agents, 0 errors, 9 claims verified, 0
+  refuted). Structured event store `tools/events/` + saved post-run workflow: see the
+  09-30 process section of `docs/CLAIMS.md` / memory when landed.
 
 ## PRE-DROP 2026-09-29 late → restock 2026-09-30 03:00 (`/pre-drop`)
 
@@ -41,11 +103,6 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   59 isolated singles (some 9/10 incomplete); 0 visibility banners; tracebacks all
   `WinError 10054`. **No regime change.** This is the proxy-pool proof for tonight
   (production path, the wrapper's own env, 19 h), in place of `validate_proxies.py`. — [MEASURED]
-- **Keyless 401 = an unsigned write (decoys):** each sampled decoy 401 carried `Shape
-  tokens: 0` and its 424 re-probe carried all six `X-GyJwza5Z-*`. Main first shots replay a
-  banked set (09-25 05:20: all three replayed, bank 5-6/6), so this bites re-shots and decoys
-  with an empty bank, not first shots. primary's two 09-25 first-shot 401s were signed
-  (10 s-old set) — cause still unknown (C-0925-06). — [MEASURED 09-30, n=3 decoy samples]
 - **`95082118` = Mega Evolution Ascended Heroes Elite Trainer Box** (web search listing +
   a 09-23 hobbyist repo pairing it with 1010892076 / 1010892069). — [REPORTED 09-30]
 - 🔴 **Refract's LIVE docs (09-30, 5,798 lines; archived
@@ -61,13 +118,12 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   number of accounts you run matters so much" (L3699). — [REPORTED, vendor, no n]
   **So:** at their 1% cart→order, even their 90% carting on 3 accounts is ~0.03 orders a
   window; the scale lever is real. **But our CARTING is the gap they do not have:** 09-25
-  carted 1 of 42 account-races (2.4%) and re-shots went 0/663 vs "~90% of tasks". Lead,
-  NOT ESTABLISHED: our trust score — local Windows + CDP-driven Chrome + our own 24/7
-  Shape traffic (a real decoy ATC ~every 46 s per account, ~20% of them unsigned 401s =
-  "Shape blocks" in Refract's terms, plus a harvest every 40 s). No exposed knob for the
-  decoy cadence; not changed tonight. **First daytime investigation.** Weakened: the decoy
-  write heartbeat shipped 2026-07-07 (`60a8b2f9`), before every July-August order, so it did
-  not stop ordinary SKUs converting; for hot SKUs it is untested.
+  carted 1 of 42 account-races (2.4%) and re-shots went 0/663 vs "~90% of tasks". (The
+  "trust score / our own decoy traffic" lead that stood here was tested on 09-30 and does
+  not hold for the limiter: C-0930-04 — the limiter tracks network location, not trust;
+  C-0930-06 — signed and unsigned decoys 401 at the same rate, and 0 of 1,804 decoys ever
+  drew a limiter 429. Refract's scaled users spread add-to-carts over residential harvester
+  proxies, i.e. many network locations.)
 - 🔴 **WHERE OUR CARTING DIES — per-shot credential join, 1,760 hot shots, five nights
   (09-11, 09-15/16, 09-17, 09-22/23, 09-25; orchestrator script, 09-30):**
   | IP | first shot of a race | every later shot |
@@ -76,14 +132,13 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   | BD exits (09-15/16: alt-1 AZ, business Dallas) | 34% / 5.5% "passed" | same as first — but **every one a keyless 401** (71/71) |
   Page-signed (bank-empty) shots on strict SKUs 0/1,000; cookied re-shots on strict SKUs
   0/261 at any cookie age (0/135 under 15 s), account, harvest page, a0 or window age.
-  Model that fits every observation [INFERRED]: **Shape verdict first (bot → keyless 401;
-  unsigned decoys → 401, signed → 424) → hot-item limiter (429 unless admitted) → cart
-  service (201 / FS 429 / 424).** BD exits fail step 1 (Refract: "resis pass Shape far better
-  than ISPs"); the home line passes step 1 and the limiter admits only the flip's first
-  volley. Refract users "cart ~90%" through the same limiter → their requests sit in a
-  higher trust tier ("the cookie is a test that has to score 90% or higher", security rises
-  after the first wave). **Leading hypothesis, NOT ESTABLISHED: our Shape score is held down
-  by SYNTHETIC INPUT** — hand logins pass ~100% while scripted logins in the same Chrome on the
+  Model, CORRECTED 09-30 (C-0930-03; the order that stood here was backwards): **edge
+  limiter first (`ERR_A2C` 429, ~130 ms, no `x-ssx-hop`) → SSX hop (keyless 401 = the Shape
+  verdict) → cart service (201 / FS 429 / 424).** So the BD exits PASSED the limiter
+  (later shots too) and then failed Shape at the SSX hop; the home line passes Shape ~2/3 of
+  the time but its limiter allowance is spent by the flip's first volley. Trust (the
+  cookie score, Refract's "90% or higher") acts only at the SSX wall. **The synthetic-input
+  hypothesis below therefore concerns the SSX wall only (NOT ESTABLISHED)** — hand logins pass ~100% while scripted logins in the same Chrome on the
   same IP fail ~100% (0/25), and every cookie is minted by a CDP `Input.dispatchMouseEvent`
   click of ≤9 Bezier points ~80 px apart, a teleported start, no scroll, no dwell
   (`shape_harvest.py:409-548`). Constraint: more mouse events grow the `-a` sensor toward the
@@ -107,13 +162,14 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   keyless/non-CVV 400 or 401/403 still falls to the legacy nav+DOM path (27.96 s on 09-25)
   and a **whole-cart clear** (`pe:5538-5539`). In the loop an unverified cart fires a
   place-order only after a pre 2xx (`pe:8889-8890`, `:8920-8925`); 4/4 hot in-chain chains
-  since 09-11 ended `pre=429 po=0`. The 40-ticket cap bound once (09-17) on a cart a 424 RF
-  had already emptied — not a lever. PRE_RETRY, the 1,1,1,2,2,3 schedule, eviction
+  since 09-11 ended `pre=429 po=0`. The 40-ticket cap (and the 120 s per-call cap) ENDED
+  A LIVE, VERIFIED CART on 09-30 (C-0930-02) — it is a lever; the fix is designed but not
+  armed (see the 09-30 post-run section). PRE_RETRY, the 1,1,1,2,2,3 schedule, eviction
   read/PRESUME and RF_ENTRY: **0 live runs since arming** — tonight is their first live
   test if a cart is won. `TARGET_RESERVATION_BAIL` governs only the legacy DOM loop
-  (`pe:10186-10192`), no conflict with R1. Per-ACCOUNT 45 s FS cooldown (`pe:7476`, read
-  `:4507`) sends that account's next fresh cart on ANY TCIN down the legacy path —
-  follow-up. — [INFERRED from code + MEASURED counts, 09-30]
+  (`pe:10186-10192`), no conflict with R1. Per-ACCOUNT 45 s FS cooldown (`pe:7542-7565`,
+  read `:4585`, set by the loop at `:9100-9104`) sends that account's next fresh cart on ANY
+  TCIN down the legacy path — cost 0 on 09-30 (0 `[THROTTLE]` lines); follow-up. — [INFERRED from code + MEASURED counts, 09-30]
 - **ARMED 09-30 ~01:35 (new code, LOG-ONLY): `TARGET_ATC_RESP_HDRS=1`** — one
   `[ATC_RESP_HDRS] tab= status= n= | name=value | ...` line per add-to-cart response with
   EVERY response header, sorted (main tab: every response; warmup: 401 only, first 20 per
@@ -571,16 +627,20 @@ should). **All UNPROVEN LIVE.**
 - **Zero orders of any kind since 2026-08-04.** — [MEASURED 09-20] same
 - 78 carts won all-time, 58 lost, 20 converted. — [MEASURED 09-20] same
 
-## 🔴 WE STOPPED LOOKING. Commit `a30bc294`, 2026-08-10.
+## The 2026-08-10 target-list change (`a30bc294`) — history, NOT a lever
 
-**The single most decision-relevant fact in this file.** [VERIFIED 09-22, fresh
-context, order attribution re-derived from primary logs]
+**OPERATOR DECISION, 2026-09-30: "the tcins added are what i want if they arent added
+that means i dont want them."** The enabled list in `config/product_config.json` is the
+target list. The 8 SKUs below are absent ON PURPOSE. **Do not propose re-adding them**;
+the goal is converting the SKUs the operator chose. This section only explains why
+orders stopped after 08-04 (a different, less-protected target set), so that no
+analysis compares the old order rate with tonight's SKUs as if it were one population.
 
 All 20 orders came from **8 TCINs**. On **2026-08-10** — six days after the last
 order — `a30bc294` ("sync product config/catalog to the 08-09 drop-ready TCIN
-list") **wholesale-swapped `config/product_config.json` to a DISJOINT set**,
-sharing zero TCINs with the order-producing list. **It has stayed swapped for 43+
-days. 0 of 8 are in the config today — absent, not merely disabled.**
+list") swapped `config/product_config.json` to a DISJOINT set, sharing zero TCINs
+with the order-producing list. 0 of 8 are in the config (still true 09-30).
+[VERIFIED 09-22, order attribution re-derived from primary logs]
 
 | TCIN | Product | orders | last MONITORED |
 |---|---|---|---|
@@ -600,14 +660,10 @@ filters to enabled TCINs, so "stopped restocking" and "stopped being monitored"
 are indistinguishable here, with zero exceptions in either direction.
 
 **What IS directly evidenced is the config swap, not Target's behaviour.** Orders
-did not stop because the bot broke or because Target went quiet — as far as the
-data can say, they stopped when we stopped watching the SKUs that produced them.
+stopped when the bot stopped being aimed at the SKUs that produced them — which was
+the operator's choice of target, not a bot failure. Consequence for analysis: the
+July-August order rate is NOT a baseline for the current hot-SKU list.
 
-- ⚠️ **The Pitch Black family is demonstrably still restocking.** Sibling
-  `1011483413` (Pitch Black Booster Box) was in stock as recently as **09-18**,
-  while `1011483406` and `1011483414` — **7 of the 20 orders between them** — have
-  been unwatched for 43 days. This is the cheapest available experiment: the only
-  way to learn whether the order-producing SKUs still restock is to watch them.
 - Correction to `logs/analysis_2026_09_20/winning_shape/SUMMARY.txt`: it lists
   orders #1 and #2 as account `(pre-ident)`. Both were **W1/primary** —
   `build_table.py`'s regex requires a parenthetical that June-era lines lack.
@@ -971,12 +1027,15 @@ must not be used even directionally. — [VERIFIED 09-21]
 
 ## Open contradictions — do not assert either side
 
-- **What a Target ATC 401 means.** Competitor docs: "A Shape block." This project
-  (07-10): the write-auth / member-token layer. One is wrong and it decides where
-  credential effort goes. Never run.
-- **Whether the 401 gate sits before or after the edge limiter.**
-  `docs/FAILURES.md:767` (08-28) says limiter-first; `:773-778` (09-17) corrects to
-  401-first. Unresolved.
+- **What a Target ATC 401 means — two kinds, now separable.** `401 ERR_UNAUTHORIZED`
+  (key present) = a missing/deleted member token (09-25, 09-28). The KEYLESS 401
+  (`_ERR_AUTH_DENIED`, 231-byte body, `x-ssx-hop=1`, no envoy) is produced at the SSX
+  hop after the limiter admitted the shot — consistent with Refract's "a Shape block"
+  (C-0930-03, headers + latency, 09-30). Which vendor stamps `x-ssx-hop`: NOT ESTABLISHED
+  (no public source names it).
+- **Limiter vs 401 order — RESOLVED 09-30 (C-0930-03): the limiter answers first.**
+  `docs/FAILURES.md` 08-28 (limiter-first) was right; its 09-17 "401-first" correction
+  and `docs/HOT_SKU_FIX_2026_09_16.md` L5 were wrong (corrected at source 09-30).
 - **How many hot carts have ever been won — 5 or 6.** Three of this project's own
   analysis artifacts disagree. Conversion is 0 under every count.
 - **Retry cadence**: wave-first ~60 s (ours until 09-23) vs "keep submitting" ~3.5 s
@@ -1105,17 +1164,17 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Metric | Last-known-good | Current regime | As of |
 |---|---|---|---|
 | Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) — no ordinary SKU armed since | 09-20 |
-| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37; 09-25: 1/1,212 (1 cart in 8 windows) | 09-25 |
-| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change | 09-25 |
-| Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07) | 09-25 |
-| Won hot cart → order | none ever | 0/9 lifetime (07-14 → 09-25): 4 never reached place-order, 5 died on checkout FAST_SELLING. A first conversion is a RECOVERY signal | 09-25 |
-| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 and 09-25 had stock: 0; the 09-28 day run and both 09-29 runs had no stock) | 09-30 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst | 09-28 |
-| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone) | 09-28 |
-| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots) | 09-25 |
+| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37; 09-25: 1/1,212 (1 cart in 8 windows); 09-30: 1/256 (1 cart in 12 windows) | 09-30 |
+| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change; 09-30: flip-race first shots 4/33, every other shot 0/219 — no change (C-0930-08) | 09-30 |
+| Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07); 09-30: 4/33 (12.1%; 2 × 401 + 1 × 503 excluded), every other shot 0/219 — no change | 09-30 |
+| Won hot cart → order | none ever | 0/10 lifetime (07-14 → 09-30): 4 never reached place-order, 5 died on checkout FAST_SELLING; 09-30 alt-1 1010892067: 41 place-orders (38 FAST_SELLING, 3 RESERVATION_FAILURE incl. the in-chain one), then RETIRED BY OUR CAPS with the line proven present and the TCIN in stock (C-0930-02). A first conversion is a RECOVERY signal | 09-30 |
+| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23, 09-25 and 09-30 had stock: 0; the 09-28 day run and both 09-29 runs had no stock) | 09-30 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst; 09-30: 0.54% whole run (435/81,040), 1.05% 02:00-05:30, 411 RedSky 206 partial reads (largest burst 02:32:31-02:34:51) — no regime change | 09-30 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone); 09-30: 424 80.0% / keyless 401 20.0% (n=1,804 unique — the readout printed 3,608, a double count, C-0930-07), 0 ERR_UNAUTHORIZED; signed and unsigned decoys 401 at the same rate (C-0930-06) | 09-30 |
+| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots); 09-30: 3/256 (1.2%), all keyless — each a shot that PASSED the limiter (C-0930-03) | 09-30 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
 | Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54, all rung 2) | **0/62 from 09-25 06:01; 09-28: 0/253 (rung 1 404 x253, rung 2 0/12 on live sessions)** — the REPAIR rungs stay broken (both delete or bypass the live token). **RECOVERY 09-29 with the repair off (KEEPFRESH=0): the running bot re-minted 12 of 12 expiries (3 accounts x 4), jars on the 4 h grid, 0 ERR_UNAUTHORIZED** (C-0929-01) | 09-30 |
-| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`) | 09-28 |
+| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`); 09-30: 52 lines / 411 partial reads in 39 clusters, 17 of 52 latest reads incomplete | 09-30 |
 | In-bot scripted re-login | ~0/25 historic | 09-25: 2/5; **09-28: 0/6** ("username did NOT advance"), each left the account a GUEST | 09-28 |
 
 **Declare a regime change and open an investigation when:** a cart rate moves by

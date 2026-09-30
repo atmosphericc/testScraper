@@ -31,6 +31,13 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-09-30] - 0-for on the 03:00 restock: 12 windows on 5 SKUs, 256 shots, 4 past the limiter, 1 cart RETIRED BY OUR OWN won-cart caps while live; the gate order was backwards in our own model - TARGET
+**Symptom**: `run_20260930_014647.log` (01:46:47 → 09:24:52). 12 stock windows 02:31-04:54 (1010892076 ×7, 1010892067 ×2, 1010892069, 1010892078, 95082118), 47 races all 3 wide, 256 main-tab add-to-carts: 248 × 429 `ERR_A2C_TCIN_RATE_LIMITED`, 3 × 429 FAST_SELLING (95082118 first shots), 3 × keyless 401, 1 × 503, 1 × 201 (alt-1, 1010892067, 04:00:06). The cart got 41 place-orders (in-chain RESERVATION_FAILURE + 40 tickets: 38 FAST_SELLING, 2 RESERVATION_FAILURE) and no order. No regime change (flip-race first shots 4/33 vs 15/65).
+**Root Cause**: (1) OURS, checkout: the won-cart loop quit on its own limits — `call_cap` (TARGET_WONCART_CALL_MAX_S=120) at ticket 39, then `cart_ticket_cap` (TARGET_WONCART_MAX_TICKETS=40) at +128 s — while ticket 40's pre_checkout had just proven the line ours and the TCIN read in stock ≥165 s more; the exit's delete read 429, the dirty flag then blocked two in-stock dispatches, and window 2 (04:13) deleted the ~13-min-old line and fired 4 fresh add-to-carts (all edge 429) (C-0930-02, verified). (2) Target, carting: the edge limiter answers FIRST (~130 ms, no `x-ssx-hop`), before the SSX hop that produces the keyless 401 (C-0930-03, verified); it behaves per network location, not per Shape/HUMAN trust (C-0930-04: on 09-15/16 a Shape-denied Bright Data exit passed it on 30/90 later shots, the home line 0/90); all three buyers share one home IP, so the first volley spends the allowance. Trust shows at the SSX wall (401 on 514/518 BD vs 13/38 home, C-0930-05). (3) "keyless 401 = unsigned decoy write" was wrong (C-0930-06).
+**Fix Applied**: None armed. F1 (won-cart caps follow the stock probe; hold the line on an out-of-stock read) was designed from the verified claims, but the Claude Code auto-mode classifier DENIED the edit on 09-30; the tree was restored byte-identical to HEAD. Model corrected at source (CURRENT_STATE, this file 08-28/09-13 items, HOT_SKU_FIX L5); readout double-counts recorded (C-0930-07); structured event store started (`tools/events/`).
+**Confidence**: high on the cart's death and the header/latency facts (fresh-context verifiers, n stated in docs/CLAIMS.md); medium on "per network location" (one night, account and IP confounded); conversion value of more tickets NOT ESTABLISHED (hot tickets 0/90 ever).
+**Outcome**: open — operator decision on F1 and on a second network identity (E5) / a human control (E4).
+
 ### [2026-09-25] - 0-for on a rich restock: 8 windows on all 7 drop SKUs, 1,212 shots, 5 edge admissions, 1 cart lost at checkout; RedSky 206 bursts from 02:10; every account's member-token mint stopped at 06:01 - TARGET
 **Symptom**: `run_20260925_004139.log` (launched 00:41 after a forced hand login of primary, whose token had turned GUEST during four exit-87 boots at 00:31-00:36). Stock windows 03:32-05:41 on all 7 drop SKUs (ETB twice), 14 races, 13 of them 3 accounts wide. 1,212 main-tab add-to-cart shots: 1,205 edge 429 `ERR_A2C_TCIN_RATE_LIMITED`, 4 FAST_SELLING 429 (DCO), 2 keyless 401, 1 × 201. In-stock read to first POST ~0.1 s (C-0925-11). The one cart (business, AH Meganium tin 1012644665, 05:20:27, qty 2) passed pre_checkout 201, then place-order 429 `RESERVATION_FAILURE` at ~1.3 s, FAST_SELLING at +28/+77/+125 s, 424 `INVENTORY_NOT_AVAILABLE` at +174 s: 0 orders. Monitor: 17 bursts 02:10-04:49 in which up to 95% of sweeps failed (ground truth: 94 × HTTP 206), whole-run loss 11.8%. After the drop every account's member-token mint failed from 06:01 (0/62 vs 80/80 before); business stayed dead, primary and alt-1 recovered through a scripted re-login.
 **Root Cause**: (1) The edge limiter is the binding stage — 99.6% of shots — and admitted only a window's FIRST volley, fired 0-11 ms after the window's first shot (5/20 first shots vs 0/663 re-shots at 2-120 s; first-shot rate unchanged vs 09-23, p=0.33). So A1's 2.7 s re-shots bought nothing (C-0925-01). (2) OURS: the one cart was refused by the won-cart loop's entry gate (FAST_SELLING only; this was a 429 RESERVATION_FAILURE), fell into the legacy nav+DOM path, sat 26.7 s in DOM polls on a checkout page that never rendered a button (0/3 such navs found a control in Sept vs 48/60 in Jun-Aug), then the 45 s holds: ONE place-order while the TCIN still read in stock (C-0925-02). (3) primary's first shots on the only two windows where the edge admitted first shots (Meganium 05:20, Feraligatr 05:23) were keyless 401s, so it took the cold re-entry and missed t≈0 on both (C-0925-06). (4) Target-side, cause unknown: the 206 bursts (C-0925-03, cost 0 s of detection tonight — every window fell in a clean gap) and the mint outage (C-0925-04, after the windows; the bot's own delete-first repair brought each death forward by ≤30 min but did not cause the flip — the same repair minted 80/80 before).
@@ -217,8 +224,8 @@ grep checklist and readouts: `docs/HOT_SKU_FIX_2026_09_16.md` sections 5-6.
 **Symptom**: run_20260911_010759, 80 fast-lane chains rebuilt shot by shot (chain-done line + the
 preceding `[HARVEST/x] REPLAY` line): 63×429 (edge lottery), 13×401, 2×431, 1×503, 1×201. 75/80
 shots REPLAYED a real-click banked set (tokens=7, a0=yes, ages 2-91 s) — the harvester works. Of the
-shots that did NOT draw an edge 429 (CORRECTED 2026-09-17: a 401 is not "past the limiter" — see the
-2026-09-16 entry): business 0/6 (all 401), alt-1 0/7 (all 401), primary 503 + 431 +
+shots that did NOT draw an edge 429 (a 401 IS "past the limiter": the 09-17 correction that stood here was
+itself wrong — RE-CORRECTED 2026-09-30, C-0930-03, the limiter answers first): business 0/6 (all 401), alt-1 0/7 (all 401), primary 503 + 431 +
 **201**. Sets carrying the `-a0` chunk: 0/14 (12×401 on the two Bright Data accounts, 431 + 503 on
 home-IP primary). Sets WITHOUT `-a0`: 1/2 — the 201 at 05:19:54 (age 2 s, tokens=6) and one 67-s-old
 business set (401). Every order in the repo's history (07-14 … 08-04) was signed by a set without
@@ -788,12 +795,12 @@ TWO GATES IN SERIES, and both were shut for us:
    rest. The hot-vs-regular "401 share" split (54-73% vs 5-8%) is the
    limiter's pass rate in disguise, NOT differential Shape strictness.
    Measure P(401|not 429) in every future audit.
-   CORRECTED 2026-09-17 (see the 2026-09-16 entry): this item assumed the
-   limiter answers first, so that a 401 proves the shot passed it. The
-   09-16 analysis (plan L5) finds the 401 most likely takes precedence over
-   the limiter, so a 401 is NOT "past the limiter" and "P(401 | passed)"
-   cannot be read this way. Report per identity: P(401) over all shots,
-   passes per non-401 shot, and P(edge429).
+   RE-CORRECTED 2026-09-30 (C-0930-03, verified): this item's original
+   reading was RIGHT. The limiter answers first (ERR_A2C in ~130 ms with no
+   x-ssx-hop; the 401 carries x-ssx-hop and takes seconds in the same
+   volley), so a 401 IS a shot that got past the limiter and P(401 | passed)
+   is the SSX (Shape) wall's deny rate. The 09-17 "401 takes precedence"
+   correction (plan L5) was wrong.
 WHAT SEPARATES WINNING NIGHTS (F2, decisive): the Shape verdict on
 WAVE-FIRST shots (first shot per identity on a TCIN after a >=15 s own
 pause). 07-31: wave-first-3 limiter-passers converted 32.6% (REG) / 9.1%

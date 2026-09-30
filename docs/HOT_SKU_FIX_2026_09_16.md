@@ -32,8 +32,8 @@ A hot-SKU order has to get through three Target gates, one after another. We als
 - **What drives it:** how long an account keeps shooting the same hot TCIN without a break. That is a PROVEN correlation.
   - Chrome age is REFUTED on 3 nights.
   - Whether a deliberate pause resets the wall is UNKNOWN.
-- **Wording fix:** a 401 is **not** "a shot that got past the limiter".
-  - The 401 most likely takes precedence over the limiter (plan L5).
+- **Wording fix — RETRACTED 2026-09-30 (C-0930-03):** a 401 IS a shot that got past the limiter.
+  - The limiter answers first; plan L5's "the 401 takes precedence" was wrong.
   - Future audits should report three numbers per account: P(401) over all shots, passes per non-401 shot, and P(edge-429).
 
 ### Gate 3: checkout FAST_SELLING (`FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION`)
@@ -229,7 +229,7 @@ Some lines are written twice; count only lines that start with a timestamp.
 
 - Checkout admission by gap class and live state, from `[FS_TICKET]`.
 - Checkout attempts per won cart inside the live window.
-- Per account: P(401), passes per non-401 shot, and P(edge-429). A 401 is not "past the limiter".
+- Per account: P(401), passes per non-401 shot, and P(edge-429). A 401 IS past the limiter (C-0930-03).
 - Arrival order (`atc_t0` / `atc_rt`) vs which shot passed.
 - The harvest miss labels (PerimeterX vs other).
 - Pickup fields on the hot TCINs.
