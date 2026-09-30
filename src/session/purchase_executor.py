@@ -445,6 +445,60 @@ def fs_ticket_log_on() -> bool:
     return os.environ.get('TARGET_FS_TICKET_LOG', '0').strip() == '1'
 
 
+def atc_resp_hdrs_on() -> bool:
+    """TARGET_ATC_RESP_HDRS=1 (2026-09-30): one extra [ATC_RESP_HDRS] line per
+    add-to-cart (cart_items POST) response -- EVERY response header, sorted -- on
+    the main tab (every shot) and on the warmup tab for a 401 only (first 20 per
+    account per run). Why: [ATC_RESP] keeps four headers, so whether the hot-item 429
+    carries Retry-After / rate-limit headers, and what a keyless 401 looks like on
+    the wire (Shape block vs token), has never been observable. Log-only: built
+    from the already-parsed header list before the response is continued, printed
+    after, never awaits, never raises. Needs the response-stage capture
+    (TARGET_ATC_RESPONSE_HEADER_CAPTURE, armed). Default '0'. Kill-switch: =0."""
+    return os.environ.get('TARGET_ATC_RESP_HDRS', '0').strip() == '1'
+
+
+_ATC_HDRS_WARMUP_CAP = 20
+
+
+def atc_resp_hdrs_line(label, status, raw_headers, max_val: int = 160,
+                       max_len: int = 2400) -> str:
+    """Pure; never raises. The [ATC_RESP_HDRS] message for one cart_items POST
+    response: 'tab=<label> status=<n> n=<headers> | name=value | ...', sorted by
+    name, each value cut to max_val, the whole message to max_len. Set-Cookie
+    VALUES are never printed (they can carry auth tokens) -- only the cookie
+    names, as set-cookie-names=[...]; cookie / authorization are redacted."""
+    try:
+        pairs, ck = [], []
+        for h in (raw_headers or []):
+            try:
+                if isinstance(h, dict):
+                    n, v = h.get('name'), h.get('value')
+                else:
+                    n, v = getattr(h, 'name', None), getattr(h, 'value', None)
+            except Exception:
+                continue
+            if not n:
+                continue
+            ln = str(n).strip().lower()
+            if ln == 'set-cookie':
+                ck.append(str(v or '').split('=', 1)[0].strip()[:40] or '?')
+                continue
+            if ln in ('cookie', 'authorization', 'proxy-authorization'):
+                pairs.append((ln, '<redacted>'))
+                continue
+            sv = ' '.join(str(v if v is not None else '').split())
+            pairs.append((ln, sv[:max_val]))
+        pairs.sort()
+        if ck:
+            pairs.append(('set-cookie-names', '[' + ','.join(sorted(ck)) + ']'))
+        msg = (f"[ATC_RESP_HDRS] tab={label} status={status} n={len(pairs)}"
+               + ''.join(f" | {k}={v}" for k, v in pairs))
+        return msg[:max_len]
+    except Exception as e:
+        return f"[ATC_RESP_HDRS] tab={label} status={status} unformattable: {type(e).__name__}"
+
+
 def _dx_epoch_ms(v):
     """A browser Date.now() value as int ms, or None (bool / non-finite /
     non-numeric / implausibly small)."""
@@ -2305,11 +2359,35 @@ class PurchaseExecutor:
                                     f"{'on' if getattr(self, '_harvest_selftest_armed', False) else 'off'}")
                         except Exception as _atc_resp_err:
                             self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
+                    # 2026-09-30 TARGET_ATC_RESP_HDRS: every response header of a
+                    # cart_items POST (main tab: every response; warmup: 401 only,
+                    # first _ATC_HDRS_WARMUP_CAP per account per run). Built here from
+                    # the already-parsed list (no I/O, no await, never raises) and
+                    # printed after the shared continue below -- the 08-26 rule.
+                    _atc_hdrs_msg = None
+                    if (self._atc_resp_capture_on and atc_resp_hdrs_on()
+                            and 'web_checkouts/v1/cart_items' in url and method == 'POST'):
+                        try:
+                            if label == 'main':
+                                _atc_hdrs_msg = atc_resp_hdrs_line(label, status, raw_resp_headers)
+                            elif label == 'warmup' and status == 401:
+                                _hn = int(getattr(self, '_atc_hdrs_warm_n', 0) or 0)
+                                if _hn < _ATC_HDRS_WARMUP_CAP:
+                                    self._atc_hdrs_warm_n = _hn + 1
+                                    _atc_hdrs_msg = atc_resp_hdrs_line(label, status, raw_resp_headers)
+                        except Exception:
+                            _atc_hdrs_msg = None
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
                     if _atc_resp_msg:
                         try:
                             print(f"[INTERCEPTOR:{label}] {_atc_resp_msg}")
                             self.logger.info(_atc_resp_msg)
+                        except Exception:
+                            pass
+                    if _atc_hdrs_msg:
+                        try:
+                            print(f"[INTERCEPTOR:{label}] {_atc_hdrs_msg}")
+                            self.logger.info(_atc_hdrs_msg)
                         except Exception:
                             pass
                     return

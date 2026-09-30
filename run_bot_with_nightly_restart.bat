@@ -301,6 +301,14 @@ REM  window finally tells demand-throttle from identity-block. Continue-exactly-
 REM  per the 07-23 leak rule; capture never blocks or mutates the response.
 REM  Kill-switch: set TARGET_ATC_RESPONSE_HEADER_CAPTURE=0
 set TARGET_ATC_RESPONSE_HEADER_CAPTURE=1
+REM  2026-09-30 ATC_RESP_HDRS: one more log-only line per ATC POST response with
+REM  EVERY response header, sorted (main tab: all; warmup: 401 only, first 20 per
+REM  account). It answers: does the hot-item 429 carry Retry-After or rate-limit
+REM  headers, which layer sends it, and what a keyless 401 is on the wire.
+REM  Set-Cookie values are never printed (names only). Built before the response
+REM  is continued, printed after; no await; continue-exactly-once holds.
+REM  Offline: test_dx_logs 24 checks, 4 mutations. Kill-switch: set it to 0.
+set TARGET_ATC_RESP_HDRS=1
 REM  2026-09-21 tab label on [ATC_RESP]. The interceptor label was printed but
 REM  NOT passed to logger.info, so package.log could not tell a real shot from
 REM  the warmup heartbeat. Measured across two nights: 138 main vs 5,144 warmup,

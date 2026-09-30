@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-30 ~00:30 (`/pre-drop` for the 09-30 03:00 restock) · HEAD `2f3d9d27` + the pre-drop working tree below · branch `feat_refract_arch_v1`**
+**As of: 2026-09-30 ~01:40 (`/pre-drop` for the 09-30 03:00 restock) · HEAD `77e8f72b` (commits the 09-28 arming + tonight's work) · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -92,6 +92,15 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   drop — any later-shot admission vs the 0/1,300 baseline is decisive; or scripted login on a
   throwaway account (0/25 baseline), operator-approved only. **Not changed before the 09-30
   drop** (a broken harvester would cost the only shots that pass).
+  **Refined by Refract's live in-bot harvester page (09-30):** "Show Browser: does not matter at
+  all… Harvesting works the same either way" → they do NOT rely on visible/OS-level input, which
+  weakens the pure mouse-path idea. What they stress: a SEPARATE harvester browser (tasks only
+  replay its cookies), "try different browser types… Chrome, Brave, Edge", resi or home IP, and
+  "Local Windows gets flagged much faster" (device trust decays with use). Ours mints every
+  cookie inside the ACCOUNT's own long-lived Chrome profile, which also fires a decoy ATC ~every
+  46 s 24/7 (~20% unsigned → 401). = parity delta #1 of 09-21 ("browsers decoupled from
+  buyers"). **Next experiment: one account fed by a clean separate harvester browser (fresh
+  profile, not logged in, Brave/Edge), A/B on the next drop vs the 0/1,300 later-shot baseline.**
 - **Checkout path map (purchase-flow-engineer, 09-30, `pe` = purchase_executor.py):**
   after a hot 201 the chain runs pre_checkout (≤5 tries, 250 ms, 1.5 s) → ONE place-order;
   a `pre_*` stop or a PO 429 FS/RF enters the ticket loop (`pe:672-696`); a first-PO 424,
@@ -105,7 +114,18 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   (`pe:10186-10192`), no conflict with R1. Per-ACCOUNT 45 s FS cooldown (`pe:7476`, read
   `:4507`) sends that account's next fresh cart on ANY TCIN down the legacy path —
   follow-up. — [INFERRED from code + MEASURED counts, 09-30]
-- **Nothing new armed, no code changed.** Wrapper = HEAD + the uncommitted 09-28 pair.
+- **ARMED 09-30 ~01:35 (new code, LOG-ONLY): `TARGET_ATC_RESP_HDRS=1`** — one
+  `[ATC_RESP_HDRS] tab= status= n= | name=value | ...` line per add-to-cart response with
+  EVERY response header, sorted (main tab: every response; warmup: 401 only, first 20 per
+  account); Set-Cookie values never printed (names only); built before the response is
+  continued, printed after, no await (`purchase_executor.py` `atc_resp_hdrs_line`,
+  `atc_resp_hdrs_on`). Answers: does the hot-item 429 carry Retry-After / rate-limit headers
+  (a per-client penalty window would explain later shots 0/1,300), which layer answers each
+  status, and what a keyless 401 is on the wire. `tests/test_dx_logs.py` +24 checks (276/276),
+  4 mutations caught. Readout rule H1 in `readout_2026_09_30.py`. Kill: =0.
+- **Operator hand-logged all three 09-30 ~01:09-01:12** → readiness 01:13: 3/3 ✅ MEMBER,
+  tokens exp 05:09:47 / 05:10:49 / 05:12:14; 95082118 PARTIAL until the bot's first scan.
+- (The line below was true until 01:35.) **Nothing new armed, no code changed.** Wrapper = HEAD + the uncommitted 09-28 pair.
   Offline suite **30/30** (358 s) on this tree. Readout `tools/analysis/readout_2026_09_30.py`
   (chains 09-29 → 09-25; adds N1 new-TCIN visibility and M1 token continuity with `--jars`:
   member / valid-at-stop / 4 h-grid). — [MEASURED 09-30]

@@ -85,6 +85,7 @@ R_INVIS = re.compile(r'\[TCIN-VISIBILITY\] \d+ of \d+ configured TCIN\(s\) are I
 R_NOWVIS = re.compile(r'\[TCIN-VISIBILITY\] NOW VISIBLE in RedSky')
 R_WARM = re.compile(r'\[ATC_RESP\] status=(\d+) method=POST tgt-cart-error-key=(\S*) .*?tab=warmup')
 R_MAIN_RESP = re.compile(r'\[INTERCEPTOR:main\] \[ATC_RESP\] status=(\d+) method=POST tgt-cart-error-key=(\S*)')
+R_HDRS = re.compile(r'\[ATC_RESP_HDRS\] tab=(\w+) status=(\d+) n=\d+(.*)$')
 JARS = (('primary', 'target.json'), ('business', 'target-2.json'), ('alt-1', 'target-3.json'))
 R_REPLAY = re.compile(r'\[HARVEST/([\w-]+)\] REPLAY on main shot: banked set age=(\d+)s')
 R_EMPTY = re.compile(r'\[HARVEST/([\w-]+)\] bank EMPTY at shot time')
@@ -179,6 +180,7 @@ def main():
     cred = {}                           # ident -> ('cookie'|'page', line_no)
     shot_n = Counter()                  # (race_idx, ident) -> shots so far
     allshots = []                       # (ident, first|later, cookie|page|none, gate)
+    hdrs = []                           # (tab, status, ' | k=v | ...') from [ATC_RESP_HDRS]
     for i, ln in enumerate(lines):
         m = TS.match(ln)
         if m:
@@ -229,6 +231,9 @@ def main():
                         key = mr.group(2) or '-'
                     break
             firsts.append((races[ridx][1], m.group(2), m.group(1), key))
+        m = R_HDRS.search(ln)
+        if m and '[INTERCEPTOR:' in ln:
+            hdrs.append((m.group(1), m.group(2), m.group(3)))
         m = R_WARM.search(ln)
         if m and last_ts:
             warm[(last_ts[11:13], m.group(1), m.group(2))] += 1
@@ -310,6 +315,41 @@ def main():
              if _adm(l) else '')))
     if not allshots:
         w('    NO DATA -- no race shots')
+
+    w('')
+    w('H1  ADD-TO-CART RESPONSE HEADERS (TARGET_ATC_RESP_HDRS, armed 2026-09-30; measured)')
+    w('    Questions, fixed before the run: (a) does the hot-item 429 carry Retry-After or')
+    w('    x-ratelimit-* -- if yes, what values (a per-client penalty window would explain')
+    w('    0/1,300 later shots); (b) which layer answers each status (header-name set per')
+    w('    status: a 429 without envoy/upstream headers = rejected before Target services);')
+    w('    (c) what a keyless 401 carries (Shape block vs token: www-authenticate? a body')
+    w('    length? any x-* verdict header?). Values for the headers named below; names only')
+    w('    for the rest. Each tab/status printed from its own lines.')
+    if not hdrs:
+        w('    NO DATA -- no [ATC_RESP_HDRS] lines (flag off, or no cart_items POST)')
+    else:
+        by = defaultdict(list)
+        for tab_, st_, rest in hdrs:
+            kv = {}
+            for part in rest.split(' | '):
+                if '=' in part:
+                    k_, v_ = part.split('=', 1)
+                    kv[k_.strip()] = v_.strip()
+            by[(tab_, st_)].append(kv)
+        KEYS = ('retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset',
+                'server', 'via', 'x-cache', 'content-length', 'content-type', 'cache-control',
+                'www-authenticate', 'x-envoy-upstream-service-time', 'tgt-cart-error-key')
+        for (tab_, st_), rows in sorted(by.items()):
+            names = Counter(k_ for kv in rows for k_ in kv)
+            w('    tab=%s status=%s n=%d' % (tab_, st_, len(rows)))
+            w('      header names (count): %s' % dict(sorted(names.items())))
+            for key in KEYS:
+                vals = Counter(kv[key] for kv in rows if key in kv)
+                if vals:
+                    w('      %-30s %s' % (key, dict(vals.most_common(6))))
+        ra = Counter(kv.get('retry-after', '<absent>') for (tab_, st_), rows in by.items()
+                     if tab_ == 'main' and st_ == '429' for kv in rows)
+        w('    ANSWER (a): main-tab 429 retry-after values: %s' % (dict(ra) or 'no main-tab 429'))
 
     if a.jars:
         # Read-only. Three checks per account, token values never printed:

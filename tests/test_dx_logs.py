@@ -60,7 +60,7 @@ DX_FLAGS = (
 OTHER_KNOBS = ("TARGET_ATC_BYTEMATCH", "TARGET_FASTLANE_QTY_GUARD", "TARGET_WONCART_DIRECT",
                "TARGET_HELD_CART_REENTRY", "TARGET_FASTLANE_STAGE_TRACK",
                "TARGET_CHECKOUT_BODY_CAPTURE", "TARGET_ATC_RESPONSE_HEADER_CAPTURE",
-               "TARGET_ATC_RESP_LABEL")
+               "TARGET_ATC_RESP_LABEL", "TARGET_ATC_RESP_HDRS")
 for _k in DX_FLAGS + OTHER_KNOBS:
     os.environ.pop(_k, None)
 os.environ["TARGET_API_CAPTURE_CHECKOUT_STEPS"] = "false"   # no capture file writes
@@ -1323,11 +1323,88 @@ def test_scr_ingest():
           "                            + stock_watch_pickup_suffix(s))" in SCR_SRC)
 
 
+def test_pe_atc_resp_hdrs():
+    """2026-09-30 TARGET_ATC_RESP_HDRS: one extra line with every response header of a
+    cart_items POST. OFF = byte-identical output; ON = [ATC_RESP] unchanged + one new
+    line; set-cookie values never printed; every paused event continued exactly once."""
+    atc = lambda rid, hdrs, st=429: _resp_event(rid, ATC_URL, st, hdrs)  # noqa: E731
+    H = {"tgt-cart-error-key": "ERR_A2C_TCIN_RATE_LIMITED", "x-request-id": "RID-1",
+         "Retry-After": "60", "Server": "edge-x", "Content-Length": "0",
+         "Set-Cookie": "SECRETCK=abc.def.ghi; Path=/; Secure"}
+    base_line = ("[INTERCEPTOR:main] [ATC_RESP] status=429 method=POST "
+                 "tgt-cart-error-key=ERR_A2C_TCIN_RATE_LIMITED x-request-id=RID-1 url=cart_items")
+    ex, tab, out_off = _drive({}, [atc("a1", H)])
+    check("hdrs_off_no_line", "[ATC_RESP_HDRS]" not in out_off, out_off[-400:])
+    check("hdrs_off_atc_resp_unchanged",
+          [l for l in out_off.splitlines() if "[ATC_RESP]" in l] == [base_line])
+    check("hdrs_off_continued_once", tab.continues() == ["a1"], tab.continues())
+
+    ex, tab, out = _drive({"TARGET_ATC_RESP_HDRS": "1"}, [atc("a1", H)])
+    hl = [l for l in out.splitlines() if "[ATC_RESP_HDRS]" in l]
+    check("hdrs_on_one_line", len(hl) == 1, hl)
+    line = hl[0] if hl else ""
+    check("hdrs_on_prefix", line.startswith("[INTERCEPTOR:main] [ATC_RESP_HDRS] tab=main status=429 n="), line)
+    check("hdrs_on_retry_after", " | retry-after=60" in line and " | server=edge-x" in line
+          and " | content-length=0" in line, line)
+    check("hdrs_on_sorted", line.find("content-length=") < line.find("retry-after=")
+          < line.find("server=") < line.find("tgt-cart-error-key="), line)
+    check("hdrs_on_cookie_value_never_printed", "abc.def" not in out and "SECRETCK=" not in out, line)
+    check("hdrs_on_cookie_names_only", "set-cookie-names=[SECRETCK]" in line, line)
+    check("hdrs_on_atc_resp_unchanged",
+          [l for l in out.splitlines() if "[ATC_RESP]" in l] == [base_line])
+    check("hdrs_on_continued_once", tab.continues() == ["a1"], tab.continues())
+    check("hdrs_on_after_atc_resp", out.find("[ATC_RESP] status=") < out.find("[ATC_RESP_HDRS]"))
+
+    ex, tab, out = _drive({"TARGET_ATC_RESP_HDRS": "1"},
+                          [atc("a2", {"x-request-id": "R2"}, 201),
+                           _resp_event("c1", PO_URL, 429, {"tgt-cart-error-key": FS_KEY})])
+    hl = [l for l in out.splitlines() if "[ATC_RESP_HDRS]" in l]
+    check("hdrs_on_201_logged_po_not", len(hl) == 1 and "status=201" in hl[0], hl)
+    check("hdrs_on_two_continues", tab.continues() == ["a2", "c1"], tab.continues())
+
+    ex, tab, out = _drive({"TARGET_ATC_RESP_HDRS": "1",
+                           "TARGET_ATC_RESPONSE_HEADER_CAPTURE": "0"}, [atc("a3", H)])
+    check("hdrs_needs_response_capture", "[ATC_RESP_HDRS]" not in out, out[-300:])
+    check("hdrs_capture_off_continued_once", tab.continues() == ["a3"], tab.continues())
+
+    async def _warm(flags, events):
+        ex = _int_ex()
+        tab = _FakeTab()
+        await ex._setup_cdp_fetch_interceptor(tab, persistent=True)
+        h = tab.handlers[cdp.fetch.RequestPaused][-1]
+        for ev in events:
+            await h(ev)
+        return ex, tab
+    with env(TARGET_ATC_RESP_HDRS="1"):
+        # the 424 goes FIRST, while the cap is unspent, so a rule that logged it would show
+        evs = ([atc("w424", {"tgt-cart-error-key": "ITEM_NOT_READY_FOR_LAUNCH"}, 424)]
+               + [atc(f"w{i}", {"x-request-id": "-"}, 401) for i in range(pe_mod._ATC_HDRS_WARMUP_CAP + 3)])
+        out = capture_async(_warm({}, evs))
+    ex, tab = capture_async.result
+    hl = [l for l in out.splitlines() if "[ATC_RESP_HDRS]" in l]
+    check("hdrs_warmup_401_capped", len(hl) == pe_mod._ATC_HDRS_WARMUP_CAP
+          and all("tab=warmup status=401" in l for l in hl), len(hl))
+    check("hdrs_warmup_424_not_logged", not any("status=424" in l for l in hl))
+    check("hdrs_warmup_all_continued_once", tab.continues() == [e.request_id for e in evs]
+          or [str(c) for c in tab.continues()] == [str(e.request_id) for e in evs], tab.continues()[:3])
+
+    f = pe_mod.atc_resp_hdrs_line
+    check("hdrs_pure_junk_no_raise", f("main", 429, None).startswith("[ATC_RESP_HDRS] tab=main status=429 n=0")
+          and f("main", 429, [object(), None, 5]).startswith("[ATC_RESP_HDRS]")
+          and f("main", 429, 7).startswith("[ATC_RESP_HDRS]"))
+    check("hdrs_pure_dict_entries", " | a=1" in f("main", 200, [{"name": "A", "value": "1"}]))
+    check("hdrs_pure_redacts", "sekrit" not in f("main", 200, [{"name": "Authorization", "value": "sekrit"},
+                                                              {"name": "Cookie", "value": "sekrit=1"}]))
+    long = f("main", 200, [{"name": f"h{i}", "value": "x" * 500} for i in range(50)])
+    check("hdrs_pure_max_len", len(long) <= 2400 and "x" * 161 not in long, len(long))
+    check("hdrs_pure_newlines_flattened", "\n" not in f("main", 200, [{"name": "a", "value": "1\n2"}]))
+
+
 def main():
     tests = (test_ir_classify, test_ir_flags, test_ir_runs_and_counters, test_ir_census_format,
              test_mgr_exposure, test_r2_held_reentry_not_a_shot, test_mgr_census, test_mgr_source_pins,
              test_pe_pure_helpers, test_pe_chain_done_line, test_pe_js_insertion, test_pe_js_node,
-             test_pe_interceptor, test_pe_stash_attribution, test_pe_legacy_fs_ticket,
+             test_pe_interceptor, test_pe_atc_resp_hdrs, test_pe_stash_attribution, test_pe_legacy_fs_ticket,
              test_pe_legacy_fs_ticket_body,
              test_pe_note_atc, test_pe_impl_wiring,
              test_smon_fixture, test_smon_malformed, test_scr_ingest)
