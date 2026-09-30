@@ -32,7 +32,7 @@ const RUN = A.run ? String(A.run) : ''
 const NOTE = A.note ? String(A.note) : ''
 const clampInt = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.round(n))) : d }
 const MAX_ROUNDS = clampInt(A.max_rounds, 1, 5, 3)
-const MAX_CLAIMS = clampInt(A.max_claims, 1, 6, 3)
+const MAX_CLAIMS = clampInt(A.max_claims, 1, 6, 4)
 const MAX_GAPS = clampInt(A.max_gaps, 0, 6, 3)
 const KEY = Array.isArray(A.answer_key) ? A.answer_key.map(String) : []
 const CANARIES = Array.isArray(A.canaries) ? A.canaries : []
@@ -40,7 +40,7 @@ const CANARIES = Array.isArray(A.canaries) ? A.canaries : []
 const DOCTRINE = `
 Repo: C:\\Users\\elric\\Desktop\\testScraper (Windows; the Bash tool is Git Bash).
 Read .claude/agent-context.md sections 1, 2, 2C and 4 first. HARD RULES: never launch the bot, a browser, a harvester, a login or a live checkout; never blanket-run tests/; never print config/proxyIps.json; read-only (write only under logs/analysis_*/ when told).
-Facts come from the event store: python tools/events/build.py --only <run_id> (idempotent), then python tools/events/q.py <regime|walls|windows|checkout|per_tcin|arms> --run <run_id>, or q.py "<SQL>" (tables: runs, shots, races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, unparsed). Grep the raw log only for what the store does not parse, and say so.
+Facts come from the event store: python tools/events/build.py --only <run_id> (idempotent), then python tools/events/q.py <regime|regime_tcin|monitor_hours|walls|windows|checkout|per_tcin|arms> --run <run_id>, or q.py "<SQL>" (tables: runs, shots, races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, unparsed). Grep the raw log only for what the store does not parse, and say so.
 Gate model (C-0930-03): edge limiter first (429 ERR_A2C_TCIN_RATE_LIMITED, ~130 ms, no x-ssx-hop) -> SSX hop (keyless 401 = the Shape verdict) -> cart service (201 / FAST_SELLING 429 / 424). A 401 is a shot that got PAST the limiter. Segment by account, first vs later shot, and network.
 Tag every claim [MEASURED]/[REPORTED]/[INFERRED]/[NOT ESTABLISHED]/[REFUTED] with n and path:line; report the unmatched remainder of every tally. Baselines: .claude/state/CURRENT_STATE.md (newest run on top; REGIME WATCH near the end).
 ` + (NOTE ? `\nOPERATOR NOTE: ${NOTE}\n` : '')
@@ -145,7 +145,7 @@ const CRITIC_SCHEMA = {
   properties: {
     gaps: {
       type: 'array',
-      description: 'ONLY questions whose answer could change the units-lost ranking, a fix decision, or a verdict. Empty when the investigation is complete.',
+      description: 'ONLY a question whose answer could flip a verdict in this report, or change which fix spec is eligible or ranked first. Everything exploratory, historical or merely interesting goes to research_questions. Empty when the decision is settled.',
       items: {
         type: 'object',
         properties: {
@@ -155,6 +155,11 @@ const CRITIC_SCHEMA = {
         },
         required: ['question', 'why', 'agent'],
       },
+    },
+    research_questions: {
+      type: 'array',
+      description: 'Worth answering later, but no answer would change a verdict or a fix decision in THIS report. These do not start another round.',
+      items: { type: 'object', properties: { question: { type: 'string' }, why: { type: 'string' } }, required: ['question', 'why'] },
     },
     disagreements: { type: 'array', items: { type: 'string' } },
     specs_on_weak_claims: { type: 'array', items: { type: 'string' } },
@@ -242,8 +247,8 @@ phase('Facts')
 const facts = await agent(DOCTRINE + `
 YOUR TASK: establish the facts of run ${RUN || 'the newest logs/runs/run_*.log larger than 1 MB (by modification time)'}.
 1. Build the store for that run; report the per-marker unparsed remainder.
-2. Run q.py regime, walls, windows, checkout and per_tcin for it; put the tables in tables_md (trim long ones to 40 rows and say so). If q.py arms returns rows, include it.
-3. Compare against CURRENT_STATE.md REGIME WATCH: list in regime_flags every metric that moved more than ~3x, went to zero over a meaningful n, showed a new error string, or recovered - with both numbers.
+2. Run q.py regime, regime_tcin, monitor_hours, walls, windows, checkout and per_tcin for it (monitor_hours also for the previous run, for a like-for-like hour comparison); put the tables in tables_md (trim long ones to 40 rows and say so). If q.py arms returns rows, include it.
+3. Compare against CURRENT_STATE.md REGIME WATCH: list in regime_flags every metric that moved more than ~3x, went to zero over a meaningful n, showed a new error string, or recovered - with both numbers. For every rate-based flag also compute it PER TCIN and with the TCIN that has the most shots left out; a flag that does not survive both is COMPOSITION (which SKUs restocked), not a regime change - say which. Compare monitor loss like-for-like: the same clock hours on earlier restock and no-stock nights, not a whole-run average.
 Return the schema; put anything the store could not answer in gaps.`,
   { label: 'facts', phase: 'Facts', agentType: 'log-miner', model: 'sonnet', schema: FACTS_SCHEMA })
 if (!facts) {
@@ -287,6 +292,7 @@ let jobs = round1
 let round = 1
 let critic = null
 let openGaps = []
+const research = []
 
 const canaryIds = CANARIES.map((_, i) => `X${i + 1}`)
 const canaryClaims = CANARIES.map((c, i) => ({
@@ -324,7 +330,7 @@ while (round <= MAX_ROUNDS && jobs.length > 0) {
   const verdicts = results.filter(v => v.source !== 'calibration').map(v =>
     `- ${v.claim.id} [${v.source}]: ${v.claim.claim} => ${v.judgment ? `${v.judgment.verdict} (replication ${v.judgment.replication_agrees}; ${clip(v.judgment.narrowed_claim, 400)})` : 'NO JUDGMENT'}`).join('\n')
   critic = await agent(DOCTRINE + FACTS_BLOCK + `
-YOUR TASK: completeness critic after round ${R}. Below: every report so far and each claim's verdict (a blind replication + an adversarial check + a neutral judge). Return ONLY gaps whose answer could change the units-lost ranking, a fix decision, or a verdict - each as one answerable question with the agent best placed to answer it. Do NOT repeat anything already investigated:
+YOUR TASK: completeness critic after round ${R}. Below: every report so far and each claim's verdict (a blind replication + an adversarial check + a neutral judge). Put in gaps ONLY a question whose answer could flip a verdict below, or change which fix spec is eligible or ranked first - each as one answerable question with the agent best placed to answer it. Put everything else worth knowing (history, mechanism, curiosity) in research_questions; those do NOT start another round. The loop exists to settle decisions, not to exhaust the topic. Do NOT repeat anything already investigated:
 ${investigated.join('\n')}
 Also list disagreements between reports / verdicts / the event store, fix specs resting on claims that are not CONFIRMED (say whether a PARTIALLY CONFIRMED narrowing still supports them), and file:line of any doc, memory or code comment this run contradicts. Return an empty gaps list when the investigation is complete.
 
@@ -340,7 +346,8 @@ ${verdicts || '(none)'}`, { label: `critic:r${R}`, phase: 'Critic', agentType: '
     seenGaps.add(k)
     return true
   })
-  if (fresh.length === 0) { log(`round ${R}: the critic found nothing new - complete`); openGaps = []; break }
+  ;((critic && critic.research_questions) || []).forEach(q => { if (!research.some(x => norm(x.question) === norm(q.question))) research.push(q) })
+  if (fresh.length === 0) { log(`round ${R}: the critic found no decision-changing gap - complete`); openGaps = []; break }
   if (fresh.length > MAX_GAPS) log(`round ${R}: ${fresh.length} new gaps; taking ${MAX_GAPS}; deferred: ${fresh.slice(MAX_GAPS).map(g => g.question).join(' | ')}`)
   openGaps = fresh
   jobs = fresh.slice(0, MAX_GAPS).map((g, i) => ({
@@ -392,6 +399,7 @@ return {
   rounds_run: Math.min(round, MAX_ROUNDS),
   complete: openGaps.length === 0,
   open_gaps: openGaps.map(g => g.question),
+  research_questions: research,
   reports: reports.map(r => ({ round: r.round, key: r.key, report: r.report })),
   results: results.map(v => ({
     round: v.round, source: v.source, id: v.claim.id, kind: v.claim.kind, claim: v.claim.claim,

@@ -471,6 +471,19 @@ def test_db_and_query_cli():
         check('q_arms_param_bound', 'treated:alt-1' in out and 'rest' in out, out)
         rc, out = q('SELECT gate FROM shots WHERE ident = :who', '-p', 'who=alt-1', '--json')
         check('q_json_and_param', rc == 0 and '"admitted_fs"' in out and '"wall2_denied"' in out, out)
+        # 2026-09-30: per-TCIN regime check (C-0930-08 was a pooled-rate artifact). Two first
+        # shots (ERR_A2C + FAST_SELLING) and two later shots (ERR_A2C + keyless 401) on one TCIN:
+        # first 1/2 past the limiter, admitted 1/2, later 1/2 (a 401 is past), share 100%; the
+        # leave-the-dominant-TCIN-out figure is empty (0/0) because only one TCIN exists.
+        rc, out = q('regime_tcin', '--csv')
+        rows = [r.split(',') for r in out.strip().splitlines()]
+        per = [r for r in rows if len(r) > 1 and r[1] == TC]
+        check('q_regime_tcin_per_tcin', rc == 0 and len(per) == 1
+              and per[0][3:8] == ['1/2', '50.0', '1/2', '1/2', '100.0'], out)
+        pooled = [r for r in rows if len(r) > 4 and r[3] == TC and r[1] == '1/2']
+        check('q_regime_tcin_leave_one_out', rc == 0 and len(pooled) == 1 and pooled[0][5] == '0/0', out)
+        rc, out = q('monitor_hours', '--csv')
+        check('q_monitor_hours_runs_without_stats', rc == 0, out)
 
 
 if __name__ == "__main__":

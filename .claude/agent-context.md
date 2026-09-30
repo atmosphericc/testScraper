@@ -241,7 +241,7 @@ state/proxy_state.json, state/session_profiles/
 **Since 2026-09-30, facts come from ONE tested parser.** `python tools/events/build.py`
 turns `logs/runs/run_*.log` into `logs/events/events.sqlite` (tables: runs, shots,
 races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, unparsed);
-`python tools/events/q.py <regime|walls|windows|checkout|per_tcin|arms> --run <id>` or
+`python tools/events/q.py <regime|regime_tcin|monitor_hours|walls|windows|checkout|per_tcin|arms> --run <id>` or
 `q.py "<SQL>"` answers most questions. It handles glued lines and print+logger
 duplicates once, in one place, under an offline test — the two slips that corrupted
 the 09-30 readout's decoy and header counts (C-0930-07). Grep the raw log only for what
@@ -250,6 +250,12 @@ the store does not parse, say that you did, and prefer extending the parser.
 **Gate model for classifying a shot (C-0930-03):** edge limiter first (429
 `ERR_A2C_TCIN_RATE_LIMITED`, ~130 ms, no `x-ssx-hop`) → SSX hop (keyless 401 = the
 Shape verdict) → cart service (201 / FAST_SELLING 429 / 424). A 401 is PAST the limiter.
+
+**Never read a pooled rate as a regime verdict.** Recompute it per TCIN (`q.py regime_tcin`,
+which also leaves the dominant TCIN out) and compare monitor loss by clock hour against the
+same hours on an earlier night (`q.py monitor_hours`). On 09-30 the pooled first-shot rate
+read as a collapse and as "no change" depending on the cut; per TCIN it was one TCIN that
+has never carted (C-0930-08 weakened, C-0930-09).
 
 ### The legacy readout scripts — `tools/analysis/`
 

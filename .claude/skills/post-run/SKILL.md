@@ -34,8 +34,10 @@ Workflow({ name: "post-run", args: { run: "<run id, optional>", note: "<operator
 It is `.claude/workflows/post-run.js` (v2, 2026-09-30: "loop until complete, and be
 confident without inherent bias"). It runs in ROUNDS until a round adds nothing:
 1. **Facts** (log-miner, Sonnet): `tools/events/build.py` + the saved queries
-   `regime`, `walls`, `windows`, `checkout`, `per_tcin`, `arms` → a schema'd fact sheet
-   and the regime flags against CURRENT_STATE's REGIME WATCH.
+   `regime`, `regime_tcin`, `monitor_hours`, `walls`, `windows`, `checkout`, `per_tcin`, `arms`
+   → a schema'd fact sheet and the regime flags against CURRENT_STATE's REGIME WATCH. A
+   rate flag must survive per-TCIN / leave-one-TCIN-out and like-for-like hours, or it is
+   composition, not a regime change.
 2. **Investigate** — round 1 routes only to what lost units: no restock →
    `stock-pipeline-analyst` (did we miss one?); restock → `antibot-analyst`; any cart →
    `purchase-flow-engineer` (did TARGET or OUR limits end it?); any regime flag →
