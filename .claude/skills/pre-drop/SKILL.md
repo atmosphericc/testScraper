@@ -104,13 +104,21 @@ purchase manager is wired.
 
 ## Phase 5 — Pre-register the readout
 
-Write `tools/analysis/readout_<date>.py` **before** the run, with PASS/FAIL criteria
-fixed in advance, one rule per change you armed. This is `docs/CLAIMS.md` rule 3 and
-it is what stops tomorrow's narrative from being fitted to tomorrow's data.
+Pre-register the readout **before** the run, with PASS/FAIL criteria fixed in
+advance, one rule per change you armed. This is `docs/CLAIMS.md` rule 3 and it is
+what stops tomorrow's narrative from being fitted to tomorrow's data.
 
-Smoke it against a past log so you know the regexes match real lines. Get the
-formats from the actual log, not from the code — print-only markers reach only
+Since 2026-09-30 a readout is a **saved query** in `tools/events/queries/<name>.sql`
+(run with `python tools/events/q.py <name> --run <run_id>`) plus its written rule —
+not a new `readout_<date>.py` that chains yesterday's. If the event store does not
+parse a marker you need, extend `tools/events/build.py` and its offline test
+(`tests/test_events_parser.py`) instead of writing a one-off regex. Smoke the query
+against a past run so you know it returns real rows. Print-only markers reach only
 `logs/runs/run_<boot>.log`, never `package.log`.
+
+If a change's effect is uncertain, arm it on ONE account (`<FLAG>_ACCOUNTS=alt-1`
+style) so the other accounts are same-window controls, and write the readout as a
+treated-vs-control comparison (`q.py arms`).
 
 ## Phase 6 — Gate and record
 

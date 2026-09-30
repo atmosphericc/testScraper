@@ -103,6 +103,8 @@ Thumbs.db
 !.claude/state/
 !.claude/agent-context.md
 !.claude/settings.json
+!.claude/workflows/
+!.claude/hooks/
 # logs/api_capture.log
 
 # Aider

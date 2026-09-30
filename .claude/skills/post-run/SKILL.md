@@ -1,152 +1,104 @@
 ---
 name: post-run
-description: Post-mortem the most recent bot run end to end, then fix what it found. Fans out log forensics, purchase-chain and anti-bot analysis in parallel, verifies every finding from a fresh context, and lands flag-gated fixes behind the offline suite. Use after every drop, restock or overnight run.
-argument-hint: "[run date or log path, optional]"
+description: Post-mortem the most recent bot run end to end, then fix what it found. Runs the saved `post-run` Workflow (facts from the event store, analysts routed to the wall that lost units, fresh-context verification of every load-bearing claim, completeness critic), then lands only verified, flag-gated fixes behind the offline suite and records the corrections. Use after every drop, restock or overnight run.
+argument-hint: "[run id or operator note, optional]"
 arguments: run-target
 ---
 
-# Post-run: find everything that went wrong, then fix it
+# Post-run: find what went wrong, verify it, then fix it
 
-Target run: `$run-target` — if blank, use the most recent run in `logs/`.
+Target run / note: `$run-target` — blank = the newest `logs/runs/run_*.log` over 1 MB.
 
-**Read `.claude/agent-context.md` before anything else.** Its safety rules bind
-this whole workflow.
+**Read `.claude/agent-context.md` before anything else.** Its safety rules bind this
+whole procedure. Rebuilt 2026-09-30 after the operator's "post run … sucks": the
+analysis is now a deterministic Workflow script, and facts come from one tested parser
+instead of a new regex every night.
 
 ## Non-negotiables
 
-- **Never launch the bot to "check" something.** Launching is the user's call. If a
-  question can only be answered by a live run, write it down as an open question.
+- **Never launch the bot** (or a browser, harvester, login or live checkout) to "check"
+  something. A question only a live run can answer becomes a pre-registered experiment.
 - **The gate is `python tests/run_offline_suite.py`.** Never a blanket `tests/` run.
-- **Nothing gets armed on a theory.** Every fix traces to a verified finding.
+- **Nothing gets armed on a theory.** Every fix traces to a claim a fresh-context
+  verifier did not refute. A PARTIALLY CONFIRMED claim supports only its narrowed version.
+- **Auto-mode classifier denials are final for that outcome.** If an edit or command is
+  denied, do not re-route it through another tool, script or agent. Restore the tree,
+  record the blocked fix in CURRENT_STATE / CLAIMS, and hand the decision to the operator.
 
----
-
-## Phase 0 — REGIME CHECK (do this first, every time, before any other analysis)
-
-**Target is an adversary that changes without telling us.** This phase exists
-because ordinary-SKU conversion collapsed on 2026-08-06 and was not noticed for six
-weeks, while the project kept optimising a different tier.
-
-Open `.claude/state/CURRENT_STATE.md` → **REGIME WATCH**, and compute this run's
-value for each baseline metric. Then ask one question: **did the world move?**
-
-Declare a regime change when a rate moves more than ~3x, a status-code
-distribution shifts materially, a new error string appears, or **any metric goes to
-zero over a meaningful n** — that last one is the signal that was missed.
-
-If a regime change is detected:
-1. Say so at the top of the report, before anything else. It outranks every other
-   finding, because tuning inside a changed regime optimises against the wrong world.
-2. Append an entry to `docs/TARGET_CHANGES.md`, including the **detection gap** —
-   how long it took us to notice. Driving that number down is the point.
-3. Ask whether recent fixes were evaluated inside the old regime, and re-open any
-   conclusion that was.
-
-Also watch for **recovery**. Something starting to work again is as informative as
-a collapse, and just as easy to miss.
-
-## Phase 0.5 — Was there anything to buy? (30 seconds, before you spawn anything)
+## Step 1 — Run the workflow (do not re-do its work by hand)
 
 ```
-grep -c 'in_stock=True' <run log>     # the number that decides the whole shape
-grep -c '\[RACE\]' <run log>
+Workflow({ name: "post-run", args: { run: "<run id, optional>", note: "<operator note, optional>" } })
 ```
 
-**If that count is zero, the purchase chain was never exercised** and "0% success"
-is 0-for-**zero**, not 0-for-N. Three of Phase 1's four default agents then have
-nothing to analyse — `purchase-flow-engineer` would be tracing carts that do not
-exist. Spawning them anyway burns a lot of tokens to report "n=0".
+It is `.claude/workflows/post-run.js` (v2, 2026-09-30: "loop until complete, and be
+confident without inherent bias"). It runs in ROUNDS until a round adds nothing:
+1. **Facts** (log-miner, Sonnet): `tools/events/build.py` + the saved queries
+   `regime`, `walls`, `windows`, `checkout`, `per_tcin`, `arms` → a schema'd fact sheet
+   and the regime flags against CURRENT_STATE's REGIME WATCH.
+2. **Investigate** — round 1 routes only to what lost units: no restock →
+   `stock-pipeline-analyst` (did we miss one?); restock → `antibot-analyst`; any cart →
+   `purchase-flow-engineer` (did TARGET or OUR limits end it?); any regime flag →
+   `failure-forensics`. Later rounds: one agent per critic gap.
+3. **Verify every load-bearing claim three ways, none of them by its author:**
+   a **blind replicator** gets only a question (never the claim or its number) and
+   measures it — counting questions go to Sonnet, a different tier than the Opus
+   analyst, to decorrelate errors; a **refuter** gets only the bare claim; a **neutral
+   judge** confirms only when the blind measurement agrees and the refutation fails.
+4. **Critic** — gaps that could change units lost, a fix decision or a verdict. Each new
+   gap becomes the next round's question; no new gap = complete. `max_rounds` (default
+   3) bounds cost and every unfinished gap is logged, never dropped silently.
+5. **Calibration (optional args):** `canaries` = known-false claims mixed in under
+   neutral ids — a confirmed canary means verification is rubber-stamping and the run's
+   verdicts are not to be trusted; `answer_key` = known findings, graded for recall.
+   Both are shown to nobody but the grader. Use them whenever the workflow itself
+   changes (the 09-30 run is the reference case: see the 09-30 section of CURRENT_STATE).
 
-Redirect the fan-out to the only live question — **did we MISS a restock, or did
-none happen?** — with `stock-pipeline-analyst` on blind windows and per-TCIN
-visibility continuity, and `log-miner` on the hour-by-hour sweep tally.
+The result lists every claim with its three checks, `fix_specs` with an `eligible`
+flag (true only when every claim a spec rests on was judged CONFIRMED or PARTIALLY
+CONFIRMED), `complete` / `open_gaps`, and the calibration.
 
-And before calling a zero night a regression, check the base rate:
-`for f in logs/runs/run_*.log; do echo "$(grep -c in_stock=True $f) $f"; done`.
-On 2026-09-22 **six of the last nine full runs had zero stock events** — two in a
-row is normal, and treating it as a regression sends a whole investigation at a
-bot that did nothing wrong.
+Wait for the completion notification. Save the result under
+`logs/analysis_<date>/postrun/` before reading it (it is large).
 
-## Phase 1 — Establish what happened (parallel, cheap where possible)
+If the event store is missing or broken, fix the store first (it is analysis code with
+its own offline test, `tests/test_events_parser.py`); do not fall back to a one-off
+readout script.
 
-Fan these out **in one message** so they run concurrently. Do not do this reading
-yourself; context spent here is context unavailable for the reasoning later.
+## Step 2 — Decide (the main session, not an agent)
 
-| Agent | Model | Job |
-|---|---|---|
-| `log-miner` | sonnet | Raw tallies: shots, status-code distribution, per-TCIN, per-account, per-IP, timeline. **Must report the unmatched remainder.** |
-| `failure-forensics` | opus | Timeline and funnel with n at every stage; name the single highest-loss stage |
-| `purchase-flow-engineer` | opus | Every cart won: trace it to its death or its order, with elapsed times per hop |
-| `antibot-analyst` | opus | Block classification — Shape vs HUMAN/PX vs edge limiter vs write-auth, with n each |
+- **Regime first.** If the facts or the critic flag a regime change, say so at the top
+  of the report and append `docs/TARGET_CHANGES.md` with the detection gap.
+- **Rank by expected units recovered**, not by interest or ease. Separate Target's
+  limits from OUR behaviour — 09-30's only cart was ended by our own caps.
+- A REFUTED verdict kills the fix. Disagreements go back to primary evidence; never
+  average two agents.
 
-Add `stock-pipeline-analyst` (opus) only if detection or monitor behaviour is
-implicated; detection has been measured as not the bottleneck, so it is off the
-critical path by default.
+## Step 3 — Fix (only what survived Step 2)
 
-**Segment hot vs ordinary SKU in every single one.** A pooled number is a useless
-number here — the bot converts on ordinary SKUs and not on hype ones, so anything
-averaged across both describes neither.
+- **Flag-gated and surgical**; the default reproduces current behaviour.
+- **Scope uncertain changes to one account** (`<FLAG>_ACCOUNTS=alt-1` style) so the other
+  accounts are same-window controls. Fleet-wide arming confounds the change with the
+  night (Target's per-SKU, per-night security level) — the main reason past fixes could
+  not be read.
+- **Pre-register the readout as SQL** in `tools/events/queries/` (a named query plus the
+  worked / failed / inconclusive rule and the n it needs), not as a new readout script.
+- Arm in `run_bot_with_nightly_restart.bat` (CRLF). Run the offline suite; report the
+  real result.
 
-## Phase 2 — Synthesise (the orchestrator does this, not an agent)
+## Step 4 — Record, and correct what this run proved wrong
 
-Build the ranked loss list: for each failure, how many units it plausibly cost,
-and what evidence supports that. Rank by expected units recovered, not by how
-interesting or how easy the fix is.
+1. `.claude/state/CURRENT_STATE.md`: bump the as-of line; put this run's section at the
+   top; **delete refuted lines** (no caveats bolted onto stale facts); update the REGIME
+   WATCH rows.
+2. Fix every stale belief at its source (the critic's `stale_facts_to_correct`).
+3. `docs/CLAIMS.md` (CRLF): each claim, n, verdict, date. `docs/FAILURES.md` (CRLF): the entry.
+4. Memory (the machine restarts): a session file + the MEMORY.md RESUME line.
+5. Date-stamp everything; era-stamp every rate; say plainly what is UNPROVEN LIVE and
+   when each flag was armed.
 
-**Reconcile before you rank.** Where two agents disagree, that disagreement is
-itself a finding — resolve it against primary evidence or carry it forward as an
-open contradiction. Do not average two agents into a middle answer.
+## Closing report to the operator
 
-## Phase 3 — Verify (parallel, fresh context, mandatory)
-
-For every finding you intend to act on, spawn a `claims-verifier` (opus) with
-**the claim alone and none of your reasoning**. Run them concurrently.
-
-A `REFUTED` verdict kills the fix. No exceptions, no "but the other evidence
-still points that way" — that reasoning is exactly how this project has shipped
-wrong fixes before.
-
-## Phase 4 — Fix
-
-Only for findings that survived Phase 3.
-
-- **Flag-gated and surgical.** One env flag per behaviour change, defaulting to the
-  current behaviour so the change is reversible without a revert.
-- **Arm in `run_bot_with_nightly_restart.bat`** — a flag that only defaults ON in
-  code is not live. Batch files here **must be CRLF**.
-- **Pre-register the readout.** Before arming anything, write or name the script in
-  `tools/analysis/` that will tell you next run whether it worked, and say what
-  result would count as failure. A change with no pre-registered readout does not
-  get armed.
-- Run `python tests/run_offline_suite.py` and report the real result.
-
-## Phase 5 — Record, and correct what this run proved wrong
-
-This phase is what keeps the whole system from going stale. Skipping it means the
-next session inherits today's beliefs with none of today's corrections.
-
-1. **Update `.claude/state/CURRENT_STATE.md`.** Bump the as-of line to today's date
-   and HEAD. Rewrite every line this run changed. **Delete lines this run refuted —
-   do not leave a stale fact in place with a caveat bolted on;** a future agent
-   will read the fact and skim the caveat.
-2. **Name every belief this run invalidated, explicitly**, with the file and line
-   that still carries the old version. Fix those too. A correction that lives only
-   in this session's chat is a correction that did not happen.
-3. Append to `docs/CLAIMS.md`: each finding, its tag, its n, its verdict, its date.
-4. Append to `docs/FAILURES.md`: what failed and why.
-5. Update the memory directory per the user's standing rule — the machine restarts,
-   and memory is the only thing that survives it.
-6. **Date-stamp everything and era-stamp every rate.** "Converts on ordinary SKUs"
-   is not a claim. "Converted at 15.6% at the stock edge, 07-23→08-04, 0% after
-   08-06" is.
-7. State plainly what is **UNPROVEN LIVE**. Everything shipped here is unproven
-   until a real drop says otherwise, and saying so is accuracy, not hedging.
-8. **Record when each newly-armed flag was armed.** A mechanism only explains
-   outcomes after its arming date, and this project has already been caught
-   attributing results to a feature that was not live at the time.
-
-## Closing report to the user
-
-Lead with units lost and the single biggest cause. Then the ranked list with
-verdicts, then what was armed, then what remains open. Do not pad it with what
-went right.
+Lead with units lost and the single biggest cause (Target's wall or ours). Then the
+ranked, verified list; what was armed; what was blocked and needs their decision; what
+remains open. No padding.

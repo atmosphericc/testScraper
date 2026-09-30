@@ -9,6 +9,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/block_bot_launch.py",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

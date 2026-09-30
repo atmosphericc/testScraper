@@ -89,8 +89,27 @@ message so they run concurrently.
 **Workflows** (`.claude/skills/`):
 - `/pre-drop [time/TCINs]` — best position before a known drop: readiness, regime
   check, arming audit, proxy proof, pre-registered readout, boot checklist. Never starts the bot.
-- `/post-run [run]` — post-mortem the last run, verify findings, land flag-gated fixes
+- `/post-run [run]` — post-mortem the last run, verify findings, land flag-gated fixes.
+  Since 2026-09-30 it drives the saved Workflow `.claude/workflows/post-run.js` (v2):
+  facts from the event store → analysts routed to the wall that lost units → every
+  load-bearing claim checked by a BLIND replicator (sees only a question, never the
+  claimed value), a refuter and a neutral judge → a critic whose gaps start the next
+  round, until a round adds nothing. Known-false canaries + an answer key grade the
+  workflow itself whenever it changes.
 - `/bot-investigate [issue]` — fan-out investigation of a bug or open question
+
+**Event store (2026-09-30):** `python tools/events/build.py` parses `logs/runs/run_*.log`
+into `logs/events/events.sqlite`; query with `python tools/events/q.py <name|"SQL">`
+(saved queries in `tools/events/queries/`). Use it instead of writing a new per-night
+readout script; pre-register a readout as a saved query plus its pass/fail rule.
+
+**Gate model (C-0930-03):** edge limiter first (429 `ERR_A2C_TCIN_RATE_LIMITED`, ~130 ms,
+no `x-ssx-hop`) → SSX hop (keyless 401 = the Shape verdict) → cart service. A 401 is a
+shot that got PAST the limiter.
+
+**Safety hook:** `.claude/hooks/block_bot_launch.py` (PreToolUse, Bash/PowerShell) blocks
+launching `app.py`, the wrapper bat, logins and any `tests/` file outside the offline list.
+Auto-mode classifier denials are final for that outcome — never route around one.
 
 **Always verify before arming.** Hand the bare claim, with none of your reasoning,
 to `claims-verifier`. A `REFUTED` verdict kills the fix.

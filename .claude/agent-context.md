@@ -236,7 +236,22 @@ state/proxy_state.json, state/session_profiles/
 **Forbidden paths:** `__pycache__/`, `.git/`, `venv/`, `node_modules/`, `dist/`,
 `.pytest_cache/`. Never load the whole repo.
 
-## 4. THE READOUT SCRIPTS — `tools/analysis/`
+## 4. THE EVENT STORE FIRST, then the readout scripts
+
+**Since 2026-09-30, facts come from ONE tested parser.** `python tools/events/build.py`
+turns `logs/runs/run_*.log` into `logs/events/events.sqlite` (tables: runs, shots,
+races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, unparsed);
+`python tools/events/q.py <regime|walls|windows|checkout|per_tcin|arms> --run <id>` or
+`q.py "<SQL>"` answers most questions. It handles glued lines and print+logger
+duplicates once, in one place, under an offline test — the two slips that corrupted
+the 09-30 readout's decoy and header counts (C-0930-07). Grep the raw log only for what
+the store does not parse, say that you did, and prefer extending the parser.
+
+**Gate model for classifying a shot (C-0930-03):** edge limiter first (429
+`ERR_A2C_TCIN_RATE_LIMITED`, ~130 ms, no `x-ssx-hop`) → SSX hop (keyless 401 = the
+Shape verdict) → cart service (201 / FAST_SELLING 429 / 424). A 401 is PAST the limiter.
+
+### The legacy readout scripts — `tools/analysis/`
 
 Pre-registered, read-only analyses over the run logs. **Read their source to learn
 what has already been measured** before proposing a new measurement — the answer is
@@ -271,11 +286,17 @@ readout_next_drop.py    the next-drop readout
   `.claude/state/CURRENT_STATE.md` — do not assume, and do not carry a belief
   about this forward from an older session.)
 - **RedSky** — Target's product/stock API, used by the monitor.
-- **Edge limiter** — Target's front-door rate limiter. Returns 429, often with
-  `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` or `ERR_A2C_TCIN_RATE_LIMITED`.
-- **ATC 401** — contested. This repo's 2026-07-10 conclusion is the write-auth /
-  token layer; the competitor's docs call a 401 a Shape block. **Unresolved — do
-  not assert either side as settled.**
+- **Edge limiter** — Target's front-door, per-TCIN rate limiter: 429
+  `ERR_A2C_TCIN_RATE_LIMITED`, empty body, `retry-after: 0`, ~130 ms, no `x-ssx-hop`.
+  It answers BEFORE Shape and behaves per network location (IP or CDN POP), not per
+  trust (C-0930-03/04). `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` (DCO) is a different
+  layer: the cart service's throttle on a shot that got PAST the limiter (it carries
+  `x-envoy-upstream-service-time`).
+- **ATC 401** — two kinds. `401 ERR_UNAUTHORIZED` (key present) = a missing or deleted
+  member token. The KEYLESS 401 (`_ERR_AUTH_DENIED`, 231-byte body, `x-ssx-hop=1`) is
+  produced at the SSX hop after the limiter admitted the shot — the Shape verdict,
+  matching the competitor's "a 401 is a Shape block" (C-0930-03, 09-30 headers +
+  latency). Which vendor stamps `x-ssx-hop` is not established.
 - **Wave-first** — current cadence policy: after an ATC-level failure, sleep
   ~55-70 s before a cold re-entry, rather than retrying fast.
 - **Bank** — the store of harvested Shape credentials.
