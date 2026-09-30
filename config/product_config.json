@@ -62,6 +62,12 @@
       "qty": 2
     },
     {
+      "tcin": "95082118",
+      "name": "Pokémon Trading Card Game: Mega Evolution— Ascended Heroes Elite Trainer Box",
+      "enabled": true,
+      "qty": 2
+    },
+    {
       "tcin": "1011209279",
       "name": "Pokémon Trading Card Game: First Partner Illustration CollectionSeries 2",
       "enabled": false,

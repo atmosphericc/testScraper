@@ -106,6 +106,33 @@ Entry format:
 - **Confidence:** [MEASURED] that mints stopped; why [NOT ESTABLISHED] — a Target-side
   change to the mint path vs re-mint disabled for these accounts or this IP after the
   drop's volume. The deciding observation is the mint request's own response.
+- **UPDATE 2026-09-28 (pre-drop): still broken 3+ days later, and it was rung 2 that
+  changed.** All 80 successful mints 09-17 → 09-25 03:54:46 came from rung 2 (delete the
+  accessToken + reload `/account`); rung 1 (`gsp.target.com/gsp/token_refresh`) last
+  succeeded **09-16 17:25** — it was dead before 09-25, so its 404 is not this change.
+  The 09-28 16:12-21:30 run (first with `TARGET_TOKEN_MINT_LOG=1`): rung 1 **253/253
+  `status=404 type=cors`**; rung 2 on live login-sessions **0/12** (landed on `/account`,
+  `accessToken=none`), 0 `minted via` lines all run. What still minted: the wrapper's
+  `relogin_one.py all` validate pass — a fresh Chrome on the saved profile loading
+  `/account` WITHOUT deleting anything — gave primary and alt-1 member tokens at
+  16:11:47 / 16:12:14 (n=2; business, whose session was already dead, got a guest).
+  A member token lives **4 h**. Detection gap for the persistence: 3 days (no run
+  between 09-25 07:50 and 09-28 16:12). [MEASURED 09-28, antibot-analyst +
+  orchestrator; `logs/runs/run_20260928_161223.log`, `logs/relogin.log`]
+  Whether Target now mints only on a load that carries an (expired) token, or the
+  difference is fresh Chrome vs a long-lived tab: [NOT ESTABLISHED].
+- **UPDATE 2026-09-29 (pre-drop for 09-30): minting works inside the running bot as
+  long as nothing deletes the token.** With `TARGET_TOKEN_KEEPFRESH=0` +
+  `TARGET_RELOGIN_MAX_PER_6H=0` (armed 09-28), all three accounts were re-minted at
+  each 4 h expiry in long-lived tabs: jars at 23:13 hold `sut=R` tokens iat 21:11:25 /
+  21:12:44 / 21:14:29, on the 4 h grid of the 01:11-01:14 hand logins, with no login or
+  restart after 09:11:46; 0 decoy `401 ERR_UNAUTHORIZED` across 12 expiries (CLAIMS
+  C-0929-01). So "fresh Chrome vs long-lived tab" is not the difference. What remains
+  consistent with every observation: **a load that still carries the (expired) token
+  mints a member token; a load after the token was deleted does not** (rung 2 deletes
+  first: 80/80 before 09-25 06:01, 0/12 on 09-28). If that is the 09-25 change, it is
+  Target requiring the old token to refresh. [INFERRED; the mint request itself is
+  still unlogged]
 
 ---
 

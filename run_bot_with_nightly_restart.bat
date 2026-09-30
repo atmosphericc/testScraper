@@ -1323,7 +1323,25 @@ REM  it escalates the ladder to a credential relogin. The 07-10 guest-churn was 
 REM  concurrent live session (personal Chrome logged into an account) evicting the
 REM  token faster than the relogin cap ? OPERATIONAL fix: sign out / close any
 REM  personal-browser Target tabs before the drop. Kill-switch: set to 0.
-set TARGET_TOKEN_KEEPFRESH=1
+REM 2026-09-28 pre-drop: KEEP-FRESH OFF. Since 2026-09-25 about 06:00 nothing in
+REM the bot can mint a member token (rung 1 token_refresh 404 on 253 of 253 tries,
+REM rung 2 /account reload 0 of 12 on live sessions, 09-28 run). A member token
+REM lives 4 h and only a hand login or the wrapper-start relogin_one.py pass mints
+REM one. With =1 the keep-fresh repair DELETED each live token about 3.5 h after
+REM its mint (09-28 19:44, primary and alt-1, 27 min left) and each false 401x3
+REM heartbeat verdict deleted one too (3 on 09-28). =0: no in-bot path deletes the
+REM token, so it lives its full 4 h; the sentinel falls back to the pre-07-07
+REM /account navigation check. docs/CLAIMS.md C-0928-02, C-0928-03, C-0928-04.
+REM Kill: set it back to 1 once minting works again.
+set TARGET_TOKEN_KEEPFRESH=0
+REM 2026-09-28 pre-drop: NO IN-BOT SCRIPTED RE-LOGIN. 0 of 6 on 09-28 (username
+REM did NOT advance), and each attempt cleared the live browser cookies and left the
+REM account a GUEST (idToken sut=G stamped at each attempt). =0 blocks the only
+REM caller (session_manager _credential_relogin_allowed), so a live login-session
+REM outlives its token and the next wrapper start can re-mint from it. The
+REM wrapper-start relogin_one.py pass is not affected. C-0928-02, C-0928-04.
+REM Kill: delete this line.
+set TARGET_RELOGIN_MAX_PER_6H=0
 REM 2026-09-25 post-run (docs/CLAIMS.md C-0925-04): the member-token mint went
 REM from 80 of 80 to 0 of 62 at 06:01 on all three accounts and Target's answer
 REM was never logged. =1 logs rung 1's HTTP status and, on a failed rung 2,

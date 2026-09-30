@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-25 ~11:45 (first-gate investigation after the 09-25 post-run) · HEAD `16cec4ca` (the post-run arming) + the L3 flip log below · branch `feat_refract_arch_v1`**
+**As of: 2026-09-30 ~00:30 (`/pre-drop` for the 09-30 03:00 restock) · HEAD `2f3d9d27` + the pre-drop working tree below · branch `feat_refract_arch_v1`**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -14,6 +14,182 @@ any investigation that changes one of these lines, and **delete lines that turn 
 to be wrong rather than leaving them with a caveat.**
 
 ---
+
+## PRE-DROP 2026-09-29 late → restock 2026-09-30 03:00 (`/pre-drop`)
+
+Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 1010892078,
+95082118`; "dont delete any skus"; wants the implementation fixed, not "lottery".
+
+- **Config:** the first four were already enabled at `"qty": 2`. **`95082118` was in no
+  config and no run log ever** → added enabled, `"qty": 2`, placeholder name (nothing
+  branches on `name`). 11 enabled (≤30). Backup
+  `config/product_config_backup_pre_2026-09-30_drop.json`. — [MEASURED 09-30 00:0x]
+- 🟢 **The accounts keep themselves alive now (C-0929-01, REFUTES "nothing in the bot
+  re-mints").** Under the 09-28 arming (`KEEPFRESH=0`, `RELOGIN_MAX_PER_6H=0`) each member
+  token was re-minted inside the running bot at its 4 h expiry: the jars saved 09-29 23:13
+  hold `sut=R` tokens issued **21:11:25 / 21:12:44 / 21:14:29**, mid-run, with no login or
+  restart after 09:11:46, on the 4 h grid of the 01:11-01:14 hand logins (+8..+22 s over five
+  cycles). 0 `401 ERR_UNAUTHORIZED` decoys in both 09-29 runs vs 1,348 on 09-28. 12 expiries,
+  0 lapses. Mechanism NOT ESTABLISHED. **Hand-login timing is no longer the lever** — a
+  start at any time works (before 01:11 the running bot re-mints; after 01:14 the wrapper-start
+  pass re-mints an expired token, n=2 on 09-28). — [MEASURED 09-29/30]
+- **Readiness 09-30 ~00:00:** 3/3 ✅ MEMBER, login-session 29.1 d, refreshToken 89.9 d, member
+  tokens expire 01:11:25 / 01:12:44 / 01:14:29. — [MEASURED]
+- **09-29 had NO restock** (log-miner, both runs): 0 in-stock reads, 0 races, 0 shots; every
+  ATC response a decoy. Monitor: 01:16-06:33 55,692 sweeps 403=0 429=0 other 31 (0.056%);
+  09:11-23:15 149,731 sweeps 403=0 429=0 other 214 (0.14%); 18/18 ready; `[STOCK][206]` 13 /
+  59 isolated singles (some 9/10 incomplete); 0 visibility banners; tracebacks all
+  `WinError 10054`. **No regime change.** This is the proxy-pool proof for tonight
+  (production path, the wrapper's own env, 19 h), in place of `validate_proxies.py`. — [MEASURED]
+- **Keyless 401 = an unsigned write (decoys):** each sampled decoy 401 carried `Shape
+  tokens: 0` and its 424 re-probe carried all six `X-GyJwza5Z-*`. Main first shots replay a
+  banked set (09-25 05:20: all three replayed, bank 5-6/6), so this bites re-shots and decoys
+  with an empty bank, not first shots. primary's two 09-25 first-shot 401s were signed
+  (10 s-old set) — cause still unknown (C-0925-06). — [MEASURED 09-30, n=3 decoy samples]
+- **`95082118` = Mega Evolution Ascended Heroes Elite Trainer Box** (web search listing +
+  a 09-23 hobbyist repo pairing it with 1010892076 / 1010892069). — [REPORTED 09-30]
+- 🔴 **Refract's LIVE docs (09-30, 5,798 lines; archived
+  `logs/analysis_2026_09_30/research/refract_llms_full_2026_09_30.txt`) differ from the 09-21
+  corpus (87 diff hunks) and say, verbatim: "Target has become a submit order lottery.
+  Carting is not the hard part anymore: plenty of users cart around 90% of their tasks on a
+  drop, especially on macOS. Checking out is… only about 1% of carts turn into an order"
+  (L3504); "10 tasks does not cut it anymore, and why 5-account setups do not work. The
+  median running task count is 12… The people you see hitting double digits… are probably
+  running hundreds if not thousands of tasks" (L3506); "Local Windows gets flagged much
+  faster and tops out around 30 tasks" (L3508); checkout = "spamming submit order to force
+  the order through the rate limit. Every bot has to brute-force it this way… it is why the
+  number of accounts you run matters so much" (L3699). — [REPORTED, vendor, no n]
+  **So:** at their 1% cart→order, even their 90% carting on 3 accounts is ~0.03 orders a
+  window; the scale lever is real. **But our CARTING is the gap they do not have:** 09-25
+  carted 1 of 42 account-races (2.4%) and re-shots went 0/663 vs "~90% of tasks". Lead,
+  NOT ESTABLISHED: our trust score — local Windows + CDP-driven Chrome + our own 24/7
+  Shape traffic (a real decoy ATC ~every 46 s per account, ~20% of them unsigned 401s =
+  "Shape blocks" in Refract's terms, plus a harvest every 40 s). No exposed knob for the
+  decoy cadence; not changed tonight. **First daytime investigation.** Weakened: the decoy
+  write heartbeat shipped 2026-07-07 (`60a8b2f9`), before every July-August order, so it did
+  not stop ordinary SKUs converting; for hot SKUs it is untested.
+- 🔴 **WHERE OUR CARTING DIES — per-shot credential join, 1,760 hot shots, five nights
+  (09-11, 09-15/16, 09-17, 09-22/23, 09-25; orchestrator script, 09-30):**
+  | IP | first shot of a race | every later shot |
+  |---|---|---|
+  | home line (all buyers since 09-20) | ~7-12% admitted | **0 of 1,300+** (09-15 primary 0/89, 09-22 0/19, 09-25 0/1,171) |
+  | BD exits (09-15/16: alt-1 AZ, business Dallas) | 34% / 5.5% "passed" | same as first — but **every one a keyless 401** (71/71) |
+  Page-signed (bank-empty) shots on strict SKUs 0/1,000; cookied re-shots on strict SKUs
+  0/261 at any cookie age (0/135 under 15 s), account, harvest page, a0 or window age.
+  Model that fits every observation [INFERRED]: **Shape verdict first (bot → keyless 401;
+  unsigned decoys → 401, signed → 424) → hot-item limiter (429 unless admitted) → cart
+  service (201 / FS 429 / 424).** BD exits fail step 1 (Refract: "resis pass Shape far better
+  than ISPs"); the home line passes step 1 and the limiter admits only the flip's first
+  volley. Refract users "cart ~90%" through the same limiter → their requests sit in a
+  higher trust tier ("the cookie is a test that has to score 90% or higher", security rises
+  after the first wave). **Leading hypothesis, NOT ESTABLISHED: our Shape score is held down
+  by SYNTHETIC INPUT** — hand logins pass ~100% while scripted logins in the same Chrome on the
+  same IP fail ~100% (0/25), and every cookie is minted by a CDP `Input.dispatchMouseEvent`
+  click of ≤9 Bezier points ~80 px apart, a teleported start, no scroll, no dwell
+  (`shape_harvest.py:409-548`). Constraint: more mouse events grow the `-a` sensor toward the
+  ~7,900-byte chunk limit → `-a0` → 431 header-too-large on the shot (09-13). Test design: A/B
+  one account with human-grade input (OS-level SendInput or high-fidelity paths) on the next
+  drop — any later-shot admission vs the 0/1,300 baseline is decisive; or scripted login on a
+  throwaway account (0/25 baseline), operator-approved only. **Not changed before the 09-30
+  drop** (a broken harvester would cost the only shots that pass).
+- **Checkout path map (purchase-flow-engineer, 09-30, `pe` = purchase_executor.py):**
+  after a hot 201 the chain runs pre_checkout (≤5 tries, 250 ms, 1.5 s) → ONE place-order;
+  a `pre_*` stop or a PO 429 FS/RF enters the ticket loop (`pe:672-696`); a first-PO 424,
+  keyless/non-CVV 400 or 401/403 still falls to the legacy nav+DOM path (27.96 s on 09-25)
+  and a **whole-cart clear** (`pe:5538-5539`). In the loop an unverified cart fires a
+  place-order only after a pre 2xx (`pe:8889-8890`, `:8920-8925`); 4/4 hot in-chain chains
+  since 09-11 ended `pre=429 po=0`. The 40-ticket cap bound once (09-17) on a cart a 424 RF
+  had already emptied — not a lever. PRE_RETRY, the 1,1,1,2,2,3 schedule, eviction
+  read/PRESUME and RF_ENTRY: **0 live runs since arming** — tonight is their first live
+  test if a cart is won. `TARGET_RESERVATION_BAIL` governs only the legacy DOM loop
+  (`pe:10186-10192`), no conflict with R1. Per-ACCOUNT 45 s FS cooldown (`pe:7476`, read
+  `:4507`) sends that account's next fresh cart on ANY TCIN down the legacy path —
+  follow-up. — [INFERRED from code + MEASURED counts, 09-30]
+- **Nothing new armed, no code changed.** Wrapper = HEAD + the uncommitted 09-28 pair.
+  Offline suite **30/30** (358 s) on this tree. Readout `tools/analysis/readout_2026_09_30.py`
+  (chains 09-29 → 09-25; adds N1 new-TCIN visibility and M1 token continuity with `--jars`:
+  member / valid-at-stop / 4 h-grid). — [MEASURED 09-30]
+
+## PRE-DROP 2026-09-28 late evening → possible drop 2026-09-29 03:00 (`/pre-drop`)
+
+Operator: a drop may or may not come at 03:00; TCINs unannounced, so the config is
+unchanged (the same 10 enabled, all `"qty": 2`, backup
+`config/product_config_backup_pre_2026-09-29_drop.json`). More accounts are being
+made; none is wired in tonight (a new account needs its address, card and one
+manual order first).
+
+- 🔴 **All three accounts are SIGNED OUT right now; each saved jar holds only a GUEST
+  idToken (`sut=G`), no accessToken.** `check_session_readiness.py` printed ✅ 3/3
+  MEMBER anyway: a jar with no accessToken fell through to "will re-mint at startup
+  (usually fine)". Fixed (display only, `READINESS_GUEST_CHECK`, default on; exit
+  code still always 0): it now reads the idToken and prints ❌ SIGNED OUT, and for a
+  member token prints its expiry. **Every account needs a FORCED hand login**
+  (`hand_login_primary_force.bat`, `hand_login_business_force.bat`,
+  `hand_login_alt1_force.bat`). The wrapper's `relogin_one.py all` pass cannot do it:
+  its check is the `/account` URL after 3 s (`relogin_one.py:66-74`), which a guest
+  passes (business, 09-28 16:12). — [MEASURED 09-28 23:00]
+- **The 09-28 16:12-21:30 run** (`run_20260928_161223.log`, daytime, killed by the
+  operator): no stock (0 in-stock reads, 0 races, 0 shots). Monitor 56,029 sweeps,
+  403=0, 429=0, other=27 (0.048%); 18r most of the run, 93 one-session dips to 17r;
+  `[STOCK][206]` 21 isolated singles, every one `complete=10/10` (errors in
+  `store_positions` / `promotions`, not fulfillment) — L1 works, no burst. 41
+  tracebacks, all benign `WinError 10054`. — [MEASURED 09-28, log-miner]
+- 🔴 **The mint outage persists and the bot turned it into dead accounts again.**
+  Rung 1 (`gsp token_refresh`) 404 on 253/253; rung 2 0/12 on live sessions; 0
+  `minted via` all run. All 80 mints 09-17 → 09-25 came from rung 2; rung 1 had not
+  worked since 09-16 (docs/TARGET_CHANGES.md, updated). What still mints: a hand
+  login and the wrapper-start validate pass (fresh Chrome loading `/account`, nothing
+  deleted: primary 16:11:47, alt-1 16:12:14; n=2). **A member token lives exactly
+  4 h** (n=5). Chain on 09-28 (primary and alt-1): the keep-fresh repair fired at
+  19:44:01 with 27 min left → rung 2 deleted the live token → the nav refresh
+  "succeeded" on generic selectors and saved the token-less jar over the good file →
+  the scripted re-login (`Network.clearBrowserCookies`, then "username did NOT
+  advance", 0/6 all day) left each a GUEST; the idToken `iat`s match the attempts
+  (business 16:49:46, alt-1 20:19:51, primary 20:20:03). The 401x3 heartbeat also
+  deleted live tokens on 3 false alarms (restored by the watchdog in 22-41 s). A
+  write-dead account is still dispatched and fires 401s (`worker_pool.py:344-353`
+  has no auth check). By 20h the fleet's decoy writes were 95% `401
+  ERR_UNAUTHORIZED`, 100% at 21h. — [MEASURED 09-28; antibot-analyst +
+  purchase-flow-engineer]
+- ⚠️ **A decoy 424 ("write-auth alive") does not prove a MEMBER token:** primary and
+  alt-1 read 424 for ~40 min after becoming guests (a guest cart accepts writes).
+  Only the jar's accessToken `sut` or a `could NOT mint` line says member vs guest.
+  — [MEASURED 09-28]
+- **ARMED 2026-09-28 pre-drop (existing flags, no new code) — UNPROVEN LIVE
+  (docs/CLAIMS.md C-0928-02..04):**
+  `TARGET_TOKEN_KEEPFRESH=0` (was 1 since 07-12) — no in-bot path deletes a member
+  token, so a hand-login token lives its full 4 h; the sentinel falls back to the
+  pre-07-07 `/account` navigation check (holds the page lock p50 1.8 s, p90 8.8 s,
+  n=41, every ~300 s per idle account). `TARGET_RELOGIN_MAX_PER_6H=0` (was unset = 2)
+  — no in-bot scripted sign-out + login, so a live login-session outlives its token
+  and the next wrapper start can re-mint from it. Fresh-context verifier: no deleter,
+  no sign-out, no dispatch/order change CONFIRMED; "the /account check is the only new
+  behaviour" REFUTED — also a park can't clear early, 3 failed `/account` checks in a
+  row restart that buyer's Chrome (recent live-session checks 62/62 OK), the sentinel
+  no longer sees token loss (heartbeat still logs it), a TOKEN CHURN alert's text is
+  now false. `relogin_one.py` at wrapper start is untouched by both and still signs out
+  on a login redirect or ANY navigation exception. `TARGET_SENTINEL_HOMEIP_RELOGIN=0`
+  was considered and is a no-op (applies only to proxied buyers, `session_manager.py:2212`);
+  `TARGET_TOKEN_MIN_TTL_S=0` was rejected (keeps the heartbeat's delete + the save race).
+  Readout: `tools/analysis/readout_2026_09_29.py` (runs `readout_arm_2026_09_25.py`,
+  then W1 first-shot 401s, W2 session survival, W3 decoy mix, K2 flag took, K3
+  re-mint watch). Kill: KEEPFRESH=1 / delete the MAX line. Offline suite 30/30.
+- Historic windows: 09-23 02:47-05:16, 09-25 03:32-05:41 (the only admissions 05:20 /
+  05:23). (A "timing is the lever / nothing re-mints inside the bot" line stood here; it
+  was REFUTED 09-30 by C-0929-01 — the bot re-mints at expiry under this arming.)
+- **What actually happened 09-29:** the operator went to bed; forced hand logins via the
+  new `hand_login_all_force.bat` (all accounts in one run, 30 min deadman) at 01:11-01:14
+  → member tokens `iat` 01:11:11 / 01:12:36 / 01:14:07, **lifetime exactly 4.000 h (n=3,
+  first hand-login measurement)**, member refreshToken 90 d (the guest one read 180 d).
+  Bat started 01:16:05; its `relogin_one.py all` pass did **NOT** re-mint the still-valid
+  tokens (exp unchanged, n=3) — a fresh-Chrome `/account` load with a VALID token does not
+  refresh it; the 09-28 16:11 mints (n=2) were of expired tokens. [MEASURED 09-29]
+  (The prediction "write-auth ends 05:11-05:14" was wrong: the running bot re-minted at
+  05:11 and at every expiry after — C-0929-01. The scheduled-restart workaround, blocked
+  by the auto-mode classifier on 09-29, is therefore not needed.)
+- **Proxy pool:** not re-validated with `validate_proxies.py`; the 09-28 live run is
+  the stronger proof — production path, the wrapper's own env, 5.3 h, 18/18 exits at
+  ~100% (0-11 `other` each), 0 × 403 / 429. The 2 reserve exits were not exercised.
 
 ## 2026-09-25 FIRST-GATE INVESTIGATION — what "99% lost at the first gate" really is
 
@@ -162,7 +338,8 @@ four 09-23 changes below (A1/A2/A3/G1).
 - 🔴 **09-25 00:31-00:41 boot: primary's login had silently degraded to GUEST.** Four
   launches in a row exited 87 on the homepage probe (`[LOGIN_CHECK] probe error: Timeout
   (10.0s) waiting for element with text: 'Hi,'`) while every wrapper validate-pass said
-  "already logged in ✅" — that pass only checks the cookie NAMES exist. The read-only
+  "already logged in ✅" — that pass only checks that `/account` did not redirect within
+  3 s (`relogin_one.py:66-74`), which a guest passes (corrected 09-28). The read-only
   readiness check then showed primary `accessToken=guest/none (sut=G)` with a freshly
   reissued 180-day refreshToken (it read MEMBER `sut=R`, 89.8 d at 23:48). A **forced**
   hand login (`hand_login_primary_force.bat` = `relogin_one.py primary --manual --force`,
@@ -912,13 +1089,14 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change | 09-25 |
 | Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07) | 09-25 |
 | Won hot cart → order | none ever | 0/9 lifetime (07-14 → 09-25): 4 never reached place-order, 5 died on checkout FAST_SELLING. A first conversion is a RECOVERY signal | 09-25 |
-| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 and 09-25 had stock: 0) | 09-25 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25** | 09-25 |
-| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage) | 09-25 |
+| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23 and 09-25 had stock: 0; the 09-28 day run and both 09-29 runs had no stock) | 09-30 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst | 09-28 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone) | 09-28 |
 | ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots) | 09-25 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
-| Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54) | **0/62 from 09-25 06:01, all 3 accounts** — REGIME CHANGE candidate, cause NOT ESTABLISHED (C-0925-04) | 09-25 |
-| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03) | 09-25 |
+| Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54, all rung 2) | **0/62 from 09-25 06:01; 09-28: 0/253 (rung 1 404 x253, rung 2 0/12 on live sessions)** — the REPAIR rungs stay broken (both delete or bypass the live token). **RECOVERY 09-29 with the repair off (KEEPFRESH=0): the running bot re-minted 12 of 12 expiries (3 accounts x 4), jars on the 4 h grid, 0 ERR_UNAUTHORIZED** (C-0929-01) | 09-30 |
+| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`) | 09-28 |
+| In-bot scripted re-login | ~0/25 historic | 09-25: 2/5; **09-28: 0/6** ("username did NOT advance"), each left the account a GUEST | 09-28 |
 
 **Declare a regime change and open an investigation when:** a cart rate moves by
 more than ~3x in either direction, a status-code distribution shifts materially, a
@@ -950,6 +1128,9 @@ many documents repeat it.
 - Refract's complete public doc corpus (43 pages, 6,040 lines) pulled 2026-09-21 to
   `logs/analysis_2026_09_21/research/refract_llms_full_2026_09_21.txt`.
   Refresh from `help.refractbot.com/llms-full.txt`. Target module ≈ L3062-4351.
+  **Superseded 09-30 by the live pull** `logs/analysis_2026_09_30/research/refract_llms_full_2026_09_30.txt`
+  (5,798 lines, 87 diff hunks; adds "submit order lottery", ~1% cart→order, ~90% carting,
+  "5-account setups do not work", median 12 tasks, local Windows tops out ~30 tasks).
 - Their bank IS a hard admission gate ("Waiting for Cookies (Product)"); ours is
   not. Their target is 3 credentials per **running task**. — [REPORTED 09-21]
 - Their proxy guidance has **two regimes**: ≤10 tasks + ≤2 harvesters on a local
