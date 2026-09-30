@@ -82,6 +82,9 @@ OFFLINE = [
     # [STOCK][FLIP] line per out->in read (real ResilientStockChecker, stub callback,
     # temp state dir; no browser, no network).
     "test_redsky_flip_log",
+    # 2026-09-30: the run-log event store (tools/events/build.py + q.py) -- synthetic log
+    # lines parsed in memory and into a temp SQLite file (no browser, no network, no bot).
+    "test_events_parser",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
