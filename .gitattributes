@@ -1,0 +1,4 @@
+# Workflow and hook scripts must stay LF on every checkout: with core.autocrlf=true they would
+# get CRLF, and the Workflow tool rejects a script containing CR ("control characters").
+.claude/workflows/*.js text eol=lf
+.claude/hooks/*.py text eol=lf
