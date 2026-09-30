@@ -56,6 +56,9 @@ ARMED 2026-09-28 pre-drop (run_bot_with_nightly_restart.bat, existing flags only
 Read-only over the log. Stdlib only.
 """
 from __future__ import annotations
+# 2026-09-30 ~01:50: response-line lookback widened by 4 (9->13 / 12->16): the new
+# [ATC_RESP_HDRS] print+logger lines sit between [ATC_RESP] and the chain-done line and
+# pushed ~1% of 09-25 shots out of the old window (claims-verifier). Rule unchanged.
 
 import argparse
 import os
@@ -124,7 +127,7 @@ def main():
                 if k not in seen:
                     seen.add(k)
                     key = '?'
-                    for j in range(i - 1, max(-1, i - 9), -1):
+                    for j in range(i - 1, max(-1, i - 13), -1):
                         mr = R_MAIN_RESP.search(lines[j])
                         if mr:
                             if mr.group(1) == m.group(1):

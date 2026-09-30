@@ -61,6 +61,9 @@ decoy mix, K2 keep-fresh off, K3 re-mint watch) and adds:
 Read-only over the log (and, with --jars, over target*.json + logs/relogin.log). Stdlib only.
 """
 from __future__ import annotations
+# 2026-09-30 ~01:50: response-line lookback widened by 4 (9->13 / 12->16): the new
+# [ATC_RESP_HDRS] print+logger lines sit between [ATC_RESP] and the chain-done line and
+# pushed ~1% of 09-25 shots out of the old window (claims-verifier). Rule unchanged.
 
 import argparse
 import base64
@@ -211,7 +214,7 @@ def main():
             _c = cred.get(m.group(2))
             _src = _c[0] if _c and i - _c[1] <= 400 else 'none'
             _key = '?'
-            for j in range(i - 1, max(-1, i - 12), -1):
+            for j in range(i - 1, max(-1, i - 16), -1):
                 mr = R_MAIN_RESP.search(lines[j])
                 if mr:
                     if mr.group(1) == m.group(1):
@@ -224,7 +227,7 @@ def main():
                 continue
             seen.add(k)
             key = '?'
-            for j in range(i - 1, max(-1, i - 9), -1):
+            for j in range(i - 1, max(-1, i - 13), -1):
                 mr = R_MAIN_RESP.search(lines[j])
                 if mr:
                     if mr.group(1) == m.group(1):
