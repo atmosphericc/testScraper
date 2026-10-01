@@ -4139,6 +4139,60 @@ def test_r9_ticket_pre_retry():
         os.environ.update(saved)
 
 
+def test_f1_live_cap_exempt():
+    """F1 (2026-09-30, TARGET_WONCART_LIVE_CAP_EXEMPT): the per-cart ticket cap and
+    the per-call time cap must not retire a cart whose TCIN still reads live. On 09-30
+    the loop retired alt-1's 1010892067 cart at call_cap (39) then cart_ticket_cap (40)
+    while the item was in stock, and the next window deleted the still-held line
+    (C-0930-02). Flag off = byte-identical."""
+    CB, CC = pe_mod.woncart_cap_binds, pe_mod.woncart_call_cap_binds
+    # Pure functions.
+    off = pe_mod.woncart_cfg({})
+    check("f1_defaults_off", off["live_exempt"] is False and off["hard_max_tickets"] == 150
+          and off["max_tickets"] == 14)
+    check("f1_off_cap_at_max", CB(13, True, off) is False and CB(14, True, off) is True
+          and CB(14, False, off) is True and CB(14, None, off) is True and CB(13, None, off) is False)
+    check("f1_off_callcap_time_only", CC(100, 0, True, off) is False and CC(121, 0, True, off) is True)
+    on = pe_mod.woncart_cfg({"TARGET_WONCART_LIVE_CAP_EXEMPT": "1", "TARGET_WONCART_MAX_TICKETS": "3",
+                             "TARGET_WONCART_HARD_MAX_TICKETS": "50"})
+    check("f1_on_live_rides_to_hard", CB(3, True, on) is False and CB(49, True, on) is False
+          and CB(50, True, on) is True)
+    check("f1_on_oos_keeps_cap", CB(3, False, on) is True and CB(3, None, on) is True
+          and CB(2, False, on) is False)
+    check("f1_on_live_skips_callcap", CC(10 ** 9, 0, True, on) is False and CC(10 ** 9, 0, False, on) is True)
+    check("f1_hard_clamp", pe_mod.woncart_cfg({"TARGET_WONCART_HARD_MAX_TICKETS": "10"})["hard_max_tickets"] == 50
+          and pe_mod.woncart_cfg({"TARGET_WONCART_HARD_MAX_TICKETS": "999"})["hard_max_tickets"] == 400)
+    small = dict(TARGET_WONCART_MAX_TICKETS="3", TARGET_WONCART_STEADY_GAP_S="3",
+                 TARGET_WONCART_JITTER_S="0", TARGET_WONCART_SCHEDULE_S="1,1")
+    # Flag OFF: a live cart is still retired at max_tickets=3 (prior behaviour).
+    c = Clock()
+    ex = bare(c)
+    ex.probe = {"live": True}
+    tab = TicketTab(ex, [t_pre(429)] * 80, c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, **small)
+    check("f1_off_loop_caps_at_3", r.get("won_cart_exit") == "cart_ticket_cap" and len(tab.tickets) == 3,
+          (r.get("won_cart_exit"), len(tab.tickets)))
+    # Flag ON + live True: rides PAST max_tickets=3 and past call_cap (146 s > 120 s at
+    # steady 3 s) to the hard ceiling (50), then retires.
+    c = Clock()
+    ex = bare(c)
+    ex.probe = {"live": True}
+    tab = TicketTab(ex, [t_pre(429)] * 80, c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_LIVE_CAP_EXEMPT="1",
+                         TARGET_WONCART_HARD_MAX_TICKETS="50", **small)
+    check("f1_on_live_rides_to_50", len(tab.tickets) == 50 and r.get("won_cart_exit") == "cart_ticket_cap",
+          (len(tab.tickets), r.get("won_cart_exit")))
+    # Flag ON + probe out of stock: NOT kept alive (tail_spent ends it quickly, few tickets).
+    c = Clock()
+    ex = bare(c)
+    ex.probe = {"live": False}
+    tab = TicketTab(ex, [t_pre(429)] * 80, c)
+    (v, r), _ = loop_run(ex, tab, c, FL_PRE429, TARGET_WONCART_LIVE_CAP_EXEMPT="1",
+                         TARGET_WONCART_HARD_MAX_TICKETS="50", **small)
+    check("f1_on_oos_not_kept_alive", r.get("won_cart_exit") == "tail_spent" and len(tab.tickets) <= 2,
+          (r.get("won_cart_exit"), len(tab.tickets)))
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
@@ -4164,7 +4218,9 @@ def main():
              test_r8_review_20260920_presume_dirty_and_pre400_key,
              # 2026-09-20: the in-TICKET pre_checkout retry (29x pre=429 across
              # every log; only 7 of 43 tickets ever fired a place-order)
-             test_r9_ticket_pre_retry)
+             test_r9_ticket_pre_retry,
+             # 2026-09-30 F1: don't retire a live, verified cart at our own caps
+             test_f1_live_cap_exempt)
     for fn in tests:
         try:
             fn()

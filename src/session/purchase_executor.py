@@ -617,6 +617,17 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
         'oos_tail': int(_num('TARGET_WONCART_OOS_TAIL_TICKETS', 1, 0, 5)),
         'max_tickets': int(_num('TARGET_WONCART_MAX_TICKETS', 14, 1, 50)),
         'call_max_s': _num('TARGET_WONCART_CALL_MAX_S', 120, 20.0, 280.0),
+        # 2026-09-30 F1 (C-0930-02, VERIFIED): on 09-30 the loop retired a LIVE,
+        # verified cart (alt-1, 1010892067) at call_cap (ticket 39) then
+        # cart_ticket_cap (ticket 40) while the TCIN still read in stock >= 165 s
+        # more, and the next window DELETED the still-present line. With '1' the
+        # per-cart ticket cap and the per-call time cap do not fire while the stock
+        # probe reads live True (woncart_cap_binds / woncart_call_cap_binds); only
+        # TARGET_WONCART_HARD_MAX_TICKETS (a safety ceiling) and the real deadline
+        # (budget_spent, the ride window) still bound a live cart. An out-of-stock
+        # or unknown probe keeps the normal cap. Default '0' = byte-identical.
+        'live_exempt': str(env.get('TARGET_WONCART_LIVE_CAP_EXEMPT', '0')).strip() == '1',
+        'hard_max_tickets': int(_num('TARGET_WONCART_HARD_MAX_TICKETS', 150, 50, 400)),
         # >= 12 s ticket evaluate + 2 s abort read + 15 s bounded delete + 5 s.
         'headroom_s': _num('TARGET_WONCART_HEADROOM_S', 45, 34.0, 200.0),
         'pre_streak_max': int(_num('TARGET_WONCART_PRE_STREAK_MAX', 3, 1, 10)),
@@ -649,6 +660,44 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
         # marker and takes a normal shot. Default '0' = read result only.
         'eviction_presume': str(env.get('TARGET_WONCART_EVICTION_PRESUME', '0')).strip() == '1',
     }
+
+
+def woncart_cap_binds(tickets, live, cfg: Dict[str, Any]) -> bool:
+    """2026-09-30 F1 (TARGET_WONCART_LIVE_CAP_EXEMPT): True when the per-cart ticket
+    cap should end a won-cart loop or retire a held marker.
+
+    Flag off: tickets >= TARGET_WONCART_MAX_TICKETS, exactly as before (live ignored).
+    Flag on: TARGET_WONCART_HARD_MAX_TICKETS always binds; below it a live-True probe
+    never binds (keep riding a live cart), while an out-of-stock (False) or unknown
+    (None) probe keeps the normal cap. Pure; never raises."""
+    try:
+        n = int(tickets or 0)
+    except (TypeError, ValueError):
+        n = 0
+    try:
+        if not cfg.get('live_exempt'):
+            return n >= int(cfg.get('max_tickets', 14))
+        if n >= int(cfg.get('hard_max_tickets', 150)):
+            return True
+        if live is True:
+            return False
+        return n >= int(cfg.get('max_tickets', 14))
+    except Exception:
+        return n >= 14
+
+
+def woncart_call_cap_binds(wake, call_start, live, cfg: Dict[str, Any]) -> bool:
+    """2026-09-30 F1: True when TARGET_WONCART_CALL_MAX_S should end this loop call.
+    With TARGET_WONCART_LIVE_CAP_EXEMPT=1 and a live-True probe it never fires: the
+    real deadline (budget_spent, the ride/manager window minus headroom) still bounds
+    the call, and the 6 s manager round trip of a mid-window call_cap exit is skipped.
+    Pure; never raises."""
+    try:
+        if cfg.get('live_exempt') and live is True:
+            return False
+        return float(wake) > float(call_start) + float(cfg.get('call_max_s', 120.0))
+    except Exception:
+        return False
 
 
 def woncart_read_exact(read, tcin, qty) -> Optional[int]:
@@ -8822,7 +8871,7 @@ class PurchaseExecutor:
                     now = time.time()
                     live = self._stock_state(T).get('live')
                     st['live'] = live
-                    if int(L.get('tickets', 0) or 0) >= cfg['max_tickets']:
+                    if woncart_cap_binds(L.get('tickets', 0), live, cfg):
                         st['reason'] = 'cart_ticket_cap'
                         break
                     if live is False and st['oos'] >= cfg['oos_tail']:
@@ -8842,7 +8891,7 @@ class PurchaseExecutor:
                     if wake > last_start:
                         st['reason'] = 'budget_spent'
                         break
-                    if wake > call_start + cfg['call_max_s']:
+                    if woncart_call_cap_binds(wake, call_start, live, cfg):
                         st['reason'] = 'call_cap'
                         break
                     # R1 review (R1-ARM-1): yield only after THIS call fired a
@@ -9313,12 +9362,18 @@ class PurchaseExecutor:
         if not isinstance(h, dict) or not held_cart_reentry_on():
             return ''
         try:
+            cfg = woncart_cfg()
             ttl = held_cart_ttl_s()
-            cap = woncart_cfg()['max_tickets']
+            cap = cfg['max_tickets']
             created = float(h.get('created') or 0.0)
             age = (time.time() - created) if created > 0 else float('inf')
             tickets = int(h.get('tickets', 0) or 0)
-            if age <= ttl and tickets < cap:
+            # F1: do not retire a held marker at the count cap while its TCIN reads
+            # live (only HARD_MAX / TTL do). The probe is read only when armed, so the
+            # flag-off path is unchanged: woncart_cap_binds(.., None, ..) == tickets>=cap.
+            _ex_tcin = str(h.get('tcin') or '')
+            _ex_live = self._stock_state(_ex_tcin).get('live') if (_ex_tcin and cfg.get('live_exempt')) else None
+            if age <= ttl and not woncart_cap_binds(tickets, _ex_live, cfg):
                 return ''
             why = 'ttl' if age > ttl else 'ticket_cap'
             if self._boot_audit_busy():
@@ -9369,7 +9424,10 @@ class PurchaseExecutor:
             tickets = int(h.get('tickets', 0) or 0)
             loop_ok = (self._woncart_armed() and not self.test_mode and self._woncart_api_path_on()
                        and (not self._cvv_required or self._fast_lane_cvv()))
-            if not HT or not loop_ok or age > ttl or tickets >= cfg['max_tickets']:
+            # F1: re-enter (don't retire) a held cart at the count cap while live; the
+            # probe is read only when armed, so flag-off is byte-identical.
+            _he_live = self._stock_state(HT).get('live') if (HT and cfg.get('live_exempt')) else None
+            if not HT or not loop_ok or age > ttl or woncart_cap_binds(tickets, _he_live, cfg):
                 why = ('bad_marker' if not HT else 'loop_not_armed' if not loop_ok
                        else 'ttl' if age > ttl else 'ticket_cap')
                 print(f"[HELD_CART] retired ({why}; ttl={ttl:.0f}s cap={cfg['max_tickets']}) "

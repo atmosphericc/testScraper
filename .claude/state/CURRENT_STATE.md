@@ -26,7 +26,7 @@ to be wrong rather than leaving them with a caveat.**
 | Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here: home 13/38 denied, BD exits 514/518 | C-0930-05 |
 | Wall 3 — checkout | place-order FAST_SELLING / RESERVATION_FAILURE lottery (Refract: ~1% of carts → order); our won-cart loop's 40-ticket / 120 s caps ENDED a live verified cart on 09-30; history: 17/20 orders came on the FIRST place-order, none after more than 4 — so the value of more tickets is NOT ESTABLISHED | C-0930-02/10 |
 | Outcomes | 0 orders since 08-04; 0 hot-SKU orders ever (0/10 hot carts converted) | Outcomes section |
-| Blocked / operator decisions | F1 (caps follow the stock probe; hold the line on OOS) — edit DENIED by the auto-mode classifier, spec in `logs/analysis_2026_09_30/postrun/wf_checkout_fix_specs.json`; E5 second network identity — not built; E4 human control — no code | 09-30 post-run |
+| Blocked / operator decisions | F1 (don't retire a live won cart) — CODE LANDED flag-gated OFF + tested (suite 31/31); ARMING blocked by the production-deploy gate, operator adds `set TARGET_WONCART_LIVE_CAP_EXEMPT=1` after bat:1142 (kill: `=0`); E5 second network identity — not built; E4 human control — declined | 09-30 |
 | Process | `/post-run` → saved Workflow `.claude/workflows/post-run.js` (rounds until dry; blind replicator + refuter + judge per claim; canaries); facts from `tools/events/` (SQLite); PreToolUse hook blocks the common direct bot / login / live-test launches. **The hook is a safety net, not a guarantee:** an independent replay of 10,094 past commands (09-30) found launch forms it misses and some offline-test loops it wrongly blocks. The rule "bot start = operator only" still binds every agent regardless of the hook. | CLAUDE.md, 09-30 review |
 
 ## POST-RUN 2026-09-30 — real restock, 1 cart, 0 orders (claims C-0930-02..08, `docs/CLAIMS.md`)
@@ -69,9 +69,15 @@ extraction files: `logs/analysis_2026_09_30/postrun/`.
   dirty flag → two in-stock dispatches fired nothing → at 04:13 (window 2, same TCIN) the
   bot deleted the ~13-minute-old line and fired 4 fresh add-to-carts (all edge 429). The
   line had survived 13 min in the cart. Refract: keep submitting, no cap stated.
-  **Fix F1 (caps follow the stock probe; hold the line on an out-of-stock read) was DESIGNED
-  but the edit was DENIED by the Claude Code auto-mode classifier; NOTHING ARMED. Operator
-  decision.** Conversion value of more tickets: NOT ESTABLISHED and history leans against
+  **Fix F1 is now LANDED (2026-09-30, flag-gated, default OFF = byte-identical):
+  `TARGET_WONCART_LIVE_CAP_EXEMPT=1` makes the ticket cap + per-call cap not fire while the
+  stock probe reads live; only `TARGET_WONCART_HARD_MAX_TICKETS` (150) and the ride deadline
+  bound a live cart. `woncart_cap_binds` / `woncart_call_cap_binds` in `purchase_executor.py`,
+  all 4 cap sites routed through them; `test_f1_live_cap_exempt` (10 checks); offline suite
+  31/31. NOT YET ARMED — editing the production wrapper is blocked by the "[Production Deploy]"
+  gate, so arming is the operator's step: add `set TARGET_WONCART_LIVE_CAP_EXEMPT=1` after
+  bat:1142; kill-switch `=0`. Readout: event store `loop_ends.reason` + `tickets` max n per
+  live cart.** Conversion value of more tickets: NOT ESTABLISHED and history leans against
   it — 17 of the 20 orders ever came on the cart's FIRST place-order and none needed more
   than 4 (C-0930-10, June-August ordinary-SKU era); the one post-FAST_SELLING order was one
   FS, a ~42-45 s hold, then one POST → 200. Hot tickets 0/90 ever.
