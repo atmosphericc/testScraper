@@ -231,6 +231,20 @@ API_CYCLE_IN = re.compile(r'\[(?P<hms>\d\d:\d\d:\d\d)\] \[API_CYCLE\] IN STOCK: 
 STATS = re.compile(r'\[STOCK STATS\] t=(?P<t>[\d.]+)s sweeps=(?P<sweeps>\d+) \([\d.]+/s\) 200=(?P<s200>\d+) '
                    r'403=(?P<s403>\d+)(?: 429=(?P<s429>\d+))? other=(?P<other>\d+)(?: beh=(?P<beh>\d+))? '
                    r'outstanding=(?P<out>\d+)')
+# 2026-10-05 post-run (RESILIENT_STATUS_LOG / RESILIENT_206_INGEST=shadow), logger-only
+STOCK_STATUS = re.compile(r'\[STOCK STATUS\] tcin=(?P<tcin>\d{6,12}) #(?P<n>\d+) old=(?P<old>\S+) '
+                          r'new=(?P<new>\S+) in_stock=(?P<ins>[01]) services=(?P<svc>-?\d+|None) '
+                          r'atp=(?P<atp>\S+) reason=(?P<reason>\S+) via=(?P<via>\S+)')
+STOCK_STATUS_NOTE = re.compile(r'\[STOCK STATUS\] tcin=\S*?: (?:\d+ changes logged this run|not logged|'
+                               r'could not format)')
+SELLOOS = re.compile(r'\[STOCK\] SELLABLE-PARSED-OOS tcin=(?P<tcin>\d{6,12}) #(?P<n>\d+) '
+                     r'reason=(?P<reason>\S+) avail=(?P<avail>\S+) loyalty=(?P<loy>\S+) rtc=(?P<rtc>\S+) '
+                     r'services=(?P<svc>-?\d+|None) via=(?P<via>\S+)')
+SHADOW206 = re.compile(r'\[STOCK\]\[206-SHADOW\] bodies=(?P<bodies>\d+) qualifying=(?P<q>\d+) '
+                       r'tcin_reads=(?P<reads>\d+) paired=(?P<paired>\d+) agree=(?P<agree>\d+) '
+                       r'disagree=(?P<dis>\d+) in_stock_206=(?P<in206>\[[^\]]*\]) err_segs=(?P<segs>\S+) '
+                       r'first_disagree=(?P<first>.*)$')
+SHADOW206_ERR = re.compile(r'\[STOCK\]\[206-SHADOW\] not counted: ')
 EXPOSURE = re.compile(r'\[EXPOSURE\] ident=(?P<ident>\S+?) tcin=(?P<tcin>\S+?) kind=(?P<kind>\S+?) '
                       r'run_shots=(?P<rs>\d+) run_s=(?P<rsec>\d+) win_age_s=(?P<wa>[\d-]+) '
                       r'chrome_age_s=(?P<ca>[\d-]+) proxied=(?P<prox>yes|no|-) resting=(?P<resting>yes|no)')
@@ -314,6 +328,9 @@ PRINT_FAMILIES = [
     ('FLIP@wrong_form', r'\[STOCK\]\[FLIP\] '),
     ('STATS@wrong_form', r'\[STOCK STATS\] '),
     ('WATCH@wrong_form', r'\[STOCK WATCH\] '),
+    ('STATUS@wrong_form', r'\[STOCK STATUS\] '),
+    ('SELLOOS@wrong_form', r'\[STOCK\] SELLABLE-PARSED-OOS '),
+    ('SHADOW206@wrong_form', r'\[STOCK\]\[206-SHADOW\] '),
 ]
 LOGGER_FAMILIES = [
     ('ATC_RESP_L', r'^\[ATC_RESP\] '),
@@ -322,6 +339,9 @@ LOGGER_FAMILIES = [
     ('STATS', r'\[STOCK STATS\] '),
     ('CRED', r'\[HARVEST/[\w-]+\] (?:REPLAY on main shot|bank EMPTY at shot time|bank STALE at shot time)'),
     ('WATCH', r'\[STOCK WATCH\] '),
+    ('STATUS', r'\[STOCK STATUS\] '),
+    ('SELLOOS', r'\[STOCK\] SELLABLE-PARSED-OOS '),
+    ('SHADOW206', r'\[STOCK\]\[206-SHADOW\] '),
     ('VERIFY', r'\[STOCK\] VERIFY \(cache-bust\): '),
     ('RACE@wrong_form', r'\[RACE\] '),
     ('FL_CHAIN@wrong_form', r'\[FAST_LANE\] chain done'),
@@ -625,6 +645,44 @@ class RunParser:
         self._add('stats', t_s=_float(g['t']), sweeps=int(g['sweeps']),
                   s200=int(g['s200']), s403=int(g['s403']), s429=_int(g['s429']),
                   other=int(g['other']), beh=_int(g['beh']), out=int(g['out']))
+        return True
+
+    # 2026-10-05: RESILIENT_STATUS_LOG / RESILIENT_206_INGEST=shadow (logger-only lines)
+    def _h_STATUS(self, t, p, lg):
+        m = STOCK_STATUS.match(t, p)
+        if not m:
+            if STOCK_STATUS_NOTE.match(t, p):
+                self._add('status_note')
+                return True
+            return False
+        g = m.groupdict()
+        self._add('stock_status', tcin=g['tcin'], n=int(g['n']), old_key=g['old'], new_key=g['new'],
+                  avail=g['new'].split('|')[0], in_stock=int(g['ins']), services=_int(g['svc']),
+                  atp=_float(g['atp']), reason=None if g['reason'] == '-' else g['reason'], via=g['via'])
+        return True
+
+    def _h_SELLOOS(self, t, p, lg):
+        m = SELLOOS.match(t, p)
+        if not m:
+            return False
+        g = m.groupdict()
+        self._add('sellable_oos', tcin=g['tcin'], n=int(g['n']), reason=g['reason'], avail=g['avail'],
+                  loyalty=None if g['loy'] == '-' else g['loy'], rtc=g['rtc'], services=_int(g['svc']),
+                  via=g['via'])
+        return True
+
+    def _h_SHADOW206(self, t, p, lg):
+        m = SHADOW206.match(t, p)
+        if not m:
+            if SHADOW206_ERR.match(t, p):
+                self._add('shadow206_err')
+                return True
+            return False
+        g = m.groupdict()
+        self._add('shadow206', bodies=int(g['bodies']), qualifying=int(g['q']), tcin_reads=int(g['reads']),
+                  paired=int(g['paired']), agree=int(g['agree']), disagree=int(g['dis']),
+                  in_stock_206=','.join(re.findall(r'\d{6,12}', g['in206'])), err_segs=g['segs'],
+                  first_disagree=None if g['first'].strip() == '-' else g['first'].strip()[:300])
         return True
 
     def _h_EXPOSURE(self, t, p, lg):
@@ -1424,6 +1482,22 @@ class RunParser:
         stats = [dict(line=e['line'], ts_ms=ep(e['naive']), ts=e['stamp'], t_s=e['t_s'], sweeps=e['sweeps'],
                       s200=e['s200'], s403=e['s403'], s429=e['s429'], other=e['other'], beh=e['beh'],
                       outstanding=e['out']) for e in E['stats']]
+        # 2026-10-05: status log + 206 shadow rows (the logger stamp is the line's own time)
+        stock_status = [dict(line=e['line'], ts_ms=ep(e['naive']), ts=e['stamp'], tcin=e['tcin'], n=e['n'],
+                             old_key=e['old_key'], new_key=e['new_key'], avail=e['avail'],
+                             in_stock=e['in_stock'], services=e['services'], atp=e['atp'],
+                             reason=e['reason'], via=e['via']) for e in E['stock_status']]
+        sellable_oos = [dict(line=e['line'], ts_ms=ep(e['naive']), ts=e['stamp'], tcin=e['tcin'], n=e['n'],
+                             reason=e['reason'], avail=e['avail'], loyalty=e['loyalty'], rtc=e['rtc'],
+                             services=e['services'], via=e['via']) for e in E['sellable_oos']]
+        shadow206 = [dict(line=e['line'], ts_ms=ep(e['naive']), ts=e['stamp'], bodies=e['bodies'],
+                          qualifying=e['qualifying'], tcin_reads=e['tcin_reads'], paired=e['paired'],
+                          agree=e['agree'], disagree=e['disagree'], in_stock_206=e['in_stock_206'],
+                          err_segs=e['err_segs'], first_disagree=e['first_disagree']) for e in E['shadow206']]
+        if E['status_note']:
+            checks['status_note_lines'] = len(E['status_note'])
+        if E['shadow206_err']:
+            checks['shadow206_error_lines'] = len(E['shadow206_err'])
         # orders: the buying thread prints "Purchase execution completed ... 'order_id'" and
         # then "Marked thread as completing: <tcin>#W<n>"; W<n> -> ident from the race labels.
         # Fallback: the first unused race-done line whose newest entry is 'purchased'.
@@ -1575,6 +1649,7 @@ class RunParser:
             sh.pop('_seq', None)
         return dict(run=run, shots=shots, races=race_rows, flips=flip_rows, windows=win_rows,
                     tickets=tickets, loop_ends=loop_ends, decoys=decoys, monitor_stats=stats,
+                    stock_status=stock_status, sellable_oos=sellable_oos, shadow206=shadow206,
                     orders=orders, idents=list(idents.values()), unparsed=unparsed,
                     place_orders=place_orders,
                     checks=[dict(name=k, value=repr(v)) for k, v in sorted(checks.items())])
@@ -1935,6 +2010,14 @@ SCHEMA = {
     'monitor_stats': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts TEXT', 't_s REAL', 'sweeps INTEGER',
                       's200 INTEGER', 's403 INTEGER', 's429 INTEGER', 'other INTEGER', 'beh INTEGER',
                       'outstanding INTEGER'],
+    'stock_status': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts TEXT', 'tcin TEXT', 'n INTEGER',
+                     'old_key TEXT', 'new_key TEXT', 'avail TEXT', 'in_stock INTEGER', 'services INTEGER',
+                     'atp REAL', 'reason TEXT', 'via TEXT'],
+    'sellable_oos': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts TEXT', 'tcin TEXT', 'n INTEGER',
+                     'reason TEXT', 'avail TEXT', 'loyalty TEXT', 'rtc TEXT', 'services INTEGER', 'via TEXT'],
+    'shadow206': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts TEXT', 'bodies INTEGER',
+                  'qualifying INTEGER', 'tcin_reads INTEGER', 'paired INTEGER', 'agree INTEGER',
+                  'disagree INTEGER', 'in_stock_206 TEXT', 'err_segs TEXT', 'first_disagree TEXT'],
     'orders': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts TEXT', 'ident TEXT', 'tcin TEXT',
                'order_id TEXT', 'route TEXT', 'ident_src TEXT'],
     'idents': ['run_id TEXT', 'ident TEXT', 'proxied INTEGER', 'proxied_src TEXT', 'boot_proxied INTEGER',

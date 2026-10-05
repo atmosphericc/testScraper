@@ -827,6 +827,97 @@ def test_v2_queries():
               == [('flip', '1'), ('reads', '2')], out)
 
 
+SCR = 'src.monitoring.stock_check_resilient'
+
+
+def _status_run_lines(base):
+    tb, tc = '1010892074', '1010892076'
+    return [
+        L(base, f"[STOCK STATUS] tcin={tc} #1 old=(first) new=OUT_OF_STOCK|SA|svc1|- in_stock=0 services=1 "
+                f"atp=0.0 reason=- via=s3", name=SCR),
+        L(base + 1000, f"[STOCK STATUS] tcin={tb} #1 old=(first) new=OUT_OF_STOCK|SA|svc0|- in_stock=0 "
+                       f"services=0 atp=- reason=- via=s4", name=SCR),
+        L(base + 60000, f"[STOCK STATUS] tcin={tb} #2 old=OUT_OF_STOCK|SA|svc0|- new=PRE_ORDER_SELLABLE|SA|svc0|- "
+                        f"in_stock=0 services=0 atp=5.0 reason=no_services via=s9", name=SCR),
+        L(base + 60001, f"[STOCK] SELLABLE-PARSED-OOS tcin={tb} #1 reason=no_services avail=PRE_ORDER_SELLABLE "
+                        f"loyalty=- rtc=SA services=0 via=s9", name=SCR, level='WARNING'),
+        L(base + 61000, f"[STOCK STATUS] tcin={tb} #3 old=PRE_ORDER_SELLABLE|SA|svc0|- "
+                        f"new=PRE_ORDER_SELLABLE|SA|svc1|PRE_ORDER_SELLABLE in_stock=1 services=2 atp=5.0 "
+                        f"reason=- via=s2", name=SCR),
+        L(base + 62000, f"[STOCK STATUS] tcin={tc}: 200 changes logged this run; further changes of this TCIN "
+                        f"are not logged", name=SCR),
+        L(base + 90000, "[STOCK][206-SHADOW] bodies=40 qualifying=39 tcin_reads=663 paired=120 agree=119 "
+                        f"disagree=1 in_stock_206=['{tb}'] err_segs=store_positions:663,fulfillment:1 "
+                        f"first_disagree=tcin={tb} 206=1 200=0 age_s=0.80 avail206=PRE_ORDER_SELLABLE "
+                        f"avail200=OUT_OF_STOCK", name=SCR),
+        L(base + 150000, "[STOCK][206-SHADOW] bodies=3 qualifying=0 tcin_reads=0 paired=0 agree=0 disagree=0 "
+                         "in_stock_206=[] err_segs=?:3 first_disagree=-", name=SCR),
+        L(base + 151000, "[STOCK][206-SHADOW] not counted: TypeError: boom", name=SCR),
+    ]
+
+
+def test_v3_status_and_shadow():
+    lines = _status_run_lines(T) + [
+        f"[STOCK STATUS] tcin=1010892074 #9 printed instead of logged",            # wrong form (print)
+        L(T + 200000, "[STOCK STATUS] tcin=1010892074 garbled", name=SCR),          # logger, unparseable
+    ]
+    res = parse(lines)
+    st = res['stock_status']
+    check('v3_status_rows', [(r['tcin'], r['n'], r['avail'], r['in_stock']) for r in st] ==
+          [('1010892076', 1, 'OUT_OF_STOCK', 0), ('1010892074', 1, 'OUT_OF_STOCK', 0),
+           ('1010892074', 2, 'PRE_ORDER_SELLABLE', 0), ('1010892074', 3, 'PRE_ORDER_SELLABLE', 1)], st)
+    check('v3_status_fields', st[2]['old_key'] == 'OUT_OF_STOCK|SA|svc0|-' and st[2]['reason'] == 'no_services'
+          and st[2]['atp'] == 5.0 and st[1]['atp'] is None and st[0]['reason'] is None and st[3]['services'] == 2
+          and st[0]['ts_ms'] == T and st[2]['via'] == 's9', st)
+    so = res['sellable_oos']
+    check('v3_sellable_oos_row', len(so) == 1 and (so[0]['tcin'], so[0]['reason'], so[0]['avail'], so[0]['loyalty'],
+                                                   so[0]['services']) ==
+          ('1010892074', 'no_services', 'PRE_ORDER_SELLABLE', None, 0), so)
+    sh = res['shadow206']
+    check('v3_shadow_rows', [(r['bodies'], r['qualifying'], r['paired'], r['agree'], r['disagree'], r['in_stock_206'])
+                             for r in sh] == [(40, 39, 120, 119, 1, '1010892074'), (3, 0, 0, 0, 0, '')], sh)
+    check('v3_shadow_first_disagree', sh[0]['first_disagree'].startswith('tcin=1010892074 206=1 200=0')
+          and sh[1]['first_disagree'] is None and sh[0]['err_segs'] == 'store_positions:663,fulfillment:1', sh)
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('v3_notes_and_errors_parsed_not_rows', check_of(res, 'status_note_lines') == '1'
+          and check_of(res, 'shadow206_error_lines') == '1', res['checks'])
+    check('v3_unparsed_remainder', u.get('STATUS') == (1, 6) and u.get('STATUS@wrong_form') == (1, 1)
+          and u.get('SELLOOS') == (0, 1) and u.get('SHADOW206') == (0, 3), u)
+    # q.py's --run views must cover every run-scoped table build.py writes (drift guard)
+    check('v3_q_run_tables_cover_schema', set(evq.RUN_TABLES) - {'runs'} == set(ev.RUN_TABLES),
+          sorted(set(ev.RUN_TABLES) ^ (set(evq.RUN_TABLES) - {'runs'})))
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / 'runs'
+        logs.mkdir()
+        for name, ls in (('run_20990201_000000', _status_run_lines(T)),
+                         ('run_20990202_000000', _status_run_lines(T + 86400000)[:2])):
+            (logs / (name + '.log')).write_bytes(('\r\n'.join(ls) + '\r\n').encode('utf-8'))
+        db = Path(tmp) / 'ev.sqlite'
+        with contextlib.redirect_stdout(io.StringIO()):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+
+        def q(*args):
+            b = io.StringIO()
+            with contextlib.redirect_stdout(b):
+                rc = evq.main(['--db', str(db), '--csv'] + list(args))
+            rows_ = list(csv.reader(io.StringIO(b.getvalue().strip())))
+            return rc, [dict(zip(rows_[0], r)) for r in rows_[1:]] if rows_ else []
+
+        rc, sc = q('status_changes', '--run', '20990201')
+        by = {r['tcin']: r for r in sc}
+        check('v3_status_changes_query', rc == 0 and set(by) == {'1010892074', '1010892076'}
+              and (by['1010892074']['changes'], by['1010892074']['sellable_reads'], by['1010892074']['in_stock_reads'],
+                   by['1010892074']['parsed_oos'], by['1010892074']['oos_reasons']) == ('3', '2', '1', '1', 'no_services')
+              and by['1010892074']['last_status'] == 'PRE_ORDER_SELLABLE|SA|svc1|PRE_ORDER_SELLABLE', sc)
+        rc, sc2 = q('status_changes', '--run', '20990202')
+        check('v3_status_changes_run_filter', rc == 0 and {r['run'] for r in sc2} == {'run_20990202_000000'}
+              and all(r['parsed_oos'] == '0' for r in sc2), sc2)
+        rc, sh2 = q('shadow206', '--run', '20990201')
+        check('v3_shadow206_query', rc == 0 and len(sh2) == 1 and (sh2[0]['bodies'], sh2[0]['paired'],
+                                                                   sh2[0]['disagree'], sh2[0]['in_206']) ==
+              ('43', '120', '1', '1010892074') and sh2[0]['first_disagree'].startswith('tcin=1010892074'), sh2)
+
+
 if __name__ == "__main__":
     test_glued_lines()
     test_duplicates_counted_once()
@@ -843,5 +934,6 @@ if __name__ == "__main__":
     test_v2_place_orders()
     test_v2_read_episodes()
     test_v2_queries()
+    test_v3_status_and_shadow()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

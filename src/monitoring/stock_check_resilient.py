@@ -248,6 +248,120 @@ def flip_line(tcin, n, read_at, last_false_at, new_window, status, raw,
         return f"[STOCK][FLIP] tcin={tcin}: could not format: {type(e).__name__}: {e}"
 
 
+# ── 2026-10-05 post-run INS-STATUS-LOG: every shipping-status change, log-only ──
+# On 10-05 the binder 1010892074 was read OUT_OF_STOCK once (02:00:08, the only
+# [STOCK PICKUP] line) and then never again in the log: [STOCK WATCH] covers only
+# TCINs already seen in stock, so whether it went sellable -- or went sellable and
+# was parsed out of stock -- could not be decided (docs/CLAIMS.md C-1005-*).
+# RESILIENT_STATUS_LOG=1 (stock_monitor.status_log_on) adds one [STOCK STATUS]
+# line per change of (availability_status, relationship code, services present,
+# loyalty status) per TCIN -- first sighting included -- and a rate-limited
+# [STOCK] SELLABLE-PARSED-OOS line when Target says sellable and the parser says no.
+STATUS_LOG_CAP_PER_TCIN = 200
+SELLOOS_CAP_PER_TCIN = 50
+SELLOOS_REPEAT_S = 300.0
+
+
+def status_log_on() -> bool:
+    """RESILIENT_STATUS_LOG=1 -- the same read as stock_monitor.status_log_on (kept
+    local so this module's import order is unchanged). Default '0' = no new text."""
+    return os.environ.get('RESILIENT_STATUS_LOG', '0').strip() == '1'
+
+
+def status_key(info) -> str:
+    """'AVAIL|RTC|svcN|LOYALTY' for change detection (pure; never raises). services
+    enters only as present/absent (svc0 / svc1 / svc-), so a changing list length
+    is not a change."""
+    try:
+        i = info if isinstance(info, dict) else {}
+        n = i.get('sd_services')
+        svc = 'svc-' if not isinstance(n, int) or n < 0 else ('svc1' if n > 0 else 'svc0')
+        return (f"{i.get('availability_status') or '-'}|{i.get('sd_rtc') or '-'}|{svc}|"
+                f"{i.get('sd_loyalty') or '-'}")
+    except Exception:
+        return '?'
+
+
+def status_change_line(tcin, old_key, info, session_id, n) -> str:
+    """The [STOCK STATUS] line (pure; never raises)."""
+    try:
+        i = info if isinstance(info, dict) else {}
+        return (f"[STOCK STATUS] tcin={tcin} #{n} old={old_key or '(first)'} new={status_key(i)} "
+                f"in_stock={1 if i.get('in_stock') else 0} services={i.get('sd_services')} "
+                f"atp={i.get('ship_atp', '-')} reason={i.get('sd_oos_reason') or '-'} "
+                f"via={session_id}")
+    except Exception as e:
+        return f"[STOCK STATUS] tcin={tcin}: could not format: {type(e).__name__}: {e}"
+
+
+def sellable_oos_line(tcin, info, session_id, n) -> str:
+    """The [STOCK] SELLABLE-PARSED-OOS line (pure; never raises)."""
+    try:
+        i = info if isinstance(info, dict) else {}
+        return (f"[STOCK] SELLABLE-PARSED-OOS tcin={tcin} #{n} reason={i.get('sd_oos_reason')} "
+                f"avail={i.get('availability_status') or '-'} loyalty={i.get('sd_loyalty') or '-'} "
+                f"rtc={i.get('sd_rtc') or '-'} services={i.get('sd_services')} via={session_id}")
+    except Exception as e:
+        return f"[STOCK] SELLABLE-PARSED-OOS tcin={tcin}: could not format: {type(e).__name__}: {e}"
+
+
+# ── 2026-10-05 post-run FS-206-SHADOW: parse 206 bodies, compare, never act ────
+# 02:00-03:34 on 10-05 RedSky answered 12,396 of 16,904 sweeps with HTTP 206 and a
+# store_positions error on every product; 94/94 sampled bodies held the stock fields
+# for 17/17 TCINs and the sweep discarded every one (C1/C2/FF-1/FF-2 CONFIRMED).
+# Whether those fields EQUAL what a 200 says is unmeasured, so before any ingest:
+# RESILIENT_206_INGEST=shadow parses the qualifying part of each 206 body and counts
+# agreement with the same TCIN's 200 read when that read is <= SHADOW_206_PAIR_S old.
+# It never calls on_in_stock and never touches _tcin_status or any counter.
+SHADOW_206_PAIR_S = 2.0
+SHADOW_206_LOG_EVERY_S = 60.0
+_SHADOW_BAD_SEGMENTS = ('fulfillment', 'item')
+
+
+def shadow_filter_206(body):
+    """(kept_summaries, error_segment_counts, qualifies) for one 206 body (pure;
+    never raises). A summary is kept when it is complete (availability_status and
+    relationship_type_code present -- the _log_206 test) AND no RedSky error path
+    names its index with a fulfillment / item segment. An error with no path, or a
+    path not shaped ['product_summaries', <int>, <field>, ...], disqualifies the whole
+    body (kept = []): it cannot be attributed to an index."""
+    segs = {}
+    try:
+        if not isinstance(body, dict):
+            return [], segs, False
+        d = body.get('data')
+        ps = d.get('product_summaries') if isinstance(d, dict) else None
+        if not isinstance(ps, list):
+            return [], segs, False
+        bad, whole_bad = set(), False
+        errs = body.get('errors')
+        for e in (errs if isinstance(errs, list) else []):
+            path = e.get('path') if isinstance(e, dict) else None
+            if (not isinstance(path, list) or len(path) < 3 or path[0] != 'product_summaries'
+                    or isinstance(path[1], bool) or not isinstance(path[1], int)):
+                whole_bad = True
+                segs['?'] = segs.get('?', 0) + 1
+                continue
+            seg = str(path[2])[:40]
+            segs[seg] = segs.get(seg, 0) + 1
+            if seg in _SHADOW_BAD_SEGMENTS:
+                bad.add(path[1])
+        if whole_bad:
+            return [], segs, False
+        kept = []
+        for idx, p in enumerate(ps):
+            if idx in bad or not isinstance(p, dict) or not p.get('tcin'):
+                continue
+            f = p.get('fulfillment') if isinstance(p.get('fulfillment'), dict) else {}
+            so = f.get('shipping_options') if isinstance(f.get('shipping_options'), dict) else {}
+            it = p.get('item') if isinstance(p.get('item'), dict) else {}
+            if so.get('availability_status') and it.get('relationship_type_code'):
+                kept.append(p)
+        return kept, segs, bool(kept)
+    except Exception:
+        return [], segs, False
+
+
 class ResilientStockChecker:
     """
     Async stock-check engine. Start with .start(), stop with .stop().
@@ -320,6 +434,13 @@ class ResilientStockChecker:
         # State
         self._tcin_status: dict[str, TcinStatus] = {t: TcinStatus(tcin=t) for t in self.tcins}
         self._ever_seen_in_stock: set[str] = set()
+        # 2026-10-05 INS-STATUS-LOG / FS-206-SHADOW state (log-only; unused when off)
+        self._status_prev: dict[str, str] = {}
+        self._status_n: dict[str, int] = {}
+        self._selloos_last: dict[str, tuple] = {}
+        self._selloos_n: dict[str, int] = {}
+        self._shadow206: Optional[dict] = None
+        self._shadow206_log_at: float = time.time()
         self._status_lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
@@ -715,6 +836,10 @@ class ResilientStockChecker:
                 if self.log_per_request:
                     logger.info(f"  ?? {result.session_id} ({result.pinned_ip}) "
                                 f"http={result.http_status} err={(result.error or '')[:300]}")
+                # 2026-10-05 FS-206-SHADOW: partial_raw is set only under
+                # RESILIENT_206_INGEST=shadow (tab_dispatcher._fire_raw_on); log-only.
+                if result.http_status == 206 and getattr(result, 'partial_raw', None) is not None:
+                    self._shadow_206(result)
         except Exception:
             logger.exception("[STOCK] dispatch error")
         finally:
@@ -868,6 +993,97 @@ class ResilientStockChecker:
         # formatting and writing these lines can never delay a dispatch.
         if _flips:
             self._log_flips(_flips, result)
+        # 2026-10-05 INS-STATUS-LOG: same placement rule as the flips.
+        if parsed and status_log_on():
+            self._log_status_changes(parsed, result)
+
+    def _log_status_changes(self, parsed, result) -> None:
+        """RESILIENT_STATUS_LOG=1: one [STOCK STATUS] line per change of status_key per
+        TCIN (first sighting included; capped STATUS_LOG_CAP_PER_TCIN per TCIN per run)
+        and a [STOCK] SELLABLE-PARSED-OOS line when sd_oos_reason is set -- on a new
+        reason, else at most once per SELLOOS_REPEAT_S, capped SELLOOS_CAP_PER_TCIN per
+        TCIN per run. Reads only the sd_* keys _process_response adds under the same
+        flag; never touches _tcin_status. Never raises."""
+        sid = getattr(result, 'session_id', '?')
+        now = time.time()
+        for tcin, info in parsed.items():
+            try:
+                if not isinstance(info, dict) or 'sd_rtc' not in info:
+                    continue
+                key = status_key(info)
+                old = self._status_prev.get(tcin)
+                if key != old:
+                    self._status_prev[tcin] = key
+                    n = self._status_n.get(tcin, 0) + 1
+                    self._status_n[tcin] = n
+                    if n <= STATUS_LOG_CAP_PER_TCIN:
+                        logger.info(status_change_line(tcin, old, info, sid, n))
+                    elif n == STATUS_LOG_CAP_PER_TCIN + 1:
+                        logger.info(f"[STOCK STATUS] tcin={tcin}: {STATUS_LOG_CAP_PER_TCIN} changes "
+                                    f"logged this run; further changes of this TCIN are not logged")
+                reason = info.get('sd_oos_reason')
+                if reason:
+                    last = self._selloos_last.get(tcin)
+                    if last is None or last[0] != reason or now - last[1] >= SELLOOS_REPEAT_S:
+                        m = self._selloos_n.get(tcin, 0) + 1
+                        self._selloos_n[tcin] = m
+                        self._selloos_last[tcin] = (reason, now)
+                        if m <= SELLOOS_CAP_PER_TCIN:
+                            logger.warning(sellable_oos_line(tcin, info, sid, m))
+            except Exception as e:
+                logger.info(f"[STOCK STATUS] tcin={tcin}: not logged: {type(e).__name__}: {e}")
+
+    def _shadow_206(self, result) -> None:
+        """RESILIENT_206_INGEST=shadow (FS-206-SHADOW): parse the qualifying summaries
+        of a 206 body (shadow_filter_206) and compare each TCIN's in_stock with that
+        TCIN's last 200-sourced read when it is <= SHADOW_206_PAIR_S old. One
+        [STOCK][206-SHADOW] line per SHADOW_206_LOG_EVERY_S with the counts since the
+        last line. Reads _tcin_status, writes nothing outside self._shadow206; never
+        calls on_in_stock. Never raises."""
+        try:
+            st = self._shadow206
+            if st is None:
+                st = self._shadow206 = dict(bodies=0, qualifying=0, reads=0, paired=0, agree=0,
+                                            disagree=0, in206=set(), segs={}, first=None)
+            st['bodies'] += 1
+            kept, segs, ok = shadow_filter_206(getattr(result, 'partial_raw', None))
+            for k, v in segs.items():
+                st['segs'][k] = st['segs'].get(k, 0) + v
+            if ok:
+                st['qualifying'] += 1
+                now = time.time()
+                parsed = self._parse_bulk({'data': {'product_summaries': kept}})
+                for tcin, info in parsed.items():
+                    st['reads'] += 1
+                    v = bool(info.get('in_stock')) if isinstance(info, dict) else False
+                    if v:
+                        st['in206'].add(str(tcin))
+                    s = self._tcin_status.get(tcin)
+                    if (s is None or s.last_status_code != 200
+                            or now - s.last_checked_at > SHADOW_206_PAIR_S):
+                        continue
+                    st['paired'] += 1
+                    if v == bool(s.in_stock):
+                        st['agree'] += 1
+                    else:
+                        st['disagree'] += 1
+                        if st['first'] is None:
+                            st['first'] = (f"tcin={tcin} 206={int(v)} 200={int(bool(s.in_stock))} "
+                                           f"age_s={now - s.last_checked_at:.2f} "
+                                           f"avail206={info.get('availability_status')} "
+                                           f"avail200={s.availability_status}")
+            now = time.time()
+            if now - self._shadow206_log_at >= SHADOW_206_LOG_EVERY_S:
+                self._shadow206_log_at = now
+                self._shadow206 = None
+                segs_s = ','.join(f"{k}:{v}" for k, v in
+                                  sorted(st['segs'].items(), key=lambda kv: -kv[1])[:6]) or '-'
+                logger.info(f"[STOCK][206-SHADOW] bodies={st['bodies']} qualifying={st['qualifying']} "
+                            f"tcin_reads={st['reads']} paired={st['paired']} agree={st['agree']} "
+                            f"disagree={st['disagree']} in_stock_206={sorted(st['in206'])[:10]} "
+                            f"err_segs={segs_s} first_disagree={st['first'] or '-'}")
+        except Exception as e:
+            logger.info(f"[STOCK][206-SHADOW] not counted: {type(e).__name__}: {e}")
 
     # ───────── background loops ─────────
 

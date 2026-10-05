@@ -31,6 +31,22 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-10-05] - 0-for on the 03:00 ET 30th slot: nothing went on sale (the binder 1010892074 page appeared OUT OF STOCK and never flipped); a 94-min RedSky 206 storm blinded 73% of monitor reads in the slot - TARGET / MONITOR
+**Symptom**:
+- **Run** `run_20261005_002518` (00:25:18 → 09:50:43, 3 accounts, FX-1001-A armed): 0 in-stock reads on any of 17 TCINs → 0 flips, races, shots, carts, orders.
+- **The binder** 1010892074: unpublished at boot; first RedSky read 02:00:08 `ship=OUT_OF_STOCK`, NOW VISIBLE 02:00:17; no later status line.
+- **02:00:18 → 03:34:28**: RedSky answered 12,396/16,904 sweeps (73.3%) with HTTP 206 (a `store_positions` error on every product); 0 × 403 / 429. The 206 bodies carried the stock fields for 17/17 TCINs (94/94 sampled) and the sweep discarded every one. Longest stretch with no usable read: <90 s.
+- Smaller: 08:25-09:30 the four 168.158/16 exits lost 29% (cause not logged; s10 flagged crashed twice on raw timeouts).
+- Pre-boot (10-04 23:49-23:51): 3 boots exited 87 — primary had gone GUEST; recovered by a hand login at 00:06. Primary then ran all night without a `login-session` cookie (565 watchdog lines) and still re-minted its member token in-bot (08:10:21).
+**Root Cause**:
+- **(1) Target: no sellable stock.** 5+ alert accounts (PokemonRestocks, PokeTCGAlerts, CardPurchaser, PokemonFindr, PokemonDealsHub) reported the binder page LOADED at 02:00 CT with "no stock went up", later "did NOT drop"; 0 "now live" posts for any 30th item on 10-05 (they posted one per flip on 10-02). The bot's reads agree. [REPORTED + MEASURED, C-1005-OP / C-1005-01/02]
+- **(2) Target: the 206 storm** at the slot (third such: 09-25, 09-30, 10-05). **Ours: we discard 206 bodies** (C-1005-03/04). Cost tonight: 0 units (nothing to see); a short window inside the storm had a modelled ~9-28% miss chance (2-5 s).
+**Fix Applied** (2026-10-05, all LOG-ONLY, flag-gated, armed in the bat; offline suite gate in CURRENT_STATE):
+- `RESILIENT_STATUS_LOG=1`: `[STOCK STATUS]` per shipping-status change per TCIN + `[STOCK] SELLABLE-PARSED-OOS` (Target says sellable, parser says no, with the rule). Would have answered "did the binder go sellable" from the log. Event store `stock_status` / `sellable_oos`, query `status_changes.sql`.
+- `RESILIENT_206_INGEST=shadow`: parses the usable part of each 206 and logs agreement with a ≤2 s-old 200 read of the same TCIN (`[STOCK][206-SHADOW]`, table `shadow206`, query `shadow206.sql`). Prerequisite for any real 206 ingest; nothing is ingested or fired.
+- Not built (eligible, deferred): FS-206-INGEST (needs SHADOW's agreement first; value = latency inside a storm only), FS-STATS-SPLIT / INS-GT-RATE (STATS-line format changes; need parser work first).
+**Confidence**: high that the bot read nothing in stock and that the 206 bodies were complete (blind replication + refutation + judge). High (reported, multi-source) that the binder never went on sale; a negative from X is not proof. **Outcome**: pending the next restock.
+
 ### [2026-10-02] - 0-for on the 30th Celebration restock: the FIRST edge (1011407490 Booster Bundle, 02:11:58, the window trackers call the release) got 0 shots because a host GPU crash froze all 3 buyer Chromes; every later shot (128/129) hit the edge limiter - TARGET / HOST
 **Symptom**:
 - **Old run** `run_20261002_011217`: the 02:11:58 IN_STOCK read dispatched 3 buyers. All 3 returned `cdp_wedged_pre_atc` (chrome_age 3596 s) and 0 add-to-carts were sent. The log stops at 02:12:36.

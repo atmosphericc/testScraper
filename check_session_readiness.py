@@ -52,6 +52,17 @@ AUTH = ("login-session", "refreshToken", "accessToken", "idToken")
 # UTC -- the documented "+5 h display skew" on 'saved Xh ago'.
 _GUEST_CHECK = __import__("os").environ.get("READINESS_GUEST_CHECK", "1").strip() != "0"
 
+# 2026-10-04: READINESS_REMINT_AWARE (default 1; 0 = the 09-28 output byte for byte).
+# "nothing in the bot re-mints" was REFUTED on 09-29 (C-0929-01: the running bot re-mints
+# each member token at its 4 h expiry, 12/12). And the bat's start pass
+# (`relogin_one.py all`, validate-first) refreshes an EXPIRED member token from a live
+# login-session before app.py starts: primary 2026-10-04 20:48:19 ("already logged in",
+# token iat 20:48:14), business / alt-1 2026-10-02 09:23:39 / 09:23:54, primary / alt-1
+# 2026-09-28 16:11-16:12. So an expired token on a live member session needs no hand
+# login; only a missing/expired login-session or a guest jar does. The bat re-runs this
+# check AFTER that pass, so a pass that failed still shows up red at boot.
+_REMINT_AWARE = __import__("os").environ.get("READINESS_REMINT_AWARE", "1").strip() != "0"
+
 
 def load_accounts() -> list[tuple[str, str]]:
     try:
@@ -323,6 +334,10 @@ def main() -> int:
         elif not is_member:
             verdict = f"⚠  persisted token was GUEST (sut={sut}) — startup must re-mint MEMBER"
             all_green = False
+        elif _GUEST_CHECK and at_exp and at_exp <= NOW and _REMINT_AWARE and id_sut.upper() == "R":
+            verdict = (f"✅ member token expired {_fmt_local(at_exp)} but the login-session is live — "
+                       f"the bat's start pass (relogin_one.py all) refreshes it before app.py; "
+                       f"no hand login needed")
         elif _GUEST_CHECK and at_exp and at_exp <= NOW:
             verdict = (f"❌ MEMBER token EXPIRED {_fmt_local(at_exp)} — since 2026-09-25 nothing in "
                        f"the bot re-mints it; force a hand login before boot")
@@ -353,7 +368,13 @@ def main() -> int:
         print("  NOTE: this is PERSISTED state. It does NOT prove the live token survives")
         print("  to the drop — the rebuilds churn at runtime. Confirm close to the drop with")
         print("  verify_multi_account_live.py, and see docs/PRE_DROP_RUNBOOK.md.")
-        if member_exps:
+        if member_exps and _REMINT_AWARE:
+            first_exp, first_acct = min(member_exps)
+            print(f"  Member tokens live 4 h ({first_acct}'s is first to expire, at "
+                  f"{_fmt_local(first_exp)}); the running bot re-mints each at expiry (C-0929-01).")
+            print("  A hand login is needed only for a ❌ line: a missing/expired login-session or")
+            print("  a signed-out (guest) jar.")
+        elif member_exps:
             first_exp, first_acct = min(member_exps)
             # rung 1 (token_refresh) 404s and rung 2 (/account reload) mints nothing
             print(f"  WRITE-AUTH ENDS: {first_acct}'s member token expires first, at "

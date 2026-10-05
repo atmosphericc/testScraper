@@ -60,6 +60,18 @@ class BulkResult:
     latency_ms: int
     raw: Optional[dict] = None  # parsed JSON body when http_status==200
     error: Optional[str] = None
+    # 2026-10-05 FS-206-SHADOW: the parsed body of a 206, set ONLY under
+    # RESILIENT_206_INGEST=shadow; read by the sweep's log-only shadow comparison.
+    partial_raw: Optional[dict] = None
+
+
+def shadow_206_on() -> bool:
+    """RESILIENT_206_INGEST=shadow (2026-10-05 post-run FS-206-SHADOW): attach a 206's
+    parsed body to its BulkResult as partial_raw so the sweep can measure, log-only,
+    whether the stock fields in a 206 agree with an adjacent 200 read. Default '0' =
+    partial_raw stays None and nothing reads it. Kill-switch: =0. (A future '1' =
+    ingest is NOT implemented; any value but 'shadow' is off.)"""
+    return os.environ.get('RESILIENT_206_INGEST', '0').strip().lower() == 'shadow'
 
 
 class TabDispatcher:
@@ -287,12 +299,19 @@ class TabDispatcher:
                     res.error = f"raw_404_rate_limited:{(text or '')[:120]}"
                 elif status == 206 and os.environ.get('RESILIENT_206_LOG', '0') == '1':
                     # 2026-09-25 post-run (docs/CLAIMS.md C-0925-03): RedSky answered 102
-                    # reads with 206 in bursts (02:10-04:49, up to 95% of sweeps) and every
-                    # body was read in full and discarded -- no 206 body has ever been seen.
-                    # LOG ONLY: res, the session and every counter are untouched, so the
-                    # bot behaves identically with this on; it exists to learn the shape
-                    # before any ingest is designed. One line per 60 s, with a count.
+                    # reads with 206 in bursts (02:10-04:49, up to 95% of sweeps); the
+                    # bodies were discarded unseen until this summary line (10-05: 181
+                    # lines, 94/94 bodies in the 02:00-03:34 storm complete=17/17).
+                    # LOG ONLY: res and every counter are untouched by THIS line. Note a
+                    # 206 has already been counted by _interpret_eval_result above as a
+                    # soft failure (s.consecutive_errors += 1), so a long 206 streak plus
+                    # a timeout can flag the session crashed (10-05 post-run critic).
+                    # One line per 60 s, with a count.
                     self._log_206(s, tcins, body, text)
+                # 2026-10-05 FS-206-SHADOW: hand the parsed 206 body to the sweep's
+                # log-only shadow comparison. Off = partial_raw stays None.
+                if status == 206 and isinstance(body, dict) and shadow_206_on():
+                    res.partial_raw = body
                 return res
             except asyncio.TimeoutError:
                 s.consecutive_errors += 1

@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-10-04 ~22:10 (pre-drop for the 10-05 03:00 ET 30th Celebration slot; the last post-run is 10-02 `wf_3e516b75-b07`) · branch `feat_refract_arch_v1` · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (all 3 accounts, bat:1184, operator) · F1 still unarmed (operator declined 10-04) · host display never sleeps on AC, screensaver off (applied 10-04 ~22:00, operator-approved)**
+**As of: 2026-10-05 ~13:30 (post-run of `run_20261005_002518`, workflow `wf_9651193b-efc`, 1 round, complete) · branch `feat_refract_arch_v1` · ARMED 10-05 (log-only): `RESILIENT_STATUS_LOG=1`, `RESILIENT_206_INGEST=shadow` (bat:128-129) · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (all 3 accounts, bat:1199 after the 10-05 insert, operator) · F1 unarmed (operator declined 10-04) · host display never sleeps on AC, screensaver off (10-04)**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -19,16 +19,81 @@ to be wrong rather than leaving them with a caveat.**
 
 | Topic | Now | Source |
 |---|---|---|
-| Target list | the ENABLED TCINs in `config/product_config.json` are the operator's deliberate choice. **17 enabled, all qty 2.** 10-04, operator ("make sure all the 30th are enabled … dont remove anything"): enabled 1010892068 Sylveon ex Box, 1010892075 Espeon ex and 1010892071 Umbreon ex Battle Decks; ADDED 1010892070 Knock Out Collection (first-party, never in any config before). All 11 known first-party 30th TCINs are now on; Pitch Black 1011483413 stays OFF. Backup `config/product_config_backup_pre_2026-10-05_drop.json`. Never propose re-adding SKUs | operator 09-30, 10-02, 10-04 |
-| Accounts | 3 (primary, business, alt-1), all on the home IP; member tokens re-mint in-bot at the 4 h expiry under `TARGET_TOKEN_KEEPFRESH=0` + `TARGET_RELOGIN_MAX_PER_6H=0`; run `check_session_readiness.py` before a drop | C-0929-01, 09-30 jars |
+| Target list | the ENABLED TCINs in `config/product_config.json` are the operator's deliberate choice. **17 enabled, all qty 2.** 10-04, operator ("make sure all the 30th are enabled … dont remove anything"): enabled 1010892068 Sylveon ex Box, 1010892075 Espeon ex and 1010892071 Umbreon ex Battle Decks; ADDED 1010892074 30th Celebration Binder Collection (pre-order, release 12-04; TCIN [REPORTED] by two alert accounts, PDP 404 until it publishes; added with the operator's explicit approval outside auto mode, ~22:45, after the auto-mode classifier had denied it). 1010892070 Knock Out Collection was added, then REMOVED at the operator's request ("i dont want the knock collection", 10-04 ~22:40) — UNWANTED, never re-add. Pitch Black 1011483413 stays OFF. Backup `config/product_config_backup_pre_2026-10-05_drop.json`. Never propose re-adding SKUs | operator 09-30, 10-02, 10-04 |
+| Accounts | **10-05: all 3 enabled.** primary was hand-logged (force) 00:06 → its live Chrome has had NO `login-session` cookie since (watchdog `'login-session' MISSING` ×565 all run), yet 0 `ERR_UNAUTHORIZED` and an in-bot member-token re-mint at 08:10:21 (C-1005-09) — so a re-mint does NOT need a live login-session (contradicts the older belief); whether pre_checkout / place-order pass without it is NOT ESTABLISHED, and a boot with primary as a guest exit-87-loops the WHOLE bot (worker 1 = primary). History — 10-04 23:5x: primary DISABLED in `config/target_accounts.json` (operator: no hand login; backup `config/target_accounts.json.bak_20261004_primary_off`) → the 10-05 drop runs on 2 accounts, business = worker 1, alt-1 = worker 2.** Why: the 23:49 boot exited 87 three times — primary's jar had gone GUEST (sut=G) between 21:43 (member) and 23:49, cause NOT ESTABLISHED (lead: bat:1381-1386 — primary IS the operator's personal Target login; a personal browser/app session on it can rotate the bot's token). The bat's login pass reported the guest as "already logged in ✅" (known blind spot). To restore: one hand login for primary, then `enabled: true`. Otherwise 3 (primary, business, alt-1), all on the home IP; member tokens re-mint in-bot at the 4 h expiry under `TARGET_TOKEN_KEEPFRESH=0` + `TARGET_RELOGIN_MAX_PER_6H=0`; run `check_session_readiness.py` before a drop | C-0929-01, 09-30 jars |
 | Monitor | 18 Bright Data ISP exits, `apps_raw` channel, every TCIN read ~every 0.34 s, read → first POST ~40 ms | 09-30 readout L3 |
 | Wall 1 — edge limiter | 429 `ERR_A2C_TCIN_RATE_LIMITED`, answers FIRST (no `x-ssx-hop`); not explained by Shape/HUMAN trust, differs by network location, splits within same-IP volleys — mechanism NOT ESTABLISHED; strongly per TCIN. **10-01 RECOVERY with no armed change:** 1010892076 past the limiter 58/230 three-wide-race shots vs 1/195 the night before (its first carts ever); flip-race first shots 13/14; later shots past it 41/164 — cause NOT ESTABLISHED | C-0930-03/04, C-1001-11/14 |
 | Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here (09-30: home 13/38 denied, BD exits 514/518). **10-01: a per-TCIN admit-then-401 switch** — on 1010892076 the first 6 past-limiter shots were admitted, then 70/70 keyless 401 from all 3 accounts while decoy 401s held at ~20%; 80/102 past-limiter shots were 401 | C-0930-05, C-1001-12 |
 | Wall 3 — checkout | place-order FAST_SELLING / RESERVATION_FAILURE lottery (Refract: ~1% of carts → order). **Orders come from EARLY place-orders:** 18 of 21 orders ever ≤~4.6 s after detection; HTTP 200 by window age ≤5 s 18/34, >120 s 0/150 (pooled, descriptive). 10-01: 0/199 won-cart tickets; our caps / gates / yield / self-heal ENDED all 7 non-converting carts while the TCIN read live | C-1001-02..08 |
-| Outcomes | **10-01: 1 order, 2 units — the first hot-SKU order ever** (primary, 1011960739, in-chain first shot of a flip race, `8cba94c1`); hot carts → order 1/18 lifetime. **10-02 (30th Celebration): 0** — first edge lost to a host crash (0 shots), the rest 128/129 edge 429 | C-1001-01, C-1002-F1/F2 |
+| Outcomes | **10-01: 1 order, 2 units — the first hot-SKU order ever** (primary, 1011960739, in-chain first shot of a flip race, `8cba94c1`); hot carts → order 1/18 lifetime. **10-02 (30th Celebration): 0** — first edge lost to a host crash (0 shots), the rest 128/129 edge 429. **10-05 (03:00 ET 30th slot): 0, nothing went on sale** — the binder 1010892074 page appeared OUT OF STOCK at 02:00 CT and never flipped (bot + 5 alert accounts agree); 0 in-stock reads on 17 TCINs | C-1001-01, C-1002-F1/F2, C-1005-01/OP |
+| Monitor 206 storms | **02:00-03:34 on 10-05 RedSky 206'd 73.3% of sweeps; the bodies held complete stock fields (94/94) and we discard every 206** (third storm at the 02:00 CT slot: 09-25, 09-30, 10-05). Longest blind stretch <90 s; 0/28 past real windows opened inside a ≥50%-loss interval → a latency lever, not a measured unit lever. FS-206-SHADOW armed 10-05 (log-only) to measure agreement before any ingest | C-1005-03..06 |
 | Host | **The #1 controllable loss on 10-02.** 27/27 NVIDIA GPU-error episodes since 07-17 began at a display WAKE (screen off → on); since the 09-27 driver (617.14) 5/5 ended in bugcheck 0x116; on-screen buyer Chromes freeze in every episode. **10-04 ~22:00 (operator-approved): display timeout on AC 900 s → Never (`powercfg /change monitor-timeout-ac 0`; DC stays 180 s), screensaver OFF (`ScreenSaveActive` 1 → 0, applied live by SystemParametersInfo); AC sleep was already Never.** Restore: `powercfg /change monitor-timeout-ac 15` + `ScreenSaveActive=1`. A remote connection (Parsec, RDP) can still be a wake trigger (20/27 wakes carried code 6, NOT independently verified). Root-cause checklist from 07-13 (BIOS/microcode, XMP) still not done | 10-02 + 10-04 sections |
 | Blocked / operator decisions | **Host (operator):** no keyboard / mouse / remote session (Parsec, RDP) on the host during a drop window; then BIOS update + XMP off (07-13 checklist). **FX-1001-A** (a held line at a fresh flip → in-chain pre_checkout → place-order) — **v11 VERIFIED 10-03, ARMED 10-04 on all 3 accounts** (`set TARGET_HELD_LINE_FLIP_STRIKE=1`, bat:1184, IDENTS unset = every account per `purchase_executor.py:209-225`; the code on disk is the verified v11 — mtime 10-03 00:27:26, before the v11 suite and verifier #11); kill `=0`; readout R-FX in the 10-04 section. F1 — code landed flag-gated OFF; **operator declined arming 10-04** (~0 units on the late-draw data); EXP-1002-NET (one buyer on a second, non-BD network) — operator; E5 not built; E4 declined | 10-02 + 10-04 sections |
 | Process | `/post-run` → saved Workflow `.claude/workflows/post-run.js` (rounds until dry; blind replicator + refuter + judge per claim; canaries); facts from `tools/events/` (SQLite); PreToolUse hook blocks the common direct bot / login / live-test launches. **The hook is a safety net, not a guarantee:** an independent replay of 10,094 past commands (09-30) found launch forms it misses and some offline-test loops it wrongly blocks. The rule "bot start = operator only" still binds every agent regardless of the hook. | CLAUDE.md, 09-30 review |
+
+## POST-RUN 2026-10-05 — the 03:00 ET 30th slot: 0 bought because NOTHING WENT ON SALE; a RedSky 206 storm blinded 73% of reads in the slot (claims C-1005-*, `docs/CLAIMS.md`)
+
+Operator: "i believe only tcin 1010892074 restocked. but still we were unsuccessful … investigate
+all issues and fix so that we can be ready for the next restock." Results:
+`logs/analysis_2026_10_05/postrun/` (`workflow_result.json`, `sections/`, wf_9651193b-efc, 1 round,
+28 agents, 0 errors, complete, 0 open gaps; 8 claims: 6 CONFIRMED, 2 PARTIALLY CONFIRMED, 0 REFUTED).
+
+- **The run** `run_20261005_002518` (00:25:18 → 09:50:43, one launch, 3 accounts, 17 TCINs): **0 in-stock
+  reads on any TCIN** → 0 flips, races, shots, carts, orders (C-1005-01). Units lost: **0** — there was
+  nothing to buy.
+- 🔑 **The binder never went on sale** (C-1005-OP, REFUTES the operator's belief as worded; REPORTED,
+  5+ alert accounts). Its page appeared at 02:00 CT out of stock ("no stock went up", "Not Live Yet",
+  later "did NOT drop", "didn't flip"); those accounts posted "now live" for every 10-02 flip and none on
+  10-05. Two automated bots labelled the page's appearance "RESTOCK" at 02:00:06-09 CT — the likely source
+  of the belief. The bot read exactly that: NOW VISIBLE 02:00:17, `ship=OUT_OF_STOCK` at 02:00:08. The PDP
+  on 10-05 ~12:00 CT: $39.99, Out of Stock, street date Dec 4. Several accounts guessed the drop moved to
+  10-06 overnight [REPORTED, unconfirmed].
+- **Target-side: a RedSky 206 storm at the slot** (`docs/TARGET_CHANGES.md` 10-05): 02:00:18-03:34:28,
+  12,396/16,904 sweeps lost (73.3%), store_positions errors on every product; 72.56.171.184 spared again
+  (14.2% vs ~76%). **Ours: we discard the 206 bodies** although 94/94 sampled held complete stock fields
+  (C-1005-03/04). Cost tonight 0; inside a storm a 2-5 s window has a modelled 9-28% miss chance.
+- **Host: PASS** (C-1005-08) — 0 GPU / bugcheck / display-wake events, 0 wedges. The 10-04 display change
+  held through the slot.
+- **primary without a login-session** all run, still re-minted in-bot (C-1005-09) — see the Accounts row.
+- **Pre-registered readouts (10-04):** R-FX INCONCLUSIVE (0 shots); R-COVER vacuous (0 flips); R-HOST PASS;
+  R-DECOY 20.0% (443/2,215) → the 10-02 09:24 dip was a fluke, watch closed; R-VIS fails only for the
+  unpublished binder (by design).
+- **Other:** 08:25-09:30 the four 168.158/16 exits lost 29% (cause not logged; BD subnet, not Target);
+  `[DISPATCHER] s10 flagged crashed` ×2 (new string, raw timeout). A 206 also bumps
+  `consecutive_errors` (`tab_dispatcher.py:416`), so a long 206 streak + one timeout can flag a session
+  crashed (did not bite tonight).
+
+**ARMED 2026-10-05 (both LOG-ONLY, flag-gated, default off = unchanged; offline suite
+`logs/analysis_2026_10_05/postrun/offline_suite_after_status_shadow.txt`):**
+- **INS-STATUS-LOG `RESILIENT_STATUS_LOG=1`** (bat:128): `stock_monitor.redsky_status_fields` adds
+  `sd_rtc / sd_services / sd_loyalty / sd_oos_reason` under the flag (the DX-1 pattern);
+  `_log_status_changes` writes `[STOCK STATUS] tcin= #n old= new=AVAIL|RTC|svcN|LOYALTY in_stock= …` per
+  change (first sighting included, ≤200/TCIN) AFTER every on_in_stock callback, and
+  `[STOCK] SELLABLE-PARSED-OOS tcin= reason=` (no_services / atp_zero / not_target_direct / loyalty_only /
+  other; new reason or ≥300 s, ≤50/TCIN). Event store tables `stock_status`, `sellable_oos`; query
+  `status_changes.sql`.
+- **FS-206-SHADOW `RESILIENT_206_INGEST=shadow`** (bat:129): `_fire_raw_on` sets `BulkResult.partial_raw`
+  for a 206 (only value 'shadow' is on); `_dispatch_one` → `_shadow_206` keeps complete summaries with no
+  fulfillment / item error (`shadow_filter_206`; an unattributable error disqualifies the body), parses
+  them, and counts agreement with the TCIN's 200-sourced read ≤2 s old. One `[STOCK][206-SHADOW]` line a
+  minute. Never calls on_in_stock, never writes `_tcin_status`. Table `shadow206`; query `shadow206.sql`.
+- Tests: `tests/test_status_log_and_206_shadow.py` 57/57 (10 mutations caught, files restored by hash);
+  `tests/test_events_parser.py` 140/140 (+11, 3 parser mutations caught; `q.py` RUN_TABLES drift guard).
+- **Readout rules (pre-registered 10-05; run `python tools/events/build.py` first):**
+  - **R-STATUS** (`q.py status_changes --run <run>`): COVERAGE PASS = every enabled TCIN visible to RedSky
+    has ≥1 row; any `parsed_oos > 0` = a parser classification gap → investigate before the next drop; an
+    operator "X restocked" report is CONFIRMED by `sellable_reads > 0` for X, REFUTED for the bot's window
+    by `sellable_reads = 0`.
+  - **R-206SHADOW** (`q.py shadow206 --run <run>`): ELIGIBLE to build FS-206-INGEST = paired ≥1,000 with
+    disagree = 0; INCONCLUSIVE = paired <1,000 or no in-stock read on either side (OOS agreement alone does
+    not validate positives); FAILED (never ingest) = any disagree > 0. Kill-switch: any
+    `[STOCK][206-SHADOW] not counted` traceback line, or sweeps/s >5% below the previous run's same hours.
+- **Deferred (eligible, not built):** FS-206-INGEST (needs SHADOW's agreement; value = latency inside a
+  storm only, per the critic); FS-STATS-SPLIT / INS-GT-RATE (change the STATS line format → parser first;
+  FS-STATS-SPLIT should also reset/split the 206 `consecutive_errors` bump).
+- **Open (research):** why 72.56.171.184 is spared in storms (n=2); what triggers the 02:00 storm; why
+  primary's live Chrome lost `login-session` between 00:06:10 and 00:10:17 (the wrapper's relaunch drops a
+  session-only cookie?) and whether checkout works without it; the 168.158/16 08:25 cluster.
 
 ## PRE-DROP 2026-10-04 → 30th Celebration slot 2026-10-05 03:00 ET = 02:00 CT (`/pre-drop`)
 
@@ -45,9 +110,20 @@ ready as possible." Notes: `logs/analysis_2026_10_04/`.
   business and alt-1 member tokens EXPIRED 10-02 13:23:39 / 13:23:54; login-session 27.1 d
   on all three. Those two tokens were minted at 09:23:39 / 09:23:54 on 10-02, i.e. by the
   wrapper-start `relogin_one.py` pass re-minting EXPIRED tokens right before the 09:24 boot — the
-  third such case (n=2 on 09-28). The readiness script's "since 2026-09-25 nothing in the bot
-  re-mints it" text is STALE (C-0929-01). Standing rule kept: hand-log business + alt-1 (force)
-  before boot and re-run readiness for 3/3.
+  third such case (n=2 on 09-28). **And at 20:48:12 on 10-04 the operator's bat start (stopped
+  after ~10 s) refreshed primary the same way:** `logs/relogin.log:3261` "primary: already logged
+  in ✅ (cookies refreshed …)", token iat 20:48:14. So **no hand login is needed tonight**: the
+  bat's validate-first pass (`relogin_one.py:402-411`) refreshes an expired member token from a
+  live login-session, and the bat re-runs the readiness check after it (bat:1459-1463), so a pass
+  that failed still shows ❌ at boot. A hand login is needed only for a dead login-session or a
+  guest jar. The script's stale "nothing in the bot re-mints it; force a hand login" verdict is
+  fixed (10-04, `READINESS_REMINT_AWARE`, default 1; =0 is byte-identical to `c1d24d8a`, checked).
+  - **Why the typed login cannot simply be scripted:** the dead-session fallback
+    (`relogin_one.py:413-431`) already types the config email and password and ticks KMSI, 3
+    attempts. Shape blocks it at the username step (~0/25 historic, 2/5 on 09-25, 0/6 on 09-28
+    "username did NOT advance"), and each failure leaves the account signed out. The login-session
+    reads 27.1 d on all three (09-30 00:00 read 29.1 d, before the 09-30 01:09-01:12 hand logins),
+    so a dead session is a ~monthly event, ~10-31/11-01 [INFERRED from two readings].
 - **Regime:** nothing new on a drop night since 10-02 (no run). One WATCH:
   `run_20261002_092404` decoy keyless 401 5/109 (4.6%) vs 18-20% in the four earlier runs; signed
   decoys 0/55 → `docs/TARGET_CHANGES.md` (2026-10-02 09:24 entry), rule R-DECOY below.
@@ -624,7 +700,9 @@ pre-registered and smoked on 09-25 and 09-23: `tools/analysis/readout_arm_2026_0
 - **Offline suite 29/29** (0 failed, 0 skipped, 354 s) on the final wrapper. New files `tests/test_redsky_206_log.py` (28) and
   `tests/test_token_mint_log.py` (22), 11 new checks in `test_won_cart_direct_smoke.py`;
   every new branch mutation-checked.
-- **Deliberately NOT done:** a 206 ingest (needs L1's shape first); a token keep-and-restore
+- **Deliberately NOT done:** a 206 ingest (09-25: needed L1's shape first — measured 10-05:
+  94/94 storm bodies complete=17/17, store_positions errors only; what is still missing is
+  AGREEMENT with 200 reads, measured by FS-206-SHADOW, armed 10-05); a token keep-and-restore
   (its motivating claim was REFUTED; worth ≤30 min per account); skipping the legacy DOM
   detour and stopping the legacy hold on OOS (R1 routes the observed case around both —
   follow-ups); the C-0924-01 MISS re-arm (0 contention skips on 09-25).
@@ -1363,8 +1441,10 @@ ends with `invisible: []` and all 10 `last_seen == updated_at`. The 09-21
 43-minute 429 tarpit did **not** recur — `429=` read 0 on all 1,060 intervals.
 [VERIFIED 09-22, fresh context]
 
-- **Zero-restock nights are the NORM: 6 of the last 9 full runs had zero stock
-  events.** Two in a row is the base rate, not a regression. [MEASURED 09-22]
+- (Corrected 10-05 post-run: the 09-22 line "zero-restock nights are the NORM, 6 of the
+  last 9" no longer holds — since 09-15, 7 of 10 overnight runs before 10-05 had ≥1 stock
+  window (event store `runs` / `windows`); 10-05 was the first zero-window night since
+  09-29. [MEASURED 10-05; the target list changed over that span])
 - Whole-run loss 302/93,608 = 0.32%; **excluding the 01:01-01:17 dip it is
   45/82,888 = 0.054%**, better than the 8-exit baseline of 0.07%. The 18-exit
   restore is vindicated on steady-state grounds. [MEASURED 09-22]
@@ -1441,13 +1521,13 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change; 09-30: flip-race first shots 4/33, every other shot 0/219 — COMPOSITION, not a verdict: hot-list-only 1/123 at window age <150 s vs 7.6%, but 1010892076 (0/145 home first shots since 09-15, never carted) dominates; this baseline carries no TCIN mix, so compare per TCIN / leave-one-TCIN-out (C-0930-08 weakened, C-0930-09); 10-01: 12/49 = 24.5% hot-only (1010892076 alone 3/29 = 1.4x; the pooled 3.2x comes from the four small TCINs); 10-02: 1/37 = 2.7% (p=0.49 vs 7.6%) — back in the baseline range | 10-02 |
 | Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07); 09-30: 4/33 (12.1%; 2 × 401 + 1 × 503 excluded) pooled; hot-list only 1/30 (P=0.004 vs 15/65) but that is 1010892076-dominated; 95082118 3/3; every other shot 0/219. Regime verdict NOT ESTABLISHED until the baseline is restated per TCIN (fix spec FS-1); **10-01: 13/14 (92.9%; leave-1010892076-out 10/10; 1010892076 3/4 vs 0/20 on 09-30); every other shot 9/238 = 3.8% (raw-log count; event-store parser v2 gives 12/241 = 4.98% because it counts the 3 × 400 MAX_PURCHASE shots as past the limiter — quote either with its definition)** — RECOVERY (C-1001-14); **10-02: 1/9 (p=0.67 vs 15/65; p=0.0002 vs 10-01); every other shot 0/120** — back inside the pre-10-01 range, 10-01 was the departure (C-1002-F3) | 10-02 |
 | Won hot cart → order | none ever | 0/10 lifetime (07-14 → 09-30): 4 never reached place-order, 5 died on checkout FAST_SELLING; 09-30 alt-1 1010892067: 41 place-orders (38 FAST_SELLING, 3 RESERVATION_FAILURE incl. the in-chain one), then RETIRED BY OUR CAPS with the line proven present and the TCIN in stock (C-0930-02). A first conversion is a RECOVERY signal; **10-01: FIRST CONVERSION — 1/8 (primary 1011960739, in-chain first shot, C-1001-01) → 1/18 lifetime**; the other 7 ended by OUR code while live, 0/199 tickets (C-1001-02); 10-02: no carts | 10-02 |
-| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23, 09-25 and 09-30 had stock: 0; the 09-28 day run and both 09-29 runs had no stock); **10-01: 1 (2 units)**; 10-02: 0 (first edge lost to a host crash) | 10-02 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst; 09-30: 0.54% whole run (435/81,040) = 7.7x this row's 8-IP baseline; RESTOCK HOURS like-for-like: 02:00-04:59 1.20% vs 0.040% the same hours on 09-29 — FLAG, from RedSky 206 bursts (C-0930-11); 10-01: 0.167% whole run (309/184,823, all 'other'); restock hours 02:00-04:59 0.180% vs 1.20% on 09-30 — the 206 burst did not recur; 92 of 309 lost on one exit | 10-01 |
-| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone); 09-30: 424 80.0% / keyless 401 20.0% (n=1,804 unique — the readout printed 3,608, a double count, C-0930-07), 0 ERR_UNAUTHORIZED; signed and unsigned decoys 401 at the same rate (C-0930-06); 10-01: 424 79.6% / keyless 401 20.4% (n=4,063), 0 ERR_UNAUTHORIZED — no change, and flat through the SSX switch (C-1001-12) | 10-01 |
+| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23, 09-25 and 09-30 had stock: 0; the 09-28 day run and both 09-29 runs had no stock); **10-01: 1 (2 units)**; 10-02: 0 (first edge lost to a host crash); 10-05: 0 — no stock event at all (nothing went on sale) | 10-05 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst; 09-30: 0.54% whole run (435/81,040) = 7.7x this row's 8-IP baseline; RESTOCK HOURS like-for-like: 02:00-04:59 1.20% vs 0.040% the same hours on 09-29 — FLAG, from RedSky 206 bursts (C-0930-11); 10-01: 0.167% whole run (309/184,823, all 'other'); restock hours 02:00-04:59 0.180% vs 1.20% on 09-30 — the 206 burst did not recur; 92 of 309 lost on one exit; **10-05: 12.854% whole run (12,924/100,545) — a 206 STORM 02:00:18-03:34:28, 73.3% lost (12,396/16,904), 0×403/429, pool-wide except 72.56.171.184 (14.2%); leave-the-storm-out 0.654%, of which 08:25-09:30 = the four 168.158/16 exits at 29% (a BD subnet cluster); 00-01 + 04-07 pooled 0.144% = baseline** (C-1005-05) | 10-05 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone); 09-30: 424 80.0% / keyless 401 20.0% (n=1,804 unique — the readout printed 3,608, a double count, C-0930-07), 0 ERR_UNAUTHORIZED; signed and unsigned decoys 401 at the same rate (C-0930-06); 10-01: 424 79.6% / keyless 401 20.4% (n=4,063), 0 ERR_UNAUTHORIZED — no change, and flat through the SSX switch (C-1001-12); 10-02 09:24 run 4.6% (5/109) → a fluke: **10-05: 424 80.0% / keyless 401 20.0% (n=2,215), 0 ERR_UNAUTHORIZED** — no change | 10-05 |
 | ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots); 09-30: 3/256 (1.2%), all keyless — each a shot that PASSED the limiter (C-0930-03); **10-01: 80/350 (22.9%)** — 70 on 1010892076 after its first 6 admits (the per-TCIN SSX switch, C-1001-12); leave-1010892076-out 10/82 (12.2%); 10-02: 0/129, not informative (only 1 shot passed the limiter) | 10-02 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
-| Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54, all rung 2) | **0/62 from 09-25 06:01; 09-28: 0/253 (rung 1 404 x253, rung 2 0/12 on live sessions)** — the REPAIR rungs stay broken (both delete or bypass the live token). **RECOVERY 09-29 with the repair off (KEEPFRESH=0): the running bot re-minted 12 of 12 expiries (3 accounts x 4), jars on the 4 h grid, 0 ERR_UNAUTHORIZED** (C-0929-01) | 09-30 |
-| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`); 09-30 on the NEW `[STOCK][206]` marker (from 09-25): 411 partial reads, 382 of them 02:00-04:59 vs 10 in the same hours on 09-29 (the "1-3 a night" baseline is an older instrument; compare reads per hour on the same marker) (C-0930-11); 10-01: 194 partial reads (11.2/h), only 24 in 02:00-04:59 vs 382 on 09-30 | 10-01 |
+| Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54, all rung 2) | **0/62 from 09-25 06:01; 09-28: 0/253 (rung 1 404 x253, rung 2 0/12 on live sessions)** — the REPAIR rungs stay broken (both delete or bypass the live token). **RECOVERY 09-29 with the repair off (KEEPFRESH=0): the running bot re-minted 12 of 12 expiries (3 accounts x 4), jars on the 4 h grid, 0 ERR_UNAUTHORIZED** (C-0929-01); **10-05: held — jars at stop all MEMBER, minted in-bot (business 07:55:38, alt-1 07:56:20, primary 08:10:21), 0 ERR_UNAUTHORIZED, incl. primary with NO login-session all run** (C-1005-09) | 10-05 |
+| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`); 09-30 on the NEW `[STOCK][206]` marker (from 09-25): 411 partial reads, 382 of them 02:00-04:59 vs 10 in the same hours on 09-29 (the "1-3 a night" baseline is an older instrument; compare reads per hour on the same marker) (C-0930-11); 10-01: 194 partial reads (11.2/h), only 24 in 02:00-04:59 vs 382 on 09-30; 10-02: 86; **10-05: 12,644 partial reads (incl. 143 ground-truth), 12,560 in 02:00-04:59 — the largest storm yet; bodies complete=17/17 with store_positions errors (94/94 sampled)** (C-1005-03) | 10-05 |
 | In-bot scripted re-login | ~0/25 historic | 09-25: 2/5; **09-28: 0/6** ("username did NOT advance"), each left the account a GUEST | 09-28 |
 
 **Declare a regime change and open an investigation when:** a cart rate moves by

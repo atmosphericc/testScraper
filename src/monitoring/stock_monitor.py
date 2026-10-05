@@ -57,6 +57,58 @@ def redsky_pickup_fields(fulfillment, shipping=None) -> dict:
     return out
 
 
+_SELLABLE_STATUSES = ('IN_STOCK', 'PRE_ORDER_SELLABLE')
+
+
+def status_log_on() -> bool:
+    """RESILIENT_STATUS_LOG=1 (2026-10-05 post-run, INS-STATUS-LOG): _process_response
+    adds the sd_* keys below and the sweep logs [STOCK STATUS] / SELLABLE-PARSED-OOS.
+    Default '0' = no new keys, no new text. Kill-switch: =0."""
+    return os.environ.get('RESILIENT_STATUS_LOG', '0').strip() == '1'
+
+
+def redsky_status_fields(item, shipping, availability_status, in_stock,
+                         is_target_direct, atp_qty, services) -> dict:
+    """2026-10-05 post-run INS-STATUS-LOG: the inputs of one shipping verdict, and WHY
+    a read that Target calls sellable came out not in stock. On 10-05 the binder
+    1010892074 was read OUT_OF_STOCK once at 02:00:08 and nothing after that was
+    logged, so "did it ever go sellable, and did our parser say no" was undecidable
+    (docs/CLAIMS.md C-1005-*). Four NEW keys, never touching in_stock / max_qty:
+      sd_rtc         item.relationship_type_code as sent ('' = missing)
+      sd_services    len(shipping_options.services) (-1 = missing / not a list)
+      sd_loyalty     shipping_options.loyalty_availability_status ('' = none; the apps
+                     channel sends it and nothing else reads it)
+      sd_oos_reason  '' unless availability_status or sd_loyalty is IN_STOCK /
+                     PRE_ORDER_SELLABLE and in_stock is False; then the rule(s) of the
+                     verdict below that said no, '+'-joined: loyalty_only, no_services,
+                     atp_zero, not_target_direct, or other
+    Mirrors the verdict in _process_response (BLOCKED / PRE_ORDER_SELLABLE needs
+    services / IN_STOCK needs atp != 0 / then SA-or-VC). Raises only on a
+    pathological input object; the caller wraps it."""
+    it = item if isinstance(item, dict) else {}
+    sh = shipping if isinstance(shipping, dict) else {}
+    rtc = it.get('relationship_type_code')
+    loy = sh.get('loyalty_availability_status')
+    out = {'sd_rtc': str(rtc).strip()[:12] if rtc else '',
+           'sd_services': len(services) if isinstance(services, list) else -1,
+           'sd_loyalty': str(loy).strip()[:40] if loy else '',
+           'sd_oos_reason': ''}
+    avail = str(availability_status or '')
+    if in_stock or not (avail in _SELLABLE_STATUSES or out['sd_loyalty'] in _SELLABLE_STATUSES):
+        return out
+    why = []
+    if avail not in _SELLABLE_STATUSES:
+        why.append('loyalty_only')
+    elif avail == 'PRE_ORDER_SELLABLE' and out['sd_services'] <= 0:
+        why.append('no_services')
+    elif avail == 'IN_STOCK' and atp_qty == 0:
+        why.append('atp_zero')
+    if not is_target_direct:
+        why.append('not_target_direct')
+    out['sd_oos_reason'] = '+'.join(why) or 'other'
+    return out
+
+
 class StockMonitor:
     def __init__(self):
         self.api_endpoint = 'https://redsky.target.com/redsky_aggregations/v1/web/product_summary_with_fulfillment_v1'
@@ -502,6 +554,7 @@ class StockMonitor:
         # 2026-09-16 hot-sku plan P7 (DX-1): read once per response; see
         # redsky_pickup_fields(). Default '0' = the result dicts are unchanged.
         _store_opts_log = os.environ.get('TARGET_REDSKY_STORE_OPTIONS_LOG', '0').strip() == '1'
+        _status_log = status_log_on()      # 2026-10-05 INS-STATUS-LOG; '0' = unchanged
 
         for product_summary in product_summaries:
             try:
@@ -602,6 +655,15 @@ class StockMonitor:
                 if _store_opts_log:
                     try:
                         result[tcin].update(redsky_pickup_fields(fulfillment, shipping))
+                    except Exception:
+                        pass
+                # 2026-10-05 INS-STATUS-LOG: same contract as DX-1 above (own try,
+                # after the entry exists, new keys only).
+                if _status_log:
+                    try:
+                        result[tcin].update(redsky_status_fields(
+                            item, shipping, availability_status, in_stock,
+                            is_target_direct, atp_qty, services))
                     except Exception:
                         pass
 

@@ -88,6 +88,10 @@ OFFLINE = [
     # 2026-09-30: the run-log event store (tools/events/build.py + q.py) -- synthetic log
     # lines parsed in memory and into a temp SQLite file (no browser, no network, no bot).
     "test_events_parser",
+    # 2026-10-05 post-run: RESILIENT_STATUS_LOG + RESILIENT_206_INGEST=shadow, both log-only
+    # (real ResilientStockChecker / StockMonitor parser on synthetic bodies, stubbed
+    # urllib, temp state dir; no browser, no network).
+    "test_status_log_and_206_shadow",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

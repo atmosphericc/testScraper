@@ -232,6 +232,35 @@ Entry format:
   401 share stays under ~10% over n ≥ 500, treat it as a Shape/SSX change and open an
   investigation. If it is back at 18-20%, this was a 30-min fluke.
 - **Confidence:** [MEASURED] counts. A change is [SUSPECTED]: n=109, 29 minutes, one run.
+- **UPDATE 2026-10-05: a fluke; watch CLOSED** by its pre-registered rule (R-DECOY):
+  `run_20261005_002518` decoy keyless 401 = 20.0% (443/2,215, 0 ERR_UNAUTHORIZED, per hour
+  15.5-23.5%) — back on the 18-20% baseline.
+
+### 2026-10-05 — RedSky 206 storm at the 03:00 ET slot: 94 min, store_positions on every product
+- **Changed:** 02:00:18.951-03:34:28 CDT the apps_raw bulk read answered HTTP 206 with a
+  `store_positions` error ("Exception while fetching data") on every product.
+  - Sweeps lost 12,396/16,904 (73.3%), all in `other`, with 0 × 403 and 0 × 429.
+  - By exit: 13 exits in 31.105/16 lost 76.0%, 4 in 168.158/16 lost 75.9%, and the lone
+    72.56.171.184 lost 14.2% (150/1,058). That exit was also the least-hit on 09-25
+    (14.0% vs ~31%); why is NOT ESTABLISHED.
+  - The bodies held the stock fields for 17/17 TCINs on 94/94 sampled lines (C-1005-01).
+  - This is the third storm at the 02:00 CT slot: 09-25 (11.8% whole run), 09-30 (1.20% in
+    02:00-04:59), 10-05. There was none on 10-01 or 10-02.
+  - Onset was 1.5 s after the binder 1010892074 was published, but a publish is neither
+    necessary nor sufficient: the 09-11 publish night lost 0.28% in hour 02, and the 09-25 /
+    09-30 storms had no publish. Its contribution on 10-05 is NOT ESTABLISHED.
+- **Noticed:** bot WARNING at once, first ERROR 02:11:34; humans at the 10-05 post-run
+  (≥7 h 50 min). Known since 09-25, so the real gap is the 10-day RESPONSE gap (no 206 use).
+- **Cost:** 0 stock events seen all run. The longest stretch with no usable read was <90 s
+  (1 of 1,122 STATS intervals had 0 ok reads). Modelled miss chance inside the storm
+  [INFERRED]: a 2 s sellable window ~28%, 5 s ~9%, 10 s ~3%, 30 s 0.7%. No real stock
+  window has ever opened in a ≥50%-loss interval (0/28, 09-25..10-02).
+- **Evidence:** run_20261005_002518.log `[STOCK][206]` (181 lines, 12,644 reads incl. 143
+  ground-truth), `[STOCK STATS]`, `[STOCK][EXITS]`; `q.py monitor_hours`;
+  `logs/analysis_2026_10_05/postrun/`.
+- **Our response:** log-only FS-206-SHADOW armed 10-05 (`RESILIENT_206_INGEST=shadow`). It
+  measures whether a 206 body agrees with an adjacent 200 before any ingest is built.
+- **Confidence:** [MEASURED] counts and sampled shape; the cause is [NOT ESTABLISHED].
 
 ---
 

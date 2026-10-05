@@ -33,7 +33,8 @@ HERE = Path(__file__).resolve().parent
 QUERIES = HERE / 'queries'
 DEFAULT_DB = HERE.parents[1] / 'logs' / 'events' / 'events.sqlite'
 RUN_TABLES = ['runs', 'shots', 'races', 'flips', 'windows', 'tickets', 'loop_ends', 'decoys',
-              'monitor_stats', 'orders', 'idents', 'unparsed', 'checks', 'place_orders']
+              'monitor_stats', 'orders', 'idents', 'unparsed', 'checks', 'place_orders',
+              'stock_status', 'sellable_oos', 'shadow206']        # 2026-10-05
 
 
 def statements(sql: str):

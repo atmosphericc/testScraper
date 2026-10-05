@@ -112,6 +112,21 @@ REM errors and which TCINs came back complete, absent or incomplete. LOG ONLY:
 REM the read still counts as failed and nothing is ingested. grep STOCK][206.
 REM Kill: set it to 0.
 set RESILIENT_206_LOG=1
+REM 2026-10-05 post-run (wf_9651193b-efc), both LOG ONLY, nothing ingested or fired:
+REM  RESILIENT_STATUS_LOG=1  one [STOCK STATUS] line per change of a TCIN's shipping
+REM   status / relationship code / services present / loyalty status (first sighting
+REM   included), plus [STOCK] SELLABLE-PARSED-OOS when Target says IN_STOCK or
+REM   PRE_ORDER_SELLABLE and our parser says out of stock, with the rule that said
+REM   no. On 10-05 the binder 1010892074 had ONE status line all night, so whether
+REM   it ever went sellable could not be told. Kill: set it to 0.
+REM  RESILIENT_206_INGEST=shadow  02:00-03:34 on 10-05 RedSky answered 73.3 percent
+REM   of sweeps with HTTP 206 whose bodies held the stock fields for 17 of 17 TCINs,
+REM   and we threw them away. Shadow parses the usable part of each 206 and logs one
+REM   [STOCK][206-SHADOW] line a minute: how often it agrees with a 200 read of the
+REM   same TCIN under 2 s old. It never fires a purchase or changes stock state.
+REM   Agreement must be measured before any real 206 ingest. Kill: set it to 0.
+set RESILIENT_STATUS_LOG=1
+set RESILIENT_206_INGEST=shadow
 REM 2026-09-25 L3 (log-only): one [STOCK][FLIP] line per out-of-stock to in-stock
 REM read, with the read's epoch-ms stamp (read_ms), the last out-of-stock read
 REM (last_oos_ms) and RedSky's raw ATP / purchase-limit fields. Every edge
