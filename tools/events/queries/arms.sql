@@ -2,7 +2,8 @@
 --
 -- Usage:  python tools/events/q.py arms -p treated=alt-1 [--run 0925,0930]
 --         (or set EVENTS_TREATED=alt-1 in the environment; unset -> every ident lands in 'rest')
--- w1_pass = any gate except wall1_limited/other/unknown (a 401 counts: it is past the limiter).
+-- w1_pass = any gate except wall1_limited/other/unknown (a 401 counts: it is past the limiter; so does
+-- cart_limit, the parser-v2 gate for a 400 MAX_PURCHASE_LIMIT_EXCEEDED, which was 'other' before v2).
 -- The pct denominators exclude other/unknown. Shots with no ident or no race (resp_only) are left out.
 -- Selection effect: a later shot exists only because the earlier one failed -- compare arms at the
 -- same shot position, never later-vs-first.
@@ -15,12 +16,12 @@ WITH t AS (
 )
 SELECT run_id AS run, arm,
        SUM(is_first = 0) AS later_n,
-       SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory')) AS later_w1_pass,
-       ROUND(100.0 * SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory'))
+       SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS later_w1_pass,
+       ROUND(100.0 * SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit'))
              / NULLIF(SUM(is_first = 0 AND gate NOT IN ('other', 'unknown')), 0), 2) AS later_pct,
        SUM(is_first = 1) AS first_n,
-       SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory')) AS first_w1_pass,
-       ROUND(100.0 * SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory'))
+       SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS first_w1_pass,
+       ROUND(100.0 * SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit'))
              / NULLIF(SUM(is_first = 1 AND gate NOT IN ('other', 'unknown')), 0), 2) AS first_pct
 FROM t
 GROUP BY run_id, arm
@@ -34,12 +35,12 @@ WITH t AS (
 )
 SELECT 'ALL ' || COUNT(DISTINCT run_id) || ' runs' AS run, arm,
        SUM(is_first = 0) AS later_n,
-       SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory')) AS later_w1_pass,
-       ROUND(100.0 * SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory'))
+       SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS later_w1_pass,
+       ROUND(100.0 * SUM(is_first = 0 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit'))
              / NULLIF(SUM(is_first = 0 AND gate NOT IN ('other', 'unknown')), 0), 2) AS later_pct,
        SUM(is_first = 1) AS first_n,
-       SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory')) AS first_w1_pass,
-       ROUND(100.0 * SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory'))
+       SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS first_w1_pass,
+       ROUND(100.0 * SUM(is_first = 1 AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit'))
              / NULLIF(SUM(is_first = 1 AND gate NOT IN ('other', 'unknown')), 0), 2) AS first_pct
 FROM t
 GROUP BY arm

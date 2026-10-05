@@ -49,7 +49,8 @@ os.environ.setdefault("TARGET_API_PLACE_ORDER", "true")
 _HOT_SKU_JS_FLAGS = ("TARGET_FASTLANE_STAGE_TRACK", "TARGET_FASTLANE_QTY_GUARD",
                      "TARGET_FASTLANE_T_STAMPS", "TARGET_FASTLANE_LOG_CART_QTY",
                      "TARGET_WONCART_DIRECT", "TARGET_HELD_CART_REENTRY",
-                     "TARGET_AMBIGUOUS_COMMIT_LATCH")
+                     "TARGET_AMBIGUOUS_COMMIT_LATCH",
+                     "TARGET_HELD_LINE_FLIP_STRIKE", "TARGET_HELD_LINE_FLIP_STRIKE_IDENTS")
 for _k in _HOT_SKU_JS_FLAGS:
     os.environ.pop(_k, None)
 

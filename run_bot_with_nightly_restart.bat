@@ -1172,6 +1172,16 @@ REM cart); a one-shot boot cart audit keeps or clears a leftover cart.
 REM grep [HELD_CART] and [BOOT_CART_AUDIT]. Kill: TARGET_HELD_CART_REENTRY=0.
 set TARGET_HELD_CART_REENTRY=1
 set TARGET_HELD_CART_TTL_S=900
+REM 2026-10-04 pre-drop, operator: FX-1001-A held-line flip strike, v11,
+REM verified 10-03 by fresh verifiers 10 and 11. An add-to-cart 400
+REM MAX_PURCHASE (our line is already held) at a fresh flip continues in the
+REM same chain to pre_checkout then place-order, only when the cart holds
+REM nothing but our TCIN with qty at most Q. A held line in a new stock window
+REM is struck through the won-cart ticket loop. The legacy whole-cart checkout
+REM runs only on a cart read that shows no line of another item. Needs the qty
+REM guard, forced on by TARGET_HELD_CART_REENTRY=1 above. grep the markers
+REM [HELD_LINE_STRIKE] and [LEGACY_CART_GUARD]. Kill: TARGET_HELD_LINE_FLIP_STRIKE=0.
+set TARGET_HELD_LINE_FLIP_STRIKE=1
 REM WC-2 hygiene on a held cart: no forced /cart re-warm before a legacy
 REM re-shoot, no warmup /cart nav while a cart is held, no fleet cycle-warm
 REM while stock is live, no duplicate pre_checkout, and a ride that ends as

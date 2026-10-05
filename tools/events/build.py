@@ -42,7 +42,14 @@ LOG FORMAT RULES THIS PARSER IS BUILT ON (all seen in real logs)
 SHOTS (one row per main-tab add-to-cart request)
   anchors: "[FAST_LANE] chain done ... atc=<status> ... ident=" (src=chain); a fast-lane
   evaluate timeout / raise with no chain line (src=orphan: no response, gate unknown);
-  an ident-tagged "[PURCHASE] ATC fetch" outcome with no pending chain (src=legacy).
+  an ident-tagged "[PURCHASE] ATC fetch" outcome with no pending chain (src=legacy);
+  v2: the legacy 401 ladder's own retry adds, "[PURCHASE] ATC fast-retry succeeded (201)" /
+  "ATC retry-2 succeeded (201)" (src=legacy_retry, variant=fast-retry|retry-2). Those lines
+  carry no ident; their TCIN is the running executions' TCIN ("[PURCHASE] Starting purchase
+  for <tcin>" minus "Purchase execution completed ... 'tcin'") when they all share one,
+  else NULL (unparsed PRETRY@tcin_null) -- never the last [FAST_LANE] Firing TCIN.
+  v2 ep_window_id / ep_age_ms / ep_src: the shot's in-stock episode by its OWN time (see
+  WINDOWS); window_id / window_age_ms keep the v1 meaning (the race's flip window, atc_t0).
   Every main-tab [ATC_RESP] is joined to one anchor of the SAME status:
     ts / ts_loose  global greedy on |logger_ts - (atc_t0 + atc_rt)| <= 2 s (|dt| <= 10 ms
                    = 'ts'), when the chain has atc_t0 and the file uses the logger form
@@ -72,6 +79,11 @@ GATE (never guessed; 'unknown' is counted, not folded into a bucket)
   admitted_fs   429 + FAST_SELLING / DCO_RATE_LIMITED (past both walls, cart throttle)
   wall2_denied  401 (past the limiter, denied at the SSX hop)
   inventory     424
+  cart_limit    v2: 400 whose key is MAX_PURCHASE_LIMIT_EXCEEDED (a cart-service answer,
+                x-ssx-hop=1: PAST the limiter). A 400 carries no tgt-cart-error-key; its
+                [PURCHASE] ATC fetch body "code" becomes err_key (err_key_src='body'); a
+                400 without one is counted (unparsed ATC400@no_body_code). Other codes stay
+                'other' with the code as err_key.
   other         any other status (503, 431, 400, 0 ...)
   unknown       no status (no response) or a 429 whose key is missing / unrecognised
                 (logs before 2026-08-27 have no [ATC_RESP], so their 429s are unknown;
@@ -87,11 +99,44 @@ WINDOWS  a window opens at a [STOCK][FLIP] new_window=1 line and runs until that
   next new_window=1 flip (stock_check_resilient.py:136-144 / :844). Races take the
   window of their TCIN that contains their start (first shot atc_t0); the earliest race
   of a window is flip_opened. Runs with no flip lines get NULL (unknown), not 0.
+  v2 read-based episodes (windows.src='reads', ids after the flip windows): where no flip
+  window covers a moment, the episode opens at the TCIN's first in-stock read after its
+  last out-of-stock read, in LOG order. In-stock reads: [STOCK] IN STOCK (+ its [API_CYCLE]
+  second), [STOCK WATCH] in_stock=True, cache-bust VERIFY in_stock=True; out-of-stock:
+  [STOCK WATCH] / VERIFY in_stock=False. No hysteresis (the 30-s [STOCK WATCH] cadence
+  cannot resolve one). Every episode is stored for a run without flips; in a flip run only
+  the ones something fell back to. Races / flip_opened never use them.
+
+PLACE_ORDERS (v2, one row per main-tab "[INTERCEPTOR:main] [CHECKOUT_POST]")
+  response  FIFO with the "[CHECKOUT_RESPONSE] HTTP <s>" lines (all accounts share the label;
+            pair_q 'fifo_overlap' when >1 POST was pending); its "424 flagged (reason=KEY)" /
+            "headers: {...}" lines give err_key ('-' when logged empty) and the Date header.
+  path      the claim that follows the response with the same status: "[FAST_LANE] chain done
+            ... po=<s>" -> in_chain; "[API_PLACE_ORDER] HTTP <s>" -> legacy (its mode=legacy
+            [FS_TICKET] adds ident/tcin/ms_since_201); "[FS_TICKET] layer=po" -> ticket; none
+            -> unknown (pre-September DOM clicks, mostly). claim_q 'fifo_multi' = >1 candidate.
+  ident/tcin  chain shot / ticket, else the open races (one TCIN / one active account), else the
+            running executions' TCIN; else NULL.
+  ts_ms     the response's Date header clamped into [ts_lo_ms, ts_hi_ms] (rejections only), else
+            ts_lo_ms. ts_lo_ms = the last logger stamp before the POST (or the chain's 201, if
+            later); ts_hi_ms = the first logger stamp after it.
+  window    window_id / window_src / window_age_ms: the flip window covering ts_ms, else the
+            read-based episode (WINDOWS).
+  cart      cart_line = the cart shot: 'chain' (its own chain), 'ident' (that account's latest
+            cart, <= 1 h), then for ident-less lines the heuristics 'fifo_first' (oldest cart
+            with no POST yet, <= 60 s) / 'unique_recent' (the only cart <= 180 s); else NULL.
+            po_idx = 1 for the cart's first POST. ms_since_201: chain atc_t0+atc_rt, the
+            [FS_TICKET] value, or the linked cart's 201 (ms201_src).
+  Counted in `unparsed`: CHECKOUT_POST@unpaired, CHECKOUT_RESPONSE@unpaired / @detail_unpaired,
+  API_PO@http0 (fetch threw: the POST may not exist), PO_CLAIM@unmatched, PO@path_unknown,
+  PO@ident_null, PO@tcin_null, PO@window_null. order_id: the order line within 100 lines after
+  a 200's response.
 """
 from __future__ import annotations
 
 import argparse
 import calendar
+import email.utils
 import os
 import re
 import sqlite3
@@ -100,7 +145,7 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 1
+PARSER_VERSION = 2       # 2026-10-01: legacy_retry shots, place_orders, 400 body code/cart_limit, episodes
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNS_DIR = ROOT / 'logs' / 'runs'
@@ -218,6 +263,25 @@ PFETCH_ST = re.compile(r'\[PURCHASE\] ATC fetch status: (?P<status>\d{1,3})(?P<r
 PFETCH_AUX = re.compile(r'\[PURCHASE\] ATC fetch \d{3} auth denied')
 PFIRE = re.compile(r'\[PURCHASE\] Firing ATC fetch qty=(?P<qty>\d+)')
 PF_T_IDENT = re.compile(r'\(t=[\d.]+s\)(?: ident=' + IDENT + ')?')
+BODY_CODE = re.compile(r'"code"\s*:\s*"(?P<code>[A-Za-z0-9_]{3,80})"')
+# v2 (2026-10-01): the legacy 401 ladder's retry adds (purchase_executor.py "ATC fast-retry
+# succeeded" / "ATC retry-2 succeeded") -- add-to-cart requests of their own, print only
+PRETRY = re.compile(r'\[PURCHASE\] ATC (?P<kind>fast-retry|retry-2) succeeded \((?P<status>\d{3})\)')
+PSTART = re.compile(r'\[PURCHASE\] Starting purchase for (?P<tcin>' + TCIN + r')')
+# v2: main-tab place-order POSTs and their interceptor responses (purchase_executor.py
+# [CHECKOUT_POST] request stage, [CHECKOUT_RESPONSE] response stage), the legacy path's
+# own result line, and the monitor's 30-s per-TCIN state / cache-bust verify reads
+CO_POST = re.compile(r'\[INTERCEPTOR:(?P<tab>[\w-]+)\] \[CHECKOUT_POST\] POST ')
+CO_RESP = re.compile(r'\[INTERCEPTOR:(?P<tab>[\w-]+)\] \[CHECKOUT_RESPONSE\] (?:'
+                     r'HTTP (?P<status>\d{1,3}) — (?:SUCCESS|REJECTED)'
+                     r'|\d{1,3} flagged — short-circuiting wait loop \(reason=(?P<reason>[^)\[]*)\)'
+                     r'|headers: (?P<hdrs>.*)'
+                     r'|(?P<body>body(?: capture failed)?: ))')
+CO_HDR_DATE = re.compile(r"'date': '([^']*)'")
+CO_HDR_KEY = re.compile(r"'tgt-cart-error-key': '([^']*)'")
+API_PO = re.compile(r'\[API_PLACE_ORDER\] HTTP (?P<status>\d{1,3}) in [\d.]+s')
+WATCH = re.compile(r'\[STOCK WATCH\] (?P<tcin>' + TCIN + r'): in_stock=(?P<v>True|False)')
+VERIFY = re.compile(r'\[STOCK\] VERIFY \(cache-bust\): (?P<tcin>' + TCIN + r') -> \S+ in_stock=(?P<v>True|False)')
 
 # Presence patterns: a hit that its family's full regexes cannot parse is `unparsed`.
 PRINT_FAMILIES = [
@@ -241,9 +305,15 @@ PRINT_FAMILIES = [
     ('FWD', r'\[FORWARDER\] (?:W\d+/|\[WARN\] |\[ERROR\] )'),
     ('PFETCH', r'\[PURCHASE\] ATC fetch'),
     ('PFIRE', r'\[PURCHASE\] Firing ATC fetch'),
+    ('PRETRY', r'\[PURCHASE\] ATC (?:fast-retry|retry-2) succeeded'),
+    ('PSTART', r'\[PURCHASE\] Starting purchase for '),
+    ('CO_POST', r'\[INTERCEPTOR:[\w-]+\] \[CHECKOUT_POST\] '),
+    ('CO_RESP', r'\[INTERCEPTOR:[\w-]+\] \[CHECKOUT_RESPONSE\] '),
+    ('API_PO', r'\[API_PLACE_ORDER\] HTTP '),
     # logger-only markers seen in print text = a format change (counted, never parsed)
     ('FLIP@wrong_form', r'\[STOCK\]\[FLIP\] '),
     ('STATS@wrong_form', r'\[STOCK STATS\] '),
+    ('WATCH@wrong_form', r'\[STOCK WATCH\] '),
 ]
 LOGGER_FAMILIES = [
     ('ATC_RESP_L', r'^\[ATC_RESP\] '),
@@ -251,16 +321,23 @@ LOGGER_FAMILIES = [
     ('FLIP', r'\[STOCK\]\[FLIP\] '),
     ('STATS', r'\[STOCK STATS\] '),
     ('CRED', r'\[HARVEST/[\w-]+\] (?:REPLAY on main shot|bank EMPTY at shot time|bank STALE at shot time)'),
+    ('WATCH', r'\[STOCK WATCH\] '),
+    ('VERIFY', r'\[STOCK\] VERIFY \(cache-bust\): '),
     ('RACE@wrong_form', r'\[RACE\] '),
     ('FL_CHAIN@wrong_form', r'\[FAST_LANE\] chain done'),
     ('EXPOSURE@wrong_form', r'\[EXPOSURE\] '),
     ('FS_TICKET@wrong_form', r'\[FS_TICKET\] '),
+    ('CO_POST@wrong_form', r'\[CHECKOUT_POST\] '),
+    ('API_PO@wrong_form', r'\[API_PLACE_ORDER\] HTTP '),
 ]
 
 
 def _dispatch(fams):
     return re.compile('|'.join('(?P<%s>%s)' % (n.replace('@', '__'), p) for n, p in fams))
 
+
+# print-only events whose time is bracketed: last logger stamp before <= t <= first one after
+NEXT_STAMP_EVENTS = frozenset(('co_post',))
 
 PRINT_DISPATCH = _dispatch(PRINT_FAMILIES)
 LOGGER_DISPATCH = _dispatch(LOGGER_FAMILIES)
@@ -304,6 +381,8 @@ def gate_of(status, key):
         return 'wall2_denied'
     if status == 424:
         return 'inventory'
+    if status == 400 and key and 'MAX_PURCHASE_LIMIT_EXCEEDED' in key.upper():
+        return 'cart_limit'                              # v2: a cart-service answer (x-ssx-hop=1)
     if status == 429:
         if key is None:
             return 'unknown'
@@ -364,6 +443,7 @@ class RunParser:
         self.first_bad = {}
         self.ev = defaultdict(list)
         self.recent_api = deque(maxlen=8)   # API_CYCLE events for IN STOCK timing
+        self.want_next = []                 # v2: print events that also need the NEXT logger stamp
 
     # -- intake -------------------------------------------------------------------
     def feed(self, lineno: int, line: str) -> None:
@@ -372,6 +452,10 @@ class RunParser:
         for kind, text, nms, stamp in split_segments(line):
             if kind == 'logger':
                 self.last_naive = nms
+                if self.want_next:
+                    for ev_ in self.want_next:
+                        ev_['next_naive'] = nms
+                    self.want_next = []
                 self.last_stamp = stamp
                 if self.first_stamp is None:
                     self.first_stamp = stamp
@@ -403,6 +487,9 @@ class RunParser:
         kw.setdefault('naive', self.last_naive)
         kw.setdefault('stamp', self.last_stamp)
         self.ev[_ev].append(kw)
+        if _ev in NEXT_STAMP_EVENTS:
+            kw['next_naive'] = None
+            self.want_next.append(kw)
         return kw
 
     # -- handlers (return True when parsed) ---------------------------------------
@@ -586,9 +673,11 @@ class RunParser:
         if not m:
             return False
         oid = re.search(r"'order_id': '([0-9A-Za-z-]{6,40})'", m.group('d'))
+        tc = re.search(r"'tcin': '(\d{6,12})'", m.group('d'))
         if oid:                                           # only successful purchases carry one
-            tc = re.search(r"'tcin': '(\d{6,12})'", m.group('d'))
             self._add('order_done', oid=oid.group(1), tcin=tc.group(1) if tc else None)
+        # v2: every completion closes one "Starting purchase for" execution of its TCIN
+        self._add('pdone', tcin=tc.group(1) if tc else None)
         return True
 
     def _h_RPT_MARK(self, t, p, lg):
@@ -666,9 +755,68 @@ class RunParser:
             bm = re.match(r" body=(.*?) \(t=[\d.]+s\)", m.group('rest'))
             body = bm.group(1) if bm else "''"
         im = PF_T_IDENT.search(m.group('rest'))
+        cm = BODY_CODE.search(body or '')
         self._add('pfetch', status=_int(m.group('status')),
                   ident_raw=(im.group('ident') if im and im.group('ident') else None),
-                  hint=body_hint_of(_int(m.group('status')), body))
+                  hint=body_hint_of(_int(m.group('status')), body),
+                  code=cm.group('code') if cm else None)
+        return True
+
+    def _h_PRETRY(self, t, p, lg):
+        m = PRETRY.match(t, p)
+        if not m:
+            return False
+        self._add('retry201', kind=m.group('kind'), status=int(m.group('status')))
+        return True
+
+    def _h_PSTART(self, t, p, lg):
+        m = PSTART.match(t, p)
+        if not m:
+            return False
+        self._add('pstart', tcin=m.group('tcin'))
+        return True
+
+    def _h_CO_POST(self, t, p, lg):
+        m = CO_POST.match(t, p)
+        if not m:
+            return False
+        self._add('co_post', tab=m.group('tab'))
+        return True
+
+    def _h_CO_RESP(self, t, p, lg):
+        m = CO_RESP.match(t, p)
+        if not m:
+            return False
+        if m.group('status') is not None:
+            self._add('co_resp', tab=m.group('tab'), status=int(m.group('status')))
+        elif m.group('reason') is not None:
+            self._add('co_reason', tab=m.group('tab'), reason=m.group('reason').strip())
+        elif m.group('hdrs') is not None:
+            h = m.group('hdrs')
+            d, k = CO_HDR_DATE.search(h), CO_HDR_KEY.search(h)
+            self._add('co_hdrs', tab=m.group('tab'), date=d.group(1) if d else None,
+                      key=k.group(1) if k else None)
+        return True                                      # body lines: diagnostics only
+
+    def _h_API_PO(self, t, p, lg):
+        m = API_PO.match(t, p)
+        if not m:
+            return False
+        self._add('api_po', status=int(m.group('status')))
+        return True
+
+    def _h_WATCH(self, t, p, lg):
+        m = WATCH.match(t, p)
+        if not m:
+            return False
+        self._add('sread', tcin=m.group('tcin'), v=1 if m.group('v') == 'True' else 0, kind='watch')
+        return True
+
+    def _h_VERIFY(self, t, p, lg):
+        m = VERIFY.match(t, p)
+        if not m:
+            return False
+        self._add('sread', tcin=m.group('tcin'), v=1 if m.group('v') == 'True' else 0, kind='verify')
         return True
 
     # -- post-processing -----------------------------------------------------------
@@ -782,9 +930,11 @@ class RunParser:
         pending_notrel = None
         wcd_tcin = {}
         last_ticket_tcin = {}
+        pctx = Counter()               # v2: TCIN -> running "Starting purchase for" executions
+        retry_tcin_null = 0
         s = []
         for k in ('race_start', 'race_done', 'fire', 'chain', 'orphan', 'notrel', 'pfetch', 'cred',
-                  'wcd_end', 'ticket'):
+                  'wcd_end', 'ticket', 'pstart', 'pdone', 'retry201', 'co_post'):
             s += [(e['seq'], k, e) for e in E[k]]
         for e in main_resps:
             s.append((e['seq'], 'resp', e))
@@ -850,7 +1000,30 @@ class RunParser:
             elif k == 'cred':
                 cred_q[e['ident']].append(e)
             elif k == 'chain':
-                mk_anchor(e, 'chain', e['ident'], e['atc'])
+                e['anchor'] = mk_anchor(e, 'chain', e['ident'], e['atc'])
+            elif k == 'pstart':
+                pctx[e['tcin']] += 1
+            elif k == 'pdone':
+                if e['tcin'] and pctx[e['tcin']] > 0:
+                    pctx[e['tcin']] -= 1
+            elif k == 'retry201':
+                # the legacy 401 ladder's retry add: no ident on the line; its TCIN is the
+                # running executions' TCIN when they all share one, else NULL (counted)
+                live = sorted(t_ for t_, n_ in pctx.items() if n_ > 0)
+                tc = live[0] if len(live) == 1 else None
+                a = mk_anchor(e, 'legacy_retry', None, e['status'])
+                a['variant'] = e['kind']
+                if a['race'] is not None and (tc is None or races[a['race']]['tcin'] != tc):
+                    a['race'], a['race_src'] = None, None
+                a['tcin_fixed'] = (tc, 'purchase_ctx' if tc else None)
+                if tc is None:
+                    retry_tcin_null += 1
+            elif k == 'co_post':
+                o = open_races()
+                e['ctx'] = dict(race_tcins=sorted({races[i]['tcin'] for i in o}),
+                                active=sorted(set().union(*[races[i]['active'] for i in o])) if o else [],
+                                open_of=dict(open_of), open=o,
+                                pctx=sorted(t_ for t_, n_ in pctx.items() if n_ > 0))
             elif k == 'notrel':
                 pending_notrel = e
             elif k == 'orphan':
@@ -1023,6 +1196,7 @@ class RunParser:
         ai = 0
         read_unassigned = 0
         read_rows = []
+        sreads_of = defaultdict(list)          # v2: tcin -> [(seq, line, t_ms, in_stock 0/1)]
         for r in sorted(E['instock'], key=lambda e: e['seq']):
             while ai < len(api) and (api[ai]['seq'] < r['seq']):
                 ai += 1
@@ -1043,8 +1217,59 @@ class RunParser:
                 elif have_flips:
                     read_unassigned += 1
                 read_rows.append((tc, t_ms, src, w['id'] if w else None))
+                sreads_of[tc].append((r['seq'], r['line'], t_ms, 1))
         if have_flips:
             checks['instock_reads_outside_windows'] = read_unassigned
+
+        # ---- v2: read-based in-stock episodes (the window where no flip line covers) --
+        # An episode opens at the first in-stock read of a TCIN after its last out-of-stock
+        # read (or its first in-stock read of the run). In-stock reads: [STOCK] IN STOCK
+        # (+ its [API_CYCLE] second), [STOCK WATCH] in_stock=True, VERIFY in_stock=True;
+        # out-of-stock reads: [STOCK WATCH] / VERIFY in_stock=False. Ordered by LOG ORDER
+        # (the [API_CYCLE] clock is whole-second, the logger's is ms; log order is exact).
+        # No hysteresis: the 30-s [STOCK WATCH] cadence cannot resolve one.
+        for e in E['sread']:
+            sreads_of[e['tcin']].append((e['seq'], e['line'], ep(e['naive']), e['v']))
+        read_eps = {}
+        no_time = 0
+        for tc, lst in sreads_of.items():
+            eps_, prev = [], None
+            for sq, ln, t_ms, v in sorted(lst, key=lambda x: (x[0], x[3])):
+                if v:
+                    if t_ms is None:
+                        no_time += 1
+                        continue
+                    if prev != 1:
+                        eps_.append(dict(tcin=tc, first=t_ms, seq=sq, line=ln, last=t_ms, n=0, id=None,
+                                         end=None, used=False))
+                    eps_[-1]['last'] = max(eps_[-1]['last'], t_ms)
+                    eps_[-1]['n'] += 1
+                prev = v
+            for i, x in enumerate(eps_[:-1]):
+                x['end'] = eps_[i + 1]['first']
+            read_eps[tc] = eps_
+        if no_time:
+            checks['stock_reads_without_time'] = no_time
+
+        def event_window(tc, t_ms, sq):
+            """('flip', window) when a [STOCK][FLIP] window of tc contains t_ms; else the
+            read-based episode of tc opened last before log position sq; else (None, None)."""
+            if tc is None:
+                return None, None
+            if have_flips and wins_of.get(tc):
+                w = win_for(tc, t_ms)
+                if w is not None:
+                    return 'flip', w
+            got = None
+            for x in read_eps.get(tc, ()):
+                if x['seq'] < sq:
+                    got = x
+                else:
+                    break
+            if got is not None:
+                got['used'] = True
+                return 'reads', got
+            return None, None
 
         # ---- shots --------------------------------------------------------------------
         shots = []
@@ -1140,6 +1365,18 @@ class RunParser:
             if sh['ident'] in idents:
                 sh['proxied'] = idents[sh['ident']]['proxied']
 
+        # ---- v2: every shot's in-stock episode by its OWN time (shots.window_* stay the
+        #      flip window of the shot's race, atc_t0 only; ep_* use any ts and fall back to
+        #      the read-based episode where no flip window covers)
+        for sh in shots:
+            src_, w = event_window(sh['tcin'], sh['ts_ms'], sh['_seq'])
+            sh['_ep'] = w
+            sh['ep_src'] = src_
+            if w is not None and sh['ts_ms'] is not None:
+                sh['ep_age_ms'] = sh['ts_ms'] - w['first']
+
+        place_orders, po_unparsed = self._place_orders(E, shots, races, ep, event_window, norm, idents)
+
         # ---- decoys (warmup-tab responses, one row each) --------------------------------
         decoys = []
         posts, reqs = deque(), deque()
@@ -1222,6 +1459,46 @@ class RunParser:
                         break
             orders.append(dict(line=e['line'], ts_ms=ep(e['naive']), ts=e['stamp'], ident=who,
                                ident_src=wsrc, tcin=tc, order_id=e['oid'], route=e['route']))
+        # v2: an order line names the 200 place-order just before it (same thread's print chain)
+        for o in orders:
+            po = None
+            for x in place_orders:
+                if (x['status'] in (200, 201) and x['order_id'] is None and x['resp_line'] is not None
+                        and 0 < o['line'] - x['resp_line'] <= 100):
+                    po = x
+            if po is not None:
+                po['order_id'] = o['order_id']
+                # the buyer named by the order row ("Marked thread as completing: <tcin>#W<n>")
+                # fills an ident the POST's own lines lacked (pre-09-22 chain lines carry none)
+                if po['ident'] is None and o['ident'] and (po['tcin'] is None or o['tcin'] in (None, po['tcin'])):
+                    po['ident'], po['ident_src'] = o['ident'], 'order_' + (o['ident_src'] or '?')
+                    if o['ident'] in idents:
+                        po['proxied'] = idents[o['ident']]['proxied']
+        if orders and E['co_post']:
+            checks['orders_without_po_200'] = sum(1 for o in orders if not any(
+                x['order_id'] == o['order_id'] for x in place_orders))
+        for u in po_unparsed:                          # recount after the order-row idents
+            if u['marker'] == 'PO@ident_null':
+                nul = [x['line'] for x in place_orders if x['ident'] is None]
+                u.update(n=len(nul), parsed=u['seen'] - len(nul), first_line=nul[0] if nul else None)
+
+        # ---- v2: read-based windows get ids after the flip windows -----------------------
+        for r in races:
+            if r['win'] is None:
+                event_window(r['tcin'], r['start_ms'], r['seq'])     # marks the episode used
+        rw = sorted((x for eps_ in read_eps.values() for x in eps_ if x['used'] or not have_flips),
+                    key=lambda x: (x['first'], x['tcin']))
+        for i, x in enumerate(rw, len(windows) + 1):
+            x['id'] = i
+        for sh in shots:
+            w = sh.pop('_ep', None)
+            sh['ep_window_id'] = w['id'] if w is not None else None
+        for x in place_orders:
+            w = x.pop('_w', None)
+            x.pop('_seq', None)
+            x['window_id'] = w['id'] if w is not None else None
+        retry_n = len(E['retry201'])
+        n400 = [sh for sh in shots if sh['status'] == 400]
 
         # ---- rows -----------------------------------------------------------------------
         race_rows = []
@@ -1245,7 +1522,21 @@ class RunParser:
             win_rows.append(dict(window_id=w['id'], tcin=w['tcin'], first_read_ms=w['first'],
                                  last_read_ms=last, end_ms=w['end'], reads=len(w['reads']),
                                  flips=len(w['flips']), races=len(w['races']),
-                                 shots=shots_in_win.get(w['id'], 0), trunc=w['trunc'], line=w['line']))
+                                 shots=shots_in_win.get(w['id'], 0), trunc=w['trunc'], line=w['line'],
+                                 src='flip'))
+        # read-based rows: shots/races counted by the same own-time rule as shots.ep_window_id
+        ep_shots = Counter(sh['ep_window_id'] for sh in shots if sh['ep_src'] == 'reads')
+        ep_races = Counter()
+        for r in races:
+            if r['win'] is None:
+                s_, w_ = event_window(r['tcin'], r['start_ms'], r['seq'])
+                if s_ == 'reads':
+                    ep_races[w_['id']] += 1
+        for x in rw:
+            win_rows.append(dict(window_id=x['id'], tcin=x['tcin'], first_read_ms=x['first'],
+                                 last_read_ms=x['last'], end_ms=x['end'], reads=x['n'], flips=0,
+                                 races=ep_races.get(x['id'], 0), shots=ep_shots.get(x['id'], 0),
+                                 trunc=0, line=x['line'], src='reads'))
         if E['flip_err']:
             checks['flip_unformatted_lines'] = len(E['flip_err'])
 
@@ -1260,10 +1551,23 @@ class RunParser:
             checks['legacy_fire_vs_legacy_shots'] = '%d/%d' % (
                 len(E['pfire']), sum(1 for sh in shots if sh['src'] == 'legacy'))
 
+        if place_orders:
+            checks.update(self._po_checks)
+
         unparsed = []
         for fam in sorted(set(self.seen) | set(self.parsed)):
             unparsed.append(dict(marker=fam, seen=self.seen[fam], parsed=self.parsed[fam],
                                  n=self.seen[fam] - self.parsed[fam], first_line=self.first_bad.get(fam)))
+        # v2 structural remainders (Rule 2C): parsed lines that could not be classified
+        unparsed += po_unparsed
+        if retry_n:
+            fl = next((sh['line'] for sh in shots if sh['src'] == 'legacy_retry' and sh['tcin'] is None), None)
+            unparsed.append(dict(marker='PRETRY@tcin_null', seen=retry_n, parsed=retry_n - retry_tcin_null,
+                                 n=retry_tcin_null, first_line=fl))
+        if n400:
+            nc = [sh for sh in n400 if sh['err_key_src'] != 'body']
+            unparsed.append(dict(marker='ATC400@no_body_code', seen=len(n400), parsed=len(n400) - len(nc),
+                                 n=len(nc), first_line=nc[0]['line'] if nc else None))
         run = dict(first_ts=self.first_stamp, last_ts=self.last_stamp, lines=self.lines,
                    utc_offset_min=(off // 60000) if off is not None else None, tz_src=tz_src,
                    atc_resp_form=form, flip_log=1 if have_flips else 0)
@@ -1272,7 +1576,254 @@ class RunParser:
         return dict(run=run, shots=shots, races=race_rows, flips=flip_rows, windows=win_rows,
                     tickets=tickets, loop_ends=loop_ends, decoys=decoys, monitor_stats=stats,
                     orders=orders, idents=list(idents.values()), unparsed=unparsed,
+                    place_orders=place_orders,
                     checks=[dict(name=k, value=repr(v)) for k, v in sorted(checks.items())])
+
+    PO_PAIR_GAP = 400      # lines: a [CHECKOUT_RESPONSE] HTTP pairs with a pending POST at most this far back
+    PO_DETAIL_GAP = 12     # lines: its "424 flagged (reason=)" / "headers:" lines follow it
+    PO_CLAIM_GAP = 60      # lines: a claim (chain po= / [API_PLACE_ORDER] HTTP / [FS_TICKET]) follows its response
+    CART_LINK_MS = (3600000, 60000, 180000)  # ident (a held cart is re-fired ~15 min on) / fifo_first / unique_recent
+
+    def _place_orders(self, E, shots, races, ep, event_window, norm, idents):
+        """One row per main-tab [CHECKOUT_POST] (v2, I-PO-2). Returns (rows, unparsed rows)."""
+        posts = sorted((e for e in E['co_post'] if e['tab'] == 'main'), key=lambda e: e['seq'])
+        resps = sorted((e for e in E['co_resp'] if e['tab'] == 'main'), key=lambda e: e['seq'])
+        # (1) POST -> response, FIFO: every account's main tab prints the same label
+        pend = deque()
+        resp_unpaired = 0
+        for kind, e in sorted([('p', e) for e in posts] + [('r', e) for e in resps], key=lambda x: x[1]['seq']):
+            if kind == 'p':
+                e['resp'], e['pair_q'] = None, 'unpaired'
+                pend.append(e)
+                continue
+            e.update(post=None, claim=None, claim_q=None, claim_line=None, ticket=None, reason=None,
+                     hkey=None, date=None, has_reason=False, has_hdrs=False)
+            while pend and e['line'] - pend[0]['line'] > self.PO_PAIR_GAP:
+                pend.popleft()                           # stays unpaired (counted)
+            if pend:
+                q = 'single' if len(pend) == 1 else 'fifo_overlap'
+                p = pend.popleft()
+                p['resp'], p['pair_q'] = e, q
+                e['post'] = p
+            else:
+                resp_unpaired += 1
+        # (2) a rejected response's "424 flagged (reason=KEY)" and "headers: {...}" lines follow
+        #     it in one print sequence; another account's lines may interleave -> oldest first
+        det = [('k', e) for e in E['co_reason'] if e['tab'] == 'main'] + \
+              [('h', e) for e in E['co_hdrs'] if e['tab'] == 'main']
+        detail_unpaired = 0
+        rej = []
+        for kind, e in sorted([('r', e) for e in resps] + det, key=lambda x: x[1]['seq']):
+            if kind == 'r':
+                if e['status'] not in (200, 201):
+                    rej.append(e)
+                continue
+            fld = 'has_reason' if kind == 'k' else 'has_hdrs'
+            r = next((x for x in rej if not x[fld] and 0 < e['line'] - x['line'] <= self.PO_DETAIL_GAP), None)
+            if r is None:
+                detail_unpaired += 1
+                continue
+            r[fld] = True
+            if kind == 'k':
+                r['reason'] = e['reason']
+            else:
+                r['hkey'], r['date'] = e['key'], e['date']
+        # (3) claims name the code path that fired the POST; each follows its own response
+        claims, http0 = [], 0
+        for e in E['chain']:
+            st = _int(e['po'])
+            if st:
+                claims.append(('in_chain', e, st))
+        for e in E['api_po']:
+            if e['status']:
+                claims.append(('legacy', e, e['status']))
+            else:
+                http0 += 1                               # fetch threw: the POST may not exist
+        for e in E['ticket']:
+            if e['layer'] == 'po':
+                claims.append(('legacy_ticket' if e['mode'] == 'legacy' else 'ticket', e, _int(e['status'])))
+        unclaimed, recent_legacy = [], []
+        claim_unmatched = Counter()
+        items = sorted([(e['seq'], 'r', e) for e in resps] + [(c[1]['seq'], 'c', c) for c in claims],
+                       key=lambda x: x[0])
+        for _, kind, x in items:
+            if kind == 'r':
+                unclaimed.append(x)
+                continue
+            path, e, st = x
+            if path == 'legacy_ticket':
+                # mode=legacy [FS_TICKET] prints right after its [API_PLACE_ORDER] HTTP line
+                r = next((r for r in reversed(recent_legacy) if r['ticket'] is None and r['status'] == st
+                          and 0 < e['line'] - r['claim_line'] <= 15), None)
+                if r is not None:
+                    r['ticket'] = e
+                    continue
+                path = 'legacy'
+            cands = [r for r in unclaimed if r['status'] == st and 0 < e['line'] - r['line'] <= self.PO_CLAIM_GAP]
+            if not cands:
+                claim_unmatched[path] += 1
+                continue
+            r = cands[0]
+            unclaimed.remove(r)
+            r.update(claim=(path, e), claim_line=e['line'], claim_q='single' if len(cands) == 1 else 'fifo_multi')
+            if 'layer' in e:
+                r['ticket'] = e
+            elif path == 'legacy':
+                recent_legacy.append(r)
+
+        # (4) rows
+        shot_by_seq = {sh['_seq']: sh for sh in shots}
+        carts = [sh for sh in shots if sh['gate'] == 'cart']
+
+        def t201(sh):
+            if sh['ts_ms'] is None:
+                return None
+            return sh['ts_ms'] + (sh['atc_rt_ms'] or 0) if sh['ts_src'] == 'atc_t0' else sh['ts_ms']
+
+        n_po = Counter()
+        rows = []
+        for p in posts:
+            r = p['resp']
+            lo, hi = ep(p['naive']), ep(p.get('next_naive'))   # the logger stamps around the print
+            status = r['status'] if r else None
+            claim = r['claim'] if r else None
+            path = claim[0] if claim else 'unknown'
+            ce = claim[1] if claim else None
+            tk = r['ticket'] if r else None
+            ident = ident_src = tcin = tcin_src = race_seq = cart = cart_src = ms201 = ms201_src = None
+            lo_src = 'logger_prior' if lo is not None else None
+            b201 = None
+            if path == 'in_chain':
+                a = ce.get('anchor')
+                sh = shot_by_seq.get(a['seq']) if a else None
+                if sh is not None:
+                    ident, ident_src = sh['ident'], 'chain'
+                    tcin, tcin_src = sh['tcin'], ('chain' if sh['tcin'] else None)
+                    race_seq, cart, cart_src = sh['race_seq'], sh, 'chain'
+                if ce.get('t0') and ce.get('rt') is not None:
+                    b201 = ce['t0'] + ce['rt']              # the POST follows its chain's 201
+                    if lo is None or lo < b201:
+                        lo, lo_src = b201, 'atc_201_bound'
+            # the POST time: the response's Date header (server clock, whole second) clamped
+            # into [lo, hi] when one was logged (rejections only); else the lower bound lo
+            dms = None
+            if r is not None and r['date']:
+                try:
+                    dms = int(email.utils.parsedate_to_datetime(r['date']).timestamp() * 1000)
+                except (TypeError, ValueError, IndexError):
+                    dms = None
+            if dms is not None:
+                ts, ts_src = dms, 'resp_date'
+                if lo is not None and ts < lo:
+                    ts = lo
+                if hi is not None and ts > hi and (lo is None or hi >= lo):
+                    ts = hi
+            else:
+                ts, ts_src = lo, lo_src
+            if b201 is not None and ts is not None:
+                ms201, ms201_src = ts - b201, 'chain_t0'
+            if tk is not None:
+                ident, ident_src = tk['ident'], 'ticket'
+                if tk['tcin'] and re.fullmatch(r'\d{6,12}', tk['tcin']):
+                    tcin, tcin_src = tk['tcin'], 'ticket'
+                if _int(tk['ms201']) is not None:
+                    ms201, ms201_src = _int(tk['ms201']), 'fs_ticket'
+            ctx = p.get('ctx') or {}
+            if ident is None and len(ctx.get('active') or []) == 1:
+                ident, ident_src = ctx['active'][0], 'only_active'
+            if tcin is None:
+                if ctx.get('race_tcins'):
+                    if len(ctx['race_tcins']) == 1:
+                        tcin, tcin_src = ctx['race_tcins'][0], 'open_race'
+                elif len(ctx.get('pctx') or []) == 1:
+                    tcin, tcin_src = ctx['pctx'][0], 'purchase_ctx'
+            if race_seq is None:
+                oo = ctx.get('open_of') or {}
+                if ident and ident in oo:
+                    race_seq = oo[ident] + 1
+                elif len(ctx.get('open') or []) == 1:
+                    race_seq = ctx['open'][0] + 1
+            if cart is None and ts is not None:
+                def ok(sh, lim):
+                    t_ = t201(sh)
+                    return (sh['_seq'] < p['seq'] and t_ is not None and 0 <= ts - t_ <= lim
+                            and (tcin is None or sh['tcin'] is None or sh['tcin'] == tcin))
+                if ident:
+                    c = [sh for sh in carts if sh['ident'] == ident and ok(sh, self.CART_LINK_MS[0])]
+                    if c:
+                        cart, cart_src = c[-1], 'ident'
+                if cart is None:
+                    pool = [sh for sh in carts if sh['ident'] in (None, ident)]
+                    c = [sh for sh in pool if not n_po[sh['_seq']] and ok(sh, self.CART_LINK_MS[1])]
+                    if c:
+                        cart, cart_src = c[0], 'fifo_first'      # heuristic: oldest cart without a PO yet
+                    else:
+                        c = [sh for sh in pool if ok(sh, self.CART_LINK_MS[2])]
+                        if len(c) == 1:
+                            cart, cart_src = c[0], 'unique_recent'
+            po_idx = None
+            if cart is not None:
+                n_po[cart['_seq']] += 1
+                po_idx = n_po[cart['_seq']]
+                # only a cart printed BEFORE the POST has a 201 time; an in-chain cart's own
+                # line (no atc_t0 before 09-22) is printed after its POST
+                if (ms201 is None and ts is not None and cart['_seq'] < p['seq']
+                        and t201(cart) is not None):
+                    ms201, ms201_src = ts - t201(cart), 'cart_link'
+            wsrc, w = event_window(tcin, ts, p['seq'])
+            key = key_src = None
+            if r is not None and status not in (200, 201):
+                if r['reason']:
+                    key, key_src = r['reason'], 'reason'
+                elif r['hkey']:
+                    key, key_src = r['hkey'], 'headers'
+                elif r['has_reason'] or r['has_hdrs']:
+                    key, key_src = '-', 'absent'
+            rows.append(dict(
+                line=p['line'], ts_ms=ts, ts_src=ts_src, ts_lo_ms=lo, ts_hi_ms=hi,
+                resp_line=r['line'] if r else None,
+                pair_q=p['pair_q'], status=status, err_key=key, err_key_src=key_src,
+                resp_date=r['date'] if r else None, resp_date_ms=dms, path=path,
+                claim_line=r['claim_line'] if r else None, claim_q=r['claim_q'] if r else None,
+                ticket_mode=tk['mode'] if tk is not None else None,
+                ident=ident, ident_src=ident_src, tcin=tcin, tcin_src=tcin_src, race_seq=race_seq,
+                window_id=None, window_src=wsrc, window_age_ms=(ts - w['first']) if (w and ts is not None) else None,
+                cart_line=cart['line'] if cart else None, cart_src=cart_src, po_idx=po_idx,
+                ms_since_201=ms201, ms201_src=ms201_src,
+                proxied=idents[ident]['proxied'] if ident in idents else None, order_id=None,
+                _w=w, _seq=p['seq']))
+        un = []
+
+        def rem(marker, n, seen):
+            if seen:
+                un.append(dict(marker=marker, seen=seen, parsed=seen - n, n=n, first_line=None))
+        rem('CHECKOUT_POST@unpaired', sum(1 for x in rows if x['pair_q'] == 'unpaired'), len(posts))
+        rem('CHECKOUT_RESPONSE@unpaired', resp_unpaired, len(resps))
+        rem('CHECKOUT_RESPONSE@detail_unpaired', detail_unpaired, len(det))
+        rem('API_PO@http0', http0, len(E['api_po']))
+        rem('PO_CLAIM@unmatched', sum(claim_unmatched.values()), len(claims))
+        for mk, f in (('PO@path_unknown', lambda x: x['path'] == 'unknown'),
+                      ('PO@ident_null', lambda x: x['ident'] is None),
+                      ('PO@tcin_null', lambda x: x['tcin'] is None),
+                      ('PO@window_null', lambda x: x['window_src'] is None)):
+            rem(mk, sum(1 for x in rows if f(x)), len(rows))
+        for u in un:
+            fl = None
+            if u['marker'] == 'CHECKOUT_POST@unpaired':
+                fl = next((x['line'] for x in rows if x['pair_q'] == 'unpaired'), None)
+            elif u['marker'].startswith('PO@'):
+                f = {'PO@path_unknown': lambda x: x['path'] == 'unknown',
+                     'PO@ident_null': lambda x: x['ident'] is None,
+                     'PO@tcin_null': lambda x: x['tcin'] is None,
+                     'PO@window_null': lambda x: x['window_src'] is None}[u['marker']]
+                fl = next((x['line'] for x in rows if f(x)), None)
+            u['first_line'] = fl if u['n'] else None
+        self._po_checks = dict(
+            po_path=dict(Counter(x['path'] for x in rows)), po_pair_q=dict(Counter(x['pair_q'] for x in rows)),
+            po_claim_q=dict(Counter(x['claim_q'] for x in rows if x['claim_q'])),
+            po_cart_src=dict(Counter(x['cart_src'] or '-' for x in rows)),
+            po_claim_unmatched=dict(claim_unmatched))
+        return rows, un
 
     def _hms_epoch(self, hms, ref_naive):
         """[HH:MM:SS] (local) -> epoch ms, dated from the nearest logger stamp."""
@@ -1300,13 +1851,23 @@ class RunParser:
         else:
             ts_ms, ts_src = ep(a['naive']), 'logger_prior'
         cred = a.get('cred')
+        if 'tcin_fixed' in a:                         # v2 legacy_retry: purchase-context TCIN only
+            tcin, tcin_src = a['tcin_fixed']
+        else:
+            tcin = races[ri]['tcin'] if ri is not None else a.get('fire_tcin')
+            tcin_src = 'race' if ri is not None else ('last_fire' if a.get('fire_tcin') else None)
+        # v2 (FS-2): a 400 carries no tgt-cart-error-key; its [PURCHASE] body "code" is the key
+        key_src = ('header' if key is not None else None) if r else None
+        pf = a.get('pfetch')
+        if status == 400 and (key is None or key in ('-', '')) and pf and pf.get('code'):
+            key, key_src = pf['code'], 'body'
         return dict(
             _seq=a['seq'], line=a['line'], ts_ms=ts_ms, ts_src=ts_src, ident=a['ident'],
-            tcin=races[ri]['tcin'] if ri is not None else a.get('fire_tcin'),
-            tcin_src='race' if ri is not None else ('last_fire' if a.get('fire_tcin') else None),
+            tcin=tcin, tcin_src=tcin_src,
             race_seq=(ri + 1) if ri is not None else None, race_src=a.get('race_src'),
             shot_idx=None, is_first=None, flip_opened_race=None, window_id=None, window_age_ms=None,
-            status=status, err_key=key, gate=gate_of(status, key),
+            status=status, err_key=key, err_key_src=key_src, gate=gate_of(status, key),
+            ep_window_id=None, ep_age_ms=None, ep_src=None,
             has_ssx_hop=(1 if 'x-ssx-hop' in hdr else 0) if hdr is not None else None,
             has_restarts=(1 if 'fastly-restarts' in hdr else 0) if hdr is not None else None,
             retry_after=hdr.get('retry-after') if hdr else None,
@@ -1351,7 +1912,7 @@ SCHEMA = {
               'content_length INTEGER', 'envoy_ms INTEGER', 'atc_rt_ms INTEGER', 'proxied INTEGER',
               'cred_source TEXT', 'cred_detail TEXT', 'bank_age_s INTEGER', 'src TEXT', 'variant TEXT',
               'ident_src TEXT', 'join_q TEXT', 'join_dt_ms INTEGER', 'resp_line INTEGER', 'hdrs_line INTEGER',
-              'body_hint TEXT'],
+              'body_hint TEXT', 'err_key_src TEXT', 'ep_window_id INTEGER', 'ep_age_ms INTEGER', 'ep_src TEXT'],
     'races': ['run_id TEXT', 'race_seq INTEGER', 'line INTEGER', 'tcin TEXT', 'width INTEGER', 'workers TEXT',
               'start_ms INTEGER', 'start_src TEXT', 'flip_opened INTEGER', 'window_id INTEGER',
               'lag_ms INTEGER', 'n_shots INTEGER', 'done_line INTEGER', 'units_bought INTEGER'],
@@ -1360,7 +1921,7 @@ SCHEMA = {
               'status TEXT', 'window_id INTEGER'],
     'windows': ['run_id TEXT', 'window_id INTEGER', 'tcin TEXT', 'first_read_ms INTEGER',
                 'last_read_ms INTEGER', 'end_ms INTEGER', 'reads INTEGER', 'flips INTEGER', 'races INTEGER',
-                'shots INTEGER', 'trunc INTEGER', 'line INTEGER'],
+                'shots INTEGER', 'trunc INTEGER', 'line INTEGER', 'src TEXT'],
     'tickets': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ident TEXT', 'tcin TEXT', 'cart_id TEXT',
                 'n INTEGER', 'cls TEXT', 'gap_s REAL', 'ms_since_201 INTEGER', 'live INTEGER',
                 'win_age_s INTEGER', 'layer TEXT', 'mode TEXT', 'status INTEGER', 'key TEXT',
@@ -1381,12 +1942,21 @@ SCHEMA = {
     'unparsed': ['run_id TEXT', 'marker TEXT', 'n INTEGER', 'seen INTEGER', 'parsed INTEGER',
                  'first_line INTEGER'],
     'checks': ['run_id TEXT', 'name TEXT', 'value TEXT'],
+    'place_orders': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'ts_lo_ms INTEGER',
+                     'ts_hi_ms INTEGER', 'resp_line INTEGER',
+                     'pair_q TEXT', 'status INTEGER', 'err_key TEXT', 'err_key_src TEXT', 'resp_date TEXT',
+                     'resp_date_ms INTEGER', 'path TEXT', 'claim_line INTEGER', 'claim_q TEXT',
+                     'ticket_mode TEXT', 'ident TEXT', 'ident_src TEXT', 'tcin TEXT', 'tcin_src TEXT',
+                     'race_seq INTEGER', 'window_id INTEGER', 'window_src TEXT', 'window_age_ms INTEGER',
+                     'cart_line INTEGER', 'cart_src TEXT', 'po_idx INTEGER', 'ms_since_201 INTEGER',
+                     'ms201_src TEXT', 'proxied INTEGER', 'order_id TEXT'],
 }
 RUN_TABLES = [t for t in SCHEMA if t not in ('runs', 'ingested')]
 INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, ident)',
            'CREATE INDEX IF NOT EXISTS ix_races_run ON races(run_id, race_seq)',
            'CREATE INDEX IF NOT EXISTS ix_decoys_run ON decoys(run_id)',
-           'CREATE INDEX IF NOT EXISTS ix_stats_run ON monitor_stats(run_id, line)']
+           'CREATE INDEX IF NOT EXISTS ix_stats_run ON monitor_stats(run_id, line)',
+           'CREATE INDEX IF NOT EXISTS ix_po_run ON place_orders(run_id, line)']
 
 
 def connect(db: Path) -> sqlite3.Connection:
@@ -1432,11 +2002,14 @@ def summarize(run_id, res) -> str:
     sh = res['shots']
     g = Counter(s['gate'] for s in sh)
     bad = [u for u in res['unparsed'] if u['n']]
+    po = res.get('place_orders') or []
     parts = ['%s: lines=%d shots=%d %s races=%d flips=%d windows=%d decoys=%d tickets=%d loop_ends=%d '
-             'stats=%d orders=%d' % (run_id, res['run']['lines'], len(sh), dict(sorted(g.items())),
-                                     len(res['races']), len(res['flips']), len(res['windows']),
-                                     len(res['decoys']), len(res['tickets']), len(res['loop_ends']),
-                                     len(res['monitor_stats']), len(res['orders']))]
+             'stats=%d orders=%d place_orders=%d (200=%d)' % (
+                 run_id, res['run']['lines'], len(sh), dict(sorted(g.items())),
+                 len(res['races']), len(res['flips']), len(res['windows']),
+                 len(res['decoys']), len(res['tickets']), len(res['loop_ends']),
+                 len(res['monitor_stats']), len(res['orders']), len(po),
+                 sum(1 for x in po if x['status'] == 200))]
     parts.append('    unparsed remainder: ' + (', '.join('%s %d/%d (first line %s)' % (
         u['marker'], u['n'], u['seen'], u['first_line']) for u in bad) if bad else 'none'))
     return '\n'.join(parts)

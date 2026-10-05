@@ -178,6 +178,120 @@ def held_cart_ttl_s(env=None) -> float:
     return min(3600.0, max(60.0, v))
 
 
+# ── 2026-10-01 FX-1001-A: strike a held line at a fresh restock ─────────────
+# docs/CLAIMS.md C-1001-02..07. On 10-01 our own code threw away the line we
+# already held at the moments it could have been ordered: a dirty flag deleted it
+# (429) and fired nothing at the 02:37:52 restock (race 16, primary + business),
+# and an add-to-cart answered 400 MAX_PURCHASE_LIMIT_EXCEEDED (the line is already
+# in the cart) ran the self-heal that wiped the cart (04:53:25). 18 of the 21
+# orders ever came within ~5 s of the stock edge, on the first place-order.
+# With TARGET_HELD_LINE_FLIP_STRIKE=1:
+#   (i)  a fast-lane add-to-cart 400 MAX_PURCHASE continues IN THE SAME CHAIN to
+#        pre_checkout -> place-order on the line we hold, fail-closed: only when
+#        every cart line is ours (a null tcin counts as foreign) and our qty is
+#        readable and <= Q (QG);
+#   (ii) a strike that read only our line but did not order leaves it in the
+#        cart FLAGGED (dirty: the next dispatch deletes it, or strikes it again in
+#        a new window); every other MAX_PURCHASE runs the self-heal exactly as
+#        before. 10-02 v4: every strike exit that may leave our line in the cart
+#        flags it too (terminal place-order, bad evaluate result, stuck qty
+#        delete, a PRESUMED eviction, a failed release of a held marker). The one
+#        residual is HEAD's own: a flag whose delete keeps failing is dropped
+#        after TARGET_HELD_CART_TTL_S (the fast-lane cart gate guards after that);
+#   (iii) a left-behind (dirty) or TTL/cap-expired held line for the TCIN being
+#        raced, in a NEW stock window, is struck through the won-cart ticket
+#        loop (no add-to-cart, no legacy checkout; its strict gate re-checks the
+#        cart) instead of being deleted / skipped.
+# Every path is unchanged with the flag off (golden fixture: JS byte-identical).
+_MAXP_KEY = 'MAX_PURCHASE_LIMIT_EXCEEDED'
+
+
+def held_line_strike_on(ident, env=None) -> bool:
+    """TARGET_HELD_LINE_FLIP_STRIKE=1 (default '0' = today's behaviour) for this
+    account. TARGET_HELD_LINE_FLIP_STRIKE_IDENTS scopes it to the listed accounts
+    (',' ';' or space separated, case-insensitive); unset/empty = every account.
+    Kill-switch: =0. Never raises."""
+    try:
+        env = os.environ if env is None else env
+        if str(env.get('TARGET_HELD_LINE_FLIP_STRIKE', '0') or '0').strip() != '1':
+            return False
+        raw = str(env.get('TARGET_HELD_LINE_FLIP_STRIKE_IDENTS', '') or '').strip()
+        if not raw:
+            return True
+        names = {x.strip().lower() for x in raw.replace(';', ',').replace(' ', ',').split(',')
+                 if x.strip()}
+        return str(ident or '').strip().lower() in names
+    except Exception:
+        return False
+
+
+def strike_window_fresh(snap, line_ts) -> bool:
+    """Pure: True when the TCIN reads live AND its current in-stock window opened
+    after `line_ts` (our last action on the held line), i.e. a restock happened
+    since. Any unknown (no probe, no window start, no line time) = False, which
+    keeps today's behaviour. A re-flip that the 20 s hysteresis merges into the
+    running window does not open a new one."""
+    try:
+        if not isinstance(snap, dict) or snap.get('live') is not True:
+            return False
+        ws = float(snap.get('window_start') or 0.0)
+        lt = float(line_ts or 0.0)
+        if not (ws == ws and lt == lt):
+            return False
+        return ws > 0.0 and lt > 0.0 and ws > lt
+    except (TypeError, ValueError):
+        return False
+
+
+def strike_legacy_400_reason(fl) -> str:
+    """Pure: the result reason for an add-to-cart 400 MAX_PURCHASE that reached
+    the legacy path while the strike is on (the cart is never wiped there).
+    'held_line_strike_no_line' = the chain's pre_checkout showed no line of ours,
+    so the 400 is a real purchase limit; 'held_line_strike_po_<status>' = the
+    strike's place-order was rejected and the won-cart loop did not take it;
+    'held_line_strike_<skip>' = it stopped elsewhere; 'held_line_strike_hold' =
+    no strike ran (a fallback label only: since v3 the keep branch requires
+    strike_kept_line(), so a legacy-only add-to-cart 400 runs the self-heal and
+    never gets this reason). No reason contains a BPM terminal token."""
+    try:
+        fl = fl if isinstance(fl, dict) else {}
+        atc = fl.get('atc') if isinstance(fl.get('atc'), dict) else {}
+        if atc.get('strike') is not True:
+            return 'held_line_strike_hold'
+        skip = str(fl.get('skip') or '')
+        if skip == 'strike_no_line':
+            return 'held_line_strike_no_line'
+        po = fl.get('po') if isinstance(fl.get('po'), dict) else {}
+        if po.get('fired'):
+            try:
+                return f"held_line_strike_po_{int(po.get('status') or 0)}"
+            except (TypeError, ValueError):
+                return 'held_line_strike_po_0'
+        safe = re.sub(r'[^a-z0-9_]', '_', skip.lower())[:24]
+        return f"held_line_strike_{safe or 'stopped'}"
+    except Exception:
+        return 'held_line_strike_hold'
+
+
+def strike_kept_line(fl) -> bool:
+    """Pure: did an in-chain strike READ the cart, find nothing but our line, and
+    not order? True for skip 'strike_qty_unknown' (only our line, qty unreadable)
+    and for a fired place-order that came back rejected (the chain had passed the
+    no-line / foreign / qty checks). Only these keep the line (flagged dirty)
+    instead of running the MAX_PURCHASE self-heal. Never raises."""
+    try:
+        if not isinstance(fl, dict):
+            return False
+        atc = fl.get('atc') if isinstance(fl.get('atc'), dict) else {}
+        if atc.get('strike') is not True:
+            return False
+        skip = str(fl.get('skip') or '')
+        po = fl.get('po') if isinstance(fl.get('po'), dict) else {}
+        return skip == 'strike_qty_unknown' or (bool(po.get('fired')) and not skip)
+    except Exception:
+        return False
+
+
 # ── 2026-09-16 plan P4 (WC-2): legacy-path hygiene + ride clean exit ─────────
 def reshoot_force_rewarm_on() -> bool:
     """TARGET_RESHOOT_FORCE_REWARM (default '1' = the 07-17 forced /cart
@@ -780,11 +894,17 @@ def woncart_eligible(fl, reject_status: int = 0, reject_key: str = '') -> bool:
     or in the body. With TARGET_WONCART_RF_ENTRY=1 a place-order received as 429
     RESERVATION_FAILURE (same header/body rule) is admitted too. Status-0
     place-orders, every 424 (RESERVATION_FAILURE included) and every other
-    rejection keep today's path."""
+    rejection keep today's path. 2026-10-01 FX-1001-A: an add-to-cart 400
+    MAX_PURCHASE that the chain struck (atc.strike, set only with
+    TARGET_HELD_LINE_FLIP_STRIKE on) counts as won: the add's 400 says our line
+    is in the cart. The loop then treats it like any won cart: verified only when
+    the chain's pre_checkout showed nothing but our line at qty <= Q; otherwise
+    its tickets run the strict pre_checkout gate until one verifies the cart
+    (after that, place-order-only tickets, the loop's existing rule)."""
     if not isinstance(fl, dict):
         return False
     atc = fl.get('atc') or {}
-    if atc.get('status') not in (200, 201):
+    if atc.get('status') not in (200, 201) and atc.get('strike') is not True:
         return False
     po = fl.get('po') or {}
     skip = str(fl.get('skip') or '')
@@ -2076,6 +2196,207 @@ class PurchaseExecutor:
             return getattr(self.session_manager, 'account_id', None) or 'session'
         except Exception:
             return 'session'
+
+    def _note_ordered_tcin(self, tcin) -> None:
+        """Remember that THIS account placed an order for `tcin` in this process
+        (FX-1001-A never strikes an account x TCIN that already ordered). Never raises."""
+        try:
+            s = getattr(self, '_ordered_tcins', None)
+            if not isinstance(s, set):
+                s = set()
+                self._ordered_tcins = s
+            s.add(str(tcin))
+        except Exception:
+            pass
+
+    def _held_line_strike_active(self, tcin) -> bool:
+        """FX-1001-A gate for this account and `tcin`: the flag (and its account
+        scope) is on, the qty guard is on (it refuses a stacked line), and this
+        account has not ordered `tcin` in this process. Other accounts may still
+        strike a TCIN another account bought (operator, 10-01: more units is
+        fine). Never raises."""
+        try:
+            if not held_line_strike_on(self._ident_tag()):
+                return False
+            if not fastlane_qty_guard_on():
+                return False
+            if not held_cart_reentry_on():
+                # v10 (verifier #9, 3b path B): without re-entry a strike's
+                # won-cart loop could end with no held marker to keep its line.
+                return False
+            s = getattr(self, '_ordered_tcins', None)
+            return not (isinstance(s, set) and str(tcin) in s)
+        except Exception:
+            return False
+
+    def _strike_loop_ok(self) -> bool:
+        """FX-1001-A: may a kept line be struck through the won-cart ticket loop
+        (API place-order only, never an add-to-cart, never the legacy checkout)?
+        Same conditions the held re-entry uses. Never raises."""
+        try:
+            return bool(held_cart_reentry_on() and woncart_direct_on() and self._woncart_armed()
+                        and not self.test_mode and self._woncart_api_path_on()
+                        and (not self._cvv_required or self._fast_lane_cvv()))
+        except Exception:
+            return False
+
+    def _strike_mark_dirty(self, tcin, why: str, cvv_put: str = 'unknown') -> None:
+        """FX-1001-A: keep a line the strike leaves in the cart TRACKED with the
+        dirty flag (the next dispatch deletes it before any shot, or strikes it
+        through the ticket loop in a NEW stock window). Never raises."""
+        try:
+            self._woncart_dirty = {'tcin': str(tcin), 'ts': time.time(),
+                                   'why': woncart_reason_safe(why), 'cvv_put': str(cvv_put or 'unknown')}
+            print(f"[HELD_LINE_STRIKE] {tcin} line left in the cart is FLAGGED ({why}) — the next "
+                  f"dispatch deletes it or strikes it in a new window ident={self._ident_tag()}")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _strike_ledger(entry, L) -> bool:
+        """FX-1001-A v5: is this won-cart ledger (or held marker) a strike's line?
+        True for a strike-loop entry, a ledger tagged by one (L['strike']), or an
+        in-chain strike's ledger (first_201_src 'strike_400', which reaches the
+        loop with entry='first'). Only a flag-on strike ever produces these, so
+        flag off this is always False. Never raises."""
+        try:
+            if entry == 'strike':
+                return True
+            return isinstance(L, dict) and (L.get('strike') is True
+                                            or L.get('first_201_src') == 'strike_400')
+        except Exception:
+            return False
+
+    async def _legacy_checkout_cart_guard(self, tab, tcin, start_time: float):
+        """FX-1001-A v6/v7 sink guard (verifiers #4 and #5 kept finding exits,
+        several inherited from HEAD, that leave a line untracked). With the strike
+        on for this account, the legacy checkout, which buys the WHOLE cart, runs
+        only when a READ of the cart shows nothing but the TCIN being raced.
+        Evidence: this purchase's silent-hold read when it is <= 10 s old, for the
+        same TCIN, and provably complete (its raw line count equals its tcin list,
+        so .filter(Boolean) dropped nothing); otherwise one fresh cart read that
+        carried a cart_items array (and under the read's 50-line cap). The add
+        response is never evidence: it lists only the line it added (verifier #6).
+        Lines of any other item (or with no tcin) are deleted by the exact
+        cart_item_ids a qualifying read showed, every one must be deleted, and a
+        qualifying RE-READ must then show nothing but this TCIN: a delete's own
+        ok is not proof of removal (its internal read can be a no-array 2xx,
+        verifier #7). Anything short of that, or no qualifying read, skips the
+        checkout. Returns None to proceed or a skip result. Never raises
+        (CancelledError excepted)."""
+        T = str(tcin)
+
+        def _qual(rd):
+            # A qualifying read: [(cart_item_id, tcin)], or None.
+            if (isinstance(rd, dict) and rd.get('ok') is True and rd.get('has_items') is True
+                    and isinstance(rd.get('items'), list) and len(rd['items']) < 50):
+                return [((str(i.get('id') or ''), str(i.get('tcin') or '')) if isinstance(i, dict)
+                         else ('', '')) for i in rd['items']]
+            return None
+
+        def _skip(why):
+            return self._held_skip(T, 'held_cart_release_failed', why, start_time)
+
+        try:
+            hr = getattr(self, '_hold_read', None)
+            self._hold_read = None
+            _hn = hr.get('n') if isinstance(hr, dict) else None
+            if (isinstance(hr, dict) and hr.get('tcin') == T and isinstance(hr.get('tcins'), list)
+                    and isinstance(_hn, int) and not isinstance(_hn, bool) and _hn == len(hr['tcins'])
+                    and 0.0 <= time.time() - float(hr.get('ts') or 0.0) <= 10.0
+                    and all(str(x) == T for x in hr['tcins'])):
+                return None                    # complete silent-hold read: only this TCIN
+            lines = _qual(await self._cart_items_read(tab))
+            if lines is None:
+                print(f"[LEGACY_CART_GUARD] {T}: cart unreadable before the legacy checkout — "
+                      f"NOT checking out (it buys the whole cart) ident={self._ident_tag()}")
+                return _skip('cart unreadable before the legacy checkout')
+            foreign = [cid for cid, tc in lines if tc != T]
+            if not foreign:
+                return None
+            ok, n = await self._delete_cart_items(tab, ids=foreign, budget_s=15.0)
+            after = None
+            if ok and n == len(foreign):
+                after = _qual(await self._cart_items_read(tab))
+            clean = after is not None and all(tc == T for _, tc in after)
+            print(f"[LEGACY_CART_GUARD] {T}: {len(foreign)} line(s) of another item in the cart — "
+                  f"delete ok={ok} lines={n}/{len(foreign)}, re-read "
+                  f"{'clean' if clean else ('unreadable' if after is None else 'NOT clean')}; "
+                  f"{'checking out' if clean else 'NOT checking out'} ident={self._ident_tag()}")
+            if clean:
+                return None
+            return _skip('a line of another item could not be proven removed before the legacy checkout')
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[LEGACY_CART_GUARD] {T}: guard errored ({type(e).__name__}: {e}) — NOT checking "
+                  f"out ident={self._ident_tag()}")
+            return self._held_skip(T, 'held_cart_error',
+                                   f'legacy cart guard errored: {type(e).__name__}', start_time)
+
+    async def _strike_line_proven_gone(self, tab, T) -> bool:
+        """FX-1001-A v9 (verifier #8, claim 3b): True only when one cart read
+        that carried a cart_items array (under the read's 50-line cap) shows no
+        line of T. A 2xx without the array (which reads as 'empty' / 'nothing to
+        delete' elsewhere), a failed read, or our line present -> False, so the
+        caller keeps the strike's line flagged. CancelledError propagates."""
+        try:
+            rd = await self._cart_items_read(tab)
+            if isinstance(rd, dict) and isinstance(rd.get('items'), list) and len(rd['items']) >= 50:
+                return False
+            return woncart_read_has_tcin(rd, T) is False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    def _ticket_cvv_maybe_sent(self, L, rendered: bool) -> None:
+        """FX-1001-A v5 (verifier claim 5): a ticket rendered with a CVV PUT
+        (CVV_FIRST / CVV_REACTIVE) whose outcome was never read back (a timeout
+        that was not aborted, an abort past the 'pre' stage, a bad result) may
+        have sent that PUT. Mark the cart's ledger 'unknown' so no further PUT
+        goes out on this cart, including from a later strike that carries this
+        state (<= 1 PUT per cart). Flag-off accounts keep today's ledger. Never
+        raises."""
+        try:
+            if (rendered and isinstance(L, dict) and held_line_strike_on(self._ident_tag())
+                    and str(L.get('cvv_put') or 'none') == 'none'):
+                L['cvv_put'] = 'unknown'
+        except Exception:
+            pass
+
+    async def _held_line_strike_loop(self, tab, T: str, quantity, start_time: float, src: str,
+                                     old=None, old_attr: str = '', cvv_put: str = 'unknown'):
+        """FX-1001-A keep sites (a left-behind or TTL/cap-expired held line for the
+        TCIN being raced, in a NEW stock window). Strike the line we hold through
+        the won-cart ticket loop with a fresh, unverified ledger: no add-to-cart,
+        no legacy path. Its tickets run the strict pre_checkout gate (empty cart,
+        any line that is not ours, an unreadable or too-large qty: no
+        place-order) until one verifies the cart; after that the loop's existing
+        place-order-only rule applies. The cart's CVV-PUT state is carried over
+        (<= 1 PUT per cart). The loop's exit decides the line's state (held
+        marker / deleted / dirty, 'terminal' re-flags it); the old tracking
+        object is dropped here only after 'placed' or 'done', if it is still the
+        same object. Returns the purchase result."""
+        Q = max(1, int(quantity or 1))
+        cv = str(cvv_put or 'unknown')
+        fl0 = None                             # 'none': no PUT on this cart yet
+        if cv == 'ok':
+            fl0 = {'cvv': {'put': 200}}
+        elif cv == 'failed':
+            fl0 = {'cvv': {'put': 400}}
+        elif cv != 'none':
+            fl0 = {'stage': 'cvv'}             # unknown: a PUT may have gone out, send no more
+        print(f"[HELD_LINE_STRIKE] {src}: {T} is raced in a NEW stock window — striking the line "
+              f"we hold through the ticket loop (no add-to-cart, no delete, cvv={cv}) "
+              f"ident={self._ident_tag()}")
+        v, t = await self._won_cart_ticket_loop(tab, T, Q, fl0, start_time, entry='strike')
+        if v in ('placed', 'done') and old is not None and old_attr:
+            if getattr(self, old_attr, None) is old:
+                setattr(self, old_attr, None)
+        if v == 'placed':
+            return await self._fastlane_success_result(tab, T, Q, start_time)
+        return t
 
     # -------------------------------------------------------------------------
     # Page-level helpers (migrated from patchright)
@@ -4606,7 +4927,7 @@ class PurchaseExecutor:
             # legacy path (taken while the FAST_SELLING cooldown runs) would buy
             # it with this purchase. Only the flag-gated loop sets the flag.
             if getattr(self, '_woncart_dirty', None) is not None:
-                _dirty_res = await self._woncart_dirty_release(tab, tcin, start_time)
+                _dirty_res = await self._woncart_dirty_release(tab, tcin, start_time, quantity)
                 if _dirty_res is not None:
                     if isinstance(_dirty_res, dict):
                         _dirty_res['woncart_entry'] = 'held'   # no ATC fired (DX-1 skips it)
@@ -4659,7 +4980,28 @@ class PurchaseExecutor:
                             'execution_time': time.time() - start_time}
                 _verdict, _terminal = self._apply_fast_lane_result(_fl, tcin, start_time)
                 if _verdict == 'terminal':
+                    # 2026-10-02 FX-1001-A v4 (verifier R-A): a strike whose
+                    # place-order came back 0 / 408 / 5xx is terminal (the order
+                    # may have committed), but our line may still sit in the cart.
+                    # Flag it: the next dispatch deletes it before any shot (a
+                    # delete after a committed order is a no-op), so another TCIN's
+                    # silently-landed add can never take it into a legacy
+                    # whole-cart checkout during the AC-1 latch. Only a strike sets
+                    # atc.strike (flag off: the JS never renders it).
+                    if atc_result.get('strike') is True:
+                        self._strike_mark_dirty(tcin, 'strike_terminal', woncart_cvv_seed(_fl))
                     return _terminal
+                # 2026-10-01 FX-1001-A: a strike's order is placed on the line we
+                # held, but its atc status is 400; it must never reach the legacy
+                # ATC branches below (the MAX_PURCHASE self-heal would clear the cart
+                # and add again after a committed order). Return the success now.
+                if _verdict == 'placed' and atc_result.get('strike') is True:
+                    _sq = (_fl.get('pre') or {}).get('qty')
+                    _sq = (int(_sq) if isinstance(_sq, (int, float)) and not isinstance(_sq, bool)
+                           and _sq == _sq and 1 <= _sq <= int(quantity) else quantity)
+                    print(f"[HELD_LINE_STRIKE] order placed on the held {tcin} line (qty={_sq}) "
+                          f"ident={self._ident_tag()}")
+                    return await self._fastlane_success_result(tab, tcin, _sq, start_time)
                 # 2026-09-16 plan P1 (WC-1): a WON cart whose chain stopped at
                 # pre_checkout (skip=pre_*) or whose place-order got FAST_SELLING
                 # goes to the won-cart ticket loop instead of the ~26.5 s legacy
@@ -4691,8 +5033,17 @@ class PurchaseExecutor:
                           f"re-racing a fresh ATC (NOT buying the whole cart) ident={self._ident_tag()}")
                     try:
                         await self._clear_cart(tab)
+                    except asyncio.CancelledError:
+                        if atc_result.get('strike') is True:     # FX-1001-A v7 (verifier #6, 3b)
+                            self._strike_mark_dirty(tcin, 'strike_foreign', woncart_cvv_seed(_fl))
+                        raise
                     except Exception as _cc_e:
                         print(f"[FAST_LANE] cart clear after foreign_cart_item failed ({_cc_e})")
+                    if atc_result.get('strike') is True:
+                        # FX-1001-A v5 (verifier path B): _clear_cart's True proves
+                        # nothing (its DOM fallback answers True off /cart after a
+                        # 429 GET), so a strike's line stays flagged regardless.
+                        self._strike_mark_dirty(tcin, 'strike_foreign', woncart_cvv_seed(_fl))
                     return {'success': False, 'tcin': tcin, 'reason': 'foreign_cart_cleared',
                             'error': 'foreign/extra item in cart — cleared, re-racing',
                             'execution_time': time.time() - start_time}
@@ -4706,7 +5057,26 @@ class PurchaseExecutor:
                     print(f"[FAST_LANE] [QTY_GUARD] cart holds qty={_qpre.get('qty')} of {tcin} "
                           f"(> requested {quantity}) — NOT placing the order; deleting that "
                           f"line and re-racing ident={self._ident_tag()}")
-                    _qok, _qn = await self._delete_cart_items(tab, only_tcin=tcin, budget_s=15.0)
+                    try:
+                        _qok, _qn = await self._delete_cart_items(tab, only_tcin=tcin, budget_s=15.0)
+                    except asyncio.CancelledError:
+                        if atc_result.get('strike') is True:     # FX-1001-A v7 (verifier #6, 3b)
+                            self._strike_mark_dirty(tcin, 'strike_qty_stuck', woncart_cvv_seed(_fl))
+                        raise
+                    _q_gone = True
+                    if atc_result.get('strike') is True and _qok and _qn == 0:
+                        # FX-1001-A v9 (verifier #8, 3b): the chain just saw our line
+                        # over Q, so a 0-line delete is a contradiction (its read may
+                        # be a 2xx without cart_items); keep it flagged unless proven gone.
+                        try:
+                            _q_gone = await self._strike_line_proven_gone(tab, tcin)
+                        except asyncio.CancelledError:
+                            self._strike_mark_dirty(tcin, 'strike_qty_stuck', woncart_cvv_seed(_fl))
+                            raise
+                    if (not _qok or not _q_gone) and atc_result.get('strike') is True:
+                        # FX-1001-A v4 (verifier fix 4): a strike's stacked line
+                        # that could not be deleted stays TRACKED.
+                        self._strike_mark_dirty(tcin, 'strike_qty_stuck', woncart_cvv_seed(_fl))
                     return {'success': False, 'tcin': tcin,
                             'reason': 'cart_qty_cleared' if _qok else 'cart_qty_stuck',
                             'error': ('stacked cart line deleted, re-racing' if _qok
@@ -5118,6 +5488,25 @@ class PurchaseExecutor:
                             print(f"[PURCHASE] Token not ready within 10s (button stayed disabled) — falling through to button click")
                         cart_confirmed = False
                 skip_signal_wait = True
+            elif (atc_status == 400 and _MAXP_KEY in atc_body.upper()
+                    and self._held_line_strike_active(tcin) and strike_kept_line(_fl)):
+                # 2026-10-01 FX-1001-A (TARGET_HELD_LINE_FLIP_STRIKE): the in-chain
+                # strike read the cart and found nothing but our line (qty
+                # unreadable), or its place-order was definitively rejected and the
+                # won-cart loop did not take it. Keep the line but TRACKED (dirty):
+                # the next dispatch deletes it before any shot, or strikes it again
+                # in a NEW stock window. An untracked line would be bought whole by
+                # the legacy silent-hold checkout (verifier 10-02). Every other
+                # MAX_PURCHASE (no strike, no line of ours, pre_checkout not 2xx)
+                # runs the self-heal below exactly as before.
+                _sk_reason = strike_legacy_400_reason(_fl)
+                self._strike_mark_dirty(tcin, _sk_reason, woncart_cvv_seed(_fl))
+                print(f"[HELD_LINE_STRIKE] add-to-cart 400 MAX_PURCHASE on {tcin}: the strike did not "
+                      f"order (reason={_sk_reason}) — line kept, flagged; NO self-heal "
+                      f"(t={time.time()-start_time:.2f}s) ident={self._ident_tag()}")
+                return {'success': False, 'tcin': tcin, 'reason': _sk_reason,
+                        'error': 'held-line strike did not order; line kept and flagged',
+                        'execution_time': time.time() - start_time}
             elif atc_status == 400 and 'EXCEEDED' in atc_body.upper():
                 # Self-heal MAX_PURCHASE_LIMIT_EXCEEDED. Two distinct root causes
                 # produce this 400, both recoverable here:
@@ -5427,6 +5816,14 @@ class PurchaseExecutor:
             except Exception:
                 pass
 
+            # 2026-10-02 FX-1001-A v6 (sink guard): the legacy checkout buys the
+            # WHOLE cart. With the strike on, it runs only on a cart that holds
+            # nothing but this TCIN, however a line of another item got there.
+            if not self._fastlane_placed and held_line_strike_on(self._ident_tag()):
+                _lg = await self._legacy_checkout_cart_guard(tab, tcin, start_time)
+                if _lg is not None:
+                    return _lg
+
             # Navigate to checkout
             self._notify_status(tcin, 'checking_out', {'timestamp': datetime.now().isoformat()})
             checkout_result = False
@@ -5704,6 +6101,7 @@ class PurchaseExecutor:
                 execution_time = time.time() - start_time
                 print(f"[PURCHASE] PROD_MODE: Order complete: {tcin} in {execution_time:.2f}s")
                 print(f"[PURCHASE] PROD_MODE: Staying on confirmation (next attempt will navigate to product)")
+                self._note_ordered_tcin(tcin)      # FX-1001-A: before the unbounded save below
 
             # Save session after successful purchase
             await self.session_manager.save_session_state()
@@ -5732,6 +6130,7 @@ class PurchaseExecutor:
                 'order_id': order_id,
                 'confirmation_url': confirmation_url,
             })
+            self._note_ordered_tcin(tcin)          # FX-1001-A: never strike it again
 
             return {
                 'success': True,
@@ -5797,8 +6196,17 @@ class PurchaseExecutor:
                     if (_rec_cleared and held_cart_reentry_on()
                             and getattr(self, '_held_cart', None) is not None):
                         # 2026-09-16 plan P3: the held line went with the clear.
+                        _rec_h = self._held_cart
                         self._held_cart = None
                         print(f"[HELD_CART] marker dropped — the error-recovery clear emptied the cart")
+                        # FX-1001-A v6 (verifier #5 path C): _clear_cart's True does
+                        # not prove the line is gone; with the strike on, the next
+                        # dispatch deletes it (or finds it gone) before any shot.
+                        if (held_line_strike_on(self._ident_tag()) and isinstance(_rec_h, dict)
+                                and _rec_h.get('tcin')
+                                and getattr(self, '_woncart_dirty', None) is None):
+                            self._strike_mark_dirty(_rec_h.get('tcin'), 'recovery_clear_unproven',
+                                                    str(_rec_h.get('cvv_put') or 'unknown'))
             except Exception:
                 pass
 
@@ -6565,6 +6973,11 @@ class PurchaseExecutor:
         if now - self._last_cart_hold_check_ts < self._cart_hold_check_interval_s:
             return False
         self._last_cart_hold_check_ts = now
+        # FX-1001-A v7: with the strike on, also report the raw line count, so
+        # the legacy-checkout guard can tell a complete tcin list from one that
+        # .filter(Boolean) shortened. Flag off: the JS is byte-identical.
+        _hold_n_js = (", n: Array.isArray(d.cart_items) ? d.cart_items.length : -1"
+                      if held_line_strike_on(self._ident_tag()) else "")
         try:
             res = await asyncio.wait_for(tab.evaluate("""(async () => {
                 try {
@@ -6577,12 +6990,17 @@ class PurchaseExecutor:
                     const tcins = (d.cart_items || [])
                         .map(i => String(i.tcin || (i.item && i.item.tcin) || ''))
                         .filter(Boolean);
-                    return {ok: true, tcins: tcins};
+                    return {ok: true, tcins: tcins""" + _hold_n_js + """};
                 } catch(e) { return {ok: false, error: String(e)}; }
             })()""", await_promise=True), timeout=2.5)
             if isinstance(res, dict) and res.get('ok') and str(tcin) in (res.get('tcins') or []):
                 print(f"[CART_HOLD] {tcin}: ATC denied ({deny_status}) but the item IS in the cart "
                       f"(silent hold) — proceeding to checkout instead of bailing")
+                if held_line_strike_on(self._ident_tag()):
+                    # FX-1001-A v6/v7: the legacy-checkout cart guard reads this.
+                    self._hold_read = {'ts': time.time(), 'tcin': str(tcin),
+                                       'tcins': [str(x) for x in (res.get('tcins') or [])],
+                                       'n': res.get('n')}
                 return True
             # 2026-08-18 observability: the check is otherwise SILENT-on-miss,
             # which made it unfalsifiable in the 08-18 audit (zero [CART_HOLD]
@@ -7829,6 +8247,7 @@ class PurchaseExecutor:
             self._api_confirmation_url = (
                 f"https://www.target.com/checkout/confirmation?orderId={oid}")
             self._fastlane_placed = True
+            self._note_ordered_tcin(tcin)          # FX-1001-A: never strike it again
             print(f"[FAST_LANE] *** ORDER PLACED *** HTTP {status} at "
                   f"t={time.time()-start_time:.2f}s — order_id={oid}")
             _cvv_info = fl.get('cvv') or {}
@@ -8037,6 +8456,65 @@ class PurchaseExecutor:
             await new Promise(_r => setTimeout(_r, {_prc['gap_ms']}));
             }}"""
 
+        # 2026-10-01 FX-1001-A (TARGET_HELD_LINE_FLIP_STRIKE): an add-to-cart 400
+        # MAX_PURCHASE_LIMIT_EXCEEDED means our line is already in the cart, so
+        # the chain goes on to pre_checkout and places the order on that line.
+        # Fail-closed: no line of ours = skip 'strike_no_line' (a real purchase
+        # limit); any line that is not ours, a null tcin included = skip
+        # 'foreign_cart_item'; our qty unreadable = skip 'strike_qty_unknown'; the
+        # qty guard (QG, required) still refuses qty > Q. All three fragments are
+        # '' (and the stop condition unchanged) when the strike is off for this
+        # account, so the JS stays byte-identical to the golden fixture.
+        _strike_mark_js = ''
+        _strike_line_js = ''
+        _strike_capture_js = ''
+        _atc_stop_cond = "out.atc.status !== 201 && out.atc.status !== 200"
+        _strike_on = self._held_line_strike_active(tcin)
+        if _strike_on:
+            # Our qty, strictly: every line of this TCIN must carry a finite
+            # number >= 1 (QG's Number() would read null / '' / true as numbers).
+            _strike_capture_js = f"""
+                try {{
+                    const _sp = JSON.parse(t2);
+                    out.pre.sarr = !!(_sp && Array.isArray(_sp.cart_items));
+                    const _si = (_sp && Array.isArray(_sp.cart_items)) ? _sp.cart_items : [];
+                    let _ss = 0, _sok = true;
+                    for (const _it of _si) {{
+                        if (!_it || _it.tcin === undefined || _it.tcin === null
+                                || String(_it.tcin) !== '{tcin}') continue;
+                        const _sv = _it.quantity;
+                        if (typeof _sv === 'number' && Number.isFinite(_sv) && _sv >= 1) {{ _ss += _sv; }} else {{ _sok = false; }}
+                    }}
+                    out.pre.sq = _sok ? _ss : null;
+                }} catch(_) {{ out.pre.sq = null; out.pre.sarr = false; }}"""
+            _strike_mark_js = f"""
+            if (out.atc.status === 400 && out.atc.body.indexOf('{_MAXP_KEY}') !== -1) {{
+                out.atc.strike = true;
+            }}"""
+            _atc_stop_cond = "!out.atc.strike && " + _atc_stop_cond
+            _strike_line_js = f"""
+            if (out.atc.strike) {{
+                // v10 (verifier #9, 3b): a 2xx pre_checkout without a cart_items
+                // array proves nothing about our line: keep it (flagged), never
+                // run the self-heal on it; any line whose tcin is missing or not
+                // ours is foreign BEFORE "no line of ours" is concluded.
+                if (out.pre.sarr !== true) {{
+                    out.skip = 'strike_qty_unknown'; return out;
+                }}
+                if (out.pre.tcins.some(t => t === undefined || t === null || String(t) !== '{tcin}')) {{
+                    out.skip = 'foreign_cart_item'; return out;
+                }}
+                if (!out.pre.tcins.some(t => t !== undefined && t !== null && String(t) === '{tcin}')) {{
+                    out.skip = 'strike_no_line'; return out;
+                }}
+                if (typeof out.pre.sq !== 'number' || !Number.isFinite(out.pre.sq) || out.pre.sq < 1) {{
+                    out.skip = 'strike_qty_unknown'; return out;
+                }}
+                if (out.pre.sq > {int(quantity)}) {{
+                    out.skip = 'cart_qty_over'; return out;
+                }}
+            }}"""
+
         js = f"""(async () => {{{_stf['open']}
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{
@@ -8078,8 +8556,8 @@ class PurchaseExecutor:
             }} catch(e) {{
                 out.atc.status = 0; out.atc.body = String(e);
                 out.skip = 'atc_threw'; return out;
-            }}
-            if (out.atc.status !== 201 && out.atc.status !== 200) {{
+            }}{_strike_mark_js}
+            if ({_atc_stop_cond}) {{
                 out.skip = 'atc_' + out.atc.status; return out;
             }}
 
@@ -8115,7 +8593,7 @@ class PurchaseExecutor:
                         cvv: pi && (pi.cvv_required !== undefined ? pi.cvv_required
                              : pi.requires_cvv !== undefined ? pi.requires_cvv : null)
                     }}));
-                }} catch(_) {{}}{_qg_capture_js}
+                }} catch(_) {{}}{_qg_capture_js}{_strike_capture_js}
             }} catch(e) {{
                 out.pre.status = 0;
             }}{_pre_retry_close}
@@ -8124,7 +8602,7 @@ class PurchaseExecutor:
                 // CART_COMPARISION_FAILURE_ERROR (observed 2026-05-07). Hand back
                 // to the nav path, which hydrates by loading the page.
                 out.skip = 'pre_' + out.pre.status; return out;
-            }}
+            }}{_strike_line_js}
             // Cart-contents guard: place-order buys the WHOLE cart. If anything
             // that is not our TCIN leaked in from a prior failed attempt, do not
             // fire — let the legacy path run its cart-state checks first.
@@ -8224,11 +8702,23 @@ class PurchaseExecutor:
         try:
             res = await asyncio.wait_for(
                 tab.evaluate(js, await_promise=True), timeout=12.0)
+        except asyncio.CancelledError:
+            # FX-1001-A v6 (verifier #5 path B): the 140 s budget or the manager's
+            # cancel can land while a strike chain is in flight; keep the line
+            # tracked (_po_inflight stays True for the hang branch, as above).
+            if _strike_on:
+                self._strike_mark_dirty(tcin, 'strike_cancelled', 'unknown')
+            raise
         except asyncio.TimeoutError:
             if _stage_track:
                 # 2026-09-16 FL-1: one bounded read-and-abort. _po_inflight stays
                 # True across it (a purchase-timeout cancel here still latches).
-                _ab = await self._fast_lane_read_and_abort(tab, _st_key, _st_n)
+                try:
+                    _ab = await self._fast_lane_read_and_abort(tab, _st_key, _st_n)
+                except asyncio.CancelledError:
+                    if _strike_on:                         # FX-1001-A v7 (verifier #6, 3b)
+                        self._strike_mark_dirty(tcin, 'strike_cancelled', 'unknown')
+                    raise
                 self._po_inflight = False
                 _syn = fast_lane_timeout_outcome(_ab)
                 if (_syn is not None and _syn.get('skip') == 'evaluate_timeout_atc'
@@ -8242,6 +8732,11 @@ class PurchaseExecutor:
                 if _syn is not None:
                     if _syn.get('skip') == 'evaluate_timeout_atc':
                         self._orphan_atc_ts = time.time()   # R1-QTY-1: the add may still land
+                        if _strike_on:
+                            # v11 (verifier #10, 3b): the pending add may have been a
+                            # strike's 400 on a line we hold; keep it tracked, as the
+                            # cancel branch does at the same stage.
+                            self._strike_mark_dirty(tcin, 'strike_atc_timeout', 'unknown')
                     _syn['elapsed'] = time.time() - t0
                     print(f"[FAST_LANE] evaluate timed out after 12s — stage={_syn.get('stage')} "
                           f"atc={_syn.get('stage_atc')} ABORTED before any place-order "
@@ -8250,6 +8745,8 @@ class PurchaseExecutor:
                 print(f"[FAST_LANE] evaluate timed out after 12s — stage read {repr(_ab)[:200]} "
                       f"(not relabelled) ident={self._ident_tag()}")
             self._po_inflight = False
+            if _strike_on:                         # FX-1001-A: never leave a line untracked
+                self._strike_mark_dirty(tcin, 'strike_timeout', 'unknown')
             # Cannot prove the place-order POST did not commit ⇒ terminal.
             print("[FAST_LANE] evaluate timed out after 12s — place-order state "
                   "UNKNOWN, treating as no-response (non-retryable)")
@@ -8258,6 +8755,8 @@ class PurchaseExecutor:
                     'skip': 'evaluate_timeout', 'elapsed': time.time() - t0}
         except Exception as e:
             self._po_inflight = False
+            if _strike_on:                         # FX-1001-A: never leave a line untracked
+                self._strike_mark_dirty(tcin, 'strike_threw', 'unknown')
             print(f"[FAST_LANE] evaluate raised: {e} — place-order state UNKNOWN")
             return {'atc': {'status': 0, 'body': '', 'cart_items': []},
                     'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
@@ -8265,6 +8764,8 @@ class PurchaseExecutor:
         self._po_inflight = False
 
         if not isinstance(res, dict):
+            if _strike_on:                         # FX-1001-A v4 (verifier R-A): never untracked
+                self._strike_mark_dirty(tcin, 'strike_bad_result', 'unknown')
             print(f"[FAST_LANE] unexpected result type {type(res)} — treating as unknown")
             return {'atc': {'status': 0, 'body': '', 'cart_items': []},
                     'pre': {'status': 0}, 'po': {'status': 0, 'body': '', 'fired': True},
@@ -8291,9 +8792,11 @@ class PurchaseExecutor:
         except (TypeError, ValueError):
             _pt = 1
         _pt_note = f" pre_tries={_pt}" if _pt > 1 else ''
+        # 2026-10-01 FX-1001-A: '' unless the chain struck a held line.
+        _sk_note = ' strike=1' if _atc.get('strike') is True else ''
         print(f"[FAST_LANE] chain done in {res['elapsed']:.2f}s — "
               f"atc={_atc.get('status')} pre={_pre.get('status')} "
-              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_pt_note}{_cv_note}"
+              f"po={_po.get('status')} skip={res.get('skip') or 'none'}{_pt_note}{_sk_note}{_cv_note}"
               f" ident={self._ident_tag()}{_dx_note}")
         if _pre.get('pi'):
             # One-line intel record: the payment-instruction id + any cvv flag is
@@ -8327,6 +8830,7 @@ class PurchaseExecutor:
         has, desc = None, 'no read'
         _all_429 = True
         self._woncart_presume_dirty = False
+        self._woncart_evict_presumed = False   # FX-1001-A v4: True = presumed, not read
         for _try in (1, 2):
             try:
                 rd = await self._cart_items_read(tab)
@@ -8353,6 +8857,7 @@ class PurchaseExecutor:
             # mark the cart dirty: the next purchase deletes any leftover line before
             # it adds. _woncart_presume_dirty is read by the loop right after this.
             self._woncart_presume_dirty = not _all_429
+            self._woncart_evict_presumed = True
             print(f"[WON_CART_DIRECT] cart unreadable twice after the rejection ({desc}) — every "
                   f"424 on record emptied the cart: presuming evicted, the race re-adds (the qty "
                   f"guard covers a stacked line){'' if _all_429 else '; read failed for a LOCAL reason, '
@@ -8555,10 +9060,15 @@ class PurchaseExecutor:
         try:
             res = await asyncio.wait_for(tab.evaluate(js, await_promise=True), timeout=12.0)
         except asyncio.CancelledError:
+            self._ticket_cvv_maybe_sent(L, cvv_first or cvv_reactive)   # FX-1001-A v6 (claim 5)
             raise
         except Exception as e:
             err = type(e).__name__
-            ab = await self._ticket_read_and_abort(tab, key, n)
+            try:
+                ab = await self._ticket_read_and_abort(tab, key, n)
+            except asyncio.CancelledError:
+                self._ticket_cvv_maybe_sent(L, cvv_first or cvv_reactive)   # FX-1001-A v7 (claim 5)
+                raise
             self._po_inflight = False
             if isinstance(ab, dict) and ab.get('aborted') is True:
                 res = _synth('ticket_timeout_aborted', False, error=err, stage=str(ab.get('s')))
@@ -8566,15 +9076,19 @@ class PurchaseExecutor:
                     # R1 review (R1-CVV-1): stage 'cvv' is written right before
                     # the PUT fetch, so that PUT may land; never send another.
                     L['cvv_put'] = 'unknown'
+                elif str(ab.get('s')) != 'pre':
+                    self._ticket_cvv_maybe_sent(L, cvv_first or cvv_reactive)
             else:
                 _stg = str(ab.get('s')) if isinstance(ab, dict) else 'unknown'
                 res = _synth('ticket_timeout', True, error=err, stage=_stg)
+                self._ticket_cvv_maybe_sent(L, cvv_first or cvv_reactive)
         else:
             self._po_inflight = False
             if not isinstance(res, dict) or not isinstance(res.get('po'), dict):
                 # The ticket JS always returns {po: {...}}; anything else means
                 # the place-order outcome is unknown -> terminal guard.
                 res = _synth('ticket_bad_result', True)
+                self._ticket_cvv_maybe_sent(L, cvv_first or cvv_reactive)
         pre = res.get('pre') if isinstance(res.get('pre'), dict) else {}
         po = res.get('po') if isinstance(res.get('po'), dict) else {}
         cv = res.get('cvv') if isinstance(res.get('cvv'), dict) else {}
@@ -8634,6 +9148,8 @@ class PurchaseExecutor:
             if _t1 is not None and 0.0 <= now - _t1 / 1000.0 <= 60.0:
                 L['first_201_ts'] = _t1 / 1000.0
                 L['first_201_src'] = 'atc_t1'
+            if atc.get('strike') is True:          # FX-1001-A: a 400 on a held line, not a 201
+                L['first_201_src'] = 'strike_400'
             L['cart_id'] = _woncart_safe_id(pre.get('cart_id')) or _woncart_safe_id(atc.get('cart_id'))
             pis = pre.get('pi') or []
             if isinstance(pis, list) and pis and isinstance(pis[0], dict):
@@ -8857,6 +9373,8 @@ class PurchaseExecutor:
                     L = h
                 else:
                     L = self._woncart_new_ledger(T, Q, fl0, t_entry, rej_status0, rej_key0)
+                    if entry == 'strike':
+                        L['strike'] = True      # FX-1001-A v5: a held marker it leaves stays a strike's
                 _pre0 = ((fl0.get('pre') or {}).get('status') if isinstance(fl0, dict) else '-')
                 _po0 = (fl0.get('po') or {}) if isinstance(fl0, dict) else {}
                 _key0 = (rej_key0 if (_po0.get('fired') and rej_status0 == _po0.get('status'))
@@ -9025,6 +9543,12 @@ class PurchaseExecutor:
                         continue
                     if skip == 'cart_empty' and pre.get('parsed') is True and 200 <= pst <= 299:
                         st['reason'] = 'cart_evicted'          # proven by a parsed 2xx pre
+                        # FX-1001-A v9 (verifier #8, 3b): a 2xx pre without cart_items
+                        # also reads as empty; a strike's line stays flagged unless a
+                        # cart read with the array shows it gone.
+                        if (self._strike_ledger(entry, L)
+                                and not await self._strike_line_proven_gone(tab, T)):
+                            st['dirty'] = True
                         break
                     if skip == 'foreign_cart_item':
                         _b = min(15.0, max(0.0, st['dl'] - time.time() - 5.0))
@@ -9057,7 +9581,14 @@ class PurchaseExecutor:
                             # -shaped 400 — a payment or CVV 400 says nothing about
                             # the cart and must not end the loop.
                             if await self._woncart_eviction_read(tab, T, cfg.get('eviction_presume')) is True:
-                                if getattr(self, '_woncart_presume_dirty', False):
+                                # FX-1001-A v4/v5 (verifier R-B, path A): a strike's line
+                                # is a line we KNOW was in the cart; a presumed (unread)
+                                # eviction keeps it flagged, whether the loop came from
+                                # the strike loop, a strike-tagged marker or the in-chain
+                                # strike (entry='first'). Only the flag makes these.
+                                if (getattr(self, '_woncart_presume_dirty', False)
+                                        or (getattr(self, '_woncart_evict_presumed', False)
+                                            and self._strike_ledger(entry, L))):
                                     st['dirty'] = True
                                 st['reason'] = 'cart_evicted'
                                 break
@@ -9085,7 +9616,9 @@ class PurchaseExecutor:
                                 # cart; read it now instead of waiting for a pre 2xx
                                 # that the FS gate will not let through.
                                 if await self._woncart_eviction_read(tab, T, cfg.get('eviction_presume')) is True:
-                                    if getattr(self, '_woncart_presume_dirty', False):
+                                    if (getattr(self, '_woncart_presume_dirty', False)
+                                            or (getattr(self, '_woncart_evict_presumed', False)
+                                                and self._strike_ledger(entry, L))):   # v4/v5 R-B, A
                                         st['dirty'] = True       # F3: local read failure
                                     st['reason'] = 'cart_evicted'
                                     break
@@ -9136,12 +9669,20 @@ class PurchaseExecutor:
                 # purchase deletes that line before any ATC.
                 _h_now = getattr(self, '_held_cart', None)
                 _marker_kept = isinstance(_h_now, dict) and str(_h_now.get('tcin') or '') == T
+                if (entry == 'strike' and _marker_kept and _h_now is not L and isinstance(L, dict)
+                        and str(L.get('cvv_put') or 'none') != 'none'
+                        and str(_h_now.get('cvv_put') or 'none') == 'none'):
+                    # FX-1001-A v6 (verifier #5, claim 5): the strike's fresh ledger is
+                    # dropped here; the marker it did not replace must not keep
+                    # claiming no CVV PUT went out on this cart.
+                    _h_now['cvv_put'] = str(L.get('cvv_put'))
                 if (verdict != 'placed' and not st.get('holding') and not _marker_kept
                         and (verdict == 'terminal' or result is None or st.get('dirty'))):
                     self._woncart_dirty = {
                         'tcin': T, 'ts': now,
                         'why': woncart_reason_safe(st.get('reason')
                                                    or ('cancelled' if result is None else 'unknown')),
+                        'cvv_put': (str(L.get('cvv_put') or 'none') if isinstance(L, dict) else 'unknown'),
                     }
                     print(f"[WON_CART_DIRECT] our line may still be in the cart "
                           f"(exit={self._woncart_dirty['why']}, verdict={verdict}) — the next "
@@ -9199,16 +9740,20 @@ class PurchaseExecutor:
             _ok, _n = ((await self._delete_cart_items(tab, only_tcin=T, budget_s=budget))
                        if budget >= 1.0 else (False, 0))
             self._woncart_drop_marker(L)
-            if not _ok:
+            if not _ok or (_n == 0 and self._strike_ledger('', L)       # FX-1001-A v9 (3b)
+                           and not await self._strike_line_proven_gone(tab, T)):
                 st['dirty'] = True          # R3 (WC-DIRTY-CART): the next purchase deletes it
             res = dict(base, reason='cart_qty_cleared' if _ok else 'cart_qty_stuck',
                        error='won-cart loop: stacked line ' + ('deleted' if _ok else 'not deleted'))
         elif reason == 'cart_ticket_cap':
-            _ok = False
+            _ok, _cn = False, None
             if budget >= 1.0:
-                _ok = _del_ok(await self._delete_cart_items(tab, only_tcin=T, budget_s=budget))
+                _cr = await self._delete_cart_items(tab, only_tcin=T, budget_s=budget)
+                _ok = _del_ok(_cr)
+                _cn = _cr[1] if isinstance(_cr, (tuple, list)) and len(_cr) > 1 else None
             self._woncart_drop_marker(L)
-            if not _ok:
+            if not _ok or (_cn == 0 and self._strike_ledger('', L)      # FX-1001-A v9 (3b)
+                           and not await self._strike_line_proven_gone(tab, T)):
                 st['dirty'] = True          # R3 (WC-DIRTY-CART): the next purchase deletes it
             res = dict(base, reason='won_cart_retired',
                        error='won-cart loop: per-cart ticket cap reached, cart released')
@@ -9257,7 +9802,8 @@ class PurchaseExecutor:
 
     async def _held_cart_release(self, tab, h, why: str) -> bool:
         """Bounded delete of the held TCIN's line(s) (15 s, no repair / warm /
-        DOM); the marker is dropped either way. Returns the delete's ok."""
+        DOM); the marker is dropped either way (FX-1001-A v4: with the strike on,
+        a failed delete re-flags the line dirty). Returns the delete's ok."""
         HT = str((h or {}).get('tcin') or '') if isinstance(h, dict) else ''
         ok, n = True, 0                       # no TCIN on the marker = nothing to delete
         if HT:
@@ -9266,6 +9812,16 @@ class PurchaseExecutor:
                 ok = True                     # R3 (CS-R1-TICK-DISPATCH-DOUBLE-DELETE)
         if getattr(self, '_held_cart', None) is h:
             self._held_cart = None
+        # 2026-10-02 FX-1001-A v4 (verifier R-C): with the strike on for this
+        # account (it feeds lines into held markers), a FAILED delete hands the
+        # line to the dirty flag instead of dropping it untracked: the next
+        # dispatch retries the delete before any shot (HEAD's TTL give-up still
+        # applies). The dirty slot is free here (the dispatch releases it first);
+        # if it is not, today's drop stands. Flag off: unchanged.
+        if (not ok and HT and held_line_strike_on(self._ident_tag())
+                and getattr(self, '_woncart_dirty', None) is None):
+            self._strike_mark_dirty(HT, 'held_release_failed',
+                                    str((h or {}).get('cvv_put') or 'unknown'))
         print(f"[HELD_CART] released ({why}) {self._held_desc(h) if isinstance(h, dict) else ''} "
               f"delete_ok={ok} lines={n} ident={self._ident_tag()}")
         return bool(ok)
@@ -9297,7 +9853,7 @@ class PurchaseExecutor:
         except Exception:
             return False
 
-    async def _woncart_dirty_release(self, tab, tcin, start_time: float):
+    async def _woncart_dirty_release(self, tab, tcin, start_time: float, quantity=None):
         """R3 review (WC-DIRTY-CART-LEGACY-CHECKOUT): delete (bounded, only that
         TCIN's lines) the line a won-cart loop exit may have left in the cart
         with no held marker, before this purchase fires anything. None =
@@ -9313,6 +9869,17 @@ class PurchaseExecutor:
             self._woncart_dirty = None
             return None
         DT = str(d.get('tcin') or '')
+        # 2026-10-01 FX-1001-A: the line left behind is for the TCIN being raced
+        # and a NEW stock window opened after the loop that left it: strike it
+        # through the ticket loop (no add-to-cart, no delete, no legacy path).
+        # On 10-01 race 16 (02:37:52) this path deleted nothing (cart GET 429)
+        # and fired nothing for primary + business.
+        if (quantity is not None and DT and DT == T and self._held_line_strike_active(T)
+                and self._strike_loop_ok()
+                and strike_window_fresh(self._stock_state(T), d.get('ts'))):
+            return await self._held_line_strike_loop(
+                tab, T, quantity, start_time, f"left-behind line (exit={d.get('why')})",
+                old=d, old_attr='_woncart_dirty', cvv_put=d.get('cvv_put', 'unknown'))
         try:
             ok, n = True, 0
             if DT:
@@ -9430,6 +9997,21 @@ class PurchaseExecutor:
             if not HT or not loop_ok or age > ttl or woncart_cap_binds(tickets, _he_live, cfg):
                 why = ('bad_marker' if not HT else 'loop_not_armed' if not loop_ok
                        else 'ttl' if age > ttl else 'ticket_cap')
+                # 2026-10-01 FX-1001-A: a TTL / cap retire of a line for the TCIN
+                # being raced, in a NEW stock window after our last action on it:
+                # strike it through the ticket loop instead of deleting it.
+                if (why in ('ttl', 'ticket_cap') and HT == T and self._held_line_strike_active(T)
+                        and self._strike_loop_ok()):
+                    _lt = 0.0
+                    for _k in ('created', 'first_201_ts', 'last_ticket_ts'):
+                        try:
+                            _lt = max(_lt, float(h.get(_k) or 0.0))
+                        except (TypeError, ValueError):
+                            pass
+                    if strike_window_fresh(self._stock_state(T), _lt):
+                        return await self._held_line_strike_loop(
+                            tab, T, Q, start_time, f"held line ({why}) {self._held_desc(h)}",
+                            old=h, old_attr='_held_cart', cvv_put=h.get('cvv_put', 'unknown'))
                 print(f"[HELD_CART] retired ({why}; ttl={ttl:.0f}s cap={cfg['max_tickets']}) "
                       f"{self._held_desc(h)} ident={self._ident_tag()}")
                 if not await self._held_cart_release(tab, h, 'retired_' + why):
@@ -9477,6 +10059,10 @@ class PurchaseExecutor:
                         self._held_cart = None
                     print(f"[HELD_CART] held {T} line carries qty={qsum} > {Q} — deleted "
                           f"(ok={_ok} lines={_n}), marker dropped ident={self._ident_tag()}")
+                    if (not _ok and held_line_strike_on(self._ident_tag())
+                            and getattr(self, '_woncart_dirty', None) is None):
+                        # FX-1001-A v6 (verifier #5 path A): the line stays tracked.
+                        self._strike_mark_dirty(T, 'held_qty_stuck', str(h.get('cvv_put') or 'unknown'))
                     if not _ok:
                         return self._held_skip(T, 'held_cart_release_failed',
                                                'stacked held line could not be deleted', start_time)
@@ -9505,6 +10091,18 @@ class PurchaseExecutor:
                             return None
                     else:
                         _presume = True
+                if (_presume and held_line_strike_on(self._ident_tag())
+                        and self._strike_ledger('held', h)):
+                    # 2026-10-02 FX-1001-A v5 (verifier path C): a strike's held line
+                    # is never presumed gone and shot over (a dropped marker lets a
+                    # later dispatch's silent hold buy it with whatever landed).
+                    # Enter the loop instead, as a fresh marker does: its strict
+                    # pre_checkout re-verifies the cart, and every exit keeps the
+                    # line tracked (held / dirty / proven gone).
+                    print(f"[HELD_LINE_STRIKE] cart unreadable twice on the strike's held {T} line "
+                          f"(idle {_idle:.0f}s) — NOT presumed gone; entering the loop "
+                          f"ident={self._ident_tag()}")
+                    _presume = False
                 if _presume:
                     self._held_cart = None
                     print(f"[HELD_CART] cart unreadable twice (status={r.get('status')}) on a marker idle "
@@ -9673,6 +10271,7 @@ class PurchaseExecutor:
             'order_id': order_id,
             'confirmation_url': confirmation_url,
         })
+        self._note_ordered_tcin(tcin)              # FX-1001-A: never strike it again
         return {
             'success': True,
             'tcin': tcin,

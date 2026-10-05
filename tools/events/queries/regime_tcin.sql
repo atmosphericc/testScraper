@@ -5,7 +5,8 @@
 -- Result 1, per run x TCIN (main-tab shots; home and proxied kept apart):
 --   first_pass   past the limiter / classified FIRST shots  (past = any gate but wall1_limited;
 --                a keyless 401 counts as past, C-0930-03; other/unknown excluded from both sides)
---   first_adm    admitted (201 / FAST_SELLING / 424) / (admitted + wall1_limited)  - the f1 rule
+--   first_adm    admitted (201 / FAST_SELLING / 424 / cart_limit 400) / (admitted + wall1_limited)  - the f1 rule
+--                (cart_limit: parser v2; before v2 that 400 was 'other' and excluded from both sides)
 --   later_pass   the same as first_pass for every later shot
 --   share        this TCIN's share of the run's classified first shots (the composition)
 -- Result 2, per run: the pooled first-shot rates and the same with the TCIN that has the most
@@ -14,7 +15,7 @@ WITH s AS (
   SELECT run_id, tcin, proxied, is_first, gate,
          CASE WHEN gate IN ('other', 'unknown') THEN NULL
               WHEN gate = 'wall1_limited' THEN 0 ELSE 1 END AS past,
-         CASE WHEN gate IN ('admitted_fs', 'cart', 'inventory') THEN 1
+         CASE WHEN gate IN ('admitted_fs', 'cart', 'inventory', 'cart_limit') THEN 1
               WHEN gate = 'wall1_limited' THEN 0 ELSE NULL END AS adm
   FROM shots
 ),
@@ -44,7 +45,7 @@ WITH s AS (
   SELECT run_id, tcin, is_first,
          CASE WHEN gate IN ('other', 'unknown') THEN NULL
               WHEN gate = 'wall1_limited' THEN 0 ELSE 1 END AS past,
-         CASE WHEN gate IN ('admitted_fs', 'cart', 'inventory') THEN 1
+         CASE WHEN gate IN ('admitted_fs', 'cart', 'inventory', 'cart_limit') THEN 1
               WHEN gate = 'wall1_limited' THEN 0 ELSE NULL END AS adm
   FROM shots WHERE is_first = 1
 ),

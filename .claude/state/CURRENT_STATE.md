@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-09-30 ~11:30 (post-run of the 09-30 03:00 restock, workflow `wf_59c6b397-f34`) · HEAD `2b23a7c5` · branch `feat_refract_arch_v1` · nothing new armed since the 09-30 pre-drop**
+**As of: 2026-10-04 ~22:10 (pre-drop for the 10-05 03:00 ET 30th Celebration slot; the last post-run is 10-02 `wf_3e516b75-b07`) · branch `feat_refract_arch_v1` · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (all 3 accounts, bat:1184, operator) · F1 still unarmed (operator declined 10-04) · host display never sleeps on AC, screensaver off (applied 10-04 ~22:00, operator-approved)**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -15,19 +15,273 @@ to be wrong rather than leaving them with a caveat.**
 
 ---
 
-## STATE CARD — read this first (2026-09-30; every line is detailed further down)
+## STATE CARD — read this first (2026-10-04; every line is detailed further down)
 
 | Topic | Now | Source |
 |---|---|---|
-| Target list | the ENABLED TCINs in `config/product_config.json` are the operator's deliberate choice (11, all qty 2); never propose re-adding SKUs | operator 09-30 |
+| Target list | the ENABLED TCINs in `config/product_config.json` are the operator's deliberate choice. **17 enabled, all qty 2.** 10-04, operator ("make sure all the 30th are enabled … dont remove anything"): enabled 1010892068 Sylveon ex Box, 1010892075 Espeon ex and 1010892071 Umbreon ex Battle Decks; ADDED 1010892070 Knock Out Collection (first-party, never in any config before). All 11 known first-party 30th TCINs are now on; Pitch Black 1011483413 stays OFF. Backup `config/product_config_backup_pre_2026-10-05_drop.json`. Never propose re-adding SKUs | operator 09-30, 10-02, 10-04 |
 | Accounts | 3 (primary, business, alt-1), all on the home IP; member tokens re-mint in-bot at the 4 h expiry under `TARGET_TOKEN_KEEPFRESH=0` + `TARGET_RELOGIN_MAX_PER_6H=0`; run `check_session_readiness.py` before a drop | C-0929-01, 09-30 jars |
 | Monitor | 18 Bright Data ISP exits, `apps_raw` channel, every TCIN read ~every 0.34 s, read → first POST ~40 ms | 09-30 readout L3 |
-| Wall 1 — edge limiter | 429 `ERR_A2C_TCIN_RATE_LIMITED`, answers FIRST (no `x-ssx-hop`); not explained by Shape/HUMAN trust, differs by network location, splits within same-IP volleys — mechanism NOT ESTABLISHED; strongly per TCIN (1010892076 0/145 home first shots ever); home line: flip-race first shots pass on some TCINs, every later shot ~0% | C-0930-03/04/09, C-0925-07 |
-| Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here: home 13/38 denied, BD exits 514/518 | C-0930-05 |
-| Wall 3 — checkout | place-order FAST_SELLING / RESERVATION_FAILURE lottery (Refract: ~1% of carts → order); our won-cart loop's 40-ticket / 120 s caps ENDED a live verified cart on 09-30; history: 17/20 orders came on the FIRST place-order, none after more than 4 — so the value of more tickets is NOT ESTABLISHED | C-0930-02/10 |
-| Outcomes | 0 orders since 08-04; 0 hot-SKU orders ever (0/10 hot carts converted) | Outcomes section |
-| Blocked / operator decisions | F1 (don't retire a live won cart) — CODE LANDED flag-gated OFF + tested (suite 31/31); ARMING blocked by the production-deploy gate, operator adds `set TARGET_WONCART_LIVE_CAP_EXEMPT=1` after bat:1142 (kill: `=0`); E5 second network identity — not built; E4 human control — declined | 09-30 |
+| Wall 1 — edge limiter | 429 `ERR_A2C_TCIN_RATE_LIMITED`, answers FIRST (no `x-ssx-hop`); not explained by Shape/HUMAN trust, differs by network location, splits within same-IP volleys — mechanism NOT ESTABLISHED; strongly per TCIN. **10-01 RECOVERY with no armed change:** 1010892076 past the limiter 58/230 three-wide-race shots vs 1/195 the night before (its first carts ever); flip-race first shots 13/14; later shots past it 41/164 — cause NOT ESTABLISHED | C-0930-03/04, C-1001-11/14 |
+| Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here (09-30: home 13/38 denied, BD exits 514/518). **10-01: a per-TCIN admit-then-401 switch** — on 1010892076 the first 6 past-limiter shots were admitted, then 70/70 keyless 401 from all 3 accounts while decoy 401s held at ~20%; 80/102 past-limiter shots were 401 | C-0930-05, C-1001-12 |
+| Wall 3 — checkout | place-order FAST_SELLING / RESERVATION_FAILURE lottery (Refract: ~1% of carts → order). **Orders come from EARLY place-orders:** 18 of 21 orders ever ≤~4.6 s after detection; HTTP 200 by window age ≤5 s 18/34, >120 s 0/150 (pooled, descriptive). 10-01: 0/199 won-cart tickets; our caps / gates / yield / self-heal ENDED all 7 non-converting carts while the TCIN read live | C-1001-02..08 |
+| Outcomes | **10-01: 1 order, 2 units — the first hot-SKU order ever** (primary, 1011960739, in-chain first shot of a flip race, `8cba94c1`); hot carts → order 1/18 lifetime. **10-02 (30th Celebration): 0** — first edge lost to a host crash (0 shots), the rest 128/129 edge 429 | C-1001-01, C-1002-F1/F2 |
+| Host | **The #1 controllable loss on 10-02.** 27/27 NVIDIA GPU-error episodes since 07-17 began at a display WAKE (screen off → on); since the 09-27 driver (617.14) 5/5 ended in bugcheck 0x116; on-screen buyer Chromes freeze in every episode. **10-04 ~22:00 (operator-approved): display timeout on AC 900 s → Never (`powercfg /change monitor-timeout-ac 0`; DC stays 180 s), screensaver OFF (`ScreenSaveActive` 1 → 0, applied live by SystemParametersInfo); AC sleep was already Never.** Restore: `powercfg /change monitor-timeout-ac 15` + `ScreenSaveActive=1`. A remote connection (Parsec, RDP) can still be a wake trigger (20/27 wakes carried code 6, NOT independently verified). Root-cause checklist from 07-13 (BIOS/microcode, XMP) still not done | 10-02 + 10-04 sections |
+| Blocked / operator decisions | **Host (operator):** no keyboard / mouse / remote session (Parsec, RDP) on the host during a drop window; then BIOS update + XMP off (07-13 checklist). **FX-1001-A** (a held line at a fresh flip → in-chain pre_checkout → place-order) — **v11 VERIFIED 10-03, ARMED 10-04 on all 3 accounts** (`set TARGET_HELD_LINE_FLIP_STRIKE=1`, bat:1184, IDENTS unset = every account per `purchase_executor.py:209-225`; the code on disk is the verified v11 — mtime 10-03 00:27:26, before the v11 suite and verifier #11); kill `=0`; readout R-FX in the 10-04 section. F1 — code landed flag-gated OFF; **operator declined arming 10-04** (~0 units on the late-draw data); EXP-1002-NET (one buyer on a second, non-BD network) — operator; E5 not built; E4 declined | 10-02 + 10-04 sections |
 | Process | `/post-run` → saved Workflow `.claude/workflows/post-run.js` (rounds until dry; blind replicator + refuter + judge per claim; canaries); facts from `tools/events/` (SQLite); PreToolUse hook blocks the common direct bot / login / live-test launches. **The hook is a safety net, not a guarantee:** an independent replay of 10,094 past commands (09-30) found launch forms it misses and some offline-test loops it wrongly blocks. The rule "bot start = operator only" still binds every agent regardless of the hook. | CLAUDE.md, 09-30 review |
+
+## PRE-DROP 2026-10-04 → 30th Celebration slot 2026-10-05 03:00 ET = 02:00 CT (`/pre-drop`)
+
+Operator: "make sure all the 30th are enabled … 3am eastern tonight for 30th binders in targets
+back end data … 100k 30th etbs and 24k 30th posters. Lesser items are 6k 30th tins and like 4k
+booster bundles … besides the infinity stock pitch black … dont remove anything … make it as
+ready as possible." Notes: `logs/analysis_2026_10_04/`.
+
+- **State at 21:42** [MEASURED]: HEAD `3678ae6d`; no python process, port 5001 free; 13 chrome
+  processes = the operator's own browser. Runs since the 10-02 post-run: one, `run_20261002_092404`
+  (09:24-09:53, daytime, 0 shots, 0 flips, boot 18/18 ready, first STATS 403=0 429=0). It was
+  missing from the event store; rebuilt 10-04.
+- **Readiness 21:43** [MEASURED]: primary MEMBER until 00:48:14 (jar saved ~20:48, i.e. a fresh login);
+  business and alt-1 member tokens EXPIRED 10-02 13:23:39 / 13:23:54; login-session 27.1 d
+  on all three. Those two tokens were minted at 09:23:39 / 09:23:54 on 10-02, i.e. by the
+  wrapper-start `relogin_one.py` pass re-minting EXPIRED tokens right before the 09:24 boot — the
+  third such case (n=2 on 09-28). The readiness script's "since 2026-09-25 nothing in the bot
+  re-mints it" text is STALE (C-0929-01). Standing rule kept: hand-log business + alt-1 (force)
+  before boot and re-run readiness for 3/3.
+- **Regime:** nothing new on a drop night since 10-02 (no run). One WATCH:
+  `run_20261002_092404` decoy keyless 401 5/109 (4.6%) vs 18-20% in the four earlier runs; signed
+  decoys 0/55 → `docs/TARGET_CHANGES.md` (2026-10-02 09:24 entry), rule R-DECOY below.
+- **Config** [MEASURED]: 17 enabled ≤ 30, one RedSky chunk, no duplicate TCINs. Not added: the
+  BlueProton marketplace listings titled "Pokemon 30th Celebration …" (1013562555 ETB 2-pack
+  $439, 1013562569, 1013410935/40/68/60/81, 1013649945, 1014106191 — third-party resellers at
+  2-6x the price; buying one is a real-money mistake).
+- **Contention cost of the extra SKUs (C-0924-01):** a TCIN that flips while all 3 accounts race
+  other TCINs is not re-raced while it stays in stock. [MEASURED] 0 `[MULTI_SKU_MISS]` /
+  concurrency skips in any run since 09-15 (multi-SKU dispatch armed 09-21; restock nights 09-23,
+  09-25, 09-30, 10-01, 10-02). Real in principle, unobserved; watched by R-COVER.
+- **Proxy pool:** not re-validated with `validate_proxies.py`. The last production-path boot
+  (10-02 09:27) was 18/18 ready, first STATS 403=0 429=0, loss 0.112% over 4,483 sweeps; the
+  boot checklist line `18/18 sessions ready` re-proves it on the same path ~4 min after launch.
+- **Gate:** offline suite on this tree → `logs/analysis_2026_10_04/offline_suite_predrop_1005.txt`.
+
+**Pre-registered readout (fixed 10-04 ~22:10, before the run).** `<run>` = tonight's
+`run_2026100[45]_*`; `python tools/events/build.py` first.
+- **R-FX (FX-1001-A, all 3 accounts):** WORKED = ≥1 `[HELD_LINE_STRIKE] order placed` or an order
+  with `first_201_src=strike_400`. FAILED = any `[LEGACY_CART_GUARD]` line reaching a checkout with
+  a non-raced TCIN in the cart, a strike place-order on a cart the guard would refuse, or an
+  order containing an item we did not race / qty > 2 (order-history glance) → set `=0`.
+  INCONCLUSIVE = no add-to-cart 400 MAX_PURCHASE on a flip (the expected case; 3 ever).
+- **R-COVER:** `q.py coverage --run <run>` (new saved query, smoked on 10-01 / 10-02). PASS =
+  `unraced` 0 on every target-list TCIN that flipped. An unraced 1010892076 / 1010892067 window
+  with a `[MULTI_SKU_MISS]` naming it = the cost of tonight's extra SKUs → revisit.
+- **R-HOST:** PASS = no `cdp_wedged_pre_atc` on ≥2 accounts within 60 s and no nvlddmkm 14 /
+  bugcheck 0x116 in the System log during the run. FAIL with the display never sleeping = the
+  wake is not the only trigger (C-1002-HOST-TRIGGER) → BIOS / XMP / driver next.
+- **R-DECOY:** `q.py regime --run <run>` `d401_pct`. ≥15% over n ≥ 500 → the 10-02 09:24 dip
+  was a fluke (close the watch). <10% over n ≥ 500 → a Shape/SSX change; open an investigation.
+- **R-VIS:** boot `[GROUND-TRUTH] … (17 TCINs)`; no `[TCIN-VISIBILITY]` banner naming an enabled
+  TCIN as absent after the first scan (1010892070 and the newly enabled three read PARTIAL until
+  the bot verifies them).
+
+## POST-RUN 2026-10-02 — 30th Celebration restock, 0 bought: the first edge lost to a HOST CRASH, the rest to the edge limiter (claims C-1002-*, `docs/CLAIMS.md`)
+
+Operator: "back to being unsuccessful … investigate all issues fix and or come up with a
+solution to get these 30th anniversary products … leverage online resources." Results:
+`logs/analysis_2026_10_02/postrun/` (`workflow_result.json`, wf_3e516b75-b07, 3 rounds, 56
+agents, `complete=False` on one host gap, closed below by the main session;
+`recovered/research_30th_celebration_target.md`). A second host crash (09:21) killed the
+first analysis session; the workflow was resumed from its journal.
+
+- **Runs:** `run_20261002_011217` (boot 01:12, ended by the host crash 02:13) and
+  `run_20261002_021547` (02:15 → 08:04 clean). Edges:
+  - 1011407490 Booster Bundle at 02:11:58 (old run). restockd.app puts the 10-02 Target window
+    start at 3:12 AM ET = 02:12 CT.
+  - 1011407490 again at 02:19:37. This was a SECOND edge (OOS read 02:19:28).
+  - 1012422107 Mini Tin at 02:45:55.
+  - 1012644667 at 03:07:59 (one read).
+- 🔴 **The first edge got 0 shots (C-1002-F2 CONFIRMED; AB-1002-WEDGE PARTIAL).**
+  - All 3 buyer Chromes stopped answering CDP from 02:10:39: `cdp_wedged_pre_atc` ×3 at
+    chrome_age 3596 s.
+  - Host sequence: nvlddmkm 14 at 02:10:35 → TDR → bugcheck 0x116 → unexpected shutdown 02:13:29.
+  - The off-screen monitor Chromes kept sweeping (17/18 exits, +267 OK) and read the flip. The
+    on-screen buyers froze, as they did in 9/9 GPU episodes that overlapped a run
+    (C-1002-TDR-SPLIT, C-1002-ERA-OFFSCREEN PARTIAL: window position is confounded with the
+    driver and the era).
+- **The rest of the night (AB-1002-W1 / C-1002-F1 CONFIRMED):**
+  - 129 main add-to-carts = 128 edge 429 + 1 FAST_SELLING (primary, 1012422107, first shot).
+    0 × 401, 0 × 201.
+  - Our dispatch, gates and credentials cost 0 shots; read → fire was 31 / 62 / 41 ms.
+  - In-window decoys got 0 × 429 (77 × 424 + 17 × 401), so the limiter was scoped to the hot
+    TCINs, not to our line (AB-1002-TCIN-SCOPE CONFIRMED).
+- **Regime: not a Target change on this evidence (C-1002-F3 PARTIAL).**
+  - Tonight sits inside the pre-10-01 range: flip-race first shot 1/9 vs 15/65, p=0.67. 10-01
+    is the departure.
+  - The comparison is confounded by SKU mix, and the change point cannot be located: no
+    add-to-cart was fired from 10-01 04:53 to 10-02 02:19.
+  - The 3 TCINs have carted 0/895 shots ever, and 0/169 home later shots got past the limiter.
+    "Uniquely different" is NOT ESTABLISHED (AB-1002-SKU PARTIAL).
+- **Boot SELFTEST** (C-1002-F4 CONFIRMED): the control POST got 429 on 3/3 accounts at
+  02:16:31-37, plus 5 decoy 429s. Never seen before in 55 account-boots. Cause NOT ESTABLISHED,
+  cost 0. The SELFTEST counts a 429 as "accepted" (`purchase_executor.py` SELFTEST verdict,
+  the 2C default-bucket pattern). That was harmless here.
+
+### HOST — the crash trigger (C-1002-HOST-TRIGGER PARTIAL; gap2.1; main-session closure 10-02 ~15:00)
+- **The trigger** [MEASURED]: 27/27 nvlddmkm-14 GPU-error episodes since 07-17 began at a display WAKE.
+  - Each is a Kernel-Power 566 transition from session type 1 (screen off) to type 0 (screen on),
+    26 of them within 0.38-0.49 s of the episode.
+  - The type meanings come from 130 `0→1 reason=12` idle-timeout transitions.
+  - Wake reason codes: 20/27 carried code 6 (the r2 analyst decoded it as a remote connection;
+    a Parsec virtual display adapter is installed; mapping NOT independently verified), 3 code 3,
+    2 code 31, 2 code 32.
+  - 27 of ~189 wakes produced an episode.
+- **Escalation since the driver change** [MEASURED]: since NVIDIA 617.14 (09-27 20:54), 5/5 episodes
+  ended in bugcheck 0x116 with a dump (09-28 16:07, 09-29 09:06, 10-01 16:56, 10-02 02:10,
+  10-02 09:18).
+  - Before 617.14: 0/22 bugchecked, 4/22 ended in a dumpless stop within 5 min, and 5 recovered
+    unaided in 2.25-3.9 min.
+  - The on-screen buyers froze either way.
+  - The previous driver, 610.74, is gone from the driver store, so a rollback means a download.
+- **Host settings now** [MEASURED]: display off after 900 s on AC (DC 180 s), screensaver ON at 900 s, no AC
+  sleep. So every unattended run reaches screen-off 15 min in, and the next wake is the trigger.
+- **The 07-13 root-cause triage is still OPEN** (FAILURES.md):
+  - degraded 13900K on microcode 0x11F (BIOS 1.90, 2023);
+  - 4-DIMM XMP 5600.
+
+### Ranked actions (by units)
+1. **Host — operator, before the next drop:**
+   - Set the display timeout to Never on AC and turn the screensaver off.
+   - No keyboard, mouse or remote session (Parsec / RDP) on the host during a drop window;
+     watch from another device. The dashboard binds 127.0.0.1 only (`app.py:4471`).
+   - That is EXP-1002-NOWAKE (eligible). Then the 07-13 checklist (EXP-1002-HOSTFIX): BIOS update
+     (microcode 0x12B/0x12F + Intel Default limits), then XMP off for ≥1 week.
+   - A driver rollback to 610.74 (EXP-1002-DRIVER) is secondary. The old driver did not bugcheck,
+     but 4/22 of its episodes still ended in a dumpless stop, and the buyers froze in every one.
+2. **FX-1001-A, for nights that win carts:** see the status below.
+3. **EXP-1002-NET** (one buyer on a second, non-BD network): operator decision.
+   - This is an untested network class. BD exits were Shape-denied.
+   - It conflicts with the 09-16 no-residential-IP preference.
+4. **More accounts.** Refract's live docs (changed since 09-21) [REPORTED]: "Target has become a
+   submit order lottery … only about 1% of carts turn into an order … 10 tasks does not cut it
+   anymore".
+
+**Not done:**
+- INS-1002-HOST: an offline host-event tripwire in the post-run facts stage.
+- INS-1002-WARM429: log warm-up 429 headers.
+- EXP-1002-OFFSCREEN-BUYER: not eligible to arm.
+
+### FX-1001-A status (10-03 — v11 VERIFIED; ARMED 10-04 on all 3 accounts)
+- **History:** v3 → v11 over 10-02/03, each version checked by a FRESH claims-verifier.
+  - #3-#7 refuted something each time: untracked-line exits (many in HEAD-inherited code), cancellation windows, a guard that trusted the add response's `cart_items` (it lists only the added line), and a guard that trusted `_delete_cart_items`' ok.
+  - #8 and #9 confirmed the sink guard (claim 3). #10 confirmed claims 1, 2, 3, 4 and 5. **#11 confirmed claims 1 and 3b.** Its sweep was 2,644 runs with cancellation injected at every await: 0 untracked exits in scope.
+- **What it does, with the flag on:**
+  - An add-to-cart 400 MAX_PURCHASE (our line is held) continues IN THE SAME CHAIN to pre_checkout → place-order. That happens only when the cart holds nothing but our TCIN, with every quantity finite and the sum ≤ Q. Otherwise the line is kept and flagged.
+  - A held or left-behind line in a NEW stock window is struck through the won-cart ticket loop.
+  - **Sink guard:** the legacy whole-cart checkout runs only when a qualifying cart READ shows no line of another item. Other lines are deleted by exact id, then a qualifying re-read must come back clean. Otherwise the checkout is skipped.
+  - The strike requires the qty guard and `TARGET_HELD_CART_REENTRY`. REENTRY=1 is in the bat (bat:1173). `TARGET_FASTLANE_QTY_GUARD` itself is NOT in the bat; the guard is forced on by REENTRY=1 (`fastlane_qty_guard_on`, `purchase_executor.py:403-410`).
+- **Gates:** `tests/test_held_line_strike.py` 194/194; every v4-v11 fix is mutation-checked (`scratchpad/mutate_v*.py`); offline suite 32/32 (`logs/analysis_2026_10_02/postrun/offline_suite_after_fx1001a_v11.txt`). Flag off: JS renders byte-identical to HEAD and the differential runs show 0 diffs.
+- **Known costs and residuals (verified, accepted):**
+  - A strike evaluate that times out at the pre/cvv stage is terminal and trips the 1800 s AC-1 latch for that TCIN. That costs the window; it is safe.
+  - When the guard cannot read the cart (e.g. a 429), it skips the legacy checkout. The legacy-201 path was 0/7 of the 10-01 legacy checkouts.
+  - HEAD's own release paths can still drop a line on a 0-line "success".
+  - A line can land after the guard's last read.
+  - Live trigger frequency is small: 3 fast-lane MAX_PURCHASE 400s ever, all on 10-01.
+- **ARMED 2026-10-04 by the operator, all 3 accounts:** `set TARGET_HELD_LINE_FLIP_STRIKE=1` at bat:1184 (CRLF verified, assigned once, no IDENTS scope).
+- **Readout rule** (pre-registered, grep on the run log):
+  - WORKED = ≥1 `[HELD_LINE_STRIKE] order placed` or an order with `first_201_src=strike_400`.
+  - FAILED = any `[LEGACY_CART_GUARD]` line reaching a checkout with a non-raced TCIN in the cart, or a strike place-order on a cart the guard would refuse. Kill-switch: `=0`.
+  - INCONCLUSIVE = no MAX_PURCHASE 400 on a flip (expect several restock nights).
+- **Stale comments, not yet edited:** `session_manager.py:2337-2339` and `run_bot_with_nightly_restart.bat:1263-1264` say the home-IP Chrome "never wedges". That holds only for the age-driven wedge; a host GPU episode freezes the on-screen buyers.
+
+## POST-RUN 2026-10-01 — overnight restock, 8 carts, 1 ORDER (the first hot-SKU order ever) (claims C-1001-01..14, `docs/CLAIMS.md`)
+
+Operator: "for the first time in a long time we have got a hot sku. But for the majority
+of the night we failed. Please do a full investigation and fix all issues to be ready for
+the next restock." Result + verdicts: `logs/analysis_2026_10_01/postrun/`
+(`workflow_result.json`, `verdicts_full.md`, `regime_flags.md`).
+
+- **The run** (`run_20260930_233818.log`, 09-30 23:38:17 → 10-01 16:59, ended by a host bugcheck 0x116, per the 10-02 post-run): 6 stock windows on 5 TCINs,
+  67 races, 350 main-tab add-to-carts = 230 edge 429 + 80 keyless 401 + 13 FAST_SELLING +
+  **8 × 201** + 13 status 0 (alt-1 preflight 429s) + 3 × 400 MAX_PURCHASE + 2 keyless 429 +
+  1 × 424 [MEASURED, reconciled to 350]. F1 was NOT armed (C-1001-02).
+- 🟢 **THE ORDER (C-1001-01, VERIFIED):** primary, 1011960739, qty 2, order `8cba94c1` — the
+  first shot of the 03:48:35 flip race, ATC +98 ms after the first in-stock read, in-chain
+  201 → pre 201 → place-order 200 in 3.00 s; the first place-order on that TCIN in its
+  window. Exactly the archetype: an EARLY, in-chain first place-order.
+- 🔴 **THE OTHER 7 CARTS (14 units) WERE ALL ENDED BY OUR CODE WHILE THE TCIN READ LIVE
+  (C-1001-02..06, VERIFIED / narrowed).** Target refused every place-order on them (0/199
+  tickets + 5 in-chain, FAST_SELLING / RESERVATION_FAILURE), but what ENDED each cart was ours:
+  - 4 won-cart loops capped at live=True with ~164 s of deadline left (`cart_ticket_cap` 40 ×2 on
+    1010892076, `call_cap` ×2 on 1011960739) — F1 not armed.
+  - **The stranded-line cascade:** the held-cart TTL retire (900 s) got 429 on DELETE for the
+    alt-1 / business 1011960739 lines at 04:04-04:05 and dropped the marker anyway
+    (`purchase_executor.py:9267-9268`); those lines then made our `foreign_cart_item` gate end
+    both 1010892067 carts (04:12, 04:13) after a pre_checkout 201; at 04:53:25 the ATC-400
+    MAX_PURCHASE self-heal wiped both carts (4 lines, no TCIN filter). The code comment at
+    `purchase_executor.py:8128-8130` ("a foreign line comes from a prior failed attempt") does
+    not cover this case.
+  - `yield_fleet` gave up primary's verified, live 1010892067 cart for 1011960739 — a TCIN the
+    dispatcher was never going to race again.
+  - Our gates suppressed 4 of 18 flip-race first shots (race 16: `held_cart_release_failed` with
+    Target's cart-GET 429; race 53: `held_cart_other_tcin`).
+- 🔴 **THE RE-ARM GAP (C-1001-05):** 1011960739 read in stock 62 min after the order (129/129
+  reads) and nothing was fired at it after 03:51:30. 'purchased' only until 04:00:51, when
+  `reset_completed_purchases_by_stock_status` (`bulletproof_purchase_manager.py:1666-1737`)
+  silently reset it to a bare 'ready'; the level re-arm (`app.py:1153-1165`) skips 'ready'
+  without a `rearm_hint_ts`, and dispatch fires only on OOS→IS edges.
+- 🔑 **WHAT CONVERTS (C-1001-07/08):** 18 of the 21 orders ever came ≤~4.6 s after the bot
+  detected the TCIN in stock; HTTP 200 by window age ≤5 s 18/34, 6-30 s 2/52, 31-120 s 1/95,
+  >120 s 0/150 (pooled, era-confounded, conditioned on earlier failure — descriptive, not
+  causal); no order ever from a cart won >30 s into its window (0/19). **So the levers that
+  only add LATE draws — F1, re-racing a 'purchased' TCIN, keeping held markers — are worth
+  ~0 units on the data; the one lever that creates an EARLY place-order is FX-1001-A.**
+- **Regime (C-1001-11..14):** the limiter RECOVERED on 1010892076 (past it 58/230 vs 1/195 the
+  night before, first carts ever, no armed change — cause NOT ESTABLISHED); flip-race first
+  shots 13/14; hot cart rate 8/342. But a **per-TCIN admit-then-401 switch** at the SSX hop:
+  on 1010892076 the first 6 past-limiter shots were admitted, then 70/70 keyless 401 (all 3
+  accounts) while decoy 401s held at ~20%. New error: OPTIONS-preflight 429 on cart_items, 7
+  min on alt-1 (C-1001-13). Monitor clean in the restock hours (0.18% vs 1.20%; the 206 burst
+  did not recur). All three logged in `docs/TARGET_CHANGES.md`.
+
+**DECISION (main session, ranked by expected units at the next restock; every spec rests on
+CONFIRMED / PARTIALLY CONFIRMED claims, critic notes applied):**
+
+| # | Spec | Units | State |
+|---|---|---|---|
+| 1 | **FX-1001-A** (`TARGET_HELD_LINE_FLIP_STRIKE`, folds in FS-A `TARGET_ATC400_TO_HELD`): when an account already holds a line on the TCIN being raced at a fresh flip (ATC 400 MAX_PURCHASE, a dirty flag or a held marker naming it), run in-chain pre_checkout → foreign/qty gate → place-order on the existing line instead of skip / delete / self-heal wipe; never on an account × TCIN that already ordered this run | the only lever creating an EARLY place-order; would have applied 4× on 10-01 (race 16 ×2, 04:53:25 ×2); yield NOT ESTABLISHED (n=0); unclear whether its trigger should fire on a hysteresis-merged re-flip (`new_window=0`, race 67) | **BLOCKED 10-01 ~23:30: the operator approved the build; the auto-mode classifier DENIED a `purchase_executor.py` edit mid-build ("[Real-World Transactions]") → tree restored byte-identical to HEAD (blob 74e6b044), nothing landed.** Operator decision: build it with auto mode off (as F1 on 09-30), or by hand. Build notes from the attempt: (a) realistic 10-01 applicability is **2, not 4** — race 16 primary + business (single-TCIN carts); the 04:53:25 pair held 1011960739 + 1010892067, so pre_checkout's foreign-item guard would still have stopped the place-order, and stock was already gone (primary 424); (b) use the add-to-cart as the probe (a gone line just gets a normal 201) and gate the held/dirty unblock on a NEW window: stock snapshot `window_start` > our last action on the line; (c) a strike whose place-order returns 200 still carries atc=400, so it MUST return the success before the legacy ATC branches, or the old MAX_PURCHASE self-heal would clear the cart and add again after a committed order; (d) `woncart_eligible` must accept a strike so a FAST_SELLING place-order goes to the ticket loop; (e) flag off must leave the fast-lane JS byte-identical (golden test) |
+| 2 | FX-1001-C / FS-B carve-out: a failed delete keeps the marker for bookkeeping WITHOUT blocking other TCINs' first shots, or our own held target-list line is not "foreign" | as specced: 0 units and −4 flip first shots (gap1.1 replay); with the carve-out: frees 2 carts / 2-4 first shots per such night, late-class carts | needs redesign before eligible |
+| 3 | F1 arming (`TARGET_WONCART_LIVE_CAP_EXEMPT=1`) | ~0 on the late-draw data; floor = stop deleting a live cart (the delete → 429 → dirty-gate path) | code landed 3678ae6d; **arming = operator** (production-deploy gate) |
+| 4 | FX-1001-B / FS-C (re-race / don't yield to a 'purchased' TCIN for marker holders) | ~0 (late draws) | low priority |
+| 5 | FS-D (re-submit held lines on a 'purchased' TCIN) | ~0; deliberately buys a SECOND account's units of a TCIN already ordered | **operator's money call** |
+| — | Instruments, 0 units: INS-1 / I-PO-2 (event store: retry-path 201s + `place_orders` table), FS-2 (ATC 400 body codes), FS-4 (`ssx_sequence.sql`) — offline, safe; FS-1 / FS-E / I-PO-1 (log-only prints in the bot), FS-3 (egress fingerprint) | — | specced, not landed |
+
+- **Open research (not decision-changing):** whether the SSX switch is new or volume-driven;
+  whether a cart DELETE/read 429 is tied to the held TCIN being live (0/2 deletes OK while
+  1011960739 was live, 2/2 right after it went OOS); whether Target accepts a place-order on a
+  cart holding two target-list TCINs; who removed won lines A/B on 1010892076 after 03:26.
+  Full list: `workflow_result.json` → `research_questions` (20).
+- **Operator lead from 09-30 (harvest clicks "half-failing") — investigated 10-01 by one
+  antibot-analyst (MEASURED by that agent, not independently verified):** cosmetic for
+  credentials. Every no-POST click is a RE-click on a PDP whose first click we already
+  captured and killed with `fail_request` (1,185/1,185 no-POST; first clicks on a fresh PDP
+  29/3,521, 27 of them the alt-1 preflight-429 episode); all 334 sets replayed on real shots
+  were first-click captures (tokens=6). The on-page "item not added / something went wrong"
+  is what every SUCCESSFUL capture looks like (we fail the request on purpose).
+  `selected:False` is hard-coded (`shape_harvest.py:697`; 0/24,480 True ever); Target's PDP
+  aria-label changed 09-15/16 account by account. The 401 switch on 1010892076 rode sets of
+  all ages and all three harvest SKUs, and the same sets carted other TCINs later — not
+  credential quality. **Real finding:** at drop hour the harvest SKUs lose their
+  Add-to-cart button (21516452 on all 3 accounts 02:30-03:10 on 10-01; every drop night since
+  09-16, all 3 SKUs, cause NOT ESTABLISHED). Specced, not built: `TARGET_HARVEST_RECLICK_BLOCKED_DOC`
+  (default 1 = today; 0 skips the dead re-click; one account only, 3 drop nights, compare the
+  per-TCIN 401 share vs the other two) + log-only `TARGET_HARVEST_DOC_LOG`. Code pointers:
+  `shape_harvest.py:674-698`, `purchase_executor.py:3681-3719`, `:3855-3999`.
+- **Process (10-01):** a power outage killed the post-run workflow at round 3 (69 of 77
+  agents done). Native `resumeFromRunId` cannot replay a concurrent run (its cache keys chain
+  on call order) — it re-ran round 1 and was stopped. Recovered with a SEEDED continuation:
+  the same script with the 69 journal results embedded by label, proven offline first
+  (`logs/analysis_2026_10_01/postrun/recovery/`, `replay2.mjs`). Also: `post-run.js` builds
+  the critic digest in report COMPLETION order — pin the order if the script is ever resumed.
+  Offline suite baseline before any change: 31/31.
 
 ## POST-RUN 2026-09-30 — real restock, 1 cart, 0 orders (claims C-0930-02..08, `docs/CLAIMS.md`)
 
@@ -41,8 +295,8 @@ extraction files: `logs/analysis_2026_09_30/postrun/`.
   FAST_SELLING (95082118, every account's first shot) + 3 × 401 + 1 × 503 + **1 × 201**
   (alt-1, 1010892067, 04:00:06). **0 orders.** Flip-race first shots 4/33, every other shot
   0/219 — [MEASURED]. **Regime: NOT ESTABLISHED either way** (C-0930-08 WEAKENED by the v2
-  workflow eval): the pooled first-shot rate is COMPOSITION — 1010892076 has never carted
-  (0 × 201 in 944 shots, 0/145 home first shots since 09-15; C-0930-09) and was 105 of 138
+  workflow eval): the pooled first-shot rate is COMPOSITION — 1010892076 had never carted
+  before 10-01 (0 × 201 in 944 shots, 0/145 home first shots 09-15 → 09-30; C-0930-09; it carted twice on 10-01, C-1001-11) and was 105 of 138
   first shots tonight, while the new 95082118 went 3/3. **Monitor FLAG in the restock
   hours:** 02:00-04:59 loss 1.20% vs 0.040% the same hours on 09-29, from RedSky 206 bursts
   (382 vs 10 partial reads, C-0930-11); cost to detection not established (flips we saw
@@ -61,7 +315,7 @@ extraction files: `logs/analysis_2026_09_30/postrun/`.
   not explained by Shape/HUMAN trust and differs by network location — but it is NOT a
   simple per-IP allowance either: on 09-30 same-IP volleys fired within ~4 ms split 2/3, 1/3
   and 3/3 (windows 8, 11, 12). Mechanism NOT ESTABLISHED; the TCIN's own state dominates
-  (1010892076: 0/145 home first shots ever since 09-15). **Trust shows at the SSX wall** (C-0930-05, PARTIALLY CONFIRMED): hot
+  (1010892076: 0/145 home first shots 09-15 → 09-30; 10-01 it recovered, C-1001-11). **Trust shows at the SSX wall** (C-0930-05, PARTIALLY CONFIRMED): hot
   shots past the limiter were 401'd 514/518 on 3 BD exits vs 13/38 on the home IP.
 - 🔴 **THE CART WAS RETIRED BY OUR OWN CAPS (C-0930-02, VERIFIED).** `call_cap` (120 s) at
   ticket 39, then `cart_ticket_cap` (40) at +128 s — while ticket 40's pre_checkout proved
@@ -78,9 +332,10 @@ extraction files: `logs/analysis_2026_09_30/postrun/`.
   gate, so arming is the operator's step: add `set TARGET_WONCART_LIVE_CAP_EXEMPT=1` after
   bat:1142; kill-switch `=0`. Readout: event store `loop_ends.reason` + `tickets` max n per
   live cart.** Conversion value of more tickets: NOT ESTABLISHED and history leans against
-  it — 17 of the 20 orders ever came on the cart's FIRST place-order and none needed more
-  than 4 (C-0930-10, June-August ordinary-SKU era); the one post-FAST_SELLING order was one
-  FS, a ~42-45 s hold, then one POST → 200. Hot tickets 0/90 ever.
+  it — orders come from early place-orders — 18 of 21 ever ≤~4.6 s after detection,
+  place-orders >2 min into a window 0/150 (C-1001-07, superseding C-0930-10's 17/20); the one
+  post-FAST_SELLING order (94f186c1) was one FS, a 45 s hold, then one POST → 200, its cart won
+  ~18-19.7 s in (C-1001-10). Hot won-cart tickets 0/289 (0/90 to 09-30 + 0/199 on 10-01).
 - **REFUTED today:** "keyless 401 = an unsigned write" (C-0930-06: signed decoys 401 at the
   same ~20% rate, n=1,775); "the 40-ticket cap is not a lever" (C-0930-02); the gate order
   "Shape first → limiter → cart" (C-0930-03). **Instrument fault:** `readout_2026_09_30.py`
@@ -1182,17 +1437,17 @@ confirmed, and log the change in `docs/TARGET_CHANGES.md`):
 | Metric | Last-known-good | Current regime | As of |
 |---|---|---|---|
 | Ordinary-SKU cart rate @0-5s of stock edge | 15.6% (19/122) | **0.0%** (0/135) — no ordinary SKU armed since | 09-20 |
-| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37; 09-25: 1/1,212 (1 cart in 8 windows); 09-30: 1/256 (1 cart in 12 windows) | 09-30 |
-| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change; 09-30: flip-race first shots 4/33, every other shot 0/219 — COMPOSITION, not a verdict: hot-list-only 1/123 at window age <150 s vs 7.6%, but 1010892076 (0/145 home first shots since 09-15, never carted) dominates; this baseline carries no TCIN mix, so compare per TCIN / leave-one-TCIN-out (C-0930-08 weakened, C-0930-09) | 09-30 |
-| Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07); 09-30: 4/33 (12.1%; 2 × 401 + 1 × 503 excluded) pooled; hot-list only 1/30 (P=0.004 vs 15/65) but that is 1010892076-dominated; 95082118 3/3; every other shot 0/219. Regime verdict NOT ESTABLISHED until the baseline is restated per TCIN (fix spec FS-1) | 09-30 |
-| Won hot cart → order | none ever | 0/10 lifetime (07-14 → 09-30): 4 never reached place-order, 5 died on checkout FAST_SELLING; 09-30 alt-1 1010892067: 41 place-orders (38 FAST_SELLING, 3 RESERVATION_FAILURE incl. the in-chain one), then RETIRED BY OUR CAPS with the line proven present and the TCIN in stock (C-0930-02). A first conversion is a RECOVERY signal | 09-30 |
-| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23, 09-25 and 09-30 had stock: 0; the 09-28 day run and both 09-29 runs had no stock) | 09-30 |
-| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst; 09-30: 0.54% whole run (435/81,040) = 7.7x this row's 8-IP baseline; RESTOCK HOURS like-for-like: 02:00-04:59 1.20% vs 0.040% the same hours on 09-29 — FLAG, from RedSky 206 bursts (C-0930-11) | 09-30 |
-| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone); 09-30: 424 80.0% / keyless 401 20.0% (n=1,804 unique — the readout printed 3,608, a double count, C-0930-07), 0 ERR_UNAUTHORIZED; signed and unsigned decoys 401 at the same rate (C-0930-06) | 09-30 |
-| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots); 09-30: 3/256 (1.2%), all keyless — each a shot that PASSED the limiter (C-0930-03) | 09-30 |
+| Hot-SKU cart rate, all windows | 0.18% (2/1,106) | 0.06% (3/4,798); 09-23: 0/37; 09-25: 1/1,212 (1 cart in 8 windows); 09-30: 1/256 (1 cart in 12 windows); **10-01: 8/342 = 2.3% (3 of 6 windows carted) — RECOVERY, survives per-TCIN and leave-1010892076-out (6/74)** (C-1001-14); **10-02: 0/129** — not significant vs 10-01 (Fisher p=0.11) and inside the long-run 0.06%; SKU mix confounds it (tonight's 3 TCINs: 0/895 ever) | 10-02 |
+| Hot-SKU edge pass, main shots, window age <150 s (pass = not an edge 429; 401 excluded) | 7.6% (20/264, all hot nights ex-08-27) | 09-23: 1/37 (2.7%), P=21.9% under the baseline — no change; 09-25: FIRST shots 5/20 vs re-shots 0/1,185 (the per-shot 0.41% is diluted by A1's re-shots; first-shot rate unchanged, p=0.33) — no change; 09-30: flip-race first shots 4/33, every other shot 0/219 — COMPOSITION, not a verdict: hot-list-only 1/123 at window age <150 s vs 7.6%, but 1010892076 (0/145 home first shots since 09-15, never carted) dominates; this baseline carries no TCIN mix, so compare per TCIN / leave-one-TCIN-out (C-0930-08 weakened, C-0930-09); 10-01: 12/49 = 24.5% hot-only (1010892076 alone 3/29 = 1.4x; the pooled 3.2x comes from the four small TCINs); 10-02: 1/37 = 2.7% (p=0.49 vs 7.6%) — back in the baseline range | 10-02 |
+| Flip-race FIRST-shot edge pass, home IP (each account's first shot in a flip-opened race; 401 excluded) | 15/65 (23%), six restock nights to 09-25; every other home-IP shot 11/1,460 | same (C-0925-07); 09-30: 4/33 (12.1%; 2 × 401 + 1 × 503 excluded) pooled; hot-list only 1/30 (P=0.004 vs 15/65) but that is 1010892076-dominated; 95082118 3/3; every other shot 0/219. Regime verdict NOT ESTABLISHED until the baseline is restated per TCIN (fix spec FS-1); **10-01: 13/14 (92.9%; leave-1010892076-out 10/10; 1010892076 3/4 vs 0/20 on 09-30); every other shot 9/238 = 3.8% (raw-log count; event-store parser v2 gives 12/241 = 4.98% because it counts the 3 × 400 MAX_PURCHASE shots as past the limiter — quote either with its definition)** — RECOVERY (C-1001-14); **10-02: 1/9 (p=0.67 vs 15/65; p=0.0002 vs 10-01); every other shot 0/120** — back inside the pre-10-01 range, 10-01 was the departure (C-1002-F3) | 10-02 |
+| Won hot cart → order | none ever | 0/10 lifetime (07-14 → 09-30): 4 never reached place-order, 5 died on checkout FAST_SELLING; 09-30 alt-1 1010892067: 41 place-orders (38 FAST_SELLING, 3 RESERVATION_FAILURE incl. the in-chain one), then RETIRED BY OUR CAPS with the line proven present and the TCIN in stock (C-0930-02). A first conversion is a RECOVERY signal; **10-01: FIRST CONVERSION — 1/8 (primary 1011960739, in-chain first shot, C-1001-01) → 1/18 lifetime**; the other 7 ended by OUR code while live, 0/199 tickets (C-1001-02); 10-02: no carts | 10-02 |
+| Orders per drop night | 4-9 (07-24, 07-31, 08-04) | **0** since 08-04 (09-23, 09-25 and 09-30 had stock: 0; the 09-28 day run and both 09-29 runs had no stock); **10-01: 1 (2 units)**; 10-02: 0 (first edge lost to a host crash) | 10-02 |
+| Monitor sweep loss, steady state | 0.07% (8 IPs) | 09-22: 0.054% (45/82,888, 18 exits, excl. the /16 cascade); 09-23: 0.095% whole run (111/117,429), ≈0.058% excl. a diffuse 90 s cluster at 08:16; **09-25: 11.8% (8,969/75,799) — 17 RedSky 206 bursts 02:10-04:49 (REGIME CHANGE, C-0925-03); 0.14% before 02:10, 0.073% after 06:25**; 09-28 day run: 0.048% (27/56,029), no burst; 09-30: 0.54% whole run (435/81,040) = 7.7x this row's 8-IP baseline; RESTOCK HOURS like-for-like: 02:00-04:59 1.20% vs 0.040% the same hours on 09-29 — FLAG, from RedSky 206 bursts (C-0930-11); 10-01: 0.167% whole run (309/184,823, all 'other'); restock hours 02:00-04:59 0.180% vs 1.20% on 09-30 — the 206 burst did not recur; 92 of 309 lost on one exit | 10-01 |
+| Warmup-heartbeat `[ATC_RESP]` mix (decoy POSTs — exists on zero-stock nights too) | 424 `ITEM_NOT_READY_FOR_LAUNCH` 76.7% / 401 19.4% (n=3,005) | 09-23: 79.0% / 20.7% / 503 0.3% / 429 0 (n=2,623, all `tab=warmup`; the 7 503s all 08:36-08:38); 09-25: 424 73.3% / 401 26.7% (n=1,705) incl. a NEW key `401 ERR_UNAUTHORIZED` (141, all from 06:01:14 — writes sent without a member token after the mint outage); 09-28: 424 39.6% / `401 ERR_UNAUTHORIZED` 51.0% / keyless 401 9.5% (n=1,322) — ERR_UNAUTHORIZED 22-30% 16-18h (business dead from boot), 95-100% from 20h (every token gone); 09-30: 424 80.0% / keyless 401 20.0% (n=1,804 unique — the readout printed 3,608, a double count, C-0930-07), 0 ERR_UNAUTHORIZED; signed and unsigned decoys 401 at the same rate (C-0930-06); 10-01: 424 79.6% / keyless 401 20.4% (n=4,063), 0 ERR_UNAUTHORIZED — no change, and flat through the SSX switch (C-1001-12) | 10-01 |
+| ATC 401 rate, home IP | 2.8% | 2.8%; 09-23 main shots 0/37 (P=35% under 2.8%); 09-25 main shots 2/1,212 (both primary's keyless first shots); 09-30: 3/256 (1.2%), all keyless — each a shot that PASSED the limiter (C-0930-03); **10-01: 80/350 (22.9%)** — 70 on 1010892076 after its first 6 admits (the per-TCIN SSX switch, C-1001-12); leave-1010892076-out 10/82 (12.2%); 10-02: 0/129, not informative (only 1 shot passed the limiter) | 10-02 |
 | ATC 401 rate, BD exits | 13-21% | 13-21% | 09-20 |
 | Member-token mint success (the repair's mint) | 80/80 (09-17 → 09-25 03:54, all rung 2) | **0/62 from 09-25 06:01; 09-28: 0/253 (rung 1 404 x253, rung 2 0/12 on live sessions)** — the REPAIR rungs stay broken (both delete or bypass the live token). **RECOVERY 09-29 with the repair off (KEEPFRESH=0): the running bot re-minted 12 of 12 expiries (3 accounts x 4), jars on the 4 h grid, 0 ERR_UNAUTHORIZED** (C-0929-01) | 09-30 |
-| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`); 09-30 on the NEW `[STOCK][206]` marker (from 09-25): 411 partial reads, 382 of them 02:00-04:59 vs 10 in the same hours on 09-29 (the "1-3 a night" baseline is an older instrument; compare reads per hour on the same marker) (C-0930-11) | 09-30 |
+| RedSky HTTP 206 on the monitor | 1-3 a night (13 runs) | **102** on 09-25, in 17 bursts (C-0925-03); 09-28 day run: 21 isolated singles, each `complete=10/10` (partial errors in `store_positions` / `promotions`); 09-30 on the NEW `[STOCK][206]` marker (from 09-25): 411 partial reads, 382 of them 02:00-04:59 vs 10 in the same hours on 09-29 (the "1-3 a night" baseline is an older instrument; compare reads per hour on the same marker) (C-0930-11); 10-01: 194 partial reads (11.2/h), only 24 in 02:00-04:59 vs 382 on 09-30 | 10-01 |
 | In-bot scripted re-login | ~0/25 historic | 09-25: 2/5; **09-28: 0/6** ("username did NOT advance"), each left the account a GUEST | 09-28 |
 
 **Declare a regime change and open an investigation when:** a cart rate moves by

@@ -51,6 +51,9 @@ NEW_FLAGS = (
     "TARGET_FASTLANE_PRE_RETRY_MAX",
     "TARGET_FASTLANE_PRE_RETRY_GAP_MS",
     "TARGET_FASTLANE_PRE_RETRY_BUDGET_MS",
+    # 2026-10-01 FX-1001-A held-line strike: off must leave the JS byte-identical.
+    "TARGET_HELD_LINE_FLIP_STRIKE",
+    "TARGET_HELD_LINE_FLIP_STRIKE_IDENTS",
 )
 # Pre-existing knobs that change the JS; pinned per variant below.
 OLD_KNOBS = ("TARGET_ATC_BYTEMATCH", "TARGET_FAST_LANE_CVV")

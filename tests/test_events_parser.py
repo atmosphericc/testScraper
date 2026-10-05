@@ -20,12 +20,26 @@ Pins:
   - the unparsed remainder, incl. a marker in the wrong (print vs logger) form
   - the SQLite build (incremental skip, re-parse on change or PARSER_VERSION, no duplicate
     rows) and q.py (named query, --run filter, -p parameter)
+  v2 (2026-10-01):
+  - INS-1: the 401 ladder's "ATC fast-retry / retry-2 succeeded (201)" lines are shots
+    (src legacy_retry, gate cart), TCIN from the running "Starting purchase for" context,
+    NULL + counted (PRETRY@tcin_null) when those executions span two TCINs
+  - I-PO-2: place_orders -- POST->response FIFO, error key + Date header, path from the
+    chain po= / [API_PLACE_ORDER] HTTP / [FS_TICKET] layer=po claim, ident/TCIN, the
+    window (flip, else the read-based episode), cart link, order link; unpaired POSTs,
+    HTTP-0 lines and unclassified POSTs counted in `unparsed`
+  - FS-2: a 400's [PURCHASE] body "code" is the shot's err_key; MAX_PURCHASE_LIMIT_EXCEEDED
+    is gate cart_limit (past the limiter), and every gate-enumerating query still reconciles
+  - FS-4: ssx_sequence's per-TCIN switch reading and the pre-registered verdicts; po_by_age
+    and late_carts run and bin
 
 No browser, no network, no bot. Run: python tests/test_events_parser.py
 """
 from __future__ import annotations
 
 import contextlib
+import csv
+import email.utils
 import importlib.util
 import io
 import os
@@ -486,6 +500,333 @@ def test_db_and_query_cli():
         check('q_monitor_hours_runs_without_stats', rc == 0, out)
 
 
+# ---------------------------------------------------------------------------------
+# v2 (2026-10-01) builders -- shapes copied from run_20260804_000646 / run_20260930_233818
+# ---------------------------------------------------------------------------------
+PO_POST = ("[INTERCEPTOR:main] [CHECKOUT_POST] POST "
+           "https://carts.target.com/web_checkouts/v1/checkout?cart_type=REGULAR&field_group")
+ORDER_ID = '8cba94c1-8cc5-11f1-adbd-9de2787bfd93'
+MAXQ_BODY = '\'{"message":"Items cannot be added to cart as max purchase limit exceeded","code":"MAX_PURCHASE_LIMIT_EXCEEDED"}\''
+
+
+def start(tc):
+    return f"[PURCHASE] Starting purchase for {tc}"
+
+
+def pdone(tc):
+    return ("[REAL_PURCHASE_THREAD] [OK] Purchase execution completed (attempt 1): {'success': False, "
+            f"'tcin': '{tc}', 'reason': 'atc_failed_api_mode', 'execution_time': 7.33}}")
+
+
+def retry201(kind):
+    if kind == 'fast-retry':
+        return "[PURCHASE] ATC fast-retry succeeded (201) after Shape refresh (t=3.92s)"
+    return "[PURCHASE] ATC retry-2 succeeded (201) after second Shape refresh (t=7.27s)"
+
+
+def pf401_old():
+    return ("[PURCHASE] ATC fetch status: 401 body='{\\n  \"errorCode\": \"T83072242\",\\n  \"errorKey\": "
+            "\"_ERR_AUTH_DENIED\"\\n}' (t=0.60s)")
+
+
+def co_resp(st):
+    return f"[INTERCEPTOR:main] [CHECKOUT_RESPONSE] HTTP {st} — {'SUCCESS' if st in (200, 201) else 'REJECTED'}"
+
+
+def co_detail(key, date_ms):
+    d = email.utils.formatdate(date_ms / 1000.0, usegmt=True)
+    return [f"[INTERCEPTOR:main] [CHECKOUT_RESPONSE] 424 flagged — short-circuiting wait loop (reason={key})",
+            f"[INTERCEPTOR:main] [CHECKOUT_RESPONSE] headers: {{'content-type': 'application/json', "
+            f"'date': '{d}', 'tgt-cart-error-key': '{key}', 'x-envoy-upstream-service-time': '9'}}"]
+
+
+def chain_po(ident, t0, rt, po, pre=201):
+    return (f"[FAST_LANE] chain done in 2.94s — atc=201 pre={pre} po={po} skip=none ident={ident} "
+            f"atc_t0={t0} atc_rt={rt} cart_qty=2")
+
+
+def ticket(ident, tc, n, st, key, ms201, mode='po_only'):
+    return (f"[FS_TICKET] ident={ident} tcin={tc} cart_id=694e52f1-8cc n={n} cls=sched gap_s=1.0 "
+            f"ms_since_201={ms201} live=True win_age=10s layer=po mode={mode} status={st} key={key} "
+            f"envoy_ms=7 js_ms=241")
+
+
+def api_http(st):
+    return f"[API_PLACE_ORDER] HTTP {st} in 0.20s (0 body chars)"
+
+
+def sec(ep_ms):
+    """An HTTP Date header carries whole seconds."""
+    return ep_ms - ep_ms % 1000
+
+
+def tick(ep_ms, what='[WATCHDOG] Checking cookies...'):
+    return L(ep_ms, what, name='src.session.session_manager')
+
+
+def watch(tc, ep_ms, v):
+    return L(ep_ms, f"[STOCK WATCH] {tc}: in_stock={v} avail={'IN_STOCK' if v else 'OUT_OF_STOCK'} "
+                    f"last_clean_read=0s ago", name='src.monitoring.stock_check_resilient')
+
+
+def instock(tc, ep_ms):
+    """A whole-second [STOCK] IN STOCK read (its [API_CYCLE] line carries the local second)."""
+    return [f"[STOCK] IN STOCK: {tc}", f"[{stamp(ep_ms)[11:19]}] [API_CYCLE] IN STOCK: ['{tc}']"]
+
+
+def test_v2_retry_shots():
+    t = T + 1000
+    lines = [POOL, tick(t), race(TC, ['primary', 'business']), start(TC), start(TC), pf401_old(),
+             tick(t + 3000), retry201('fast-retry'), tick(t + 7000), retry201('retry-2')]
+    res = parse(lines)
+    rs = [s for s in res['shots'] if s['src'] == 'legacy_retry']
+    got = [(s['variant'], s['status'], s['gate'], s['tcin'], s['tcin_src'], s['race_seq'], s['ident']) for s in rs]
+    check('retry_201_lines_are_cart_shots', got == [('fast-retry', 201, 'cart', TC, 'purchase_ctx', 1, None),
+                                                     ('retry-2', 201, 'cart', TC, 'purchase_ctx', 1, None)], got)
+    check('retry_shots_keep_their_own_time', [s['ts_ms'] for s in rs] == [t + 3000, t + 7000], [s['ts_ms'] for s in rs])
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('retry_all_tcins_resolved_counted', u.get('PRETRY@tcin_null') == (0, 2) and u.get('PRETRY') == (0, 2), u)
+    # two TCINs running at once: the retry line cannot say which -> NULL, counted, no race
+    lines = [POOL, tick(t), race(TC, ['primary']), race(TC2, ['business']), start(TC), start(TC2),
+             retry201('retry-2'), pdone(TC2), retry201('retry-2')]
+    res = parse(lines)
+    rs = [(s['tcin'], s['race_seq']) for s in res['shots'] if s['src'] == 'legacy_retry']
+    check('retry_ambiguous_context_is_null_not_guessed', rs == [(None, None), (TC, None)], rs)
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('retry_ambiguous_counted_in_unparsed', u.get('PRETRY@tcin_null') == (1, 2), u)
+
+
+def test_v2_atc400_cart_limit():
+    for (st, key), want in (((400, 'MAX_PURCHASE_LIMIT_EXCEEDED'), 'cart_limit'), ((400, 'SOME_OTHER_CODE'), 'other'),
+                            ((400, '-'), 'other'), ((400, None), 'other')):
+        check(f'gate {st} {key}', ev.gate_of(st, key) == want, ev.gate_of(st, key))
+    t = T + 2000
+    hdr = "[ATC_RESP_HDRS] tab=main status=400 n=3 | content-length=110 | date=x | x-ssx-hop=1"
+    lines = [POOL, race(TC2, ['business'])] + shot('business', TC2, t, status=400, key='-', rt=355) + \
+        [L(t + 356, hdr), f"[PURCHASE] ATC fetch status: 400 body={MAXQ_BODY} (t=0.45s) ident=business"]
+    # the pre-09 legacy print: no ident, no [ATC_RESP]
+    lines += [race(TC, ['primary']), tick(t + 9000),
+              f"[PURCHASE] ATC fetch status: 400 body={MAXQ_BODY} (t=3.19s)",
+              "[PURCHASE] ATC fetch status: 400 body='{\"code\":\"SOME_OTHER_CODE\"}' (t=1.00s)",
+              "[PURCHASE] ATC fetch status: 400 body='<html>gateway</html>' (t=1.10s)"]
+    res = parse(lines)
+    got = [(s['src'], s['ident'], s['gate'], s['err_key'], s['err_key_src']) for s in res['shots']]
+    check('atc400_body_code_is_the_key', got == [
+        ('chain', 'business', 'cart_limit', 'MAX_PURCHASE_LIMIT_EXCEEDED', 'body'),
+        ('legacy', None, 'cart_limit', 'MAX_PURCHASE_LIMIT_EXCEEDED', 'body'),
+        ('legacy', None, 'other', 'SOME_OTHER_CODE', 'body'),
+        ('legacy', None, 'other', None, None)], got)
+    check('cart_limit_is_past_the_limiter', res['shots'][0]['has_ssx_hop'] == 1, res['shots'][0])
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('atc400_without_code_counted', u.get('ATC400@no_body_code') == (1, 4), u)
+    # a 429's body code never becomes a key (pre-08-27 429s stay 'unknown', body_hint keeps the class)
+    res = parse([POOL, race(TC, ['primary']), fire(TC), chain('primary', 429), pf429('primary', DCO_BODY)])
+    s0 = res['shots'][0]
+    check('body_code_only_for_400', s0['gate'] == 'unknown' and s0['err_key'] is None and s0['body_hint'] == 'dco', s0)
+
+
+def _po_run_lines():
+    """A flip-era night: an in-chain order, a legacy POST, won-cart tickets, overlapping in-chain
+    POSTs, an unclaimed POST, an HTTP-0 legacy line and a POST that never got a response."""
+    lines = [POOL, flip(TC, 1, T, 1), race(TC, ['primary', 'business', 'alt-1'])]
+    # (1) primary carts in-chain and its own POST returns 200
+    lines += [fire(TC)] + cred('primary', T + 45) + resp(T + 350, 201, '-')
+    lines += [tick(T + 1500), PO_POST, tick(T + 2600), co_resp(200), chain_po('primary', T + 50, 300, 200),
+              f"[FAST_LANE] *** ORDER PLACED *** HTTP 200 at t=3.08s — order_id={ORDER_ID}"]
+    # (2) business carts in-chain, its POST gets FAST_SELLING, then the won-cart loop fires a ticket
+    lines += [fire(TC)] + cred('business', T + 4000) + resp(T + 4300, 201, '-')
+    lines += [tick(T + 5000), PO_POST, co_resp(429)] + co_detail(FSK, T + 6000) + \
+        [tick(T + 6500), chain_po('business', T + 4000, 300, 429)]
+    lines += [tick(T + 9000), PO_POST, co_resp(429)] + co_detail('RESERVATION_FAILURE', T + 9000) + \
+        [ticket('business', TC, 1, 429, 'RESERVATION_FAILURE', 4700)]
+    # (3) the legacy path: [API_PLACE_ORDER] Firing / HTTP + its mode=legacy ticket
+    lines += ["[API_PLACE_ORDER] Firing checkout POST", tick(T + 40000), PO_POST, co_resp(429)] + \
+        co_detail(FSK, T + 41000) + [tick(T + 45000), api_http(429),
+                                     ticket('business', TC, 1, 429, FSK, '-', mode='legacy')]
+    # (4) a POST nobody claims (the pre-09 DOM click) and an HTTP-0 legacy line (no POST printed)
+    lines += ["[PAYMENT] Clicking Place Order ([data-test=\"placeOrderButton\"]) attempt 1/3", tick(T + 130000),
+              PO_POST, co_resp(400)] + co_detail('', T + 130000) + [api_http(0)]
+    # (5) a POST whose response never printed
+    lines += [tick(T + 200000), PO_POST]
+    return lines
+
+
+def test_v2_place_orders():
+    res = parse(_po_run_lines())
+    po = res['place_orders']
+    check('po_one_row_per_main_post', len(po) == 6, len(po))
+    got = [(p['path'], p['status'], p['ident'], p['tcin'], p['err_key']) for p in po]
+    check('po_paths_and_keys', got == [
+        ('in_chain', 200, 'primary', TC, None), ('in_chain', 429, 'business', TC, FSK),
+        ('ticket', 429, 'business', TC, 'RESERVATION_FAILURE'), ('legacy', 429, 'business', TC, FSK),
+        ('unknown', 400, None, TC, '-'), ('unknown', None, None, TC, None)], got)
+    p0 = po[0]
+    check('po_inchain_200_window_and_201_delay',
+          (p0['window_id'], p0['window_src'], p0['window_age_ms'], p0['ms_since_201'], p0['ms201_src'],
+           p0['ts_src'], p0['ts_lo_ms'], p0['ts_hi_ms'], p0['order_id'], p0['cart_src'], p0['po_idx'])
+          == (1, 'flip', 1500, 1150, 'chain_t0', 'logger_prior', T + 1500, T + 2600, ORDER_ID, 'chain', 1), p0)
+    p1 = po[1]
+    check('po_date_header_is_the_clock', (p1['ts_ms'], p1['ts_src'], p1['err_key_src'], p1['window_age_ms'],
+                                          p1['ts_lo_ms'], p1['ts_hi_ms'])
+          == (sec(T + 6000), 'resp_date', 'reason', sec(T + 6000) - T, T + 5000, T + 6500), p1)
+    p2 = po[2]
+    check('po_ticket_ident_and_ms201', (p2['ident_src'], p2['ms_since_201'], p2['ms201_src'], p2['cart_src'],
+                                        p2['cart_line'], p2['po_idx']) ==
+          ('ticket', 4700, 'fs_ticket', 'ident', p1['cart_line'], 2), p2)
+    p3 = po[3]
+    check('po_legacy_enriched_by_its_legacy_ticket', (p3['ticket_mode'], p3['ident_src'], p3['ts_ms']) ==
+          ('legacy', 'ticket', sec(T + 41000)), p3)
+    check('po_date_before_the_logger_bound_is_clamped', (po[4]['ts_ms'], po[4]['ts_src']) ==
+          (T + 130000, 'resp_date'), po[4])
+    check('po_unclaimed_tcin_from_open_race', (po[4]['tcin_src'], po[4]['err_key_src'], po[4]['window_age_ms'])
+          == ('open_race', 'absent', 130000), po[4])
+    check('po_unpaired_post_kept', po[5]['pair_q'] == 'unpaired' and po[5]['resp_line'] is None, po[5])
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('po_remainders_counted', (u.get('CHECKOUT_POST@unpaired'), u.get('API_PO@http0'), u.get('PO@path_unknown'),
+                                    u.get('PO@ident_null'), u.get('PO_CLAIM@unmatched'), u.get('PO@window_null'))
+          == ((1, 6), (1, 2), (2, 6), (2, 6), (0, 5), (0, 6)), u)
+    # two in-chain POSTs in flight at once: FIFO pairs them, each claim takes its own response
+    lines = [POOL, flip(TC, 1, T, 1), race(TC, ['primary', 'business'])]
+    lines += [fire(TC), fire(TC)] + resp(T + 300, 201, '-') + resp(T + 320, 201, '-')
+    lines += [tick(T + 1500), PO_POST, PO_POST, co_resp(429)] + co_detail('RESERVATION_FAILURE', T + 2000) + \
+        [chain_po('business', T + 20, 300, 429), co_resp(200), chain_po('primary', T + 10, 310, 200)]
+    res = parse(lines)
+    got = [(p['pair_q'], p['status'], p['ident'], p['claim_q']) for p in res['place_orders']]
+    check('po_overlap_fifo_pairs', got == [('fifo_overlap', 429, 'business', 'single'),
+                                           ('single', 200, 'primary', 'single')], got)
+
+
+T0 = T - 375                                             # a whole second (the [API_CYCLE] clock)
+
+
+def _read_ep_lines():
+    lines = [POOL, watch(TC, T0 - 60000, False)] + instock(TC, T0)
+    lines += [race(TC, ['primary'])] + shot('primary', TC, T0 + 400, status=429, key=A2C)
+    lines += [tick(T0 + 3000), PO_POST, co_resp(429)] + co_detail(FSK, T0 + 3000) + [api_http(429)]
+    lines += [watch(TC, T0 + 30000, True), tick(T0 + 50000), PO_POST, co_resp(429)] + \
+        co_detail(FSK, T0 + 50000) + [api_http(429)]
+    lines += [watch(TC, T0 + 70000, False)] + instock(TC, T0 + 100000)
+    lines += [tick(T0 + 102000), PO_POST, co_resp(429)] + co_detail(FSK, T0 + 102000) + [api_http(429)]
+    return lines
+
+
+def test_v2_read_episodes():
+    """No [STOCK][FLIP] lines: the window is the first in-stock read after the TCIN's last
+    out-of-stock read ([STOCK WATCH] False), in log order; a True watch line keeps it open."""
+    res = parse(_read_ep_lines())
+    check('read_eps_utc_offset_measured', res['run']['tz_src'].startswith('measured'), res['run'])
+    wins = [(w['window_id'], w['src'], w['first_read_ms'], w['reads'], w['end_ms']) for w in res['windows']]
+    check('read_episodes_are_windows', wins == [(1, 'reads', T0, 2, T0 + 100000),
+                                                (2, 'reads', T0 + 100000, 1, None)], wins)
+    got = [(p['window_id'], p['window_src'], p['window_age_ms']) for p in res['place_orders']]
+    check('po_window_from_read_episodes', got == [(1, 'reads', 3000), (1, 'reads', 50000), (2, 'reads', 2000)], got)
+    s0 = res['shots'][0]
+    check('shot_ep_window_kept_apart_from_flip_window', (s0['ep_window_id'], s0['ep_src'], s0['ep_age_ms'],
+                                                         s0['window_id'], s0['window_age_ms'])
+          == (1, 'reads', 400, None, None), s0)
+    check('no_flip_runs_still_null_flip_fields', res['races'][0]['flip_opened'] is None and res['run']['flip_log'] == 0,
+          res['races'])
+
+
+def _ssx_lines(kinds, tc=TC, t=T):
+    """One home-line account firing `kinds` in order: 'a' FAST_SELLING admit, 'c' a 201,
+    'k' a keyless 401, 'w' an edge-429 (not past the limiter)."""
+    lines = [POOL, race(tc, ['primary'])]
+    for i, k in enumerate(kinds):
+        st, key = {'a': (429, FSK), 'c': (201, '-'), 'k': (401, '-'), 'w': (429, A2C)}[k]
+        lines += shot('primary', tc, t + i * 5000, status=st, key=key)
+    return lines
+
+
+def test_v2_queries():
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / 'runs'
+        logs.mkdir()
+        runs = {
+            'run_20990101_000000': _ssx_lines('awac' + 'k' * 20),            # switch: 2 admits, 20 keyless 401s
+            'run_20990102_000000': _ssx_lines('aka' + 'k' * 5 + 'a' + 'k' * 13),   # re-admit: NOT REPLICATED
+            'run_20990103_000000': _ssx_lines('ak' * 3),                      # n < 20: INCONCLUSIVE
+            'run_20990104_000000': _po_run_lines(),
+            'run_20990105_000000': _read_ep_lines(),
+        }
+        runs['run_20990101_000000'] += [race(TC2, ['primary'])] + shot('primary', TC2, T + 900000, status=400, key='-') + \
+            [f"[PURCHASE] ATC fetch status: 400 body={MAXQ_BODY} (t=0.45s) ident=primary"]
+        for name, lines in runs.items():
+            (logs / (name + '.log')).write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
+        db = Path(tmp) / 'ev.sqlite'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        check('v2_db_built', '5 file(s) parsed' in buf.getvalue(), buf.getvalue())
+
+        def q(*args):
+            b = io.StringIO()
+            with contextlib.redirect_stdout(b):
+                rc = evq.main(['--db', str(db), '--csv'] + list(args))
+            return rc, b.getvalue()
+
+        def tables(out):
+            res_ = []
+            for blk in out.strip().split('\n\n'):
+                rows_ = list(csv.reader(io.StringIO(blk.strip())))
+                res_.append([dict(zip(rows_[0], r)) for r in rows_[1:]])
+            return res_
+
+        rc, out = q('ssx_sequence')
+        per, verdict = tables(out)
+        r1 = next(r for r in per if r['run'] == 'run_20990101_000000' and r['tcin'] == TC)
+        check('ssx_switch_row', rc == 0 and (r1['n'], r1['admits_before'], r1['k401_from'], r1['admits_after'],
+                                             r1['run_after_last_admit'], r1['reading'], r1['rep'], r1['not_rep']) ==
+              ('23', '3', '20', '0', '20', 'switch', '1', '0'), r1)
+        r2 = next(r for r in per if r['run'] == 'run_20990102_000000')
+        check('ssx_readmit_row', (r2['n'], r2['admits_before'], r2['admits_after'], r2['run_after_last_admit'],
+                                  r2['reading']) == ('22', '1', '2', '13', 'admit after a post-admit 401'), r2)
+        v = {r['run']: r['verdict'] for r in verdict}
+        check('ssx_preregistered_verdicts', v == {'run_20990101_000000': 'REPLICATED',
+                                                  'run_20990102_000000': 'NOT REPLICATED',
+                                                  'run_20990103_000000': 'INCONCLUSIVE',
+                                                  'run_20990104_000000': 'INCONCLUSIVE',
+                                                  'run_20990105_000000': 'INCONCLUSIVE'}, v)
+        rc, out = q('ssx_sequence', '--run', '20990101')
+        per, _ = tables(out)
+        check('ssx_cart_limit_is_an_admit', any(r['tcin'] == TC2 and r['admits_before'] == '1' for r in per), per)
+        # walls / per_tcin / arms still reconcile with the new gate
+        rc, out = q('walls', '--run', '20990101')
+        w = tables(out)[0]
+        ok = all(int(r['n']) == int(r['w1_limited']) + int(r['w1_pass']) + int(r['other']) + int(r['unknown'])
+                 and int(r['w1_pass']) == sum(int(r[c]) for c in ('w2_denied', 'fs', 'inv', 'carts', 'climit'))
+                 for r in w)
+        check('walls_reconcile_with_cart_limit', rc == 0 and ok and sum(int(r['climit']) for r in w) == 1, w)
+        rc, out = q('per_tcin', '--run', '20990101')
+        pt = {r['tcin']: r for r in tables(out)[0]}
+        check('per_tcin_counts_cart_limit_as_w1_pass', pt[TC2]['first_w1'] == '1/1' and pt[TC2]['climit'] == '1', pt)
+        rc, out = q('regime', '--run', '20990101')
+        rg = tables(out)[0][0]
+        check('regime_cart_limit_admitted', rc == 0 and (rg['first'], rg['later']) == ('2/2', '2/3'), rg)
+        rc, out = q('po_by_age', '--run', '20990104')
+        per_run, pooled, reading = tables(out)
+        bins = {r['bin']: r['ok_of_posts'] for r in per_run}
+        check('po_by_age_bins', bins == {'1 <=5s': '1/2', '2 6-30s': '0/1', '3 31-120s': '0/1', '4 >120s': '0/2'},
+              bins)
+        check('po_by_age_pooled_bounds', {r['bin']: (r['est'], r['at_lo_bound'], r['at_hi_bound']) for r in pooled}
+              .get('1 <=5s') == ('1/2', '1/2', '1/1'), pooled)
+        check('po_by_age_reading_needs_10_early', reading[0]['reading'] == 'INCONCLUSIVE', reading)
+        rc, out = q('late_carts', '--run', '20990104')
+        carts, by_bin, rd = tables(out)
+        c0 = {r['cart_line']: r for r in carts}
+        check('late_carts_first_po', rc == 0 and len(carts) == 2 and
+              sorted((r['ident'], r['po1_status'], r['n_po'], r['any_200']) for r in carts)
+              == [('business', '429', '3', '0'), ('primary', '200', '1', '1')], c0)
+        rc, out = q('SELECT COUNT(*) AS n FROM place_orders', '--run', 'no_such_run')
+        check('q_run_filter_covers_place_orders', out.strip().splitlines()[-1] == '0', out)
+        rc, out = q('windows')
+        wr = tables(out)[0]
+        check('windows_query_flip_only', rc == 0 and [r['run'] for r in wr] == ['run_20990104_000000'], wr)
+        rc, out = q('SELECT src, COUNT(*) AS n FROM windows GROUP BY src ORDER BY src')
+        check('windows_table_keeps_both_sources', [tuple(r.values()) for r in tables(out)[0]]
+              == [('flip', '1'), ('reads', '2')], out)
+
+
 if __name__ == "__main__":
     test_glued_lines()
     test_duplicates_counted_once()
@@ -497,5 +838,10 @@ if __name__ == "__main__":
     test_checkout_orders_proxied()
     test_decoy_tokens()
     test_db_and_query_cli()
+    test_v2_retry_shots()
+    test_v2_atc400_cart_limit()
+    test_v2_place_orders()
+    test_v2_read_episodes()
+    test_v2_queries()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

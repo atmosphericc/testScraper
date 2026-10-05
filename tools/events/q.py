@@ -16,7 +16,7 @@ result set is printed). Anything else is run as SQL.
         -p treated=alt-1 (or EVENTS_TREATED=alt-1).
 
 Tables: runs, shots, races, flips, windows, tickets, loop_ends, decoys, monitor_stats,
-orders, idents, unparsed, checks, ingested. Read-only; stdlib only.
+orders, idents, unparsed, checks, place_orders (v2), ingested. Read-only; stdlib only.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 QUERIES = HERE / 'queries'
 DEFAULT_DB = HERE.parents[1] / 'logs' / 'events' / 'events.sqlite'
 RUN_TABLES = ['runs', 'shots', 'races', 'flips', 'windows', 'tickets', 'loop_ends', 'decoys',
-              'monitor_stats', 'orders', 'idents', 'unparsed', 'checks']
+              'monitor_stats', 'orders', 'idents', 'unparsed', 'checks', 'place_orders']
 
 
 def statements(sql: str):

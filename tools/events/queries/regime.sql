@@ -5,7 +5,8 @@
 --                           counts from 0 (mon_resets = how many). 429= only exists from 09-2x on.
 -- decoys, d424_pct, d401_pct warmup-tab add-to-cart responses (heartbeat decoys), each counted once.
 -- shots, resp, r401_pct     main-tab shots / with a response / 401 share of the responses.
--- f1  flip-race FIRST shots: admitted/(admitted + wall1_limited), admitted = admitted_fs+cart+inventory.
+-- f1  flip-race FIRST shots: admitted/(admitted + wall1_limited), admitted = admitted_fs+cart+inventory+cart_limit
+--     (cart_limit = 400 MAX_PURCHASE_LIMIT_EXCEEDED, a cart-service answer; parser v2, 'other' -> f1_excl before).
 --     401s (f1_401) and other/unknown (f1_excl) are excluded from BOTH sides.
 -- eo  every other shot (flip_opened_race and is_first both known), same rule. f1/eo are NULL when the run
 --     has no [STOCK][FLIP] lines (unknown, not 0).
@@ -37,16 +38,16 @@ sh AS (
     SUM(status IS NOT NULL) AS resp,
     SUM(status = 401) AS n401,
     SUM(gate = 'unknown') AS unk,
-    SUM(flip_opened_race = 1 AND is_first = 1 AND gate IN ('admitted_fs', 'cart', 'inventory')) AS f1_adm,
+    SUM(flip_opened_race = 1 AND is_first = 1 AND gate IN ('admitted_fs', 'cart', 'inventory', 'cart_limit')) AS f1_adm,
     SUM(flip_opened_race = 1 AND is_first = 1 AND gate = 'wall1_limited') AS f1_w1,
     SUM(flip_opened_race = 1 AND is_first = 1 AND gate = 'wall2_denied') AS f1_401,
     SUM(flip_opened_race = 1 AND is_first = 1 AND gate IN ('other', 'unknown')) AS f1_excl,
-    SUM(flip_opened_race IS NOT NULL AND is_first IS NOT NULL AND NOT (flip_opened_race = 1 AND is_first = 1) AND gate IN ('admitted_fs', 'cart', 'inventory')) AS eo_adm,
+    SUM(flip_opened_race IS NOT NULL AND is_first IS NOT NULL AND NOT (flip_opened_race = 1 AND is_first = 1) AND gate IN ('admitted_fs', 'cart', 'inventory', 'cart_limit')) AS eo_adm,
     SUM(flip_opened_race IS NOT NULL AND is_first IS NOT NULL AND NOT (flip_opened_race = 1 AND is_first = 1) AND gate = 'wall1_limited') AS eo_w1,
     SUM(flip_opened_race IS NOT NULL AND is_first IS NOT NULL AND NOT (flip_opened_race = 1 AND is_first = 1) AND gate = 'wall2_denied') AS eo_401,
-    SUM(is_first = 1 AND gate IN ('admitted_fs', 'cart', 'inventory')) AS fi_adm,
+    SUM(is_first = 1 AND gate IN ('admitted_fs', 'cart', 'inventory', 'cart_limit')) AS fi_adm,
     SUM(is_first = 1 AND gate = 'wall1_limited') AS fi_w1,
-    SUM(is_first = 0 AND gate IN ('admitted_fs', 'cart', 'inventory')) AS la_adm,
+    SUM(is_first = 0 AND gate IN ('admitted_fs', 'cart', 'inventory', 'cart_limit')) AS la_adm,
     SUM(is_first = 0 AND gate = 'wall1_limited') AS la_w1
   FROM shots GROUP BY run_id
 )
