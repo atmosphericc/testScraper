@@ -198,7 +198,7 @@ test_resilient_stack.py           stock-check smoke test
 
 **Source — note the sizes, these are grep targets not read targets**
 ```
-src/session/purchase_executor.py           10,538 lines  Target ATC, Shape headers
+src/session/purchase_executor.py           ~11,500 lines  Target ATC, Shape headers
 src/purchasing/bulletproof_purchase_manager.py  4,301   Target checkout
 src/session/session_manager.py              2,679
 src/monitoring/stock_check_resilient.py     1,389       current stock pipeline
@@ -239,8 +239,9 @@ state/proxy_state.json, state/session_profiles/
 ## 4. THE EVENT STORE FIRST, then the readout scripts
 
 **Since 2026-09-30, facts come from ONE tested parser.** `python tools/events/build.py`
-turns `logs/runs/run_*.log` into `logs/events/events.sqlite` (tables: runs, shots,
-races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, unparsed);
+turns `logs/runs/run_*.log` into `logs/events/events.sqlite` (tables include runs, shots,
+races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, place_orders,
+stock_status, atc_net, gate_events, unparsed — `sqlite_master` is the authority);
 `python tools/events/q.py <regime|regime_tcin|monitor_hours|walls|windows|checkout|per_tcin|arms> --run <id>` or
 `q.py "<SQL>"` answers most questions. It handles glued lines and print+logger
 duplicates once, in one place, under an offline test — the two slips that corrupted
@@ -248,7 +249,7 @@ the 09-30 readout's decoy and header counts (C-0930-07). Grep the raw log only f
 the store does not parse, say that you did, and prefer extending the parser.
 
 **Gate model for classifying a shot (C-0930-03):** edge limiter first (429
-`ERR_A2C_TCIN_RATE_LIMITED`, ~130 ms, no `x-ssx-hop`) → SSX hop (keyless 401 = the
+`ERR_A2C_TCIN_RATE_LIMITED`, p50 ~150 ms, no `x-ssx-hop`) → SSX hop (keyless 401 = the
 Shape verdict) → cart service (201 / FAST_SELLING 429 / 424). A 401 is PAST the limiter.
 
 **Never read a pooled rate as a regime verdict.** Recompute it per TCIN (`q.py regime_tcin`,
@@ -293,7 +294,7 @@ readout_next_drop.py    the next-drop readout
   about this forward from an older session.)
 - **RedSky** — Target's product/stock API, used by the monitor.
 - **Edge limiter** — Target's front-door, per-TCIN rate limiter: 429
-  `ERR_A2C_TCIN_RATE_LIMITED`, empty body, `retry-after: 0`, ~130 ms, no `x-ssx-hop`.
+  `ERR_A2C_TCIN_RATE_LIMITED`, empty body, `retry-after: 0`, p50 ~150 ms, no `x-ssx-hop`.
   It answers BEFORE Shape and behaves per network location (IP or CDN POP), not per
   trust (C-0930-03/04). `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` (DCO) is a different
   layer: the cart service's throttle on a shot that got PAST the limiter (it carries

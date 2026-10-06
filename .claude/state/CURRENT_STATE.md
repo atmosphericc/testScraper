@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-10-05 ~13:30 (post-run of `run_20261005_002518`, workflow `wf_9651193b-efc`, 1 round, complete) · branch `feat_refract_arch_v1` · ARMED 10-05 (log-only): `RESILIENT_STATUS_LOG=1`, `RESILIENT_206_INGEST=shadow` (bat:128-129) · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (all 3 accounts, bat:1199 after the 10-05 insert, operator) · F1 unarmed (operator declined 10-04) · host display never sleeps on AC, screensaver off (10-04)**
+**As of: 2026-10-05 ~23:50 (PRE-DROP for the next restock: four 10-05 gate-audit flags ARMED in the working tree at bat:1208-1220, UNCOMMITTED; the final offline-suite run on the armed tree was DENIED by the auto-mode classifier — the operator runs it; primary needs a forced hand login) · gate-hardening audit C-1005-G01..G15 earlier this evening · post-run of `run_20261005_002518` (`wf_9651193b-efc`) ~13:30 · branch `feat_refract_arch_v1` · ARMED 10-05 (log-only): `RESILIENT_STATUS_LOG=1`, `RESILIENT_206_INGEST=shadow` (bat:128-129) · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (bat:1199) · F1 unarmed (operator declined 10-04) · host display never sleeps on AC (10-04)**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -20,16 +20,165 @@ to be wrong rather than leaving them with a caveat.**
 | Topic | Now | Source |
 |---|---|---|
 | Target list | the ENABLED TCINs in `config/product_config.json` are the operator's deliberate choice. **17 enabled, all qty 2.** 10-04, operator ("make sure all the 30th are enabled … dont remove anything"): enabled 1010892068 Sylveon ex Box, 1010892075 Espeon ex and 1010892071 Umbreon ex Battle Decks; ADDED 1010892074 30th Celebration Binder Collection (pre-order, release 12-04; TCIN [REPORTED] by two alert accounts, PDP 404 until it publishes; added with the operator's explicit approval outside auto mode, ~22:45, after the auto-mode classifier had denied it). 1010892070 Knock Out Collection was added, then REMOVED at the operator's request ("i dont want the knock collection", 10-04 ~22:40) — UNWANTED, never re-add. Pitch Black 1011483413 stays OFF. Backup `config/product_config_backup_pre_2026-10-05_drop.json`. Never propose re-adding SKUs | operator 09-30, 10-02, 10-04 |
-| Accounts | **10-05: all 3 enabled.** primary was hand-logged (force) 00:06 → its live Chrome has had NO `login-session` cookie since (watchdog `'login-session' MISSING` ×565 all run), yet 0 `ERR_UNAUTHORIZED` and an in-bot member-token re-mint at 08:10:21 (C-1005-09) — so a re-mint does NOT need a live login-session (contradicts the older belief); whether pre_checkout / place-order pass without it is NOT ESTABLISHED, and a boot with primary as a guest exit-87-loops the WHOLE bot (worker 1 = primary). History — 10-04 23:5x: primary DISABLED in `config/target_accounts.json` (operator: no hand login; backup `config/target_accounts.json.bak_20261004_primary_off`) → the 10-05 drop runs on 2 accounts, business = worker 1, alt-1 = worker 2.** Why: the 23:49 boot exited 87 three times — primary's jar had gone GUEST (sut=G) between 21:43 (member) and 23:49, cause NOT ESTABLISHED (lead: bat:1381-1386 — primary IS the operator's personal Target login; a personal browser/app session on it can rotate the bot's token). The bat's login pass reported the guest as "already logged in ✅" (known blind spot). To restore: one hand login for primary, then `enabled: true`. Otherwise 3 (primary, business, alt-1), all on the home IP; member tokens re-mint in-bot at the 4 h expiry under `TARGET_TOKEN_KEEPFRESH=0` + `TARGET_RELOGIN_MAX_PER_6H=0`; run `check_session_readiness.py` before a drop | C-0929-01, 09-30 jars |
+| Accounts | **10-05: all 3 enabled.** primary was hand-logged (force) 00:06 → its live Chrome has had NO `login-session` cookie since (watchdog `'login-session' MISSING` ×565 all run), yet 0 `ERR_UNAUTHORIZED` and an in-bot member-token re-mint at 08:10:21 (C-1005-09) — so a re-mint does NOT need a live login-session (contradicts the older belief); whether pre_checkout / place-order pass without it is NOT ESTABLISHED, and a boot with primary as a guest exit-87-loops the WHOLE bot (worker 1 = primary). History — 10-04 23:5x: primary DISABLED in `config/target_accounts.json` (operator: no hand login; backup `config/target_accounts.json.bak_20261004_primary_off`) → the 10-05 drop runs on 2 accounts, business = worker 1, alt-1 = worker 2.** Why: the 23:49 boot exited 87 three times — primary's jar had gone GUEST (sut=G) between 21:43 (member) and 23:49, cause NOT ESTABLISHED (lead: bat:1395-1430, the sign-out block (`chrome_target_signout.py` at :1429) — primary IS the operator's personal Target login; a personal browser/app session on it can rotate the bot's token). The bat's login pass reported the guest as "already logged in ✅" (known blind spot). To restore: one hand login for primary, then `enabled: true`. Otherwise 3 (primary, business, alt-1), all on the home IP; member tokens re-mint in-bot at the 4 h expiry under `TARGET_TOKEN_KEEPFRESH=0` + `TARGET_RELOGIN_MAX_PER_6H=0`; run `check_session_readiness.py` before a drop | C-0929-01, 09-30 jars |
 | Monitor | 18 Bright Data ISP exits, `apps_raw` channel, every TCIN read ~every 0.34 s, read → first POST ~40 ms | 09-30 readout L3 |
-| Wall 1 — edge limiter | 429 `ERR_A2C_TCIN_RATE_LIMITED`, answers FIRST (no `x-ssx-hop`); not explained by Shape/HUMAN trust, differs by network location, splits within same-IP volleys — mechanism NOT ESTABLISHED; strongly per TCIN. **10-01 RECOVERY with no armed change:** 1010892076 past the limiter 58/230 three-wide-race shots vs 1/195 the night before (its first carts ever); flip-race first shots 13/14; later shots past it 41/164 — cause NOT ESTABLISHED | C-0930-03/04, C-1001-11/14 |
-| Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here (09-30: home 13/38 denied, BD exits 514/518). **10-01: a per-TCIN admit-then-401 switch** — on 1010892076 the first 6 past-limiter shots were admitted, then 70/70 keyless 401 from all 3 accounts while decoy 401s held at ~20%; 80/102 past-limiter shots were 401 | C-0930-05, C-1001-12 |
+| Wall 1 — edge limiter | 429 `ERR_A2C_TCIN_RATE_LIMITED`, answers FIRST (no `x-ssx-hop`); not explained by Shape/HUMAN trust, differs by network location, splits within same-IP volleys — mechanism NOT ESTABLISHED; strongly per TCIN. **10-01 RECOVERY with no armed change:** 1010892076 past the limiter 58/230 three-wide-race shots vs 1/195 the night before (its first carts ever); flip-race first shots 13/14; later shots past it 41/164 — cause NOT ESTABLISHED. **10-05 audit (09-11→10-02, 2,747 main shots, 90.3% edge 429):** 9 fixed headers, retry-after 0, no node/POP header; "same-IP volleys all-or-nothing" NOT ESTABLISHED; first-window effect home-only, TCIN×night predicts most; own-volume effect UNVERIFIABLE both ways (the 09-20 bucket table is all-SKU); the edge-429 retry knobs are inert. Instrument built, unarmed: INS-ATC-NET | C-0930-03/04, C-1001-11/14, C-1005-G01..G05 |
+| Wall 2 — SSX / Shape | keyless 401 after the limiter; trust lives here (09-30: home 13/38 denied, BD exits 514/518). **10-01: a per-TCIN admit-then-401 switch** — on 1010892076 the first 6 past-limiter shots were admitted, then 70/70 keyless 401 from all 3 accounts while decoy 401s held at ~20%; 80/105 past-limiter shots were 401 (parser v2). **10-05 audit: the "admits early, refuses late" split is that one TCIN-night** — outside it ~25% of early and ~41% of later past-limiter shots were keyless 401; bank age does not predict it; each harvested set is replayed once | C-0930-05, C-1001-12, C-1005-G06 |
 | Wall 3 — checkout | place-order FAST_SELLING / RESERVATION_FAILURE lottery (Refract: ~1% of carts → order). **Orders come from EARLY place-orders:** 18 of 21 orders ever ≤~4.6 s after detection; HTTP 200 by window age ≤5 s 18/34, >120 s 0/150 (pooled, descriptive). 10-01: 0/199 won-cart tickets; our caps / gates / yield / self-heal ENDED all 7 non-converting carts while the TCIN read live | C-1001-02..08 |
 | Outcomes | **10-01: 1 order, 2 units — the first hot-SKU order ever** (primary, 1011960739, in-chain first shot of a flip race, `8cba94c1`); hot carts → order 1/18 lifetime. **10-02 (30th Celebration): 0** — first edge lost to a host crash (0 shots), the rest 128/129 edge 429. **10-05 (03:00 ET 30th slot): 0, nothing went on sale** — the binder 1010892074 page appeared OUT OF STOCK at 02:00 CT and never flipped (bot + 5 alert accounts agree); 0 in-stock reads on 17 TCINs | C-1001-01, C-1002-F1/F2, C-1005-01/OP |
 | Monitor 206 storms | **02:00-03:34 on 10-05 RedSky 206'd 73.3% of sweeps; the bodies held complete stock fields (94/94) and we discard every 206** (third storm at the 02:00 CT slot: 09-25, 09-30, 10-05). Longest blind stretch <90 s; 0/28 past real windows opened inside a ≥50%-loss interval → a latency lever, not a measured unit lever. FS-206-SHADOW armed 10-05 (log-only) to measure agreement before any ingest | C-1005-03..06 |
 | Host | **The #1 controllable loss on 10-02.** 27/27 NVIDIA GPU-error episodes since 07-17 began at a display WAKE (screen off → on); since the 09-27 driver (617.14) 5/5 ended in bugcheck 0x116; on-screen buyer Chromes freeze in every episode. **10-04 ~22:00 (operator-approved): display timeout on AC 900 s → Never (`powercfg /change monitor-timeout-ac 0`; DC stays 180 s), screensaver OFF (`ScreenSaveActive` 1 → 0, applied live by SystemParametersInfo); AC sleep was already Never.** Restore: `powercfg /change monitor-timeout-ac 15` + `ScreenSaveActive=1`. A remote connection (Parsec, RDP) can still be a wake trigger (20/27 wakes carried code 6, NOT independently verified). Root-cause checklist from 07-13 (BIOS/microcode, XMP) still not done | 10-02 + 10-04 sections |
-| Blocked / operator decisions | **Host (operator):** no keyboard / mouse / remote session (Parsec, RDP) on the host during a drop window; then BIOS update + XMP off (07-13 checklist). **FX-1001-A** (a held line at a fresh flip → in-chain pre_checkout → place-order) — **v11 VERIFIED 10-03, ARMED 10-04 on all 3 accounts** (`set TARGET_HELD_LINE_FLIP_STRIKE=1`, bat:1184, IDENTS unset = every account per `purchase_executor.py:209-225`; the code on disk is the verified v11 — mtime 10-03 00:27:26, before the v11 suite and verifier #11); kill `=0`; readout R-FX in the 10-04 section. F1 — code landed flag-gated OFF; **operator declined arming 10-04** (~0 units on the late-draw data); EXP-1002-NET (one buyer on a second, non-BD network) — operator; E5 not built; E4 declined | 10-02 + 10-04 sections |
+| Blocked / operator decisions | **Host (operator):** no keyboard / mouse / remote session (Parsec, RDP) on the host during a drop window; then BIOS update + XMP off (07-13 checklist). **FX-1001-A** (a held line at a fresh flip → in-chain pre_checkout → place-order) — **v11 VERIFIED 10-03, ARMED 10-04 on all 3 accounts** (`set TARGET_HELD_LINE_FLIP_STRIKE=1`, bat:1199, IDENTS unset = every account per `purchase_executor.py:209-225`; the code on disk is the verified v11 — mtime 10-03 00:27:26, before the v11 suite and verifier #11); kill `=0`; readout R-FX in the 10-04 section. F1 — code landed flag-gated OFF; **operator declined arming 10-04** (~0 units on the late-draw data); EXP-1002-NET (one buyer on a second, non-BD network) — operator; E5 not built; E4 declined. **10-05: FX-1005-BOOTSKIP, FX-1005-PO2XX, FX-1005-FOREIGN-KEEP (needs PO2XX), INS-ATC-NET — ARMED 23:39 in the working tree (bat:1208-1220), UNCOMMITTED, final suite pending (operator)** — details + checks (business CVV = the code default; readiness false red on primary's missing login-session) in the GATE-HARDENING AUDIT section | 10-02 + 10-04 + 10-05 audit sections |
 | Process | `/post-run` → saved Workflow `.claude/workflows/post-run.js` (rounds until dry; blind replicator + refuter + judge per claim; canaries); facts from `tools/events/` (SQLite); PreToolUse hook blocks the common direct bot / login / live-test launches. **The hook is a safety net, not a guarantee:** an independent replay of 10,094 past commands (09-30) found launch forms it misses and some offline-test loops it wrongly blocks. The rule "bot start = operator only" still binds every agent regardless of the hook. | CLAUDE.md, 09-30 review |
+
+## PRE-DROP 2026-10-05 ~23:50 (for the next restock; the binder 1010892074 is rumoured for 10-06 overnight [REPORTED, unconfirmed]) — `/pre-drop`
+
+- **State:** HEAD `7132c0b4` + the uncommitted gate-audit work; bot NOT running (no python, port 5001
+  free; the 21 Chromes are the operator's personal profile). Regime: no run since the 10-05 post-run,
+  no open watch. Config unchanged since 10-04 23:45: 17 enabled (≤30), all qty 2,
+  `TARGET_QTY_PER_TCIN=1`; backup `config/product_config_backup_pre_2026-10-06_drop.json`.
+- **Readiness 23:15 [MEASURED]:** primary ❌ `login-session MISSING` (member token minted 08:10,
+  expired); business + alt-1 ✅ (member tokens expired 11:55/11:56, login-session 26.1 d LEFT →
+  the bat's start pass refreshes them). 17/17 TCINs visible on the last run. **primary needs one
+  forced hand login** (`hand_login_primary_force.bat`) — it is Worker 1 (a guest W1 exit-87s the
+  bot) and whether checkout works without a login-session is NOT ESTABLISHED (C-1005-09/G12).
+- **Proxy pool PASS [MEASURED]:** `validate_proxies.py`, production env (`apps_raw` etc.), pool=all,
+  180 s: 20/20 exits HEALTHY, 537 sweeps, 537×200, 0×403/429/other, 20 sessions ready, 0 crashed
+  (`logs/analysis_2026_10_05/gate_audit/validate_proxies_predrop.txt`; the shutdown
+  ConnectionResetError is teardown noise).
+- **Arming audit:** the wrapper sets 174 flags, every one read by the code, none twice. Built but
+  unarmed before tonight: the four 10-05 flags + F1 (operator declined 10-04).
+- **ARMED 23:39 (working tree, UNCOMMITTED), bat:1208-1220:** `TARGET_BOOT_SKIP_FAILED_W1=1`,
+  `TARGET_PO_2XX_AMBIGUOUS=1`, `TARGET_FOREIGN_KEEP_WON=1`, `TARGET_ATC_NET_META=1` (CRLF, ASCII,
+  each set once; pre-edit copy in the session scratchpad). A third fresh verifier on the final code
+  found 4 more gaps, all fixed before arming: BOOTSKIP on a 2-account fleet stuck at 1 racer
+  (clear now checked before the size rule) and a transient boot failure recorded as an account
+  failure (only the probe's own "not logged in" answer records now); FOREIGN-KEEP's re-read rule
+  lost on a strike re-entry / dirty flag (carried now); INS-ATC-NET could await a zendriver
+  Network.enable on the purchase path when the tab had no Network handler (Network is listed
+  as enabled first now; proven against the real `Connection._register_handlers`).
+  `tests/test_gate_hardening_1005.py` 112/112, 9/9 mutations caught (files restored by hash).
+  Event store v3 (`PARSER_VERSION=3`): tables `atc_net`, `gate_events`; queries `atc_net.sql`,
+  `gate_events.sql`; `tests/test_events_parser.py` 168/168; every pre-existing table identical
+  row for row after the rebuild.
+- **NOT DONE — denied by the auto-mode classifier ("[Production Deploy]"):** the final
+  `tests/run_offline_suite.py` on the armed tree. The last full-suite results: 34/34 at 23:0x on the
+  code before the third verifier's fixes (`offline_suite_final_tree.txt`), and 34/34 (375 s) in
+  the event-store agent's run, which overlapped those fixes — neither is proven to cover the exact
+  final tree. **The operator runs it.** Not committed either.
+
+**PRE-REGISTERED READOUT for the next run** (written before it; `python tools/events/build.py`
+then `python tools/events/q.py <query> --run <run_id>`):
+- **R-BOOTSKIP** (`gate_events`, + `logs/bot_restart_wrapper.log`): PASS = every exit 87 is
+  followed by a `boot_skip_recorded` / `_cleared` / `_none` row naming Worker 1, no relaunch after a
+  `recorded` boots the same fleet, and with 3 accounts enabled no boot races fewer than 2. FAIL = a
+  skipped account fires a shot, or the fleet drops below 2 with 3 enabled. No exit 87 → N/A.
+- **R-PO2XX** (`gate_events` kind `po2xx_guard`): expected 0 rows. Any row → order-history check at
+  once; PASS = no further place-order on that cart after the row.
+- **R-FOREIGN** (`gate_events`): FAIL = any `foreign_bail` row whose chain had a 2xx add/strike and a
+  2xx pre (it should now enter the loop), or any order holding a TCIN other than the one raced.
+  Every `foreign_keep_po_only` row must be preceded by its cart read (the line itself says so).
+- **R-NET** (`atc_net`): coverage PASS = `[ATC_NET]` POST rows joined to ≥95% of main-tab fast-lane
+  shots with `atc_t0` (`checks.atc_net_post_join`). Descriptive only, no pass/fail: within mixed
+  first volleys of flip-opened races, does wire order (send_ms) predict passing the limiter; pass
+  by connection reused vs new; pass by edge IP (C-1005-G02/G04).
+- Carried over: **R-HOST** (0 GPU / bugcheck / display-wake events), **R-FX** (FX-1001-A strikes),
+  **R-COVER** (every window volleyed on every free account), **R-DECOY** (~20% keyless 401).
+
+**BOOT CHECKLIST (operator, first ~4 minutes):**
+0. Before starting: `venv\Scripts\python.exe tests\run_offline_suite.py` → `34 passed, 0 failed`;
+   `hand_login_primary_force.bat` → readiness 3/3 ✅ MEMBER.
+1. `=== drop-readiness check ===` → three ✅ MEMBER, and no `BOOT SKIP: ⚠` line.
+2. `[WORKER_POOL] sized from target_accounts.json: 3 account(s)` and no `[BOOT_SKIP] skipping` line.
+3. `✅ LOGGED IN TO TARGET.COM`; `[ATC_NET] Network meta instrument installed` appears on the
+   first purchase only (not at boot).
+4. `[MULTI_SESSION] started -- 18/18 sessions ready`; `[GROUND-TRUTH] pool cache-bust ok:
+   in_stock=[] (17 TCINs)`; no `[TCIN-VISIBILITY]` banner naming a wanted TCIN (the binder may
+   read PARTIAL until verified).
+5. First `[STOCK STATS]`: 200s, `403=0`.
+Readout after the run: `python tools/events/build.py` → `python tools/events/q.py gate_events --run <id>`
+and `python tools/events/q.py atc_net --run <id>` (then `/post-run`).
+
+## GATE-HARDENING AUDIT 2026-10-05 evening — every gate G0..G5, claims C-1005-G01..G15 (`docs/CLAIMS.md`)
+
+Operator: "i want to go through every gate and make it as resilient and perfect as possible".
+`/bot-investigate`: 7 analysts (G0 stock-pipeline, G1 + G2 antibot, G3/G4 + G5 purchase-flow,
+failure-forensics ledger, retailer-researcher) → 8 claims-verifiers on the findings → 2 on the
+code. Artifacts: `logs/analysis_2026_10_05/gate_audit/` (offline suite outputs).
+
+- **Where units go [MEASURED, 09-11 → 10-02, 2,747 main shots]:** 2,481 edge 429 (90.3%) → 246
+  past the limiter → 190 keyless 401 / 36 FAST_SELLING / 14 carts → 1 order. Of the 14 carts: 1
+  order, 4 ended by Target, 9 ended by OUR code while the TCIN read live — all 9 late or after a
+  failed first place-order (≈0 units on the late-draw data). Our own per-gate code is NOT the
+  binding constraint; the limiter on the first volley is, and its key is not established.
+- **G1 limiter, what the data can and cannot say:** the response is 9 fixed headers, retry-after
+  0, no node/POP header (`fastly-restarts: 1` only past it) (G01); "same-IP volleys are
+  all-or-nothing" NOT ESTABLISHED (G02); first-window-of-the-night effect home-only and P=0.07
+  within TCIN×night — the TCIN×night itself predicts most (G03); whether our own volume spends it
+  is UNVERIFIABLE both ways, and the 09-20 "shared volume bucket" table is all-SKU and confounded
+  (G04); the edge-429 retry-delay knobs are inert (G05). No public source names the key (Refract
+  live docs unchanged since 09-30). The one lever with a large measured effect stays a SECOND
+  NETWORK LOCATION (C-0930-04; EXP-1002-NET, operator) — it must also pass Shape.
+- **G2 Shape:** the "Shape admits early, refuses late" split is one TCIN-night (1010892076, 10-01)
+  — outside it ~25% of early and ~41% of later past-limiter shots were keyless 401 (G06). Bank age
+  does not predict it; each harvested set is replayed exactly once.
+- **G0 [MEASURED, analyst]:** 71/82 windows volleyed; callback → first POST p50 44 ms; the RedSky
+  read itself p50 554 ms (G14). The structural gap is the fleet lock (`[MULTI_SKU_MISS]`): 0 since
+  multi-SKU dispatch was armed 09-21, real in principle with 17 TCINs.
+- **G3/G4/G5:** whole-cart clear on a foreign line (G07, defect real, never cost a line);
+  `held_cart_other_tcin` sit-out (G08, 2 first-shot slots on 10-01, NOT fixed — FX-1001-C needs its
+  own design); odd add-to-cart statuses → a dead 1.5 s DOM wait (G10, ≈0 units, not fixed); a
+  place-order 2xx ≠ 200/201 → second POST (G11, never seen); in-chain 201 → place-order 1.3-3.2 s
+  (G15); business's configured CVV equals the hardcoded default (`purchase_executor.py:24`).
+- **Run level:** the exit-87 boot loop (G09: 15 exits / 5 wrapper starts, each ended by the
+  operator); the "27.1 d login-session / 11-01 expiry" belief REFUTED — 27.1 d was time LEFT and the
+  date is set by our `_fix_session_cookies` (G12); no timed restart by design (G13).
+
+**BUILT 10-05, flag-gated, default off = byte-identical, NOT ARMED** (`tests/test_gate_hardening_1005.py`
+97/97, 5/5 mutations caught, files restored by hash; offline suite 34/34 —
+`logs/analysis_2026_10_05/gate_audit/offline_suite_final.txt`):
+- **FX-1005-BOOTSKIP** `TARGET_BOOT_SKIP_FAILED_W1=1` (+ `TARGET_BOOT_SKIP_TTL_H`, default 12, 1-48):
+  before exit 87 app.py records Worker 1 in `state/boot_skip_accounts.json`
+  (`worker_pool.boot_skip_note_probe_failure`); the relaunch builds the fleet without it like
+  `"enabled": false` but every worker KEEPS its slot number (labels `W{n}/{acct}` key the persisted
+  AC-1 latch). A second failure while a skip is in force CLEARS the list (not an account problem →
+  full fleet, the pre-flag loop), so it never cascades below 2; it never skips the last account.
+  A real login via `relogin_one.py` (`--manual` hand login / `--force` / a scripted login that
+  passed) clears the entry; the validate-first "already logged in" pass does not.
+  `check_session_readiness.py` prints a `BOOT SKIP: ⚠` line per skipped account.
+- **FX-1005-PO2XX** `TARGET_PO_2XX_AMBIGUOUS=1`: a place-order 2xx other than 200/201 is
+  unresolved on all three API paths (fast lane, won-cart ticket, legacy + DOM fallback) →
+  terminal, `_po_ambiguous`, AC-1 tag. Not covered: a place-order fired by a DOM click (none since
+  08-04), and `TARGET_DOM_FALLBACK_ON_NO_RESPONSE=1` (unset) re-opens the DOM click.
+- **FX-1005-FOREIGN-KEEP** `TARGET_FOREIGN_KEEP_WON=1` — **inert unless PO2XX is also =1** (in code):
+  a won chain stopped at `foreign_cart_item` enters the won-cart loop (selective delete
+  `keep_tcin=T`, strict pre_po gate) instead of the bail's whole-cart clear; every po_only ticket
+  of such a cart re-reads the cart first (`L['foreign_entry']`). A failed / empty delete ends
+  `foreign_stuck` with the cart held and no order. Residual (pre-existing loop property): a line
+  landing between that read and the place-order is bought.
+- **INS-ATC-NET** `TARGET_ATC_NET_META=1` (log-only): one `[ATC_NET]` line per main-tab
+  cart_items request (POST + OPTIONS) — wire send ms, connection id / reused, edge IP:port,
+  protocol, TTFB. Awaits nothing before the add-to-cart. Readout: arrival order vs pass within
+  mixed volleys; pass by connection reuse / edge IP — the instrument for G02/G04.
+- **Withdrawn:** FX-1005-EDGE-REARM — the production `on_in_stock` (`stock_monitor._adapter`)
+  swallows every exception, so the branch was unreachable; the code was removed.
+
+**ARMED 23:39 (working tree, uncommitted)** at bat:1208-1220 — see the PRE-DROP 2026-10-05 section
+above for the third verifier's fixes, the readout rules and the boot checklist. Kill: `=0` each.
+
+**Operator decisions / checks:** (1) confirm business's card CVV is its real code (it equals the
+code's default); (2) readiness will likely show primary ❌ "login-session MISSING" although primary
+ran a member night without it (C-1005-09/G12) — the "hand login only on ❌" rule would fire on a
+false red; (3) EXP-1002-NET — one buyer on a second, non-BD network — is the only limiter lever
+with a measured effect; (4) FX-1001-C (don't sit an account out of a different TCIN's flip) needs
+its own design pass.
+
+**Stale comments left in the wrapper (production file; not edited):** bat:299-311 (edge-429 delay
+knobs "~50% more tickets" — inert, G05); bat:443-452 ("FAST_SELLING never answers a wave's first
+checkout POST" — 4/8 in Sep-Oct did, G15); bat:747-748 and :847-856 (own-volume bucket — NOT
+ESTABLISHED, G04); bat:1349-1350 ("the ATC 401 is the WRITE-AUTH layer, not Shape" — 190/190 main
+401s since 09-11 are keyless, the Shape verdict); bat:1469-1470 ("TARGET_TOKEN_KEEPFRESH keep
+healing 24/7" — KEEPFRESH=0 since 09-28).
 
 ## POST-RUN 2026-10-05 — the 03:00 ET 30th slot: 0 bought because NOTHING WENT ON SALE; a RedSky 206 storm blinded 73% of reads in the slot (claims C-1005-*, `docs/CLAIMS.md`)
 
@@ -60,7 +209,7 @@ all issues and fix so that we can be ready for the next restock." Results:
   unpublished binder (by design).
 - **Other:** 08:25-09:30 the four 168.158/16 exits lost 29% (cause not logged; BD subnet, not Target);
   `[DISPATCHER] s10 flagged crashed` ×2 (new string, raw timeout). A 206 also bumps
-  `consecutive_errors` (`tab_dispatcher.py:416`), so a long 206 streak + one timeout can flag a session
+  `consecutive_errors` (`tab_dispatcher.py:435`), so a long 206 streak + one timeout can flag a session
   crashed (did not bite tonight).
 
 **ARMED 2026-10-05 (both LOG-ONLY, flag-gated, default off = unchanged; offline suite
@@ -107,8 +256,8 @@ ready as possible." Notes: `logs/analysis_2026_10_04/`.
   (09:24-09:53, daytime, 0 shots, 0 flips, boot 18/18 ready, first STATS 403=0 429=0). It was
   missing from the event store; rebuilt 10-04.
 - **Readiness 21:43** [MEASURED]: primary MEMBER until 00:48:14 (jar saved ~20:48, i.e. a fresh login);
-  business and alt-1 member tokens EXPIRED 10-02 13:23:39 / 13:23:54; login-session 27.1 d
-  on all three. Those two tokens were minted at 09:23:39 / 09:23:54 on 10-02, i.e. by the
+  business and alt-1 member tokens EXPIRED 10-02 13:23:39 / 13:23:54; login-session 27.1 d LEFT
+  on all three (a 30-day expiry our own `_fix_session_cookies` wrote, not Target's; C-1005-G12). Those two tokens were minted at 09:23:39 / 09:23:54 on 10-02, i.e. by the
   wrapper-start `relogin_one.py` pass re-minting EXPIRED tokens right before the 09:24 boot — the
   third such case (n=2 on 09-28). **And at 20:48:12 on 10-04 the operator's bat start (stopped
   after ~10 s) refreshed primary the same way:** `logs/relogin.log:3261` "primary: already logged
@@ -121,9 +270,10 @@ ready as possible." Notes: `logs/analysis_2026_10_04/`.
   - **Why the typed login cannot simply be scripted:** the dead-session fallback
     (`relogin_one.py:413-431`) already types the config email and password and ticks KMSI, 3
     attempts. Shape blocks it at the username step (~0/25 historic, 2/5 on 09-25, 0/6 on 09-28
-    "username did NOT advance"), and each failure leaves the account signed out. The login-session
-    reads 27.1 d on all three (09-30 00:00 read 29.1 d, before the 09-30 01:09-01:12 hand logins),
-    so a dead session is a ~monthly event, ~10-31/11-01 [INFERRED from two readings].
+    "username did NOT advance"), and each failure leaves the account signed out. (The
+    "login-session 27.1 d → a dead session ~10-31/11-01" inference that stood here is REFUTED,
+    C-1005-G12: 27.1 d was time LEFT on a 30-day expiry our own `_fix_session_cookies` writes onto
+    Target's session cookie; primary ran a member night on 10-05 with no login-session at all.)
 - **Regime:** nothing new on a drop night since 10-02 (no run). One WATCH:
   `run_20261002_092404` decoy keyless 401 5/109 (4.6%) vs 18-20% in the four earlier runs; signed
   decoys 0/55 → `docs/TARGET_CHANGES.md` (2026-10-02 09:24 entry), rule R-DECOY below.
@@ -133,7 +283,7 @@ ready as possible." Notes: `logs/analysis_2026_10_04/`.
   2-6x the price; buying one is a real-money mistake).
 - **Contention cost of the extra SKUs (C-0924-01):** a TCIN that flips while all 3 accounts race
   other TCINs is not re-raced while it stays in stock. [MEASURED] 0 `[MULTI_SKU_MISS]` /
-  concurrency skips in any run since 09-15 (multi-SKU dispatch armed 09-21; restock nights 09-23,
+  concurrency skips since multi-SKU dispatch was armed 09-21 (09-16 had 13; restock nights 09-23,
   09-25, 09-30, 10-01, 10-02). Real in principle, unobserved; watched by R-COVER.
 - **Proxy pool:** not re-validated with `validate_proxies.py`. The last production-path boot
   (10-02 09:27) was 18/18 ready, first STATS 403=0 429=0, loss 0.112% over 4,483 sweeps; the
@@ -261,7 +411,7 @@ first analysis session; the workflow was resumed from its journal.
   - HEAD's own release paths can still drop a line on a 0-line "success".
   - A line can land after the guard's last read.
   - Live trigger frequency is small: 3 fast-lane MAX_PURCHASE 400s ever, all on 10-01.
-- **ARMED 2026-10-04 by the operator, all 3 accounts:** `set TARGET_HELD_LINE_FLIP_STRIKE=1` at bat:1184 (CRLF verified, assigned once, no IDENTS scope).
+- **ARMED 2026-10-04 by the operator, all 3 accounts:** `set TARGET_HELD_LINE_FLIP_STRIKE=1` at bat:1184 at the time, bat:1199 since the 10-05 insert (CRLF verified, assigned once, no IDENTS scope).
 - **Readout rule** (pre-registered, grep on the run log):
   - WORKED = ≥1 `[HELD_LINE_STRIKE] order placed` or an order with `first_201_src=strike_400`.
   - FAILED = any `[LEGACY_CART_GUARD]` line reaching a checkout with a non-raced TCIN in the cart, or a strike place-order on a cart the guard would refuse. Kill-switch: `=0`.
@@ -290,7 +440,8 @@ the next restock." Result + verdicts: `logs/analysis_2026_10_01/postrun/`
     1010892076, `call_cap` ×2 on 1011960739) — F1 not armed.
   - **The stranded-line cascade:** the held-cart TTL retire (900 s) got 429 on DELETE for the
     alt-1 / business 1011960739 lines at 04:04-04:05 and dropped the marker anyway
-    (`purchase_executor.py:9267-9268`); those lines then made our `foreign_cart_item` gate end
+    (then `purchase_executor.py:9267-9268`; today `_held_cart_release` ~:9985-9994, where the armed
+    FX-1001-A re-flags a failed release dirty instead); those lines then made our `foreign_cart_item` gate end
     both 1010892067 carts (04:12, 04:13) after a pre_checkout 201; at 04:53:25 the ATC-400
     MAX_PURCHASE self-heal wiped both carts (4 lines, no TCIN filter). The code comment at
     `purchase_executor.py:8128-8130` ("a foreign line comes from a prior failed attempt") does
@@ -346,8 +497,8 @@ CONFIRMED / PARTIALLY CONFIRMED claims, critic notes applied):**
   aria-label changed 09-15/16 account by account. The 401 switch on 1010892076 rode sets of
   all ages and all three harvest SKUs, and the same sets carted other TCINs later — not
   credential quality. **Real finding:** at drop hour the harvest SKUs lose their
-  Add-to-cart button (21516452 on all 3 accounts 02:30-03:10 on 10-01; every drop night since
-  09-16, all 3 SKUs, cause NOT ESTABLISHED). Specced, not built: `TARGET_HARVEST_RECLICK_BLOCKED_DOC`
+  Add-to-cart button (21516452 on all 3 accounts 02:30-03:10 on 10-01; 0 button-absent on the
+  10-02 and 10-05 runs per the 10-05 G2 audit, so NOT "every drop night"; cause NOT ESTABLISHED). Specced, not built: `TARGET_HARVEST_RECLICK_BLOCKED_DOC`
   (default 1 = today; 0 skips the dead re-click; one account only, 3 drop nights, compare the
   per-TCIN 401 share vs the other two) + log-only `TARGET_HARVEST_DOC_LOG`. Code pointers:
   `shape_harvest.py:674-698`, `purchase_executor.py:3681-3719`, `:3855-3999`.
@@ -509,9 +660,10 @@ Operator: restock at 03:00; TCINs `1010892076, 1010892067, 1010892069, 101089207
   after a hot 201 the chain runs pre_checkout (≤5 tries, 250 ms, 1.5 s) → ONE place-order;
   a `pre_*` stop or a PO 429 FS/RF enters the ticket loop (`pe:672-696`); a first-PO 424,
   keyless/non-CVV 400 or 401/403 still falls to the legacy nav+DOM path (27.96 s on 09-25)
-  and a **whole-cart clear** (`pe:5538-5539`). In the loop an unverified cart fires a
-  place-order only after a pre 2xx (`pe:8889-8890`, `:8920-8925`); 4/4 hot in-chain chains
-  since 09-11 ended `pre=429 po=0`. The 40-ticket cap (and the 120 s per-call cap) ENDED
+  and a **whole-cart clear** (now `pe:6060-6063`; the MAX_PURCHASE self-heal clear is `pe:5510-5592`).
+  In the loop an unverified cart fires a place-order only after a pre 2xx; on 10-01 6 of 8 hot
+  in-chain chains reached an in-chain place-order (the earlier "4/4 ended `pre=429 po=0`" no longer
+  holds; G5 audit 10-05). The 40-ticket cap (and the 120 s per-call cap) ENDED
   A LIVE, VERIFIED CART on 09-30 (C-0930-02) — it is a lever; the fix is designed but not
   armed (see the 09-30 post-run section). PRE_RETRY, the 1,1,1,2,2,3 schedule, eviction
   read/PRESUME and RF_ENTRY: **0 live runs since arming** — tonight is their first live

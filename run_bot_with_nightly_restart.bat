@@ -1197,6 +1197,27 @@ REM runs only on a cart read that shows no line of another item. Needs the qty
 REM guard, forced on by TARGET_HELD_CART_REENTRY=1 above. grep the markers
 REM [HELD_LINE_STRIKE] and [LEGACY_CART_GUARD]. Kill: TARGET_HELD_LINE_FLIP_STRIKE=0.
 set TARGET_HELD_LINE_FLIP_STRIKE=1
+REM 2026-10-05 pre-drop, gate-hardening audit (docs/CLAIMS.md C-1005-G07 G09 G11,
+REM CURRENT_STATE GATE-HARDENING AUDIT). Each verified by fresh claims-verifiers,
+REM offline suite green. FX-1005-BOOTSKIP: when Worker 1 fails the boot login
+REM probe (a real no-greeting answer, not an init error or timeout) the relaunch
+REM runs without that account, which keeps its slot number. A second failure
+REM while a skip is in force clears the list. A real login in relogin_one.py
+REM clears it, else it expires after 12 h. grep [BOOT_SKIP].
+REM Kill: TARGET_BOOT_SKIP_FAILED_W1=0.
+set TARGET_BOOT_SKIP_FAILED_W1=1
+REM FX-1005-PO2XX: a place-order 2xx other than 200 or 201 is treated as maybe
+REM placed (terminal, AC-1 tag) and is never fired again on that cart.
+REM Kill: TARGET_PO_2XX_AMBIGUOUS=0.
+set TARGET_PO_2XX_AMBIGUOUS=1
+REM FX-1005-FOREIGN-KEEP: a won line with another item in the cart goes to the
+REM won-cart loop, which deletes only the other line and re-reads the cart
+REM before every place-order-only ticket, instead of a whole-cart clear.
+REM Inert unless TARGET_PO_2XX_AMBIGUOUS=1. Kill: TARGET_FOREIGN_KEEP_WON=0.
+set TARGET_FOREIGN_KEEP_WON=1
+REM INS-ATC-NET, log-only: one [ATC_NET] line per main-tab add-to-cart request
+REM (wire send time, connection id and reuse, edge ip, ttfb). Kill: TARGET_ATC_NET_META=0.
+set TARGET_ATC_NET_META=1
 REM WC-2 hygiene on a held cart: no forced /cart re-warm before a legacy
 REM re-shoot, no warmup /cart nav while a cart is held, no fleet cycle-warm
 REM while stock is live, no duplicate pre_checkout, and a ride that ends as

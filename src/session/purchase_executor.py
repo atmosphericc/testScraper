@@ -76,6 +76,16 @@ def ambiguous_commit_latch_on() -> bool:
     return os.environ.get('TARGET_AMBIGUOUS_COMMIT_LATCH', '0').strip() == '1'
 
 
+def po_2xx_ambiguous_on() -> bool:
+    """2026-10-05 FX-1005-PO2XX: TARGET_PO_2XX_AMBIGUOUS=1 makes a received
+    place-order 2xx OTHER than 200/201 (202, 204, ...) unresolved: every path
+    reads only 200/201 as placed, and a 202 fell through as a rejection into
+    the legacy nav/DOM checkout or a held re-entry ticket, i.e. a second
+    place-order on the same cart (0 of 409 place-orders in 2026 were such a
+    2xx). Default '0' = exact prior behaviour. Kill-switch: =0."""
+    return os.environ.get('TARGET_PO_2XX_AMBIGUOUS', '0').strip() == '1'
+
+
 def po_status_unresolved(status, ticket: bool = False) -> bool:
     """R3 review (WC-5XX-NOT-AMBIGUOUS): True when a RECEIVED place-order
     status does not prove that no order was created: 408 or 5xx (a gateway
@@ -84,13 +94,18 @@ def po_status_unresolved(status, ticket: bool = False) -> bool:
     retry, no DOM click). A won-cart ticket (WC-1, which refuses to arm
     without AC-1): always. The fast lane and the legacy API place-order: only
     with TARGET_AMBIGUOUS_COMMIT_LATCH=1, and TARGET_PO_5XX_AMBIGUOUS=0 turns
-    that part off. AC-1 off = exact prior behaviour. Never raises."""
+    that part off. AC-1 off = exact prior behaviour. Never raises.
+    2026-10-05 FX-1005-PO2XX: with TARGET_PO_2XX_AMBIGUOUS=1 a 2xx other than
+    200/201 is unresolved on every path, whatever AC-1 says (a 2xx is the one
+    answer that may well mean the order was created)."""
     try:
         if isinstance(status, bool):
             return False
         s = int(status)
     except (TypeError, ValueError):
         return False
+    if 200 <= s <= 299:
+        return s not in (200, 201) and po_2xx_ambiguous_on()
     if not (s == 408 or 500 <= s <= 599):
         return False
     if ticket:
@@ -575,6 +590,59 @@ def atc_resp_hdrs_on() -> bool:
 _ATC_HDRS_WARMUP_CAP = 20
 
 
+# ── 2026-10-05 INS-ATC-NET (log-only): the wire under each add-to-cart ──────
+def atc_net_meta_on() -> bool:
+    """TARGET_ATC_NET_META=1: one [ATC_NET] line per cart_items request on the
+    MAIN tab (POST and its OPTIONS preflight) from CDP Network events: the
+    wall-clock ms the request actually left Chrome (send_start), the
+    connection id / reused flag, remote edge IP:port, protocol and
+    time-to-first-byte. Why: the 10-05 gate audit could not settle whether the
+    edge limiter keys on arrival order or on the connection / edge node (no
+    response header names the node; [ATC_RESP_HDRS] has 9 headers), and the
+    JS atc_t0 is up to ~90 ms before the wire (the interceptor pause).
+    Log-only: separate Network handlers, never in the Fetch path, never
+    awaits, never raises. Default '0'. Kill-switch: =0."""
+    return os.environ.get('TARGET_ATC_NET_META', '0').strip() == '1'
+
+
+def atc_net_send_wall_ms(will_wall_s, will_mono_s, req_time_s, send_start_ms):
+    """Pure: wall-clock ms when the request was sent, from requestWillBeSent
+    (wall_time, timestamp) and the response's ResourceTiming (request_time,
+    send_start), all from one Chrome. None when anything is missing."""
+    try:
+        if None in (will_wall_s, will_mono_s, req_time_s, send_start_ms):
+            return None
+        ss = float(send_start_ms)
+        if ss < 0:
+            return None
+        return int(round((float(will_wall_s)
+                          + (float(req_time_s) + ss / 1000.0 - float(will_mono_s))) * 1000.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def atc_net_line(ident, d) -> str:
+    """Pure: the [ATC_NET] line for one cart_items response dict `d`
+    (keys: method, status, conn, reused, ip, port, proto, send_ms, ttfb_ms,
+    connect_ms, ssl_ms, rid). Missing values print '-'. Never raises."""
+    def _v(k):
+        x = d.get(k) if isinstance(d, dict) else None
+        if x is None or x == '':
+            return '-'
+        if isinstance(x, bool):
+            return '1' if x else '0'
+        if isinstance(x, float):
+            return str(int(round(x)))
+        return str(x)[:64]
+    try:
+        return (f"[ATC_NET] ident={ident} m={_v('method')} st={_v('status')} "
+                f"conn={_v('conn')} reused={_v('reused')} ip={_v('ip')}:{_v('port')} "
+                f"proto={_v('proto')} send_ms={_v('send_ms')} ttfb_ms={_v('ttfb_ms')} "
+                f"connect_ms={_v('connect_ms')} ssl_ms={_v('ssl_ms')} rid={_v('rid')}")
+    except Exception:
+        return '[ATC_NET] ident=? (format error)'
+
+
 def atc_resp_hdrs_line(label, status, raw_headers, max_val: int = 160,
                        max_len: int = 2400) -> str:
     """Pure; never raises. The [ATC_RESP_HDRS] message for one cart_items POST
@@ -886,6 +954,25 @@ def woncart_read_desc(read) -> str:
         return '?'
 
 
+def foreign_keep_won_on() -> bool:
+    """2026-10-05 FX-1005-FOREIGN-KEEP: TARGET_FOREIGN_KEEP_WON=1 admits a won
+    chain that stopped at skip='foreign_cart_item' (a 2xx add or a strike, the
+    in-chain pre_checkout 2xx, no place-order fired, another TCIN's line in the
+    cart) into the won-cart loop. The loop's own foreign handler deletes only
+    the other lines (_delete_cart_items keep_tcin=T) and its strict pre_po gate
+    places the order only on a cart that is our TCIN alone. Without it the
+    foreign-cart bail clears the WHOLE cart, our just-won (or struck) line
+    included (verified 10-05: the path fired once in 127 logs, its clear failed
+    on a 429). Default '0' = exact prior behaviour. Kill-switch: =0.
+    Verifier (10-05): it is inert unless TARGET_PO_2XX_AMBIGUOUS=1 too — the
+    loop exits a ticket's unexpected 2xx as po_<n> and holds the cart, and a
+    later dispatch that finds the line gone fires a fresh add + place-order;
+    with FX-1005-PO2XX that 2xx is terminal instead. The loop also re-reads the
+    cart before every po_only ticket of such a cart (L['foreign_entry'])."""
+    return (os.environ.get('TARGET_FOREIGN_KEEP_WON', '0').strip() == '1'
+            and po_2xx_ambiguous_on())
+
+
 def woncart_eligible(fl, reject_status: int = 0, reject_key: str = '') -> bool:
     """Pure: may a fast-lane result enter the won-cart loop? The ATC must be
     2xx and either (A) the chain stopped at pre_checkout (skip 'pre_*', no
@@ -910,6 +997,8 @@ def woncart_eligible(fl, reject_status: int = 0, reject_key: str = '') -> bool:
     skip = str(fl.get('skip') or '')
     if skip.startswith('pre_') and not po.get('fired'):
         return True
+    if skip == 'foreign_cart_item' and not po.get('fired') and foreign_keep_won_on():
+        return True                      # FX-1005-FOREIGN-KEEP
     if po.get('fired') and po.get('status') == 429:
         key = str(reject_key or '').upper() if reject_status == 429 else ''
         body = str(po.get('body') or '').upper()
@@ -2390,7 +2479,14 @@ class PurchaseExecutor:
         print(f"[HELD_LINE_STRIKE] {src}: {T} is raced in a NEW stock window — striking the line "
               f"we hold through the ticket loop (no add-to-cart, no delete, cvv={cv}) "
               f"ident={self._ident_tag()}")
-        v, t = await self._won_cart_ticket_loop(tab, T, Q, fl0, start_time, entry='strike')
+        # FX-1005-FOREIGN-KEEP (verifier, 10-05): a struck line from a cart that
+        # once held another TCIN's line keeps the re-read-before-po_only rule.
+        _fe = bool(isinstance(old, dict) and old.get('foreign_entry'))
+        if _fe:
+            v, t = await self._won_cart_ticket_loop(tab, T, Q, fl0, start_time, entry='strike',
+                                                    foreign_entry=True)
+        else:
+            v, t = await self._won_cart_ticket_loop(tab, T, Q, fl0, start_time, entry='strike')
         if v in ('placed', 'done') and old is not None and old_attr:
             if getattr(self, old_attr, None) is old:
                 setattr(self, old_attr, None)
@@ -3030,6 +3126,82 @@ class PurchaseExecutor:
         tab.add_handler(cdp.fetch.RequestPaused, _on_request_paused)
         handler_count = len(handlers.get(cdp.fetch.RequestPaused, []))
         print(f"[INTERCEPTOR:{label}] CDP fetch interceptor ready (total RequestPaused handlers on tab: {handler_count})")
+        if label == 'main' and atc_net_meta_on():
+            await self._install_atc_net_meta(tab)      # INS-ATC-NET, log-only
+
+    async def _install_atc_net_meta(self, tab) -> None:
+        """INS-ATC-NET: register the two Network handlers on the main tab
+        once per tab (the Fetch interceptor is re-installed every purchase).
+        Awaits NOTHING (verifier, 10-05: this runs inside the interceptor setup
+        that every purchase awaits before its add-to-cart): Network is already
+        enabled on the account tab by session_manager.initialize, and the
+        enable sent here is a fire-and-forget task. Never raises."""
+        try:
+            from zendriver import cdp
+            if getattr(self, '_atc_net_tab', None) is tab:
+                return
+            sent: Dict[str, Any] = {}
+            # zendriver awaits <domain>.enable() inside the NEXT send() for any
+            # handler whose domain is not in tab.enabled_domains (verifier, 10-05),
+            # i.e. on the purchase path; listing Network first stops that, and the
+            # fire-and-forget enable below makes sure the domain really is on.
+            if cdp.network not in getattr(tab, 'enabled_domains', [cdp.network]):
+                tab.enabled_domains.append(cdp.network)
+
+            async def _on_will_send(ev):
+                try:
+                    req = ev.request
+                    if 'cart_items' in str(getattr(req, 'url', '') or ''):
+                        if len(sent) > 200:
+                            sent.clear()
+                        sent[str(ev.request_id)] = (getattr(ev, 'wall_time', None),
+                                                    getattr(ev, 'timestamp', None),
+                                                    str(getattr(req, 'method', '') or ''))
+                except Exception:
+                    pass
+
+            async def _on_response(ev):
+                try:
+                    r = ev.response
+                    if 'cart_items' not in str(getattr(r, 'url', '') or ''):
+                        return
+                    w, mono, meth = sent.pop(str(ev.request_id), (None, None, '?'))
+                    t = getattr(r, 'timing', None)
+                    g = (lambda k: getattr(t, k, None)) if t is not None else (lambda k: None)
+
+                    def _span(a, b):
+                        x, y = g(a), g(b)
+                        return (y - x) if (x is not None and y is not None and x >= 0 and y >= 0) else None
+                    d = {'method': meth, 'status': getattr(r, 'status', None),
+                         'conn': getattr(r, 'connection_id', None),
+                         'reused': getattr(r, 'connection_reused', None),
+                         'ip': getattr(r, 'remote_ip_address', None),
+                         'port': getattr(r, 'remote_port', None),
+                         'proto': getattr(r, 'protocol', None),
+                         'send_ms': atc_net_send_wall_ms(w, mono, g('request_time'), g('send_start')),
+                         'ttfb_ms': _span('send_end', 'receive_headers_end'),
+                         'connect_ms': _span('connect_start', 'connect_end'),
+                         'ssl_ms': _span('ssl_start', 'ssl_end'),
+                         'rid': str(ev.request_id)}
+                    print(atc_net_line(self._ident_tag(), d))
+                except Exception:
+                    pass
+
+            tab.add_handler(cdp.network.RequestWillBeSent, _on_will_send)
+            tab.add_handler(cdp.network.ResponseReceived, _on_response)
+            self._atc_net_tab = tab
+
+            async def _enable_quietly():
+                try:
+                    await tab.send(cdp.network.enable())
+                except Exception as _ne:
+                    print(f"[ATC_NET] network.enable failed ({type(_ne).__name__}) — relying on "
+                          f"the session's own Network.enable")
+            self._atc_net_enable_task = asyncio.ensure_future(_enable_quietly())   # keep a ref
+            print(f"[ATC_NET] Network meta instrument installed on the main tab "
+                  f"ident={self._ident_tag()}")
+        except Exception as e:
+            print(f"[ATC_NET] install failed ({type(e).__name__}: {e}) — instrument off")
 
     def _consume_fresh_capture(self) -> bool:
         """Rotate `_cached_cart_headers` to the freshest unconsumed ring entry.
@@ -8013,6 +8185,9 @@ class PurchaseExecutor:
         first checkout POST of a wave, and every re-shoot fired into it was also
         rejected — 0-for-~20. Two minutes later (wave 6) the limiter had cleared
         on its own. Re-shooting is strictly counter-productive; waiting is not.
+        2026-10-05 (docs/CLAIMS.md C-1005-G15): "never answered the first
+        checkout POST" no longer holds -- in-chain FIRST place-orders were
+        FAST_SELLING 4 of 8 in Sep-Oct.
         Kill-switch: TARGET_FAST_SELLING_COOLDOWN_S=0 disables the back-off.
         """
         _cd = float(os.environ.get('TARGET_FAST_SELLING_COOLDOWN_S', '45'))
@@ -8201,9 +8376,12 @@ class PurchaseExecutor:
             # _api_place_order no-response guard. A missed buy is free; a
             # double-charge is not.
             if _po_5xx:
+                _why = ("an unexpected 2xx (FX-1005-PO2XX) — the order may exist"
+                        if 200 <= int(status or 0) <= 299 else
+                        "a gateway error does not prove the order failed")
                 print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got HTTP {status} "
-                      f"(skip={fl.get('skip')}) — a gateway error does not prove the order "
-                      f"failed; POST may have committed. Bailing terminal, NOT retrying.")
+                      f"(skip={fl.get('skip')}) — {_why}; POST may have committed. "
+                      f"Bailing terminal, NOT retrying.")
             else:
                 print(f"[FAST_LANE] [DOUBLE-BUY GUARD] place-order got NO response "
                       f"(skip={fl.get('skip')}) — POST may have committed. "
@@ -8212,7 +8390,9 @@ class PurchaseExecutor:
             _term = {
                 'success': False, 'tcin': tcin,
                 'reason': 'checkout_navigation_failed',
-                'error': ('fast-lane place-order got a server/gateway error (unresolved)' if _po_5xx
+                'error': (('fast-lane place-order got an unexpected 2xx (unresolved)'
+                           if 200 <= int(status or 0) <= 299 else
+                           'fast-lane place-order got a server/gateway error (unresolved)') if _po_5xx
                           else 'fast-lane place-order got no response'),
                 'execution_time': time.time() - start_time,
             }
@@ -9325,7 +9505,7 @@ class PurchaseExecutor:
             pass
 
     async def _won_cart_ticket_loop(self, tab, tcin, qty, fl0, start_time: float,
-                                    entry: str = 'first'):
+                                    entry: str = 'first', foreign_entry: bool = False):
         """Fire spaced checkout tickets at a WON cart (plan P1 step 2).
 
         Returns ('placed', None) — the caller returns _fastlane_success_result;
@@ -9375,6 +9555,8 @@ class PurchaseExecutor:
                     L = self._woncart_new_ledger(T, Q, fl0, t_entry, rej_status0, rej_key0)
                     if entry == 'strike':
                         L['strike'] = True      # FX-1001-A v5: a held marker it leaves stays a strike's
+                    if foreign_entry or (isinstance(fl0, dict) and fl0.get('skip') == 'foreign_cart_item'):
+                        L['foreign_entry'] = True   # FX-1005-FOREIGN-KEEP: re-read before po_only
                 _pre0 = ((fl0.get('pre') or {}).get('status') if isinstance(fl0, dict) else '-')
                 _po0 = (fl0.get('po') or {}) if isinstance(fl0, dict) else {}
                 _key0 = (rej_key0 if (_po0.get('fired') and rej_status0 == _po0.get('status'))
@@ -9446,6 +9628,11 @@ class PurchaseExecutor:
                         # fail_request failed, or an FL-1-aborted ATC still
                         # pending in the page), re-read it through the strict gate.
                         _sus = self._woncart_cart_suspect()
+                        if not _sus and L.get('foreign_entry'):
+                            # FX-1005-FOREIGN-KEEP (verifier, 10-05): this cart
+                            # already took another TCIN's line once; never buy
+                            # it unread.
+                            _sus = 'foreign_entry'
                         if _sus:
                             # R2 review (R2-QTY1-PO-SHAPE): a pre_po ticket stops
                             # at a FAST_SELLING pre_checkout, so falling back
@@ -9684,6 +9871,8 @@ class PurchaseExecutor:
                                                    or ('cancelled' if result is None else 'unknown')),
                         'cvv_put': (str(L.get('cvv_put') or 'none') if isinstance(L, dict) else 'unknown'),
                     }
+                    if isinstance(L, dict) and L.get('foreign_entry'):
+                        self._woncart_dirty['foreign_entry'] = True   # FX-1005-FOREIGN-KEEP
                     print(f"[WON_CART_DIRECT] our line may still be in the cart "
                           f"(exit={self._woncart_dirty['why']}, verdict={verdict}) — the next "
                           f"purchase deletes it before any ATC ident={self._ident_tag()}")
@@ -10802,8 +10991,11 @@ class PurchaseExecutor:
             if (api_result.get('status', 0) == 0 or _legacy_po_5xx) \
                     and os.environ.get('TARGET_DOM_FALLBACK_ON_NO_RESPONSE', '0') != '1':
                 print(f"[PAYMENT] [DOUBLE-BUY GUARD] place-order got "
-                      + (f"HTTP {api_result.get('status')} (a gateway error does not prove the "
-                         f"order failed) " if _legacy_po_5xx else "NO response ")
+                      + ((f"HTTP {api_result.get('status')} (an unexpected 2xx, "
+                          f"FX-1005-PO2XX — the order may exist) "
+                          if 200 <= int(api_result.get('status') or 0) <= 299 else
+                          f"HTTP {api_result.get('status')} (a gateway error does not prove the "
+                          f"order failed) ") if _legacy_po_5xx else "NO response ")
                       + f"(reason={api_result.get('reason')}) — POST may have committed; "
                       f"NOT clicking DOM Place Order. Bailing terminal.")
                 # 2026-09-16 AC-1: the caller's diagnosis must not call this

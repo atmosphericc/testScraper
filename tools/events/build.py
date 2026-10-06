@@ -30,7 +30,8 @@ LOG FORMAT RULES THIS PARSER IS BUILT ON (all seen in real logs)
         [STOCK][FLIP], [STOCK STATS]      logger (they have no print copy).
         [RACE], [FAST_LANE], [EXPOSURE], [FS_TICKET], [WON_CART_DIRECT], [STOCK] IN
         STOCK, [API_CYCLE], [PURCHASE] ATC fetch, [FORWARDER] W.., [WORKER_POOL],
-        order lines                        print (they have no logger copy).
+        order lines, v3: [ATC_NET], [BOOT_SKIP], [DOUBLE-BUY GUARD] place-order got
+                                           print (they have no logger copy).
     A marker found in the other kind of segment is counted in `unparsed` as
     "<MARKER>@wrong_form" so a format change cannot hide.
   * Print-only events have no time of their own: ts_ms is the last logger stamp before
@@ -131,6 +132,40 @@ PLACE_ORDERS (v2, one row per main-tab "[INTERCEPTOR:main] [CHECKOUT_POST]")
   API_PO@http0 (fetch threw: the POST may not exist), PO_CLAIM@unmatched, PO@path_unknown,
   PO@ident_null, PO@tcin_null, PO@window_null. order_id: the order line within 100 lines after
   a 200's response.
+
+ATC_NET (v3, 2026-10-05; TARGET_ATC_NET_META=1, purchase_executor.py atc_net_line) one row per
+  print-only "[ATC_NET] ident= m= st= conn= reused= ip=<ip>:<port> proto= send_ms= ttfb_ms=
+  connect_ms= ssl_ms= rid=" line (one per MAIN-tab cart_items response: the POST, its OPTIONS
+  preflight, any other method). '-' -> NULL. port = the text after the LAST ':' of ip= (an IPv6
+  address keeps its brackets as printed). send_ms is the line's own clock: Chrome's wall-clock ms
+  when the request left (it is NOT the print time). The install / enable lines go to `checks`;
+  "ident=? (format error)" is unparseable (counted under ATC_NET).
+  join  POST and OPTIONS rows, per method, one-to-one to a shot of the SAME ident that carries a JS
+        atc_t0 (shots.ts_src='atc_t0'; for POST also the same status when both are known):
+        join_dt_ms = send_ms - atc_t0 must lie in [-10, atc_rt + 10] -- a request leaves after its
+        JS start and before its response headers (atc_rt = headers-in minus atc_t0) -- or in
+        [-10, 300] when atc_rt is missing. Global greedy by |dt|. join_q 'ts' (dt <= 300 ms),
+        'ts_rt' (300 ms < dt <= atc_rt: a long interceptor pause), 'ts_multi' (picked among >1
+        candidate on either side; dt is stored, read it). Unjoined rows keep NULL shot columns, never
+        a guess: join_q 'no_shot' (no candidate), 'contested' (every candidate went to a closer row),
+        'no_send_ms', 'no_ident'; other methods NULL. Counted: ATC_NET@post_unjoined.
+        shot_line / shot_ts_ms / shot_gate / race_seq / tcin / shot_idx / is_first /
+        flip_opened_race are COPIED from the joined shots row (two shots can share a physical line,
+        so (run_id, line) is not a key into shots).
+GATE_EVENTS (v3) one row per print-only gate marker; ts_ms = the last logger stamp before it
+  (ts_src 'logger_prior' -- these lines carry no time of their own). kind:
+    boot_skip_skipping / _ignored_all / _ignored_paths / _error   [WORKER_POOL] [BOOT_SKIP]
+    boot_skip_recorded / _cleared / _none / _error                [SYSTEM] [BOOT_SKIP] (app.py)
+    boot_skip_login_cleared / _login_clear_failed                 [BOOT_SKIP] (relogin_one.py)
+    po2xx_guard (FX-1005-PO2XX) / po_gateway_guard (408/5xx) / po_noresp_guard
+                                  [FAST_LANE] / [PAYMENT] [DOUBLE-BUY GUARD] place-order got ...
+    foreign_keep_po_only / foreign_keep_pre_po   [WON_CART_DIRECT] cart may hold a late add of ours
+                                  (foreign_entry) -- FX-1005-FOREIGN-KEEP; late_add_po_only /
+                                  late_add_pre_po = the same line for any other suspect (harvest_add,
+                                  orphan_atc), named in detail sus=
+    foreign_bail / foreign_bail_clear_failed     [FAST_LANE] foreign/extra cart item present
+  ident_or_acct: the [BOOT_SKIP] account as printed; the ident= of the won-cart / foreign lines;
+  NULL where the line names none (the [DOUBLE-BUY GUARD] lines). detail: the line's own fields.
 """
 from __future__ import annotations
 
@@ -145,7 +180,8 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 2       # 2026-10-01: legacy_retry shots, place_orders, 400 body code/cart_limit, episodes
+PARSER_VERSION = 3       # 2026-10-05: atc_net ([ATC_NET] + shot join), gate_events (BOOT_SKIP/PO2XX/foreign)
+#                          v2 2026-10-01: legacy_retry shots, place_orders, 400 body code/cart_limit, episodes
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNS_DIR = ROOT / 'logs' / 'runs'
@@ -296,6 +332,41 @@ CO_HDR_KEY = re.compile(r"'tgt-cart-error-key': '([^']*)'")
 API_PO = re.compile(r'\[API_PLACE_ORDER\] HTTP (?P<status>\d{1,3}) in [\d.]+s')
 WATCH = re.compile(r'\[STOCK WATCH\] (?P<tcin>' + TCIN + r'): in_stock=(?P<v>True|False)')
 VERIFY = re.compile(r'\[STOCK\] VERIFY \(cache-bust\): (?P<tcin>' + TCIN + r') -> \S+ in_stock=(?P<v>True|False)')
+# v3 (2026-10-05): INS-ATC-NET (purchase_executor.py atc_net_line; '-' = missing). ip= is split at
+# its LAST ':' (an IPv6 address may print with or without brackets); rid stops at a glued '['.
+_NV = r'(?:-?\d+|-)'
+ATC_NET = re.compile(r'\[ATC_NET\] ident=' + IDENT + r' m=(?P<m>[A-Za-z]+|\?|-) st=(?P<st>\d{1,3}|-) '
+                     r'conn=(?P<conn>' + _NV + r') reused=(?P<reused>[01]|-) ip=(?P<ipport>\S+?:(?:\d+|-)) '
+                     r'proto=(?P<proto>[^\s\[]+) send_ms=(?P<send>\d+|-) ttfb_ms=(?P<ttfb>' + _NV + r') '
+                     r'connect_ms=(?P<cms>' + _NV + r') ssl_ms=(?P<ssl>' + _NV + r') rid=(?P<rid>[\w.\-]+)')
+ATC_NET_AUX = re.compile(r'\[ATC_NET\] (?:(?P<inst>Network meta instrument installed on the main tab)'
+                         r'(?: ident=' + IDENT + r')?|(?P<enf>network\.enable failed)|(?P<insf>install failed))')
+# v3: the 10-05 gate markers (all print-only). FX-1005-BOOTSKIP (worker_pool.py / app.py /
+# relogin_one.py), FX-1005-PO2XX + its no-response / gateway siblings (purchase_executor.py
+# [DOUBLE-BUY GUARD]), FX-1005-FOREIGN-KEEP's won-cart re-read line, the 09-09 foreign-cart bail.
+BS_SKIPPING = re.compile(r'\[WORKER_POOL\] \[BOOT_SKIP\] skipping (?P<acct>[^\s\[]+) this boot — its boot login '
+                         r'probe failed as Worker 1 \((?P<reason>.*), x(?P<count>\d+), (?P<age>-?\d+) min ago\)')
+BS_ALL = re.compile(r'\[WORKER_POOL\] \[BOOT_SKIP\] every enabled account is on the skip list \((?P<list>.*?)\) '
+                    r'— IGNORING')
+BS_PATHS = re.compile(r'\[WORKER_POOL\] \[BOOT_SKIP\] an enabled account has no explicit session_path/profile_dir '
+                      r'— IGNORING')
+BS_WP_ERR = re.compile(r'\[WORKER_POOL\] \[BOOT_SKIP\] (?P<where>record|probe-failure bookkeeping) failed for '
+                       r'(?P<acct>[^\s\[]+?): (?P<err>.*)')
+BS_RECORDED = re.compile(r'\[SYSTEM\] \[BOOT_SKIP\] (?P<acct>[^\s\[]+) \(Worker 1\) recorded')
+BS_CLEARED = re.compile(r'\[SYSTEM\] \[BOOT_SKIP\] (?P<acct>[^\s\[]+) failed too while a skip was in force')
+BS_NONE = re.compile(r'\[SYSTEM\] \[BOOT_SKIP\] no skip recorded \((?P<act>[^,()]*), fleet=(?P<fleet>\d+)\)')
+BS_SYS_ERR = re.compile(r'\[SYSTEM\] \[BOOT_SKIP\] could not record Worker 1: (?P<err>.*)')
+BS_LOGIN = re.compile(r'\[BOOT_SKIP\] (?P<acct>[^\s\[]+?): (?:(?P<ok>cleared from the boot skip list)'
+                      r'|could not clear the boot skip list \((?P<err>.*))')
+PO_GUARD = re.compile(r'\[(?P<path>FAST_LANE|PAYMENT)\] \[DOUBLE-BUY GUARD\] place-order got '
+                      r'(?:HTTP (?P<st>\d{1,3})|(?P<nr>NO response)) (?P<rest>.*)')
+PO_GUARD_SKIP = re.compile(r'\(skip=(?P<v>[^)\s\[]*)\)')
+PO_GUARD_REASON = re.compile(r'\(reason=(?P<v>[^)\[]*)')       # a fetch_threw reason can wrap the line
+WCD_LATE = re.compile(r'\[WON_CART_DIRECT\] cart may hold a late add of ours \((?P<sus>[^)\s]*)\) — '
+                      r'(?:cart read shows only (?P<tcin>' + TCIN + r') x(?P<q>\d+): (?P<kept>po_only kept)'
+                      r'|(?P<pre>pre_po instead of po_only) \(cart read: (?P<desc>.*?)\))(?= ident=)')
+FL_FOREIGN = re.compile(r'\[FAST_LANE\] (?:(?P<bail>foreign/extra cart item present — clearing cart)'
+                        r'|cart clear after foreign_cart_item failed \((?P<err>.*))')
 
 # Presence patterns: a hit that its family's full regexes cannot parse is `unparsed`.
 PRINT_FAMILIES = [
@@ -324,6 +395,12 @@ PRINT_FAMILIES = [
     ('CO_POST', r'\[INTERCEPTOR:[\w-]+\] \[CHECKOUT_POST\] '),
     ('CO_RESP', r'\[INTERCEPTOR:[\w-]+\] \[CHECKOUT_RESPONSE\] '),
     ('API_PO', r'\[API_PLACE_ORDER\] HTTP '),
+    # v3 (2026-10-05)
+    ('ATC_NET', r'\[ATC_NET\] '),
+    ('BOOT_SKIP', r'(?:\[(?:WORKER_POOL|SYSTEM)\] )?\[BOOT_SKIP\] '),
+    ('PO_GUARD', r'\[(?:FAST_LANE|PAYMENT)\] \[DOUBLE-BUY GUARD\] place-order got '),
+    ('WCD_LATE', r'\[WON_CART_DIRECT\] cart may hold a late add of ours '),
+    ('FL_FOREIGN', r'\[FAST_LANE\] (?:foreign/extra cart item present|cart clear after foreign_cart_item failed)'),
     # logger-only markers seen in print text = a format change (counted, never parsed)
     ('FLIP@wrong_form', r'\[STOCK\]\[FLIP\] '),
     ('STATS@wrong_form', r'\[STOCK STATS\] '),
@@ -349,6 +426,9 @@ LOGGER_FAMILIES = [
     ('FS_TICKET@wrong_form', r'\[FS_TICKET\] '),
     ('CO_POST@wrong_form', r'\[CHECKOUT_POST\] '),
     ('API_PO@wrong_form', r'\[API_PLACE_ORDER\] HTTP '),
+    ('ATC_NET@wrong_form', r'\[ATC_NET\] '),                       # v3: print-only markers
+    ('GATE@wrong_form', r'\[BOOT_SKIP\] |\[DOUBLE-BUY GUARD\] place-order got |\[WON_CART_DIRECT\] cart may hold '
+                        r'a late add|\[FAST_LANE\] (?:foreign/extra cart item present|cart clear after foreign_cart)'),
 ]
 
 
@@ -877,6 +957,115 @@ class RunParser:
         self._add('sread', tcin=m.group('tcin'), v=1 if m.group('v') == 'True' else 0, kind='verify')
         return True
 
+    # -- v3 (2026-10-05): INS-ATC-NET + the gate markers (print-only) ---------------
+    def _h_ATC_NET(self, t, p, lg):
+        m = ATC_NET.match(t, p)
+        if m:
+            g = m.groupdict()
+            ip, _, port = g['ipport'].rpartition(':')
+            dash = lambda v: None if v in (None, '', '-') else v      # noqa: E731
+            meth = dash(g['m'])
+            self._add('atc_net', ident_raw=g['ident'], method=meth.upper() if meth else None,
+                      status=_int(dash(g['st'])), conn=_int(dash(g['conn'])), reused=_int(dash(g['reused'])),
+                      ip=dash(ip), port=_int(dash(port)), proto=dash(g['proto']), send_ms=_int(dash(g['send'])),
+                      ttfb_ms=_int(dash(g['ttfb'])), connect_ms=_int(dash(g['cms'])), ssl_ms=_int(dash(g['ssl'])),
+                      rid=dash(g['rid']))
+            return True
+        m = ATC_NET_AUX.match(t, p)
+        if m:
+            what = 'installed' if m.group('inst') else ('enable_failed' if m.group('enf') else 'install_failed')
+            self._add('atc_net_aux', what=what, ident_raw=m.group('ident'))
+            return True
+        return False                                     # incl. "ident=? (format error)": counted
+
+    def _gate(self, kind, acct=None, ident_raw=None, detail=None):
+        self._add('gate', kind=kind, acct=acct, ident_raw=ident_raw,
+                  detail=(detail.strip()[:300] or None) if detail else None)
+        return True
+
+    def _h_BOOT_SKIP(self, t, p, lg):
+        m = BS_SKIPPING.match(t, p)
+        if m:
+            return self._gate('boot_skip_skipping', acct=m.group('acct'),
+                              detail='reason=%s count=%s age_min=%s' % (m.group('reason'), m.group('count'),
+                                                                        m.group('age')))
+        m = BS_ALL.match(t, p)
+        if m:
+            return self._gate('boot_skip_ignored_all', detail='skip_list=' + m.group('list'))
+        if BS_PATHS.match(t, p):
+            return self._gate('boot_skip_ignored_paths')
+        m = BS_WP_ERR.match(t, p)
+        if m:
+            return self._gate('boot_skip_error', acct=m.group('acct'),
+                              detail='where=%s err=%s' % (m.group('where'), m.group('err')))
+        m = BS_RECORDED.match(t, p)
+        if m:
+            return self._gate('boot_skip_recorded', acct=m.group('acct'))
+        m = BS_CLEARED.match(t, p)
+        if m:
+            return self._gate('boot_skip_cleared', acct=m.group('acct'))
+        m = BS_NONE.match(t, p)
+        if m:
+            return self._gate('boot_skip_none', detail='act=%s fleet=%s' % (m.group('act'), m.group('fleet')))
+        m = BS_SYS_ERR.match(t, p)
+        if m:
+            return self._gate('boot_skip_error', detail='where=system err=' + m.group('err'))
+        m = BS_LOGIN.match(t, p)
+        if m:
+            if m.group('ok'):
+                return self._gate('boot_skip_login_cleared', acct=m.group('acct'))
+            return self._gate('boot_skip_login_clear_failed', acct=m.group('acct'),
+                              detail='err=' + re.sub(r'\)\s*$', '', m.group('err')))
+        return False
+
+    def _h_PO_GUARD(self, t, p, lg):
+        m = PO_GUARD.match(t, p)
+        if not m:
+            return False
+        rest = m.group('rest')
+        st = _int(m.group('st'))
+        if m.group('nr'):
+            kind = 'po_noresp_guard'
+        elif 200 <= st <= 299:
+            kind = 'po2xx_guard'                         # FX-1005-PO2XX
+        else:
+            kind = 'po_gateway_guard'                    # 408 / 5xx (WC-5XX-NOT-AMBIGUOUS)
+        det = ['path=' + m.group('path').lower(), 'status=' + (str(st) if st is not None else '-')]
+        sk, rs = PO_GUARD_SKIP.search(rest), PO_GUARD_REASON.search(rest)
+        if sk:
+            det.append('skip=' + sk.group('v'))
+        if rs:
+            det.append('reason=' + rs.group('v').strip())
+        det.append('fx=%d' % (1 if 'FX-1005-PO2XX' in rest else 0))
+        return self._gate(kind, detail=' '.join(det))
+
+    def _h_WCD_LATE(self, t, p, lg):
+        m = WCD_LATE.match(t, p)
+        if not m:
+            return False
+        im = IDENT_RE.match(t, m.end() + 1)
+        if im is None:
+            return False
+        fe = m.group('sus') == 'foreign_entry'           # FX-1005-FOREIGN-KEEP
+        if m.group('kept'):
+            kind = ('foreign_keep' if fe else 'late_add') + '_po_only'
+            det = 'sus=%s tcin=%s qty=%s' % (m.group('sus'), m.group('tcin'), m.group('q'))
+        else:
+            kind = ('foreign_keep' if fe else 'late_add') + '_pre_po'
+            det = 'sus=%s read=%s' % (m.group('sus'), m.group('desc'))
+        return self._gate(kind, ident_raw=im.group('ident'), detail=det)
+
+    def _h_FL_FOREIGN(self, t, p, lg):
+        m = FL_FOREIGN.match(t, p)
+        if not m:
+            return False
+        if m.group('bail'):
+            tail = t[m.end():]
+            cut = tail.find('[')
+            im = IDENT_RE.search(tail if cut < 0 else tail[:cut])
+            return self._gate('foreign_bail', ident_raw=im.group('ident') if im else None)
+        return self._gate('foreign_bail_clear_failed', detail='err=' + re.sub(r'\)\s*$', '', m.group('err')))
+
     # -- post-processing -----------------------------------------------------------
     def finish(self) -> dict:
         E = self.ev
@@ -900,7 +1089,8 @@ class RunParser:
             glued['UNKNOWN:' + r] += 1
             return r
 
-        for k in ('chain', 'orphan', 'notrel', 'exposure', 'wcd_end', 'pfetch', 'fwd'):
+        for k in ('chain', 'orphan', 'notrel', 'exposure', 'wcd_end', 'pfetch', 'fwd', 'atc_net', 'atc_net_aux',
+                  'gate'):
             for e in E[k]:
                 e['ident'] = norm(e.get('ident_raw'))
         for e in E['ticket']:
@@ -1433,6 +1623,16 @@ class RunParser:
             if w is not None and sh['ts_ms'] is not None:
                 sh['ep_age_ms'] = sh['ts_ms'] - w['first']
 
+        atc_net, net_unparsed, net_checks = self._atc_net(E, shots)
+        checks.update(net_checks)
+        # v3: gate markers -- one row each; the account of a [BOOT_SKIP] line is taken as printed
+        # (bounded by literal text; a skipped account is absent from [WORKER_POOL], so norm()
+        # would flag or 'repair' it), the ident= of the other lines through norm()
+        gate_events = [dict(line=e['line'], ts_ms=ep(e['naive']),
+                            ts_src='logger_prior' if e['naive'] is not None else None, kind=e['kind'],
+                            ident_or_acct=e['acct'] if e['acct'] is not None else e['ident'], detail=e['detail'])
+                       for e in sorted(E['gate'], key=lambda e: e['seq'])]
+
         place_orders, po_unparsed = self._place_orders(E, shots, races, ep, event_window, norm, idents)
 
         # ---- decoys (warmup-tab responses, one row each) --------------------------------
@@ -1634,6 +1834,7 @@ class RunParser:
                                  n=self.seen[fam] - self.parsed[fam], first_line=self.first_bad.get(fam)))
         # v2 structural remainders (Rule 2C): parsed lines that could not be classified
         unparsed += po_unparsed
+        unparsed += net_unparsed
         if retry_n:
             fl = next((sh['line'] for sh in shots if sh['src'] == 'legacy_retry' and sh['tcin'] is None), None)
             unparsed.append(dict(marker='PRETRY@tcin_null', seen=retry_n, parsed=retry_n - retry_tcin_null,
@@ -1651,7 +1852,7 @@ class RunParser:
                     tickets=tickets, loop_ends=loop_ends, decoys=decoys, monitor_stats=stats,
                     stock_status=stock_status, sellable_oos=sellable_oos, shadow206=shadow206,
                     orders=orders, idents=list(idents.values()), unparsed=unparsed,
-                    place_orders=place_orders,
+                    place_orders=place_orders, atc_net=atc_net, gate_events=gate_events,
                     checks=[dict(name=k, value=repr(v)) for k, v in sorted(checks.items())])
 
     PO_PAIR_GAP = 400      # lines: a [CHECKOUT_RESPONSE] HTTP pairs with a pending POST at most this far back
@@ -1900,6 +2101,98 @@ class RunParser:
             po_claim_unmatched=dict(claim_unmatched))
         return rows, un
 
+    NET_JOIN_SLACK_MS = 10     # JS Date.now() vs Chrome's wall clock: integer-ms rounding, both sides
+    NET_JOIN_EXPECT_MS = 300   # the expected send_ms - atc_t0 (the interceptor pause, ~90 ms seen 10-05)
+    NET_JOIN_METHODS = ('POST', 'OPTIONS')
+
+    def _atc_net(self, E, shots):
+        """v3: one row per [ATC_NET] line; POST / OPTIONS rows joined one-to-one (per method) to a
+        shot of the same ident by send_ms - atc_t0 (module doc, ATC_NET). Returns (rows, unparsed
+        rows, checks). Never forces a join: no candidate, or a lost contest, stays NULL and counted."""
+        nets = sorted(E['atc_net'], key=lambda e: e['seq'])
+        aux = E['atc_net_aux']
+        ck = {}
+        if aux:
+            inst = Counter(e['ident'] or '?' for e in aux if e['what'] == 'installed')
+            if inst:
+                ck['atc_net_installed'] = dict(inst)
+            for w in ('install_failed', 'enable_failed'):
+                n = sum(1 for e in aux if e['what'] == w)
+                if n:
+                    ck['atc_net_' + w] = n
+        if not nets:
+            return [], [], ck
+        by_ident = defaultdict(list)
+        for sh in shots:
+            if sh['ident'] and sh['ts_src'] == 'atc_t0' and sh['ts_ms'] is not None:
+                by_ident[sh['ident']].append(sh)
+        lo = -self.NET_JOIN_SLACK_MS
+        for e in nets:
+            e['shot'], e['dt'], e['q'] = None, None, None
+        for meth in self.NET_JOIN_METHODS:
+            pairs, nc_net, nc_shot = [], Counter(), Counter()
+            for e in nets:
+                if e['method'] != meth:
+                    continue
+                if not e['ident']:
+                    e['q'] = 'no_ident'
+                    continue
+                if e['send_ms'] is None:
+                    e['q'] = 'no_send_ms'
+                    continue
+                for sh in by_ident.get(e['ident'], ()):
+                    if (meth == 'POST' and e['status'] is not None and sh['status'] is not None
+                            and e['status'] != sh['status']):
+                        continue
+                    dt = e['send_ms'] - sh['ts_ms']
+                    rt = sh['atc_rt_ms']
+                    hi = rt + self.NET_JOIN_SLACK_MS if rt is not None else self.NET_JOIN_EXPECT_MS
+                    if lo <= dt <= hi:
+                        pairs.append((abs(dt), e['seq'], sh['_seq'], dt, e, sh))
+                        nc_net[e['seq']] += 1
+                        nc_shot[sh['_seq']] += 1
+            pairs.sort(key=lambda x: x[:3])
+            taken = set()
+            for _, _, _, dt, e, sh in pairs:
+                if e['shot'] is not None or sh['_seq'] in taken:
+                    continue
+                taken.add(sh['_seq'])
+                e['shot'], e['dt'] = sh, dt
+                if nc_net[e['seq']] > 1 or nc_shot[sh['_seq']] > 1:
+                    e['q'] = 'ts_multi'
+                else:
+                    e['q'] = 'ts' if dt <= self.NET_JOIN_EXPECT_MS else 'ts_rt'
+            for e in nets:
+                if e['method'] == meth and e['q'] is None:
+                    e['q'] = 'contested' if nc_net[e['seq']] else 'no_shot'
+        rows = []
+        for e in nets:
+            sh = e['shot']
+            rows.append(dict(
+                line=e['line'], ident=e['ident'], method=e['method'], status=e['status'], conn=e['conn'],
+                reused=e['reused'], ip=e['ip'], port=e['port'], proto=e['proto'], send_ms=e['send_ms'],
+                ttfb_ms=e['ttfb_ms'], connect_ms=e['connect_ms'], ssl_ms=e['ssl_ms'], rid=e['rid'],
+                join_q=e['q'], join_dt_ms=e['dt'],
+                shot_line=sh['line'] if sh else None, shot_ts_ms=sh['ts_ms'] if sh else None,
+                shot_gate=sh['gate'] if sh else None, race_seq=sh['race_seq'] if sh else None,
+                tcin=sh['tcin'] if sh else None, shot_idx=sh['shot_idx'] if sh else None,
+                is_first=sh['is_first'] if sh else None,
+                flip_opened_race=sh['flip_opened_race'] if sh else None))
+        posts = [x for x in rows if x['method'] == 'POST']
+        un = []
+        if posts:
+            bad = [x['line'] for x in posts if x['shot_line'] is None]
+            un.append(dict(marker='ATC_NET@post_unjoined', seen=len(posts), parsed=len(posts) - len(bad),
+                           n=len(bad), first_line=bad[0] if bad else None))
+            ck['atc_net_post_join'] = dict(Counter(x['join_q'] for x in posts))
+            # the other side of the reconciliation: atc_t0 shots of an instrumented ident with no POST row
+            joined = {e['shot']['_seq'] for e in nets if e['method'] == 'POST' and e['shot'] is not None}
+            idn = {x['ident'] for x in rows if x['ident']}
+            ck['atc_net_t0_shots_without_post'] = sum(
+                1 for i in idn for sh in by_ident.get(i, ()) if sh['_seq'] not in joined)
+        ck['atc_net_methods'] = dict(Counter(x['method'] or '-' for x in rows))
+        return rows, un, ck
+
     def _hms_epoch(self, hms, ref_naive):
         """[HH:MM:SS] (local) -> epoch ms, dated from the nearest logger stamp."""
         if ref_naive is None or self.utc_off is None:
@@ -2033,13 +2326,23 @@ SCHEMA = {
                      'race_seq INTEGER', 'window_id INTEGER', 'window_src TEXT', 'window_age_ms INTEGER',
                      'cart_line INTEGER', 'cart_src TEXT', 'po_idx INTEGER', 'ms_since_201 INTEGER',
                      'ms201_src TEXT', 'proxied INTEGER', 'order_id TEXT'],
+    # v3 (2026-10-05)
+    'atc_net': ['run_id TEXT', 'line INTEGER', 'ident TEXT', 'method TEXT', 'status INTEGER', 'conn INTEGER',
+                'reused INTEGER', 'ip TEXT', 'port INTEGER', 'proto TEXT', 'send_ms INTEGER', 'ttfb_ms INTEGER',
+                'connect_ms INTEGER', 'ssl_ms INTEGER', 'rid TEXT', 'join_q TEXT', 'join_dt_ms INTEGER',
+                'shot_line INTEGER', 'shot_ts_ms INTEGER', 'shot_gate TEXT', 'race_seq INTEGER', 'tcin TEXT',
+                'shot_idx INTEGER', 'is_first INTEGER', 'flip_opened_race INTEGER'],
+    'gate_events': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'kind TEXT',
+                    'ident_or_acct TEXT', 'detail TEXT'],
 }
 RUN_TABLES = [t for t in SCHEMA if t not in ('runs', 'ingested')]
 INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, ident)',
            'CREATE INDEX IF NOT EXISTS ix_races_run ON races(run_id, race_seq)',
            'CREATE INDEX IF NOT EXISTS ix_decoys_run ON decoys(run_id)',
            'CREATE INDEX IF NOT EXISTS ix_stats_run ON monitor_stats(run_id, line)',
-           'CREATE INDEX IF NOT EXISTS ix_po_run ON place_orders(run_id, line)']
+           'CREATE INDEX IF NOT EXISTS ix_po_run ON place_orders(run_id, line)',
+           'CREATE INDEX IF NOT EXISTS ix_atc_net_run ON atc_net(run_id, ident)',
+           'CREATE INDEX IF NOT EXISTS ix_gate_run ON gate_events(run_id, kind)']
 
 
 def connect(db: Path) -> sqlite3.Connection:
@@ -2093,6 +2396,11 @@ def summarize(run_id, res) -> str:
                  len(res['decoys']), len(res['tickets']), len(res['loop_ends']),
                  len(res['monitor_stats']), len(res['orders']), len(po),
                  sum(1 for x in po if x['status'] == 200))]
+    net, gev = res.get('atc_net') or [], res.get('gate_events') or []
+    if net or gev:                                     # v3
+        parts[0] += ' atc_net=%d (POST joined %d/%d) gate_events=%s' % (
+            len(net), sum(1 for x in net if x['method'] == 'POST' and x['shot_line'] is not None),
+            sum(1 for x in net if x['method'] == 'POST'), dict(sorted(Counter(x['kind'] for x in gev).items())))
     parts.append('    unparsed remainder: ' + (', '.join('%s %d/%d (first line %s)' % (
         u['marker'], u['n'], u['seen'], u['first_line']) for u in bad) if bad else 'none'))
     return '\n'.join(parts)

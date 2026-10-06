@@ -3,7 +3,7 @@
 Retailer-specific flow details, selectors, API specs, and step-by-step checkout procedures:
 
 - **Target flow, selectors, ATC POST, pre_checkout API, step-by-step, fragile points**: @docs/FLOW_TARGET.md
-- **Walmart flow, selectors, URL structure, multi-step checkout, stock check fields**: @docs/FLOW_WALMART.md
+- **Walmart: REMOVED 2026-09-21** (commit `9289edbf`; `docs/FLOW_WALMART.md` no longer exists). The Walmart notes below are history only.
 
 ## FLAG FOR @purchase-flow-engineer (2026-04-10)
 

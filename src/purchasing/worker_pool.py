@@ -64,6 +64,128 @@ from pathlib import Path as _Path
 _ROOT = _Path(__file__).resolve().parents[2]
 ACCOUNTS_CONFIG = _ROOT / "config" / "target_accounts.json"
 
+# ── 2026-10-05 FX-1005-BOOTSKIP: a failed boot login probe on Worker 1 ──────
+# app.py probes ONLY Worker 1 ('Hi,' greeting) and exits 87 on a miss; the
+# wrapper's relogin pass then reports that account "already logged in" and
+# relaunches the SAME fleet, so the bot loops until the operator steps in
+# (5 wrapper starts, 15 exits, 08-25 .. 10-04). With
+# TARGET_BOOT_SKIP_FAILED_W1=1 the exit path records Worker 1's account here
+# and the next boot builds the fleet WITHOUT it — the same effect as the
+# operator's 10-04 "enabled": false, which booted clean with business as W1.
+# An entry expires after TARGET_BOOT_SKIP_TTL_H hours (default 12, 1-48) and
+# is cleared by a successful login in relogin_one.py. A skip set that would
+# leave no account is ignored (today's behaviour). Default '0' = the file is
+# neither written nor read. Kill-switch: =0.
+BOOT_SKIP_FILE = _ROOT / "state" / "boot_skip_accounts.json"
+
+
+def boot_skip_on() -> bool:
+    return os.environ.get("TARGET_BOOT_SKIP_FAILED_W1", "0").strip() == "1"
+
+
+def boot_skip_ttl_s() -> float:
+    try:
+        h = float(os.environ.get("TARGET_BOOT_SKIP_TTL_H", "12"))
+    except (TypeError, ValueError):
+        h = 12.0
+    return min(48.0, max(1.0, h)) * 3600.0
+
+
+def _read_boot_skip(path: _Path) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = _json.load(f)
+        acc = d.get("accounts") if isinstance(d, dict) else None
+        return acc if isinstance(acc, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_boot_skip(path: _Path, accounts: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump({"accounts": accounts}, f, indent=2)
+    os.replace(tmp, path)
+
+
+def load_boot_skip(path: Optional[_Path] = None, now: Optional[float] = None) -> Dict[str, Any]:
+    """{account_id: entry} for unexpired entries. Never raises."""
+    now = time.time() if now is None else now
+    ttl = boot_skip_ttl_s()
+    out: Dict[str, Any] = {}
+    for acc_id, e in _read_boot_skip(path or BOOT_SKIP_FILE).items():
+        try:
+            if isinstance(e, dict) and now - float(e.get("ts", 0)) < ttl:
+                out[str(acc_id)] = e
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def record_boot_skip(account_id: str, reason: str = "", path: Optional[_Path] = None,
+                     now: Optional[float] = None) -> bool:
+    """Add/refresh an entry (expired entries are pruned). Never raises."""
+    try:
+        path = path or BOOT_SKIP_FILE
+        now = time.time() if now is None else now
+        acc = load_boot_skip(path, now)
+        prev = acc.get(str(account_id)) or {}
+        acc[str(account_id)] = {"ts": now, "reason": str(reason or "")[:200],
+                                "count": int(prev.get("count", 0) or 0) + 1}
+        _write_boot_skip(path, acc)
+        return True
+    except Exception as e:
+        print(f"[WORKER_POOL] [BOOT_SKIP] record failed for {account_id}: {e}")
+        return False
+
+
+def boot_skip_note_probe_failure(account_id: str, reason: str = "", pool_size: int = 0,
+                                 path: Optional[_Path] = None, now: Optional[float] = None,
+                                 definitive: bool = True) -> str:
+    """What a failed Worker-1 boot login probe means for the skip list (app.py
+    calls this just before exit 87, flag on). Returns the action taken:
+      'none'     — not definitive (init failure, the 90 s check timeout, a probe
+                   exception: a transient or global cause, so the list is left as
+                   it is and the relaunch is the pre-flag one), or no skip in force
+                   and fewer than 2 workers (never skip the last account);
+      'cleared'  — a skip is already in force, i.e. THIS boot already ran without
+                   an account and its new Worker 1 failed too: the cause is not one
+                   account (Target, the home line, the probe itself — 08-25 was a
+                   probe false negative), so every entry is dropped and the next
+                   boot runs the full fleet (the pre-flag loop). Checked BEFORE the
+                   size rule, so a 2-account fleet cut to 1 also recovers
+                   (verifier, 10-05);
+      'recorded' — no skip in force: record Worker 1's account.
+    Never raises (returns 'error')."""
+    try:
+        path = path or BOOT_SKIP_FILE
+        if not definitive:
+            return "none"
+        if load_boot_skip(path, now):
+            _write_boot_skip(path, {})
+            return "cleared"
+        if int(pool_size or 0) < 2:
+            return "none"
+        return "recorded" if record_boot_skip(account_id, reason, path=path, now=now) else "error"
+    except Exception as e:
+        print(f"[WORKER_POOL] [BOOT_SKIP] probe-failure bookkeeping failed for {account_id}: {e}")
+        return "error"
+
+
+def clear_boot_skip(account_id: str, path: Optional[_Path] = None) -> bool:
+    """Remove an account's entry, if any. True when one was removed. Never raises."""
+    try:
+        path = path or BOOT_SKIP_FILE
+        acc = _read_boot_skip(path)
+        if str(account_id) not in acc:
+            return False
+        acc.pop(str(account_id), None)
+        _write_boot_skip(path, acc)
+        return True
+    except Exception:
+        return False
+
 
 def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig]:
     """Build one WorkerConfig per ENABLED account in target_accounts.json.
@@ -81,11 +203,45 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
         data = _json.load(f)
     accounts = data.get("accounts", []) if isinstance(data, dict) else []
 
+    # FX-1005-BOOTSKIP: accounts whose boot login probe failed as Worker 1 are
+    # treated exactly like "enabled": false for this boot (see BOOT_SKIP_FILE).
+    skip_ids = set()
+    if boot_skip_on():
+        _skips = load_boot_skip()
+        _enabled = [str(a.get("account_id") or "") for a in accounts
+                    if isinstance(a, dict) and a.get("enabled") is not False]
+        skip_ids = {i for i in _enabled if i in _skips}
+        if skip_ids and len(skip_ids) >= len(_enabled):
+            print(f"[WORKER_POOL] [BOOT_SKIP] every enabled account is on the skip list "
+                  f"({sorted(skip_ids)}) — IGNORING it and booting the full fleet")
+            skip_ids = set()
+        # Paths default by POSITION (Worker 1 = target.json); skipping an account
+        # without explicit paths would hand the next one Worker 1's jar.
+        if skip_ids and not all(isinstance(a, dict) and a.get("session_path") and a.get("profile_dir")
+                                for a in accounts
+                                if isinstance(a, dict) and a.get("enabled") is not False):
+            print("[WORKER_POOL] [BOOT_SKIP] an enabled account has no explicit session_path/"
+                  "profile_dir — IGNORING the skip list (positional defaults would shift)")
+            skip_ids = set()
+        for i in sorted(skip_ids):
+            e = _skips.get(i) or {}
+            print(f"[WORKER_POOL] [BOOT_SKIP] skipping {i} this boot — its boot login probe "
+                  f"failed as Worker 1 ({e.get('reason') or '?'}, x{e.get('count', 1)}, "
+                  f"{(time.time() - float(e.get('ts', 0) or 0)) / 60:.0f} min ago). "
+                  f"Hand-login it (relogin_one.py {i} --manual --force) to restore.")
+
     configs: List[WorkerConfig] = []
     seen_ids, seen_sessions, seen_profiles, seen_proxies = set(), set(), set(), set()
     enabled_idx = 0  # 0-based position among enabled accounts -> Worker (idx+1)
     for raw_idx, acc in enumerate(accounts):
         if not isinstance(acc, dict) or acc.get("enabled") is False:
+            continue
+        if skip_ids and str(acc.get("account_id") or "") in skip_ids:
+            # Keep its slot: the others keep their worker_id and so their label
+            # 'W{n}/{acct}', which keys the persisted AC-1 ambiguous-commit latch
+            # (bulletproof_purchase_manager._ac_ident) — a renumbered fleet would
+            # silently drop a latch across the relaunch (verifier, 10-05).
+            enabled_idx += 1
             continue
         acc_id = str(acc.get("account_id") or f"account-{enabled_idx + 1}")
         session_path = str(acc.get("session_path") or (

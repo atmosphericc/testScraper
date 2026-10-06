@@ -22,6 +22,33 @@ from harvest_accounts import (
 )
 from src.session.account_identity import build_identity, apply_identity
 
+
+def _clear_boot_skip(acc_id: str) -> None:
+    """2026-10-05 FX-1005-BOOTSKIP: a REAL login (hand login, or a scripted login
+    that passed) puts the account back in the fleet: drop its entry from
+    state/boot_skip_accounts.json (written by app.py when Worker 1's boot login
+    probe fails under TARGET_BOOT_SKIP_FAILED_W1=1; format and reader in
+    src/purchasing/worker_pool.py). The validate-first "already logged in"
+    pass does NOT clear it — that check also passes a guest session. Inline
+    (no worker_pool import: it pulls in the whole purchasing package).
+    Never raises."""
+    try:
+        import json
+        path = Path(__file__).resolve().parent / "state" / "boot_skip_accounts.json"
+        if not path.exists():
+            return
+        d = json.loads(path.read_text(encoding="utf-8"))
+        acc = d.get("accounts") if isinstance(d, dict) else None
+        if not isinstance(acc, dict) or acc_id not in acc:
+            return
+        acc.pop(acc_id, None)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"accounts": acc}, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        print(f"[BOOT_SKIP] {acc_id}: cleared from the boot skip list (real login)", flush=True)
+    except Exception as e:
+        print(f"[BOOT_SKIP] {acc_id}: could not clear the boot skip list ({e})", flush=True)
+
 _LOGFILE = ROOT / "logs" / "relogin.log"
 
 
@@ -382,7 +409,8 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
                 await full_signout(tab)
             await tab.get("https://www.target.com/account")
             await asyncio.sleep(3)
-            if await _on_account_page_loggedin(tab):
+            _was_in = await _on_account_page_loggedin(tab)
+            if _was_in:
                 log("MANUAL", f"{acc_id}: already logged in")
             else:
                 print(f"\n  >>> [{acc_id}] LOG IN BY HAND in the browser window "
@@ -397,6 +425,8 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
                 _write_session(ROOT / acc["session_path"], cookies, identity)
                 auth = [h for h in AUTH_COOKIE_HINTS if any(h in c["name"] for c in cookies)]
                 log("SAVE", f"{acc_id}: saved {acc['session_path']} ({len(cookies)} cookies, auth={auth})")
+                if force or not _was_in:
+                    _clear_boot_skip(acc_id)
             return ok
 
         # VALIDATE-FIRST: if the saved session is still logged in, just refresh its
@@ -428,6 +458,7 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
             _write_session(ROOT / acc["session_path"], cookies, identity)
             auth = [h for h in AUTH_COOKIE_HINTS if any(h in c["name"] for c in cookies)]
             log("SAVE", f"{acc_id}: saved {acc['session_path']} ({len(cookies)} cookies, auth={auth})")
+            _clear_boot_skip(acc_id)
         return ok
     finally:
         await asyncio.sleep(1)

@@ -96,7 +96,15 @@ mint on a flagged range and spend on it too.
 
 ## 2. The unlock nobody would guess: spread, don't stack
 
-[MEASURED — `tools/analysis/limiter_key.py`]
+[NOT ESTABLISHED — `tools/analysis/limiter_key.py`; re-derived 2026-10-05, docs/CLAIMS.md C-1005-G04]
+
+> **2026-10-05 correction.** The table below reproduces only as an ALL-SKU table (2,105 of its
+> 2,111 "9+" shots are the 08-27/28 Bright Data lottery night; the 5-8 row, 0.7%, was left out),
+> it pools August BD shots with September home-IP shots, and within first volleys the rates are
+> flat. Under window-age x first-window control the pass rate does fall with prior volume, but the
+> effect vanishes within TCIN x night outside 10-01. Whether our own volume spends the limiter is
+> UNVERIFIABLE from the logs either way, and "same-IP volleys are all-or-nothing" is NOT
+> ESTABLISHED (C-1005-G02). Do not cite the "~20x" spread arithmetic below as measured.
 
 Target's edge limiter is a **shared per-TCIN volume bucket**, not a per-identity
 cooldown. Pass rate vs prior shots on that TCIN in 120 s:

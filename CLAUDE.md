@@ -132,5 +132,5 @@ without telling us — a collapse went unnoticed for six weeks once.
 - No source files are off-limits. `src/session/purchase_executor.py` is editable (overrides prior "DO NOT modify" guidance from the AIO refactor memory).
 
 ## Test Before Deploy
-- **Offline suite is the gate:** `python tests/run_offline_suite.py` (26 files, ~3.5 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
+- **Offline suite is the gate:** `python tests/run_offline_suite.py` (34 files, ~6 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
 - Target resilient stack: `RESILIENT_TEST_DURATION_S=120 RESILIENT_TEST_NUM_IPS=1 python test_resilient_stack.py` (fast smoke) or `python test_resilient_stack.py` (default 30 min).

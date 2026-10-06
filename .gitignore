@@ -48,6 +48,7 @@ state/*_profiles/
 state/proxy_state.json
 # 2026-09-17 AC-1 ambiguous-commit latch (runtime state, restored after a relaunch)
 state/ambiguous_commit_latch*.json
+state/boot_skip_accounts.json*
 state/*_proxy_state.json
 # Local proxy-pool rollback backups (e.g. config/proxyIps.json.bak_*)
 config/proxyIps.json.bak_*

@@ -92,6 +92,9 @@ OFFLINE = [
     # (real ResilientStockChecker / StockMonitor parser on synthetic bodies, stubbed
     # urllib, temp state dir; no browser, no network).
     "test_status_log_and_206_shadow",
+    # 2026-10-05 gate-hardening audit: PO 2xx guard, foreign-keep, boot skip, edge
+    # re-arm, ATC network meta (stubs, temp files and a real checker only).
+    "test_gate_hardening_1005",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

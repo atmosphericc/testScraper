@@ -32,6 +32,16 @@ Pins:
     is gate cart_limit (past the limiter), and every gate-enumerating query still reconciles
   - FS-4: ssx_sequence's per-TCIN switch reading and the pre-registered verdicts; po_by_age
     and late_carts run and bin
+  v3 (2026-10-05):
+  - INS-ATC-NET: [ATC_NET] lines -> atc_net (IPv4 / bracketed IPv6 ip:port, '-' -> NULL, a line
+    glued to a logger stamp, a logger copy counted @wrong_form and never a second row, the
+    format-error line counted); POST / OPTIONS joined one-to-one to a same-ident atc_t0 shot inside
+    [-10, atc_rt + 10] ms -- ts / ts_rt / ts_multi, and the unjoinable rows (no_shot incl. a status
+    mismatch, contested, no_send_ms) left NULL and counted (ATC_NET@post_unjoined)
+  - gate_events: every BOOT_SKIP / DOUBLE-BUY GUARD (2xx = FX-1005-PO2XX, gateway, no response,
+    incl. a reason that wraps the line) / won-cart late-add (foreign_entry = FOREIGN-KEEP) /
+    foreign-bail line, glued lines, prior-logger time, a skipped account kept as printed
+  - the atc_net (coverage + first-volley wire rank / reuse / edge IP) and gate_events queries
 
 No browser, no network, no bot. Run: python tests/test_events_parser.py
 """
@@ -918,6 +928,241 @@ def test_v3_status_and_shadow():
               ('43', '120', '1', '1010892074') and sh2[0]['first_disagree'].startswith('tcin=1010892074'), sh2)
 
 
+# ---------------------------------------------------------------------------------
+# v3 (2026-10-05) builders -- shapes copied from purchase_executor.py atc_net_line, worker_pool.py /
+# app.py [BOOT_SKIP], the [DOUBLE-BUY GUARD] prints, the won-cart re-read and the foreign-cart bail
+# (run_20260930_233818 L58040; run_20260720_231634 L17147 for the wrapped fetch_threw reason)
+# ---------------------------------------------------------------------------------
+NET_IP4, NET_IP6 = '151.101.2.187:443', '[2600:1408:c400::17d5:b24]:443'
+
+
+def net(ident, m, st, send, conn=55, reused=1, ip=NET_IP4, ttfb=120, cms='-', ssl='-', rid='1234.5'):
+    return (f"[ATC_NET] ident={ident} m={m} st={st} conn={conn} reused={reused} ip={ip} proto=h2 "
+            f"send_ms={send} ttfb_ms={ttfb} connect_ms={cms} ssl_ms={ssl} rid={rid}")
+
+
+def _net_run_lines():
+    """A flip-opened race: primary / business / alt-1 fire at the flip and reach the wire in that
+    order (send 107 / 140 / 405 ms after the flip); primary is admitted (FAST_SELLING), the other two
+    edge-limited. Then the rows the join must NOT force: a POST with no shot near it, two POSTs inside
+    one re-shot's window, a status mismatch, a GET, an all-'-' row, a POST without send_ms."""
+    inst = "[ATC_NET] Network meta instrument installed on the main tab ident="
+    lines = [POOL, inst + 'primary', inst + 'business', inst + 'alt-1',
+             flip(TC, 1, T, 1), race(TC, ['primary', 'business', 'alt-1'])]
+    lines += [fire(TC), fire(TC), fire(TC)] + cred('primary', T + 40) + cred('business', T + 41) + cred('alt-1', T + 42)
+    lines += [net('primary', 'OPTIONS', 204, T + 67, reused=0, ttfb=31, cms=12, ssl=8, rid='1234.4'),
+              net('primary', 'POST', 429, T + 107, rid='1234.5'),
+              net('business', 'POST', 429, T + 140, conn=56, reused=0, ip=NET_IP6, cms=14, ssl=9, rid='1240.1')]
+    lines += resp(T + 167, 429, FSK) + resp(T + 180, 429, A2C)
+    # alt-1's [ATC_NET] print with its own [ATC_RESP] logger copy glued onto the line
+    lines += [f"[INTERCEPTOR:main] {resp_msg(429, A2C)}",
+              net('alt-1', 'POST', 429, T + 405, conn=57, ttfb='-', rid='1250.2') + L(T + 455, resp_msg(429, A2C))]
+    lines += [chain('primary', 429, T + 47, 120), chain('business', 429, T + 50, 130), chain('alt-1', 429, T + 55, 400)]
+    lines += [tick(T + 30000), net('primary', 'POST', 201, T + 30010, rid='1290.1')]      # a POST no shot claims
+    lines += shot('primary', TC, T + 60000, status=429, key=A2C, rt=150)               # the re-shot
+    lines += [net('primary', 'POST', 429, T + 60030, rid='1301.1'),                    # dt 30: wins
+              net('primary', 'POST', 429, T + 60070, rid='1301.2'),                    # dt 70: lost the contest
+              net('primary', 'POST', 201, T + 60050, rid='1301.3'),                    # status mismatch
+              net('primary', 'GET', 200, T + 61000, rid='1302.1'),
+              "[ATC_NET] ident=business m=? st=429 conn=- reused=- ip=-:- proto=- send_ms=- ttfb_ms=- "
+              "connect_ms=- ssl_ms=- rid=1303.1",
+              net('business', 'POST', 429, '-', conn=58, ttfb=88, rid='1303.2'),
+              L(T + 61500, net('alt-1', 'POST', 429, T + 61400, rid='1304.1')),         # logger copy: wrong form
+              "[ATC_NET] ident=? (format error)"]
+    return lines
+
+
+def test_v3_atc_net():
+    res = parse(_net_run_lines())
+    sh = [(s['ident'], s['shot_idx'], s['gate'], s['join_q']) for s in res['shots']]
+    check('v3_net_lines_leave_shots_alone', sh == [('primary', 1, 'admitted_fs', 'ts'), ('business', 1, 'wall1_limited', 'ts'),
+                                                   ('alt-1', 1, 'wall1_limited', 'ts'), ('primary', 2, 'wall1_limited', 'ts')]
+          and check_of(res, 'main_resp') == '4', sh)
+    an = res['atc_net']
+    got = [(r['ident'], r['method'], r['join_q'], r['join_dt_ms'], r['shot_idx'], r['shot_gate']) for r in an]
+    check('v3_net_rows_and_joins', got == [
+        ('primary', 'OPTIONS', 'ts', 20, 1, 'admitted_fs'),
+        ('primary', 'POST', 'ts', 60, 1, 'admitted_fs'),
+        ('business', 'POST', 'ts', 90, 1, 'wall1_limited'),
+        ('alt-1', 'POST', 'ts_rt', 350, 1, 'wall1_limited'),        # 300 < dt <= atc_rt (400) + 10
+        ('primary', 'POST', 'no_shot', None, None, None),
+        ('primary', 'POST', 'ts_multi', 30, 2, 'wall1_limited'),
+        ('primary', 'POST', 'contested', None, None, None),
+        ('primary', 'POST', 'no_shot', None, None, None),           # 201 vs the shot's 429: never forced
+        ('primary', 'GET', None, None, None, None),
+        ('business', '?', None, None, None, None),
+        ('business', 'POST', 'no_send_ms', None, None, None)], got)
+    b = an[2]
+    check('v3_net_ipv6_and_fields', (b['ip'], b['port'], b['reused'], b['conn'], b['connect_ms'], b['ssl_ms'], b['proto'],
+                                     b['rid'], b['send_ms'], b['status'], b['ttfb_ms'])
+          == ('[2600:1408:c400::17d5:b24]', 443, 0, 56, 14, 9, 'h2', '1240.1', T + 140, 429, 120), b)
+    a = an[3]
+    check('v3_net_glued_logger_line', (a['rid'], a['ttfb_ms'], a['ip'], a['port']) == ('1250.2', None, '151.101.2.187', 443), a)
+    d = an[9]
+    check('v3_net_dash_fields_null', (d['status'], d['conn'], d['reused'], d['ip'], d['port'], d['proto'], d['send_ms'],
+                                      d['connect_ms']) == (429, None, None, None, None, None, None, None), d)
+    p = an[1]
+    check('v3_net_copies_the_shot', (p['race_seq'], p['tcin'], p['is_first'], p['flip_opened_race'], p['shot_ts_ms'],
+                                     p['shot_line']) == (1, TC, 1, 1, T + 47, res['shots'][0]['line']), p)
+    u = {r['marker']: (r['n'], r['seen'], r['first_line']) for r in res['unparsed']}
+    check('v3_net_unjoined_counted', u.get('ATC_NET@post_unjoined') == (4, 8, an[4]['line']), u.get('ATC_NET@post_unjoined'))
+    check('v3_net_format_error_counted', u.get('ATC_NET', (None,))[:2] == (1, 15), u.get('ATC_NET'))
+    check('v3_net_logger_copy_not_a_row', u.get('ATC_NET@wrong_form', (None,))[:2] == (1, 1) and len(an) == 11, u)
+    check('v3_net_checks', check_of(res, 'atc_net_installed') == "{'primary': 1, 'business': 1, 'alt-1': 1}"
+          and check_of(res, 'atc_net_t0_shots_without_post') == '0'
+          and eval(check_of(res, 'atc_net_post_join')) == {'ts': 2, 'ts_rt': 1, 'ts_multi': 1, 'no_shot': 2,
+                                                           'contested': 1, 'no_send_ms': 1}, res['checks'])
+    # without atc_rt the window is [-10, 300]: a send 350 ms after atc_t0 is no longer joinable
+    lines = [POOL, race(TC, ['alt-1']), fire(TC), net('alt-1', 'POST', 429, T + 350),
+             "[FAST_LANE] chain done in 0.42s — atc=429 pre=0 po=0 skip=atc_429 ident=alt-1 "
+             f"atc_t0={T} atc_rt=- cart_qty=-",
+             net('alt-1', 'POST', 429, T - 11)]                                   # before its JS start: no
+    res = parse(lines)
+    check('v3_net_no_rt_window_300', [r['join_q'] for r in res['atc_net']] == ['no_shot', 'no_shot'], res['atc_net'])
+    res = parse(lines[:3] + [net('alt-1', 'POST', 429, T + 299)] + lines[4:5])
+    check('v3_net_no_rt_inside_300', [(r['join_q'], r['join_dt_ms']) for r in res['atc_net']] == [('ts', 299)],
+          res['atc_net'])
+    check('v3_net_absent_means_no_rows', parse([POOL, race(TC, ['primary'])] + shot('primary', TC, T))['atc_net'] == [])
+
+
+def _gate_run_lines():
+    pool2 = "[WORKER_POOL] sized from target_accounts.json: 2 account(s) -> ['business', 'alt-1']"
+    return [
+        flip(TC, 1, T - 1000, 1),                                                # a measured UTC offset
+        tick(T),
+        "[WORKER_POOL] [BOOT_SKIP] skipping primary this boot — its boot login probe failed as Worker 1 (boot login "
+        "probe failed (no greeting), x2, 13 min ago). Hand-login it (relogin_one.py primary --manual --force) to restore.",
+        pool2,
+        "[WORKER_POOL] [BOOT_SKIP] every enabled account is on the skip list (['alt-1', 'business']) — IGNORING it "
+        "and booting the full fleet",
+        tick(T + 1000),
+        "[SYSTEM] [BOOT_SKIP] business (Worker 1) recorded — the relaunch races WITHOUT it; hand-login it to restore"
+        + tick(T + 1500),
+        "[SYSTEM] [BOOT_SKIP] business failed too while a skip was in force — not an account problem; skip list "
+        "CLEARED, the relaunch boots the full fleet",
+        "[SYSTEM] [BOOT_SKIP] no skip recorded (none, fleet=1)",
+        tick(T + 5000),
+        "[FAST_LANE] [DOUBLE-BUY GUARD] place-order got HTTP 202 (skip=none) — an unexpected 2xx (FX-1005-PO2XX) — the "
+        "order may exist; POST may have committed. Bailing terminal, NOT retrying.",
+        "[PAYMENT] [DOUBLE-BUY GUARD] place-order got HTTP 204 (an unexpected 2xx, FX-1005-PO2XX — the order may exist) "
+        "(reason=http_204) — POST may have committed; NOT clicking DOM Place Order. Bailing terminal.",
+        "[FAST_LANE] [DOUBLE-BUY GUARD] place-order got HTTP 502 (skip=none) — a gateway error does not prove the order "
+        "failed; POST may have committed. Bailing terminal, NOT retrying.",
+        "[PAYMENT] [DOUBLE-BUY GUARD] place-order got NO response (reason=fetch_threw:Inspected target navigated or closed",
+        "command:Runtime.evaluate",
+        "[FAST_LANE] [DOUBLE-BUY GUARD] place-order got NO response (skip=evaluate_timeout) — POST may have committed. "
+        "Bailing terminal, NOT retrying.",
+        "[WON_CART_DIRECT] cart may hold a late add of ours (foreign_entry) — cart read shows only 1010892076 x2: "
+        "po_only kept ident=alt-1",
+        "[WON_CART_DIRECT] cart may hold a late add of ours (foreign_entry) — pre_po instead of po_only (cart read: "
+        "2 line(s) 1010892076x2,95082118x1) ident=W3/alt-1",
+        "[WON_CART_DIRECT] cart may hold a late add of ours (harvest_add) — pre_po instead of po_only (cart read: "
+        "failed status=429 err=-) ident=business",
+        # two prints glued: the bail's ident stops at the '[' of the next print, both are rows
+        "[FAST_LANE] foreign/extra cart item present — clearing cart + re-racing a fresh ATC (NOT buying the whole "
+        "cart) ident=business[WON_CART_DIRECT] cart may hold a late add of ours (orphan_atc) — cart read shows only "
+        "1010892076 x1: po_only kept ident=business",
+        "[FAST_LANE] cart clear after foreign_cart_item failed (HTTP 429 (cart_items))",
+        L(T + 9000, "[FAST_LANE] [DOUBLE-BUY GUARD] place-order got HTTP 202 (skip=none) — an unexpected 2xx "
+                    "(FX-1005-PO2XX)"),                                          # logger form: counted, no row
+    ]
+
+
+def test_v3_gate_events():
+    res = parse(_gate_run_lines())
+    g = [(r['kind'], r['ident_or_acct'], r['detail']) for r in res['gate_events']]
+    check('v3_gate_rows', g == [
+        ('boot_skip_skipping', 'primary', 'reason=boot login probe failed (no greeting) count=2 age_min=13'),
+        ('boot_skip_ignored_all', None, "skip_list=['alt-1', 'business']"),
+        ('boot_skip_recorded', 'business', None),
+        ('boot_skip_cleared', 'business', None),
+        ('boot_skip_none', None, 'act=none fleet=1'),
+        ('po2xx_guard', None, 'path=fast_lane status=202 skip=none fx=1'),
+        ('po2xx_guard', None, 'path=payment status=204 reason=http_204 fx=1'),
+        ('po_gateway_guard', None, 'path=fast_lane status=502 skip=none fx=0'),
+        ('po_noresp_guard', None, 'path=payment status=- reason=fetch_threw:Inspected target navigated or closed fx=0'),
+        ('po_noresp_guard', None, 'path=fast_lane status=- skip=evaluate_timeout fx=0'),
+        ('foreign_keep_po_only', 'alt-1', 'sus=foreign_entry tcin=1010892076 qty=2'),
+        ('foreign_keep_pre_po', 'alt-1', 'sus=foreign_entry read=2 line(s) 1010892076x2,95082118x1'),
+        ('late_add_pre_po', 'business', 'sus=harvest_add read=failed status=429 err=-'),
+        ('foreign_bail', 'business', None),
+        ('late_add_po_only', 'business', 'sus=orphan_atc tcin=1010892076 qty=1'),
+        ('foreign_bail_clear_failed', None, 'err=HTTP 429 (cart_items)')], g)
+    ts = [(r['ts_ms'], r['ts_src']) for r in res['gate_events']]
+    check('v3_gate_prior_logger_time', ts[0] == (T, 'logger_prior') and ts[2] == (T + 1000, 'logger_prior')
+          and ts[3] == (T + 1500, 'logger_prior') and ts[5] == (T + 5000, 'logger_prior'), ts)
+    check('v3_gate_skipped_account_not_glue_repaired', check_of(res, 'ident_glue_repaired') is None,
+          check_of(res, 'ident_glue_repaired'))
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('v3_gate_remainder', (u.get('BOOT_SKIP'), u.get('PO_GUARD'), u.get('WCD_LATE'), u.get('FL_FOREIGN'),
+                                u.get('GATE@wrong_form')) == ((0, 5), (0, 5), (0, 4), (0, 2), (1, 1)), u)
+    # a changed format is counted, never a row
+    res = parse([POOL, "[SYSTEM] [BOOT_SKIP] something new happened",
+                 "[WON_CART_DIRECT] cart may hold a late add of ours (foreign_entry) — something else"])
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('v3_gate_unknown_format_counted', not res['gate_events'] and u.get('BOOT_SKIP') == (1, 1)
+          and u.get('WCD_LATE') == (1, 1), u)
+
+
+def test_v3_net_gate_queries():
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / 'runs'
+        logs.mkdir()
+        for name, ls in (('run_20990301_000000', _net_run_lines()), ('run_20990302_000000', _gate_run_lines()),
+                         ('run_20990303_000000', _ssx_lines('wwa'))):
+            (logs / (name + '.log')).write_bytes(('\r\n'.join(ls) + '\r\n').encode('utf-8'))
+        db = Path(tmp) / 'ev.sqlite'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ev.main(['--db', str(db), '--logs', str(logs)])
+        out = buf.getvalue()
+        check('v3_db_built_with_summary', '3 file(s) parsed' in out and 'atc_net=11 (POST joined 4/8)' in out
+              and "'po2xx_guard': 2" in out, out)
+
+        def q(*args):
+            b = io.StringIO()
+            with contextlib.redirect_stdout(b):
+                rc = evq.main(['--db', str(db), '--csv'] + list(args))
+            res_ = []
+            for blk in b.getvalue().strip().split('\n\n'):
+                rows_ = list(csv.reader(io.StringIO(blk.strip())))
+                res_.append([dict(zip(rows_[0], r)) for r in rows_[1:]] if rows_ else [])
+            return rc, res_
+
+        rc, (cov, rank, reuse, ip) = q('atc_net')
+        check('v3_q_atc_net_coverage_only_instrumented_runs', rc == 0 and [r['run'] for r in cov] == ['run_20990301_000000'],
+              cov)
+        c = cov[0] if cov else {}
+        check('v3_q_atc_net_coverage', tuple(c.get(k) for k in (
+            'net_lines', 'post_lines', 'options_lines', 'other_lines', 'shots', 't0_shots', 'post_joined', 'joined_pct',
+            'post_unjoined', 't0_no_post', 'q_ts', 'q_ts_rt', 'q_multi', 'options_joined', 'fo_races_2shots',
+            'fo_volleys')) == ('11', '8', '1', '2', '4', '4', '4', '50.0', '4', '0', '2', '1', '1', '1', '1', '1'), c)
+        got = [(r['wire_rank'], r['n'], r['w1_pass'], r['limited'], r['avg_behind_ms']) for r in rank]
+        check('v3_q_atc_net_wire_rank', got == [('1', '1', '1', '0', '0.0'), ('2', '1', '0', '1', '33.0'),
+                                                ('3', '1', '0', '1', '298.0')], got)
+        got = [(r['reused'], r['n'], r['w1_pass'], r['limited'], r['pass_pct'], r['rank1']) for r in reuse]
+        check('v3_q_atc_net_reuse', got == [('0', '1', '0', '1', '0.0', '0'), ('1', '2', '1', '1', '50.0', '1')], got)
+        got = [(r['edge_ip'], r['n'], r['idents'], r['w1_pass'], r['limited'], r['rank1']) for r in ip]
+        check('v3_q_atc_net_edge_ip', got == [('151.101.2.187', '2', '2', '1', '1', '1'),
+                                              ('[2600:1408:c400::17d5:b24]', '1', '1', '0', '1', '0')], got)
+        rc, (ge,) = q('gate_events')
+        by = {(r['run'], r['kind']): r for r in ge}
+        check('v3_q_gate_events_counts', rc == 0 and {k[1]: r['n'] for k, r in by.items()} == {
+            'boot_skip_skipping': '1', 'boot_skip_ignored_all': '1', 'boot_skip_recorded': '1', 'boot_skip_cleared': '1',
+            'boot_skip_none': '1', 'po2xx_guard': '2', 'po_gateway_guard': '1', 'po_noresp_guard': '2',
+            'foreign_keep_po_only': '1', 'foreign_keep_pre_po': '1', 'late_add_pre_po': '1', 'late_add_po_only': '1',
+            'foreign_bail': '1', 'foreign_bail_clear_failed': '1'}
+              and all(k[0] == 'run_20990302_000000' for k in by), ge)
+        r0 = by.get(('run_20990302_000000', 'boot_skip_skipping'), {})
+        check('v3_q_gate_events_first_ts_and_who', (r0.get('who'), r0.get('first_ts')) == ('primary', stamp(T)[:19])
+              and by[('run_20990302_000000', 'po2xx_guard')]['first_detail'] == 'path=fast_lane status=202 skip=none fx=1',
+              r0)
+        rc, (ge2,) = q('gate_events', '--run', '20990301')
+        check('v3_q_gate_events_run_filter', rc == 0 and ge2 == [], ge2)
+        rc, (cov2, *_rest) = q('atc_net', '--run', '20990302')
+        check('v3_q_atc_net_run_filter', rc == 0 and cov2 == [], cov2)
+
+
 if __name__ == "__main__":
     test_glued_lines()
     test_duplicates_counted_once()
@@ -935,5 +1180,8 @@ if __name__ == "__main__":
     test_v2_read_episodes()
     test_v2_queries()
     test_v3_status_and_shadow()
+    test_v3_atc_net()
+    test_v3_gate_events()
+    test_v3_net_gate_queries()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

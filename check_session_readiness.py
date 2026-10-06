@@ -407,8 +407,40 @@ def main() -> int:
               f"or re-run this script once the bot is up")
     else:
         print(f"TCIN VISIBILITY: UNKNOWN -- {_VIS.get('reason', 'see above')}")
+    for _line in boot_skip_report():
+        print(_line)
     print("=" * 78)
     return 0
+
+
+def boot_skip_report(path=None, now=None):
+    """2026-10-05 FX-1005-BOOTSKIP: lines naming every account the bot will
+    leave OUT of the fleet at its next boot (state/boot_skip_accounts.json,
+    written when Worker 1's boot login probe failed under
+    TARGET_BOOT_SKIP_FAILED_W1=1; reader/TTL in src/purchasing/worker_pool.py).
+    [] when there is none. Display only: never changes the verdict or exit
+    code. Never raises."""
+    import os
+    try:
+        path = Path(path) if path else ROOT / "state" / "boot_skip_accounts.json"
+        if not path.exists():
+            return []
+        acc = (json.loads(path.read_text(encoding="utf-8")) or {}).get("accounts") or {}
+        try:
+            ttl_h = min(48.0, max(1.0, float(os.environ.get("TARGET_BOOT_SKIP_TTL_H", "12"))))
+        except (TypeError, ValueError):
+            ttl_h = 12.0
+        now = time.time() if now is None else now
+        out = []
+        for a, e in sorted(acc.items()):
+            left_h = ttl_h - (now - float((e or {}).get("ts", 0) or 0)) / 3600.0
+            if left_h > 0:
+                out.append(f"BOOT SKIP: ⚠ {a} will be LEFT OUT of the next boot for {left_h:.1f} h more "
+                           f"({(e or {}).get('reason') or '?'}, x{(e or {}).get('count', 1)}) -- "
+                           f"hand_login_{a.replace('-', '')}_force.bat puts it back")
+        return out
+    except Exception as e:
+        return [f"BOOT SKIP: could not read the skip list ({e})"]
 
 
 if __name__ == "__main__":

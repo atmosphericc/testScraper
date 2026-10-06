@@ -4282,6 +4282,35 @@ if __name__ == '__main__':
                 if os.environ.get('TARGET_EXIT_ON_LOGIN_HALT', '1').lower() not in ('0', 'false', 'no'):
                     print("[SYSTEM] Exiting with code 87 so the restart wrapper can relogin + relaunch "
                           "(set TARGET_EXIT_ON_LOGIN_HALT=0 to idle instead)")
+                    # 2026-10-05 FX-1005-BOOTSKIP: only Worker 1 was probed; record
+                    # it so the relaunch boots the OTHER accounts instead of the
+                    # same fleet (5 wrapper starts looped here until the operator
+                    # stepped in). worker_pool.py owns the file, TTL and guards.
+                    try:
+                        from src.purchasing.worker_pool import boot_skip_on, boot_skip_note_probe_failure
+                        _gpm = _self_module.global_purchase_manager
+                        _wp = getattr(_gpm, 'worker_pool', None) if _gpm else None
+                        if boot_skip_on() and _wp is not None:
+                            _w1 = str(_wp.primary.cfg.account_id)
+                            # Only the probe's own "not logged in" answer counts; an init
+                            # failure, the 90 s timeout or a probe exception is transient
+                            # or global (login_check_error set) and records nothing.
+                            _act = boot_skip_note_probe_failure(
+                                _w1, reason=f"boot login probe failed ({login_check_error or 'no greeting'})",
+                                pool_size=_wp.size, definitive=(login_check_error is None))
+                            if _act == 'recorded':
+                                print(f"[SYSTEM] [BOOT_SKIP] {_w1} (Worker 1) recorded — the "
+                                      f"relaunch races WITHOUT it; hand-login it to restore")
+                                add_activity_log(f"{_w1} failed the boot login probe — next boot "
+                                                 f"runs without it", "warning", "system")
+                            elif _act == 'cleared':
+                                print(f"[SYSTEM] [BOOT_SKIP] {_w1} failed too while a skip was in force — "
+                                      f"not an account problem; skip list CLEARED, the relaunch boots "
+                                      f"the full fleet")
+                            else:
+                                print(f"[SYSTEM] [BOOT_SKIP] no skip recorded ({_act}, fleet={_wp.size})")
+                    except Exception as _bs_err:
+                        print(f"[SYSTEM] [BOOT_SKIP] could not record Worker 1: {_bs_err}")
                     add_activity_log("Exiting (code 87) for wrapper relogin + relaunch", "warning", "system")
                     try:
                         _kill_browser_now()  # release profile dirs for relogin_one.py
