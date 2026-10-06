@@ -1,6 +1,6 @@
 # CURRENT STATE — the only place live facts belong
 
-**As of: 2026-10-05 ~23:50 (PRE-DROP for the next restock: four 10-05 gate-audit flags ARMED at bat:1208-1220, COMMITTED `eb8ebaba` (not pushed); the final offline-suite run on the armed tree was DENIED by the auto-mode classifier — the operator runs it; primary needs a forced hand login) · gate-hardening audit C-1005-G01..G15 earlier this evening · post-run of `run_20261005_002518` (`wf_9651193b-efc`) ~13:30 · branch `feat_refract_arch_v1` · ARMED 10-05 (log-only): `RESILIENT_STATUS_LOG=1`, `RESILIENT_206_INGEST=shadow` (bat:128-129) · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (bat:1199) · F1 unarmed (operator declined 10-04) · host display never sleeps on AC (10-04)**
+**As of: 2026-10-05 ~23:50 (PRE-DROP for the next restock: four 10-05 gate-audit flags ARMED at bat:1208-1220, COMMITTED `eb8ebaba`; final offline suite 34/34 on the armed tree 10-06 ~00:0x; primary needs a forced hand login) · gate-hardening audit C-1005-G01..G15 earlier this evening · post-run of `run_20261005_002518` (`wf_9651193b-efc`) ~13:30 · branch `feat_refract_arch_v1` · ARMED 10-05 (log-only): `RESILIENT_STATUS_LOG=1`, `RESILIENT_206_INGEST=shadow` (bat:128-129) · ARMED 10-04: FX-1001-A `TARGET_HELD_LINE_FLIP_STRIKE=1` (bat:1199) · F1 unarmed (operator declined 10-04) · host display never sleeps on AC (10-04)**
 
 Every line below carries a date and a source. **Nothing in `.claude/agents/` or
 `.claude/agent-context.md` may restate a fact from this file** — those hold method
@@ -28,7 +28,7 @@ to be wrong rather than leaving them with a caveat.**
 | Outcomes | **10-01: 1 order, 2 units — the first hot-SKU order ever** (primary, 1011960739, in-chain first shot of a flip race, `8cba94c1`); hot carts → order 1/18 lifetime. **10-02 (30th Celebration): 0** — first edge lost to a host crash (0 shots), the rest 128/129 edge 429. **10-05 (03:00 ET 30th slot): 0, nothing went on sale** — the binder 1010892074 page appeared OUT OF STOCK at 02:00 CT and never flipped (bot + 5 alert accounts agree); 0 in-stock reads on 17 TCINs | C-1001-01, C-1002-F1/F2, C-1005-01/OP |
 | Monitor 206 storms | **02:00-03:34 on 10-05 RedSky 206'd 73.3% of sweeps; the bodies held complete stock fields (94/94) and we discard every 206** (third storm at the 02:00 CT slot: 09-25, 09-30, 10-05). Longest blind stretch <90 s; 0/28 past real windows opened inside a ≥50%-loss interval → a latency lever, not a measured unit lever. FS-206-SHADOW armed 10-05 (log-only) to measure agreement before any ingest | C-1005-03..06 |
 | Host | **The #1 controllable loss on 10-02.** 27/27 NVIDIA GPU-error episodes since 07-17 began at a display WAKE (screen off → on); since the 09-27 driver (617.14) 5/5 ended in bugcheck 0x116; on-screen buyer Chromes freeze in every episode. **10-04 ~22:00 (operator-approved): display timeout on AC 900 s → Never (`powercfg /change monitor-timeout-ac 0`; DC stays 180 s), screensaver OFF (`ScreenSaveActive` 1 → 0, applied live by SystemParametersInfo); AC sleep was already Never.** Restore: `powercfg /change monitor-timeout-ac 15` + `ScreenSaveActive=1`. A remote connection (Parsec, RDP) can still be a wake trigger (20/27 wakes carried code 6, NOT independently verified). Root-cause checklist from 07-13 (BIOS/microcode, XMP) still not done | 10-02 + 10-04 sections |
-| Blocked / operator decisions | **Host (operator):** no keyboard / mouse / remote session (Parsec, RDP) on the host during a drop window; then BIOS update + XMP off (07-13 checklist). **FX-1001-A** (a held line at a fresh flip → in-chain pre_checkout → place-order) — **v11 VERIFIED 10-03, ARMED 10-04 on all 3 accounts** (`set TARGET_HELD_LINE_FLIP_STRIKE=1`, bat:1199, IDENTS unset = every account per `purchase_executor.py:209-225`; the code on disk is the verified v11 — mtime 10-03 00:27:26, before the v11 suite and verifier #11); kill `=0`; readout R-FX in the 10-04 section. F1 — code landed flag-gated OFF; **operator declined arming 10-04** (~0 units on the late-draw data); EXP-1002-NET (one buyer on a second, non-BD network) — operator; E5 not built; E4 declined. **10-05: FX-1005-BOOTSKIP, FX-1005-PO2XX, FX-1005-FOREIGN-KEEP (needs PO2XX), INS-ATC-NET — ARMED 23:39 (bat:1208-1220), committed `eb8ebaba`, final suite pending (operator)** — details + checks (business CVV = the code default; readiness false red on primary's missing login-session) in the GATE-HARDENING AUDIT section | 10-02 + 10-04 + 10-05 audit sections |
+| Blocked / operator decisions | **Host (operator):** no keyboard / mouse / remote session (Parsec, RDP) on the host during a drop window; then BIOS update + XMP off (07-13 checklist). **FX-1001-A** (a held line at a fresh flip → in-chain pre_checkout → place-order) — **v11 VERIFIED 10-03, ARMED 10-04 on all 3 accounts** (`set TARGET_HELD_LINE_FLIP_STRIKE=1`, bat:1199, IDENTS unset = every account per `purchase_executor.py:209-225`; the code on disk is the verified v11 — mtime 10-03 00:27:26, before the v11 suite and verifier #11); kill `=0`; readout R-FX in the 10-04 section. F1 — code landed flag-gated OFF; **operator declined arming 10-04** (~0 units on the late-draw data); EXP-1002-NET (one buyer on a second, non-BD network) — operator; E5 not built; E4 declined. **10-05: FX-1005-BOOTSKIP, FX-1005-PO2XX, FX-1005-FOREIGN-KEEP (needs PO2XX), INS-ATC-NET — ARMED 23:39 (bat:1208-1220), committed `eb8ebaba`, offline suite 34/34 on the armed tree** — details + checks (business CVV = the code default; readiness false red on primary's missing login-session) in the GATE-HARDENING AUDIT section | 10-02 + 10-04 + 10-05 audit sections |
 | Process | `/post-run` → saved Workflow `.claude/workflows/post-run.js` (rounds until dry; blind replicator + refuter + judge per claim; canaries); facts from `tools/events/` (SQLite); PreToolUse hook blocks the common direct bot / login / live-test launches. **The hook is a safety net, not a guarantee:** an independent replay of 10,094 past commands (09-30) found launch forms it misses and some offline-test loops it wrongly blocks. The rule "bot start = operator only" still binds every agent regardless of the hook. | CLAUDE.md, 09-30 review |
 
 ## PRE-DROP 2026-10-05 ~23:50 (for the next restock; the binder 1010892074 is rumoured for 10-06 overnight [REPORTED, unconfirmed]) — `/pre-drop`
@@ -61,11 +61,10 @@ to be wrong rather than leaving them with a caveat.**
   Event store v3 (`PARSER_VERSION=3`): tables `atc_net`, `gate_events`; queries `atc_net.sql`,
   `gate_events.sql`; `tests/test_events_parser.py` 168/168; every pre-existing table identical
   row for row after the rebuild.
-- **NOT DONE — denied by the auto-mode classifier ("[Production Deploy]"):** the final
-  `tests/run_offline_suite.py` on the armed tree. The last full-suite results: 34/34 at 23:0x on the
-  code before the third verifier's fixes (`offline_suite_final_tree.txt`), and 34/34 (375 s) in
-  the event-store agent's run, which overlapped those fixes — neither is proven to cover the exact
-  final tree (the event-store agent's run ran 23:34-23:40, across the last edits at 23:38-23:39:46). **The operator runs it.**
+- **Final offline suite on the exact armed tree (`9fcff95d`, code = `eb8ebaba`): 34 passed, 0
+  failed, 367 s** [MEASURED, 10-06 ~00:0x] — `logs/analysis_2026_10_05/gate_audit/offline_suite_predrop_final.txt`.
+  (Run after the operator turned auto mode off; the auto-mode classifier had denied it as
+  "[Production Deploy]" at ~23:50.)
 
 **PRE-REGISTERED READOUT for the next run** (written before it; `python tools/events/build.py`
 then `python tools/events/q.py <query> --run <run_id>`):
@@ -86,8 +85,8 @@ then `python tools/events/q.py <query> --run <run_id>`):
   **R-COVER** (every window volleyed on every free account), **R-DECOY** (~20% keyless 401).
 
 **BOOT CHECKLIST (operator, first ~4 minutes):**
-0. Before starting: `venv\Scripts\python.exe tests\run_offline_suite.py` → `34 passed, 0 failed`;
-   `hand_login_primary_force.bat` → readiness 3/3 ✅ MEMBER.
+0. Before starting: `hand_login_primary_force.bat` → `check_session_readiness.py` 3/3 ✅ MEMBER
+   (the offline suite is already green on this tree).
 1. `=== drop-readiness check ===` → three ✅ MEMBER, and no `BOOT SKIP: ⚠` line.
 2. `[WORKER_POOL] sized from target_accounts.json: 3 account(s)` and no `[BOOT_SKIP] skipping` line.
 3. `✅ LOGGED IN TO TARGET.COM`; `[ATC_NET] Network meta instrument installed` appears on the
