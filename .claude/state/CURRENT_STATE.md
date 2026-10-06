@@ -42,6 +42,10 @@ to be wrong rather than leaving them with a caveat.**
   the bat's start pass refreshes them). 17/17 TCINs visible on the last run. **primary needs one
   forced hand login** (`hand_login_primary_force.bat`) — it is Worker 1 (a guest W1 exit-87s the
   bot) and whether checkout works without a login-session is NOT ESTABLISHED (C-1005-09/G12).
+  **→ DONE 10-06 00:30-00:31 by the operator** (`relogin.log`: forced sign-out, LOGGED IN ✅, 49
+  cookies incl. `login-session`). Readiness 00:3x: **3/3 ✅ MEMBER** — primary session-typed
+  login-session (promoted to 30 d at boot), member token to 04:31:02 (re-minted in-bot at expiry);
+  business + alt-1 login-session 26.0 d left, tokens refreshed by the bat's start pass.
 - **Proxy pool PASS [MEASURED]:** `validate_proxies.py`, production env (`apps_raw` etc.), pool=all,
   180 s: 20/20 exits HEALTHY, 537 sweeps, 537×200, 0×403/429/other, 20 sessions ready, 0 crashed
   (`logs/analysis_2026_10_05/gate_audit/validate_proxies_predrop.txt`; the shutdown
