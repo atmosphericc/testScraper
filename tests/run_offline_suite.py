@@ -99,6 +99,9 @@ OFFLINE = [
     # wave-first yield, lock-order pin (stub workers / stub checker, the real race loop
     # via the test_identity_rest harness, a temp StateStore; no browser, no network).
     "test_mass_restock_1006",
+    # 2026-10-06 run diagnostics, log-only: stall watchdog + [HEALTH] (app functions with stub
+    # locks), [STOCK][OTHER], /16 steer INFO, FX-1006 decision lines, bat pins (no browser/network).
+    "test_run_diagnostics_1006",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

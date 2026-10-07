@@ -1249,6 +1249,17 @@ REM FX-1006-LOCK: the stock handler takes the purchase-state snapshot before
 REM the dashboard lock, so it can no longer deadlock against a finishing racer
 REM that takes the two locks the other way round. Kill: TARGET_SHARED_LOCK_ORDER_FIX=0.
 set TARGET_SHARED_LOCK_ORDER_FIX=1
+REM 2026-10-06 run diagnostics, all log-only (no behaviour change). The stall
+REM watchdog dumps every thread's Python stack into the run log when a core lock
+REM stays held 45 s or the stock sweep stops 90 s, and prints [HEALTH] (memory,
+REM threads, handles, Chrome count, disk) every 5 min. Kill: TARGET_STALL_WATCHDOG=0.
+set TARGET_STALL_WATCHDOG=1
+REM [STOCK][OTHER] once a minute: the monitor's other bucket by HTTP status and
+REM error type and by exit. Kill: RESILIENT_OTHER_LOG=0.
+set RESILIENT_OTHER_LOG=1
+REM /16 steering away from souring subnets at INFO, once a minute per set.
+REM Kill: RESILIENT_SUBNET_STEER_LOG=0.
+set RESILIENT_SUBNET_STEER_LOG=1
 REM WC-2 hygiene on a held cart: no forced /cart re-warm before a legacy
 REM re-shoot, no warmup /cart nav while a cart is held, no fleet cycle-warm
 REM while stock is live, no duplicate pre_checkout, and a ride that ends as

@@ -457,6 +457,109 @@ class EventBus:
                         print(f"[EVENT] Error in {event_type} callback: {e}")
                         _write_error_log("event", f"Error in {event_type} callback: {e}")
 
+# ---------------------------------------------------------------------------
+# 2026-10-06 TARGET_STALL_WATCHDOG=1 (log-only): a hang leaves no trace --
+# faulthandler covers a crash, not a deadlock -- so a stuck bot would be
+# undiagnosable afterwards. Every 30 s this thread checks that the EventBus,
+# shared_data and purchase-state locks can each be taken within 45 s (one at a
+# time, released at once, never nested) and that the stock sweep counter
+# advanced within 90 s; if not it prints every thread's Python stack (at most
+# once per 10 min). Every 5 min it prints one [HEALTH] line. Never raises.
+# ---------------------------------------------------------------------------
+def _stall_watchdog_on():
+    return os.environ.get('TARGET_STALL_WATCHDOG', '0').strip() == '1'
+
+
+def _dump_all_thread_stacks(reason):
+    import traceback
+    names = {t.ident: t.name for t in threading.enumerate()}
+    out = [f"[STALL_WATCHDOG] ===== every thread's stack ({reason}) ====="]
+    for tid, frame in sys._current_frames().items():
+        out.append(f"[STALL_WATCHDOG] --- thread {names.get(tid, '?')} ({tid}) ---")
+        for chunk in traceback.format_stack(frame):
+            for sub in chunk.rstrip().splitlines():
+                # '[' -> '{' in the quoted source, so a frame that shows a print of a
+                # log marker can never be parsed as that marker.
+                out.append("[STALL_WATCHDOG]   " + sub.replace("[", "{").replace("]", "}"))
+    out.append("[STALL_WATCHDOG] ===== end of stacks =====")
+    # 25 lines per write: other threads' log lines interleave instead of waiting
+    # behind the whole dump on the console stream lock.
+    for i in range(0, len(out), 25):
+        print("\n".join(out[i:i + 25]))
+
+
+def _health_line(pm=None):
+    try:
+        import psutil
+        p = psutil.Process()
+        rss = p.memory_info().rss / 1e6
+        handles = p.num_handles() if hasattr(p, 'num_handles') else -1
+        chrome = 0
+        for q in psutil.process_iter(['name']):
+            try:
+                if (q.info.get('name') or '').lower().startswith('chrome'):
+                    chrome += 1
+            except Exception:
+                pass
+        disk = psutil.disk_usage(os.path.abspath(os.sep)).free / 1e9
+        vm = psutil.virtual_memory().percent
+        cpu = psutil.cpu_percent(interval=None)
+        ap = len(getattr(pm, '_active_purchases', {}) or {}) if pm is not None else -1
+        res = len(getattr(pm, '_worker_reservations', {}) or {}) if pm is not None else -1
+        return (f"[HEALTH] rss={rss:.0f}MB os_threads={p.num_threads()} py_threads={threading.active_count()} "
+                f"handles={handles} chrome_procs_all={chrome} sys_cpu={cpu:.0f}% sys_mem={vm:.0f}% "
+                f"disk_free={disk:.0f}GB active_purchases={ap} reservations={res}")
+    except Exception as e:
+        return f"[HEALTH] unavailable ({type(e).__name__}: {e})"
+
+
+def _stall_watchdog_tick(pm, sm, state, wait_s=45.0, sweep_stall_s=90.0, health_s=300.0, dump_gap_s=600.0):
+    """One watchdog pass (split out for the offline test). `state` carries
+    last_dump / last_health / last_sweep / last_sweep_ts between passes."""
+    now = time.time()
+    stalled = []
+    for name, lk in (('event_bus.lock', getattr(event_bus, 'lock', None)),
+                     ('shared_data.lock', getattr(shared_data, 'lock', None)),
+                     ('purchase_manager._state_lock', getattr(pm, '_state_lock', None))):
+        if lk is None:
+            continue
+        t0 = time.time()
+        if lk.acquire(timeout=wait_s):
+            lk.release()
+        else:
+            stalled.append(f"{name} not free for {time.time() - t0:.0f}s")
+    chk = getattr(sm, '_resilient_checker', None) if sm is not None else None
+    sc = getattr(chk, '_sweep_count', None) if chk is not None else None
+    if sc is not None:
+        if sc != state.get('last_sweep'):
+            state['last_sweep'], state['last_sweep_ts'] = sc, now
+        elif sc > 0 and now - state.get('last_sweep_ts', now) >= sweep_stall_s:
+            # sc == 0: the monitor is still starting its Chromes (~205 s at boot) -- not a stall
+            stalled.append(f"stock sweep stuck at #{sc} for {now - state['last_sweep_ts']:.0f}s")
+    if stalled:
+        print("[STALL_WATCHDOG] STALL: " + "; ".join(stalled))
+        if now - state.get('last_dump', 0.0) >= dump_gap_s:
+            state['last_dump'] = now
+            _dump_all_thread_stacks("; ".join(stalled))
+    if now - state.get('last_health', 0.0) >= health_s:
+        state['last_health'] = now
+        print(_health_line(pm))
+    return stalled
+
+
+def _stall_watchdog_loop(pm, sm, every_s=30.0):
+    state = {}
+    while True:
+        time.sleep(every_s)
+        try:
+            _stall_watchdog_tick(pm, sm, state)
+        except Exception as e:
+            try:
+                print(f"[STALL_WATCHDOG] tick failed ({type(e).__name__}: {e})")
+            except Exception:
+                pass
+
+
 # Global thread-safe data and event system
 shared_data = ThreadSafeData()
 event_bus = EventBus()
@@ -1110,6 +1213,21 @@ class StockMonitorThread:
                              daemon=True, name='level-rearm').start()
             print(f"[LEVEL_REARM] armed — failed waves re-race every {_rearm_s:.0f}s "
                   f"while stock persists (TARGET_LEVEL_REARM_S=0 disables)")
+        # 2026-10-06: which multi-SKU dispatch fixes this boot runs with (a post-run
+        # reads this line first).
+        print("[FX1006] multi-SKU dispatch flags: " + " ".join(
+            f"{k}={os.environ.get(v, '0').strip() or '0'}" for k, v in (
+                ('FAIR', 'TARGET_MULTI_SKU_FAIR_SHARE'), ('MISS', 'TARGET_MULTI_SKU_MISS_REARM'),
+                ('KEEP', 'TARGET_STOCK_RESET_KEEP_LIVE_FAILED'), ('YIELD', 'TARGET_WAVE_FIRST_YIELD_MISSED'),
+                ('LOCK', 'TARGET_SHARED_LOCK_ORDER_FIX'))))
+        if _stall_watchdog_on():
+            threading.Thread(target=_stall_watchdog_loop,
+                             args=(self.purchase_manager, self.stock_monitor),
+                             daemon=True, name='stall-watchdog').start()
+            print("[STALL_WATCHDOG] armed -- every 30 s: the bus / dashboard / purchase-state "
+                  "locks must be free within 45 s and the stock sweep must advance within 90 s, "
+                  "else every thread's stack is dumped to this log; [HEALTH] every 5 min "
+                  "(TARGET_STALL_WATCHDOG=0 disables)")
         # Log from a separate thread to avoid deadlock
         threading.Thread(target=lambda: add_activity_log("Stock monitor thread started", "success", "system"), daemon=True).start()
 

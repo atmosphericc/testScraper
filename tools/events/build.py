@@ -166,6 +166,19 @@ GATE_EVENTS (v3) one row per print-only gate marker; ts_ms = the last logger sta
     foreign_bail / foreign_bail_clear_failed     [FAST_LANE] foreign/extra cart item present
   ident_or_acct: the [BOOT_SKIP] account as printed; the ident= of the won-cart / foreign lines;
   NULL where the line names none (the [DOUBLE-BUY GUARD] lines). detail: the line's own fields.
+  v4 (2026-10-06) kinds -- detail = 'tcin=<first TCIN> ' + the line's text after the tag:
+    multi_sku_dispatch   [MULTI_SKU_DISPATCH]   who was reserved for which TCIN / pursued alongside
+    fair_share           [MULTI_SKU_FAIR_SHARE] FX-1006-FAIR split / old-window defer / spare accounts
+    multi_sku_miss       [MULTI_SKU_MISS]       a TCIN skipped (fleet busy, or every free worker sits out)
+    miss_rearm           [MULTI_SKU_MISS_REARM] hinted for re-offer -- or 'NOT hinted' and why
+    wave_yield           [WAVE_YIELD]           ident_or_acct = the racer that freed its account
+    keep_live_failed     [FX1006_KEEP]          a live 'failed' row kept on purpose
+    fx1006_flags / fx1006_bought   [FX1006]     the boot flag line / a purchase recorded for the guard
+    stall / stall_watchdog_armed / stall_watchdog_error   [STALL_WATCHDOG] (the stack-dump lines are
+                         consumed without a row -- read them in the run log by line number)
+    health               [HEALTH]               rss / threads / handles / chrome_procs / cpu / mem / disk
+    monitor_other        [STOCK][OTHER]         (logger) the monitor's 'other' bucket by status / error / exit
+    subnet_steer         [MULTI_SESSION] pick_session steering away (logger) a /16 excluded from sweeps
 """
 from __future__ import annotations
 
@@ -180,7 +193,8 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 3       # 2026-10-05: atc_net ([ATC_NET] + shot join), gate_events (BOOT_SKIP/PO2XX/foreign)
+PARSER_VERSION = 4       # 2026-10-06: gate_events also carry the FX-1006 dispatch markers + run diagnostics
+#                          (2026-10-05 v3: atc_net ([ATC_NET] + shot join), gate_events (BOOT_SKIP/PO2XX/foreign))
 #                          v2 2026-10-01: legacy_retry shots, place_orders, 400 body code/cart_limit, episodes
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -365,6 +379,16 @@ PO_GUARD_REASON = re.compile(r'\(reason=(?P<v>[^)\[]*)')       # a fetch_threw r
 WCD_LATE = re.compile(r'\[WON_CART_DIRECT\] cart may hold a late add of ours \((?P<sus>[^)\s]*)\) — '
                       r'(?:cart read shows only (?P<tcin>' + TCIN + r') x(?P<q>\d+): (?P<kept>po_only kept)'
                       r'|(?P<pre>pre_po instead of po_only) \(cart read: (?P<desc>.*?)\))(?= ident=)')
+FX_LINE = re.compile(r'\[(?P<tag>MULTI_SKU_FAIR_SHARE|MULTI_SKU_MISS_REARM|MULTI_SKU_MISS|MULTI_SKU_DISPATCH'
+                     r'|WAVE_YIELD|FX1006_KEEP|FX1006)\] (?P<rest>.*)')
+FX_KIND = {'MULTI_SKU_FAIR_SHARE': 'fair_share', 'MULTI_SKU_MISS_REARM': 'miss_rearm',
+           'MULTI_SKU_MISS': 'multi_sku_miss', 'MULTI_SKU_DISPATCH': 'multi_sku_dispatch',
+           'WAVE_YIELD': 'wave_yield', 'FX1006_KEEP': 'keep_live_failed', 'FX1006': 'fx1006'}
+FX_TCIN = re.compile(r'(?<!\d)(' + TCIN + r')')
+STALL_LINE = re.compile(r'\[STALL_WATCHDOG\] (?P<rest>.*)')
+HEALTH_LINE = re.compile(r'\[HEALTH\] (?P<rest>.*)')
+OTHER_LINE = re.compile(r'\[STOCK\]\[OTHER\] (?P<rest>.*)')
+STEER_LINE = re.compile(r'\[MULTI_SESSION\] pick_session steering away from souring /16s (?P<rest>.*)')
 FL_FOREIGN = re.compile(r'\[FAST_LANE\] (?:(?P<bail>foreign/extra cart item present — clearing cart)'
                         r'|cart clear after foreign_cart_item failed \((?P<err>.*))')
 
@@ -401,6 +425,11 @@ PRINT_FAMILIES = [
     ('PO_GUARD', r'\[(?:FAST_LANE|PAYMENT)\] \[DOUBLE-BUY GUARD\] place-order got '),
     ('WCD_LATE', r'\[WON_CART_DIRECT\] cart may hold a late add of ours '),
     ('FL_FOREIGN', r'\[FAST_LANE\] (?:foreign/extra cart item present|cart clear after foreign_cart_item failed)'),
+    # v4 (2026-10-06): FX-1006 dispatch markers + run diagnostics
+    ('FX1006', r'\[(?:MULTI_SKU_FAIR_SHARE|MULTI_SKU_MISS_REARM|MULTI_SKU_MISS|MULTI_SKU_DISPATCH|WAVE_YIELD'
+               r'|FX1006_KEEP|FX1006)\] '),
+    ('STALL', r'\[STALL_WATCHDOG\] '),
+    ('HEALTH', r'\[HEALTH\] '),
     # logger-only markers seen in print text = a format change (counted, never parsed)
     ('FLIP@wrong_form', r'\[STOCK\]\[FLIP\] '),
     ('STATS@wrong_form', r'\[STOCK STATS\] '),
@@ -420,6 +449,8 @@ LOGGER_FAMILIES = [
     ('SELLOOS', r'\[STOCK\] SELLABLE-PARSED-OOS '),
     ('SHADOW206', r'\[STOCK\]\[206-SHADOW\] '),
     ('VERIFY', r'\[STOCK\] VERIFY \(cache-bust\): '),
+    ('OTHER', r'\[STOCK\]\[OTHER\] '),                            # v4 (2026-10-06)
+    ('STEER', r'\[MULTI_SESSION\] pick_session steering away from souring '),
     ('RACE@wrong_form', r'\[RACE\] '),
     ('FL_CHAIN@wrong_form', r'\[FAST_LANE\] chain done'),
     ('EXPOSURE@wrong_form', r'\[EXPOSURE\] '),
@@ -1038,6 +1069,47 @@ class RunParser:
             det.append('reason=' + rs.group('v').strip())
         det.append('fx=%d' % (1 if 'FX-1005-PO2XX' in rest else 0))
         return self._gate(kind, detail=' '.join(det))
+
+    # -- v4 (2026-10-06): FX-1006 dispatch markers + run diagnostics -----------------
+    def _h_FX1006(self, t, p, lg):
+        m = FX_LINE.match(t, p)
+        if not m:
+            return False
+        tag, rest = m.group('tag'), m.group('rest').strip()
+        kind, acct = FX_KIND[tag], None
+        if tag == 'WAVE_YIELD':
+            parts = rest.split(' ', 1)
+            acct, rest = parts[0], (parts[1] if len(parts) > 1 else '')
+        elif tag == 'FX1006':
+            kind = ('fx1006_flags' if rest.startswith('multi-SKU dispatch flags')
+                    else 'fx1006_bought' if ': bought' in rest else 'fx1006')
+        tm = FX_TCIN.search(rest) if kind != 'fx1006_flags' else None
+        return self._gate(kind, acct=acct, detail=(('tcin=%s ' % tm.group(1)) if tm else '') + rest)
+
+    def _h_STALL(self, t, p, lg):
+        m = STALL_LINE.match(t, p)
+        if not m:
+            return False
+        rest = m.group('rest').strip()
+        if rest.startswith('STALL:'):
+            return self._gate('stall', detail=rest[len('STALL:'):].strip())
+        if rest.startswith('armed'):
+            return self._gate('stall_watchdog_armed')
+        if rest.startswith('tick failed'):
+            return self._gate('stall_watchdog_error', detail=rest)
+        return True                       # a stack-dump line: read it in the run log
+
+    def _h_HEALTH(self, t, p, lg):
+        m = HEALTH_LINE.match(t, p)
+        return self._gate('health', detail=m.group('rest')) if m else False
+
+    def _h_OTHER(self, t, p, lg):
+        m = OTHER_LINE.match(t, p)
+        return self._gate('monitor_other', detail=m.group('rest')) if m else False
+
+    def _h_STEER(self, t, p, lg):
+        m = STEER_LINE.match(t, p)
+        return self._gate('subnet_steer', detail=m.group('rest')) if m else False
 
     def _h_WCD_LATE(self, t, p, lg):
         m = WCD_LATE.match(t, p)

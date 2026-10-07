@@ -758,6 +758,19 @@ class MultiSessionPool:
             logger.debug(f"[MULTI_SESSION] pick_session steering away from "
                          f"souring /16s {soured} "
                          f"({len(ready) - len(healthy)} session(s) excluded)")
+            # 2026-10-06 RESILIENT_SUBNET_STEER_LOG=1 (log-only): the same fact at
+            # INFO, at most once a minute -- on 10-06 the four
+            # 168.158/16 exits got ~20% fewer reads and the cause was invisible.
+            try:
+                if os.environ.get('RESILIENT_SUBNET_STEER_LOG', '0').strip() == '1':
+                    if now - float(getattr(self, '_steer_log_ts', 0.0) or 0.0) >= 60.0:
+                        self._steer_log_ts = now
+                        logger.info(f"[MULTI_SESSION] pick_session steering away from souring /16s "
+                                    f"{soured} ({len(ready) - len(healthy)} of {len(ready)} ready "
+                                    f"session(s) excluded; >= {SUBNET_4XX_EXCLUDE_THRESHOLD} 4xx "
+                                    f"in {RECENT_4XX_WINDOW_S:.0f}s)")
+            except Exception:
+                pass
         return random.choice(healthy if healthy else ready)
 
     def session_count(self) -> tuple[int, int]:

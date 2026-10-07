@@ -832,6 +832,10 @@ class ResilientStockChecker:
                 else:
                     self._total_other += 1
                 self._note_exit(result.pinned_ip, result.http_status)
+                try:
+                    self._note_other(result)       # log-only; can never break the sweep
+                except Exception:
+                    pass
                 self.proxy_state.record_status(result.pinned_ip, result.http_status)
                 if self.log_per_request:
                     logger.info(f"  ?? {result.session_id} ({result.pinned_ip}) "
@@ -865,6 +869,37 @@ class ResilientStockChecker:
                 d['429'] += 1
             else:
                 d['other'] += 1
+        except Exception:
+            pass
+
+    def _note_other(self, result) -> None:
+        """2026-10-06 RESILIENT_OTHER_LOG=1 (log-only): break the [STOCK STATS]
+        'other' bucket down by HTTP status and error type, at most one
+        [STOCK][OTHER] line a minute (only while 'other' reads happen), so a
+        post-run can tell a 206 storm from timeouts, 5xx or one dead exit (on
+        10-06, 243 of 567 'other' reads had no recorded cause). Never raises;
+        never affects the sweep."""
+        try:
+            if str(os.environ.get('RESILIENT_OTHER_LOG', '0')).strip() != '1':
+                return
+            st = int(getattr(result, 'http_status', 0) or 0)
+            if st == 429 and getattr(self, '_split_429', False):
+                return          # counted as 429= in [STOCK STATS], not as other=
+            err = str(getattr(result, 'error', '') or '')
+            _e = err.strip().replace('(', ' ').replace(':', ' ').split()
+            kind = _e[0][:40] if _e else ''
+            key = f"http={st}" + (f"/{kind}" if kind else '')
+            now = time.time()
+            if getattr(self, '_other_tally', None) is None:
+                self._other_tally, self._other_by_exit, self._other_since = {}, {}, now
+            self._other_tally[key] = self._other_tally.get(key, 0) + 1
+            ip = str(getattr(result, 'pinned_ip', '') or '?')
+            self._other_by_exit[ip] = self._other_by_exit.get(ip, 0) + 1
+            if now - self._other_since >= 60.0:
+                parts = ' '.join(f"{k}x{v}" for k, v in sorted(self._other_tally.items(), key=lambda kv: -kv[1])[:8])
+                ex = ' '.join(f"{k}x{v}" for k, v in sorted(self._other_by_exit.items(), key=lambda kv: -kv[1])[:6])
+                logger.info(f"[STOCK][OTHER] {now - self._other_since:.0f}s: {parts} | by exit: {ex}")
+                self._other_tally, self._other_by_exit, self._other_since = {}, {}, now
         except Exception:
             pass
 

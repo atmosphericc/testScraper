@@ -360,7 +360,8 @@ def _dispatch_stub(result):
         _total_403=0, _total_429=0, _total_other=0, _split_429=True, _outstanding=1,
         _note_exit=lambda ip, st: calls.append(("exit", st)),
         proxy_state=SimpleNamespace(record_status=lambda ip, st: calls.append(("rec", st))),
-        log_per_request=False, _shadow_206=lambda r: calls.append(("shadow", r.http_status)))
+        log_per_request=False, _shadow_206=lambda r: calls.append(("shadow", r.http_status)),
+        _note_other=lambda r: None)   # 2026-10-06 RESILIENT_OTHER_LOG tally (log-only)
     asyncio.run(ResilientStockChecker._dispatch_one(stub, False))
     return calls, (stub._total_dispatched, stub._total_other, stub._total_429, stub._outstanding)
 

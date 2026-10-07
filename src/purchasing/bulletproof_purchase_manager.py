@@ -1830,6 +1830,9 @@ class BulletproofPurchaseManager:
                                 and tcin not in stock_status and self._fx1006_in_stock_now(tcin)
                                 and self._fx1006_failed_this_window(tcin, state)
                                 and not self._fx1006_recently_purchased(tcin)):
+                            if self._fx1006_log_ok('keep', self._fx1006_window_key(tcin), 60.0):
+                                print(f"[FX1006_KEEP] {tcin}: kept 'failed' -- absent from this event, "
+                                      f"still in stock, failed this window; the level re-arm re-races it")
                             continue
                         # Product is OUT OF STOCK - reset everything to ready for next cycle
                         old_order = state.get('order_number', 'N/A')
@@ -3927,6 +3930,7 @@ class BulletproofPurchaseManager:
             return
         with _FX1006_LOCK:
             self._fx1006_dict('_fx1006_purchase_ts')[str(tcin)] = time.time()
+        print(f"[FX1006] {tcin}: bought -- no FX-1006 path re-offers it in this stock window")
 
     def _fx1006_recently_purchased(self, tcin, now=None, snap=None) -> bool:
         """An account of ours bought `tcin` IN ITS CURRENT STOCK WINDOW -- it has
@@ -4233,8 +4237,15 @@ class BulletproofPurchaseManager:
                 return
             snap = self.stock_snapshot(t, now=now)
             if self._fx1006_recently_purchased(t, now, snap):
+                if self._fx1006_log_ok('miss_refuse', self._fx1006_window_key(t), 60.0):
+                    print(f"[MULTI_SKU_MISS_REARM] {t}: NOT hinted -- one of our accounts bought it this "
+                          f"window (a repeat buy needs a real out-then-in flip)")
                 return
             if not _fx1006_reads_in_stock_rearm(snap, now):
+                if self._fx1006_log_ok('miss_refuse', self._fx1006_window_key(t), 60.0):
+                    _age = snap.get('age')
+                    print(f"[MULTI_SKU_MISS_REARM] {t}: NOT hinted -- latest read out of stock or too old "
+                          f"(age={'-' if _age is None else f'{float(_age):.0f}s'})")
                 return
             row['status'] = 'ready'
             row['rearm_hint_ts'] = now
@@ -4664,6 +4675,9 @@ class BulletproofPurchaseManager:
                                 and self._fx1006_in_stock_now(tcin)
                                 and self._fx1006_failed_this_window(tcin, state)
                                 and not self._fx1006_recently_purchased(tcin)):
+                            if self._fx1006_log_ok('keep30', self._fx1006_window_key(tcin), 60.0):
+                                print(f"[FX1006_KEEP] {tcin}: 30 s stuck-state reset skipped -- a live "
+                                      f"'failed' row kept on purpose")
                             continue
                         stuck_completed_states.append({
                             'tcin': tcin,

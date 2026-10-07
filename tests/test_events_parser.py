@@ -1163,6 +1163,53 @@ def test_v3_net_gate_queries():
         check('v3_q_atc_net_run_filter', rc == 0 and cov2 == [], cov2)
 
 
+def test_v4_fx1006_and_diag_gate_events():
+    """v4 (2026-10-06): FX-1006 dispatch markers + run diagnostics -> gate_events."""
+    lines = [
+        POOL,
+        L(T, "[STOCK STATS] t=30.0s sweeps=90 (3.0/s) 200=89 403=0 429=0 other=1", name='src.monitoring.stock_check_resilient'),
+        "[FX1006] multi-SKU dispatch flags: FAIR=1 MISS=1 KEEP=1 YIELD=1 LOCK=1",
+        f"[MULTI_SKU_DISPATCH] {TC}: reserved ['W1/primary'] (alongside ['{TC2}'])",
+        f"[MULTI_SKU_FAIR_SHARE] {TC}: 2 other fresh TCIN(s) ['{TC2}', '{TC3}'] -> taking 1 of 3 firing free worker(s) (cap 3; 0 would sit it out)",
+        f"[MULTI_SKU_MISS] {TC3} in-stock but SKIPPED — '{TC}#W1' holds the fleet (3 ready worker(s)); distinct hot SKU not pursued this cycle.",
+        f"[MULTI_SKU_MISS_REARM] {TC3}: hinted -- the level re-arm re-offers it while it reads in stock (window age 1.2s)",
+        f"[MULTI_SKU_MISS_REARM] {TC2}: NOT hinted -- one of our accounts bought it this window (a repeat buy needs a real out-then-in flip)",
+        f"[WAVE_YIELD] W2/business {TC}: ending this window mid-wait to free the account for skipped live TCIN {TC3} (keeping this attempt's result)",
+        f"[FX1006_KEEP] {TC2}: kept 'failed' -- absent from this event, still in stock, failed this window; the level re-arm re-races it",
+        f"[FX1006] {TC}: bought -- no FX-1006 path re-offers it in this stock window",
+        "[STALL_WATCHDOG] armed -- every 30 s: the bus / dashboard / purchase-state locks must be free within 45 s",
+        "[STALL_WATCHDOG] STALL: event_bus.lock not free for 45s",
+        "[STALL_WATCHDOG] ===== every thread's stack (event_bus.lock not free for 45s) =====",
+        "[STALL_WATCHDOG] --- thread MainThread (1234) ---",
+        '[STALL_WATCHDOG]   File "app.py", line 10, in main',
+        "[STALL_WATCHDOG] ===== end of stacks =====",
+        "[HEALTH] rss=900MB os_threads=80 py_threads=40 handles=2000 chrome_procs=24 sys_cpu=12% sys_mem=40% disk_free=180GB active_purchases=0 reservations=0",
+        L(T + 1000, "[STOCK][OTHER] 60s: http=206x12 http=0/TimeoutErrorx3 | by exit: 1.2.3.4x9",
+          name='src.monitoring.stock_check_resilient'),
+        L(T + 2000, "[MULTI_SESSION] pick_session steering away from souring /16s ['168.158'] (4 of 18 ready session(s) excluded; >= 2 4xx in 300s)",
+          name='src.session.multi_session_pool'),
+    ]
+    res = parse(lines)
+    g = [(r['kind'], r['ident_or_acct'], (r['detail'] or '')[:40]) for r in res['gate_events']]
+    kinds = [k for k, _a, _d in g]
+    check('v4_kinds', kinds == ['fx1006_flags', 'multi_sku_dispatch', 'fair_share', 'multi_sku_miss', 'miss_rearm',
+                                'miss_rearm', 'wave_yield', 'keep_live_failed', 'fx1006_bought',
+                                'stall_watchdog_armed', 'stall', 'health', 'monitor_other', 'subnet_steer'], kinds)
+    d = {k: (a, det) for k, a, det in g}
+    check('v4_tcin_prefix', d['multi_sku_dispatch'][1].startswith('tcin=%s ' % TC)
+          and d['keep_live_failed'][1].startswith('tcin=%s ' % TC2), g)
+    check('v4_flags_no_tcin', d['fx1006_flags'][1].startswith('multi-SKU dispatch flags'), d['fx1006_flags'])
+    check('v4_yield_acct', d['wave_yield'][0] == 'W2/business', d['wave_yield'])
+    check('v4_stall_detail', d['stall'][1].startswith('event_bus.lock not free'), d['stall'])
+    nh = [r for r in res['gate_events'] if r['kind'] == 'miss_rearm' and 'NOT hinted' in (r['detail'] or '')]
+    check('v4_not_hinted_kept', len(nh) == 1, nh)
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('v4_remainder_zero', all(u.get(k, (0, 0))[0] == 0 for k in ('FX1006', 'STALL', 'HEALTH', 'OTHER', 'STEER')), u)
+    check('v4_stack_lines_no_rows', sum(1 for r in res['gate_events'] if r['kind'].startswith('stall')) == 2,
+          [r['kind'] for r in res['gate_events']])
+    check('v4_parser_version', ev.PARSER_VERSION == 4, ev.PARSER_VERSION)
+
+
 if __name__ == "__main__":
     test_glued_lines()
     test_duplicates_counted_once()
@@ -1183,5 +1230,6 @@ if __name__ == "__main__":
     test_v3_atc_net()
     test_v3_gate_events()
     test_v3_net_gate_queries()
+    test_v4_fx1006_and_diag_gate_events()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)
