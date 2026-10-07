@@ -1215,19 +1215,29 @@ class StockMonitorThread:
                   f"while stock persists (TARGET_LEVEL_REARM_S=0 disables)")
         # 2026-10-06: which multi-SKU dispatch fixes this boot runs with (a post-run
         # reads this line first).
-        print("[FX1006] multi-SKU dispatch flags: " + " ".join(
-            f"{k}={os.environ.get(v, '0').strip() or '0'}" for k, v in (
-                ('FAIR', 'TARGET_MULTI_SKU_FAIR_SHARE'), ('MISS', 'TARGET_MULTI_SKU_MISS_REARM'),
-                ('KEEP', 'TARGET_STOCK_RESET_KEEP_LIVE_FAILED'), ('YIELD', 'TARGET_WAVE_FIRST_YIELD_MISSED'),
-                ('LOCK', 'TARGET_SHARED_LOCK_ORDER_FIX'))))
-        if _stall_watchdog_on():
-            threading.Thread(target=_stall_watchdog_loop,
-                             args=(self.purchase_manager, self.stock_monitor),
-                             daemon=True, name='stall-watchdog').start()
-            print("[STALL_WATCHDOG] armed -- every 30 s: the bus / dashboard / purchase-state "
-                  "locks must be free within 45 s and the stock sweep must advance within 90 s, "
-                  "else every thread's stack is dumped to this log; [HEALTH] every 5 min "
-                  "(TARGET_STALL_WATCHDOG=0 disables)")
+        try:
+            print("[FX1006] multi-SKU dispatch flags: " + " ".join(
+                f"{k}={os.environ.get(v, '0').strip() or '0'}" for k, v in (
+                    ('FAIR', 'TARGET_MULTI_SKU_FAIR_SHARE'), ('MISS', 'TARGET_MULTI_SKU_MISS_REARM'),
+                    ('KEEP', 'TARGET_STOCK_RESET_KEEP_LIVE_FAILED'), ('YIELD', 'TARGET_WAVE_FIRST_YIELD_MISSED'),
+                    ('LOCK', 'TARGET_SHARED_LOCK_ORDER_FIX'))))
+        except Exception:
+            pass
+        # HOTFIX 2026-10-07: this class holds the manager as _purchase_manager; the first
+        # build read self.purchase_manager, raised here and stopped monitoring_loop before
+        # purchase_thread.start(). A diagnostic must never break startup: fully guarded.
+        try:
+            if _stall_watchdog_on():
+                threading.Thread(target=_stall_watchdog_loop,
+                                 args=(getattr(self, '_purchase_manager', None),
+                                       getattr(self, 'stock_monitor', None)),
+                                 daemon=True, name='stall-watchdog').start()
+                print("[STALL_WATCHDOG] armed -- every 30 s: the bus / dashboard / purchase-state "
+                      "locks must be free within 45 s and the stock sweep must advance within 90 s, "
+                      "else every thread's stack is dumped to this log; [HEALTH] every 5 min "
+                      "(TARGET_STALL_WATCHDOG=0 disables)")
+        except Exception as _wd_err:
+            print(f"[STALL_WATCHDOG] not started ({type(_wd_err).__name__}: {_wd_err})")
         # Log from a separate thread to avoid deadlock
         threading.Thread(target=lambda: add_activity_log("Stock monitor thread started", "success", "system"), daemon=True).start()
 
