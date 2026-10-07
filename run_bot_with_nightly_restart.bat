@@ -1218,6 +1218,37 @@ set TARGET_FOREIGN_KEEP_WON=1
 REM INS-ATC-NET, log-only: one [ATC_NET] line per main-tab add-to-cart request
 REM (wire send time, connection id and reuse, edge ip, ttfb). Kill: TARGET_ATC_NET_META=0.
 set TARGET_ATC_NET_META=1
+REM 2026-10-06 pre-run audit for a MANY-SKU restock (docs/CLAIMS.md C-1006-01..07,
+REM CURRENT_STATE MASS-RESTOCK AUDIT). tests/test_mass_restock_1006.py, offline
+REM suite green, fresh claims-verifiers on the code. With WORKERS_PER_TCIN=3 the
+REM FIRST TCIN in the RedSky response took all 3 accounts, and every other TCIN
+REM live in the same window printed MULTI_SKU_MISS and got 0 shots for as long
+REM as it stayed in stock (21 of 51 multi-TCIN windows in the logs, 0 raced late).
+REM FX-1006-FAIR: a TCIN dispatched while other not-yet-raced TCINs read in stock
+REM on a window opened under 20 s ago takes ceil(firing free over 1 plus others)
+REM accounts, so same-sweep flips get one first shot each, and never reserves an
+REM account that would sit it out. A lone flip, or one beside old windows only,
+REM still takes all 3. grep MULTI_SKU_FAIR_SHARE. Kill: TARGET_MULTI_SKU_FAIR_SHARE=0.
+set TARGET_MULTI_SKU_FAIR_SHARE=1
+REM FX-1006-MISS: a MULTI_SKU_MISS TCIN keeps a re-arm hint, so the 3 s level
+REM re-arm re-offers it until an account frees, least-recently-dispatched first.
+REM Never a TCIN one of our accounts bought in its current stock window.
+REM grep MULTI_SKU_MISS_REARM. Kill: TARGET_MULTI_SKU_MISS_REARM=0.
+set TARGET_MULTI_SKU_MISS_REARM=1
+REM FX-1006-KEEP: a failed TCIN absent from another TCIN's stock event is no
+REM longer reset to a bare ready row the re-arm never re-offers, while the
+REM monitor reads it in stock. Kill: TARGET_STOCK_RESET_KEEP_LIVE_FAILED=0.
+set TARGET_STOCK_RESET_KEEP_LIVE_FAILED=1
+REM FX-1006-YIELD: a racer in the 55-70 s wave-first wait after an edge 429 or
+REM a 401 ends its window early, keeping that result, when a skipped TCIN reads
+REM in stock on a window under 20 s old and this account would not sit it out,
+REM so the next re-arm tick gives that account a first shot there. Inert unless
+REM MISS_REARM=1. grep WAVE_YIELD. Kill: TARGET_WAVE_FIRST_YIELD_MISSED=0.
+set TARGET_WAVE_FIRST_YIELD_MISSED=1
+REM FX-1006-LOCK: the stock handler takes the purchase-state snapshot before
+REM the dashboard lock, so it can no longer deadlock against a finishing racer
+REM that takes the two locks the other way round. Kill: TARGET_SHARED_LOCK_ORDER_FIX=0.
+set TARGET_SHARED_LOCK_ORDER_FIX=1
 REM WC-2 hygiene on a held cart: no forced /cart re-warm before a legacy
 REM re-shoot, no warmup /cart nav while a cart is held, no fleet cycle-warm
 REM while stock is live, no duplicate pre_checkout, and a ride that ends as

@@ -195,7 +195,8 @@ def test_pulse_knobs_and_defaults():
 def test_pulse_counter_source_pins():
     # 2026-09-09: the wave-first-only block (census) sits between the counter and
     # the pulse, so the region is wider and the pulse is now an `elif` behind it.
-    reg = _region(MGR_SRC, "if _gk == 'auth401':", after=5200)
+    # 2026-10-06: the FX-1006-YIELD branch in that block adds ~600 chars -> 6200.
+    reg = _region(MGR_SRC, "if _gk == 'auth401':", after=6200)
     check("auth401_increments", "_consec_401 += 1" in reg)
     check("edge_is_neutral", "elif _gk != 'edge':" in reg)
     check("pulse_guarded_by_flag_and_streak",

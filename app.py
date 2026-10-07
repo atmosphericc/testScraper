@@ -1774,6 +1774,17 @@ class PurchaseManagerThread:
                     actual_status = after_state.get('status')
                     is_in_stock = stock_lookup.get(tcin, False)
 
+                    # FX-1006-KEEP: a 'failed' row ABSENT from this event is left
+                    # 'failed' on purpose while the monitor reads it in stock (the
+                    # level re-arm keeps re-racing it), and one still inside the
+                    # reset's 3.5 s / 10 s error delay is kept by design too --
+                    # neither is a reset failure.
+                    if (actual_status == 'failed'
+                            and os.environ.get('TARGET_STOCK_RESET_KEEP_LIVE_FAILED', '0').strip() == '1'
+                            and (tcin not in stock_lookup
+                                 or time.time() - float(after_state.get('completed_at') or 0) < 10.5)):
+                        continue
+
                     if is_in_stock:
                         # Skip verification if TCIN transitioned to 'attempting' (purchase thread beat verification read)
                         # This is not a reset failure; it's the purchase thread claiming the item
@@ -1792,8 +1803,20 @@ class PurchaseManagerThread:
 
             # CRITICAL: Sync resets to shared_data BEFORE starting new purchases
             # This prevents race conditions where resets are invisible to dashboard
-            with shared_data.lock:
-                shared_data.purchase_states = self.purchase_manager.get_all_states()
+            # FX-1006-LOCK (TARGET_SHARED_LOCK_ORDER_FIX=1; default 0 = prior code):
+            # get_all_states() takes the purchase manager's _state_lock, and a
+            # finishing racer holds _state_lock while purchase_status_callback takes
+            # shared_data.lock -- the opposite order (docs/CLAIMS.md C-1006-05).
+            # Taking the snapshot first means this thread never holds both, so the
+            # two can no longer deadlock the stock handler (and with it, the
+            # EventBus every stock event goes through).
+            if os.environ.get('TARGET_SHARED_LOCK_ORDER_FIX', '0').strip() == '1':
+                _ps_snapshot = self.purchase_manager.get_all_states()
+                with shared_data.lock:
+                    shared_data.purchase_states = _ps_snapshot
+            else:
+                with shared_data.lock:
+                    shared_data.purchase_states = self.purchase_manager.get_all_states()
 
             # CRITICAL FIX (TEST_MODE): Force immediate dashboard update for resets
             # Ensures dashboard shows "ready" status immediately after "purchased"

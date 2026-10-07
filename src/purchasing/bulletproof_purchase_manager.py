@@ -99,6 +99,108 @@ def _multi_sku_cfg() -> Dict[str, int]:
     }
 
 
+# ── 2026-10-06 MASS-RESTOCK dispatch (FX-1006-FAIR / -MISS / -KEEP / -YIELD) ──
+# Pre-run audit for a restock with many SKUs live at once (docs/CLAIMS.md
+# C-1006-01..06). Under the bat's WORKERS_PER_TCIN=3 + CAP_ALWAYS=1 the FIRST
+# TCIN in the RedSky response took all 3 accounts and every other TCIN live in
+# the same window printed [MULTI_SKU_MISS] and got 0 shots for as long as it
+# stayed in stock (C-0924-01; 21 of 51 multi-TCIN windows in the logs, 0 raced
+# late). First shots in the first 5 s of a window are where orders come from
+# (hot era 71/240 past the limiter). Each flag defaults OFF = exact prior code.
+_FX1006_LOCK = threading.Lock()
+
+
+def _fair_share_on() -> bool:
+    """FX-1006-FAIR TARGET_MULTI_SKU_FAIR_SHARE=1: a TCIN dispatched while other
+    not-yet-raced TCINs read in stock on a FRESH window (opened in the last
+    TARGET_MULTI_SKU_FAIR_FRESH_S, 20) takes ceil(firing free / (1 + others))
+    workers instead of the WORKERS_PER_TCIN cap, so TCINs flipping in the same
+    sweep each get a t+0 first shot. With no other fresh-window TCIN live it
+    takes the full cap (old windows, flickers and raced TCINs never count). Only
+    accounts that would not sit the TCIN out are reserved, those least useful
+    to the other fresh TCINs first. Kill: =0."""
+    return os.environ.get('TARGET_MULTI_SKU_FAIR_SHARE', '0').strip() == '1'
+
+
+def _miss_rearm_on() -> bool:
+    """FX-1006-MISS TARGET_MULTI_SKU_MISS_REARM=1: a [MULTI_SKU_MISS] skip stamps
+    rearm_hint_ts on that one state row so the level re-arm re-offers the TCIN
+    every TARGET_LEVEL_REARM_S until a worker frees (C-0924-01); multi-TCIN
+    events are processed least-recently-dispatched first; the in-loop hint
+    writes are single-row (no stale-snapshot overwrite). Kill: =0."""
+    return os.environ.get('TARGET_MULTI_SKU_MISS_REARM', '0').strip() == '1'
+
+
+def _keep_live_failed_on() -> bool:
+    """FX-1006-KEEP TARGET_STOCK_RESET_KEEP_LIVE_FAILED=1: the stock-aware reset
+    no longer treats a TCIN ABSENT from a stock event as out of stock when its
+    row is 'failed' and the monitor's latest read is in stock -- the row stays
+    'failed', so the level re-arm keeps re-racing it (lead C-0924-03). Kill: =0."""
+    return os.environ.get('TARGET_STOCK_RESET_KEEP_LIVE_FAILED', '0').strip() == '1'
+
+
+def _wave_yield_on() -> bool:
+    """FX-1006-YIELD TARGET_WAVE_FIRST_YIELD_MISSED=1 (inert unless
+    TARGET_MULTI_SKU_MISS_REARM=1): a racer in the wave-first cold re-entry wait
+    (55-70 s after an ATC-level 429/401) ends its window early -- keeping that
+    attempt's result -- when a skipped TCIN reads in stock with a window no older
+    than TARGET_WAVE_FIRST_YIELD_MAX_AGE_S (20) and its account would not sit it
+    out, so the next re-arm tick hands the freed account a first shot there.
+    Several pending TCINs share the yielding racers. Kill: =0."""
+    return (os.environ.get('TARGET_WAVE_FIRST_YIELD_MISSED', '0').strip() == '1'
+            and _miss_rearm_on())
+
+
+def _fx1006_reads_in_stock(snap, now: float) -> bool:
+    """Pure: True only when the monitor's LATEST read of the TCIN was in stock and
+    is no older than TARGET_STOCK_PROBE_FRESH_S (15). Unlike the probe's 'live'
+    (True for TARGET_STOCK_HYST_S after the last in-stock read) this is the raw
+    last read, so a TCIN that just sold out is not counted."""
+    try:
+        age = (snap or {}).get('age')
+        if age is None or float(age) > _env_float_clamped('TARGET_STOCK_PROBE_FRESH_S', 15.0, 2.0, 120.0):
+            return False
+        lt = float(snap.get('last_true') or 0.0)
+        lf = float(snap.get('last_false') or 0.0)
+        return lt > 0.0 and lt >= lf
+    except Exception:
+        return False
+
+
+def _fx1006_reads_in_stock_rearm(snap, now: float) -> bool:
+    """Pure: the latest read was in stock and is no older than 90 s -- the same
+    tolerance app._build_level_rearm_map applies, so a hint is never refused for
+    a TCIN the re-arm would still offer (verifier #7: a 15-90 s old read left a
+    TCIN every free account sat out un-hinted and never re-offered, where HEAD's
+    AC-1 hint had no freshness check)."""
+    try:
+        age = (snap or {}).get('age')
+        if age is None or float(age) > 90.0:
+            return False
+        lt = float(snap.get('last_true') or 0.0)
+        lf = float(snap.get('last_false') or 0.0)
+        return lt > 0.0 and lt >= lf
+    except Exception:
+        return False
+
+
+def _fx1006_fresh_snap(snap, now: float) -> bool:
+    """Pure: the latest read is a fresh in-stock read on a window opened within
+    TARGET_MULTI_SKU_FAIR_FRESH_S (20) by a GENUINE flip -- the last out-of-stock
+    read came no more than that long before the window opened. A window renewed
+    by a read gap alone (no 200 for > TARGET_STOCK_HYST_S, no out-of-stock read)
+    or a first-ever read is not a flip, and nothing will publish it."""
+    try:
+        if not _fx1006_reads_in_stock(snap, now):
+            return False
+        young_s = _env_float_clamped('TARGET_MULTI_SKU_FAIR_FRESH_S', 20.0, 2.0, 60.0)
+        ws = float(snap.get('window_start') or 0.0)
+        lf = float(snap.get('last_false') or 0.0)
+        return ws > 0.0 and now - ws <= young_s and lf > 0.0 and 0.0 <= ws - lf <= young_s
+    except Exception:
+        return False
+
+
 def _valid_started_at(v) -> bool:
     """True for a usable epoch stamp (positive finite int/float, not bool)."""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
@@ -1719,6 +1821,16 @@ class BulletproofPurchaseManager:
                         reset_details.append(reset_info)
 
                     else:
+                        # FX-1006-KEEP: ABSENT from this event is not out of stock. A
+                        # single-TCIN event (another TCIN's flip, a one-TCIN re-arm)
+                        # reset every in-stock 'failed' row to a bare 'ready' that the
+                        # level re-arm never re-offers (lead C-0924-03). Leave it
+                        # 'failed' while the monitor's latest read is in stock.
+                        if (_keep_live_failed_on() and current_status == 'failed'
+                                and tcin not in stock_status and self._fx1006_in_stock_now(tcin)
+                                and self._fx1006_failed_this_window(tcin, state)
+                                and not self._fx1006_recently_purchased(tcin)):
+                            continue
                         # Product is OUT OF STOCK - reset everything to ready for next cycle
                         old_order = state.get('order_number', 'N/A')
                         old_completed_at = state.get('completed_at', 'unknown')
@@ -2692,7 +2804,16 @@ class BulletproofPurchaseManager:
                             print(f"[WAVE_FIRST] ATC-level {_gk} on {tcin} — no re-POST; cold re-entry in "
                                   f"{_re_s:.0f}s ident={_race_wlbl or 'auto'}")
                             _consec_401 = 0
-                            time.sleep(_re_s)
+                            if _wave_yield_on():
+                                # FX-1006-YIELD: free this account for a skipped live TCIN.
+                                _yt = self._wave_yield_sleep(tcin, _race_wlbl or 'auto', _re_s)
+                                if _yt:
+                                    print(f"[WAVE_YIELD] {_race_wlbl or 'auto'} {tcin}: ending this window "
+                                          f"mid-wait to free the account for skipped live TCIN {_yt} "
+                                          f"(keeping this attempt's result)")
+                                    break
+                            else:
+                                time.sleep(_re_s)
                         elif _pulse_on and _consec_401 >= _pulse_streak_n:
                             _pulse_s = min(random.uniform(_pulse_lo, _pulse_hi),
                                            max(0.0, _retry_deadline - time.time()) + 1.0)
@@ -2946,7 +3067,12 @@ class BulletproofPurchaseManager:
             # clamp at 8, so a fleet of 9+ always leaves some accounts idle on
             # a single-TCIN night.)
             _limit = _ms['per_tcin'] if (_others or _ms.get('cap_always')) else len(ready_workers)
-            dispatch_workers = self._reserve_workers_for_tcin(tcin, ready_workers, _limit)
+            _reserve_order = ready_workers
+            if _fair_share_on():
+                # FX-1006-FAIR: leave workers for the other TCINs on fresh windows,
+                # and reserve only accounts that will actually fire here.
+                _limit, _reserve_order = self._fair_share_plan(tcin, ready_workers, _limit, _others)
+            dispatch_workers = self._reserve_workers_for_tcin(tcin, _reserve_order, _limit)
             if not dispatch_workers:
                 print(f"[MULTI_SKU_DISPATCH] {tcin}: no unreserved worker "
                       f"(held by {sorted(_others)}) — not starting this cycle")
@@ -2955,6 +3081,8 @@ class BulletproofPurchaseManager:
             print(f"[MULTI_SKU_DISPATCH] {tcin}: reserved "
                   f"{[w.label() for w in dispatch_workers]}"
                   f"{f' (alongside {sorted(_others)})' if _others else ' (fleet idle)'}")
+            if _miss_rearm_on():
+                self._fx1006_note_acct_dispatch(tcin, dispatch_workers)
 
         if race_on:
             race_agg = {
@@ -3043,6 +3171,15 @@ class BulletproofPurchaseManager:
         clobbering each other. None preserves the legacy single-worker behavior
         exactly (the body below).
         """
+        # FX-1006: remember that we bought this TCIN -- on BOTH the race and the
+        # single-worker path -- so no FX-1006 path re-offers it inside the same
+        # stock window (HEAD parity: a 'purchased' row is never re-armed; an
+        # ambiguous commit stays per identity, the AC-1 latch). No-op flags off.
+        if isinstance(result, dict) and result.get('success'):
+            try:
+                self._fx1006_note_purchase(tcin)
+            except Exception:
+                pass
         if race_agg is not None:
             return self._record_race_result(tcin, result, race_agg, worker_label)
         with self._state_lock:
@@ -3746,10 +3883,459 @@ class BulletproofPurchaseManager:
                 return
             cur['status'] = 'ready'
             cur['rearm_hint_ts'] = time.time()
+            if _miss_rearm_on():
+                # FX-1006-MISS: one row, not the caller's whole (stale) snapshot.
+                self._fx1006_set_row(states, tcin, cur)
+                return
             states[tcin] = cur
             self._save_states_unsafe(states)
         except Exception:
             pass
+
+    # ── FX-1006 helpers (mass-restock dispatch; module flags above) ─────────
+    def _fx1006_dict(self, name: str) -> Dict:
+        """Lazily created per-manager dict (managers built without __init__ in
+        tests have none). Caller holds _FX1006_LOCK or tolerates a race."""
+        d = getattr(self, name, None)
+        if d is None:
+            d = {}
+            setattr(self, name, d)
+        return d
+
+    def _fx1006_set_row(self, states, tcin, row) -> None:
+        """Write ONE state row. process_stock_data's `states` is a snapshot taken
+        at its start; start_purchase writes rows to the store directly, so saving
+        the whole snapshot later in the same loop reverts them (a racing TCIN's
+        'attempting' row back to 'ready'). Caller holds _state_lock."""
+        states[tcin] = row
+        store = getattr(self, 'state_store', None)
+        if store is not None:
+            store.set(tcin, row)
+        else:
+            self._save_states_unsafe(states)
+
+    def _fx1006_in_stock_now(self, tcin, now=None) -> bool:
+        """The monitor's latest read of `tcin` is in stock and fresh. Never raises."""
+        try:
+            now = time.time() if now is None else float(now)
+            return _fx1006_reads_in_stock(self.stock_snapshot(tcin, now=now), now)
+        except Exception:
+            return False
+
+    def _fx1006_note_purchase(self, tcin) -> None:
+        if not (_miss_rearm_on() or _fair_share_on() or _keep_live_failed_on()):
+            return
+        with _FX1006_LOCK:
+            self._fx1006_dict('_fx1006_purchase_ts')[str(tcin)] = time.time()
+
+    def _fx1006_recently_purchased(self, tcin, now=None, snap=None) -> bool:
+        """An account of ours bought `tcin` IN ITS CURRENT STOCK WINDOW -- it has
+        not both read out of stock since the purchase and opened a new window
+        (window_start) after it -- so a bought TCIN is never
+        hinted, counted as a contender or yielded to until a real out-then-in
+        flip opens a new window -- the same rule the level re-arm keeps for a
+        'purchased' row (qty-2 repeats have drawn cancels). Without a window
+        stamp: bought within TARGET_MULTI_SKU_MISS_REARM_PURCHASED_HOLD_S (1800).
+        Never raises."""
+        try:
+            now = time.time() if now is None else float(now)
+            with _FX1006_LOCK:
+                ts = self._fx1006_dict('_fx1006_purchase_ts').get(str(tcin))
+            if not ts:
+                return False
+            if snap is None:
+                snap = self.stock_snapshot(tcin, now=now)
+            snap = snap or {}
+            if snap.get('age') is None:
+                hold = _env_float_clamped('TARGET_MULTI_SKU_MISS_REARM_PURCHASED_HOLD_S', 1800.0, 60.0, 86400.0)
+                return (now - float(ts)) < hold
+            ws = float(snap.get('window_start') or 0.0)
+            lf = float(snap.get('last_false') or 0.0)
+            # Same window unless BOTH an out-of-stock read came after the purchase
+            # and the window renewed after it (verifier #6: a >20 s read gap renews
+            # window_start with no flip at all).
+            return float(ts) >= ws or lf <= float(ts)
+        except Exception:
+            return False
+
+    def _fx1006_failed_this_window(self, tcin, row) -> bool:
+        """The 'failed' row was written in the TCIN's CURRENT stock window
+        (completed_at >= window_start). A failure left over from an earlier
+        window -- the TCIN went out of stock since and no event reset it --
+        must reset like HEAD, so the new window is raced as a fresh 'ready'
+        TCIN (verifier #5: KEEP had cancelled FAIR on exactly that). Never
+        raises (False = HEAD's reset)."""
+        try:
+            ws = float(self.stock_snapshot(tcin).get('window_start') or 0.0)
+            ca = float((row or {}).get('completed_at') or 0.0)
+            return ws > 0.0 and ca >= ws
+        except Exception:
+            return False
+
+    def _fx1006_fresh_window(self, tcin, now=None) -> bool:
+        """The TCIN reads in stock on a window opened by a GENUINE flip within
+        TARGET_MULTI_SKU_FAIR_FRESH_S (20) -- see _fx1006_fresh_snap. Never raises."""
+        try:
+            now = time.time() if now is None else float(now)
+            snap = self.stock_snapshot(tcin, now=now)
+            return _fx1006_fresh_snap(snap, now)
+        except Exception:
+            return False
+
+    def _fx1006_window_key(self, tcin) -> str:
+        try:
+            return f"{tcin}@{int(float(self.stock_snapshot(tcin).get('window_start') or 0.0))}"
+        except Exception:
+            return str(tcin)
+
+    def _fx1006_note_acct_dispatch(self, tcin, workers) -> None:
+        now = time.time()
+        with _FX1006_LOCK:
+            d = self._fx1006_dict('_fx1006_acct_dispatch')
+            for w in workers or ():
+                try:
+                    d[(str(w.label()), str(tcin))] = now
+                except Exception:
+                    pass
+
+    def _fx1006_worker_sits_out(self, w, tcin) -> bool:
+        """True when worker `w`, dispatched to `tcin`, would only sit out: an
+        in-thread skip reason (AC-1 latch, park, HS-1, ID-1) or a held won cart
+        for ANOTHER TCIN that still reads live (the executor's
+        held_cart_other_tcin skip, purchase_executor.py ~:10210). Handing it the
+        TCIN would open an empty race that ends 'failed' and is re-offered
+        every re-arm tick. Never raises (False = dispatch as before)."""
+        try:
+            t = str(tcin)
+            acct = str(getattr(getattr(w, 'cfg', None), 'account_id', '') or '')
+            if self._thread_skip_reason(self._ac_ident(w), acct, t, log=False):
+                return True
+            if os.environ.get('TARGET_HELD_CART_REENTRY', '0').strip() == '1':
+                h = getattr(getattr(w, 'purchase_executor', None), '_held_cart', None)
+                ht = str((h or {}).get('tcin') or '') if isinstance(h, dict) else ''
+                # A marker past TARGET_HELD_CART_TTL_S is retired by the executor
+                # (which then fires), so it is no sit-out.
+                ttl = _env_float_clamped('TARGET_HELD_CART_TTL_S', 900.0, 30.0, 86400.0)
+                created = float((h or {}).get('created') or 0.0) if isinstance(h, dict) else 0.0
+                fresh = (not created) or (time.time() - created) <= ttl
+                if ht and ht != t and fresh and self.stock_snapshot(ht).get('live') is True:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _fx1006_worker_line_tcin(self, w) -> str:
+        """The TCIN of a cart line this worker's executor still holds -- a
+        left-behind won line (_woncart_dirty) or a held won cart (_held_cart) --
+        or ''. Such an account belongs on THAT TCIN when it flips (FX-1001-A
+        strikes the line there; sent elsewhere it deletes it). Never raises."""
+        try:
+            ex = getattr(w, 'purchase_executor', None)
+            for attr in ('_woncart_dirty', '_held_cart'):
+                d = getattr(ex, attr, None)
+                if isinstance(d, dict) and d.get('tcin'):
+                    return str(d.get('tcin'))
+        except Exception:
+            pass
+        return ''
+
+    def _fx1006_worker_by_label(self, label):
+        try:
+            for w in list(getattr(self.worker_pool, 'workers', None) or []):
+                if w.label() == label:
+                    return w
+        except Exception:
+            pass
+        return None
+
+    def _fx1006_note_dispatch(self, tcin) -> None:
+        with _FX1006_LOCK:
+            self._fx1006_dict('_fx1006_last_dispatch')[str(tcin)] = time.time()
+            self._fx1006_dict('_fx1006_miss_pending').pop(str(tcin), None)
+
+    def _fair_share_contenders(self, tcin, others, free_workers, now=None) -> list:
+        """Other TCINs worth holding a worker back for: each reads in stock now on
+        a FRESH window -- opened within TARGET_MULTI_SKU_FAIR_FRESH_S (20) -- with
+        a 'ready' row, i.e. its t+0 first shot is still ahead
+        (orders come from the first ~5 s of a window, C-1006-03). Also: not
+        already reserved (`others`), no live racer, not bought by us this
+        window, and at least one FREE worker would not sit it out (checked
+        silently; a TCIN only busy accounts could race holds nothing back).
+        A stale 'failed' row from an earlier window was already reset to
+        'ready' by the stock-aware reset that runs before this event. The same-sweep case: the checker writes every status before
+        firing any callback (stock_check_resilient.py:937-980). Never counted:
+        a TCIN on an old window (a flicker back inside the hysteresis included)
+        or one already raced ('failed') -- it re-races with whatever is free and
+        must not shrink a fresh flip's volley. Never raises."""
+        try:
+            now = time.time() if now is None else float(now)
+            try:
+                states = self._load_states_unsafe() or {}
+            except Exception:
+                states = {}
+            out = []
+            for t in self.any_stock_live(exclude_tcin=tcin, now=now):
+                t = str(t)
+                if t in others:
+                    continue
+                snap = self.stock_snapshot(t, now=now)
+                if not _fx1006_fresh_snap(snap, now):
+                    continue
+                row = states.get(t) or {'status': 'ready'}
+                if row.get('status', 'ready') != 'ready':
+                    continue
+                if self._tcin_has_live_racer(t) or self._fx1006_recently_purchased(t, now, snap):
+                    continue
+                if not free_workers or all(self._fx1006_worker_sits_out(w, t) for w in free_workers):
+                    continue
+                out.append(t)
+            return out
+        except Exception:
+            return []
+
+    def _fair_share_plan(self, tcin, ready_workers, limit, others):
+        """FX-1006-FAIR: (limit, reserve order) for `tcin`. Only free workers
+        that would NOT sit `tcin` out are offered (so a sitter is never reserved
+        beside firing accounts); with C fresh-window contenders the cap is
+        ceil(those / (1 + C)); the order puts first the workers that could race
+        the FEWEST contenders, so a worker that sits a contender out is spent
+        here, not stranded. No firing worker at all -> (limit, ready_workers),
+        the prior behaviour (the all-sit-out MISS check upstream catches it).
+        Caller holds _state_lock. Never raises."""
+        try:
+            limit = int(limit)
+            free = self._free_workers(ready_workers)
+            fire = [w for w in free if not self._fx1006_worker_sits_out(w, tcin)]
+            if not fire:
+                return limit, ready_workers
+            contenders = self._fair_share_contenders(tcin, set(others or ()), free)
+            if contenders and not self._fx1006_fresh_window(tcin):
+                # An OLD-window TCIN beside fresh flips races only the accounts no
+                # fresh contender can use (with none, it was deferred upstream).
+                spare = [w for w in fire if all(self._fx1006_worker_sits_out(w, c) for c in contenders)]
+                if spare:
+                    print(f"[MULTI_SKU_FAIR_SHARE] {tcin}: old window beside fresh TCIN(s) "
+                          f"{sorted(contenders)[:6]} -> taking only the {len(spare)} account(s) they cannot use")
+                    return min(limit, len(spare)), spare
+            def _key(w):
+                # A line for THIS TCIN first (FX-1001-A strikes it here); a line
+                # for a contender last -- but only if the account can fire that
+                # contender (an AC-1-latched holder is no use to it, verifier #8).
+                lt = self._fx1006_worker_line_tcin(w)
+                if lt == str(tcin):
+                    held = 0
+                elif lt in contenders and not self._fx1006_worker_sits_out(w, lt):
+                    held = 2
+                else:
+                    held = 1
+                return (held, sum(1 for c in contenders if not self._fx1006_worker_sits_out(w, c)))
+            def _dedicated(w):
+                # Its only good use is THIS TCIN: it holds a line for it (FX-1001-A
+                # strikes the line here; sent elsewhere the line is deleted) or it
+                # can fire none of the contenders (verifier #9: two cart holders for
+                # the first TCIN were capped below two and one idled).
+                return (self._fx1006_worker_line_tcin(w) == str(tcin)
+                        or all(self._fx1006_worker_sits_out(w, c) for c in contenders))
+            order = sorted(fire, key=_key)
+            new = limit
+            for _ in range(len(contenders) + 2):
+                if not (contenders and limit > 1):
+                    new = limit
+                    break
+                share = max(1, -(-len(fire) // (1 + len(contenders))))
+                new = min(limit, max(share, sum(1 for w in fire if _dedicated(w))))
+                order = sorted(fire, key=_key)
+                rest = order[new:]
+                # Hold an account back only for a contender a LEFTOVER account can
+                # fire; otherwise it would sit idle while this TCIN is short. The
+                # set only shrinks, so the bound is never what stops the loop.
+                keep = [c for c in contenders if any(not self._fx1006_worker_sits_out(w, c) for w in rest)]
+                if len(keep) == len(contenders):
+                    break
+                contenders = keep
+            if new < limit or len(fire) < len(free):
+                print(f"[MULTI_SKU_FAIR_SHARE] {tcin}: {len(contenders)} other fresh TCIN(s) "
+                      f"{sorted(contenders)[:6]} -> taking {min(new, len(fire))} of {len(fire)} "
+                      f"firing free worker(s) (cap {limit}; {len(free) - len(fire)} would sit it out)")
+            return new, order
+        except Exception as e:
+            print(f"[MULTI_SKU_FAIR_SHARE] {tcin}: plan failed ({type(e).__name__}: {e}) "
+                  f"-- cap {limit} unchanged")
+            return limit, ready_workers
+
+    def _fx1006_all_free_sit_out(self, tcin) -> bool:
+        """FX-1006-MISS: True when there is a ready worker, at least one of
+        them free, and every free one would only sit `tcin` out -- a
+        dispatch would open an empty race that ends 'failed' and is re-offered
+        every re-arm tick. Never raises (False = dispatch as before)."""
+        try:
+            cands = self.worker_pool.ready_workers() if self.worker_pool else []
+            if not cands:
+                return False
+            free = self._free_workers(cands)
+            return bool(free) and all(self._fx1006_worker_sits_out(w, tcin) for w in free)
+        except Exception:
+            return False
+
+    def _fx1006_defer_for_fresh(self, tcin) -> list:
+        """FX-1006-FAIR (+MISS): the fresh-window contenders an OLD-window TCIN
+        (a flicker back, a re-race) must yield to -- it sits before them in the
+        same sweep's callbacks and would otherwise split the free accounts with
+        their t+0 first volley. [] = dispatch as usual. Never raises."""
+        try:
+            if self._fx1006_fresh_window(tcin):
+                return []
+            cands = self.worker_pool.ready_workers() if self.worker_pool else []
+            free = self._free_workers(cands)
+            if not free:
+                return []
+            contenders = self._fair_share_contenders(tcin, self._reserved_tcins(), free)
+            if not contenders:
+                return []
+            # Defer only when every firing free account could serve a fresh one;
+            # otherwise _fair_share_plan races this TCIN with just the accounts
+            # no fresh contender can use (verifier #7: all-or-nothing idled them).
+            fire = [w for w in free if not self._fx1006_worker_sits_out(w, tcin)]
+            spare = [w for w in fire if all(self._fx1006_worker_sits_out(w, c) for c in contenders)]
+            return [] if spare else contenders
+        except Exception:
+            return []
+
+    def _fx1006_log_ok(self, kind, tcin, every_s=30.0) -> bool:
+        """At most one line per (kind, TCIN) every `every_s` seconds."""
+        now = time.time()
+        with _FX1006_LOCK:
+            d = self._fx1006_dict('_fx1006_log_ts')
+            if len(d) > 2000:
+                for _k in [k for k, v in d.items() if now - float(v) > 3600.0]:
+                    d.pop(_k, None)
+            k = (str(kind), str(tcin))
+            if now - float(d.get(k, 0.0)) < float(every_s):
+                return False
+            d[k] = now
+            return True
+
+    def _stamp_miss_rearm_hint(self, states, tcin) -> None:
+        """FX-1006-MISS: a [MULTI_SKU_MISS] TCIN gets a fresh rearm_hint_ts on its
+        own row, so app._build_level_rearm_map re-offers it every
+        TARGET_LEVEL_REARM_S while the monitor reads it in stock; each repeat MISS
+        re-stamps it, and a real dispatch overwrites the row. Skipped (row stays
+        bare 'ready', the prior behaviour) when the live row is not 'ready', the
+        latest read is not a fresh in-stock read, or we bought this TCIN recently.
+        Also registers it for FX-1006-YIELD. Caller holds _state_lock. Never raises."""
+        try:
+            now = time.time()
+            t = str(tcin)
+            store = getattr(self, 'state_store', None)
+            live = store.get(t) if store is not None else None
+            row = dict(live if live is not None else (states.get(t) or {'status': 'ready'}))
+            if row.get('status', 'ready') != 'ready':
+                return
+            snap = self.stock_snapshot(t, now=now)
+            if self._fx1006_recently_purchased(t, now, snap):
+                return
+            if not _fx1006_reads_in_stock_rearm(snap, now):
+                return
+            row['status'] = 'ready'
+            row['rearm_hint_ts'] = now
+            self._fx1006_set_row(states, t, row)
+            ws = float(snap.get('window_start') or 0.0) or now
+            with _FX1006_LOCK:
+                pend = self._fx1006_dict('_fx1006_miss_pending')
+                ent = pend.get(t)
+                if ent is None or ent.get('window_start') != ws:
+                    pend[t] = {'first_miss_ts': now, 'window_start': ws}
+                logged = self._fx1006_dict('_fx1006_miss_log_ts')
+                if now - float(logged.get(t, 0.0)) >= 30.0:
+                    logged[t] = now
+                    print(f"[MULTI_SKU_MISS_REARM] {t}: hinted -- the level re-arm re-offers it "
+                          f"while it reads in stock (window age {now - ws:.1f}s)")
+        except Exception:
+            pass
+
+    def _wave_yield_target(self, own_tcin, wlbl, now=None):
+        """FX-1006-YIELD: a skipped TCIN this racer should free its account for,
+        or None. Candidates come from the MISS registry; each must still be a
+        'ready' row, unreserved, not ours, not bought recently, read in stock
+        now, and have a window no older than TARGET_WAVE_FIRST_YIELD_MAX_AGE_S
+        (20), and this racer's account must not sit it out. Spread over several
+        pending TCINs by recent claims. Never raises (None = keep waiting, the
+        prior behaviour)."""
+        try:
+            now = time.time() if now is None else float(now)
+            max_age = _env_float_clamped('TARGET_WAVE_FIRST_YIELD_MAX_AGE_S', 20.0, 3.0, 120.0)
+            with _FX1006_LOCK:
+                pend = dict(self._fx1006_dict('_fx1006_miss_pending'))
+            if not pend:
+                return None
+            reserved = self._reserved_tcins()
+            store = getattr(self, 'state_store', None)
+            me = self._fx1006_worker_by_label(wlbl)
+            if me is None:
+                # The legacy single-worker path ('auto'): its account is unknown, so
+                # neither the sit-out nor the first-shot check can run -- never yield.
+                return None
+            cands = []
+            for t, ent in pend.items():
+                if t == str(own_tcin) or t in reserved:
+                    continue
+                row = store.get(t) if store is not None else (self._load_states_unsafe() or {}).get(t)
+                if (row or {}).get('status', 'ready') != 'ready':
+                    continue
+                snap = self.stock_snapshot(t, now=now)
+                if self._fx1006_recently_purchased(t, now, snap):
+                    continue
+                if not _fx1006_reads_in_stock(snap, now):
+                    continue
+                # Never free an account for a TCIN it would only sit out (verifier
+                # 10-06: an AC-1-latched or cart-holding account looped there).
+                if self._fx1006_worker_sits_out(me, t):
+                    continue
+                ws = float(snap.get('window_start') or 0.0) or float(ent.get('window_start') or 0.0)
+                if not ws or now - ws > max_age:
+                    continue
+                # First shots only: never yield back to a TCIN this account was
+                # already dispatched to in this window (verifier #5: ping-pong).
+                with _FX1006_LOCK:
+                    _sent = self._fx1006_dict('_fx1006_acct_dispatch').get((str(wlbl), t))
+                _lf = float(snap.get('last_false') or 0.0)
+                if _sent and (float(_sent) >= ws or _lf <= float(_sent)):
+                    # same window: no OOS read since that dispatch, or no renewal
+                    continue
+                cands.append((ws, t))
+            if not cands:
+                return None
+            with _FX1006_LOCK:
+                # Every waiting racer may yield to a fresh skipped TCIN (its own
+                # re-entry shot on an old window is worth far less, C-1006-03); with
+                # several pending, spread: fewest other-racer claims in the last 8 s
+                # first, then the oldest window.
+                claims = self._fx1006_dict('_fx1006_yield_claims')
+
+                def _load(t):
+                    return sum(1 for (lbl, ts) in claims.get(t, ())
+                               if lbl != wlbl and now - float(ts) < 8.0)
+                ws_, t = min(cands, key=lambda c: (_load(c[1]), c[0]))
+                kept = [(lbl, ts) for (lbl, ts) in claims.get(t, ())
+                        if lbl != wlbl and now - float(ts) < 8.0]
+                claims[t] = kept + [(wlbl, now)]
+                return t
+        except Exception:
+            return None
+
+    def _wave_yield_sleep(self, own_tcin, wlbl, total_s):
+        """Sleep `total_s` in <=0.5 s slices; return a TCIN as soon as
+        _wave_yield_target names one (the caller then ends its window), else None
+        once the full wait has elapsed (exactly the prior single sleep)."""
+        deadline = time.time() + max(0.0, float(total_s))
+        while True:
+            t = self._wave_yield_target(own_tcin, wlbl)
+            if t:
+                return t
+            left = deadline - time.time()
+            if left <= 0:
+                return None
+            time.sleep(min(0.5, left))
 
     def _record_race_result(self, tcin: str, result: Dict, race_agg: Dict, worker_label: Optional[str]):
         """Merge one racing worker's result into the shared aggregate and write
@@ -4070,6 +4656,15 @@ class BulletproofPurchaseManager:
 
                     # If purchase completed more than 30 seconds ago, it should have been reset by now
                     if time_since_completion > 30:
+                        # FX-1006-KEEP: a 'failed' row kept on purpose (still in stock,
+                        # not bought by us this window) is not stuck -- the level
+                        # re-arm keeps re-racing it. Resetting it to a bare 'ready'
+                        # here would strand it (lead C-0924-03).
+                        if (_keep_live_failed_on() and status == 'failed'
+                                and self._fx1006_in_stock_now(tcin)
+                                and self._fx1006_failed_this_window(tcin, state)
+                                and not self._fx1006_recently_purchased(tcin)):
+                            continue
                         stuck_completed_states.append({
                             'tcin': tcin,
                             'status': status,
@@ -4235,6 +4830,17 @@ class BulletproofPurchaseManager:
                 return priority_map.get(tcin, 999999)
 
             sorted_tcins = sorted(stock_data.keys(), key=get_priority_index)
+            if _miss_rearm_on() and len(sorted_tcins) > 1:
+                # FX-1006-MISS: a multi-TCIN event (a level re-arm tick) offers its
+                # free workers to fresh-window TCINs first (their t+0 shot is the
+                # value), then the least-recently-dispatched, so a skipped TCIN is
+                # not starved by the one raced a minute ago.
+                with _FX1006_LOCK:
+                    _ld = dict(self._fx1006_dict('_fx1006_last_dispatch'))
+                _fresh = {str(t): self._fx1006_fresh_window(t) for t in sorted_tcins}
+                sorted_tcins = sorted(sorted_tcins,
+                                      key=lambda t: (0 if _fresh.get(str(t)) else 1,
+                                                     float(_ld.get(str(t), 0.0)), get_priority_index(t)))
 
             # Refresh Shape headers every 30 cycles (~30s) to keep auth tokens fresh.
             # Auth tokens go stale in ~40-50s — 30s interval ensures the direct fetch ATC
@@ -4335,21 +4941,55 @@ class BulletproofPurchaseManager:
                                     if _pursue and _stuck_reset_live_guard_on() and len(_cands) <= 1:
                                         _pursue = False
                                 if _pursue:
-                                    print(f"[MULTI_SKU_DISPATCH] {tcin} in-stock — pursuing "
-                                          f"alongside '{active_purchase}' ({_free_n} unreserved "
-                                          f"worker(s), {_live_n}/{_ms_d['max_tcins']} TCINs live)")
+                                    if not (_miss_rearm_on() and self._fx1006_all_free_sit_out(tcin)):
+                                        print(f"[MULTI_SKU_DISPATCH] {tcin} in-stock — pursuing "
+                                              f"alongside '{active_purchase}' ({_free_n} unreserved "
+                                              f"worker(s), {_live_n}/{_ms_d['max_tcins']} TCINs live)")
                                     # fall through to start_purchase below
                                 else:
                                     try:
                                         _nready = len(self.worker_pool.ready_workers()) if self.worker_pool else 1
                                     except Exception:
                                         _nready = 1
-                                    print(f"[MULTI_SKU_MISS] {tcin} in-stock but SKIPPED — "
-                                          f"'{active_purchase}' holds the fleet ({_nready} ready worker(s)); "
-                                          f"distinct hot SKU not pursued this cycle.")
+                                    # FX-1006-MISS: a re-offered TCIN would repeat this line every
+                                    # 3 s re-arm tick; one per TCIN per 30 s under the flag.
+                                    if not _miss_rearm_on() or self._fx1006_log_ok('miss', self._fx1006_window_key(tcin)):
+                                        print(f"[MULTI_SKU_MISS] {tcin} in-stock but SKIPPED — "
+                                              f"'{active_purchase}' holds the fleet ({_nready} ready worker(s)); "
+                                              f"distinct hot SKU not pursued this cycle.")
+                                    if _miss_rearm_on():
+                                        # FX-1006-MISS: keep it on offer until a worker frees.
+                                        self._stamp_miss_rearm_hint(states, tcin)
                                     continue
                             else:
                                 print(f"[PURCHASE_CONCURRENCY] Skipping {tcin} - purchase already active for {active_purchase}")
+                                continue
+
+                        # FX-1006-MISS: every FREE worker would only sit this TCIN out
+                        # (AC-1 latch, park, a live held won cart elsewhere) -- skip it
+                        # as a MISS that stays on offer, not an empty race that ends
+                        # 'failed' and is re-offered every re-arm tick (both the idle
+                        # fleet and the pursue-alongside path reach here).
+                        if _miss_rearm_on() and self._fx1006_all_free_sit_out(tcin):
+                            if self._fx1006_log_ok('miss', self._fx1006_window_key(tcin)):
+                                print(f"[MULTI_SKU_MISS] {tcin}: every free worker would sit it out "
+                                      f"-- not opening an empty race")
+                            # keep the AC-1 "every candidate identity is latched -- check
+                            # order history" alert (rate-limited inside; result unused)
+                            self._all_dispatch_candidates_latched(tcin)
+                            self._stamp_miss_rearm_hint(states, tcin)
+                            continue
+
+                        # FX-1006-FAIR: an old-window TCIN ahead of a FRESH flip in the
+                        # same sweep defers (hinted, re-offered next tick, fresh-first)
+                        # so the fresh window's first volley gets every free account.
+                        if _fair_share_on() and _miss_rearm_on():
+                            _fresh_c = self._fx1006_defer_for_fresh(tcin)
+                            if _fresh_c:
+                                if self._fx1006_log_ok('miss', self._fx1006_window_key(tcin)):
+                                    print(f"[MULTI_SKU_FAIR_SHARE] {tcin}: old window -- deferring to "
+                                          f"fresh TCIN(s) {sorted(_fresh_c)[:6]}; re-offered next tick")
+                                self._stamp_miss_rearm_hint(states, tcin)
                                 continue
 
                         # 2026-09-16 AC-1: every identity that would race this TCIN
@@ -4401,6 +5041,8 @@ class BulletproofPurchaseManager:
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle
                             active_purchase = tcin
+                            if _miss_rearm_on():
+                                self._fx1006_note_dispatch(tcin)
 
                             # Reload states to get updated completion info
                             updated_states = self._load_states_unsafe()
@@ -4419,7 +5061,20 @@ class BulletproofPurchaseManager:
                     elif current_status in ['purchased', 'failed', 'interrupted']:
                         # 'interrupted' means the app was killed mid-purchase — always safe to retry.
                         # 'failed'/'purchased' here means the reset cycle hasn't run yet.
-                        print(f"[PURCHASE_ERROR] {tcin} is IN STOCK but still has completed status '{current_status}' - reset failed!")
+                        _cat = 0.0
+                        if _keep_live_failed_on():
+                            try:
+                                _cat = float(current_state.get('completed_at') or 0.0)
+                            except (TypeError, ValueError):
+                                _cat = 0.0
+                        if (_keep_live_failed_on() and current_status == 'failed'
+                                and _cat > 0.0 and time.time() - _cat < 10.5):
+                            # FX-1006-KEEP: a row kept 'failed' inside its error delay
+                            # is expected, not a reset failure.
+                            print(f"[PURCHASE] {tcin} failed {time.time() - _cat:.1f}s ago -- inside its "
+                                  f"error delay; re-armed (FX-1006-KEEP)")
+                        else:
+                            print(f"[PURCHASE_ERROR] {tcin} is IN STOCK but still has completed status '{current_status}' - reset failed!")
                         # Emergency force reset.
                         #
                         # 2026-08-18 deadlock fix: in resilient mode the ONLY
@@ -4444,8 +5099,12 @@ class BulletproofPurchaseManager:
                         if (os.environ.get('TARGET_REARM_AFTER_EMERGENCY_RESET', '1') != '0'
                                 and current_status != 'purchased'):
                             _new_state['rearm_hint_ts'] = time.time()
-                        states[tcin] = _new_state
-                        self._save_states_unsafe(states)
+                        if _miss_rearm_on():
+                            # FX-1006-MISS: one row, not the loop's stale snapshot.
+                            self._fx1006_set_row(states, tcin, _new_state)
+                        else:
+                            states[tcin] = _new_state
+                            self._save_states_unsafe(states)
                         print(f"[PURCHASE_EMERGENCY] Emergency reset {tcin} to ready and will retry purchase next cycle")
                     else:
                         pass  # Already attempting - let it continue
