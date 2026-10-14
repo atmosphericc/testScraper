@@ -81,7 +81,7 @@ def _run(script, **extra):
 
 def test_cfg_defaults_and_clamps():
     c = bpm_mod._dco_burst_cfg({})
-    BANK = {"require_bank": True, "bank_wait_s": 6.0, "bank_margin_s": 5.0}
+    BANK = {"require_bank": True, "bank_wait_s": 6.0, "bank_margin_s": 5.0, "stuck_nowait": False}
     check("cfg_default_off", c == dict({"on": False, "max": 2, "lo": 1.0, "hi": 1.5}, **BANK), c)
     c = bpm_mod._dco_burst_cfg({"TARGET_ATC_DCO_BURST": "1", "TARGET_ATC_DCO_BURST_MAX": "99",
                                 "TARGET_ATC_DCO_BURST_MIN_S": "0.1", "TARGET_ATC_DCO_BURST_MAX_S": "0.05"})
@@ -357,6 +357,68 @@ def test_require_bank_off_restores_0917():
     ok, out, ex, m = _bank_run([DCO, WIN], [False], TARGET_ATC_DCO_BURST_REQUIRE_BANK="0")
     check("req_off_two_shots", ok and ex.calls == 2, ex.calls)
     check("req_off_line", "bank=False waited=" in out, out[-900:])
+
+
+class _StuckExec(_BankExec):
+    """_BankExec whose harvest reports itself stuck (FX-1014-BURSTSTUCK)."""
+    def __init__(self, script, ready, stuck):
+        super().__init__(script, ready)
+        self.stuck = stuck
+
+    def harvest_stuck_reason(self):
+        return self.stuck
+
+
+def _stuck_run(script, ready, stuck, **extra):
+    ws = _fleet(script)
+    ws[0].purchase_executor = _StuckExec(script, ready, stuck)
+    m = H.race_mgr(ws)
+    with env(**{**BASE, **BURST_BANK, "TARGET_ATC_DCO_BURST_REQUIRE_BANK": "0", **extra}):
+        ok, out = quiet(H._race, m, HOT_TCIN)
+    return ok, out, ws[0].purchase_executor, m
+
+
+def test_fx1014_stuck_nowait():
+    # 2026-10-14 FX-1014-BURSTSTUCK: a PX-parked harvest cannot bank a set, so the burst
+    # skips the BANK_WAIT_S wait and re-POSTs page-signed at once (REQUIRE_BANK=0).
+    ok, out, ex, m = _stuck_run([DCO, WIN], [False], "PX park", TARGET_ATC_DCO_BURST_STUCK_NOWAIT="1")
+    check("fx1014_stuck_two_shots", ok and ex.calls == 2, ex.calls)
+    check("fx1014_stuck_no_wait", ex.waits == [], ex.waits)
+    check("fx1014_stuck_line", "[DCO_BURST] harvest stuck (PX park) — no bank wait on" in out
+          and "bank=False waited=0.0s" in out, out[-900:])
+    # Flag off: the same stuck harvest still costs the full wait (prior behaviour).
+    ok, out, ex, m = _stuck_run([DCO, WIN], [False], "PX park")
+    check("fx1014_off_waits", ok and ex.calls == 2 and ex.waits == [1.0], (ex.calls, ex.waits))
+    check("fx1014_off_no_stuck_line", "harvest stuck" not in out, out[-900:])
+    # Flag on, harvest healthy: the wait runs as configured.
+    ok, out, ex, m = _stuck_run([DCO, WIN], [False], "", TARGET_ATC_DCO_BURST_STUCK_NOWAIT="1")
+    check("fx1014_not_stuck_waits", ok and ex.calls == 2 and ex.waits == [1.0], (ex.calls, ex.waits))
+    check("fx1014_not_stuck_no_line", "harvest stuck" not in out, out[-900:])
+    # REQUIRE_BANK=1 + stuck: no wait, no re-POST, wave-first decides at once.
+    ok, out, ex, m = _stuck_run([DCO, WIN], [False], "PX park", TARGET_ATC_DCO_BURST_STUCK_NOWAIT="1",
+                                TARGET_ATC_DCO_BURST_REQUIRE_BANK="1")
+    check("fx1014_require_bank_stuck", ok and ex.calls == 1 and ex.waits == []
+          and "no replayable banked set within 0s on" in out, (ex.calls, ex.waits, out[-600:]))
+
+
+def test_fx1014_wait_helper():
+    f = bpm_mod._dco_burst_wait_s
+    on = bpm_mod._dco_burst_cfg({"TARGET_ATC_DCO_BURST_STUCK_NOWAIT": "1"})
+    off = bpm_mod._dco_burst_cfg({})
+    st = type("S", (), {"harvest_stuck_reason": lambda self: "PX park"})()
+    ok_ex = type("O", (), {"harvest_stuck_reason": lambda self: ""})()
+    boom = type("B", (), {"harvest_stuck_reason": lambda self: 1 / 0})()
+    check("fx1014_cfg_parse", on["stuck_nowait"] is True and off["stuck_nowait"] is False
+          and bpm_mod._dco_burst_cfg({"TARGET_ATC_DCO_BURST_STUCK_NOWAIT": "yes"})["stuck_nowait"] is False)
+    check("fx1014_helper_stuck", f(on, st) == (0.0, "PX park"))
+    check("fx1014_helper_off", f(off, st) == (6.0, ""))
+    check("fx1014_helper_healthy", f(on, ok_ex) == (6.0, ""))
+    check("fx1014_helper_no_api", f(on, object()) == (6.0, ""))
+    check("fx1014_helper_raises", f(on, boom) == (6.0, ""))
+    check("fx1014_helper_zero_wait", f(dict(on, bank_wait_s=0.0), st) == (0.0, ""))
+    src = Path(bpm_mod.__file__).read_text(encoding="utf-8")
+    check("fx1014_src_wait_wired", "_burst_wait, _burst_stuck = _dco_burst_wait_s(_dco_burst, target_purchase_executor)" in src
+          and "_burst_wait, _dco_burst['bank_margin_s'])" in src)
 
 
 def test_bank_helper_never_raises():

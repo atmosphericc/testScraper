@@ -48,7 +48,10 @@ not by eye.
   (2/2 on 10-14, business + alt-1; earlier ~1/7 and ~0/25), then `check_session_readiness.py`
   must show it `sut=R`. Never on an account that is already MEMBER (a forced login signs
   it out first — `hand_login_all_force.bat` cost primary on 10-14). A hand login is asked
-  for only when that attempt fails.
+  for only when that attempt fails. Do it as early as possible (at the Step 1 preflight,
+  hours out), not at T-60 unless the account went guest since: Refract's PX notes say
+  "Logging in within the last hour before the drop very likely causes issues"
+  [REPORTED, Walmart section].
 - **The config's enabled TCINs are the operator's deliberate target list.** Add only what
   they ask for; never remove, never re-add a removed SKU, never a third-party
   (BlueProton / marketplace) listing. Candidate TCINs found by research are offered as a
@@ -275,7 +278,12 @@ session open until the boot is GREEN. If T-20 has already passed when Step 8 end
      restart into the window). `login_check` / `wrapper_exit87` = a guest jar: run
      `bot_ctl.py stop` at once (never let the exit-87 loop cycle — 10-14 burned 64
      launches), then it is the person step above. `thread_start_exception` = a startup-path
-     bug: kill the flag behind it in the wrapper and restart.
+     bug: kill the flag behind it in the wrapper and restart. `harvest:*` WARN with
+     `[PX-CHALLENGE/harvest]` lines = HUMAN Press & Hold on the harvest tab: NOT a RED and
+     NOT a reason to restart (the verdict is shared by every profile on the host,
+     C-1014-09). FX-1014-PXRENAV loads the next decoy after one 300 s park; re-run
+     `boot_check` once ~6 min later and report the result — a still-empty bank means
+     page-signed shots (C-1014-08), not no shots.
 - **T-0:** hands off the host. Nothing is restarted mid-window unless the bot is dead
   (`bot_ctl.py status` shows no app.py — then `bot_ctl.py start` at once); a
   `WRITE-AUTH DEAD` is normal Shape burn unless it persists.

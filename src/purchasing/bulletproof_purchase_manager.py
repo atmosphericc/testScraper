@@ -746,6 +746,12 @@ def _dco_burst_cfg(env=None) -> Dict[str, object]:
         'require_bank': str(env.get('TARGET_ATC_DCO_BURST_REQUIRE_BANK', '1')).strip() != '0',
         'bank_wait_s': _num('TARGET_ATC_DCO_BURST_BANK_WAIT_S', 6.0, 0.0, 15.0),
         'bank_margin_s': _num('TARGET_ATC_DCO_BURST_BANK_MARGIN_S', 5.0, 0.0, 30.0),
+        # 2026-10-14 FX-1014-BURSTSTUCK: no bank wait while the executor reports its
+        # harvest stuck (PX park, back-off, disabled, buttonless streak) -- that harvest
+        # cannot bank a set, so the BANK_WAIT_S wait only pushed the re-POST to ~7 s
+        # after the DCO (10-09: harvest PX-parked 03:55 to the end of the run). Default
+        # 0 = wait as before. Kill: TARGET_ATC_DCO_BURST_STUCK_NOWAIT=0.
+        'stuck_nowait': str(env.get('TARGET_ATC_DCO_BURST_STUCK_NOWAIT', '0')).strip() == '1',
     }
 
 
@@ -846,6 +852,24 @@ def _dco_burst_bank_ready(executor, worker, session_manager, wait_s, margin_s):
         return _rdy(), time.time() - t0
     except Exception:
         return False, time.time() - t0
+
+
+def _dco_burst_wait_s(cfg, executor):
+    """(wait_s, why): the bank wait for a burst re-POST. FX-1014-BURSTSTUCK
+    (cfg['stuck_nowait']): 0 while the executor's harvest_stuck_reason() is
+    non-empty, with that reason; otherwise cfg['bank_wait_s'] and ''. Never raises."""
+    try:
+        w = float(cfg.get('bank_wait_s', 0.0) or 0.0)
+    except Exception:
+        w = 0.0
+    try:
+        if not cfg.get('stuck_nowait') or w <= 0:
+            return w, ''
+        fn = getattr(executor, 'harvest_stuck_reason', None)
+        why = str(fn() or '') if callable(fn) else ''
+        return (0.0, why) if why else (w, '')
+    except Exception:
+        return w, ''
 
 
 # ── 2026-09-16 hot-sku plan P7 (DX-1) + P9 recorder: exposure / census ───────
@@ -2775,12 +2799,16 @@ class BulletproofPurchaseManager:
                                 # 2026-09-18: never a page-signed burst re-POST (6/6 edge
                                 # 429 on the first live night). bank= / waited= feed the
                                 # readout.
+                                _burst_wait, _burst_stuck = _dco_burst_wait_s(_dco_burst, target_purchase_executor)
+                                if _burst_stuck:      # FX-1014-BURSTSTUCK (flag-set only)
+                                    print(f"[DCO_BURST] harvest stuck ({_burst_stuck}) — no bank wait "
+                                          f"on {tcin} ident={_race_wlbl or 'auto'}")
                                 _bank_ready, _dco_burst_waited = _dco_burst_bank_ready(
                                     target_purchase_executor, worker, target_session_manager,
-                                    _dco_burst['bank_wait_s'], _dco_burst['bank_margin_s'])
+                                    _burst_wait, _dco_burst['bank_margin_s'])
                                 if _dco_burst['require_bank'] and not _bank_ready:
                                     print(f"[DCO_BURST] no replayable banked set within "
-                                          f"{_dco_burst['bank_wait_s']:.0f}s on {tcin} — no page-signed "
+                                          f"{_burst_wait:.0f}s on {tcin} — no page-signed "
                                           f"re-POST, wave-first decides ident={_race_wlbl or 'auto'}")
                                 else:
                                     _dco_burst_n += 1

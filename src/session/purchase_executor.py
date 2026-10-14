@@ -1724,6 +1724,11 @@ class PurchaseExecutor:
         self._harvest_px_alert_ts: float = 0.0      # error_log line at most every 10 min
         self._harvest_backoff_until: float = 0.0    # bad-load back-off (renav flag only)
         self._harvest_miss_times: Deque[float] = deque(maxlen=16)
+        # 2026-10-14 FX-1014-PXRENAV (TARGET_HARVEST_PX_RENAV=1 only)
+        self._harvest_px_park_nav_ts: float = -1.0  # the document the last PX park was on
+        self._harvest_px_streak: int = 0            # challenged documents since the last banked capture
+        self._harvest_px_renav_due: bool = False    # a 2nd verdict on the same document: load the next decoy
+        self._harvest_px_renav_ts: list = []        # PX re-navigations (rolling hour cap)
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -3775,6 +3780,8 @@ class PurchaseExecutor:
             self._harvest_stats['captured' if ok else 'no_tokens'] += 1
             if ok:
                 self._harvest_miss_streak = 0       # 2026-09-16 HV-1: harvest_stuck() streak
+                self._harvest_px_streak = 0         # FX-1014-PXRENAV: parks restart at PX_PARK_S
+                self._harvest_px_park_nav_ts = -1.0
             a0 = any(str(k).lower().endswith('-a0') for k in toks)
             _hb = _shape_harvest.header_bytes(headers)
             self._harvest_log(f"CAPTURED{'' if ok else ' (NO Shape tokens — not banked)'} tokens={len(toks)} "
@@ -3887,16 +3894,36 @@ class PurchaseExecutor:
         no click for TARGET_HARVEST_PX_PARK_S. Logs [PX-CHALLENGE/harvest] and,
         at most every 10 min, one error_log line under that tag (not the
         account-level AUTH_CRITICAL alert: the account's shots keep firing).
-        The widget is left alone. Never raises."""
+        The widget is left alone.
+        FX-1014-PXRENAV (TARGET_HARVEST_PX_RENAV=1): the park doubles per newly
+        challenged document since the last capture (cap TARGET_HARVEST_PX_PARK_MAX_S),
+        and a repeat verdict on the SAME document sets _harvest_px_renav_due so the
+        caller loads the next decoy (the park set here stands only if that load
+        cannot run). Never raises."""
         try:
             now = time.time()
             park_s = float(self._harvest_cfg.get('px_park_s', 300.0) or 300.0)
+            repeat = False
+            if self._harvest_cfg.get('px_renav'):
+                repeat = getattr(self, '_harvest_px_park_nav_ts', -1.0) == self._harvest_tab_nav_ts
+                if not repeat:
+                    self._harvest_px_streak = int(getattr(self, '_harvest_px_streak', 0) or 0) + 1
+                    self._harvest_px_park_nav_ts = self._harvest_tab_nav_ts
+                n = max(1, int(getattr(self, '_harvest_px_streak', 0) or 0))
+                cap = max(float(self._harvest_cfg.get('px_park_max_s', 3600.0) or 3600.0), park_s)
+                park_s = min(park_s * (2 ** min(n - 1, 8)), cap)
+                self._harvest_px_renav_due = repeat
             self._harvest_px_parked_until = now + park_s
             self._harvest_px_parks = int(getattr(self, '_harvest_px_parks', 0) or 0) + 1
             self._harvest_miss = 0
-            msg = (f"[PX-CHALLENGE/harvest] {self._harvest_acct()}: HUMAN challenge on the harvest tab "
-                   f"({desc}) — harvest PARKED {park_s:.0f}s: no nav, no click "
-                   f"(#{self._harvest_px_parks}); shots continue")
+            if repeat:
+                msg = (f"[PX-CHALLENGE/harvest] {self._harvest_acct()}: HUMAN challenge still on the harvest "
+                       f"tab after the park ({desc}) — loading the next decoy, else PARKED {park_s:.0f}s "
+                       f"(#{self._harvest_px_parks}); shots continue")
+            else:
+                msg = (f"[PX-CHALLENGE/harvest] {self._harvest_acct()}: HUMAN challenge on the harvest tab "
+                       f"({desc}) — harvest PARKED {park_s:.0f}s: no nav, no click "
+                       f"(#{self._harvest_px_parks}); shots continue")
             print(msg)
             try:
                 self.logger.warning(msg)
@@ -3915,6 +3942,46 @@ class PurchaseExecutor:
                     pass
         except Exception:
             pass
+
+    async def _harvest_px_renav(self) -> bool:
+        """FX-1014-PXRENAV: the harvest tab drew a second PX verdict on the same
+        document -> load the next decoy PDP now instead of parking on it again.
+        Lifts the fresh park for that one navigation and restores it on every other
+        exit (held won cart, won-cart loop, purchase live, back-off, hourly cap,
+        failed nav, cancellation). True = the tab shows a new document. Never
+        raises an Exception."""
+        parked_until = float(getattr(self, '_harvest_px_parked_until', 0.0) or 0.0)
+        navigated = False
+        try:
+            now = time.time()
+            cap = int(self._harvest_cfg.get('px_renav_max_per_h', 3) or 3)
+            recent = [t for t in (getattr(self, '_harvest_px_renav_ts', None) or []) if now - t < 3600.0]
+            self._harvest_px_renav_ts = recent
+            if len(recent) >= cap:
+                self._harvest_log(f"PX re-nav held: {len(recent)}/{cap} this hour — parked in place")
+                return False
+            try:
+                held = bool(self._held_cart_active())
+            except Exception:
+                held = True                         # unreadable: no PDP load next to a held cart
+            if held:
+                self._harvest_log("PX re-nav held: a won cart is held on this identity — parked in place")
+                return False
+            before = self._harvest_tab_nav_ts
+            self._harvest_px_parked_until = 0.0     # _harvest_rotate will not navigate while parked
+            await self._harvest_rotate(same=False)
+            if self._harvest_tab_nav_ts != before:
+                self._harvest_px_renav_ts = recent + [now]
+                navigated = True
+                return True
+            self._harvest_log("PX re-nav did not run (purchase live / won-cart loop / back-off / nav failed) "
+                              "— parked in place")
+        except Exception:
+            pass
+        finally:
+            if not navigated:
+                self._harvest_px_parked_until = parked_until
+        return False
 
     def _harvest_note_bad_load(self, now: float) -> bool:
         """TARGET_HARVEST_MISS_RENAV_LIVE=1 only: 3 buttonless loads within
@@ -4295,6 +4362,7 @@ class PurchaseExecutor:
             on this identity; 3 misses within 600 s start the bad-load back-off.
         """
         cfg = self._harvest_cfg
+        _tcin = self._harvest_tcin         # the PDP this miss was on (a PX re-nav below moves the tab)
         self._harvest_miss += 1
         miss_n = self._harvest_miss
         self._harvest_miss_streak = int(getattr(self, '_harvest_miss_streak', 0) or 0) + 1
@@ -4302,13 +4370,17 @@ class PurchaseExecutor:
         px = False
         if cfg.get('miss_probe') and getattr(self, '_harvest_probe_nav_ts', -1.0) != self._harvest_tab_nav_ts:
             px = await self._harvest_miss_probe(tab)
+        px_renav = False
+        if px and getattr(self, '_harvest_px_renav_due', False):   # 2026-10-14 FX-1014-PXRENAV (flag-set only)
+            self._harvest_px_renav_due = False
+            px_renav = await self._harvest_px_renav()
         renav = bool(cfg.get('miss_renav_live'))
         if renav and not px:
             self._harvest_note_bad_load(now)
         rotate = (miss_n >= 2) and not px
         allow_live = False
         if px:
-            action = 'no rotate (PX park)'
+            action = 'next decoy loaded (PX re-nav)' if px_renav else 'no rotate (PX park)'
         elif miss_n < 2:
             action = 'will retry'
         else:
@@ -4337,7 +4409,7 @@ class PurchaseExecutor:
                 else:
                     action = (f"rotation deferred (purchase live; last load {now - last:.0f}s ago "
                               f"< {need:.0f}s)")
-        self._harvest_log(f"ATC button {'DISABLED' if info.get('found') else 'absent'} on {self._harvest_tcin} "
+        self._harvest_log(f"ATC button {'DISABLED' if info.get('found') else 'absent'} on {_tcin} "
                           f"(ready={info.get('ready')} oos={info.get('oos')}; miss #{miss_n}) — {action}")
         if rotate:
             self._harvest_miss = 0

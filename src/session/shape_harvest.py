@@ -57,6 +57,14 @@ Flags (all read at executor init; bat pins them):
                                 or click for this long (renav flag only)
   TARGET_HARVEST_FLUSH_ON_RELAUNCH=1  banked sets minted by a killed Chrome are dropped
                                 (ShapeBank.clear) instead of replayed on the new one
+
+2026-10-14 FX-1014-PXRENAV, default OFF = exact prior behaviour:
+  TARGET_HARVEST_PX_RENAV=1     a SECOND PX verdict on the same harvest document loads the
+                                next decoy PDP instead of parking on it again (never while
+                                a purchase is live or a won-cart loop runs)
+  TARGET_HARVEST_PX_PARK_MAX_S=3600  each newly challenged document parks PX_PARK_S x 2^(n-1)
+                                up to this cap (n = challenged documents since the last capture)
+  TARGET_HARVEST_PX_RENAV_MAX_PER_H=3  PX re-navigations per rolling hour (else park in place)
 """
 from __future__ import annotations
 
@@ -173,6 +181,16 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "miss_renav_live": str(e.get("TARGET_HARVEST_MISS_RENAV_LIVE", "0")).strip() == "1",
         "badload_backoff_s": _float(e, "TARGET_HARVEST_BADLOAD_BACKOFF_S", 300.0, 30.0, 3600.0),
         "flush_on_relaunch": str(e.get("TARGET_HARVEST_FLUSH_ON_RELAUNCH", "0")).strip() == "1",
+        # 2026-10-14 FX-1014-PXRENAV (default OFF = exact prior behaviour). While the probe
+        # keeps reading a HUMAN challenge the parked tab is never re-navigated: 10-09 three
+        # accounts re-probed one challenged document 139 times over ~4 h and never banked
+        # again. A challenge CAN clear in place (10-05: two accounts after one park), so the
+        # first park stays; a SECOND verdict on the same document loads the next decoy
+        # instead of parking on it again. Parks double per challenged document (base
+        # PX_PARK_S, cap PX_PARK_MAX_S); at most PX_RENAV_MAX_PER_H such loads per hour.
+        "px_renav": str(e.get("TARGET_HARVEST_PX_RENAV", "0")).strip() == "1",
+        "px_park_max_s": _float(e, "TARGET_HARVEST_PX_PARK_MAX_S", 3600.0, 30.0, 14400.0),
+        "px_renav_max_per_h": _int(e, "TARGET_HARVEST_PX_RENAV_MAX_PER_H", 3, 1, 20),
     }
 
 

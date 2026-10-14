@@ -702,7 +702,8 @@ MGR_PATH = ROOT / 'src' / 'purchasing' / 'bulletproof_purchase_manager.py'
 MGR_SRC = MGR_PATH.read_text(encoding='utf-8', errors='replace')
 HV1_ENV = ('TARGET_HARVEST_SKIP_DISABLES_REPLAY', 'TARGET_HARVEST_MISS_PROBE', 'TARGET_HARVEST_MISS_SHOTS_MAX',
            'TARGET_HARVEST_PX_PARK_S', 'TARGET_HARVEST_MISS_RENAV_LIVE', 'TARGET_HARVEST_BADLOAD_BACKOFF_S',
-           'TARGET_HARVEST_FLUSH_ON_RELAUNCH', 'TARGET_BANK_GATE_ADAPTIVE')
+           'TARGET_HARVEST_FLUSH_ON_RELAUNCH', 'TARGET_BANK_GATE_ADAPTIVE',
+           'TARGET_HARVEST_PX_RENAV', 'TARGET_HARVEST_PX_PARK_MAX_S', 'TARGET_HARVEST_PX_RENAV_MAX_PER_H')
 MISS = {'found': False, 'disabled': True, 'ready': 'complete', 'oos': False}
 PX_INFO = {'url': 'https://www.target.com/p/-/A-111', 'title': 'Target', 'px_container': True,
            'px_iframe': False, 'press_hold': True, 'denied': False, 'ready': 'complete', 'vis': 'visible',
@@ -1426,6 +1427,126 @@ def test_hv1_wiring():
           EXE_SRC[EXE_SRC.find("def _harvest_px_park"):EXE_SRC.find("def _harvest_note_bad_load")])
 
 
+def test_fx1014_px_renav():
+    """2026-10-14 FX-1014-PXRENAV: while the probe keeps reading a HUMAN challenge the
+    parked tab was never re-navigated (10-09: 139 verdicts on one document over ~4 h).
+    The first park stays (a challenge can clear in place, 10-05); a second verdict on
+    the SAME document loads the next decoy; parks double per challenged document."""
+    c = h.config({'TARGET_SHAPE_HARVEST': '1'})
+    check("fx1014_cfg_default_off", c['px_renav'] is False and c['px_park_max_s'] == 3600.0
+          and c['px_renav_max_per_h'] == 3)
+    c1 = h.config({'TARGET_HARVEST_PX_RENAV': ' 1 ', 'TARGET_HARVEST_PX_PARK_MAX_S': '99999',
+                   'TARGET_HARVEST_PX_RENAV_MAX_PER_H': '0'})
+    check("fx1014_cfg_parsed_clamped", c1['px_renav'] is True and c1['px_park_max_s'] == 14400.0
+          and c1['px_renav_max_per_h'] == 1)
+    check("fx1014_cfg_strict", h.config({'TARGET_HARVEST_PX_RENAV': 'yes'})['px_renav'] is False)
+
+    def _age(ex):
+        # time passes between parks (prod: >= PX_PARK_S); keep a parked document parked
+        same = ex._harvest_px_park_nav_ts == ex._harvest_tab_nav_ts
+        ex._harvest_tab_nav_ts -= 100.0
+        if same:
+            ex._harvest_px_park_nav_ts = ex._harvest_tab_nav_ts
+        ex._harvest_px_parked_until = time.time() - 1
+
+    on = {'TARGET_HARVEST_MISS_PROBE': '1', 'TARGET_HARVEST_PX_RENAV': '1'}
+    ex, _ = _hv1_stub(on)
+    tab = ProbeTab(dict(PX_INFO))
+    ex._harvest_tab = tab
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("fx1014_first_verdict_parks_in_place", tab.gets == [] and ex._harvest_hold_reason() == 'PX park'
+          and 'PARKED 300s: no nav, no click (#1)' in out and 'no rotate (PX park)' in out
+          and ex._harvest_px_streak == 1 and ex._harvest_px_renav_due is False)
+    _age(ex)
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("fx1014_second_verdict_same_doc_loads_next_decoy", tab.gets == [h.pdp_url('222')]
+          and ex._harvest_tcin == '222' and ex._harvest_hold_reason() == ''
+          and 'still on the harvest tab after the park' in out and 'rotating to PDP 222' in out
+          and 'ATC button absent on 111' in out and 'next decoy loaded (PX re-nav)' in out
+          and len(ex._harvest_px_renav_ts) == 1 and ex._harvest_px_renav_due is False)
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("fx1014_new_doc_parks_doubled", tab.gets == [h.pdp_url('222')] and tab.probes() == 3
+          and ex._harvest_hold_reason() == 'PX park' and 'PARKED 600s: no nav, no click' in out
+          and ex._harvest_px_streak == 2)
+    _age(ex)
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("fx1014_second_renav_wraps", tab.gets == [h.pdp_url('222'), h.pdp_url('111')]
+          and len(ex._harvest_px_renav_ts) == 2 and ex._harvest_hold_reason() == '')
+    ex._harvest_px_streak = 9
+    _, out = _captured(ex._harvest_handle_miss(tab, dict(MISS)))
+    check("fx1014_park_capped", 'PARKED 3600s' in out)
+    # Hourly cap: the repeat verdict parks in place.
+    ex2, _ = _hv1_stub(dict(on, TARGET_HARVEST_PX_RENAV_MAX_PER_H='1'))
+    tab2 = ProbeTab(dict(PX_INFO))
+    ex2._harvest_tab = tab2
+    ex2._harvest_px_renav_ts = [time.time() - 60]
+    _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    _age(ex2)
+    _, out = _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    check("fx1014_hourly_cap_parks_in_place", tab2.gets == [] and ex2._harvest_hold_reason() == 'PX park'
+          and 'PX re-nav held: 1/1 this hour' in out and 'no rotate (PX park)' in out)
+    ex2._harvest_px_renav_ts = [time.time() - 3601]
+    _age(ex2)
+    _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
+    check("fx1014_hourly_cap_rolls", tab2.gets == [h.pdp_url('222')])
+    # A live purchase: no navigation, the park stands.
+    ex3, _ = _hv1_stub(on, live=True)
+    tab3 = ProbeTab(dict(PX_INFO))
+    ex3._harvest_tab = tab3
+    _captured(ex3._harvest_handle_miss(tab3, dict(MISS)))
+    _age(ex3)
+    _, out = _captured(ex3._harvest_handle_miss(tab3, dict(MISS)))
+    check("fx1014_live_purchase_no_nav", tab3.gets == [] and ex3._harvest_hold_reason() == 'PX park'
+          and 'PX re-nav did not run' in out and ex3._harvest_px_renav_ts == [])
+    # A held won cart (no live purchase): no navigation next to it, the park stands.
+    ex5, _ = _hv1_stub(on)
+    tab5 = ProbeTab(dict(PX_INFO))
+    ex5._harvest_tab = tab5
+    ex5._held_cart_active = lambda: True
+    _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    _age(ex5)
+    _, out = _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    check("fx1014_held_cart_no_nav", tab5.gets == [] and ex5._harvest_hold_reason() == 'PX park'
+          and 'PX re-nav held: a won cart is held' in out)
+    ex5._held_cart_active = lambda: 1 / 0          # unreadable -> fail closed
+    _age(ex5)
+    _captured(ex5._harvest_handle_miss(tab5, dict(MISS)))
+    check("fx1014_held_cart_unreadable_fails_closed", tab5.gets == [] and ex5._harvest_hold_reason() == 'PX park')
+    # Cancelled mid-navigation: the park is restored before the cancellation propagates.
+    ex6, _ = _hv1_stub(on)
+
+    class _CancelTab(ProbeTab):
+        async def get(self, url):
+            self.gets.append(url)
+            raise asyncio.CancelledError()
+    tab6 = _CancelTab(dict(PX_INFO))
+    ex6._harvest_tab = tab6
+    _captured(ex6._harvest_handle_miss(tab6, dict(MISS)))
+    _age(ex6)
+    ex6._harvest_px_parked_until = time.time() + 300.0      # the fresh park the repeat verdict sets
+    cancelled = False
+    try:
+        asyncio.run(ex6._harvest_px_renav())
+    except asyncio.CancelledError:
+        cancelled = True
+    check("fx1014_cancel_restores_park", cancelled and tab6.gets == [h.pdp_url('222')]
+          and ex6._harvest_hold_reason() == 'PX park' and ex6._harvest_px_renav_ts == [])
+    # Flag off: the second verdict re-parks on the same document (prior behaviour).
+    ex4, _ = _hv1_stub({'TARGET_HARVEST_MISS_PROBE': '1'})
+    tab4 = ProbeTab(dict(PX_INFO))
+    ex4._harvest_tab = tab4
+    _captured(ex4._harvest_handle_miss(tab4, dict(MISS)))
+    ex4._harvest_px_parked_until = time.time() - 1
+    _, out = _captured(ex4._harvest_handle_miss(tab4, dict(MISS)))
+    check("fx1014_off_reparks_same_doc", tab4.gets == [] and 'PARKED 300s: no nav, no click (#2)' in out
+          and 'still on the harvest tab' not in out and getattr(ex4, '_harvest_px_renav_due', False) is False)
+    # Source pin: a banked capture restarts the park ladder.
+    i_push = EXE_SRC.find("ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin")
+    i_rst = EXE_SRC.find("self._harvest_px_streak = 0", i_push)
+    i_capt = EXE_SRC.find('self._harvest_log(f"CAPTURED', i_push)
+    check("fx1014_streak_reset_at_capture", 0 < i_push < i_rst < i_capt)
+
+
 if __name__ == '__main__':
     for fn in (test_prefix_and_tokens, test_merge, test_bank, test_bezier_and_click_point, test_config_and_js,
                test_header_bytes,
@@ -1438,7 +1559,9 @@ if __name__ == '__main__':
                test_hv1_miss_probe_and_park,
                test_hv1_harvest_once_px_integration, test_hv1_renav_live, test_hv1_backoff,
                test_hv1_harvest_stuck, test_hv1_flush_on_relaunch, test_hv1_bank_gate_adaptive,
-               test_hv1_wiring):
+               test_hv1_wiring,
+               # 2026-10-14 FX-1014-PXRENAV
+               test_fx1014_px_renav):
         try:
             fn()
         except Exception as e:

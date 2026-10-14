@@ -922,6 +922,13 @@ REM shot got no burst because the HUMAN wall had emptied every bank). Burst evid
 REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1.
 set TARGET_ATC_DCO_BURST_REQUIRE_BANK=0
 set TARGET_ATC_DCO_BURST_BANK_WAIT_S=6
+REM 2026-10-14 FX-1014-BURSTSTUCK: no burst bank wait while the executor reports
+REM its harvest stuck (PX park, back-off, buttonless streak): that harvest cannot
+REM bank a set, so with REQUIRE_BANK=0 the 6 s wait only moved the re-POST to
+REM ~7.5 s after the DCO (the 15/48 evidence is for re-POSTs within 5 s). It now
+REM fires at ~1.5 s. grep '[DCO_BURST] harvest stuck'.
+REM Kill: TARGET_ATC_DCO_BURST_STUCK_NOWAIT=0.
+set TARGET_ATC_DCO_BURST_STUCK_NOWAIT=1
 set TARGET_CART_HOLD_CHECK_INTERVAL_S=1.0
 REM  15) Real PDP referrer on the fast-lane ATC via fetch's `referrer` INIT
 REM      option (the headers-object Referer is a forbidden name and never hit
@@ -1334,6 +1341,16 @@ set TARGET_HARVEST_PX_PARK_S=300
 set TARGET_HARVEST_MISS_RENAV_LIVE=0
 set TARGET_BANK_GATE_ADAPTIVE=1
 set TARGET_HARVEST_FLUSH_ON_RELAUNCH=1
+REM 2026-10-14 FX-1014-PXRENAV: while the probe keeps reading a HUMAN challenge
+REM the parked harvest tab was never re-navigated (10-09: three accounts re-probed
+REM one challenged document 139x over ~4 h; no banked set for the rest of the drop).
+REM A challenge can clear in place (10-05), so the first park stays; a SECOND
+REM verdict on the same document loads the next decoy instead. Parks double per
+REM challenged document (PX_PARK_S .. PX_PARK_MAX_S=3600); at most
+REM PX_RENAV_MAX_PER_H=3 such loads an hour; never while a purchase is live or a
+REM won-cart loop runs. grep 'loading the next decoy', 'PX re-nav'.
+REM Kill: TARGET_HARVEST_PX_RENAV=0.
+set TARGET_HARVEST_PX_RENAV=1
 REM INF-1: print the sentinel ticks skipped while a purchase is in flight.
 REM Kill: TARGET_SENTINEL_LOG_SKIPS=0.
 set TARGET_SENTINEL_LOG_SKIPS=1
