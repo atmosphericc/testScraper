@@ -227,8 +227,8 @@ test_resilient_stack.py           stock-check smoke test
 
 **Source — note the sizes, these are grep targets not read targets**
 ```
-src/session/purchase_executor.py           ~11,500 lines  Target ATC, Shape headers
-src/purchasing/bulletproof_purchase_manager.py  4,301   Target checkout
+src/session/purchase_executor.py           ~11,600 lines  Target ATC, Shape headers
+src/purchasing/bulletproof_purchase_manager.py  ~5,300  Target checkout
 src/session/session_manager.py              2,679
 src/monitoring/stock_check_resilient.py     1,389       current stock pipeline
 src/session/multi_session_pool.py             787
@@ -346,8 +346,9 @@ readout_next_drop.py    the next-drop readout
   produced at the SSX hop after the limiter admitted the shot — the Shape verdict,
   matching the competitor's "a 401 is a Shape block" (C-0930-03, 09-30 headers +
   latency). Which vendor stamps `x-ssx-hop` is not established.
-- **Wave-first** — current cadence policy: after an ATC-level failure, sleep
-  ~55-70 s before a cold re-entry, rather than retrying fast.
+- **Wave-first** — a cadence policy: after an ATC-level failure, sleep ~55-70 s
+  before a cold re-entry instead of retrying fast. Which failure classes it still
+  covers (vs the fast 3-4.5 s re-shot) is a live fact: read the bat and CURRENT_STATE.
 - **Bank** — the store of harvested Shape credentials.
 - **BD** — Bright Data ISP proxies. **Home IP** — the user's own residential line,
   which currently carries the buyer accounts.

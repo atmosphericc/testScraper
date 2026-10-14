@@ -127,6 +127,13 @@ restart` is the way to (re)start the bot. Regression test: `tests/test_block_bot
 Auto-mode classifier denials are final for that outcome — never route around one; handling
 in `.claude/agent-context.md` §1B.
 
+**Nightly auto-arm (2026-10-14, operator):** Windows scheduled tasks `TargetBot\ensure-armed 2315`
+and `TargetBot\ensure-armed 0130` run `tools/ops/ensure_armed.py`: they start the bot when it is
+down (or RED, or >20 h old outside 00-06), give a GUEST account one scripted forced login first,
+and follow `boot_check` (log `logs/ensure_armed.log`). The wrapper's exit-87 branch calls its
+`--mode exit87`. A stopped bot therefore comes back at 23:15 — to keep it down for a night,
+create `state/ensure_armed.disable`.
+
 **Always verify before arming.** Hand the bare claim, with none of your reasoning,
 to `claims-verifier`. A `REFUTED` verdict kills the fix.
 

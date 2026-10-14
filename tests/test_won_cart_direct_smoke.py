@@ -4160,8 +4160,10 @@ def test_f1_live_cap_exempt():
     check("f1_on_oos_keeps_cap", CB(3, False, on) is True and CB(3, None, on) is True
           and CB(2, False, on) is False)
     check("f1_on_live_skips_callcap", CC(10 ** 9, 0, True, on) is False and CC(10 ** 9, 0, False, on) is True)
+    # 2026-10-14 RIDE-TO-OOS: the ceiling moved 400 -> 1500 (default 150 unchanged).
     check("f1_hard_clamp", pe_mod.woncart_cfg({"TARGET_WONCART_HARD_MAX_TICKETS": "10"})["hard_max_tickets"] == 50
-          and pe_mod.woncart_cfg({"TARGET_WONCART_HARD_MAX_TICKETS": "999"})["hard_max_tickets"] == 400)
+          and pe_mod.woncart_cfg({"TARGET_WONCART_HARD_MAX_TICKETS": "999"})["hard_max_tickets"] == 999
+          and pe_mod.woncart_cfg({"TARGET_WONCART_HARD_MAX_TICKETS": "99999"})["hard_max_tickets"] == 1500)
     small = dict(TARGET_WONCART_MAX_TICKETS="3", TARGET_WONCART_STEADY_GAP_S="3",
                  TARGET_WONCART_JITTER_S="0", TARGET_WONCART_SCHEDULE_S="1,1")
     # Flag OFF: a live cart is still retired at max_tickets=3 (prior behaviour).
@@ -4193,6 +4195,194 @@ def test_f1_live_cap_exempt():
           (r.get("won_cart_exit"), len(tab.tickets)))
 
 
+class _RideCtx:
+    """Stand-in for execute_purchase's timeout context: records the reschedule."""
+    def __init__(self):
+        self.whens = []
+
+    def reschedule(self, when):
+        self.whens.append(when)
+
+
+# The 2026-10-14 armed won-cart bundle, exactly as the wrapper sets it.
+RTO_ARMED = dict(TARGET_HELD_CART_REENTRY="1", TARGET_WON_CART_RIDE="1",
+                 TARGET_WON_CART_RIDE_MAX_S="300", TARGET_WONCART_SCHEDULE_S="1,1,1,2,2,3",
+                 TARGET_WONCART_STEADY_GAP_S="3", TARGET_WONCART_JITTER_S="1",
+                 TARGET_WONCART_OOS_TAIL_TICKETS="1", TARGET_WONCART_MAX_TICKETS="40",
+                 TARGET_WONCART_CALL_MAX_S="120", TARGET_WONCART_HEADROOM_S="45",
+                 TARGET_WONCART_YIELD_FLEET="0", TARGET_WONCART_LIVE_CAP_EXEMPT="1",
+                 TARGET_WONCART_HARD_MAX_TICKETS="1200", TARGET_WONCART_RIDE_TO_OOS="1",
+                 TARGET_WONCART_EVICTION_READ="1", TARGET_WONCART_EVICTION_PRESUME="1")
+
+
+def test_rto_ride_to_oos():
+    """2026-10-14 RIDE-TO-OOS (C-1014-11/12): with the armed bundle a won cart whose
+    TCIN reads live keeps submitting at ~3 s past the old 40-ticket / 120 s caps and
+    past another live TCIN (no yield) to the call's real deadline (~240 s at the armed
+    RIDE_MAX_S=300), then is HELD and re-entered on the next race, until the item goes
+    out of stock, the 3600 s TTL or the 1200-ticket ceiling; quiet mode covers every ticket; a verified held line is never
+    presumed gone on an unreadable cart. Flag off = byte-identical."""
+    cfg0 = pe_mod.woncart_cfg({})
+    check("rto_default_off", cfg0["ride_to_oos"] is False and cfg0["hard_max_tickets"] == 150)
+    check("rto_cfg_on", pe_mod.woncart_cfg({"TARGET_WONCART_RIDE_TO_OOS": " 1 "})["ride_to_oos"] is True
+          and pe_mod.woncart_cfg({"TARGET_WONCART_RIDE_TO_OOS": "0"})["ride_to_oos"] is False)
+
+    def ride(flags, oos_after=None):
+        c = Clock()
+        t0 = c.t
+        ex = bare(c)
+        del ex._begin_won_cart_ride                  # the real ride extension (RIDE_MAX_S)
+        ex._purchase_timeout_ctx = _RideCtx()
+        ex.probe = {"live": True}
+        ex._other_live_fn = lambda t: [OTHER]        # another monitored TCIN is live all ride
+        tab = TicketTab(ex, [t_pre(429, FS_BODY)] * 2000, c)
+        quiet_ok, fired = [], [0]
+        _orig = tab.evaluate
+
+        async def _ev(js, await_promise=False, **kw):
+            if "const MODE = '" in js:
+                quiet_ok.append(ex._woncart_quiet())
+                fired[0] += 1
+                if oos_after is not None and fired[0] >= oos_after:
+                    ex.probe = {"live": False}
+            return await _orig(js, await_promise=await_promise, **kw)
+
+        tab.evaluate = _ev
+        (v, r), _ = loop_run(ex, tab, c, FL_PRE429, **flags)
+        return r, tab, quiet_ok, c.t - t0, ex
+
+    # Armed bundle, item live all along: one call rides to its 300 s deadline (dl = start
+    # + 285, last ticket start = dl - 45 = 240 s) at ~3 s -> past 40 tickets and the 120 s
+    # call cap, no yield; the cart is HELD for the next race's re-entry, never deleted.
+    r, tab, quiet_ok, span, ex = ride(RTO_ARMED)
+    n = len(tab.tickets)
+    check("rto_rides_to_deadline", r.get("won_cart_exit") == "budget_spent" and 60 <= n <= 100
+          and 200 <= span <= 260 and r.get("reason") == "won_cart_held" and not ex.deletes,
+          (r.get("won_cart_exit"), n, span, r.get("reason")))
+    check("rto_no_yield_with_other_live", r.get("won_cart_exit") != "yield_fleet")
+    check("rto_quiet_every_ticket", len(quiet_ok) == n and all(quiet_ok), (n, quiet_ok.count(False)))
+    check("rto_quiet_reset_after", ex._woncart_active_until == 0.0, ex._woncart_active_until)
+    check("rto_cadence_3s", all(2.0 - 1e-6 <= b - a <= 4.0 + 1e-6 for (a, _, _), (b, _, _)
+                                in zip(tab.tickets[6:], tab.tickets[7:])))
+    # Item goes out of stock after 60 tickets (past the soft cap of 40) -> one tail
+    # ticket, then the ride ends with the line KEPT (held), never deleted at the soft cap.
+    r, tab, quiet_ok, span, ex = ride(RTO_ARMED, oos_after=60)
+    # (past 120 s an OOS probe re-arms the per-call cap, so the exit is call_cap
+    # rather than tail_spent; both keep the line held.)
+    check("rto_ends_at_oos", r.get("won_cart_exit") in ("tail_spent", "call_cap") and 60 <= len(tab.tickets) <= 62
+          and r.get("reason") == "won_cart_held" and not ex.deletes,
+          (r.get("won_cart_exit"), len(tab.tickets), r.get("reason"), ex.deletes))
+    # Same without the flag (LIVE_CAP_EXEMPT alone, the 10-11 F1 snippet): the OOS probe
+    # past 40 tickets retires the cart at the soft cap and deletes the line.
+    r, tab, quiet_ok, span, ex = ride(dict(RTO_ARMED, TARGET_WONCART_RIDE_TO_OOS="0"), oos_after=60)
+    check("rto_off_oos_deletes_at_soft_cap", r.get("won_cart_exit") == "cart_ticket_cap"
+          and r.get("reason") == "won_cart_retired", (r.get("won_cart_exit"), r.get("reason")))
+    # cap function: ride_to_oos keeps a non-live probe below the hard ceiling, the
+    # hard ceiling still binds, and flag-off is unchanged.
+    CB = pe_mod.woncart_cap_binds
+    rc = pe_mod.woncart_cfg({"TARGET_WONCART_LIVE_CAP_EXEMPT": "1", "TARGET_WONCART_RIDE_TO_OOS": "1",
+                             "TARGET_WONCART_MAX_TICKETS": "40", "TARGET_WONCART_HARD_MAX_TICKETS": "1200"})
+    check("rto_cap_fn", CB(60, False, rc) is False and CB(60, None, rc) is False and CB(60, True, rc) is False
+          and CB(1200, False, rc) is True and CB(1200, True, rc) is True)
+    rc_only = pe_mod.woncart_cfg({"TARGET_WONCART_RIDE_TO_OOS": "1", "TARGET_WONCART_MAX_TICKETS": "40"})
+    check("rto_cap_needs_live_exempt", CB(40, False, rc_only) is True and CB(40, True, rc_only) is True)
+    # Same bundle WITHOUT the new flag: quiet mode lapses mid-ride (call_max 120 + 30 s),
+    # i.e. the bug this flag fixes; the ride itself is unchanged.
+    r, tab, quiet_ok, span, ex = ride(dict(RTO_ARMED, TARGET_WONCART_RIDE_TO_OOS="0"))
+    check("rto_off_quiet_lapses", r.get("won_cart_exit") == "budget_spent" and quiet_ok[:40] == [True] * 40
+          and quiet_ok.count(False) > 15, (r.get("won_cart_exit"), quiet_ok.count(False)))
+    # Held re-entry of the same cart (ledger already at 45 tickets, past the soft cap of
+    # 40) keeps riding while live instead of retiring at the cap.
+    c = Clock()
+    ex = bare(c)
+    ex.probe = {"live": True}
+    ex._other_live_fn = lambda t: [OTHER]
+    ex._held_cart = mk_held(tickets=45, sched_used=6, last_ticket_ts=c.t - 10.0)
+    tab = TicketTab(ex, [t_pre(429, FS_BODY)] * 400, c)
+    (v, r), _ = loop_run(ex, tab, c, None, entry="held", **RTO_ARMED)
+    check("rto_held_reentry_past_soft_cap", len(tab.tickets) >= 40 and r.get("won_cart_exit") == "budget_spent"
+          and r.get("reason") == "won_cart_held" and not ex.deletes,
+          (len(tab.tickets), r.get("won_cart_exit"), r.get("reason")))
+    # A warmup dummy POST that ADDED its decoy line marks the cart suspect: a verified
+    # cart's tickets fall back to the strict pre_po gate (never an unread po_only).
+    c = Clock()
+    ex = bare(c)
+    ex._checkout_reject_status, ex._checkout_reject_reason = 429, "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"
+    ex._dummy_landed_suspect_ts = c.t
+    tab = TicketTab(ex, [t_prepo(429, FS_BODY), t_po(429, FS_BODY), t_po(429, FS_BODY)], c)
+    loop_run(ex, tab, c, FL_PO_FS, TARGET_WONCART_MAX_TICKETS="3")
+    modes = [m for _, m, _ in tab.tickets]
+    check("rto_dummy_add_forces_pre_po", modes == ["pre_po", "pre_po", "pre_po"]
+          and "dummy_add" in run.last_out, modes)
+    c = Clock()
+    ex = bare(c)
+    check("rto_dummy_add_suspect_fn", ex._woncart_cart_suspect() == "")
+    ex._dummy_landed_suspect_ts = c.t
+    with fake_time(c):
+        a1 = ex._woncart_cart_suspect()
+        ex._woncart_suspect_cleared_ts = c.t + 301.0
+        a2 = ex._woncart_cart_suspect()
+    check("rto_dummy_add_cleared_after_window", a1 == "dummy_add" and a2 == "", (a1, a2))
+    src = (ROOT / "src" / "session" / "purchase_executor.py").read_text(encoding="utf-8")
+    check("rto_dummy_add_set_only_with_flag",
+          "if 200 <= int(_dummy_status) < 300 and woncart_cfg().get('ride_to_oos'):" in src)
+    # Pre-10-14 armed values (yield on, caps 40 / 120 s, ride 300): ends early while live.
+    r, tab, quiet_ok, span, ex = ride(dict(RTO_ARMED, TARGET_WONCART_YIELD_FLEET="1",
+                                           TARGET_WONCART_LIVE_CAP_EXEMPT="0", TARGET_WON_CART_RIDE_MAX_S="300",
+                                           TARGET_WONCART_RIDE_TO_OOS="0"))
+    check("rto_old_bundle_yields_early", r.get("won_cart_exit") == "yield_fleet" and len(tab.tickets) <= 10,
+          (r.get("won_cart_exit"), len(tab.tickets)))
+
+    # ---- held re-entry: a VERIFIED marker, cart unreadable twice, presume on ----
+    BAD = {"ok": False, "status": 429, "items": []}
+
+    def scripted(ex_, results):
+        seq = list(results)
+        ex_.reads = []
+
+        async def _read(t, timeout=2.5):
+            ex_.reads.append(timeout)
+            r_ = seq.pop(0) if len(seq) > 1 else seq[0]
+            return json.loads(json.dumps(r_))
+        ex_._cart_items_read = _read
+
+    HELD_PRES = dict(HELD, TARGET_WONCART_EVICTION_PRESUME="1")
+    c = Clock()
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})          # verified, idle 50 s
+    scripted(ex, [BAD])
+    run_impl(ex, dict(HELD_PRES, TARGET_WONCART_RIDE_TO_OOS="1"))
+    check("rto_verified_held_not_presumed", ex.loop_calls == [(TCIN, 2, "held")] and ex.fl_calls == []
+          and isinstance(ex._held_cart, dict) and "NOT presumed gone (ride-to-OOS)" in run.last_out
+          and "presuming the held" not in run.last_out and len(ex.reads) == 2,
+          (ex.loop_calls, ex.fl_calls, ex.reads, run.last_out[-300:]))
+    # ... but the second read still runs, and a read that shows the line gone drops it
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})
+    scripted(ex, [BAD, {"ok": True, "status": 200, "has_items": True, "items": []}])
+    run_impl(ex, dict(HELD_PRES, TARGET_WONCART_RIDE_TO_OOS="1"))
+    check("rto_verified_second_read_gone_drops", ex._held_cart is None and ex.fl_calls == [2]
+          and "line is gone from the cart (second read)" in run.last_out, (ex.loop_calls, ex.fl_calls))
+    # an UNVERIFIED marker keeps the presume (only proof of the line exempts it)
+    ex, tab = held_impl(c, mk_held(verified=False), probes={TCIN: True})
+    scripted(ex, [BAD])
+    run_impl(ex, dict(HELD_PRES, TARGET_WONCART_RIDE_TO_OOS="1"))
+    check("rto_unverified_still_presumed", ex._held_cart is None and ex.fl_calls == [2]
+          and "presuming the held" in run.last_out, (ex.loop_calls, ex.fl_calls))
+    # flag off -> exact prior behaviour (verified marker presumed gone, normal shot)
+    ex, tab = held_impl(c, mk_held(), probes={TCIN: True})
+    scripted(ex, [BAD])
+    run_impl(ex, HELD_PRES)
+    check("rto_off_prior_presume", ex._held_cart is None and ex.fl_calls == [2]
+          and "presuming the held" in run.last_out, (ex.loop_calls, ex.fl_calls))
+
+    # ---- the wrapper arms the bundle exactly once each ----
+    bat = (ROOT / "run_bot_with_nightly_restart.bat").read_bytes().decode("utf-8", "replace").split("\r\n")
+    for k, v in (("TARGET_WONCART_RIDE_TO_OOS", "1"), ("TARGET_WONCART_LIVE_CAP_EXEMPT", "1"),
+                 ("TARGET_WONCART_HARD_MAX_TICKETS", "1200"), ("TARGET_WONCART_YIELD_FLEET", "0"),
+                 ("TARGET_WON_CART_RIDE_MAX_S", "300"), ("TARGET_HELD_CART_TTL_S", "3600")):
+        sets = [ln for ln in bat if ln.startswith(f"set {k}=")]
+        check(f"rto_bat_{k}", sets == [f"set {k}={v}"], sets)
+
+
 def main():
     tests = (test_a_ticket_js_node, test_a_python_primitive, test_b_qg_fast_lane, test_c_call_site,
              test_c_hang_branch_placed, test_c_loop_core, test_c_loop_deadlines, test_c_loop_exits,
@@ -4220,7 +4410,9 @@ def main():
              # every log; only 7 of 43 tickets ever fired a place-order)
              test_r9_ticket_pre_retry,
              # 2026-09-30 F1: don't retire a live, verified cart at our own caps
-             test_f1_live_cap_exempt)
+             test_f1_live_cap_exempt,
+             # 2026-10-14 RIDE-TO-OOS: the armed bundle rides a live cart to OOS
+             test_rto_ride_to_oos)
     for fn in tests:
         try:
             fn()

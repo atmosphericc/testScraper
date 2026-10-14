@@ -115,6 +115,9 @@ OFFLINE = [
     # 2026-10-14: tools/ops/bot_ctl.py, the start / stop / restart helper /pre-drop boots
     # with (every process / OS call stubbed; nothing launched or signalled).
     "test_bot_ctl",
+    # 2026-10-14: tools/ops/ensure_armed.py, the nightly auto-arm + the wrapper's exit-87
+    # guest-login hook (every subprocess faked; nothing launched, nothing logged in).
+    "test_ensure_armed_1014",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

@@ -473,6 +473,10 @@ REM  future wait (up to RIDE_MAX_S) ONLY while the executor is holding a live wo
 REM  the 200 s force-complete respects it, so the hold can ride ~6 x 45 s. "Keep submitting
 REM  and let it ride." Kill-switch: set TARGET_WON_CART_RIDE=0 (holds then clamp to 80 s).
 set TARGET_WON_CART_RIDE=1
+REM  2026-10-14 RIDE-TO-OOS: kept at 300 on purpose. A won-cart call holds its TCIN for
+REM  the other accounts until it returns, so 900 would have locked them out ~13 min per
+REM  call - pre-arming verifier. Each call rides ~4 min; the held re-entry carries the
+REM  same cart on, uncapped while live, to the TTL below.
 set TARGET_WON_CART_RIDE_MAX_S=300
 set TARGET_FAST_SELLING_HOLD_CYCLES=6
 set TARGET_FAST_SELLING_HOLD_TOTAL_S=270
@@ -1165,7 +1169,24 @@ set TARGET_WONCART_OOS_TAIL_TICKETS=1
 set TARGET_WONCART_MAX_TICKETS=40
 set TARGET_WONCART_CALL_MAX_S=120
 set TARGET_WONCART_HEADROOM_S=45
-set TARGET_WONCART_YIELD_FLEET=1
+REM 2026-10-14 RIDE-TO-OOS: 1 to 0. A yield never freed the account for the other TCIN
+REM (held_cart_other_tcin sits it out) and ignored eligibility (10-01 04:12 primary yielded
+REM a verified cart to a TCIN it had ALREADY bought). Leading bots stay on the product
+REM until it is out of stock. Revert: 1.
+set TARGET_WONCART_YIELD_FLEET=0
+REM 2026-10-14 RIDE-TO-OOS (operator: "mimic the leading bots"; Refract: "keep submitting
+REM the order ... Leave it running"). 10 of the 11 won-cart loops that ended while their
+REM TCIN read live ended on OUR caps (C-1014-11). LIVE_CAP_EXEMPT=1: the 40-ticket and
+REM 120 s caps do not fire while the stock probe reads live (an OOS / unknown probe keeps
+REM them); HARD_MAX_TICKETS=1200 (~1 h at ~3 s) is the safety ceiling; RIDE_TO_OOS=1 keeps
+REM quiet mode on for the whole ride and never presumes a VERIFIED held line gone.
+REM A warmup dummy POST that ADDS its line makes the next ticket re-check the cart.
+REM Never a second order: more place-orders on the same cart (C-1011-12). grep
+REM "[WON_CART_DIRECT] end" / "NOT presumed gone (ride-to-OOS)" / dummy_add. Kill:
+REM RIDE_TO_OOS=0 + LIVE_CAP_EXEMPT=0 + YIELD_FLEET=1 + TTL 900.
+set TARGET_WONCART_LIVE_CAP_EXEMPT=1
+set TARGET_WONCART_HARD_MAX_TICKETS=1200
+set TARGET_WONCART_RIDE_TO_OOS=1
 REM 2026-09-18 live read-out (run_20260917_232400, cart 1011483413): a
 REM place-order 424 RESERVATION_FAILURE EMPTIES the cart, but the loop only
 REM learned that from a later pre_checkout 2xx that the FAST_SELLING gate
@@ -1197,7 +1218,11 @@ REM no new ATC when its TCIN reads live again (up to 15 min, 14 tickets per
 REM cart); a one-shot boot cart audit keeps or clears a leftover cart.
 REM grep [HELD_CART] and [BOOT_CART_AUDIT]. Kill: TARGET_HELD_CART_REENTRY=0.
 set TARGET_HELD_CART_REENTRY=1
-set TARGET_HELD_CART_TTL_S=900
+REM 2026-10-14 RIDE-TO-OOS: 900 to 3600, the code's max, so a held live cart is not retired
+REM and DELETED mid-window - 10-01 windows ran 3,760 / 3,938 s. A terminal place-order drops
+REM the marker at once, so the 1800 s ambiguous-commit latch is not undercut - verifiers.
+REM Revert: 900.
+set TARGET_HELD_CART_TTL_S=3600
 REM 2026-10-04 pre-drop, operator: FX-1001-A held-line flip strike, v11,
 REM verified 10-03 by fresh verifiers 10 and 11. An add-to-cart 400
 REM MAX_PURCHASE (our line is already held) at a fresh flip continues in the
@@ -1630,7 +1655,13 @@ REM  (2026-07-03 fix: it used to idle forever as a dashboard-only zombie).
 REM  Recover the PROVEN way: re-run relogin_one.py all (home IP, validate-first)
 REM  and relaunch. Burst guard: after 3 consecutive 87-cycles, cool down 10
 REM  minutes so a genuinely-broken account can't login-storm Shape all night.
+REM  2026-10-14 C-1014-10: relogin_one.py all cannot see a GUEST jar - C-1014-02 - so
+REM  10-14 looped 54 times on guest accounts. First give each GUEST / signed-out jar ONE
+REM  scripted forced login - the env that went 2/2 on 10-14 - at most once per account
+REM  per 6 h; member jars are never touched. grep [LOGIN] in logs\ensure_armed.log.
+REM  Kill: set ENSURE_ARMED_EXIT87=0
 REM ---------------------------------------------------------------------------
+set ENSURE_ARMED_EXIT87=1
 if "%EXITCODE%"=="87" (
     set /a RELOGIN_BURSTS+=1
     echo [!date! !time!] exit 87: not-logged-in ? relogin cycle !RELOGIN_BURSTS!/3 >> "%RUNLOG%"
@@ -1639,6 +1670,11 @@ if "%EXITCODE%"=="87" (
         echo Three relogin cycles failed. Cooling down 10 minutes...
         ping -n 601 127.0.0.1 >nul
         set /a RELOGIN_BURSTS=0
+    )
+    if "!ENSURE_ARMED_EXIT87!"=="1" (
+        echo [!date! !time!] guest-account forced login: ensure_armed.py --mode exit87 >> "%RUNLOG%"
+        "%PYTHON%" tools\ops\ensure_armed.py --mode exit87
+        echo [!date! !time!] guest-account forced login done code=!ERRORLEVEL! >> "%RUNLOG%"
     )
     if exist "%~dp0config\target_accounts.json" (
         echo [!date! !time!] account relogin: relogin_one.py all >> "%RUNLOG%"

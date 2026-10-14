@@ -809,7 +809,16 @@ def woncart_cfg(env=None) -> Dict[str, Any]:
         # (budget_spent, the ride window) still bound a live cart. An out-of-stock
         # or unknown probe keeps the normal cap. Default '0' = byte-identical.
         'live_exempt': str(env.get('TARGET_WONCART_LIVE_CAP_EXEMPT', '0')).strip() == '1',
-        'hard_max_tickets': int(_num('TARGET_WONCART_HARD_MAX_TICKETS', 150, 50, 400)),
+        # 2026-10-14 (C-1014-11): ceiling 400 -> 1500 so a ~3 s ticket cadence can
+        # ride a 30-60 min window (10-01: 3,760 / 3,938 s). Default 150 unchanged.
+        'hard_max_tickets': int(_num('TARGET_WONCART_HARD_MAX_TICKETS', 150, 50, 1500)),
+        # 2026-10-14 RIDE-TO-OOS (C-1014-11/12; Refract: "keep submitting the order
+        # ... Leave it running"): with '1' (a) quiet mode covers the loop's real
+        # deadline instead of call_max_s + 30 s, which lapsed ~90 s before a
+        # live-exempt ride ended; (b) a VERIFIED held line is never presumed gone
+        # on two failed cart reads -- the loop is entered and its strict
+        # pre_checkout re-verifies the cart. Default '0' = byte-identical.
+        'ride_to_oos': str(env.get('TARGET_WONCART_RIDE_TO_OOS', '0')).strip() == '1',
         # >= 12 s ticket evaluate + 2 s abort read + 15 s bounded delete + 5 s.
         'headroom_s': _num('TARGET_WONCART_HEADROOM_S', 45, 34.0, 200.0),
         'pre_streak_max': int(_num('TARGET_WONCART_PRE_STREAK_MAX', 3, 1, 10)),
@@ -862,6 +871,13 @@ def woncart_cap_binds(tickets, live, cfg: Dict[str, Any]) -> bool:
         if n >= int(cfg.get('hard_max_tickets', 150)):
             return True
         if live is True:
+            return False
+        if cfg.get('ride_to_oos'):
+            # 2026-10-14 RIDE-TO-OOS: past the soft cap an out-of-stock / unknown probe
+            # used to end the ride as cart_ticket_cap, which DELETES the line (test
+            # rto_ends_at_oos). Below the hard ceiling the ride now ends by tail_spent /
+            # probe_unknown / call_cap and the line stays held for the FX-1001-A strike
+            # at the next restock; the TTL and the hard ceiling still retire it.
             return False
         return n >= int(cfg.get('max_tickets', 14))
     except Exception:
@@ -2153,6 +2169,14 @@ class PurchaseExecutor:
             ots = float(getattr(self, '_orphan_atc_ts', 0.0) or 0.0)
             if ots > 0 and 0.0 <= now - ots < _WONCART_LATE_ADD_WINDOW_S:
                 return 'orphan_atc'
+            # 2026-10-14 RIDE-TO-OOS (pre-arming verifier, risk 3): the warmup dummy POST
+            # keeps firing during a ride; a 2xx there means its decoy line LANDED, and an
+            # unread po_only ticket would buy it. Set only with TARGET_WONCART_RIDE_TO_OOS=1;
+            # cleared the same way as 'harvest_add'.
+            dts = float(getattr(self, '_dummy_landed_suspect_ts', 0.0) or 0.0)
+            if (dts > 0 and float(getattr(self, '_woncart_suspect_cleared_ts', 0.0) or 0.0)
+                    < dts + _WONCART_LATE_ADD_WINDOW_S):
+                return 'dummy_add'
         except Exception:
             return ''
         return ''
@@ -3572,6 +3596,15 @@ class PurchaseExecutor:
         elif _dummy_status not in (-1, 0):
             # 201 = dummy actually added (harmless test TCIN), 400/404/422 =
             # authenticated-but-rejected payload — all prove write-auth alive.
+            try:
+                if 200 <= int(_dummy_status) < 300 and woncart_cfg().get('ride_to_oos'):
+                    # RIDE-TO-OOS: the decoy line is in the cart now; the won-cart loop
+                    # re-checks the cart before any po_only ticket (_woncart_cart_suspect).
+                    self._dummy_landed_suspect_ts = time.time()
+                    print(f"[WARMUP#{idx}/{_acct}] dummy POST ADDED its line (status {_dummy_status}) — "
+                          f"a won-cart po_only ticket re-checks the cart first (dummy_add)")
+            except Exception:
+                pass
             print(f"[WARMUP#{idx}/{_acct}] dummy POST status {_dummy_status} — write-auth alive")
 
         # Capture window: 1.5s (interceptor fires in 100-300ms when it's going
@@ -9620,6 +9653,11 @@ class PurchaseExecutor:
                 dl = min(exec_dl, mgr_dl)
                 last_start = dl - cfg['headroom_s']
                 st['dl'] = dl
+                if cfg.get('ride_to_oos'):
+                    # RIDE-TO-OOS (a): stay quiet until the real deadline (+30 s,
+                    # the same margin as above); the exit still resets it to 0.
+                    self._woncart_active_until = max(
+                        float(getattr(self, '_woncart_active_until', 0.0) or 0.0), dl + 30.0)
                 h = getattr(self, '_held_cart', None)
                 if entry == 'held' and isinstance(h, dict) and str(h.get('tcin')) == T:
                     L = h
@@ -10341,7 +10379,14 @@ class PurchaseExecutor:
                 # re-entry) keeps the prior behaviour.
                 _idle = time.time() - float(h.get('last_ticket_ts') or h.get('first_201_ts') or 0.0)
                 _presume = False
-                if woncart_cfg().get('eviction_presume') and _idle > 20.0:
+                _wcfg = woncart_cfg()
+                # RIDE-TO-OOS (b): a verified line (a 2xx pre proved it in the cart) is
+                # not presumed gone when the cart is unreadable TWICE; the second read
+                # still runs and a read that shows the line gone still drops the marker
+                # (delta verifier, 2026-10-14). 10-01 04:12: a verified cart was dropped
+                # on two 429 reads and the next ATC drew a 401.
+                _rto_keep = bool(_wcfg.get('ride_to_oos') and h.get('verified'))
+                if _wcfg.get('eviction_presume') and _idle > 20.0:
                     await asyncio.sleep(0.6)
                     r2 = await self._cart_items_read(tab)
                     if r2.get('ok'):
@@ -10350,6 +10395,10 @@ class PurchaseExecutor:
                             print(f"[HELD_CART] {T} line is gone from the cart (second read) — marker "
                                   f"dropped, normal shot (QG covers stacking) ident={self._ident_tag()}")
                             return None
+                    elif _rto_keep:
+                        print(f"[HELD_CART] cart unreadable twice (status={r2.get('status')}) on a VERIFIED "
+                              f"held {T} line idle {_idle:.0f}s — NOT presumed gone (ride-to-OOS); "
+                              f"entering the loop ident={self._ident_tag()}")
                     else:
                         _presume = True
                 if (_presume and held_line_strike_on(self._ident_tag())
