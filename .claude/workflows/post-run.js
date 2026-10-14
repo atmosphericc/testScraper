@@ -1,7 +1,7 @@
 export const meta = {
   name: 'post-run',
   description: 'Post-mortem a bot run in rounds until a round adds nothing: event-store facts, analysts routed to the wall that lost units, every load-bearing claim checked by a BLIND replicator (never sees the claimed value) + a refuter + a neutral judge, then a critic whose gaps start the next round. Optional answer key + known-false canaries grade the process itself. Analysis only - never edits code, arms flags or launches anything.',
-  whenToUse: 'After every run with a restock, an anomaly or an operator complaint. args (all optional): {run: "run_20260930_014647", note: "operator note", max_rounds: 3, max_claims: 3, max_gaps: 3, answer_key: ["finding", ...], canaries: [{claim, check_against, question, expected, kind}]}. answer_key and canaries exist to grade the workflow; they are never shown to analysts, replicators, refuters or judges.',
+  whenToUse: 'After every run with a restock, an anomaly or an operator complaint. args (all optional): {run: "run_20260930_014647", note: "operator note", max_rounds: 2, max_claims: 3, max_gaps: 3, answer_key: ["finding", ...], canaries: [{claim, check_against, question, expected, kind}]}. answer_key and canaries exist to grade the workflow; they are never shown to analysts, replicators, refuters or judges.',
   phases: [
     { title: 'Facts', detail: 'event store build + saved queries + regime check' },
     { title: 'Investigate', detail: 'round 1: analysts routed by the wall that lost units; later rounds: one agent per critic gap' },
@@ -31,8 +31,8 @@ const A = args || {}
 const RUN = A.run ? String(A.run) : ''
 const NOTE = A.note ? String(A.note) : ''
 const clampInt = (v, lo, hi, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, Math.round(n))) : d }
-const MAX_ROUNDS = clampInt(A.max_rounds, 1, 5, 3)
-const MAX_CLAIMS = clampInt(A.max_claims, 1, 6, 4)
+const MAX_ROUNDS = clampInt(A.max_rounds, 1, 5, 2)
+const MAX_CLAIMS = clampInt(A.max_claims, 1, 6, 3)
 const MAX_GAPS = clampInt(A.max_gaps, 0, 6, 3)
 const KEY = Array.isArray(A.answer_key) ? A.answer_key.map(String) : []
 const CANARIES = Array.isArray(A.canaries) ? A.canaries : []
@@ -229,16 +229,20 @@ Quote the claimed value and the replicated value in basis.`
 const pickAgent = (name) => (AGENTS.includes(name) ? name : 'failure-forensics')
 
 // ── verification of one claim: blind replicate || refute -> judge ───────────
+// Model split (operator 2026-10-14: "not all subagents should use expensive models"): Sonnet
+// counts, reads code and judges (the judge compares two finished checks); Opus only where the
+// claim is causal. The analysts and the critic stay on their Opus agent definitions.
 const verifyClaim = (c, tag) => {
   const kind = ['count', 'code', 'causal'].includes(c.kind) ? c.kind : 'causal'
+  const deep = kind === 'causal' ? {} : { model: 'sonnet' }
   const repOpts = kind === 'count'
     ? { label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'log-miner', model: 'sonnet', schema: REPLICATION_SCHEMA, effort: 'high' }
-    : { label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'claims-verifier', schema: REPLICATION_SCHEMA, effort: 'high' }
+    : Object.assign({ label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'claims-verifier', schema: REPLICATION_SCHEMA, effort: 'high' }, deep)
   return parallel([
     () => agent(replicatePrompt(c), repOpts),
-    () => agent(refutePrompt(c), { label: `refute:${tag}:${c.id}`, phase: 'Refute', agentType: 'claims-verifier', schema: VERDICT_SCHEMA, effort: 'high' }),
+    () => agent(refutePrompt(c), Object.assign({ label: `refute:${tag}:${c.id}`, phase: 'Refute', agentType: 'claims-verifier', schema: VERDICT_SCHEMA, effort: 'high' }, deep)),
   ]).then(([rep, ref]) =>
-    agent(judgePrompt(c, rep, ref), { label: `judge:${tag}:${c.id}`, phase: 'Judge', agentType: 'claims-verifier', schema: JUDGE_SCHEMA, effort: 'high' })
+    agent(judgePrompt(c, rep, ref), { label: `judge:${tag}:${c.id}`, phase: 'Judge', agentType: 'claims-verifier', model: 'sonnet', schema: JUDGE_SCHEMA, effort: 'high' })
       .then(j => ({ claim: c, replication: rep, refutation: ref, judgment: j })))
 }
 
@@ -307,7 +311,7 @@ while (round <= MAX_ROUNDS && jobs.length > 0) {
   jobs.forEach(j => investigated.push(`r${R}:${j.key}${j.question ? ' - ' + j.question : ''}`))
   const analysisP = pipeline(
     jobs,
-    (j) => agent(j.prompt, { label: `r${R}:${j.key}`, phase: 'Investigate', agentType: j.agentType, schema: ANALYSIS_SCHEMA, effort: 'xhigh' }),
+    (j) => agent(j.prompt, { label: `r${R}:${j.key}`, phase: 'Investigate', agentType: j.agentType, schema: ANALYSIS_SCHEMA, effort: 'high' }),
     (res, j) => {
       if (!res) return []
       reports.push({ round: R, key: j.key, report: res.report_markdown, fix_specs: res.fix_specs || [], claims: res.claims || [] })
@@ -391,7 +395,7 @@ ANSWER KEY:
 ${KEY.map((k, i) => `K${i + 1}. ${k}`).join('\n')}
 
 THE WORKFLOW'S JUDGED CLAIMS:
-${judged || '(none)'}`, { label: 'grade', phase: 'Grade', schema: GRADE_SCHEMA, effort: 'high' })
+${judged || '(none)'}`, { label: 'grade', phase: 'Grade', model: 'sonnet', schema: GRADE_SCHEMA, effort: 'high' })
 }
 
 return {

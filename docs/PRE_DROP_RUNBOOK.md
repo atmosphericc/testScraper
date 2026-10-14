@@ -1,5 +1,13 @@
 # Pre-Drop Runbook — be confident before you commit
 
+> **2026-10-08 — superseded by `/pre-drop` v2.** The procedure now lives in
+> `.claude/skills/pre-drop/SKILL.md`; the checks are scripts, not eyes:
+> `python tools/predrop/preflight.py --drop "YYYY-MM-DD HH:MM" --tcins ...` before the
+> start, and `python tools/predrop/boot_check.py --follow` right after it (GREEN = every
+> buy-path marker incl. `purchase_thread started`; RED = stop, fix, restart). Parts of the
+> text below predate 09-20 (buyers are on the home IP, `TARGET_TOKEN_KEEPFRESH=0` since
+> 09-28, the running bot re-mints member tokens at their 4 h expiry); read it as history.
+
 **Purpose:** turn "I hope the accounts are hot" into "I verified the accounts are hot."
 The 2026-07-14 overnight drop converted only 1 of 9 waves because 2 of 3 accounts
 held **dead write-auth** (ATC 401 `_ERR_AUTH_DENIED`) at the drop moments — token
@@ -28,14 +36,18 @@ in order, every time you start it — **no separate commands needed**:
 2. **Log in all accounts** — `relogin_one.py all` (validate-first; relogins only dead ones).
 3. **Drop-readiness echo** — `check_session_readiness.py` prints a per-account
    MEMBER verdict so a cold/guest account is visible immediately (non-blocking).
-4. **Hold tokens hot 24/7** — `TARGET_TOKEN_KEEPFRESH=1`; the sentinel re-checks
-   write-auth every ~5 min, so it's drop-ready whenever you started it.
+4. **Member tokens re-mint in-bot at their 4 h expiry** (`TARGET_TOKEN_KEEPFRESH=0` +
+   `TARGET_RELOGIN_MAX_PER_6H=0` since 09-28, C-0929-01); the start pass refreshes an
+   expired token from a live login-session. Only a dead login-session or a guest jar
+   (readiness ❌) needs a hand login.
 5. **Self-heal** — a not-logged-in boot (exit 87) re-runs the account login.
 
 So on drop night: **just start the bat and watch the startup output.** You want:
 - `=== drop-readiness check ===` → **all three ✅ MEMBER**
-- `[RELOGIN]` 3/3 logged in, member token MINTED ✅
-- pool **LIVE** 3 BD exits, **write-auth ×3**, `[SENTINEL] timer thread started`
+- `logs/relogin.log`: `[RESULT] <acct>: already logged in ✅ (… auth=['accessToken', 'idToken', 'refreshToken', 'login-session'])` ×3
+- `[MONITORING_LOOP] [OK] purchase_thread started (is_alive: True)` and `✅ All threads started successfully`
+  (both by ~+13 s; their absence = the 10-07 class, the bot cannot buy), **write-auth alive ×3**,
+  `[SENTINEL] timer thread started`, `[MULTI_SESSION] started — 18/18 sessions ready` (~+3.5 min)
 - first `STOCK STATS` clean (200s, **0 403s**)
 - the readiness echo's new **`TCIN visibility`** section (from the previous run's
   `state/tcin_visibility.json`; four-state verdict **OK / PARTIAL / WARNING /

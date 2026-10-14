@@ -30,9 +30,11 @@ Read `.claude/state/CURRENT_STATE.md` for the live picture. The items below are
 architectural shape rather than measurements, but they still carry dates, and the
 staleness protocol in §6 of the context file applies to all of them.
 
-- Browser-native dispatch: N persistent Chromes pinned 1:1 to ISP IPs, firing bulk
-  RedSky via `tab.evaluate(fetch(...))`. JA3/JA4 comes from the real browser; there
-  is no curl_cffi anywhere in the request path. [architecture, stable]
+- N persistent Chromes pinned 1:1 to ISP IPs. **Since 2026-09-09 the sweep itself is a raw
+  urllib GET of the apps endpoint through the local forwarder** (`RESILIENT_REDSKY_CHANNEL=apps_raw`,
+  `tab_dispatcher.py` ~194-245): Python's TLS, app headers; the Chromes carry heartbeats
+  and cookies and gate `pick_session`. `tab.evaluate(fetch(...))` is the `web` channel,
+  which HUMAN/PX walls on the BD prefixes. No curl_cffi anywhere. [architecture; corrected 2026-10-08]
 - RedSky hard-caps `product_summary_with_fulfillment_v1` at 30 TCINs per request;
   we chunk at 28. Per-TCIN refresh = `RPS / ceil(N/28)`. [vendor limit, verify if
   sweeps start failing]

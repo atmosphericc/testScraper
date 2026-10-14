@@ -206,6 +206,16 @@ def _write_session(session_path: Path, cookies: List[Dict[str, Any]], identity: 
     if not cookies:
         print(f"    [SKIP] 0 cookies captured — NOT overwriting {session_path.name} (clobber guard).")
         return
+    # FX-1014-JARGUARD (TARGET_JAR_GUEST_GUARD=1): never write a guest jar over a member's.
+    try:
+        from src.jar_guard import inspect as _jar_inspect
+        _block, _why = _jar_inspect(session_path, cookies)
+    except Exception:
+        _block, _why = False, None
+    if _why:
+        print(f"    [JAR_GUARD] {'NOT overwriting' if _block else 'writing'} {session_path.name}: {_why}")
+    if _block:
+        return
     payload = {
         "cookies": cookies,
         "saved_at": datetime.now(_tz.utc).isoformat(),

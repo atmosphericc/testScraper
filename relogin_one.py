@@ -437,7 +437,15 @@ async def relogin_account(acc: dict, force: bool = False, manual: bool = False) 
             cookies = await _export_cookies(tab)
             _write_session(ROOT / acc["session_path"], cookies, identity)
             auth = [h for h in AUTH_COOKIE_HINTS if any(h in c["name"] for c in cookies)]
-            log("RESULT", f"{acc_id}: already logged in ✅ (cookies refreshed, {len(cookies)} cookies, auth={auth})")
+            # FX-1014-JARGUARD: the /account test above passes guests (C-1014-02) — name them.
+            _guest = ""
+            try:
+                from src.jar_guard import enabled as _jg_on, sut_of as _jg_sut
+                if _jg_on() and _jg_sut(cookies) == "G":
+                    _guest = " ⚠ GUEST (sut=G) — the profile is signed out"
+            except Exception:
+                pass
+            log("RESULT", f"{acc_id}: already logged in ✅ (cookies refreshed, {len(cookies)} cookies, auth={auth}){_guest}")
             return True
 
         # Retry the whole sign-out + login up to 3× — attempts are independent and

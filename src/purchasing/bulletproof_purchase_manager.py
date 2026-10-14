@@ -749,6 +749,65 @@ def _dco_burst_cfg(env=None) -> Dict[str, object]:
     }
 
 
+# FX-1011-CADENCE (2026-10-11): per-account fast lottery cadence.
+# TARGET_FAST_CADENCE_IDENTS=<acct>[,<acct>...] | all   (unset / empty / 0 = OFF, byte-identical)
+# TARGET_FAST_CADENCE_MIN_S / _MAX_S                     (default 3.0 / 4.5 s, floor 1.0 s)
+# For the listed accounts an edge 429 (ERR_A2C_TCIN_RATE_LIMITED) or an ATC-level
+# DCO 429 schedules the next shot MIN-MAX s later instead of the wave-first cold
+# re-entry 55-70 s later; the race budget (TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S /
+# _MAX), [RETRY_OOS], the live-racer guard, FX-1006-YIELD and the Shape-scoped
+# 401 handling (wave-first, bank gate, pulse) are unchanged. Why: on 10-09 the
+# fleet fired ~1.4 shots/account/min into 8-32 min in-stock windows and 686/690
+# POSTs drew the edge 429; a quota on OUR OWN traffic would have had to be zero
+# before we ever fired (the first POST ever sent to each of 8 new TCINs was limited
+# 24/24 while the same Chromes' decoys passed; decoy TCIN 0/100,933 ERR_A2C). Each
+# shot is a draw; this buys ~10x the draws per account per window. Scoped per
+# account so one account can run it beside two wave-first controls on the same
+# night (the 09-25 fleet-wide test, 0/663, had no control and is p~0.10 against
+# the 0.35% baseline -- NOT ESTABLISHED either way). Kill: unset IDENTS.
+def _fast_cadence_cfg(env=None) -> Dict[str, object]:
+    env = os.environ if env is None else env
+
+    def _num(name, default, lo, hi):
+        try:
+            v = float(str(env.get(name, default)).strip())
+        except (TypeError, ValueError):
+            v = float(default)
+        if not (v == v) or v in (float('inf'), float('-inf')):
+            v = float(default)
+        return min(hi, max(lo, v))
+    try:
+        raw = str(env.get('TARGET_FAST_CADENCE_IDENTS', '') or '').strip()
+    except Exception:
+        raw = ''
+    if raw == '0':
+        raw = ''
+    names = {x.strip().lower() for x in raw.replace(';', ',').replace(' ', ',').split(',')
+             if x.strip()}
+    lo = _num('TARGET_FAST_CADENCE_MIN_S', 3.0, 1.0, 60.0)
+    hi = max(lo, _num('TARGET_FAST_CADENCE_MAX_S', 4.5, 1.0, 60.0))
+    return {'on': bool(names), 'idents': names, 'lo': lo, 'hi': hi}
+
+
+def _fast_cadence_applies(cfg, wlbl) -> bool:
+    """Pure: does FX-1011-CADENCE apply to this racer? `wlbl` is the worker label
+    (`W3/alt-1`); the account part or the whole label may be listed; `all` / `*`
+    = every account. Off / unknown label = False. Never raises."""
+    try:
+        if not cfg or not cfg.get('on'):
+            return False
+        names = cfg.get('idents') or set()
+        if 'all' in names or '*' in names:
+            return True
+        lbl = str(wlbl or '').strip().lower()
+        if not lbl:
+            return False
+        acct = lbl.split('/', 1)[1] if '/' in lbl else lbl
+        return lbl in names or acct in names
+    except Exception:
+        return False
+
+
 def _dco_burst_bank_ready(executor, worker, session_manager, wait_s, margin_s):
     """(ready, waited_s): is a replayable banked Shape set available for a burst
     re-POST, waiting up to `wait_s` for the in-window harvest to bank one.
@@ -2423,6 +2482,10 @@ class BulletproofPurchaseManager:
                     _dco_burst_n = 0
                     _dco_burst_capped = False
                     _dco_burst_waited = 0.0
+                    # FX-1011-CADENCE: parsed once per race thread (helpers above the class).
+                    _fast_cfg = _fast_cadence_cfg()
+                    _fast_on = _fast_cadence_applies(_fast_cfg, _race_wlbl)
+                    _fast_noted = False
 
                     _attempt_n = 0
                     # 2026-09-16 (plan P2/P9): identity for the in-thread skip.
@@ -2634,10 +2697,24 @@ class BulletproofPurchaseManager:
                         # 2026-09-23: restored (=0 in the bat) as a pre-registered BET. The
                         # census pooled every SKU; re-derived hot-only at matched window age
                         # it is NOT ESTABLISHED either way (docs/CLAIMS.md C-0923-02).
+                        # 2026-10-11: the bat has had TARGET_WAVE_FIRST_EDGE=1 since 09-25
+                        # (bat:784); the lottery cadence is now scoped per account by
+                        # FX-1011-CADENCE (TARGET_FAST_CADENCE_IDENTS, helpers above the class).
                         _wf_only = os.environ.get('TARGET_WAVE_FIRST_ONLY', '0') == '1'
                         _wf_kinds = (('auth401', 'edge', 'dco')
                                      if os.environ.get('TARGET_WAVE_FIRST_EDGE', '1') == '1'
                                      else ('auth401',))
+                        # FX-1011-CADENCE: for the listed accounts wave-first keeps only the
+                        # Shape-scoped 401s; edge / DCO 429s fall through to the lottery
+                        # cadence below with this account's own band. The bank gate follows
+                        # _wf_kinds, so a fast re-shot never waits on the bank either.
+                        if _fast_on:
+                            _wf_kinds = tuple(k for k in _wf_kinds if k == 'auth401')
+                            if not _fast_noted:
+                                _fast_noted = True
+                                print(f"[FAST_CADENCE] {_race_wlbl or 'auto'} {tcin}: edge/DCO re-shots every "
+                                      f"{_fast_cfg['lo']:.1f}-{_fast_cfg['hi']:.1f}s this race (wave-first keeps "
+                                      f"401s; budget {max(0.0, _retry_deadline - time.time()):.0f}s left)")
                         # 2026-09-17 evening — ATC-level DCO burst (TARGET_ATC_DCO_BURST=1;
                         # default 0 = exact prior behaviour). A DCO-body 429
                         # ("Request throttled due to high demand item",
@@ -2724,6 +2801,9 @@ class BulletproofPurchaseManager:
                         if str((result or {}).get('gate_kind', '')) == 'edge' or (_dco_as_edge and _gk == 'dco'):
                             _edge_lo = float(os.environ.get('TARGET_ATC_EDGE429_RETRY_DELAY_MIN', '2.0'))
                             _edge_hi = float(os.environ.get('TARGET_ATC_EDGE429_RETRY_DELAY_MAX', '3.0'))
+                            if _fast_on:
+                                # FX-1011-CADENCE: this account's own band (floor 1.0 s below).
+                                _edge_lo, _edge_hi = float(_fast_cfg['lo']), float(_fast_cfg['hi'])
                             # Hard clamp: MIN>=1.0 (the documented ~1s per-IP ban
                             # floor — help.refractbot.com), MAX>=MIN. Guards env
                             # overrides; defaults 2.0/3.0 sit >=2x the floor.
@@ -2773,6 +2853,8 @@ class BulletproofPurchaseManager:
                             # 2026-09-23: "our own volume trips the limiter" is NOT ESTABLISHED
                             # for hot SKUs (docs/CLAIMS.md C-0923-02); with the bat's
                             # TARGET_WAVE_FIRST_EDGE=0 this branch now handles 401s only.
+                            # 2026-10-11: stale — the bat has had =1 since 09-25 (bat:784), so this
+                            # branch takes edge/DCO 429s too, except for FX-1011-CADENCE accounts.
                             try:
                                 _re_lo = float(os.environ.get('TARGET_WAVE_REENTRY_MIN_S', '55'))
                                 _re_hi = float(os.environ.get('TARGET_WAVE_REENTRY_MAX_S', '70'))
@@ -2824,6 +2906,16 @@ class BulletproofPurchaseManager:
                                   f"wave-first reset pause {_pulse_s:.1f}s ident={_race_wlbl or 'auto'}")
                             _consec_401 = 0
                             time.sleep(_pulse_s)
+                        elif _fast_on and _gk in ('edge', 'dco') and _wave_yield_on():
+                            # FX-1011-CADENCE: the fast wait still honours FX-1006-YIELD (free this
+                            # account mid-wait for a skipped live TCIN); same band as the std site.
+                            _yt = self._wave_yield_sleep(tcin, _race_wlbl or 'auto',
+                                                         random.uniform(_atc_lo, _atc_hi))
+                            if _yt:
+                                print(f"[WAVE_YIELD] {_race_wlbl or 'auto'} {tcin}: ending this window "
+                                      f"mid-wait to free the account for skipped live TCIN {_yt} "
+                                      f"(keeping this attempt's result) [fast-cadence]")
+                                break
                         else:
                             time.sleep(random.uniform(_atc_lo, _atc_hi))
                         # 2026-09-09 fresh-set gate (TARGET_SHOT_BANK_GATE=1; default 0 =

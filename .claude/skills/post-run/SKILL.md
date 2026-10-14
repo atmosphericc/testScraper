@@ -44,12 +44,20 @@ confident without inherent bias"). It runs in ROUNDS until a round adds nothing:
    `failure-forensics`. Later rounds: one agent per critic gap.
 3. **Verify every load-bearing claim three ways, none of them by its author:**
    a **blind replicator** gets only a question (never the claim or its number) and
-   measures it — counting questions go to Sonnet, a different tier than the Opus
-   analyst, to decorrelate errors; a **refuter** gets only the bare claim; a **neutral
-   judge** confirms only when the blind measurement agrees and the refutation fails.
+   measures it — count and code questions go to Sonnet, a different tier than the Opus
+   analyst, to decorrelate errors; a **refuter** gets only the bare claim (Sonnet for
+   count / code claims, Opus only for causal ones); a **neutral judge** (Sonnet) confirms
+   only when the blind measurement agrees and the refutation fails. (Model split since
+   2026-10-14, operator: "not all subagents should use expensive models".)
 4. **Critic** — gaps that could change units lost, a fix decision or a verdict. Each new
    gap becomes the next round's question; no new gap = complete. `max_rounds` (default
-   3) bounds cost and every unfinished gap is logged, never dropped silently.
+   2) and `max_claims` (default 3 per analyst) bound cost and every unfinished gap is
+   logged, never dropped silently.
+
+**Size it to the night.** The workflow routes on restock / carts / regime flags. A night
+with no shots (a boot loop, the bot down) has nothing for it to route on — run a Sonnet
+log-miner for the timeline, one Opus analyst for the causes and one claims-verifier on the
+claims a fix rests on instead (10-14).
 5. **Calibration (optional args):** `canaries` = known-false claims mixed in under
    neutral ids — a confirmed canary means verification is rubber-stamping and the run's
    verdicts are not to be trusted; `answer_key` = known findings, graded for recall.

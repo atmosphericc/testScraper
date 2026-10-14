@@ -31,6 +31,21 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-10-14] - Drop window (00:00-03:00 CT, rumoured) lost before boot: no MEMBER session on any account; 68 exit-87 launches overnight, 0 minutes of monitoring in the window - OURS (sessions + tooling) / HOST
+**Symptom**:
+- 69 launches (`run_20261014_001059` … `run_20261014_070319`): 68 exited 87 on the 30 s 'Hi,' probe timeout before any stock read; the only GREEN boot was 07:03 (after a scripted login succeeded at 07:02:36), stopped by a double Ctrl-C at 07:44:35. 0 minutes of monitoring 00:00-07:07; 07:07-07:44 all 25 TCINs OUT_OF_STOCK. Units lost: not determinable.
+- After the operator stopped the wrapper (00:16:46) and powered off (00:29:17, the shutdown failed), Windows Update rebooted the host 02:30-02:33, signed in automatically and the Startup shortcut `TargetBot.lnk` restarted the wrapper at 02:34:04 → 64 unattended exit-87 launches with `relogin_one.py all` between each.
+**Root Cause**:
+- business + alt-1 were already GUEST (sut=G) at the 10-13 23:18 preflight — they went guest during the 50.4 h `run_20261009_192351` (exact moment not established; nothing decodes sut).
+- primary (member, token expired, login-session live) was signed out by `hand_login_all_force.bat` (`relogin_one.py all --manual --force`, 23:54:49 + 00:01:15, neither login completed); the wrapper's 00:10:23 start pass saved the cleared profile's guest cookies over `target.json` because its "already logged in" test reads only the /account URL (C-1014-01 PARTIALLY CONFIRMED, C-1014-02 CONFIRMED). The 10-14 note that the relogin loop did this is REFUTED.
+- The in-bot sentinel also saves jars sut-blind (C-1014-04): it re-saved the guest jars at 07:39:58.
+- Recovery was Target-walled: the scripted typed login failed 6/7 ("password did NOT advance"), succeeded once (07:02:36).
+**Fix Applied**: FX-1014-JARGUARD `TARGET_JAR_GUEST_GUARD=1` (bat:1287, 2026-10-14): never write a guest jar over a member jar (`src/jar_guard.py`; hooks in `harvest_accounts._write_session`, `SessionManager.save_session_state`; relogin RESULT names guests). Test 23/23. Operator actions: restore business + alt-1; never run `hand_login_all_force.bat` while an account is MEMBER (use per-account force on the guests); pause Windows Update before a drop; keep the <24 h restart.
+**Confidence**: high on the mechanism (token mint times, code); low on the counterfactual (whether primary would have booted member).
+**Outcome**: UNPROVEN LIVE. Designed, not built: guest-aware relogin with a per-account typed-login cap; `--force` that skips or restores a member profile; BOOT_SKIP "not an account problem" rule wrong with 2 guests.
+
+---
+
 ### [2026-10-05] - 0-for on the 03:00 ET 30th slot: nothing went on sale (the binder 1010892074 page appeared OUT OF STOCK and never flipped); a 94-min RedSky 206 storm blinded 73% of monitor reads in the slot - TARGET / MONITOR
 **Symptom**:
 - **Run** `run_20261005_002518` (00:25:18 → 09:50:43, 3 accounts, FX-1001-A armed): 0 in-stock reads on any of 17 TCINs → 0 flips, races, shots, carts, orders.

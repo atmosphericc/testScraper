@@ -916,7 +916,11 @@ REM re-POST now fires ONLY with a replayable banked set: 0 s check, then up to
 REM BANK_WAIT_S for the in-window harvest (one set per 8-10 s); none in time =
 REM no re-POST, wave-first decides. grep "no replayable banked set".
 REM Kill: TARGET_ATC_DCO_BURST_REQUIRE_BANK=0 (the 09-17 behaviour).
-set TARGET_ATC_DCO_BURST_REQUIRE_BANK=1
+REM 2026-10-11: =0 - a shot that passed the edge and drew FAST_SELLING re-POSTs within
+REM 1.0-1.5 s even when the Shape bank is empty (10-09 04:32:35: the night's only admitted
+REM shot got no burst because the HUMAN wall had emptied every bank). Burst evidence:
+REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1.
+set TARGET_ATC_DCO_BURST_REQUIRE_BANK=0
 set TARGET_ATC_DCO_BURST_BANK_WAIT_S=6
 set TARGET_CART_HOLD_CHECK_INTERVAL_S=1.0
 REM  15) Real PDP referrer on the fast-lane ATC via fetch's `referrer` INIT
@@ -1249,11 +1253,38 @@ REM FX-1006-LOCK: the stock handler takes the purchase-state snapshot before
 REM the dashboard lock, so it can no longer deadlock against a finishing racer
 REM that takes the two locks the other way round. Kill: TARGET_SHARED_LOCK_ORDER_FIX=0.
 set TARGET_SHARED_LOCK_ORDER_FIX=1
+REM 2026-10-11 FX-1011-CADENCE (docs/CLAIMS.md C-1011-01..10, CURRENT_STATE 2026-10-11).
+REM On 10-09 the items sat buyable 8-32 min and each account fired 2 shots per race,
+REM 55-70 s apart (1.7/min); 686/690 POSTs drew the edge 429. The limiter's state is per
+REM TCIN and exists before our first contact (first-ever POSTs to 8 new TCINs 24/24
+REM limited while the same Chromes' decoys passed), so every shot is a draw. Every account
+REM now re-shoots 3.0-4.5 s after an edge / ATC-level DCO 429 inside the unchanged 110 s
+REM race budget (~22 shots per race); 401s, bank gate, RETRY_OOS, the live-racer guard and
+REM the FX-1006 yield are unchanged. grep FAST_CADENCE / RETRY_CADENCE. Operator 10-11:
+REM "this should be fixed, no need for a flag" = on for every account. Readout R-FAST.
+REM Kill: TARGET_FAST_CADENCE_IDENTS=0 (or =alt-1 for a one-account A/B).
+set TARGET_FAST_CADENCE_IDENTS=all
 REM 2026-10-06 run diagnostics, all log-only (no behaviour change). The stall
 REM watchdog dumps every thread's Python stack into the run log when a core lock
 REM stays held 45 s or the stock sweep stops 90 s, and prints [HEALTH] (memory,
 REM threads, handles, Chrome count, disk) every 5 min. Kill: TARGET_STALL_WATCHDOG=0.
 set TARGET_STALL_WATCHDOG=1
+REM 2026-10-08 23:5x pre-drop (live fix): four boots in a row exited 87 on the
+REM homepage 'Hi,' greeting probe timing out at 10 s while every jar was a MEMBER
+REM and the relogin pass said already logged in. Give the greeting 30 s, and when
+REM it is still not found decide by the /account URL, the same signal the relogin
+REM pass trusts (a logged-out session still redirects to login and exits 87).
+REM grep LOGIN_CHECK. Kill: TARGET_LOGIN_PROBE_ACCOUNT_FALLBACK=0, TIMEOUT back to 10.
+set TARGET_LOGIN_CHECK_TIMEOUT_S=30
+REM 23:58 DISARMED: readiness then showed primary + business GUEST (sut=G); the /account
+REM URL check is the relogin pass's own guest blind spot (09-28), so the fallback would
+REM boot guest sessions. Hand login + the 'Hi,' probe decide. Code stays, default off.
+set TARGET_LOGIN_PROBE_ACCOUNT_FALLBACK=0
+REM FX-1014-JARGUARD (2026-10-14 post-run): never write a GUEST jar (idToken sut=G) over a
+REM MEMBER jar (sut=R). On 10-14 the wrapper relogin pass (/account URL test) and the in-bot
+REM sentinel saved guest cookies over target*.json without reading sut (C-1014-02/04).
+REM Prints [JAR_GUARD] lines; relogin_one marks guests "GUEST (sut=G)". Kill: =0.
+set TARGET_JAR_GUEST_GUARD=1
 REM [STOCK][OTHER] once a minute: the monitor's other bucket by HTTP status and
 REM error type and by exit. Kill: RESILIENT_OTHER_LOG=0.
 set RESILIENT_OTHER_LOG=1

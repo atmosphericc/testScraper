@@ -4231,9 +4231,32 @@ async def _probe_target_login(tab, timeout_s=10.0, homepage="https://www.target.
             print("[LOGIN_CHECK] 'Hi,' greeting found — logged in")
             return True
         print("[LOGIN_CHECK] 'Hi,' greeting NOT found — not logged in (run relogin.py)")
-        return False
+        return await _probe_login_account_fallback(tab)
     except Exception as probe_err:
         print(f"[LOGIN_CHECK] probe error: {probe_err} — assuming not logged in")
+        return await _probe_login_account_fallback(tab)
+
+
+async def _probe_login_account_fallback(tab) -> bool:
+    """2026-10-08 23:5x, flag-gated (TARGET_LOGIN_PROBE_ACCOUNT_FALLBACK=1; default OFF =
+    the probe returns False exactly as before). Four boots in a row exited 87 on
+    `Timeout (10.0s) waiting for element with text: 'Hi,'` while every jar was a MEMBER
+    with a live login-session and the wrapper's relogin pass said "already logged in"
+    each time. That pass decides by the /account URL (relogin_one._on_account_page_loggedin,
+    "authoritative"): /account that does not redirect to login/signin = logged in. When
+    the homepage greeting is missing or slow, decide the same way. A logged-out session
+    still redirects to login -> False -> exit 87 as before. Never raises."""
+    try:
+        if os.environ.get('TARGET_LOGIN_PROBE_ACCOUNT_FALLBACK', '0').strip().lower() not in ('1', 'true', 'yes'):
+            return False
+        await asyncio.wait_for(tab.get("https://www.target.com/account"), timeout=20.0)
+        await asyncio.sleep(3)
+        url = (getattr(tab, 'url', '') or '').lower()
+        ok = ('login' not in url and 'signin' not in url and '/account' in url)
+        print(f"[LOGIN_CHECK] /account fallback: {'logged in' if ok else 'NOT logged in'} (url={url[:90]})")
+        return ok
+    except Exception as e:
+        print(f"[LOGIN_CHECK] /account fallback error: {e} — assuming not logged in")
         return False
 
 

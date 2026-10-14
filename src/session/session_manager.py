@@ -2537,6 +2537,22 @@ class SessionManager:
                         # Existing file unreadable — treat as no-existing and proceed
                         pass
 
+            # FX-1014-JARGUARD (TARGET_JAR_GUEST_GUARD=1): the sentinel's logged-in test passes
+            # guests (C-1014-04); never write a guest jar over a member's. No caller reads the
+            # return value. Off / any error = the previous behaviour.
+            try:
+                from src.jar_guard import inspect as _jar_inspect
+                _jg_block, _jg_why = _jar_inspect(self.session_path, all_cookies)
+            except Exception:
+                _jg_block, _jg_why = False, None
+            if _jg_why:
+                _jg_line = (f"[JAR_GUARD] {self.account_id or 'session'}: "
+                            f"{'NOT saving' if _jg_block else 'saving'} — {_jg_why}")
+                self.logger.warning(_jg_line)
+                print(_jg_line)
+            if _jg_block:
+                return False
+
             target_cookies = [c for c in all_cookies if 'target.com' in c.get('domain', '')]
             self.logger.info(f"[COOKIE_DEBUG] [SAVE] Found {len(all_cookies)} total cookies, {len(target_cookies)} for Target.com")
 

@@ -264,6 +264,47 @@ Entry format:
 
 ---
 
+## 2026-10-08 — rumours and competitor guidance (REPORTED, not observed by the bot)
+
+- **Rumoured, unconfirmed by Target:** a one-entry-per-account "drawing" for the hardest
+  drops, from backend text found by one botter (@themacint0sh) and written up 09-28/09-29
+  (trackalacker.com, qgreloaded.com). "You've purchased the maximum allowed for this drawing
+  (one per account)." No launch date, no product list. If it ships, first-come online drops
+  for those items end; watch for new error keys at add-to-cart / place-order.
+- **Refract's Target docs changed between 09-30 and 10-08** (help.refractbot.com/llms-full.txt,
+  live copy saved in the 10-08 session scratchpad): the "10 tasks, no proxies" starter regime
+  is gone; now "Windows: 30-50 tasks. Mac: 200+", "Resis on tasks and harvesters, ISPs on the
+  monitor", "resis have been passing Shape far better than ISPs". Error semantics unchanged
+  ("401 = A Shape block"; 429 = FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION / ERR_A2C_TCIN_RATE_LIMITED).
+- **Timing (Swooper, 498 detections 07-10 → 10-08):** 363 at 3-5 AM ET; a smaller 1 PM ET wave
+  (31); 99% of logged restocks carried a per-order limit, almost always 2.
+- **Noticed / cost:** nothing of this was observed in our runs; no action armed.
+
+## 2026-10-11 — the market leader's regime change (REPORTED, competitor docs; not observed by the bot)
+
+- **Refract rewrote its Target guidance between 2026-09-21 and 2026-10-09T02:46Z** (space `updatedAt`;
+  `help.refractbot.com/llms-full.txt`, 1,047-line diff against our 09-21 copy): "Target has become a
+  submit order lottery"; "Carting is not the hard part anymore: plenty of users cart around 90% of
+  their tasks on a drop, especially on macOS. Checking out is … only about 1% of carts turn into an
+  order"; "10 tasks does not cut it anymore … 5-account setups do not work"; "Windows: 30-50 tasks.
+  Mac: 200+"; "Resis on tasks and harvesters, ISPs on the monitor" (the "home IP, no proxies, ≤10
+  tasks" starter regime is gone); a new "Submitting Order" status = "spamming submit order to force
+  the order through Target's high-demand rate limit. Every bot has to do this". Unchanged: the
+  `ERR_A2C_TCIN_RATE_LIMITED` text ("site-wide traffic throttle … not a proxy, account, or bot
+  issue"), retry delay 3,500 ms.
+- **What it says about the opponent [INFERRED]:** their tasks get carts on hype drops at a rate we
+  never see (we carted 0 of 704 on 10-09) while facing the same 429 key; the differences they
+  document are task count, one residential IP per task, retry every 3.5 s through the whole window,
+  and macOS. Their checkout lottery (~1% of carts) matches our hot carts → order 1/18.
+- **10-09 itself:** an ordinary timed web drop at ~03:04 ET (no queue, app-only or drawing — the
+  09-28 drawing rumour has nothing after 09-29; Walmart runs drawings). The UPC Day/Night were
+  $249.99 pre-orders (street date 11-06). Humans at 03:05: "Clicking and it does nothing / Does not
+  add to cart". Alert vendors claim a hidden "available to ship" flag flips 2-5 s before the PDP
+  (unverified).
+- **Our response:** FX-1011-CADENCE built (per-account 3-4.5 s lottery cadence), NOT armed; see
+  docs/CLAIMS.md C-1011-01..10 and the 2026-10-11 section of CURRENT_STATE.
+- **Confidence:** [REPORTED] for the docs; [INFERRED] for what it implies.
+
 ## Known-unknowns about the opponent
 
 Things we would need to see their side to answer. Listed so they are not
@@ -279,6 +320,11 @@ re-litigated from first principles every few weeks:
   unmeasured. The kill rule tripped and the flag went back to 1 (C-0925-01). 09-23 also showed
   9 of 10 window-opening shots rejected after 24-47 min of zero fleet shots on the
   TCIN -- not what an idle-refilled per-account bucket predicts.
+  **Re-read 2026-10-11 (C-1011-07):** against the right comparator (wave-first home re-shots
+  after an own edge 429, 14/1,421) 09-25's 0/1,183 is p=0.007 per shot — but two nights carry
+  it, 5 of 8 wave-first nights were also zero, and within wave-first nights a shot <10 s after
+  an own edge 429 passed at the same rate as one at 50-80 s (4/507 vs 8/916). Still open; only
+  a concurrent control settles it (FX-1011-CADENCE on one account).
 - What fraction of requests the high-demand rate limiter admits. Their own vendor
   docs say nobody outside Target knows.
 - Whether a Target ATC 401 is a Shape block or the write-auth layer. Unresolved,
