@@ -85,9 +85,23 @@ config/proxyIps.json
 # config/target_accounts.example.json (committed); the real file is gitignored.
 config/target_accounts.json
 
-# Logs (intentionally tracked for post-mortem of early-morning Target drops)
-# logs/
-# Sim subprocess run logs (transient, regenerated each test run)
+# Logs: all local (2026-10-14). The repo is PUBLIC and logs/error_log.txt took raw
+# DOM dumps of logged-in Target pages, so the four runtime logs that used to be
+# tracked (activity_log.pkl, bot_restart_wrapper.log, error_log.txt,
+# purchase_states.json) were untracked and stay on disk. Post-mortems read
+# logs/runs/ and the event store, both local. logs/analysis_*/ stays local too.
+logs/*
+!logs/LOG_ANALYSIS_SUMMARY_20260603.txt
+
+# Local backups and leftovers that can hold credentials, cookies or account data
+config/target_accounts.json.bak*
+config/product_config_backup_*.json
+/target*.json.*
+*.bat.bak_*
+/login_state_*.png
+*.stackdump
+walmart-profile*/
+state/
 
 # IDE / OS
 .vscode/
