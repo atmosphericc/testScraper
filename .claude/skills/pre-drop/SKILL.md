@@ -41,10 +41,14 @@ not by eye.
 - **Verify before arming.** Hand the bare claim, with none of your reasoning, to
   `claims-verifier` (the Workflow does this for every deciding claim). `REFUTED` or
   `NOT ESTABLISHED` kills the change — or kills the reason you were not making it.
-- **No routine manual steps.** A hand login is asked for ONLY when readiness prints ❌ (a
-  dead login-session or a guest jar); an expired member token on a live session is
-  refreshed by the bat's own start pass. Never build or propose automation of the sign-in
-  itself (a safety classifier stopped that on 10-04).
+- **No routine manual steps.** An expired member token on a live session is refreshed by
+  the bat's own start pass. A GUEST or ❌ account gets ONE scripted forced login, run by
+  this session with the hand-login environment, one account at a time, the bot stopped:
+  `RELOGIN_SKIP_PROXY=1 TARGET_UA_MODE=engine TARGET_FP_CHROMIUM=0 TARGET_JAR_GUEST_GUARD=1 python relogin_one.py <acct> --force`
+  (2/2 on 10-14, business + alt-1; earlier ~1/7 and ~0/25), then `check_session_readiness.py`
+  must show it `sut=R`. Never on an account that is already MEMBER (a forced login signs
+  it out first — `hand_login_all_force.bat` cost primary on 10-14). A hand login is asked
+  for only when that attempt fails.
 - **The config's enabled TCINs are the operator's deliberate target list.** Add only what
   they ask for; never remove, never re-add a removed SKU, never a third-party
   (BlueProton / marketplace) listing. Candidate TCINs found by research are offered as a
@@ -237,9 +241,11 @@ session open until the boot is GREEN. If T-20 has already passed when Step 8 end
   Parsec / RDP / keyboard / mouse planned on the host during the window; BIOS / XMP
   checklist is still open (10-02).
 - **T-60 (wake 1):** re-run the preflight (`--drop --tcins`). Readiness can change in two
-  hours (10-04: primary went guest between 21:43 and 23:49). A readiness ❌ is the one step
-  that needs a person (a hand login): put it first in the output and send a
-  `PushNotification` when the tool is available.
+  hours (10-04: primary went guest between 21:43 and 23:49). A GUEST / ❌ account: stop
+  the bot if it runs (`bot_ctl.py stop`), give that account its one scripted forced login
+  (Non-negotiables), re-run readiness. Only if it is still not `sut=R` is a person needed
+  (a hand login): put it first in the output and send a `PushNotification` when the tool
+  is available.
 - **T-20 (wake 2) — boot:**
   1. `python tools/ops/bot_ctl.py status --json`. Keep a running bot only when all three
      hold: it will be < 20 h old at T-0 (login-session rot 32–46 h; RSS grows ~0.4 GB/h), a
