@@ -11,25 +11,54 @@ anything else.
 This repo drives a **live retail purchasing bot that spends real money on a real
 credit card**. It is not a simulation.
 
-- **NEVER launch the bot.** Not `app.py`, not `test_app.py`, not
-  `run_bot_with_nightly_restart.bat`, not any Chrome/zendriver/nodriver process,
-  not any live-checkout path. Launching is the **user's** decision, always, and
-  they must do it themselves. If you believe a run is needed, say so and stop.
-- **NEVER blanket-run `tests/`.** That directory contains live tests that launch
-  browsers and can fire real purchases. The **only** sanctioned test command is:
+- **Bot launches: main session only** (operator 2026-10-14: "you can launch the bot or a
+  login"; the hook's second-bot block was removed the same day at their request). The
+  main session may start `app.py`, `test_app.py`, `run_bot_with_nightly_restart.bat`,
+  `test_resilient_stack.py` or a login (`relogin_one.py`, `hand_login*.bat`) when the
+  task calls for it. Sub-agents do not, unless their task says so in as many words.
+  Start, stop and restart the production bot with
+  `python tools/ops/bot_ctl.py start|stop|restart|status` (restart stops the old bot
+  first; start opens the wrapper like a double-click). Two bots on the same accounts
+  double-fire, and the wrapper itself refuses a second `app.py`
+  (`check_single_instance.py`, exit 9): replace a bot with `restart`, run a second one only
+  when the task means it. After any boot, `python tools/predrop/boot_check.py --follow`
+  must reach GREEN before the bot is reported up.
+- **Named live tests: main session only, when the task calls for one** (operator
+  2026-10-14). Every `tests/` file outside the OFFLINE list launches Chrome against Target
+  on the bot's accounts and can place a real order. **NEVER blanket-run `tests/`**: no
+  glob, no `pytest tests/`, no `pytest -k` over a directory, no loop over `ls tests` — the
+  hook blocks those (the 09-14 incident). The gate stays:
   ```
-  python tests/run_offline_suite.py      # 26 files, ~3.5 min — this is THE gate
+  python tests/run_offline_suite.py      # 41 files, ~7 min — this is THE gate
   ```
-  Never `pytest tests/`. Never `pytest tests/ -k something`. Never a whole-dir run.
 - **NEVER run anything in `tools/analysis/` without being explicitly told to.**
   Those scripts are read-only readouts, but they are slow and they are
   pre-registered per investigation (see §4). Read their source to learn what was
   measured; run them only on instruction.
 - **Default to read-only.** Unless your task explicitly says "edit" or "write",
   you are reading and reporting. Do not "helpfully" fix something you noticed.
-- **Never start a harvester or a login flow.** Account logins are hand-done by the
-  user before a drop window. A scripted re-login is burned (~0/25) and wastes a
-  session that takes the user real effort to restore.
+- **Log in only an account the readiness check shows ❌** (dead/expired login-session
+  or a guest jar). A typed-credential scripted login is Shape-burned (~0/25), and a
+  login of a live member session wastes it. Never start a harvester.
+- **Session jars** (`target.json`, `target-2.json`, `target-3.json` in the repo root,
+  `state/session_profiles/`): overwriting or restoring one is allowed when needed to
+  recover a login (operator 2026-10-14). Make a dated backup copy first. Never commit
+  them, or any credential: the repo is PUBLIC.
+
+### 1B. Auto-mode denials
+
+- A denial is final for that action. Do not retry it through another tool, script or
+  agent, and do not follow it with checks on the same file: a `git status` or suite run
+  right after a denied edit was itself denied as [Auto-Mode Bypass] 5 times (09-30..10-02).
+- Record it in the night's folder, `logs/analysis_<date>/BLOCKED_BY_AUTO_MODE.md` (action,
+  reason label, exact change spec, tree state), restore the tree, carry on with the
+  independent work, and list it in the final report.
+- A new offline test goes into `OFFLINE` in `tests/run_offline_suite.py`, or the gate
+  never runs it.
+- The hook passes any `tests/` file named outright, alone or in a for-loop over literal
+  names (`for t in a b; do python tests/$t.py; done`); a glob, an unexpanded `$var`,
+  `while`, `xargs` or `find -exec` over `tests/` blocks.
+- `cd` into a subfolder is safe: the hooks are anchored to `${CLAUDE_PROJECT_DIR}` (10-14).
 
 ## 2. EPISTEMICS — this project runs on a claims ledger, not vibes
 
@@ -257,6 +286,19 @@ which also leaves the dominant TCIN out) and compare monitor loss by clock hour 
 same hours on an earlier night (`q.py monitor_hours`). On 09-30 the pooled first-shot rate
 read as a collapse and as "no change" depending on the cut; per TCIN it was one TCIN that
 has never carted (C-0930-08 weakened, C-0930-09).
+
+### Pre-drop and boot tools — `tools/predrop/` (2026-10-08, read-only, always safe to run)
+
+```
+preflight.py   [--drop "YYYY-MM-DD HH:MM"] [--tcins a,b] [--json] [--no-host] [--no-readiness] [--no-git]
+               every zero-browser readiness fact in one pass (accounts, config, wrapper flags,
+               host, proxy state, the last boot); prints the exact validate_proxies.py command
+boot_check.py  [--log <run log>] [--follow] [--json] [--no-port]
+               GREEN / PENDING / RED on the first minutes of a run log: every buy-path marker
+               in order with elapsed seconds (purchase_thread started, All threads started, ...)
+```
+Neither launches anything. `validate_proxies.py` is NOT one of these: it starts 18 Chromes
+and is the main session's / operator's call.
 
 ### The legacy readout scripts — `tools/analysis/`
 

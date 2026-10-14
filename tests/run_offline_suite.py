@@ -99,9 +99,22 @@ OFFLINE = [
     # wave-first yield, lock-order pin (stub workers / stub checker, the real race loop
     # via the test_identity_rest harness, a temp StateStore; no browser, no network).
     "test_mass_restock_1006",
+    "test_fast_cadence_1011",
     # 2026-10-06 run diagnostics, log-only: stall watchdog + [HEALTH] (app functions with stub
     # locks), [STOCK][OTHER], /16 steer INFO, FX-1006 decision lines, bat pins (no browser/network).
     "test_run_diagnostics_1006",
+    # 2026-10-08 pre-drop tooling: tools/predrop/boot_check.py + preflight.py on synthetic
+    # logs and a temp repo root (host / readiness / git skipped; no browser, no network, no bot).
+    "test_predrop_tools",
+    # 2026-10-14 post-run: FX-1014-JARGUARD, never write a guest jar over a member's (temp
+    # files, a stub tab under SessionManager.save_session_state; no browser, no network).
+    "test_jar_guard_1014",
+    # 2026-10-14: the PreToolUse hook .claude/hooks/block_bot_launch.py (imports the hook and
+    # feeds it command strings; one subprocess of the hook itself; no browser, no network).
+    "test_block_bot_launch_hook",
+    # 2026-10-14: tools/ops/bot_ctl.py, the start / stop / restart helper /pre-drop boots
+    # with (every process / OS call stubbed; nothing launched or signalled).
+    "test_bot_ctl",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

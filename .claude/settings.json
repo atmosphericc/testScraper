@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python tools/state_check.py"
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/tools/state_check.py"]
           }
         ]
       }
@@ -16,7 +17,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/block_bot_launch.py",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/block_bot_launch.py"],
             "timeout": 15
           }
         ]

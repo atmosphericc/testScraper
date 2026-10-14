@@ -12,6 +12,7 @@
 ## Architecture — Resilient Stack (Round 2, validated 2026-05-13)
 Browser-native dispatcher: N persistent Chromes (one per BD ISP IP) fire bulk RedSky via `tab.evaluate(fetch(...))`. **99.95% over 60 min @ 3 RPS / 3 IPs / 33 TCINs** (zero 403s, 5 self-healed timeouts).
 
+- **Correction 2026-10-08:** since 09-09 (`RESILIENT_REDSKY_CHANNEL=apps_raw`, bat:106) the sweep is a raw urllib GET of `/v1/apps/tcin_product_list_v2` with app headers through the local forwarder (`src/monitoring/tab_dispatcher.py` ~194-245, `redsky_channel.py`), not `tab.evaluate(fetch)`; the pool Chromes carry heartbeats and cookies and gate `pick_session`. The browser-native path is the `web` channel, which HUMAN/PX walls on the BD prefixes. The 30-per-request cap is the web endpoint's; the apps endpoint is proven to 25 TCINs (25 once, 10-08 22:41 proof; 26-28 untested).
 - Architecture doc: `docs/RESILIENT_STACK.md`
 - Operational findings: `docs/RESILIENT_STACK_OPERATIONAL_NOTES.md`
 - Production: `USE_RESILIENT_STACK=1 python app.py` — rate via `RESILIENT_TARGET_RPS` (alias `TARGET_SWEEPS_PER_SEC`)
@@ -65,8 +66,9 @@ Browser-native dispatcher: N persistent Chromes (one per BD ISP IP) fire bulk Re
 ## Agentic Orchestration
 All botting work — new bugs, post-run fixes, parity questions — runs through the
 agent roster in `.claude/agents/`. **Every agent reads `.claude/agent-context.md`
-first**; that file holds the hard safety rules (never launch the bot, never blanket-run
-`tests/`), the claim-tagging discipline, the repo map and the domain glossary.
+first**; that file holds the hard safety rules (bot launches and named live tests: main
+session only; never blanket-run `tests/`), the claim-tagging discipline, the repo map and the
+domain glossary.
 
 | Agent | Model | Beat |
 |---|---|---|
@@ -78,17 +80,27 @@ first**; that file holds the hard safety rules (never launch the bot, never blan
 | `log-miner` | sonnet | Mechanical counts out of big logs; reports the unmatched remainder |
 | `retailer-researcher` | sonnet | Competitor docs, retailer APIs, vendor claims; verbatim extraction |
 
-**Model discipline (operator, 2026-09-25: "use the new models 5.5"):** reasoning —
-code comprehension, causal analysis, adversarial verification — goes to `opus`
-(= Opus 5.5); extraction — counting, quoting, tallying — goes to `sonnet` (= Sonnet 5),
-not haiku: extraction slips here have been costly (a 208-of-211 remainder reported as
-"0 FAILED", a timestamp filter that reported 0 `[WAVE_FIRST]` for a night with 36).
-Aliases track the newest model of each tier. Launch independent agents in a single
-message so they run concurrently.
+**Model discipline (operator, 2026-09-25: "use the new models 5.5"; 2026-10-14: "not all
+subagents should use expensive models"):** `opus` (= Opus 5.5) only for causal analysis
+(the analysts), the workflow critic, the refuter of a CAUSAL claim, and the main session's
+claims-verifier check before arming. Everything else goes to `sonnet` (= Sonnet 5.5):
+counting, quoting, tallying, reading what code does, replicating and refuting count / code
+claims, and judging (comparing two finished checks). Not haiku: extraction slips here have
+been costly (a 208-of-211 remainder reported as "0 FAILED", a timestamp filter that reported
+0 `[WAVE_FIRST]` for a night with 36). Size the fan-out to the night: a run with no shots
+needs a log-miner + one analyst + one verifier, not a full workflow. Aliases track the
+newest model of each tier. Launch independent agents in a single message so they run
+concurrently.
 
 **Workflows** (`.claude/skills/`):
-- `/pre-drop [time/TCINs]` — best position before a known drop: readiness, regime
-  check, arming audit, proxy proof, pre-registered readout, boot checklist. Never starts the bot.
+- `/pre-drop [time/TCINs]` — best position before a known drop. Since 2026-10-08: the
+  deterministic preflight `python tools/predrop/preflight.py --drop "..." --tcins ...`
+  (accounts, config, wrapper flags, host power / Windows Update / GPU events, proxy state,
+  the last boot), then the saved Workflow `.claude/workflows/pre-drop.js` (parallel audits
+  of arming, code risk, money safety, monitor, regime, research; blind verification of every
+  GO/NO-GO claim; critic rounds), then config / proof / arming / readout / record, ending
+  with the boot check `python tools/predrop/boot_check.py --follow` (GREEN = every buy-path
+  marker, incl. `purchase_thread started`; RED = stop and fix). Never starts the bot.
 - `/post-run [run]` — post-mortem the last run, verify findings, land flag-gated fixes.
   Since 2026-09-30 it drives the saved Workflow `.claude/workflows/post-run.js` (v2):
   facts from the event store → analysts routed to the wall that lost units → every
@@ -108,8 +120,12 @@ no `x-ssx-hop`) → SSX hop (keyless 401 = the Shape verdict) → cart service. 
 shot that got PAST the limiter.
 
 **Safety hook:** `.claude/hooks/block_bot_launch.py` (PreToolUse, Bash/PowerShell) blocks
-launching `app.py`, the wrapper bat, logins and any `tests/` file outside the offline list.
-Auto-mode classifier denials are final for that outcome — never route around one.
+only a BLANKET run over `tests/` (a glob, an unexpanded `$var`, the directory, bare
+`pytest`, xargs / find -exec / while over tests/). Since 2026-10-14 (operator) bot / login
+launches, a second bot and named live tests all pass; `python tools/ops/bot_ctl.py
+restart` is the way to (re)start the bot. Regression test: `tests/test_block_bot_launch_hook.py`.
+Auto-mode classifier denials are final for that outcome — never route around one; handling
+in `.claude/agent-context.md` §1B.
 
 **Always verify before arming.** Hand the bare claim, with none of your reasoning,
 to `claims-verifier`. A `REFUTED` verdict kills the fix.
@@ -132,5 +148,6 @@ without telling us — a collapse went unnoticed for six weeks once.
 - No source files are off-limits. `src/session/purchase_executor.py` is editable (overrides prior "DO NOT modify" guidance from the AIO refactor memory).
 
 ## Test Before Deploy
-- **Offline suite is the gate:** `python tests/run_offline_suite.py` (34 files, ~6 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
+- **Offline suite is the gate:** `python tests/run_offline_suite.py` (37 files, ~7 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
+- **After any boot:** `python tools/predrop/boot_check.py --follow` (read-only) must reach GREEN before anyone is told the bot is up; a startup exception can leave the process alive and unable to buy (10-07).
 - Target resilient stack: `RESILIENT_TEST_DURATION_S=120 RESILIENT_TEST_NUM_IPS=1 python test_resilient_stack.py` (fast smoke) or `python test_resilient_stack.py` (default 30 min).
