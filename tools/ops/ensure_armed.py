@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -303,6 +304,35 @@ def exit87(args, run=default_run, now=None) -> int:
     return 0
 
 
+def disabled_now(now=None) -> tuple:
+    """(disabled, note). The opt-out file state/ensure_armed.disable keeps the bot down:
+    empty / any text = until the file is removed (as before); a first line
+    'until YYYY-MM-DDTHH:MM' (local time) = only until then -- after that the file is
+    deleted and the run proceeds, so a one-night opt-out cannot outlive the night it
+    was meant for (2026-10-15: bot stopped overnight, the 23:15 run must still start it)."""
+    now = time.time() if now is None else now
+    if not DISABLE.exists():
+        return False, ""
+    try:
+        txt = DISABLE.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        txt = ""
+    m = re.match(r"until\s+(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})", txt)
+    if not m:
+        return True, "disable file present (no expiry)"
+    try:
+        until = datetime.fromisoformat(f"{m.group(1)}T{m.group(2)}:{m.group(3)}").timestamp()
+    except ValueError:
+        return True, f"disable file present (unreadable expiry {txt[:40]!r})"
+    if now >= until:
+        try:
+            DISABLE.unlink()
+        except Exception:
+            pass
+        return False, f"disable file expired ({m.group(1)} {m.group(2)}:{m.group(3)}) -- removed"
+    return True, f"disabled until {m.group(1)} {m.group(2)}:{m.group(3)}"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--mode", choices=("evening", "exit87"), default="evening")
@@ -310,9 +340,12 @@ def main(argv=None) -> int:
     ap.add_argument("--login-gap-h", type=float, default=6.0)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
-    if DISABLE.exists():
-        log(f"[DISABLED] {DISABLE} exists -- not touching the bot")
+    _dis, _note = disabled_now()
+    if _dis:
+        log(f"[DISABLED] {DISABLE}: {_note} -- not touching the bot")
         return 2
+    if _note:
+        log(f"[ENABLED] {_note}")
     try:
         return exit87(a) if a.mode == "exit87" else evening(a)
     except Exception as e:   # a scheduled task must leave a trace, never a silent death

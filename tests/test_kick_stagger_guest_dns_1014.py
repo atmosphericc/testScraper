@@ -217,6 +217,29 @@ def test_sentinel_for_stops_after_shutdown():
 # guests), so "3 GUEST + WRITE-AUTH DEAD" never fires on a real guest, while members sit
 # in short DEAD windows (160 in October) and a stale log could force-login a member.
 
+def test_disable_file_expiry():
+    """state/ensure_armed.disable 'until <local time>' keeps the bot down only until
+    then (a one-night opt-out must not outlive the night); empty = permanent."""
+    from datetime import datetime as _dt, timedelta as _td
+    old = EA.DISABLE
+    try:
+        EA.DISABLE = Path(tempfile.mkdtemp(prefix="eadis_")) / "ensure_armed.disable"
+        check("dis_absent", EA.disabled_now() == (False, ""))
+        EA.DISABLE.write_text("", encoding="utf-8")
+        check("dis_empty_permanent", EA.disabled_now()[0] is True)
+        fut = (_dt.now() + _td(hours=2)).strftime("%Y-%m-%dT%H:%M")
+        EA.DISABLE.write_text(f"until {fut}\nwhy", encoding="utf-8")
+        check("dis_future", EA.disabled_now()[0] is True and EA.DISABLE.exists())
+        past = (_dt.now() - _td(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+        EA.DISABLE.write_text(f"until {past}", encoding="utf-8")
+        r = EA.disabled_now()
+        check("dis_expired_removed", r[0] is False and not EA.DISABLE.exists() and "expired" in r[1], r)
+        EA.DISABLE.write_text("until 2026-13-99T99:99", encoding="utf-8")
+        check("dis_garbled_stays_off", EA.disabled_now()[0] is True)
+    finally:
+        EA.DISABLE = old
+
+
 def test_no_live_guest_login_in_ensure_armed():
     src = (ROOT / "tools" / "ops" / "ensure_armed.py").read_text(encoding="utf-8")
     check("ea_no_live_guest_login", "live_guests" not in src)
