@@ -192,7 +192,7 @@ def test_boot_check_rows():
     check("bc_primary_ok", rows.get("member:primary", {}).get("status") == "OK", rows.get("member:primary"))
     check("bc_business_guest_warn", rows.get("member:business", {}).get("status") == "WARN"
           and "GUEST" in rows["member:business"]["detail"], rows.get("member:business"))
-    check("bc_latest_verdict_wins", "cannot buy" in rows.get("member:business", {}).get("detail", ""))
+    check("bc_latest_verdict_wins", "SIGNED OUT" in rows.get("member:business", {}).get("detail", ""))
     check("bc_failed_warn", rows.get("member:alt-1", {}).get("status") == "WARN", rows.get("member:alt-1"))
     check("bc_jar_guest_warn", rows.get("jar:alt-1", {}).get("status") == "WARN", rows.get("jar:alt-1"))
     check("bc_no_jar_row_for_member", "jar:primary" not in rows)

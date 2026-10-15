@@ -80,6 +80,87 @@ class Upstream:
     fallback_home: bool = True
     fallbacks: int = 0
     connect_s: float = 4.0
+    # FX-1014-EGRESS DNS: resolve through this server, queried FROM bind_ip, so
+    # the account reaches the CDN edge its own network maps to (carts.target.com
+    # is a DNS-steered Fastly name). '' = the OS resolver (the home line's).
+    dns_server: str = ""
+    dns_fallbacks: int = 0
+    dns_cache: dict = field(default_factory=dict)
+
+
+def dns_query_a(host: str, server: str, bind_ip: str = "", timeout: float = 2.0, port: int = 53):
+    """Minimal DNS A lookup: ([ipv4, ...], ttl_s) for `host` asked of `server`
+    over UDP from `bind_ip`. Follows nothing itself (the server recurses);
+    CNAME answers are skipped, A records collected. Raises on any failure."""
+    import random
+    import socket
+    import struct
+    tid = random.randint(0, 0xFFFF)
+    q = struct.pack(">HHHHHH", tid, 0x0100, 1, 0, 0, 0)
+    for label in host.rstrip(".").split("."):
+        b = label.encode("idna")
+        if not 0 < len(b) < 64:
+            raise ValueError(f"bad label in {host!r}")
+        q += bytes([len(b)]) + b
+    q += b"\x00" + struct.pack(">HH", 1, 1)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(timeout)
+        if bind_ip:
+            sock.bind((bind_ip, 0))
+        sock.sendto(q, (server, int(port)))
+        data, _ = sock.recvfrom(4096)
+    finally:
+        sock.close()
+    if len(data) < 12:
+        raise ValueError("short DNS reply")
+    rid, flags, qd, an, _ns, _ar = struct.unpack(">HHHHHH", data[:12])
+    if rid != tid:
+        raise ValueError("DNS id mismatch")
+    if flags & 0x000F:
+        raise ValueError(f"DNS rcode {flags & 0x000F}")
+
+    def _skip_name(off):
+        while True:
+            if off >= len(data):
+                raise ValueError("truncated name")
+            ln = data[off]
+            if ln == 0:
+                return off + 1
+            if ln & 0xC0 == 0xC0:
+                return off + 2
+            off += 1 + ln
+
+    off = 12
+    for _ in range(qd):
+        off = _skip_name(off) + 4
+    ips, ttls = [], []
+    for _ in range(an):
+        off = _skip_name(off)
+        rtype, _rclass, ttl, rdlen = struct.unpack(">HHIH", data[off:off + 10])
+        off += 10
+        if off + rdlen > len(data):
+            raise ValueError("truncated rdata")
+        if rtype == 1 and rdlen == 4:
+            ips.append(".".join(str(x) for x in data[off:off + 4]))
+            ttls.append(ttl)
+        off += rdlen
+    if not ips:
+        raise ValueError(f"no A record for {host}")
+    return ips, min(300, max(30, min(ttls)))
+
+
+_DNS_POOL = None
+
+
+def _dns_executor():
+    """A small dedicated pool, so slow DNS never queues behind (or starves) the
+    loop's default executor that getaddrinfo uses."""
+    global _DNS_POOL
+    if _DNS_POOL is None:
+        import concurrent.futures
+        _DNS_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="EgressDNS")
+    return _DNS_POOL
 
 
 def parse_bd_proxy_url(url: str):
@@ -120,7 +201,7 @@ class ForwarderPool:
         return up
 
     def add_direct(self, port: int, bind_ip: str, fallback_home: bool = True,
-                   connect_s: float = 4.0) -> Upstream:
+                   connect_s: float = 4.0, dns_server: str = "") -> Upstream:
         """FX-1014-EGRESS: a direct CONNECT proxy on `port` whose outbound
         connections bind to `bind_ip` (no upstream proxy, no auth). connect_s
         bounds each bound dial (a dead-but-associated hotspot fails fast).
@@ -131,18 +212,63 @@ class ForwarderPool:
             stats=UpstreamStats(pinned_ip=bind_ip, port=port),
             direct=True, bind_ip=bind_ip, fallback_home=fallback_home,
             connect_s=max(0.5, float(connect_s)),
+            dns_server=str(dns_server or ""),
         )
         self.upstreams[port] = up
         return up
 
-    async def _open_direct(self, up: Upstream, host: str, port: int):
-        """Dial host:port bound to up.bind_ip; on a bind/connect failure fall
-        back to the home route when allowed. Raises when nothing connects."""
+    async def _resolve_direct(self, up: Upstream, host: str) -> list:
+        """FX-1014-EGRESS DNS: the IPv4s for `host` from up.dns_server (cached for
+        the record TTL, 30-300 s), else [host] (the OS resolver, counted). A failed
+        lookup is remembered for 20 s, so a dead DNS server costs one 2 s wait per
+        host, not one per tunnel."""
+        if not up.dns_server or re.fullmatch(r"[0-9.]+", host or "") or ":" in (host or ""):
+            return [host]
+        key = (host or "").lower()
+        now = time.time()
+        hit = up.dns_cache.get(key)
+        if hit and hit[1] > now:
+            return list(hit[0]) or [host]
         try:
-            return await asyncio.wait_for(
-                asyncio.open_connection(host, port, local_addr=(up.bind_ip, 0)),
-                timeout=up.connect_s,
-            )
+            _srv, _, _p = up.dns_server.partition(":")
+            ips, ttl = await asyncio.get_running_loop().run_in_executor(
+                _dns_executor(), dns_query_a, host, _srv, up.bind_ip, 2.0, int(_p or 53))
+            up.dns_cache[key] = (list(ips), now + ttl)
+            return list(ips)
+        except Exception as e:
+            up.dns_fallbacks += 1
+            up.dns_cache[key] = ([], now + 20.0)
+            if up.dns_fallbacks in (1, 10) or up.dns_fallbacks % 100 == 0:
+                logger.warning(f"[EGRESS:{up.port}] DNS via {up.dns_server} failed for {host} "
+                               f"({type(e).__name__}: {e}) -- OS resolver used (#{up.dns_fallbacks})")
+            return [host]
+
+    async def _open_direct(self, up: Upstream, host: str, port: int):
+        """Dial host:port bound to up.bind_ip -- DNS + connect inside one
+        connect_s budget; an address that will not connect is dropped from the
+        cache and the next one (then the OS resolver) is tried. On a bind /
+        connect failure fall back to the home route only when allowed. Raises
+        when nothing connects."""
+        try:
+            deadline = time.time() + up.connect_s
+            addrs = await asyncio.wait_for(self._resolve_direct(up, host), timeout=up.connect_s)
+            if addrs[0] != host:
+                addrs = addrs[:2] + [host]
+            last_err = None
+            for addr in addrs:
+                left = deadline - time.time()
+                if left <= 0:
+                    break
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.open_connection(addr, port, local_addr=(up.bind_ip, 0)),
+                        timeout=left,
+                    )
+                except Exception as e:
+                    last_err = e
+                    if addr != host:
+                        up.dns_cache.pop((host or "").lower(), None)
+            raise last_err or asyncio.TimeoutError("egress connect budget spent")
         except Exception as e:
             if not up.fallback_home:
                 raise

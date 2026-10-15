@@ -128,6 +128,8 @@ OFFLINE = [
     "test_egress_bind_1014",
     # 2026-10-14: FX-1014-GUESTSEEN, the sentinel + boot_check see a GUEST account (stubs only).
     "test_guest_seen_1014",
+    # 2026-10-14 late: FX-1014-KICK / SENTSTAGGER / live-guest recovery / egress DNS (stubs, loopback).
+    "test_kick_stagger_guest_dns_1014",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

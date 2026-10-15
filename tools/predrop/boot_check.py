@@ -451,13 +451,15 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
             add(f"harvest:{a}", "WARN", f"{a}: no harvest SELFTEST verdict by +{age:.0f} s")
         else:
             add(f"harvest:{a}", "PENDING", f"{a}: harvest selftest not seen yet (due by +300 s)")
-        # FX-1014-GUESTSEEN: a GUEST account cannot buy (every cart write 401s). WARN, not
-        # FAIL: the other accounts still buy, and a restart does not fix a dead login.
+        # FX-1014-GUESTSEEN: a GUEST (signed-out) account. Its cart still accepts writes
+        # (10-14: 69/69 warmup writes alive on two guests), so write_auth stays OK -- this
+        # row is the only signal. WARN, not FAIL: the other accounts still buy, and a
+        # restart does not fix a dead login.
         if a in sentinel:
             sv, no, t = sentinel[a]
             if sv in ("GUEST", "NO_TOKEN"):
-                add(f"member:{a}", "WARN", f"{a}: live session is {sv} (sentinel) -- this account cannot "
-                    f"buy; recover with a scripted --force login while the bot is stopped", no, t)
+                add(f"member:{a}", "WARN", f"{a}: live session is {sv} (sentinel) -- SIGNED OUT; "
+                    f"recover with a scripted --force login while the bot is stopped", no, t)
             else:
                 add(f"member:{a}", "OK" if sv == "OK" else "WARN", f"{a}: sentinel {sv}", no, t)
         if jar_guest and a in jar_guest:

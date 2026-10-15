@@ -232,6 +232,7 @@ def _egress_bind_map(flog=None) -> Dict[str, str]:
         # strictly behind the home default route, or joining it moves EVERY
         # account + the monitor onto it (Wi-Fi's automatic metric equals Ethernet's).
         alias = next((name for name, ips in adapters.items() if ip in ips), '')
+        _EGRESS_ALIAS[ip] = alias
         why = _egress_route_problem(alias)
         if why:
             _say(f"[EGRESS] [WARN] {acct}: {why} -- {acct} stays on HOME. One-time fix (admin "
@@ -239,6 +240,33 @@ def _egress_bind_map(flog=None) -> Dict[str, str]:
             continue
         out[acct] = ip
     return out
+
+
+_EGRESS_ALIAS: Dict[str, str] = {}
+
+
+def _egress_dns_server(alias: str, timeout_s: float = 10.0) -> str:
+    """The first IPv4 DNS server Windows lists for adapter `alias` ('' on any
+    error -> the forwarder uses the OS resolver)."""
+    try:
+        import re
+        import subprocess
+        if not alias:
+            return ''
+        # The alias travels in an environment variable, never inside the command
+        # text, so no quote character (incl. curly ones) can break or inject.
+        cmd = ("(Get-DnsClientServerAddress -InterfaceAlias $env:EGRESS_ALIAS -AddressFamily IPv4)"
+               ".ServerAddresses -join ','")
+        r = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', cmd],
+                           capture_output=True, text=True, timeout=timeout_s,
+                           env={**os.environ, 'EGRESS_ALIAS': alias})
+        for cand in (r.stdout or '').strip().split(','):
+            cand = cand.strip()
+            if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', cand):
+                return cand
+        return ''
+    except Exception:
+        return ''
 
 
 def _default_routes(timeout_s: float = 10.0):
@@ -342,12 +370,35 @@ async def _sentinel_member_verdict(sm, ok):
         return ok
 
 
+def _sentinel_stagger_s() -> float:
+    """FX-1014-SENTSTAGGER: seconds between consecutive accounts' sentinel checks
+    (0 = all at once, the prior behaviour). Clamped to [0, 90]."""
+    return _env_float_clamped('TARGET_SENTINEL_STAGGER_S', 0.0, 0.0, 90.0)
+
+
+def _rearm_kick_on() -> bool:
+    """FX-1014-KICK TARGET_REARM_KICK=1: a racer that ends (finished, yielded,
+    sat out) wakes app.py's level re-arm loop at once instead of leaving its
+    freed account idle until the next TARGET_LEVEL_REARM_S tick (0-3 s), so a
+    skipped fresh flip (FX-1006 MISS / YIELD) or a joinable race gets that
+    account immediately. Dispatch rules are unchanged (the woken tick runs the
+    same map + process path). Kill: =0."""
+    return os.environ.get('TARGET_REARM_KICK', '0').strip() == '1'
+
+
 def _rebuy_file() -> str:
     return (os.environ.get('TARGET_REBUY_FILE', '') or '').strip() or _REBUY_FILE_DEFAULT
 
 
 def _rebuy_hold_s() -> float:
     return _env_float_clamped('TARGET_REBUY_BUYER_HOLD_S', 1800.0, 60.0, 86400.0)
+
+
+def _rebuy_flip_gap_s() -> float:
+    """Round-3 verifier Q1: the most a new window may open after the out-of-stock
+    read and still count as a real flip. One False read followed by a read gap
+    longer than the window hysteresis also renews window_start with no sell-out."""
+    return _env_float_clamped('TARGET_REBUY_FLIP_GAP_S', 20.0, 1.0, 300.0)
 
 
 def _rebuy_load(path, now: float, info=None) -> Dict[tuple, float]:
@@ -2535,6 +2586,47 @@ class BulletproofPurchaseManager:
         with self._reserve_state():
             self._worker_reservations.pop(worker_label, None)
 
+    def rearm_kick_event(self):
+        """FX-1014-KICK: the Event app.py's level re-arm loop waits on (created
+        on first use). None when the flag is off. Never raises."""
+        try:
+            if not _rearm_kick_on():
+                return None
+            ev = getattr(self, '_rearm_kick', None)
+            if ev is None:
+                with _REBUY_INIT_LOCK:
+                    ev = getattr(self, '_rearm_kick', None)
+                    if ev is None:
+                        ev = threading.Event()
+                        self._rearm_kick = ev
+            return ev
+        except Exception:
+            return None
+
+    def kick_offer_ok(self, tcin) -> bool:
+        """FX-1014-KICK: a kicked re-arm tick may offer `tcin` only when it is in
+        the FX-1006 MISS registry (skipped for want of a free account) or an open
+        FX-1014-REBUY row -- never a 'failed' row inside its error delay. Never raises."""
+        try:
+            t = str(tcin)
+            with _FX1006_LOCK:
+                if t in self._fx1006_dict('_fx1006_miss_pending'):
+                    return True
+            if _rebuy_on():
+                st = (self.get_all_states() or {}).get(t) or {}
+                return bool(self._rebuy_rearm_ok(t, st.get('status')))
+            return False
+        except Exception:
+            return False
+
+    def _rearm_kick_set(self) -> None:
+        try:
+            ev = self.rearm_kick_event()
+            if ev is not None:
+                ev.set()
+        except Exception:
+            pass
+
     def start_purchase(self, tcin: str, product_title: str, max_qty: int = 1) -> Dict:
         """Start a new purchase attempt with duplicate prevention (assumes caller has lock)
 
@@ -2703,8 +2795,15 @@ class BulletproofPurchaseManager:
                         and self.worker_pool is not None:
                     try:
                         if self._fx1006_worker_sits_out(worker, tcin):
+                            # Round-3 Q2: never an account reserved for, or racing,
+                            # another TCIN (G1 upstream covered it; now local too).
+                            with self._reserve_state():
+                                _resv = dict(self._worker_reservations)
+                            _busy = self._busy_worker_tcins()
                             _alt = next((w for w in self.worker_pool.ready_workers()
                                          if w is not worker
+                                         and not _resv.get(w.label())
+                                         and not _busy.get(w.label())
                                          and not self._fx1006_worker_sits_out(w, tcin)), None)
                             if _alt is not None:
                                 print(f"[REBUY] {tcin}: {worker.label()} would only sit it out -- "
@@ -3513,6 +3612,9 @@ class BulletproofPurchaseManager:
                 # No-op when the flag is off (nothing was ever reserved).
                 if pinned_worker is not None:
                     self._release_worker_reservation(pinned_worker.label())
+                # FX-1014-KICK: this account is free now (out of _active_purchases,
+                # reservation released) -- wake the level re-arm (flag only).
+                self._rearm_kick_set()
 
                 # Close purchase log and restore stdout — LAST racer only.
                 # (2026-08-14) The FIRST finisher used to run this while the
@@ -3902,7 +4004,11 @@ class BulletproofPurchaseManager:
         for w, _ip in egress_workers:
             port = self.PURCHASE_FORWARDER_PORT_BASE + w.cfg.worker_id
             try:
-                fwd.add_direct(port, _ip, fallback_home=_eg_fallback, connect_s=_eg_connect_s)
+                _dns = (_egress_dns_server(_EGRESS_ALIAS.get(_ip, ''))
+                        if os.environ.get('TARGET_ACCOUNT_EGRESS_DNS', '1').strip() != '0' else '')
+                fwd.add_direct(port, _ip, fallback_home=_eg_fallback, connect_s=_eg_connect_s,
+                               dns_server=_dns)
+                print(f"[EGRESS] {w.label()}: DNS via {_dns or 'the OS resolver (home line)'}")
                 w.cfg.proxy_url = f"127.0.0.1:{port}"
                 needing.append(w)   # reverted with the BD workers on a start failure
                 print(f"[EGRESS] {w.label()} → 127.0.0.1:{port} (DIRECT, bound to {_ip}; "
@@ -4024,8 +4130,31 @@ class BulletproofPurchaseManager:
         worker mid-purchase (queue-time skip + page-lock guard inside)."""
         if self.worker_pool is None:
             return
+        # FX-1014-SENTSTAGGER (TARGET_SENTINEL_STAGGER_S > 0): each check holds that
+        # account's page lock ~2 s; all accounts at once meant a flip landing in that
+        # instant waited on EVERY account. Account i is checked i x stagger seconds
+        # later, so a normal (~2 s) check holds one account at a time; a long repair
+        # ladder (up to 240 s) can still overlap the next one. 0 = all at once (prior).
+        _workers = list(self.worker_pool.workers)
+        _stagger = _sentinel_stagger_s()
+        if _stagger > 0 and len(_workers) > 1:
+            for _i, _w in enumerate(_workers[1:], 1):
+                try:
+                    _t = threading.Timer(_i * _stagger, self._run_session_sentinel_for, args=([_w],))
+                    _t.daemon = True
+                    _t.start()
+                except Exception:
+                    self._run_session_sentinel_for([_w])
+            _workers = _workers[:1]
+        self._run_session_sentinel_for(_workers)
 
-        for w in self.worker_pool.workers:
+    def _run_session_sentinel_for(self, workers) -> None:
+        """One sentinel check per worker in `workers` (see _run_session_sentinel_once).
+        A staggered call that fires after shutdown set _sentinel_stop does nothing."""
+        _stop = getattr(self, '_sentinel_stop', None)
+        if _stop is not None and _stop.is_set():
+            return
+        for w in workers:
             sm = getattr(w, 'session_manager', None)
             if sm is None:
                 continue
@@ -4068,13 +4197,15 @@ class BulletproofPurchaseManager:
                     }
                 if _guest:
                     # FX-1014-GUESTSEEN: the ladder passed on the account page, but
-                    # the live accessToken carries no member id -- every cart write
-                    # from this account 401s. boot_check greps "(GUEST)".
+                    # the live accessToken carries no member id: the account is signed
+                    # out. (A guest cart still ACCEPTS writes -- 10-14: 69/69 warmup
+                    # writes "alive" on two guests -- so the write probe cannot see
+                    # it.) boot_check greps "(GUEST)".
                     _kind, _, _detail = _guest.partition(':')
                     print(f"[SENTINEL] {_label}: logged_in=False "
                           f"({'GUEST' if _kind == 'guest' else 'NO_TOKEN'}) {_detail} -- "
-                          f"this account cannot buy; a scripted --force login with the bot "
-                          f"stopped recovers it")
+                          f"this account is SIGNED OUT (its orders cannot go through a member "
+                          f"checkout); a scripted --force login with the bot stopped recovers it")
                     return
                 tag = "OK" if ok else "FAILED"
                 print(f"[SENTINEL] {_label}: logged_in={ok} ({tag})"
@@ -4644,7 +4775,11 @@ class BulletproofPurchaseManager:
                 return in_hold
             ws = float(snap.get('window_start') or 0.0)
             lf = float(snap.get('last_false') or 0.0)
-            return lf <= ts or ws <= lf
+            if lf <= ts or ws <= lf:
+                return True
+            # Round-3 Q1: released only when the new window opened right after the
+            # out-of-stock read (a real flip), not after a read gap.
+            return (ws - lf) > _rebuy_flip_gap_s()
         except Exception:
             return True
 

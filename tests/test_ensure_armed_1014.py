@@ -38,7 +38,7 @@ def jar(path, ls="live", at=None, idt=None):
     if ls == "live":
         cks.append({"name": "login-session", "value": "v", "domain": ".target.com", "expires": time.time() + 86400 * 20})
     elif ls == "expired":
-        cks.append({"name": "login-session", "value": "v", "domain": ".target.com", "expires": time.time() - 60})
+        cks.append({"name": "login-session", "value": "v", "domain": ".target.com", "expires": time.time() - 86400 * 365})  # 10-14: was -60, a time bomb vs the fixed EVENING clock once real time passed 23:16
     elif ls == "session":
         cks.append({"name": "login-session", "value": "v", "domain": ".target.com", "expires": -1})
     if at:

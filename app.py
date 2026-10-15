@@ -1332,8 +1332,40 @@ class StockMonitorThread:
         serialization, and dedupes via the 'attempting' guard. Effective
         re-race cadence is therefore ~wave-length, not interval_s.
         """
+        # 2026-10-14 FX-1014-KICK (TARGET_REARM_KICK=1): a racer that frees its account
+        # sets an event; the loop then runs an extra KICKED tick that offers ONLY the
+        # TCINs skipped for want of a free account (the FX-1006 MISS registry) and open
+        # FX-1014-REBUY rows -- never a 'failed' row (its 3.5 / 10 s error delay stays) --
+        # published as 'level_rearm_kick' (exempt from the handler's 0.5 s debounce,
+        # which dropped kicked ticks -- verifier K2), kicked ticks >= 0.6 s apart, and
+        # the regular full tick keeps its own fixed schedule. Flag off -> the plain
+        # sleep, exactly as before.
+        _next_full = time.time() + interval_s
+        _last_kicked = 0.0
         while self.running:
-            time.sleep(interval_s)
+            _kick = None
+            try:
+                _pmk = self._purchase_manager
+                _kick = _pmk.rearm_kick_event() if _pmk is not None else None
+            except Exception:
+                _kick = None
+            _kicked = False
+            if _kick is None:
+                time.sleep(interval_s)
+            else:
+                _fired = _kick.wait(max(0.0, _next_full - time.time()))
+                _kick.clear()
+                if time.time() >= _next_full - 0.01:
+                    _next_full = time.time() + interval_s
+                elif _fired:
+                    _at = max(time.time(), _last_kicked + 0.6)
+                    if _at >= _next_full - 0.01:
+                        continue    # the regular full tick is due first and offers these too
+                    time.sleep(max(0.0, _at - time.time()))
+                    _last_kicked = time.time()
+                    _kicked = True
+                else:
+                    continue        # neither a kick nor the scheduled tick
             if not self.running:
                 return
             try:
@@ -1360,14 +1392,20 @@ class StockMonitorThread:
                     _rb_open = None
                 rearm = self._build_level_rearm_map(
                     snapshot, pm.get_all_states(), time.time(), rebuy_open=_rb_open)
+                if _kicked:
+                    try:
+                        rearm = {t: v for t, v in rearm.items() if pm.kick_offer_ok(t)}
+                    except Exception:
+                        rearm = {}
                 if not rearm:
                     continue
                 print(f"[LEVEL_REARM] stock still live for failed wave(s) "
-                      f"{sorted(rearm)} — re-publishing for re-race")
+                      f"{sorted(rearm)} — re-publishing for re-race"
+                      + (" [kick: a racer freed its account]" if _kicked else ""))
                 self.event_bus.publish('stock_updated', {
                     'stock_data': rearm,
                     'timestamp': time.time(),
-                    'source': 'level_rearm',
+                    'source': 'level_rearm_kick' if _kicked else 'level_rearm',
                 })
             except Exception as e:
                 print(f"[LEVEL_REARM] tick failed: {e}")
@@ -1884,7 +1922,10 @@ class PurchaseManagerThread:
             # sweep won't re-fire). The purchase manager dedupes one-per-TCIN (_state_lock +
             # 'attempting' guard + runtime _active_purchases), so processing every in-stock fire is
             # money-safe; only the non-proxy dashboard/tab-fetch publishes stay debounced.
-            if event_data.get('source') != 'proxy' and hasattr(self, '_last_stock_update_time'):
+            # FX-1014-KICK: a kicked re-arm tick is spaced >= 0.6 s by its own loop and
+            # carries only MISS / open-REBUY TCINs -- debouncing it lost the hand-off.
+            if (event_data.get('source') not in ('proxy', 'level_rearm_kick')
+                    and hasattr(self, '_last_stock_update_time')):
                 time_since_last = current_time - self._last_stock_update_time
                 if time_since_last < 0.5:  # Short window to prevent race conditions
                     return

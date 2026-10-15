@@ -562,6 +562,59 @@ def test_round2_save_snapshot_inside_lock_and_unreadable_file():
         check("unreadable_file_warned", "buyers file unreadable" in out and "check order history" in out, out)
 
 
+def test_round3_q1_read_gap_does_not_release_the_buyer():
+    """Round-3 Q1: one out-of-stock read after the buy, then a read gap longer than
+    the window hysteresis renews window_start with no sell-out -- the buyer stays
+    bound. A real flip (new window right after the out-of-stock read) releases."""
+    old = bpm_mod._REBUY_PROC_START
+    bpm_mod._REBUY_PROC_START = time.time() - 86400.0
+    try:
+        with env(**ON):
+            # one False read 40 s ago, the window renewed 0.5 s ago (ws - lf = 39.5 s)
+            m = M._mgr(statuses={A: M._st(win_ago=0.5, lf_ago=40.0)})
+            m._rebuy_state()[0][("W1/primary", A)] = time.time() - 120.0
+            check("q1_read_gap_binds", m._thread_skip_reason("W1/primary", "primary", A) == "bought_this_window")
+            # a real flip: last False read 0.8 s before the new window
+            m = M._mgr(statuses={A: M._st(win_ago=0.5, lf_ago=1.3)})
+            m._rebuy_state()[0][("W1/primary", A)] = time.time() - 120.0
+            check("q1_real_flip_releases", m._thread_skip_reason("W1/primary", "primary", A) == "")
+        with env(**{**ON, "TARGET_REBUY_FLIP_GAP_S": "60"}):
+            m = M._mgr(statuses={A: M._st(win_ago=0.5, lf_ago=40.0)})
+            m._rebuy_state()[0][("W1/primary", A)] = time.time() - 120.0
+            check("q1_gap_knob", m._thread_skip_reason("W1/primary", "primary", A) == "")
+    finally:
+        bpm_mod._REBUY_PROC_START = old
+
+
+def test_round3_q2_swap_skips_reserved_and_busy():
+    """Round-3 Q2: the single-worker swap never takes an account reserved for, or
+    racing, another TCIN -- it then keeps the original (sitting-out) worker."""
+    with env(**{**ON, **M.E2E_ENV, "TARGET_REBUY_FILE": _file()}):
+        gate = threading.Event()
+        m, ws = M._e2e_mgr({A: M._st(win_ago=40.0)}, gate)
+        m.worker_pool = _S4Pool(ws[0], [ws[1]])
+        m.worker = ws[0]
+        m._states[A] = {"status": "purchased", "completed_at": time.time() - 5}
+        quiet(m._rebuy_note, A, "W1/primary")
+        m._fx1006_note_purchase(A)
+        m._worker_reservations = {"W2/business": (B, time.time())}      # business is B's
+        try:
+            rearm = _build()(m.stock_monitor._resilient_checker._tcin_status, m.get_all_states(),
+                             time.time(), rebuy_open=m._rebuy_rearm_ok)
+            out = ""
+            if rearm:
+                _, o1 = quiet(m.reset_completed_purchases_by_stock_status, rearm)
+                _, o2 = quiet(m.process_stock_data, rearm)
+                out = o1 + o2
+            time.sleep(0.4)
+            shots = M._shots(ws)
+        finally:
+            M._settle(m, gate, ws)
+        check("q2_reserved_not_swapped", "dispatching W2/business instead" not in out, out[-900:])
+        check("q2_reserved_never_fires_A", A not in shots["W2/business"], shots)
+        check("q2_buyer_never_fires", shots["W1/primary"] == [], shots)
+
+
 def test_source_pins():
     src = (ROOT / "src" / "purchasing" / "bulletproof_purchase_manager.py").read_text(encoding="utf-8")
     check("pin_note_on_result_path", "self._rebuy_note(tcin, worker_label)" in src)

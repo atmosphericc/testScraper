@@ -1664,8 +1664,11 @@ class SessionManager:
         """Read the live accessToken cookie from the browser jar.
         Returns {present, member, eid, ttl_s, iat}. member=False covers
         missing, expired-claim-less AND guest-scope tokens (no `eid`) — a
-        guest token renders the site header fine while every carts WRITE
-        401s, which is exactly the blind spot that lost the 07-07 drops."""
+        guest token renders the site header fine, which is exactly the blind
+        spot that lost the 07-07 drops. (Correction 2026-10-14, C-1014-26: the
+        07-07 belief "every carts WRITE 401s" does not hold -- 69/69 warmup dummy
+        writes on two guest accounts came back 424 "alive" -- so the write probe
+        cannot see a guest; this eid check can.)"""
         out = {'present': False, 'member': False, 'eid': None, 'ttl_s': -1.0, 'iat': None}
         try:
             tab = tab or await self.get_page()
