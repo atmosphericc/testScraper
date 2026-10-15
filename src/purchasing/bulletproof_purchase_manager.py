@@ -228,8 +228,56 @@ def _egress_bind_map(flog=None) -> Dict[str, str]:
             _say(f"[EGRESS] [WARN] {acct}: {ip} is loopback/link-local (adapter not really "
                  f"online) -- {acct} stays on HOME")
             continue
+        # Verifier E4: the egress adapter must have its own default route AND rank
+        # strictly behind the home default route, or joining it moves EVERY
+        # account + the monitor onto it (Wi-Fi's automatic metric equals Ethernet's).
+        alias = next((name for name, ips in adapters.items() if ip in ips), '')
+        why = _egress_route_problem(alias)
+        if why:
+            _say(f"[EGRESS] [WARN] {acct}: {why} -- {acct} stays on HOME. One-time fix (admin "
+                 f"PowerShell): tools\\ops\\hotspot_egress_setup.ps1 -Alias \"{alias or '?'}\"")
+            continue
         out[acct] = ip
     return out
+
+
+def _default_routes(timeout_s: float = 10.0):
+    """[(interface alias, effective metric)] for the IPv4 default routes
+    (route metric + interface metric), via PowerShell. None on any error."""
+    try:
+        import subprocess
+        cmd = ("Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 | ForEach-Object { "
+               "$i = Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4; "
+               "'{0}|{1}|{2}' -f $_.InterfaceAlias, $_.RouteMetric, $i.InterfaceMetric }")
+        r = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', cmd],
+                           capture_output=True, text=True, timeout=timeout_s)
+        out = []
+        for line in (r.stdout or '').splitlines():
+            parts = line.strip().split('|')
+            if len(parts) == 3 and parts[1].strip().isdigit() and parts[2].strip().isdigit():
+                out.append((parts[0].strip(), int(parts[1]) + int(parts[2])))
+        return out if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+def _egress_route_problem(alias: str) -> str:
+    """'' when `alias` has a default route that ranks strictly behind every
+    other default route (so only sockets bound to it use it); else why not.
+    Fails safe: no answer -> a problem (the account stays on HOME)."""
+    routes = _default_routes()
+    if routes is None:
+        return "could not read the default routes"
+    mine = [m for a, m in routes if a.lower() == (alias or '').lower()]
+    others = [m for a, m in routes if a.lower() != (alias or '').lower()]
+    if not mine:
+        return f"adapter '{alias}' has no default route (bound connections would fail)"
+    if not others:
+        return f"adapter '{alias}' is the ONLY default route -- the whole PC is on it"
+    if min(mine) <= min(others):
+        return (f"adapter '{alias}' (metric {min(mine)}) ranks with or ahead of the home route "
+                f"(metric {min(others)}) -- every account and the monitor could move onto it")
+    return ''
 
 
 def _egress_public_ip_probe(pairs, flog=None, host='api.ipify.org', timeout=6.0):
@@ -260,7 +308,9 @@ def _egress_public_ip_probe(pairs, flog=None, host='api.ipify.org', timeout=6.0)
             via = _get(ip)
             same = (via == home) and not via.startswith('ERR')
             msg = (f"[EGRESS] {label}: public IP via {ip} = {via}; home = {home}"
-                   + (" -- SAME as home: the second network is NOT separate" if same else ""))
+                   + (" -- SAME as home: the second network is NOT separate" if same else "")
+                   + (" -- [WARN] the egress route did not answer: this account's requests "
+                      "may be failing" if via.startswith('ERR') else ""))
             print(msg)
             if flog:
                 flog(msg)
@@ -3820,10 +3870,14 @@ class BulletproofPurchaseManager:
         # place-order. Without the fallback the resend fails -> status 0 -> the
         # no-response guard holds. =1 trades that for availability.
         _eg_fallback = os.environ.get('TARGET_ACCOUNT_EGRESS_FALLBACK_HOME', '0').strip() == '1'
+        try:
+            _eg_connect_s = float(os.environ.get('TARGET_ACCOUNT_EGRESS_CONNECT_S', '4') or 4)
+        except (TypeError, ValueError):
+            _eg_connect_s = 4.0
         for w, _ip in egress_workers:
             port = self.PURCHASE_FORWARDER_PORT_BASE + w.cfg.worker_id
             try:
-                fwd.add_direct(port, _ip, fallback_home=_eg_fallback)
+                fwd.add_direct(port, _ip, fallback_home=_eg_fallback, connect_s=_eg_connect_s)
                 w.cfg.proxy_url = f"127.0.0.1:{port}"
                 needing.append(w)   # reverted with the BD workers on a start failure
                 print(f"[EGRESS] {w.label()} → 127.0.0.1:{port} (DIRECT, bound to {_ip}; "

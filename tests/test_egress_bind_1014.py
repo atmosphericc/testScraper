@@ -64,7 +64,55 @@ def _with_psutil(adapters, fn):
 
 # ── 1. the env map ───────────────────────────────────────────────────────────
 
+GOOD_ROUTES = [("Ethernet 2", 25), ("Wi-Fi 2", 125), ("Wi-Fi", 125)]
+
+
+def _routes(rows):
+    old = bpm_mod._default_routes
+    bpm_mod._default_routes = lambda timeout_s=10.0: rows
+    return old
+
+
 def test_bind_map():
+    old = _routes(GOOD_ROUTES)
+    try:
+        _bind_map()
+    finally:
+        bpm_mod._default_routes = old
+
+
+def test_route_guard():
+    """Verifier E4: the egress adapter needs its own default route ranking strictly
+    behind the home route, else the whole PC could move onto the hotspot."""
+    ad = {"Wi-Fi": ["172.20.10.3"]}
+    cases = [
+        ("route_ok", [("Ethernet 2", 25), ("Wi-Fi", 125)], {"alt-1": "172.20.10.3"}, None),
+        ("route_tie_refused", [("Ethernet 2", 25), ("Wi-Fi", 25)], {}, "ranks with or ahead"),
+        ("route_ahead_refused", [("Ethernet 2", 25), ("Wi-Fi", 10)], {}, "ranks with or ahead"),
+        ("route_missing_refused", [("Ethernet 2", 25)], {}, "no default route"),
+        ("route_only_refused", [("Wi-Fi", 125)], {}, "ONLY default route"),
+        ("route_unreadable_refused", None, {}, "could not read"),
+    ]
+    for name, rows, want, msg in cases:
+        old = _routes(rows)
+        try:
+            with env(TARGET_ACCOUNT_EGRESS_BIND="alt-1=Wi-Fi"):
+                got, out = quiet(_with_psutil, ad, bpm_mod._egress_bind_map)
+        finally:
+            bpm_mod._default_routes = old
+        check(name, got == want and (msg is None or (msg in out and "hotspot_egress_setup.ps1" in out)),
+              (got, out))
+
+
+def test_direct_connect_timeout_param():
+    fwd = ForwarderPool()
+    up = fwd.add_direct(_free_port(), "127.0.0.1", connect_s=0.1)
+    check("connect_s_floor", up.connect_s == 0.5, up.connect_s)
+    up2 = fwd.add_direct(_free_port(), "127.0.0.1")
+    check("connect_s_default_4", up2.connect_s == 4.0, up2.connect_s)
+
+
+def _bind_map():
     ad = {"Wi-Fi": ["192.168.1.20"], "Wi-Fi 2": ["172.20.10.3"], "Ethernet 2": []}
     with env(TARGET_ACCOUNT_EGRESS_BIND=None):
         check("unset_empty", bpm_mod._egress_bind_map() == {})

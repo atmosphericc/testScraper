@@ -482,6 +482,11 @@ REM      hotspot could move the DEFAULT route of every account + the monitor; (3
 REM      account becomes "proxied" for TARGET_CHROME_MAX_AGE_S (35 min relaunches);
 REM      (4) a dead-but-associated hotspot costs a 10 s dial per connection.
 REM  Fix list in CURRENT_STATE (FX-1014-EGRESS) before this is ever set.
+REM  22:5x: (1) fallback now OFF by default; (2) the bot now REFUSES the bind unless the
+REM  egress adapter has its own default route ranking strictly behind home -- one-time
+REM  fix: admin PowerShell tools\ops\hotspot_egress_setup.ps1 (Wi-Fi metric 100);
+REM  (4) bound dials give up after 4 s (TARGET_ACCOUNT_EGRESS_CONNECT_S). (3) kept on
+REM  purpose (the old wedge's cause is unknown and this path uses the same forwarder).
 set TARGET_ACCOUNT_EGRESS_BIND=
 
 REM  HOLD the won cart through that cooldown (2026-07-28). That drop won 4 carts

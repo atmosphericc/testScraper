@@ -79,6 +79,7 @@ class Upstream:
     bind_ip: str = ""
     fallback_home: bool = True
     fallbacks: int = 0
+    connect_s: float = 4.0
 
 
 def parse_bd_proxy_url(url: str):
@@ -118,15 +119,18 @@ class ForwarderPool:
         self.upstreams[port] = up
         return up
 
-    def add_direct(self, port: int, bind_ip: str, fallback_home: bool = True) -> Upstream:
+    def add_direct(self, port: int, bind_ip: str, fallback_home: bool = True,
+                   connect_s: float = 4.0) -> Upstream:
         """FX-1014-EGRESS: a direct CONNECT proxy on `port` whose outbound
-        connections bind to `bind_ip` (no upstream proxy, no auth). Does not
-        start the server."""
+        connections bind to `bind_ip` (no upstream proxy, no auth). connect_s
+        bounds each bound dial (a dead-but-associated hotspot fails fast).
+        Does not start the server."""
         up = Upstream(
             proxy_url="", port=port, pinned_ip=bind_ip, upstream_host="", upstream_port=0,
             user="", password="", auth_b64="",
             stats=UpstreamStats(pinned_ip=bind_ip, port=port),
             direct=True, bind_ip=bind_ip, fallback_home=fallback_home,
+            connect_s=max(0.5, float(connect_s)),
         )
         self.upstreams[port] = up
         return up
@@ -137,7 +141,7 @@ class ForwarderPool:
         try:
             return await asyncio.wait_for(
                 asyncio.open_connection(host, port, local_addr=(up.bind_ip, 0)),
-                timeout=10.0,
+                timeout=up.connect_s,
             )
         except Exception as e:
             if not up.fallback_home:
