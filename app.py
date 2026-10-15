@@ -1267,10 +1267,12 @@ class StockMonitorThread:
         site (TARGET_REARM_AFTER_EMERGENCY_RESET=0 stops stamping → no hints →
         this branch is inert).
 
-        2026-10-14 FX-1014-REBUY: `rebuy_open` (the manager's _rebuy_tcin_open,
-        passed only with TARGET_REBUY_NONBUYERS=1) also re-arms an in-stock
-        'purchased' row whose buyers are all on record, so the accounts that did
-        not buy keep racing it; the buyer sits it out in-thread. None = HEAD.
+        2026-10-14 FX-1014-REBUY: `rebuy_open(tcin, status)` (the manager's
+        _rebuy_rearm_ok, passed only with TARGET_REBUY_NONBUYERS=1) also re-arms
+        an in-stock 'purchased' or bare 'ready' row inside a stock window one of
+        our NAMED accounts bought in, while a ready non-buyer exists, so the
+        accounts that did not buy keep racing it; the buyer sits it out
+        in-thread. None = HEAD.
 
         Returns a stock_data dict in the _adapter shape _handle_stock_update
         already consumes.
@@ -1285,13 +1287,19 @@ class StockMonitorThread:
                     continue
                 _st = states.get(str(tcin), {})
                 _status = _st.get('status')
-                if _status == 'purchased' and rebuy_open is not None:
+                # FX-1014-REBUY: rebuy_open(tcin, status) -> the manager's
+                # _rebuy_rearm_ok: a 'purchased' row, or a bare 'ready' row (round-2
+                # verifier S2), inside a bought window with a ready non-buyer.
+                _rb = False
+                if rebuy_open is not None and _status in ('purchased', 'ready'):
                     try:
-                        _rb = bool(rebuy_open(str(tcin)))
+                        _rb = bool(rebuy_open(str(tcin), _status))
                     except Exception:
                         _rb = False
-                    if not _rb:
-                        continue
+                if _rb:
+                    pass
+                elif _status == 'purchased':
+                    continue
                 elif _status != 'failed':
                     # Emergency-reset breadcrumb: a fresh 'ready' item that was
                     # just force-reset off a stuck completed state. Anything
@@ -1347,7 +1355,7 @@ class StockMonitorThread:
                 _rb_open = None
                 try:
                     if pm.rebuy_active():
-                        _rb_open = pm._rebuy_tcin_open
+                        _rb_open = pm._rebuy_rearm_ok
                 except Exception:
                     _rb_open = None
                 rearm = self._build_level_rearm_map(

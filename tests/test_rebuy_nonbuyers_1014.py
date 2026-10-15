@@ -148,7 +148,7 @@ def test_unlabelled_purchase_keeps_head_block():
               and m._thread_skip_reason("W1/primary", "primary", A) == "bought_this_window")
         rows = {A: {"status": "purchased"}}
         rearm = _build()({A: m.stock_monitor._resilient_checker._tcin_status[A]}, rows, time.time(),
-                         rebuy_open=m._rebuy_tcin_open)
+                         rebuy_open=m._rebuy_rearm_ok)
         check("unlabelled_map_excludes", rearm == {}, rearm)
 
 
@@ -160,7 +160,7 @@ def test_no_record_purchased_row_not_open():
         check("no_record_not_open", m._rebuy_tcin_open(A) is False)
         rows = {A: {"status": "purchased"}}
         rearm = _build()({A: m.stock_monitor._resilient_checker._tcin_status[A]}, rows, time.time(),
-                         rebuy_open=m._rebuy_tcin_open)
+                         rebuy_open=m._rebuy_rearm_ok)
         check("no_record_map_excludes", rearm == {}, rearm)
 
 
@@ -258,17 +258,17 @@ def test_map_includes_open_purchased_row():
         quiet(m._rebuy_note, A, "W1/primary")
         rows = {A: {"status": "purchased"}, B: {"status": "purchased"}}
         snap = m.stock_monitor._resilient_checker._tcin_status
-        rearm = _build()(snap, rows, time.time(), rebuy_open=m._rebuy_tcin_open)
+        rearm = _build()(snap, rows, time.time(), rebuy_open=m._rebuy_rearm_ok)
         check("map_open_A_only", set(rearm) == {A}, rearm)
         rearm0 = _build()(snap, rows, time.time())
         check("map_without_callable_HEAD", rearm0 == {}, rearm0)
         stale = {A: M._st(win_ago=30.0, age=200.0)}
         check("map_stale_read_excluded",
-              _build()(stale, rows, time.time(), rebuy_open=m._rebuy_tcin_open) == {})
+              _build()(stale, rows, time.time(), rebuy_open=m._rebuy_rearm_ok) == {})
         oos = {A: M._st(in_stock=False)}
-        check("map_oos_excluded", _build()(oos, rows, time.time(), rebuy_open=m._rebuy_tcin_open) == {})
+        check("map_oos_excluded", _build()(oos, rows, time.time(), rebuy_open=m._rebuy_rearm_ok) == {})
 
-        def _boom(_t):
+        def _boom(*_a):
             raise RuntimeError("x")
         check("map_callable_error_excluded", _build()(snap, rows, time.time(), rebuy_open=_boom) == {})
 
@@ -287,7 +287,7 @@ def test_e2e_non_buyers_race_bought_tcin():
             m._fx1006_note_purchase(A)
             try:
                 rearm = _build()(m.stock_monitor._resilient_checker._tcin_status, m.get_all_states(),
-                                 time.time(), rebuy_open=(m._rebuy_tcin_open if m.rebuy_active() else None))
+                                 time.time(), rebuy_open=(m._rebuy_rearm_ok if m.rebuy_active() else None))
                 out = ""
                 if rearm:
                     _, o1 = quiet(m.reset_completed_purchases_by_stock_status, rearm)
@@ -322,7 +322,7 @@ def test_e2e_all_bought_no_empty_race():
         m._fx1006_note_purchase(A)
         try:
             rearm = _build()(m.stock_monitor._resilient_checker._tcin_status, m.get_all_states(),
-                             time.time(), rebuy_open=m._rebuy_tcin_open)
+                             time.time(), rebuy_open=m._rebuy_rearm_ok)
             out = ""
             if rearm:
                 _, o1 = quiet(m.reset_completed_purchases_by_stock_status, rearm)
@@ -439,6 +439,127 @@ def test_purchased_row_kept_through_other_events():
                 check("oos_in_event_resets", M._rows(m)[A]["status"] == "ready", M._rows(m)[A])
             else:
                 check("off_purchased_reset_HEAD", st == "ready", M._rows(m)[A])
+
+
+def test_round2_bare_ready_row_reoffered_in_bought_window():
+    """Round-2 S2: a row reset to bare 'ready' while the only non-buyer was briefly
+    not ready must be re-offered once it is ready again (bought window still live)."""
+    with env(**ON):
+        m = M._mgr(statuses={A: M._st(win_ago=300.0)})
+        quiet(m._rebuy_note, A, "W1/primary")
+        quiet(m._rebuy_note, A, "W2/business")
+        rows = {A: {"status": "ready"}}
+        snap = m.stock_monitor._resilient_checker._tcin_status
+        rearm = _build()(snap, rows, time.time(), rebuy_open=m._rebuy_rearm_ok)
+        check("s2_ready_reoffered_nonbuyer_ready", set(rearm) == {A}, rearm)
+        full = list(m.worker_pool._w)
+        m.worker_pool._w = full[:2]                      # alt-1 (the non-buyer) not ready
+        rearm = _build()(snap, rows, time.time(), rebuy_open=m._rebuy_rearm_ok)
+        check("s2_not_offered_while_nonbuyer_down", rearm == {}, rearm)
+        m.worker_pool._w = full
+        rearm = _build()(snap, rows, time.time(), rebuy_open=m._rebuy_rearm_ok)
+        check("s2_offered_again_when_back", set(rearm) == {A}, rearm)
+        check("s2_rearm_ok_rejects_failed_status", m._rebuy_rearm_ok(A, "failed") is False)
+    old = bpm_mod._REBUY_PROC_START
+    bpm_mod._REBUY_PROC_START = time.time() - 86400.0
+    try:
+        with env(**ON):
+            # a NEW window (out-of-stock read after the purchase, then a new window):
+            # not ours to re-offer -- the edge publisher's job (HEAD)
+            m = M._mgr(statuses={A: M._st(win_ago=0.5)})
+            m._rebuy_state()[0][("W1/primary", A)] = time.time() - 120.0
+            rows = {A: {"status": "ready"}}
+            rearm = _build()(m.stock_monitor._resilient_checker._tcin_status, rows, time.time(),
+                             rebuy_open=m._rebuy_rearm_ok)
+            check("s2_new_window_not_rearmed", rearm == {}, rearm)
+            check("s2_window_not_live", m._rebuy_window_live(A) is False)
+    finally:
+        bpm_mod._REBUY_PROC_START = old
+    with env(**FLAGS):
+        m = M._mgr(statuses={A: M._st(win_ago=300.0)})
+        rows = {A: {"status": "ready"}}
+        check("s2_flag_off_bare_ready_HEAD",
+              _build()(m.stock_monitor._resilient_checker._tcin_status, rows, time.time()) == {})
+
+
+class _S4Pool:
+    """Round-2 S4: the sticky worker (and primary) is the buyer; only the
+    non-buyer business is ready."""
+    def __init__(self, buyer, ready):
+        self._buyer = buyer
+        self._ready = list(ready)
+
+    def ready_workers(self):
+        return list(self._ready)
+
+    @property
+    def primary(self):
+        return self._buyer
+
+    @property
+    def workers(self):
+        return [self._buyer] + list(self._ready)
+
+    def acquire_for_tcin(self, tcin):
+        return self._buyer
+
+
+def test_round2_single_worker_path_dispatches_the_nonbuyer():
+    for flag in ("1", None):
+        with env(**{**ON, **M.E2E_ENV, "TARGET_REBUY_NONBUYERS": flag, "TARGET_REBUY_FILE": _file()}):
+            gate = threading.Event()
+            m, ws = M._e2e_mgr({A: M._st(win_ago=40.0)}, gate)
+            m.worker_pool = _S4Pool(ws[0], [ws[1]])
+            m.worker = ws[0]
+            m._states[A] = {"status": "purchased", "completed_at": time.time() - 5}
+            quiet(m._rebuy_note, A, "W1/primary")
+            m._fx1006_note_purchase(A)
+            try:
+                out = ""
+                if flag:
+                    rearm = _build()(m.stock_monitor._resilient_checker._tcin_status, m.get_all_states(),
+                                     time.time(), rebuy_open=m._rebuy_rearm_ok)
+                    check("s4_offered", set(rearm) == {A}, rearm)
+                    _, o1 = quiet(m.reset_completed_purchases_by_stock_status, rearm)
+                    _, o2 = quiet(m.process_stock_data, rearm)
+                    out = o1 + o2
+                time.sleep(0.4)
+                shots = M._shots(ws)
+            finally:
+                M._settle(m, gate, ws)
+            if flag:
+                check("s4_buyer_never_fires", shots["W1/primary"] == [], shots)
+                check("s4_nonbuyer_fires", shots["W2/business"] == [A], (shots, out[-900:]))
+                check("s4_swap_logged", "dispatching W2/business instead" in out, out[-900:])
+            else:
+                check("s4_off_nobody_fires", all(v == [] for v in shots.values()), shots)
+
+
+def test_round2_save_snapshot_inside_lock_and_unreadable_file():
+    src = (ROOT / "src" / "purchasing" / "bulletproof_purchase_manager.py").read_text(encoding="utf-8")
+    i = src.index("    def _rebuy_note(")
+    body = src[i:i + 2500]
+    check("s1_snapshot_inside_save_lock",
+          body.index("with _REBUY_SAVE_LOCK:") < body.index("snap = dict(d)") < body.index("_rebuy_save(path, snap, now)"))
+    path = _file()
+    with env(**{**ON, "TARGET_REBUY_FILE": path}):
+        m = M._mgr(statuses={A: M._st(win_ago=30.0)})
+        m._rebuy_path = path
+        ths = [threading.Thread(target=m._rebuy_note, args=(A, f"W{i}/acct{i}")) for i in range(1, 9)]
+
+        def _run_all():
+            for t in ths:
+                t.start()
+            for t in ths:
+                t.join()
+        quiet(_run_all)
+        data = json.load(open(path, encoding="utf-8"))
+        check("s1_concurrent_notes_all_saved", len(data.get("buyers", {})) == 8, data)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{garbage")
+        m2 = M._mgr(statuses={A: M._st()})
+        _, out = quiet(m2._rebuy_restore)
+        check("unreadable_file_warned", "buyers file unreadable" in out and "check order history" in out, out)
 
 
 def test_source_pins():

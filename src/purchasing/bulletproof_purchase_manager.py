@@ -350,9 +350,10 @@ def _rebuy_hold_s() -> float:
     return _env_float_clamped('TARGET_REBUY_BUYER_HOLD_S', 1800.0, 60.0, 86400.0)
 
 
-def _rebuy_load(path, now: float) -> Dict[tuple, float]:
+def _rebuy_load(path, now: float, info=None) -> Dict[tuple, float]:
     """{(label, tcin): ts} younger than a day from the buyers file; {} when
-    missing or unreadable. Never raises."""
+    missing or unreadable. A file that exists but cannot be parsed sets
+    info['unreadable'] (when a dict is passed). Never raises."""
     out: Dict[tuple, float] = {}
     try:
         if not path or not os.path.exists(path):
@@ -361,6 +362,8 @@ def _rebuy_load(path, now: float) -> Dict[tuple, float]:
             raw = json.load(f)
         items = raw.get('buyers', {}) if isinstance(raw, dict) else None
         if not isinstance(items, dict):
+            if isinstance(info, dict):
+                info['unreadable'] = 'bad_shape'
             return out
         for k, ts in items.items():
             label, sep, tcin = str(k).rpartition('|')
@@ -372,7 +375,12 @@ def _rebuy_load(path, now: float) -> Dict[tuple, float]:
             if not (ts == ts) or ts > now + 60.0 or ts + _REBUY_FILE_TTL_S <= now:
                 continue
             out[(label, tcin)] = ts
-    except Exception:
+    except Exception as e:
+        if isinstance(info, dict):
+            try:
+                info['unreadable'] = type(e).__name__
+            except Exception:
+                pass
         return {}
     return out
 
@@ -2687,6 +2695,23 @@ class BulletproofPurchaseManager:
                         assigned_worker = primary
                 # Final fallback: legacy single-worker path (shouldn't happen post-Phase 6)
                 worker = assigned_worker or self.worker
+                # FX-1014-REBUY (round-2 verifier S4): the single-worker path's sticky /
+                # primary fallback can hand a TCIN to an account that only sits it out
+                # (the not-ready buyer) while a ready non-buyer idles. Swap to a ready
+                # account that would fire. Flag off: unchanged.
+                if pinned_worker is None and _rebuy_on() and worker is not None \
+                        and self.worker_pool is not None:
+                    try:
+                        if self._fx1006_worker_sits_out(worker, tcin):
+                            _alt = next((w for w in self.worker_pool.ready_workers()
+                                         if w is not worker
+                                         and not self._fx1006_worker_sits_out(w, tcin)), None)
+                            if _alt is not None:
+                                print(f"[REBUY] {tcin}: {worker.label()} would only sit it out -- "
+                                      f"dispatching {_alt.label()} instead")
+                                worker = _alt
+                    except Exception:
+                        pass
                 # FX-1014-REBUY: this thread's buyer identity (no-op unless a purchase
                 # succeeds with the flag on; same key as the in-thread skip below).
                 try:
@@ -4545,7 +4570,12 @@ class BulletproofPurchaseManager:
             if not _rebuy_on():
                 return 0
             self._rebuy_path = _rebuy_file()
-            got = _rebuy_load(self._rebuy_path, time.time())
+            _info = {}
+            got = _rebuy_load(self._rebuy_path, time.time(), _info)
+            if _info.get('unreadable'):
+                print(f"[REBUY] [WARN] buyers file unreadable ({_info['unreadable']}: "
+                      f"{self._rebuy_path}) -- any buyer from the previous process is LOST; "
+                      f"check order history")
             if not got:
                 return 0
             d, lk = self._rebuy_state()
@@ -4573,17 +4603,26 @@ class BulletproofPurchaseManager:
                      or str(getattr(_REBUY_TLS, 'label', '') or '').strip()
                      or _REBUY_ANY)
             d, lk = self._rebuy_state()
-            with lk:
-                d[(label, str(tcin))] = now
-                snap = dict(d)
             path = getattr(self, '_rebuy_path', None)
-            if path:
-                _rebuy_save(path, snap, now)
+            # Round-2 verifier S1: snapshot INSIDE the save lock (lock order: save lock,
+            # then the record lock), so the last writer always saves a superset -- an
+            # earlier snapshot can no longer overwrite a newer buyer.
+            with _REBUY_SAVE_LOCK:
+                with lk:
+                    d[(label, str(tcin))] = now
+                    snap = dict(d)
+                saved = _rebuy_save(path, snap, now) if path else True
             who = 'an unknown account -- every account sits it out' if label == _REBUY_ANY else label
             print(f"[REBUY] {tcin}: {why} by {who} -- that account sits it out this stock "
                   f"window; the others stay on it while it reads in stock")
-        except Exception:
-            pass
+            if not saved:
+                print(f"[REBUY] [WARN] could not save {path} -- this buyer record is in memory "
+                      f"only; after a crash relaunch check order history before it re-races")
+        except Exception as _e:
+            try:
+                print(f"[REBUY] [WARN] buyer record for {tcin} failed ({type(_e).__name__}: {_e})")
+            except Exception:
+                pass
 
     def _rebuy_ts_live(self, tcin, ts, now, snap=None) -> bool:
         """A buyer record still binds UNLESS the TCIN read out of stock after
@@ -4675,6 +4714,39 @@ class BulletproofPurchaseManager:
                 if not self._rebuy_buyer_binds(self._ac_ident(w), acct, tcin, now):
                     return True
             return False
+        except Exception:
+            return False
+
+    def _rebuy_window_live(self, tcin, now=None) -> bool:
+        """Some NAMED buyer record of `tcin` still binds (we are inside a stock
+        window in which one of our accounts bought it). Never raises."""
+        try:
+            now = time.time() if now is None else float(now)
+            t = str(tcin)
+            d, lk = self._rebuy_state()
+            with lk:
+                recs = [(l, ts) for (l, tt), ts in d.items() if tt == t and l != _REBUY_ANY]
+            snap = None
+            for _l, ts in recs:
+                if snap is None:
+                    snap = self.stock_snapshot(t, now=now) or {}
+                if self._rebuy_ts_live(t, ts, now, snap):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _rebuy_rearm_ok(self, tcin, status='purchased') -> bool:
+        """app.py level re-arm: re-offer an in-stock row in a bought window to
+        the non-buyers. 'purchased' and a bare 'ready' (round-2 verifier S2: a
+        row reset to 'ready' while the only non-buyer was briefly not ready was
+        never offered again) both need the TCIN open AND the bought window
+        still live -- a new window is the edge publisher's job, as HEAD.
+        Never raises (False = HEAD)."""
+        try:
+            if status not in ('purchased', 'ready'):
+                return False
+            return bool(self._rebuy_tcin_open(tcin) and self._rebuy_window_live(tcin))
         except Exception:
             return False
 
