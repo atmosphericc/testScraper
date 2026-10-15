@@ -451,6 +451,13 @@ REM  So on FAST_SELLING the executor now backs off for this many seconds instead
 REM  of re-shooting; every other 429/424 keeps the 07-17 behavior unchanged.
 REM  Kill-switch (never back off, pre-07-21): set TARGET_FAST_SELLING_COOLDOWN_S=0
 set TARGET_FAST_SELLING_COOLDOWN_S=45
+REM 2026-10-14 C-1014-15: the FAST_SELLING back-off above was kept per ACCOUNT, so a
+REM place-order FAST_SELLING on one item pushed this account's next shot on ANOTHER item off
+REM the fast lane onto the legacy path, whose pre-shot hold then waited out the first item's
+REM window before the new cart's first place-order. FAST_SELLING is Target's per-item
+REM throttle: with =1 the back-off applies to that item only. grep [THROTTLE].
+REM Kill: set TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=0
+set TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=1
 
 REM  HOLD the won cart through that cooldown (2026-07-28). That drop won 4 carts
 REM  and cleared every one after a FAST_SELLING/post-FS rejection, then re-raced

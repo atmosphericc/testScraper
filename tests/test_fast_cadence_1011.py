@@ -232,6 +232,120 @@ def test_fast_wait_still_yields():
     check("fy_reservations_released", m._worker_reservations == {}, m._worker_reservations)
 
 
+def _bat_env():
+    """Every plain `set NAME=value` in the production wrapper (C-1014-16: no test ran the
+    ARMED combination -- DCO burst on, MAX 40, the 110 s budget -- before 2026-10-14)."""
+    bat = (ROOT / "run_bot_with_nightly_restart.bat").read_text(encoding="utf-8", errors="replace")
+    out = {}
+    for ln in bat.splitlines():
+        mm = re.match(r"^set ([A-Z0-9_]+)=(.*)$", ln.strip())
+        if mm and "%" not in mm.group(2) and "!" not in mm.group(2):
+            out[mm.group(1)] = mm.group(2)
+    return out
+
+
+class _VirtTime:
+    """Per-THREAD virtual clock for the manager module: sleep(s) advances only the calling
+    racer's clock, so the armed 0.5 s-slice yield-aware wait and the 110 s budget behave as
+    they would live while costing no real time."""
+    def __init__(self):
+        self._loc = threading.local()
+        self.rec = []
+        self._lock = threading.Lock()
+
+    def _off(self):
+        return getattr(self._loc, "off", 0.0)
+
+    def time(self):
+        return _real_time.time() + self._off()
+
+    def sleep(self, s):
+        self._loc.off = self._off() + max(0.0, float(s))
+        with self._lock:
+            self.rec.append(float(s))
+
+    def __getattr__(self, name):
+        return getattr(_real_time, name)
+
+
+def _armed_race(ws, tcin=A):
+    """One real race with the wrapper's own values, on per-thread virtual time; returns the
+    virtual time of every shot per account."""
+    m = H.race_mgr(ws)
+    MR._with_checker(m, {tcin: MR._st()})
+    benv = {k: v for k, v in _bat_env().items() if k.startswith("TARGET_")}
+    # Single-TCIN race harness; the stub stock status is stamped once in real time, so
+    # [RETRY_OOS] (armed, tested in test_retry_oos_stop) would read it stale on virtual time.
+    benv.update(TARGET_MULTI_SKU_DISPATCH=None, TARGET_RETRY_STOP_WHEN_OOS="0")
+    vt = _VirtTime()
+    shots = {w.cfg.account_id: [] for w in ws}
+    for w in ws:
+        orig = w.purchase_executor.execute_purchase
+
+        async def _stamped(tcin_, quantity=1, _o=orig, _a=w.cfg.account_id):
+            shots[_a].append(bpm.time.time())
+            return await _o(tcin_, quantity)
+        w.purchase_executor.execute_purchase = _stamped
+    saved = bpm.time
+    bpm.time = vt
+    try:
+        with env(**{**FLAGS, **benv}):
+            ok, out = quiet(H._race, m, tcin)
+    finally:
+        bpm.time = saved
+    gaps = {a: [b - x for x, b in zip(ts, ts[1:])] for a, ts in shots.items()}
+    return ok, out, shots, gaps, benv
+
+
+def test_armed_combination_from_bat():
+    """C-1014-16: the wrapper as armed (IDENTS=all, WAVE_FIRST_ONLY/EDGE=1, DCO burst on with
+    REQUIRE_BANK=0, MAX=40, 110 s budget). Edge 429s re-shoot in the 3.0-4.5 s band up to MAX;
+    an ATC-level FAST_SELLING first takes the <=2-shot burst (~1.0-1.5 s), then the fast band;
+    a 401 keeps the 55-70 s cold re-entry."""
+    benv = _bat_env()
+    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") == "all"
+          and benv.get("TARGET_ATC_DCO_BURST") == "1" and benv.get("TARGET_RETRY_WHILE_IN_STOCK_MAX") == "40"
+          and benv.get("TARGET_ATC_DCO_BURST_REQUIRE_BANK") == "0",
+          {k: benv.get(k) for k in ("TARGET_FAST_CADENCE_IDENTS", "TARGET_ATC_DCO_BURST",
+                                    "TARGET_RETRY_WHILE_IN_STOCK_MAX", "TARGET_ATC_DCO_BURST_REQUIRE_BANK")})
+    mx = int(benv.get("TARGET_RETRY_WHILE_IN_STOCK_MAX", "40"))
+    bud = float(benv.get("TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S", "110"))
+    # Edge 429s only: each account re-shoots every 3.0-4.5 s until the 110 s budget (or MAX)
+    # ends its window -- ~25-37 shots, never a cold re-entry.
+    ws = _fleet()
+    ok, out, shots, gaps, _ = _armed_race(ws)
+    n = {a: len(v) for a, v in shots.items()}
+    allg = [g for v in gaps.values() for g in v]
+    check("armed_edge_race_finished", ok, out[-600:])
+    check("armed_edge_many_shots_each", all(22 <= k <= mx for k in n.values()), n)
+    check("armed_edge_all_gaps_fast", allg and all(FAST[0] - 0.01 <= g <= FAST[1] + 0.6 for g in allg),
+          (min(allg or [0]), max(allg or [0])))
+    check("armed_edge_window_within_budget", all(v[-1] - v[0] <= bud + FAST[1] + 1 for v in shots.values()),
+          {a: round(v[-1] - v[0], 1) for a, v in shots.items()})
+    check("armed_edge_no_wave_lines", "cold re-entry in" not in out, out[-500:])
+    # ATC-level FAST_SELLING on alt-1: the <=2-shot DCO burst (short gaps, after the bounded
+    # bank wait) then the fast band -- never a cold re-entry.
+    dco = {"success": False, "reason": "rate_limited_429", "gate_kind": "dco",
+           "gate_body": "FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION"}
+    ws = _fleet(alt_script=[dco])
+    ok, out, shots, gaps, _ = _armed_race(ws)
+    ga = gaps["alt-1"]
+    check("armed_dco_race_finished", ok, out[-600:])
+    bursts = [l for l in out.splitlines() if "[DCO_BURST]" in l and "alt-1" in l]
+    check("armed_dco_burst_logged", len(bursts) >= 1, [l[:160] for l in out.splitlines() if "DCO_BURST" in l][:6])
+    check("armed_dco_first_two_short", len(ga) > 3 and all(g <= 8.0 for g in ga[:2]), ga[:4])
+    check("armed_dco_rest_fast", all(FAST[0] - 0.01 <= g <= FAST[1] + 0.6 for g in ga[2:]),
+          (min(ga[2:] or [0]), max(ga[2:] or [0])))
+    check("armed_dco_no_wave", "cold re-entry in" not in out, out[-400:])
+    # A Shape-scoped 401 on alt-1 keeps the 55-70 s cold re-entry; the others stay fast.
+    ws = _fleet(alt_script=[A401])
+    ok, out, shots, gaps, _ = _armed_race(ws)
+    wave_alt = [l for l in out.splitlines() if "cold re-entry in" in l and "alt-1" in l]
+    check("armed_401_wave_first", ok and len(wave_alt) >= 1 and all("auth401" in l for l in wave_alt), wave_alt[:3])
+    check("armed_401_alt1_few_shots", 1 <= len(shots["alt-1"]) <= 3 and len(shots["primary"]) >= 22,
+          {a: len(v) for a, v in shots.items()})
+
+
 def test_source_wiring():
     src = (ROOT / "src" / "purchasing" / "bulletproof_purchase_manager.py").read_text(encoding="utf-8")
     check("wiring_env_read_once", src.count("env.get('TARGET_FAST_CADENCE_IDENTS'") == 1)
@@ -251,7 +365,8 @@ def test_source_wiring():
 def main():
     tests = [test_cfg_parsing, test_applies, test_off_state_wave_first_for_everyone,
              test_alt1_fast_others_wave_first, test_all_fast_custom_band, test_fast_ident_401_stays_wave_first,
-             test_fast_dco_is_fast_too, test_fast_wait_still_yields, test_source_wiring]
+             test_fast_dco_is_fast_too, test_fast_wait_still_yields, test_armed_combination_from_bat,
+             test_source_wiring]
     for t in tests:
         try:
             t()

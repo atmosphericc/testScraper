@@ -1551,6 +1551,10 @@ class PurchaseExecutor:
         # night). The in-place re-shoot loop was feeding the very limiter that was
         # blocking it. Back off for a cooldown instead.
         self._fast_selling_until: float = 0.0
+        # 2026-10-14 (C-1014-15): the same back-off per TCIN; read only with
+        # TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=1 (_fs_cooldown_left).
+        self._fs_until_by_tcin: Dict[str, float] = {}
+        self._exec_tcin: str = ''
         # Per-TCIN cache for PDP-extracted purchase_limit. Bulk RedSky often
         # omits maximum_order_quantity; without this cache every repeat
         # purchase pays a 0.05-0.65s PDP poll. Entries expire after 30 min.
@@ -4860,6 +4864,7 @@ class PurchaseExecutor:
     async def _execute_purchase_impl(self, tcin: str, quantity: int = 1) -> Dict[str, Any]:
         """Execute purchase for given TCIN using persistent session"""
         start_time = time.time()
+        self._exec_tcin = str(tcin)          # C-1014-15: which item a FAST_SELLING back-off is for
         # Floor at 1 to avoid quantity:0 (would be rejected by Target). No upper
         # bound — the PDP-extracted purchase_limit is authoritative.
         quantity = max(1, int(quantity or 1))
@@ -5229,7 +5234,7 @@ class PurchaseExecutor:
                     and not self.test_mode
                     and os.environ.get('TARGET_API_PLACE_ORDER', 'false').lower() == 'true'
                     and (not self._cvv_required or self._fast_lane_cvv())
-                    and not self._fast_selling_cooling_down()):
+                    and not self._fast_selling_cooling_down(tcin)):
                 if getattr(self, '_harvest_cfg', {}).get('enabled'):
                     self._harvest_log(f"pre-shot {self._shape_bank.summary()} "
                                       f"replay={'on' if self._harvest_replay_on else 'OFF'}")
@@ -8299,12 +8304,44 @@ class PurchaseExecutor:
         if _cd <= 0:
             return
         self._fast_selling_until = time.time() + _cd
+        self._fs_note_tcin(getattr(self, '_exec_tcin', ''), self._fast_selling_until)
         print(f"[THROTTLE] FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION — holding checkout "
               f"POSTs for {_cd:.0f}s (re-shooting into this limiter went 0-for-~20 on 07-21)")
 
-    def _fast_selling_cooling_down(self) -> bool:
+    def _fs_note_tcin(self, tcin, until: float) -> None:
+        """Record a FAST_SELLING back-off for `tcin` (C-1014-15). Never raises."""
+        try:
+            if tcin:
+                d = getattr(self, '_fs_until_by_tcin', None)
+                if not isinstance(d, dict):
+                    d = {}
+                    self._fs_until_by_tcin = d
+                d[str(tcin)] = max(float(d.get(str(tcin), 0.0) or 0.0), float(until))
+        except Exception:
+            pass
+
+    def _fs_cooldown_left(self, tcin=None) -> float:
+        """Seconds left on the FAST_SELLING back-off that applies to `tcin`.
+
+        Default: the account-wide window (_fast_selling_until), exactly as before.
+        2026-10-14 C-1014-15, TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=1: FAST_SELLING is
+        Target's per-ITEM checkout throttle, so a back-off on item A no longer pushes
+        this account's next shot on item B off the fast lane onto the legacy path
+        (whose pre-shot hold then waited out A's cooldown before B's first place-order).
+        Never raises."""
+        try:
+            now = time.time()
+            if (os.environ.get('TARGET_FAST_SELLING_COOLDOWN_PER_TCIN', '0').strip() == '1'
+                    and (tcin or getattr(self, '_exec_tcin', ''))):
+                d = getattr(self, '_fs_until_by_tcin', None) or {}
+                return float(d.get(str(tcin or self._exec_tcin), 0.0) or 0.0) - now
+            return float(getattr(self, '_fast_selling_until', 0.0) or 0.0) - now
+        except Exception:
+            return float(getattr(self, '_fast_selling_until', 0.0) or 0.0) - time.time()
+
+    def _fast_selling_cooling_down(self, tcin=None) -> bool:
         """True while the fast-selling back-off window is still open."""
-        _left = self._fast_selling_until - time.time()
+        _left = self._fs_cooldown_left(tcin)
         if _left > 0:
             print(f"[THROTTLE] FAST_SELLING cooldown active ({_left:.0f}s left) — "
                   f"not spending a checkout POST")
@@ -8368,7 +8405,7 @@ class PurchaseExecutor:
         """
         if os.environ.get('TARGET_FAST_SELLING_HOLD_CART', '1') != '1' or self.test_mode:
             return False
-        _left = getattr(self, '_fast_selling_until', 0.0) - time.time()
+        _left = self._fs_cooldown_left()
         if _left <= 0:
             return False
         _hold = min(_left, float(os.environ.get('TARGET_FAST_SELLING_HOLD_MAX_S', '75')))
@@ -9991,6 +10028,7 @@ class PurchaseExecutor:
                     self._fast_selling_until = max(
                         float(getattr(self, '_fast_selling_until', 0.0) or 0.0),
                         float(L['fs_seen_ts']) + cfg['fs_cooldown_s'])
+                    self._fs_note_tcin(T, float(L['fs_seen_ts']) + cfg['fs_cooldown_s'])
                 if float(getattr(self, '_won_cart_ride_until', 0.0) or 0.0) > 0:
                     if verdict in ('placed', 'terminal'):
                         # R1 review (R1-DB-1): the success tail (session save,
