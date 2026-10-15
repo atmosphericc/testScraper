@@ -1316,6 +1316,17 @@ REM FX-1006-KEEP: a failed TCIN absent from another TCIN's stock event is no
 REM longer reset to a bare ready row the re-arm never re-offers, while the
 REM monitor reads it in stock. Kill: TARGET_STOCK_RESET_KEEP_LIVE_FAILED=0.
 set TARGET_STOCK_RESET_KEEP_LIVE_FAILED=1
+REM FX-1014-REBUY (2026-10-14 23:0x, operator: "more units is fine", 10-01): a TCIN one
+REM of our accounts BOUGHT keeps being offered to the OTHER accounts while it reads in
+REM stock (10-01: two accounts sat on WON carts 62 min on primary's bought TCIN, no
+REM ticket). The buyer -- and any account with a possibly-committed order (AC-1) --
+REM sits it out ("bought_this_window") until the TCIN reads out of stock after the
+REM purchase and a new window opens. Buyers persist in state\rebuy_buyers.json.
+REM Three opus verifier rounds (C-1014-23); round 3: no refutation, residual NOT
+REM ESTABLISHED = a committed order answered as a non-ambiguous non-2xx. Needs
+REM MISS_REARM=1 above. grep "[REBUY]". After a drop with a purchase: order history.
+REM Kill: set TARGET_REBUY_NONBUYERS=0
+set TARGET_REBUY_NONBUYERS=1
 REM FX-1006-YIELD: a racer in the 55-70 s wave-first wait after an edge 429 or
 REM a 401 ends its window early, keeping that result, when a skipped TCIN reads
 REM in stock on a window under 20 s old and this account would not sit it out,
