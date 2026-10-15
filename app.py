@@ -1326,6 +1326,11 @@ class StockMonitorThread:
                     continue  # checker mutated the dict mid-copy — next tick
                 if not snapshot:
                     continue
+                # 2026-10-14 FX-1014-JOIN (TARGET_RACE_JOIN_FREE=1; inert otherwise): free
+                # accounts join a race still running on a live TCIN. Never raises.
+                _join = getattr(pm, 'race_join_tick', None)
+                if _join is not None:
+                    _join()
                 rearm = self._build_level_rearm_map(
                     snapshot, pm.get_all_states(), time.time())
                 if not rearm:

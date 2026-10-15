@@ -120,6 +120,8 @@ OFFLINE = [
     "test_ensure_armed_1014",
     # 2026-10-14: FAST_SELLING back-off per TCIN (C-1014-15; a bare executor, no browser).
     "test_fs_cooldown_per_tcin_1014",
+    # 2026-10-14: FX-1014-JOIN, free accounts join a running race (real race loop, stub workers).
+    "test_race_join_1014",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

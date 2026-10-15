@@ -553,6 +553,54 @@ def _stuck_reset_live_guard_on() -> bool:
     return os.environ.get('TARGET_STUCK_RESET_LIVE_GUARD', '0').strip() == '1'
 
 
+# ── 2026-10-14 FX-1014-JOIN: a free account joins a race that is still running ──
+# C-1014-13 (VERIFIED): a TCIN stays 'attempting' until EVERY racer has reported, so
+# while one account rides a won cart (~240 s per call under FX-1014-RTO) the accounts
+# that finished their own 110 s window cannot fire at it again even though it reads in
+# stock (10-01: alt-1 idle 137 s on 1010892076). Leading bots run one independent task
+# per account per product (Refract L3164, L3244). With TARGET_RACE_JOIN_FREE=1 the level
+# re-arm tick (race_join_tick) adds a one-wide racer for each FREE account to the race
+# still open on a live TCIN. Default '0' = exact prior behaviour.
+def _race_join_on() -> bool:
+    return os.environ.get('TARGET_RACE_JOIN_FREE', '0').strip() == '1'
+
+
+def _race_join_gap_s() -> float:
+    """Minimum seconds between two joins of the same account on the same TCIN."""
+    try:
+        v = float(os.environ.get('TARGET_RACE_JOIN_GAP_S', '10'))
+    except (TypeError, ValueError):
+        v = 10.0
+    if not (v == v):
+        v = 10.0
+    return min(120.0, max(3.0, v))
+
+
+def _race_join_budget_s() -> float:
+    """A joined racer's in-stock retry window (pre-arming verifier D2: a joiner held for a
+    full 110 s keeps an account from a fresh flip that happens after the join). Short,
+    so the account is free again quickly; the next tick can re-join it."""
+    try:
+        v = float(os.environ.get('TARGET_RACE_JOIN_BUDGET_S', '30'))
+    except (TypeError, ValueError):
+        v = 30.0
+    if not (v == v):
+        v = 30.0
+    return min(110.0, max(10.0, v))
+
+
+def _race_join_fresh_s() -> float:
+    """Join only while the TCIN's last in-stock read is at most this old (verifier D6: the
+    probe reads live up to 20 s after the last in-stock read)."""
+    try:
+        v = float(os.environ.get('TARGET_RACE_JOIN_FRESH_S', '5'))
+    except (TypeError, ValueError):
+        v = 5.0
+    if not (v == v):
+        v = 5.0
+    return min(20.0, max(1.0, v))
+
+
 # ── 2026-09-16 hot-sku plan P11 (CFG-2): per-TCIN quantity pin (U2) ──────────
 # TARGET_QTY_PER_TCIN=1 honours an optional "qty" on a product_config.json
 # entry (e.g. "qty": 1 on the 30th Celebration TCINs) in place of the
@@ -2423,6 +2471,13 @@ class BulletproofPurchaseManager:
                     # non-PDP hoist) instead of ~28s, so 110s buys ~30+ ATC shots
                     # against a 429/401 throttle instead of ~4.
                     _retry_budget_s = float(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S', '110'))
+                    if race_agg is not None and _race_join_on():
+                        # FX-1014-JOIN (verifier D2): a joined racer gets a short window.
+                        try:
+                            if (race_agg.get('labels') or {}).get(threading.get_ident()):
+                                _retry_budget_s = min(_retry_budget_s, _race_join_budget_s())
+                        except Exception:
+                            pass
                     _retry_max = int(os.environ.get('TARGET_RETRY_WHILE_IN_STOCK_MAX', '24'))
                     _retry_deadline = time.time() + _retry_budget_s
                     # Reasons worth re-firing on. SAFETY (drop-readiness audit 2026-06-04):
@@ -3219,6 +3274,28 @@ class BulletproofPurchaseManager:
             }
             print(f"[RACE] {tcin}: racing {len(dispatch_workers)} accounts → "
                   f"{[w.label() for w in dispatch_workers]}")
+            if _race_join_on():
+                # FX-1014-JOIN: remember how to add a racer to THIS race. A joined
+                # thread records its result under its own key ('<label>#j<n>') so it
+                # is counted once against the 'total' that race_join_tick raised.
+                def _spawn_join(w, agg_label, _agg=race_agg):
+                    def _run():
+                        with _agg['lock']:
+                            _agg.setdefault('labels', {})[threading.get_ident()] = agg_label
+                        execute_real_purchase(pinned_worker=w, state_key=f"{tcin}#W{w.cfg.worker_id}",
+                                              race_agg=_agg)
+                    threading.Thread(target=_run, daemon=True).start()
+                # Pre-arming verifier D1: an account is IN FLIGHT here from before its
+                # thread exists until its result is recorded -- the tick never joins an
+                # in-flight account (racers register in _active_purchases only later).
+                race_agg['inflight'] = {w.label() for w in dispatch_workers}
+                try:
+                    with self._reserve_state():
+                        if not isinstance(getattr(self, '_open_races', None), dict):
+                            self._open_races = {}
+                        self._open_races[str(tcin)] = {'agg': race_agg, 'spawn': _spawn_join}
+                except Exception:
+                    pass
             for w in dispatch_workers:
                 sk = f"{tcin}#W{w.cfg.worker_id}"
                 threading.Thread(
@@ -4480,6 +4557,14 @@ class BulletproofPurchaseManager:
         """
         wl = worker_label or f"w{len(race_agg['results']) + 1}"
         with race_agg['lock']:
+            # FX-1014-JOIN: a joined racer is counted under its own key, and the
+            # account leaves the race's in-flight set once its result is in.
+            if worker_label and isinstance(race_agg.get('inflight'), set):
+                race_agg['inflight'].discard(worker_label)
+            _jl = (race_agg.get('labels') or {}).get(threading.get_ident())
+            if _jl:
+                wl = _jl
+                race_agg.setdefault('join_pending', set()).discard(_jl)
             race_agg['results'][wl] = result
             if result.get('success'):
                 race_agg['units'] += int(result.get('quantity') or result.get('qty') or 1)
@@ -4491,6 +4576,15 @@ class BulletproofPurchaseManager:
         successes = [r for r in results_snapshot.values() if r.get('success')]
         any_success = bool(successes)
         all_done = recorded >= total
+        if all_done:
+            # FX-1014-JOIN: a closed race takes no more joiners.
+            try:
+                o = getattr(self, '_open_races', None)
+                if isinstance(o, dict) and (o.get(str(tcin)) or {}).get('agg') is race_agg:
+                    with self._reserve_state():
+                        o.pop(str(tcin), None)
+            except Exception:
+                pass
 
         # Collect order numbers from successful accounts (same parse as the
         # single-worker path: result field, else ?orderId= from confirmation URL).
@@ -4691,6 +4785,138 @@ class BulletproofPurchaseManager:
         except Exception:
             return {'live': None, 'window_start': 0.0, 'last_true': 0.0,
                     'last_false': 0.0, 'age': None}
+
+    def race_join_tick(self, now=None) -> list:
+        """FX-1014-JOIN (TARGET_RACE_JOIN_FREE=1): for every race still open on a TCIN
+        that reads live, add a one-wide racer for each FREE account. Free = ready,
+        not racing anything right now (a rider's thread is alive), not reserved for
+        another TCIN, has not ordered this TCIN, did not just sit out of this race,
+        has no join of its own still pending here, and did not join this TCIN in the
+        last TARGET_RACE_JOIN_GAP_S. Never while another live TCIN is un-raced: a
+        fresh flip outranks another draw here (FX-1006 owns that). The joiner is
+        counted into the race under the race's own lock, only while the race is
+        still open, so the TCIN cannot finalize before it reports. Called from the
+        level re-arm tick. Returns [(tcin, label)]. Never raises."""
+        joined = []
+        if not _race_join_on():
+            return joined
+        try:
+            now = time.time() if now is None else float(now)
+            races = dict(getattr(self, '_open_races', None) or {})
+            if not races or self.worker_pool is None:
+                return joined
+            live = set(self.any_stock_live(now=now))
+            if not live:
+                return joined
+            states = self.get_all_states() or {}
+            if any((states.get(t) or {}).get('status') != 'attempting' for t in live):
+                return joined
+            pool = list(self.worker_pool.ready_workers() or [])
+            with self._state_lock:
+                busy = self._busy_worker_tcins()
+            with self._reserve_state():
+                reserved = dict(self._worker_reservations)
+            last = getattr(self, '_race_join_last', None)
+            if not isinstance(last, dict):
+                last = {}
+                self._race_join_last = last
+            gap = _race_join_gap_s()
+            fresh_s = _race_join_fresh_s()
+            # Verifier D1: every account in flight in ANY open race -- recorded before its
+            # thread starts, so the window before it registers as busy is covered.
+            all_inflight = set()
+            open_aggs = []
+            for _t, _info in races.items():
+                _a = (_info or {}).get('agg')
+                if not isinstance(_a, dict):
+                    continue
+                with _a['lock']:
+                    all_inflight |= set(_a.get('inflight') or ())
+                    _t0 = float(_a.get('t0') or 0.0)
+                    open_aggs.append(((0 if now - _t0 <= 60.0 else 1, len(_a.get('inflight') or ()), -_t0),
+                                      _t, _info))
+            checker = getattr(getattr(self, 'stock_monitor', None), '_resilient_checker', None)
+            statuses = getattr(checker, '_tcin_status', None) or {}
+            # Verifiers D2 / K4: a race opened in the last 60 s (a fresh flip) is offered
+            # first, then the fewest accounts in flight, then the most recent race.
+            for _key, tcin, info in sorted(open_aggs, key=lambda x: x[0]):
+                if tcin not in live:
+                    continue
+                # Verifier D6: join only on a fresh in-stock read.
+                try:
+                    _snap = _stock_status_snapshot(statuses.get(tcin), now)
+                    if now - float(_snap.get('last_true') or 0.0) > fresh_s:
+                        continue
+                except Exception:
+                    continue
+                agg = (info or {}).get('agg')
+                spawn = (info or {}).get('spawn')
+                if not isinstance(agg, dict) or spawn is None:
+                    continue
+                with agg['lock']:
+                    if len(agg['results']) >= agg['total']:
+                        continue
+                    results = dict(agg['results'])
+                    pending = set(agg.get('join_pending') or ())
+                for w in pool:
+                    lbl = w.label()
+                    if lbl in all_inflight or busy.get(lbl):
+                        continue
+                    # Round-2 verifier K1: ANY reservation disqualifies -- a finishing
+                    # racer deletes its _active_purchases entry BEFORE it releases its
+                    # reservation, and a same-TCIN re-take in that gap would be popped.
+                    if reserved.get(lbl):
+                        continue
+                    if any(p.split('#j', 1)[0] == lbl for p in pending):
+                        continue
+                    ex = getattr(w, 'purchase_executor', None)
+                    if str(tcin) in (getattr(ex, '_ordered_tcins', None) or set()):
+                        continue
+                    mine = [r for k, r in results.items() if k == lbl or k.startswith(lbl + '#j')]
+                    if any((r or {}).get('success') for r in mine):
+                        continue
+                    if mine and _is_sit_out_reason((mine[-1] or {}).get('reason')):
+                        continue
+                    if now - float(last.get((lbl, tcin), 0.0) or 0.0) < gap:
+                        continue
+                    if not self._reserve_workers_for_tcin(tcin, [w], 1):
+                        continue
+                    with agg['lock']:
+                        if len(agg['results']) >= agg['total'] or lbl in (agg.get('inflight') or ()):
+                            n = 0
+                        else:
+                            agg['total'] += 1
+                            agg['joins'] = int(agg.get('joins', 0)) + 1
+                            n = agg['joins']
+                            agg.setdefault('join_pending', set()).add(f"{lbl}#j{n}")
+                            agg.setdefault('inflight', set()).add(lbl)
+                    if not n:
+                        self._release_worker_reservation(lbl)
+                        break
+                    all_inflight.add(lbl)
+                    last[(lbl, tcin)] = now
+                    if _miss_rearm_on():
+                        try:
+                            self._fx1006_note_acct_dispatch(tcin, [w])   # verifier D7
+                        except Exception:
+                            pass
+                    print(f"[RACE_JOIN] {tcin}: {lbl} joins the running race #{n} — free while the "
+                          f"TCIN reads live and another account is still racing / riding it")
+                    try:
+                        spawn(w, f"{lbl}#j{n}")
+                    except Exception as e:
+                        with agg['lock']:
+                            agg['total'] -= 1
+                            agg.setdefault('join_pending', set()).discard(f"{lbl}#j{n}")
+                            agg.setdefault('inflight', set()).discard(lbl)
+                        all_inflight.discard(lbl)
+                        self._release_worker_reservation(lbl)
+                        print(f"[RACE_JOIN] {tcin}: {lbl} join did not start ({type(e).__name__}: {e})")
+                        continue
+                    joined.append((tcin, lbl))
+        except Exception as e:
+            print(f"[RACE_JOIN] tick errored ({type(e).__name__}: {e}) — no join this tick")
+        return joined
 
     def any_stock_live(self, exclude_tcin=None, now=None) -> list:
         """TCINs (other than exclude_tcin) whose probe reads live=True. The

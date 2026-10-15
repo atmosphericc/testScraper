@@ -246,6 +246,7 @@ TCIN = r'\d{6,12}(?!\d)'
 RACE_START = re.compile(r'\[RACE\] (?P<tcin>' + TCIN + r'): racing (?P<n>\d+) accounts? → \[(?P<workers>[^\]]*)\]')
 RACE_DONE = re.compile(r'\[RACE\] (?P<tcin>' + TCIN + r'): (?P<k>\d+)/(?P<n>\d+) accounts? done, '
                        r'units_bought=(?P<units>\d+), breakdown=\{(?P<bd>[^{}]*)\}')
+RACE_JOIN_RE = re.compile(r'\[RACE_JOIN\] (?P<tcin>' + TCIN + r'): W\d+/(?P<w>\S+) joins the running race #(?P<n>\d+)')
 BD_ENTRY = re.compile(r"'W(\d+)/([^']+)': (?:'([^']*)'|(\w+))")
 WORKER = re.compile(r"'W(\d+)/([^']+)'")
 FIRE = re.compile(r'\[FAST_LANE\] Firing ATC\S* chain \(tcin=(?P<tcin>' + TCIN + r'), qty=(?P<qty>\d+)\)')
@@ -395,6 +396,7 @@ FL_FOREIGN = re.compile(r'\[FAST_LANE\] (?:(?P<bail>foreign/extra cart item pres
 # Presence patterns: a hit that its family's full regexes cannot parse is `unparsed`.
 PRINT_FAMILIES = [
     ('RACE', r'\[RACE\] '),
+    ('RACE_JOIN', r'\[RACE_JOIN\] '),            # 2026-10-14 FX-1014-JOIN
     ('FL_FIRE', r'\[FAST_LANE\] Firing ATC'),
     ('FL_CHAIN', r'\[FAST_LANE\] chain done'),
     ('FL_TIMEOUT', r'\[FAST_LANE\] (?:evaluate timed out|evaluate raised|unexpected result type)'),
@@ -636,6 +638,13 @@ class RunParser:
             bd = [(e[1], e[2] if e[2] or not e[3] else e[3]) for e in BD_ENTRY.findall(m.group('bd'))]
             self._add('race_done', tcin=m.group('tcin'), k=int(m.group('k')), n=int(m.group('n')),
                       units=int(m.group('units')), bd=bd)
+            return True
+        return False
+
+    def _h_RACE_JOIN(self, t, p, lg):
+        m = RACE_JOIN_RE.match(t, p)
+        if m:
+            self._add('race_join', tcin=m.group('tcin'), worker=m.group('w'), n=int(m.group('n')))
             return True
         return False
 
@@ -1152,6 +1161,7 @@ class RunParser:
             if raw is None:
                 return None
             r = re.sub(r'^W\d+/', '', raw)
+            r = re.sub(r'#j\d+$', '', r)      # FX-1014-JOIN: a joined racer's own result key
             if not known or r in known:
                 return r
             best = max((k for k in known if r.startswith(k)), key=len, default=None)
@@ -1253,7 +1263,7 @@ class RunParser:
         pctx = Counter()               # v2: TCIN -> running "Starting purchase for" executions
         retry_tcin_null = 0
         s = []
-        for k in ('race_start', 'race_done', 'fire', 'chain', 'orphan', 'notrel', 'pfetch', 'cred',
+        for k in ('race_start', 'race_join', 'race_done', 'fire', 'chain', 'orphan', 'notrel', 'pfetch', 'cred',
                   'wcd_end', 'ticket', 'pstart', 'pdone', 'retry201', 'co_post'):
             s += [(e['seq'], k, e) for e in E[k]]
         for e in main_resps:
@@ -1297,6 +1307,13 @@ class RunParser:
                     wn = norm(w)
                     open_of[wn] = r['idx']
                     r['active'].add(wn)
+            elif k == 'race_join':
+                # FX-1014-JOIN: the joiner re-enters the race still open on that TCIN.
+                wn = norm(e['worker'])
+                cand = [r for r in races if r['tcin'] == e['tcin'] and r['done_line'] is None]
+                if cand:
+                    open_of[wn] = cand[-1]['idx']
+                    cand[-1]['active'].add(wn)
             elif k == 'race_done':
                 if not e['bd']:
                     continue
