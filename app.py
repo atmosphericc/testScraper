@@ -1242,7 +1242,8 @@ class StockMonitorThread:
         threading.Thread(target=lambda: add_activity_log("Stock monitor thread started", "success", "system"), daemon=True).start()
 
     @staticmethod
-    def _build_level_rearm_map(status_snapshot, states, now, stale_after_s=90.0):
+    def _build_level_rearm_map(status_snapshot, states, now, stale_after_s=90.0,
+                               rebuy_open=None):
         """Pure filter for the level re-arm publisher (unit-tested).
 
         From the resilient checker's {tcin: TcinStatus} snapshot, keep only
@@ -1266,6 +1267,11 @@ class StockMonitorThread:
         site (TARGET_REARM_AFTER_EMERGENCY_RESET=0 stops stamping → no hints →
         this branch is inert).
 
+        2026-10-14 FX-1014-REBUY: `rebuy_open` (the manager's _rebuy_tcin_open,
+        passed only with TARGET_REBUY_NONBUYERS=1) also re-arms an in-stock
+        'purchased' row whose buyers are all on record, so the accounts that did
+        not buy keep racing it; the buyer sits it out in-thread. None = HEAD.
+
         Returns a stock_data dict in the _adapter shape _handle_stock_update
         already consumes.
         """
@@ -1279,7 +1285,14 @@ class StockMonitorThread:
                     continue
                 _st = states.get(str(tcin), {})
                 _status = _st.get('status')
-                if _status != 'failed':
+                if _status == 'purchased' and rebuy_open is not None:
+                    try:
+                        _rb = bool(rebuy_open(str(tcin)))
+                    except Exception:
+                        _rb = False
+                    if not _rb:
+                        continue
+                elif _status != 'failed':
                     # Emergency-reset breadcrumb: a fresh 'ready' item that was
                     # just force-reset off a stuck completed state. Anything
                     # else stays excluded (pre-existing semantics).
@@ -1331,8 +1344,14 @@ class StockMonitorThread:
                 _join = getattr(pm, 'race_join_tick', None)
                 if _join is not None:
                     _join()
+                _rb_open = None
+                try:
+                    if pm.rebuy_active():
+                        _rb_open = pm._rebuy_tcin_open
+                except Exception:
+                    _rb_open = None
                 rearm = self._build_level_rearm_map(
-                    snapshot, pm.get_all_states(), time.time())
+                    snapshot, pm.get_all_states(), time.time(), rebuy_open=_rb_open)
                 if not rearm:
                     continue
                 print(f"[LEVEL_REARM] stock still live for failed wave(s) "

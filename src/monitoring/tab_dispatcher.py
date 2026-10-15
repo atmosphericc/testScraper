@@ -426,6 +426,17 @@ class TabDispatcher:
                 s.consecutive_errors = 0
                 return BulkResult(s.id, s.proxy_ip, 200, ms,
                                   raw=result.get("__body"))
+            # 2026-10-14 FX-1014-206ALIVE (RESILIENT_206_NOT_ERROR=1): a 206 is RedSky
+            # answering (a partial body) -- the session is alive. Counting it as a
+            # soft failure let a 206 storm (73% of reads in the 10-05 slot) plus one
+            # timeout flag a working session crashed (10-05 post-run critic). The
+            # result itself (status 206, error text) is unchanged. Kill: =0.
+            if status == 206 and os.environ.get('RESILIENT_206_NOT_ERROR', '0') == '1':
+                s.consecutive_errors = 0
+                return BulkResult(
+                    s.id, s.proxy_ip, status, ms,
+                    error=(result.get("__body_text") or "")[:500],
+                )
             # 4xx / 5xx — count as a soft failure for crash threshold, but
             # let ProxyState handle the actual park/burn decision via status code.
             # Fix #5: timestamp 4xx (Shape block/throttle class) so

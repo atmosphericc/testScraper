@@ -114,6 +114,27 @@ def enabled_tcins(root: Path):
         return None
 
 
+def jar_guest_map(root: Path) -> dict:
+    """FX-1014-GUESTSEEN: {account_id: why} for enabled accounts whose saved jar
+    cannot start a member session (tools/ops/ensure_armed.jar_state). Read-only;
+    {} on any error."""
+    try:
+        import importlib.util
+        if str(root) not in sys.path:
+            sys.path.insert(0, str(root))
+        spec = importlib.util.spec_from_file_location("_ea_bootcheck", root / "tools" / "ops" / "ensure_armed.py")
+        ea = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ea)
+        out = {}
+        for acct, path in ea.accounts(root):
+            need, why = ea.jar_state(path)
+            if need:
+                out[acct] = why
+        return out
+    except Exception:
+        return {}
+
+
 def enabled_accounts(root: Path):
     try:
         cfg = json.loads((root / "config" / "target_accounts.json").read_text(encoding="utf-8"))
@@ -217,7 +238,7 @@ def parse_relogin(text: str, boot_ts: float) -> dict:
 # -- the run log --------------------------------------------------------------
 
 def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: dict,
-                cfg_changed: bool = False, acct_changed: bool = False) -> dict:
+                cfg_changed: bool = False, acct_changed: bool = False, jar_guest=None) -> dict:
     """cfg_changed / acct_changed: the config file was modified AFTER this boot, so the
     enabled counts on disk are not what this run booted with -- count mismatches are then
     informational, not failures (a pre-drop edits the config after the last run)."""
@@ -229,6 +250,7 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
     thread_start_exc = None
     write_auth = {}
     selftest = {}
+    sentinel = {}
     first_sight = {}
     vpc = []
     visibility = None
@@ -292,6 +314,10 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
         m = re.search(r"\[WARMUP#\d+/([^\]]+)\] (dummy POST status \d+ .{1,3} write-auth alive|WRITE-AUTH DEAD[^\n]{0,60})", raw)
         if m and in_window:
             write_auth[m.group(1)] = ("alive" if "alive" in m.group(2) else "DEAD", no, t)
+        # FX-1014-GUESTSEEN: the latest sentinel verdict per account (any time in the run)
+        m = re.search(r"\[SENTINEL\] W\d+/([^:\s]+): logged_in=(True|False) \((OK|FAILED|GUEST|NO_TOKEN)\)", raw)
+        if m:
+            sentinel[m.group(1)] = (m.group(3), no, t)
         m = re.search(r"\[HARVEST/([^\]]+)\] SELFTEST verdict: probes=(\d+) replayed=(\d+) accepted=\[([^\]]*)\] rejected=\[([^\]]*)\]", raw)
         if m and m.group(1) not in selftest:
             selftest[m.group(1)] = (m.group(4), m.group(5), no, t)
@@ -425,6 +451,18 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
             add(f"harvest:{a}", "WARN", f"{a}: no harvest SELFTEST verdict by +{age:.0f} s")
         else:
             add(f"harvest:{a}", "PENDING", f"{a}: harvest selftest not seen yet (due by +300 s)")
+        # FX-1014-GUESTSEEN: a GUEST account cannot buy (every cart write 401s). WARN, not
+        # FAIL: the other accounts still buy, and a restart does not fix a dead login.
+        if a in sentinel:
+            sv, no, t = sentinel[a]
+            if sv in ("GUEST", "NO_TOKEN"):
+                add(f"member:{a}", "WARN", f"{a}: live session is {sv} (sentinel) -- this account cannot "
+                    f"buy; recover with a scripted --force login while the bot is stopped", no, t)
+            else:
+                add(f"member:{a}", "OK" if sv == "OK" else "WARN", f"{a}: sentinel {sv}", no, t)
+        if jar_guest and a in jar_guest:
+            add(f"jar:{a}", "WARN", f"{a}: saved login on disk is a GUEST token ({jar_guest[a]}) -- "
+                f"the next boot starts this account signed out")
 
     # purchasing really on; boot cart audit; restored latches
     if init_flags.get("test_mode") is not None:
@@ -544,7 +582,8 @@ def run_once(root: Path, log, now, check_port: bool = True) -> dict:
             return False
     res = analyze_log(text, boot, now, tcins, accounts, armed_flags(root),
                       cfg_changed=_changed_after(root / "config" / "product_config.json"),
-                      acct_changed=_changed_after(root / "config" / "target_accounts.json"))
+                      acct_changed=_changed_after(root / "config" / "target_accounts.json"),
+                      jar_guest=jar_guest_map(root))
     rows = res["rows"]
     # wrapper
     try:

@@ -70,6 +70,15 @@ class Upstream:
     auth_b64: str
     server: Optional[asyncio.AbstractServer] = None
     stats: UpstreamStats = field(default_factory=lambda: UpstreamStats("", 0))
+    # 2026-10-14 FX-1014-EGRESS: a DIRECT listener (no upstream proxy) whose
+    # outbound sockets bind to bind_ip -- one account's traffic leaves through a
+    # second network adapter (a phone hotspot, EXP-1002-NET). fallback_home:
+    # when the bind fails (adapter gone), dial unbound (home route) instead of
+    # failing every request of that account; each fallback is counted.
+    direct: bool = False
+    bind_ip: str = ""
+    fallback_home: bool = True
+    fallbacks: int = 0
 
 
 def parse_bd_proxy_url(url: str):
@@ -109,6 +118,50 @@ class ForwarderPool:
         self.upstreams[port] = up
         return up
 
+    def add_direct(self, port: int, bind_ip: str, fallback_home: bool = True) -> Upstream:
+        """FX-1014-EGRESS: a direct CONNECT proxy on `port` whose outbound
+        connections bind to `bind_ip` (no upstream proxy, no auth). Does not
+        start the server."""
+        up = Upstream(
+            proxy_url="", port=port, pinned_ip=bind_ip, upstream_host="", upstream_port=0,
+            user="", password="", auth_b64="",
+            stats=UpstreamStats(pinned_ip=bind_ip, port=port),
+            direct=True, bind_ip=bind_ip, fallback_home=fallback_home,
+        )
+        self.upstreams[port] = up
+        return up
+
+    async def _open_direct(self, up: Upstream, host: str, port: int):
+        """Dial host:port bound to up.bind_ip; on a bind/connect failure fall
+        back to the home route when allowed. Raises when nothing connects."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.open_connection(host, port, local_addr=(up.bind_ip, 0)),
+                timeout=10.0,
+            )
+        except Exception as e:
+            if not up.fallback_home:
+                raise
+            up.fallbacks += 1
+            up.stats.last_error = f"egress_bind_failed({up.bind_ip}): {type(e).__name__}: {e}"
+            if up.fallbacks in (1, 10) or up.fallbacks % 100 == 0:
+                logger.warning(f"[EGRESS:{up.port}] bind to {up.bind_ip} failed ({type(e).__name__}: {e}) "
+                               f"-- HOME route used (fallback #{up.fallbacks})")
+            return await asyncio.wait_for(asyncio.open_connection(host, port), timeout=10.0)
+
+    @staticmethod
+    def _split_hostport(target: str, default_port: int):
+        """'host:443' / '[::1]:443' / 'host' -> (host, port)."""
+        t = target.strip()
+        if t.startswith("["):
+            host, _, rest = t[1:].partition("]")
+            port = int(rest[1:]) if rest.startswith(":") and rest[1:].isdigit() else default_port
+            return host, port
+        host, sep, port_s = t.rpartition(":")
+        if sep and port_s.isdigit():
+            return host, int(port_s)
+        return t, default_port
+
     async def start_all(self):
         """Launch a TCP server for each registered upstream."""
         for port, up in self.upstreams.items():
@@ -120,6 +173,9 @@ class ForwarderPool:
         async def handler(reader, writer):
             await self._handle_client(up, reader, writer)
         up.server = await asyncio.start_server(handler, self.listen_host, up.port)
+        if up.direct:
+            logger.info(f"[FORWARDER] {self.listen_host}:{up.port} → DIRECT bound to {up.bind_ip}")
+            return
         logger.info(f"[FORWARDER] {self.listen_host}:{up.port} → "
                     f"{up.upstream_host}:{up.upstream_port} (exit_ip={up.pinned_ip})")
 
@@ -193,6 +249,10 @@ class ForwarderPool:
             return
         target = parts[1].decode("ascii", errors="ignore")
 
+        if up.direct:
+            await self._connect_direct(up, client_reader, client_writer, target)
+            return
+
         # Open upstream
         try:
             up_reader, up_writer = await asyncio.wait_for(
@@ -257,6 +317,58 @@ class ForwarderPool:
             except Exception:
                 pass
 
+    async def _connect_direct(self, up: Upstream, client_reader, client_writer, target: str):
+        """FX-1014-EGRESS CONNECT: dial the target itself from bind_ip."""
+        try:
+            host, port = self._split_hostport(target, 443)
+            u_reader, u_writer = await self._open_direct(up, host, port)
+        except Exception as e:
+            client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+            await client_writer.drain()
+            up.stats.errors += 1
+            up.stats.last_error = f"direct_connect: {type(e).__name__}: {e}"
+            return
+        try:
+            client_writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            await client_writer.drain()
+            await self._pipe_both(up, client_reader, client_writer, u_reader, u_writer)
+        finally:
+            try:
+                u_writer.close()
+                await u_writer.wait_closed()
+            except Exception:
+                pass
+
+    async def _http_direct(self, up: Upstream, client_reader, client_writer, headers):
+        """FX-1014-EGRESS plain HTTP: absolute-URI request line -> origin form,
+        proxy-only headers dropped, sent from bind_ip."""
+        try:
+            method, uri, ver = headers[0].decode("latin-1").rstrip("\r\n").split(" ", 2)
+            if "://" not in uri:
+                raise ValueError("not an absolute URI")
+            hostport, slash, path = uri.split("://", 1)[1].partition("/")
+            host, port = self._split_hostport(hostport, 80)
+            line = f"{method} /{path if slash else ''} {ver}\r\n".encode("latin-1")
+            u_reader, u_writer = await self._open_direct(up, host, port)
+        except Exception as e:
+            client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+            await client_writer.drain()
+            up.stats.errors += 1
+            up.stats.last_error = f"direct_http: {type(e).__name__}: {e}"
+            return
+        try:
+            u_writer.write(line + b"".join(
+                h for h in headers[1:]
+                if not h.lower().startswith((b"proxy-connection:", b"proxy-authorization:"))))
+            await u_writer.drain()
+            await self._pipe_both(up, client_reader, client_writer, u_reader, u_writer)
+        finally:
+            try:
+                u_writer.close()
+                await u_writer.wait_closed()
+            except Exception:
+                pass
+
     async def _handle_http(self, up: Upstream, client_reader, client_writer,
                            first_line: bytes):
         """Plain HTTP request — forward unchanged, with auth header injected."""
@@ -271,6 +383,10 @@ class ForwarderPool:
                 if line == b"\r\n":
                     break
         except asyncio.TimeoutError:
+            return
+
+        if up.direct:
+            await self._http_direct(up, client_reader, client_writer, headers)
             return
 
         # Inject Proxy-Authorization just before the terminating blank line

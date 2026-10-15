@@ -554,7 +554,7 @@ def test_bat_arms_burst():
     # 2026-10-11: =0 armed (CLAIMS C-1011-06): a page-signed burst re-POST is allowed when the bank is
     # empty, after the 10-09 HUMAN wall left every bank empty for the night's only admitted shot.
     check("bat_burst_require_bank", H._bat_value("TARGET_ATC_DCO_BURST_REQUIRE_BANK") == "0")
-    check("bat_burst_bank_wait", H._bat_value("TARGET_ATC_DCO_BURST_BANK_WAIT_S") == "6")
+    check("bat_burst_bank_wait", H._bat_value("TARGET_ATC_DCO_BURST_BANK_WAIT_S") == "2")  # 6 -> 2 on 10-14 (A1 #9)
     check("bat_burst_min_s", H._bat_value("TARGET_ATC_DCO_BURST_MIN_S") == "1.0")
     check("bat_burst_max_s", H._bat_value("TARGET_ATC_DCO_BURST_MAX_S") == "1.5")
     i = lines.index("set TARGET_ATC_DCO_BURST=1")

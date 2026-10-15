@@ -21,7 +21,11 @@ from zendriver import cdp
 from .session_manager import SessionManager
 from . import shape_harvest as _shape_harvest   # 2026-09-03 real-click Shape harvest + banked replay
 
-CARD_CVV = '229'
+# 2026-10-14: no card code in source (public repo). Every named account reads its own
+# 'cvv' from config/target_accounts.json (_resolve_cvv refuses a shared default for a
+# named account); only a legacy executor with no account_id falls back to this, now
+# empty unless TARGET_LEGACY_CARD_CVV is set.
+CARD_CVV = (os.environ.get('TARGET_LEGACY_CARD_CVV') or '').strip()
 
 # The warmup heartbeat's dummy cart-write. Module-level so the 401-confirmation
 # re-probe fires a byte-identical request instead of a near-copy that could

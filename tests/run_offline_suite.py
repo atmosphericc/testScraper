@@ -122,6 +122,12 @@ OFFLINE = [
     "test_fs_cooldown_per_tcin_1014",
     # 2026-10-14: FX-1014-JOIN, free accounts join a running race (real race loop, stub workers).
     "test_race_join_1014",
+    # 2026-10-14: FX-1014-REBUY, non-buyers keep racing a bought TCIN (real dispatch, stub workers).
+    "test_rebuy_nonbuyers_1014",
+    # 2026-10-14: FX-1014-EGRESS, one account exits a second adapter (loopback sockets only).
+    "test_egress_bind_1014",
+    # 2026-10-14: FX-1014-GUESTSEEN, the sentinel + boot_check see a GUEST account (stubs only).
+    "test_guest_seen_1014",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

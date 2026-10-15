@@ -112,6 +112,11 @@ REM errors and which TCINs came back complete, absent or incomplete. LOG ONLY:
 REM the read still counts as failed and nothing is ingested. grep STOCK][206.
 REM Kill: set it to 0.
 set RESILIENT_206_LOG=1
+REM 2026-10-14 FX-1014-206ALIVE: a 206 is RedSky answering, so the monitor session is
+REM alive -- it no longer counts toward the crash threshold (a 206 storm plus one timeout
+REM could recycle a working session, 10-05 critic). Still read as failed, nothing
+REM ingested. Kill: set RESILIENT_206_NOT_ERROR=0
+set RESILIENT_206_NOT_ERROR=1
 REM 2026-10-05 post-run (wf_9651193b-efc), both LOG ONLY, nothing ingested or fired:
 REM  RESILIENT_STATUS_LOG=1  one [STOCK STATUS] line per change of a TCIN's shipping
 REM   status / relationship code / services present / loyalty status (first sighting
@@ -458,6 +463,26 @@ REM window before the new cart's first place-order. FAST_SELLING is Target's per
 REM throttle: with =1 the back-off applies to that item only. grep [THROTTLE].
 REM Kill: set TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=0
 set TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=1
+
+REM 2026-10-14 FX-1014-EGRESS (EXP-1002-NET, the second clean network): the named
+REM account's purchase Chrome exits through another network adapter instead of the home
+REM line. Home = "Ethernet 2"; the "Wi-Fi" adapter is free. To use it: connect this PC's
+REM Wi-Fi to a phone hotspot BEFORE the bot starts. Not connected (or only a 169.254
+REM address) = alt-1 stays on the home IP exactly as before, with an [EGRESS] WARN line.
+REM A failed bind mid-run FAILS that connection (no home fallback since 22:4x 10-14, see
+REM below; TARGET_ACCOUNT_EGRESS_FALLBACK_HOME=1 re-enables it at a money risk).
+REM Proof in logs\forwarder.log: "[EGRESS] W3/alt-1: public IP via ... = X; home = Y".
+REM Logins still go out the home IP. Kill: set TARGET_ACCOUNT_EGRESS_BIND=
+REM 2026-10-14 22:3x NOT ARMED -- pre-arming verifier (opus) REFUTED E2 + E3 open:
+REM  (1) fallback_home + Chrome's silent resend of a request on a dying reused
+REM      connection could re-send a committed place-order over home, get a non-2xx,
+REM      and pass the "provably no order" guard -> second order (NOT ESTABLISHED, so
+REM      not safe); (2) the Wi-Fi interface metric equals Ethernet's (25): joining a
+REM      hotspot could move the DEFAULT route of every account + the monitor; (3) the
+REM      account becomes "proxied" for TARGET_CHROME_MAX_AGE_S (35 min relaunches);
+REM      (4) a dead-but-associated hotspot costs a 10 s dial per connection.
+REM  Fix list in CURRENT_STATE (FX-1014-EGRESS) before this is ever set.
+set TARGET_ACCOUNT_EGRESS_BIND=
 
 REM  HOLD the won cart through that cooldown (2026-07-28). That drop won 4 carts
 REM  and cleared every one after a FAST_SELLING/post-FS rejection, then re-raced
@@ -854,7 +879,7 @@ set TARGET_ATC_DCO_BURST_MAX=2
 set TARGET_ATC_DCO_BURST_MIN_S=1.0
 set TARGET_ATC_DCO_BURST_MAX_S=1.5
 REM ---------------------------------------------------------------------
-REM D1 MULTI-SKU DISPATCH (2026-09-20, BUILT and TESTED, NOT ARMED)
+REM D1 MULTI-SKU DISPATCH (2026-09-20, BUILT and TESTED; ARMED -- see the set line below)
 REM Measured over all 104 run logs (tools/analysis/limiter_key.py): Target's
 REM edge limiter is a SHARED per-TCIN VOLUME bucket, not a per-identity
 REM cooldown. Pass rate vs prior shots on that TCIN in 120 s: 9.6 pct at 0
@@ -932,7 +957,11 @@ REM 1.0-1.5 s even when the Shape bank is empty (10-09 04:32:35: the night's onl
 REM shot got no burst because the HUMAN wall had emptied every bank). Burst evidence:
 REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1.
 set TARGET_ATC_DCO_BURST_REQUIRE_BANK=0
-set TARGET_ATC_DCO_BURST_BANK_WAIT_S=6
+REM 2026-10-14 (audit A1 #9): with REQUIRE_BANK=0 a burst still waited up to this long
+REM for a banked set before firing page-signed, landing the re-POST ~7.5 s after the
+REM DCO; the 15/48 evidence above is for re-POSTs within 5 s. 2 s keeps every burst
+REM inside ~3.5 s; a set already banked is still used at the 0 s check. Was 6.
+set TARGET_ATC_DCO_BURST_BANK_WAIT_S=2
 REM 2026-10-14 FX-1014-BURSTSTUCK: no burst bank wait while the executor reports
 REM its harvest stuck (PX park, back-off, buttonless streak): that harvest cannot
 REM bank a set, so with REQUIRE_BANK=0 the 6 s wait only moved the re-POST to
@@ -1324,6 +1353,12 @@ REM MEMBER jar (sut=R). On 10-14 the wrapper relogin pass (/account URL test) an
 REM sentinel saved guest cookies over target*.json without reading sut (C-1014-02/04).
 REM Prints [JAR_GUARD] lines; relogin_one marks guests "GUEST (sut=G)". Kill: =0.
 set TARGET_JAR_GUEST_GUARD=1
+REM FX-1014-GUESTSEEN (2026-10-14): the sentinel's ladder passes on the account page's
+REM "Account"/"Orders" text, which a guest page also shows -- on 10-14 07:03 two GUEST
+REM accounts logged logged_in=True all morning. With =1 the sentinel then reads the live
+REM accessToken: no member id = "[SENTINEL] Wn/acct: logged_in=False (GUEST)", which
+REM boot_check reports as a member:acct WARN. Observational only. Kill: =0.
+set TARGET_SENTINEL_MEMBER_CHECK=1
 REM [STOCK][OTHER] once a minute: the monitor's other bucket by HTTP status and
 REM error type and by exit. Kill: RESILIENT_OTHER_LOG=0.
 set RESILIENT_OTHER_LOG=1
@@ -1435,6 +1470,10 @@ set TARGET_CHROME_RELAUNCH_DESYNC_S=120
 REM Identity-rest enforcement (ID-1) stays off under (c).
 set TARGET_IDENTITY_REST=0
 REM ---------------------------------------------------------------------------
+REM 2026-10-14 NOTE: this U1 block is history. All three accounts have been on the HOME
+REM IP since 09-20 and BG-1 is armed above; only HS-1 (TARGET_HOME_SHARE_GUARD) stays off.
+REM (FX-1014-EGRESS may move alt-1 to a hotspot: its loopback proxy_url then makes it a
+REM "proxied" Chrome for TARGET_CHROME_MAX_AGE_S.)
 REM U1 = (a), alt-1 on the HOME IP: NOT ARMED. Its in-drop guard HS-1
 REM (TARGET_HOME_SHARE_GUARD: 2 primary carts-401s on one TCIN in 30 min park
 REM alt-1 on every TCIN for 1 h) and volume cap BG-1 (TARGET_BG_SLOW_ACCOUNTS,

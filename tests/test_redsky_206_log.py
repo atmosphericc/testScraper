@@ -221,6 +221,28 @@ def test_gate_and_wrapper():
           [l for l in bat if "RESILIENT_206_LOG" in l])
 
 
+def test_206_alive_flag():
+    """FX-1014-206ALIVE: RESILIENT_206_NOT_ERROR=1 -- a 206 resets the crash counter
+    like a 200; the result (status 206, no raw, nothing ingested) is unchanged."""
+    old = os.environ.get("RESILIENT_206_NOT_ERROR")
+    os.environ["RESILIENT_206_NOT_ERROR"] = "1"
+    try:
+        on, _ = _run_fire(False)
+    finally:
+        if old is None:
+            os.environ.pop("RESILIENT_206_NOT_ERROR", None)
+        else:
+            os.environ["RESILIENT_206_NOT_ERROR"] = old
+    off, _ = _run_fire(False)
+    check("alive_206_not_counted", on["ce"] == 0 and on["state"] == off["state"], on)
+    check("alive_206_result_same", on["status"] == 206 and on["raw"] is None
+          and on["error"] == off["error"], (on, off))
+    check("alive_off_still_counts_HEAD", off["ce"] == 1, off)
+    bat = (ROOT / "run_bot_with_nightly_restart.bat").read_bytes().decode("ascii", "replace").split("\r\n")
+    check("alive_bat_armed_once", bat.count("set RESILIENT_206_NOT_ERROR=1") == 1,
+          [l for l in bat if "RESILIENT_206_NOT_ERROR" in l])
+
+
 if __name__ == "__main__":
     test_full_with_errors()
     test_partial_shapes()
@@ -228,5 +250,6 @@ if __name__ == "__main__":
     test_rate_limit_and_count()
     test_fire_raw_on_off_vs_on_identical()
     test_gate_and_wrapper()
+    test_206_alive_flag()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

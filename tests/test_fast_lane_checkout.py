@@ -56,6 +56,9 @@ for _k in _HOT_SKU_JS_FLAGS:
 
 import src.session.purchase_executor as pe_mod  # noqa: E402
 from src.session.purchase_executor import PurchaseExecutor  # noqa: E402
+# 2026-10-14: the source no longer carries a card code; the legacy stub below
+# falls through to this dummy (CARD_CVV is read at call time).
+pe_mod.CARD_CVV = "123"
 
 TCIN = "94300072"
 PASSED: list[str] = []
@@ -85,7 +88,7 @@ class _CapturingTab:
 class _StubSessionManager:
     """Legacy single-account shape for _resolve_cvv (2026-08-11 named-account
     guard): no account_id and no per-account cvv, so resolution falls through
-    to the module CARD_CVV default ('229') — the premise the CVV tests below
+    to the module CARD_CVV default ('123') — the premise the CVV tests below
     were written against."""
     account_id = None
 
@@ -288,7 +291,7 @@ def test_js_atc_throw_does_not_mark_fired():
 #   {"card_details":{"cvv":"..."},"cart_id":"...","payment_type":"CARD",
 #    "wallet_mode":"NONE"}          (NO Shape X-headers on the real request)
 # and the next place-order stops 400ing. The bare executor has no
-# session_manager, so the chain embeds the module-default CVV ('229').
+# session_manager, so the chain embeds the module-default CVV ('123').
 
 CVVPUT = "payment_instructions/"
 
@@ -323,7 +326,7 @@ def test_js_cvv_400_put_then_reshoot_wins():
     put_call = [c for c in r["calls"] if CVVPUT in c["url"]][0]
     body = json.loads(put_call["body"])
     check("cvv_put_body_matches_capture",
-          body == {"card_details": {"cvv": "229"}, "cart_id": "CART-77",
+          body == {"card_details": {"cvv": "123"}, "cart_id": "CART-77",
                    "payment_type": "CARD", "wallet_mode": "NONE"}, str(body))
     check("cvv_put_is_PUT_without_shape_headers",
           put_call["method"] == "PUT"
@@ -504,8 +507,8 @@ def test_fast_selling_cooldown_can_be_disabled():
 
 def test_fast_lane_cvv_source_and_validation():
     ex = _bare_executor()
-    # bare instance has no session_manager → module default CARD_CVV ('229')
-    check("cvv_falls_back_to_module_default", ex._fast_lane_cvv() == "229",
+    # bare instance has no session_manager → module default CARD_CVV ('123')
+    check("cvv_falls_back_to_module_default", ex._fast_lane_cvv() == "123",
           repr(ex._fast_lane_cvv()))
 
     class _SM:

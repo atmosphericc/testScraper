@@ -139,6 +139,233 @@ def _keep_live_failed_on() -> bool:
     return os.environ.get('TARGET_STOCK_RESET_KEEP_LIVE_FAILED', '0').strip() == '1'
 
 
+def _rebuy_on() -> bool:
+    """FX-1014-REBUY TARGET_REBUY_NONBUYERS=1 (needs TARGET_MULTI_SKU_MISS_REARM=1,
+    whose all-free-sit-out check keeps an all-bought TCIN from opening empty
+    races): a TCIN one of our accounts bought stays on offer to the OTHER
+    accounts while it reads in stock (operator 10-01: "more units is fine";
+    C-1014-14). The buyer itself sits it out ('bought_this_window') for the rest
+    of that stock window (the _fx1006_recently_purchased rule; a real
+    out-then-in flip opens a new window for everyone, as HEAD) -- the
+    same-account repeat is what drew cancels (qty-2 repeats). Buyers are kept
+    per (worker label, TCIN) and persisted to TARGET_REBUY_FILE
+    (state/rebuy_buyers.json); a record restored after a crash relaunch also
+    holds for TARGET_REBUY_BUYER_HOLD_S (1800), since the window it belonged to
+    is unknowable then. A purchase with no worker label (single-worker path)
+    keeps HEAD's whole-fleet block of the TCIN for its window.
+    Kill: =0 (exact prior code)."""
+    return (os.environ.get('TARGET_REBUY_NONBUYERS', '0').strip() == '1'
+            and _miss_rearm_on())
+
+
+_REBUY_FILE_DEFAULT = os.path.join('state', 'rebuy_buyers.json')
+_REBUY_FILE_TTL_S = 86400.0
+_REBUY_ANY = '*'
+_REBUY_SAVE_LOCK = threading.RLock()
+_REBUY_INIT_LOCK = threading.Lock()
+# The purchase thread's own identity (_ac_ident(worker), the in-thread skip's key),
+# so a single-worker purchase -- no race label -- still names its buyer.
+_REBUY_TLS = threading.local()
+# Records older than this process came from before a crash relaunch: the stock
+# window seen now cannot say whether they belong to it, so they also hold.
+_REBUY_PROC_START = time.time()
+
+
+def _egress_bind_map(flog=None) -> Dict[str, str]:
+    """FX-1014-EGRESS TARGET_ACCOUNT_EGRESS_BIND="alt-1=Wi-Fi 2;business=192.168.43.7":
+    {account_id (lower): local IPv4}. Each value is an IPv4 or a network adapter
+    name (resolved to its IPv4 now, via psutil). A name with no IPv4, or an IP not
+    on any adapter, is dropped with a loud line -- that account stays on HOME.
+    Empty/unset = {} (exact prior behaviour). Never raises."""
+    raw = (os.environ.get('TARGET_ACCOUNT_EGRESS_BIND', '') or '').strip()
+    out: Dict[str, str] = {}
+    if not raw:
+        return out
+
+    def _say(msg):
+        print(msg)
+        if flog:
+            try:
+                flog(msg)
+            except Exception:
+                pass
+
+    import socket as _sock
+    adapters = {}
+    try:
+        import psutil as _ps
+        for name, addrs in (_ps.net_if_addrs() or {}).items():
+            v4 = [a.address for a in addrs if getattr(a, 'family', None) == _sock.AF_INET]
+            if v4:
+                adapters[str(name)] = v4
+    except Exception as e:
+        _say(f"[EGRESS] [WARN] adapter list unavailable ({type(e).__name__}: {e})")
+    local_ips = {ip for ips in adapters.values() for ip in ips}
+    for part in raw.replace(',', ';').split(';'):
+        acct, sep, val = part.partition('=')
+        acct, val = acct.strip().lower(), val.strip()
+        if not sep or not acct or not val:
+            continue
+        ip = ''
+        try:
+            _sock.inet_aton(val)
+            ip = val if val.count('.') == 3 else ''
+        except OSError:
+            ip = ''
+        if not ip:
+            hits = [ip_ for name, ips in adapters.items() if name.lower() == val.lower()
+                    for ip_ in ips if not ip_.startswith('169.254.')]
+            ip = hits[0] if hits else ''
+            if not ip:
+                _say(f"[EGRESS] [WARN] {acct}: adapter '{val}' has no IPv4 now "
+                     f"(adapters: {sorted(adapters)}) -- {acct} stays on HOME")
+                continue
+        elif adapters and ip not in local_ips:
+            _say(f"[EGRESS] [WARN] {acct}: {ip} is on no local adapter "
+                 f"({sorted(local_ips)}) -- {acct} stays on HOME")
+            continue
+        if ip.startswith('127.') or ip.startswith('169.254.'):
+            _say(f"[EGRESS] [WARN] {acct}: {ip} is loopback/link-local (adapter not really "
+                 f"online) -- {acct} stays on HOME")
+            continue
+        out[acct] = ip
+    return out
+
+
+def _egress_public_ip_probe(pairs, flog=None, host='api.ipify.org', timeout=6.0):
+    """Log the public IP seen through each egress bind and through the home
+    route, and shout when they match (the split is not real). Never raises."""
+    import socket as _sock
+
+    def _get(bind_ip=None):
+        try:
+            s = _sock.create_connection((host, 80), timeout=timeout,
+                                        source_address=(bind_ip, 0) if bind_ip else None)
+            try:
+                s.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode())
+                buf = b''
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+            finally:
+                s.close()
+            return buf.split(b"\r\n\r\n", 1)[-1].decode('ascii', 'replace').strip()[:45] or '?'
+        except Exception as e:
+            return f"ERR {type(e).__name__}"
+    try:
+        home = _get(None)
+        for label, ip in pairs:
+            via = _get(ip)
+            same = (via == home) and not via.startswith('ERR')
+            msg = (f"[EGRESS] {label}: public IP via {ip} = {via}; home = {home}"
+                   + (" -- SAME as home: the second network is NOT separate" if same else ""))
+            print(msg)
+            if flog:
+                flog(msg)
+    except Exception:
+        pass
+
+
+async def _sentinel_member_verdict(sm, ok):
+    """FX-1014-GUESTSEEN TARGET_SENTINEL_MEMBER_CHECK=1: after the sentinel's
+    ladder says logged in, read the live accessToken. The ladder's account-page
+    rung passes on the text "Account"/"Orders", which a GUEST page also shows --
+    so on 10-14 07:03 two guest accounts logged logged_in=True all morning
+    (C-1014-04/05). A PRESENT accessToken with no member id (eid) ->
+    'guest:<detail>'. No token is NOT reported: get_access_token_status
+    returns present=False on any CDP read error too (verifier G1b), so it is
+    indistinguishable from a read failure. Flag off, a failed ladder, absent
+    token or a read error -> `ok` unchanged. Observational only:
+    _account_health feeds the log/dashboard."""
+    if not ok or os.environ.get('TARGET_SENTINEL_MEMBER_CHECK', '0').strip() != '1':
+        return ok
+    try:
+        st = await asyncio.wait_for(sm.get_access_token_status(), timeout=15.0)
+        if not isinstance(st, dict):
+            return ok
+        if st.get('present') and not st.get('member'):
+            return f"guest:accessToken has no member id (ttl={float(st.get('ttl_s', -1)):.0f}s)"
+        return ok
+    except Exception:
+        return ok
+
+
+def _rebuy_file() -> str:
+    return (os.environ.get('TARGET_REBUY_FILE', '') or '').strip() or _REBUY_FILE_DEFAULT
+
+
+def _rebuy_hold_s() -> float:
+    return _env_float_clamped('TARGET_REBUY_BUYER_HOLD_S', 1800.0, 60.0, 86400.0)
+
+
+def _rebuy_load(path, now: float) -> Dict[tuple, float]:
+    """{(label, tcin): ts} younger than a day from the buyers file; {} when
+    missing or unreadable. Never raises."""
+    out: Dict[tuple, float] = {}
+    try:
+        if not path or not os.path.exists(path):
+            return out
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        items = raw.get('buyers', {}) if isinstance(raw, dict) else None
+        if not isinstance(items, dict):
+            return out
+        for k, ts in items.items():
+            label, sep, tcin = str(k).rpartition('|')
+            if not sep or not label or not tcin:
+                continue
+            if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                continue
+            ts = float(ts)
+            if not (ts == ts) or ts > now + 60.0 or ts + _REBUY_FILE_TTL_S <= now:
+                continue
+            out[(label, tcin)] = ts
+    except Exception:
+        return {}
+    return out
+
+
+def _rebuy_save(path, buyers, now: float) -> bool:
+    """Atomically write the buyers younger than a day. Never raises."""
+    tmp = None
+    try:
+        if not path:
+            return False
+        with _REBUY_SAVE_LOCK:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            data = {'written_at': now,
+                    'buyers': {f"{l}|{t}": float(ts) for (l, t), ts in dict(buyers).items()
+                               if float(ts) + _REBUY_FILE_TTL_S > now}}
+            tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}.{os.urandom(3).hex()}"
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            for _try in range(4):
+                try:
+                    os.replace(tmp, path)
+                    tmp = None
+                    return True
+                except PermissionError:
+                    time.sleep(0.05 * (_try + 1))
+            return False
+    except Exception:
+        return False
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
+
 def _wave_yield_on() -> bool:
     """FX-1006-YIELD TARGET_WAVE_FIRST_YIELD_MISSED=1 (inert unless
     TARGET_MULTI_SKU_MISS_REARM=1): a racer in the wave-first cold re-entry wait
@@ -449,7 +676,8 @@ def _guards_banner() -> str:
 # Sit-out reasons: an identity that fired nothing (R1 review: never the race's
 # headline failure_reason while a real attempt exists).
 _SIT_OUT_REASONS = frozenset({'account_parked_hot', 'ambiguous_commit_latched',
-                              'identity_resting', 'home_share_guard'})
+                              'identity_resting', 'home_share_guard',
+                              'bought_this_window'})
 
 
 def _is_sit_out_reason(reason) -> bool:
@@ -1243,6 +1471,9 @@ class BulletproofPurchaseManager:
         # process (crash -> wrapper relaunch). Latch flag + persist flag only.
         self._ac_latch_path = None
         self._ac_restore_latches()
+        # FX-1014-REBUY: per-account buyers survive a crash relaunch (flag only).
+        self._rebuy_path = None
+        self._rebuy_restore()
         # 2026-09-16 plan P5 (c): print the active hot-TCIN park once at boot
         # (nothing when TARGET_PARK_ACCOUNT_TCINS is empty/unset).
         _pb = _park_banner()
@@ -1965,6 +2196,15 @@ class BulletproofPurchaseManager:
                                 print(f"[FX1006_KEEP] {tcin}: kept 'failed' -- absent from this event, "
                                       f"still in stock, failed this window; the level re-arm re-races it")
                             continue
+                        # FX-1014-REBUY: same for a live 'purchased' row with a named
+                        # buyer -- absent from another TCIN's event is not out of stock.
+                        if (_rebuy_on() and current_status == 'purchased'
+                                and tcin not in stock_status and self._fx1006_in_stock_now(tcin)
+                                and self._rebuy_has_named(tcin)):
+                            if self._fx1006_log_ok('rebuy_keep', self._fx1006_window_key(tcin), 60.0):
+                                print(f"[REBUY] {tcin}: kept 'purchased' -- absent from this event, "
+                                      f"still in stock; the non-buyers stay on it")
+                            continue
                         # Product is OUT OF STOCK - reset everything to ready for next cycle
                         old_order = state.get('order_number', 'N/A')
                         old_completed_at = state.get('completed_at', 'unknown')
@@ -2340,6 +2580,7 @@ class BulletproofPurchaseManager:
             #     the global stock-monitor suspend/resume. None for single buys.
             state_key = state_key or tcin
             _race_wlbl = pinned_worker.label() if pinned_worker is not None else None
+            _REBUY_TLS.label = ''   # FX-1014-REBUY: set once this thread's worker is known
             try:
                 _wlbl = _race_wlbl or 'auto'
                 print(f"[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for {tcin} ({_wlbl})")
@@ -2396,6 +2637,12 @@ class BulletproofPurchaseManager:
                         assigned_worker = primary
                 # Final fallback: legacy single-worker path (shouldn't happen post-Phase 6)
                 worker = assigned_worker or self.worker
+                # FX-1014-REBUY: this thread's buyer identity (no-op unless a purchase
+                # succeeds with the flag on; same key as the in-thread skip below).
+                try:
+                    _REBUY_TLS.label = self._ac_ident(worker)
+                except Exception:
+                    _REBUY_TLS.label = ''
                 target_session_manager = worker.session_manager if worker else self.session_manager
                 target_purchase_executor = worker.purchase_executor if worker else self.purchase_executor
                 # 2026-09-16 plan P1 step 0: read-only stock probe for the
@@ -3380,6 +3627,8 @@ class BulletproofPurchaseManager:
                 self._fx1006_note_purchase(tcin)
             except Exception:
                 pass
+            # FX-1014-REBUY: remember WHICH account bought (no-op flag off).
+            self._rebuy_note(tcin, worker_label)
         if race_agg is not None:
             return self._record_race_result(tcin, result, race_agg, worker_label)
         with self._state_lock:
@@ -3493,14 +3742,33 @@ class BulletproofPurchaseManager:
             return
         needing = [w for w in pool.workers
                    if w.cfg.proxy_url and self._proxy_needs_forwarder(w.cfg.proxy_url)]
+        # 2026-10-14 FX-1014-EGRESS (TARGET_ACCOUNT_EGRESS_BIND; empty = nothing):
+        # named HOME-IP accounts exit through another adapter instead.
+        egress = {}
+        try:
+            egress = _egress_bind_map(_flog)
+        except Exception as _eg_err:
+            _flog(f"[WARN] TARGET_ACCOUNT_EGRESS_BIND ignored ({type(_eg_err).__name__}: {_eg_err})")
+        egress_workers = []
+        for w in pool.workers:
+            _acct = str(getattr(w.cfg, 'account_id', '') or '').strip().lower()
+            if _acct in egress:
+                if w.cfg.proxy_url:
+                    print(f"[EGRESS] {w.label()}: has a proxy_url already -- egress bind ignored")
+                    _flog(f"  [WARN] egress: {w.label()} has a proxy_url -- bind ignored")
+                    continue
+                egress_workers.append((w, egress[_acct]))
         # Record the full intended egress map up front (home-IP workers included).
         _flog("=== purchase forwarder setup ===")
+        _eg_labels = {w.label(): ip for w, ip in egress_workers}
         for w in pool.workers:
             if w.cfg.proxy_url and self._proxy_needs_forwarder(w.cfg.proxy_url):
                 _flog(f"  intent: {w.label()} worker_id={w.cfg.worker_id} → BD:{_exit_ip(w.cfg.proxy_url)}")
+            elif w.label() in _eg_labels:
+                _flog(f"  intent: {w.label()} worker_id={w.cfg.worker_id} → EGRESS bound to {_eg_labels[w.label()]}")
             else:
                 _flog(f"  intent: {w.label()} worker_id={w.cfg.worker_id} → HOME IP (no BD proxy_url)")
-        if not needing:
+        if not needing and not egress_workers:
             # Plain host:port proxies (if any) are already Chrome-usable; nothing to do.
             _flog("no workers need a forwarder — all on HOME IP / plain proxy")
             return
@@ -3544,6 +3812,28 @@ class BulletproofPurchaseManager:
                 _flog(f"  [WARN] {w.label()} proxy unparseable ({e}) → HOME IP")
                 w.cfg.proxy_url = None
 
+        # FX-1014-EGRESS: a direct listener bound to the second adapter per named
+        # account (no upstream proxy). Home fallback on a failed bind is OFF by
+        # default: the 10-14 verifier (E3) found Chrome may silently resend a request
+        # whose reused connection died; a resend that reaches Target over home and
+        # gets a non-2xx would pass the "provably no order" guard after a committed
+        # place-order. Without the fallback the resend fails -> status 0 -> the
+        # no-response guard holds. =1 trades that for availability.
+        _eg_fallback = os.environ.get('TARGET_ACCOUNT_EGRESS_FALLBACK_HOME', '0').strip() == '1'
+        for w, _ip in egress_workers:
+            port = self.PURCHASE_FORWARDER_PORT_BASE + w.cfg.worker_id
+            try:
+                fwd.add_direct(port, _ip, fallback_home=_eg_fallback)
+                w.cfg.proxy_url = f"127.0.0.1:{port}"
+                needing.append(w)   # reverted with the BD workers on a start failure
+                print(f"[EGRESS] {w.label()} → 127.0.0.1:{port} (DIRECT, bound to {_ip}; "
+                      f"fallback_home={'on' if _eg_fallback else 'off'})")
+                _flog(f"  bind OK: {w.label()} → 127.0.0.1:{port} (EGRESS bound to {_ip})")
+            except Exception as e:
+                print(f"[EGRESS] [WARN] {w.label()} egress setup failed ({e}); HOME IP.")
+                _flog(f"  [WARN] {w.label()} egress setup failed ({e}) → HOME IP")
+                w.cfg.proxy_url = None
+
         if not fwd.upstreams:
             # Everything failed to parse — tear the loop back down, no forwarder.
             _flog("[ERROR] no upstreams parseable — no forwarder pool; BD workers reverted to HOME IP")
@@ -3566,6 +3856,12 @@ class BulletproofPurchaseManager:
         self._forwarder_thread = t
         print(f"[FORWARDER] purchase forwarder pool live: {len(fwd.upstreams)} exit(s)")
         _flog(f"pool LIVE: {len(fwd.upstreams)} BD exit(s) active — isolation ENGAGED")
+        if egress_workers:
+            # Prove the split in the log: the public IP each route shows (off the
+            # boot path; nothing waits on it).
+            threading.Thread(target=_egress_public_ip_probe,
+                             args=([(w.label(), ip) for w, ip in egress_workers], _flog),
+                             daemon=True, name="EgressProbe").start()
 
     def _shutdown_purchase_forwarders(self) -> None:
         """Stop the purchase forwarder pool + its loop/thread. Safe if never started."""
@@ -3675,15 +3971,32 @@ class BulletproofPurchaseManager:
                         # verdict rather than recording a phantom failure.
                         print(f"[SENTINEL] {_label}: skipped (purchase in progress)")
                         return
-                    ok = bool(_res)
+                    _guest = None
+                    if isinstance(_res, str) and _res.startswith(('guest:', 'no_token:')):
+                        _guest = _res
+                        ok = False
+                    else:
+                        ok = bool(_res)
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"
+                    _guest = None
                 with self._sentinel_lock:
                     self._account_health[_label] = {
                         'logged_in': ok,
                         'checked_at': time.time(),
                         'error': err,
+                        'guest': bool(_guest),
                     }
+                if _guest:
+                    # FX-1014-GUESTSEEN: the ladder passed on the account page, but
+                    # the live accessToken carries no member id -- every cart write
+                    # from this account 401s. boot_check greps "(GUEST)".
+                    _kind, _, _detail = _guest.partition(':')
+                    print(f"[SENTINEL] {_label}: logged_in=False "
+                          f"({'GUEST' if _kind == 'guest' else 'NO_TOKEN'}) {_detail} -- "
+                          f"this account cannot buy; a scripted --force login with the bot "
+                          f"stopped recovers it")
+                    return
                 tag = "OK" if ok else "FAILED"
                 print(f"[SENTINEL] {_label}: logged_in={ok} ({tag})"
                       + (f" err={err}" if err else ""))
@@ -3709,12 +4022,26 @@ class BulletproofPurchaseManager:
                         return 'skip'
                     _lock = getattr(_pe, '_page_lock', None) if _pe is not None else None
                     if _lock is None:
-                        return await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                        _ok = await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                        return await _sentinel_member_verdict(_sm, _ok)
                     async with asyncio.timeout(300):
                         async with _lock:
                             if getattr(_sm, 'purchase_in_progress', False):
                                 return 'skip'
-                            return await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                            _t_locked = time.time()
+                            _ok = await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)
+                            # FX-1014-GUESTSEEN (verifier G1a): a purchase that began
+                            # waiting on this lock during the ladder (execute_purchase
+                            # stamps _execute_started_at BEFORE taking the lock) must
+                            # not also wait for the token read -- release now.
+                            try:
+                                _waiting = (float(getattr(_pe, '_execute_started_at', 0.0) or 0.0) >= _t_locked
+                                            or bool(getattr(_sm, 'purchase_in_progress', False)))
+                            except Exception:
+                                _waiting = True
+                            if _waiting:
+                                return _ok
+                            return await _sentinel_member_verdict(_sm, _ok)
                 fut = w.run_async(_bounded_check())
                 fut.add_done_callback(_record)
             except Exception as e:
@@ -3926,6 +4253,11 @@ class BulletproofPurchaseManager:
             msg = (f"[AMBIGUOUS_COMMIT] {ident} {tcin} latched {_ac_latch_ttl_s():.0f}s — "
                    f"check order history (why={why or 'unknown'})")
             print(msg)
+            # FX-1014-REBUY: a possibly-committed order counts as a purchase for
+            # the whole stock window, not just the latch TTL (the re-arm keeps a
+            # bought TCIN on offer, so a 1800 s latch alone could expire mid-window).
+            if _rebuy_on():
+                self._rebuy_note(tcin, ident, why='possibly ordered (AC-1 latch)')
             try:
                 _p = getattr(self, '_ac_error_log_path', 'logs/error_log.txt')
                 _d = os.path.dirname(_p)
@@ -3976,6 +4308,14 @@ class BulletproofPurchaseManager:
                 return 'ambiguous_commit_latched'
         except Exception:
             pass
+        # FX-1014-REBUY: this account already bought this TCIN this window.
+        try:
+            if _rebuy_on() and self._rebuy_buyer_binds(ident, acct, tcin):
+                if log:
+                    print(f"[REBUY] {ident} sits out {tcin}: bought it this window")
+                return 'bought_this_window'
+        except Exception:
+            pass
         # 2026-09-16 plan P5 (c): account parked on this hot TCIN
         # (TARGET_PARK_ACCOUNT_TCINS; empty = nobody parked).
         if _park_hit(acct, tcin):
@@ -4017,7 +4357,7 @@ class BulletproofPurchaseManager:
         normally; the in-thread skip still applies)."""
         try:
             if not (_ac_latch_on() or _park_map() or _ident_rest.home_share_guard_on()
-                    or _ident_rest.identity_rest_on()):
+                    or _ident_rest.identity_rest_on() or _rebuy_on()):
                 return False
             pool = getattr(self, 'worker_pool', None)
             cands = []
@@ -4129,6 +4469,165 @@ class BulletproofPurchaseManager:
             self._fx1006_dict('_fx1006_purchase_ts')[str(tcin)] = time.time()
         print(f"[FX1006] {tcin}: bought -- no FX-1006 path re-offers it in this stock window")
 
+    # ── FX-1014-REBUY: per-account buyers (see _rebuy_on) ─────────────────────
+    def _rebuy_state(self):
+        """(buyers dict, lock), created on first use. Only a manager built by
+        __init__ (which sets _rebuy_path) loads/persists the file. Never raises."""
+        d = getattr(self, '_rebuy_buyers', None)
+        lk = getattr(self, '_rebuy_lock', None)
+        if d is None or lk is None:
+            with _REBUY_INIT_LOCK:
+                if getattr(self, '_rebuy_buyers', None) is None:
+                    self._rebuy_buyers = {}
+                if getattr(self, '_rebuy_lock', None) is None:
+                    self._rebuy_lock = threading.Lock()
+                d, lk = self._rebuy_buyers, self._rebuy_lock
+        return d, lk
+
+    def _rebuy_restore(self) -> int:
+        """Load buyers written by a previous process (crash -> wrapper relaunch).
+        Flag off: nothing. Never raises."""
+        try:
+            if not _rebuy_on():
+                return 0
+            self._rebuy_path = _rebuy_file()
+            got = _rebuy_load(self._rebuy_path, time.time())
+            if not got:
+                return 0
+            d, lk = self._rebuy_state()
+            with lk:
+                for k, ts in got.items():
+                    if float(ts) > float(d.get(k, 0.0)):
+                        d[k] = ts
+            print(f"[REBUY] restored {len(got)} buyer record(s) from the previous process: "
+                  f"{sorted(f'{l} {t}' for (l, t) in got)} -- each sits its TCIN out")
+            return len(got)
+        except Exception:
+            return 0
+
+    def _rebuy_note(self, tcin, worker_label, why: str = 'bought') -> None:
+        """Record that `worker_label` bought `tcin` -- or, with no race label,
+        this purchase thread's own identity (_REBUY_TLS, the in-thread skip's
+        key). Neither known -> an unlabelled record, which makes EVERY account
+        sit the TCIN out for the window (fail closed). Flag off: no-op. Never
+        raises."""
+        try:
+            if not _rebuy_on():
+                return
+            now = time.time()
+            label = (str(worker_label or '').strip()
+                     or str(getattr(_REBUY_TLS, 'label', '') or '').strip()
+                     or _REBUY_ANY)
+            d, lk = self._rebuy_state()
+            with lk:
+                d[(label, str(tcin))] = now
+                snap = dict(d)
+            path = getattr(self, '_rebuy_path', None)
+            if path:
+                _rebuy_save(path, snap, now)
+            who = 'an unknown account -- every account sits it out' if label == _REBUY_ANY else label
+            print(f"[REBUY] {tcin}: {why} by {who} -- that account sits it out this stock "
+                  f"window; the others stay on it while it reads in stock")
+        except Exception:
+            pass
+
+    def _rebuy_ts_live(self, tcin, ts, now, snap=None) -> bool:
+        """A buyer record still binds UNLESS the TCIN read out of stock after
+        the purchase AND a new in-stock window opened after that out-of-stock
+        read (a real out-then-in flip). A read-gap renewal of window_start, a
+        flicker shorter than the window-renewal gap, or a restart with no
+        out-of-stock read since all keep it bound. With no stock read, or for
+        a record from a previous process, it also binds inside
+        TARGET_REBUY_BUYER_HOLD_S. Never raises (True = binds)."""
+        try:
+            ts = float(ts)
+            in_hold = (now - ts) < _rebuy_hold_s()
+            if in_hold and ts < _REBUY_PROC_START:
+                return True
+            if snap is None:
+                snap = self.stock_snapshot(tcin, now=now)
+            snap = snap or {}
+            if snap.get('age') is None:
+                return in_hold
+            ws = float(snap.get('window_start') or 0.0)
+            lf = float(snap.get('last_false') or 0.0)
+            return lf <= ts or ws <= lf
+        except Exception:
+            return True
+
+    def _rebuy_buyer_binds(self, ident, acct, tcin, now=None) -> bool:
+        """True when this account (worker label `ident`, or the same account id
+        under another label) -- or ANY account, for an unlabelled record --
+        bought `tcin` and the record still binds. ident == _REBUY_ANY asks about
+        the unlabelled records only. Fails CLOSED: an error while a record for
+        `tcin` exists -> True. Never raises."""
+        recs = []
+        try:
+            now = time.time() if now is None else float(now)
+            t = str(tcin)
+            ident = str(ident or '')
+            acct = str(acct or '')
+            d, lk = self._rebuy_state()
+            with lk:
+                recs = [(l, ts) for (l, tt), ts in d.items() if tt == t]
+            snap = None
+            for label, ts in recs:
+                if ident == _REBUY_ANY:
+                    mine = label == _REBUY_ANY
+                else:
+                    mine = label == _REBUY_ANY or (
+                        (ident and label == ident)
+                        or (acct and label.rpartition('/')[2] == acct))
+                if not mine:
+                    continue
+                if snap is None:
+                    snap = self.stock_snapshot(t, now=now) or {}
+                if self._rebuy_ts_live(t, ts, now, snap):
+                    return True
+            return False
+        except Exception:
+            return bool(recs)
+
+    def _rebuy_has_named(self, tcin) -> bool:
+        """A NAMED buyer record for `tcin` exists (any age the file keeps)."""
+        try:
+            t = str(tcin)
+            d, lk = self._rebuy_state()
+            with lk:
+                return any(tt == t and l != _REBUY_ANY for (l, tt) in d)
+        except Exception:
+            return False
+
+    def _rebuy_tcin_open(self, tcin, now=None) -> bool:
+        """REBUY on, at least one NAMED buyer of `tcin` is on record, no
+        unlabelled purchase binds, and at least one READY account has not
+        bought it this window: the TCIN stays on offer to the non-buyers.
+        No record at all (bought with the flag off, or a day ago) -> False, so a
+        'purchased' row nobody can attribute keeps HEAD's whole-fleet block.
+        Every ready account a buyer -> False (no re-offer loop). Never raises."""
+        try:
+            if not _rebuy_on():
+                return False
+            if not self._rebuy_has_named(tcin):
+                return False
+            if self._rebuy_buyer_binds(_REBUY_ANY, '', tcin, now):
+                return False
+            pool = getattr(self, 'worker_pool', None)
+            ready = list(pool.ready_workers() or []) if pool is not None else []
+            if not ready:
+                return False
+            for w in ready:
+                acct = str(getattr(getattr(w, 'cfg', None), 'account_id', '') or '')
+                if not self._rebuy_buyer_binds(self._ac_ident(w), acct, tcin, now):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def rebuy_active(self) -> bool:
+        """For app.py's level re-arm: include in-stock 'purchased' rows."""
+        return _rebuy_on()
+
     def _fx1006_recently_purchased(self, tcin, now=None, snap=None) -> bool:
         """An account of ours bought `tcin` IN ITS CURRENT STOCK WINDOW -- it has
         not both read out of stock since the purchase and opened a new window
@@ -4143,6 +4642,10 @@ class BulletproofPurchaseManager:
             with _FX1006_LOCK:
                 ts = self._fx1006_dict('_fx1006_purchase_ts').get(str(tcin))
             if not ts:
+                return False
+            # FX-1014-REBUY: every purchase in force names its buyer -> the TCIN
+            # stays on offer; the buyer sits it out in-thread (bought_this_window).
+            if self._rebuy_tcin_open(tcin, now):
                 return False
             if snap is None:
                 snap = self.stock_snapshot(tcin, now=now)
@@ -5025,6 +5528,14 @@ class BulletproofPurchaseManager:
                                 print(f"[FX1006_KEEP] {tcin}: 30 s stuck-state reset skipped -- a live "
                                       f"'failed' row kept on purpose")
                             continue
+                        # FX-1014-REBUY: a live 'purchased' row with a named buyer stays
+                        # 'purchased' so the level re-arm keeps offering it to the others.
+                        if (_rebuy_on() and status == 'purchased'
+                                and self._fx1006_in_stock_now(tcin) and self._rebuy_has_named(tcin)):
+                            if self._fx1006_log_ok('rebuy_keep30', self._fx1006_window_key(tcin), 60.0):
+                                print(f"[REBUY] {tcin}: 30 s stuck-state reset skipped -- a live "
+                                      f"'purchased' row kept for the non-buyers")
+                            continue
                         stuck_completed_states.append({
                             'tcin': tcin,
                             'status': status,
@@ -5456,8 +5967,11 @@ class BulletproofPurchaseManager:
                         # Target cancels). Repeat buys keep requiring a real
                         # OOS→IS flip, exactly _build_level_rearm_map's stated
                         # semantics. failed/interrupted still re-race.
+                        # FX-1014-REBUY: a bought TCIN whose buyers are all named stays
+                        # on offer -- the buyer sits it out in-thread, never re-buys.
                         if (os.environ.get('TARGET_REARM_AFTER_EMERGENCY_RESET', '1') != '0'
-                                and current_status != 'purchased'):
+                                and (current_status != 'purchased'
+                                     or self._rebuy_tcin_open(tcin))):
                             _new_state['rearm_hint_ts'] = time.time()
                         if _miss_rearm_on():
                             # FX-1006-MISS: one row, not the loop's stale snapshot.
