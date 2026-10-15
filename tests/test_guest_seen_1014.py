@@ -230,6 +230,32 @@ def test_jar_guest_map_reads_disk():
     check("jgm_error_empty", bc.jar_guest_map(d / "nope") == {} or isinstance(bc.jar_guest_map(d / "nope"), dict))
 
 
+def test_boot_check_waits_for_a_new_launch():
+    """After `bot_ctl start` the newest run log is still the PREVIOUS run until the
+    wrapper's login pass ends; judging it gave a false RED (10-14 23:54)."""
+    from datetime import datetime as _dt
+    bc = _bc()
+    d = Path(tempfile.mkdtemp(prefix="bcnew_"))
+    (d / "logs" / "runs").mkdir(parents=True)
+    old_boot = time.time() - 1800
+    name = "run_" + _dt.fromtimestamp(old_boot).strftime("%Y%m%d_%H%M%S") + ".log"
+    (d / "logs" / "runs" / name).write_text("[x] old run\n", encoding="utf-8")
+
+    def _wrap(rest, ago):
+        ts = _dt.fromtimestamp(time.time() - ago)
+        return f"[{ts.strftime('%a %m/%d/%Y %H:%M:%S')}.12]{rest}\n"
+    wl = d / "logs" / "bot_restart_wrapper.log"
+    wl.write_text(_wrap(" launch #1 app.py", 1801) + _wrap(" account login: relogin_one.py all", 20), encoding="utf-8")
+    r = bc.run_once(d, None, None, check_port=False)
+    check("bc_new_launch_pending", r["verdict"] == "PENDING" and r["rows"][0]["id"] == "new_launch", r)
+    wl.write_text(_wrap(" launch #1 app.py", 1801) + _wrap(" app.py exited code=0", 20), encoding="utf-8")
+    r = bc.run_once(d, None, None, check_port=False)
+    check("bc_stopped_bot_not_masked", not any(x["id"] == "new_launch" for x in r["rows"]), r["rows"][:2])
+    wl.write_text(_wrap(" launch #1 app.py", 1801) + _wrap(" account login: relogin_one.py all", 20), encoding="utf-8")
+    r = bc.run_once(d, d / "logs" / "runs" / name, None, check_port=False)
+    check("bc_explicit_log_judged", not any(x["id"] == "new_launch" for x in r["rows"]), r["rows"][:2])
+
+
 def test_bat_arms_member_check():
     bat = (ROOT / "run_bot_with_nightly_restart.bat").read_text(encoding="utf-8", errors="replace")
     check("bat_member_check_armed", "\nset TARGET_SENTINEL_MEMBER_CHECK=1" in bat.replace("\r\n", "\n"))

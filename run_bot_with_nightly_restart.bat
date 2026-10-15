@@ -1375,6 +1375,14 @@ REM accounts logged logged_in=True all morning. With =1 the sentinel then reads 
 REM accessToken: no member id = "[SENTINEL] Wn/acct: logged_in=False (GUEST)", which
 REM boot_check reports as a member:acct WARN. Observational only. Kill: =0.
 set TARGET_SENTINEL_MEMBER_CHECK=1
+REM FX-1014-SENTSTAGGER (2026-10-14): each sentinel check holds that account's page lock
+REM ~2 s; all three accounts were checked within 3 ms, so a flip landing in that instant
+REM waited on EVERY account. Account i is now checked i x 30 s after the first, so a
+REM normal check holds one account at a time (opus verifier K3). Kill: set it to 0.
+set TARGET_SENTINEL_STAGGER_S=30
+REM FX-1014-KICK (TARGET_REARM_KICK) is built but NOT ARMED: two opus rounds refuted it
+REM (yields come in bursts -- all 3 accounts within ~0.1 s on 10-09 -- and a kick hands
+REM the fresh flip to the first exiter alone; kicked publishes also starve full ticks).
 REM [STOCK][OTHER] once a minute: the monitor's other bucket by HTTP status and
 REM error type and by exit. Kill: RESILIENT_OTHER_LOG=0.
 set RESILIENT_OTHER_LOG=1

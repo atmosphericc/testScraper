@@ -562,14 +562,49 @@ def verdict(rows) -> str:
     return "GREEN"
 
 
+_PRELAUNCH = re.compile(r"sign-out|account login|drop-readiness|launch #\d+ app\.py")
+
+
+def wrapper_last_ts(root: Path):
+    """Epoch of the newest wrapper line when that line is a PRE-LAUNCH step (sign-out,
+    account login, readiness, 'launch #N app.py') -- i.e. a launch in progress; None
+    otherwise (no log, or the last line is an exit: a stopped bot stays RED)."""
+    try:
+        text = (root / "logs" / "bot_restart_wrapper.log").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    last, last_rest = None, ""
+    for m in re.finditer(r"^\[\w{3} (\d{2})/(\d{2})/(\d{4}) (\d{2}):(\d{2}):(\d{2})\.\d+\](.*)$", text, re.M):
+        try:
+            mo, d, y, hh, mm, ss = (int(x) for x in m.groups()[:6])
+            last, last_rest = datetime(y, mo, d, hh, mm, ss).timestamp(), m.group(7)
+        except ValueError:
+            continue
+    return last if (last is not None and _PRELAUNCH.search(last_rest or "")) else None
+
+
 def run_once(root: Path, log, now, check_port: bool = True) -> dict:
     now = time.time() if now is None else now
+    explicit = log is not None
     log = log or newest_run_log(root)
     if log is None or not Path(log).exists():
         return {"verdict": "RED", "log": None, "rows": [{"id": "run_log", "status": "FAIL",
                 "detail": "no logs/runs/run_*.log found -- has the bat been started?", "line": None, "t": None}]}
     log = Path(log)
     boot = boot_ts_from_name(log) or os.path.getmtime(log)
+    # 2026-10-14: right after `bot_ctl start` the wrapper runs its sign-out / login /
+    # readiness pass (~40-75 s) before app.py opens a run log, and the newest log is
+    # still the PREVIOUS run -- judging it said RED ("dashboard down") for a healthy
+    # boot. A wrapper line well after that log's boot = a new launch in progress.
+    if not explicit:
+        w_last = wrapper_last_ts(root)
+        if w_last is not None and w_last > boot + 90 and now - w_last < 600:
+            return {"verdict": "PENDING", "log": str(log), "age_s": 0,
+                    "rows": [{"id": "new_launch", "status": "PENDING",
+                              "detail": f"the wrapper started a new launch at "
+                                        f"{datetime.fromtimestamp(w_last).strftime('%H:%M:%S')} -- its run "
+                                        f"log is not open yet (login pass); newest log {log.name} is the "
+                                        f"previous run", "line": None, "t": None}]}
     try:
         text = log.read_text(encoding="utf-8", errors="replace")
     except OSError as e:

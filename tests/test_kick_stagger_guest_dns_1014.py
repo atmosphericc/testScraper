@@ -116,7 +116,10 @@ def test_sentinel_stagger():
         check("stagger_clamped", bpm_mod._sentinel_stagger_s() == 90.0)
     bat = (ROOT / "run_bot_with_nightly_restart.bat").read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
     check("bat_stagger_armed", "\nset TARGET_SENTINEL_STAGGER_S=30" in bat)
-    check("bat_kick_armed", "\nset TARGET_REARM_KICK=1" in bat)
+    # KICK v2 verifier (opus, 10-14 23:5x): DO NOT ARM -- yields come in bursts (all 3
+    # accounts within 44-131 ms on 10-09) and a kick hands the fresh flip to the first
+    # exiter alone; a kicked publish also stamps the debounce clock (full ticks dropped).
+    check("bat_kick_not_armed", "\nset TARGET_REARM_KICK=1" not in bat)
 
 
 class _LoopPM:
