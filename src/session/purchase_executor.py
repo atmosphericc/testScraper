@@ -8288,8 +8288,11 @@ class PurchaseExecutor:
             print(f"[PAYMENT] Stock error modal check error: {e}")
             return False
 
-    def _note_fast_selling_throttle(self) -> None:
+    def _note_fast_selling_throttle(self, tcin=None) -> None:
         """Start a back-off after Target's fast-selling limiter rejects a shot.
+
+        `tcin` (optional, 2026-10-14 verifier F4): the item the 429 was for; when
+        omitted, the TCIN of the purchase in flight (_exec_tcin).
 
         07-21 evidence (run_20260720_231634.log): FAST_SELLING never answered the
         first checkout POST of a wave, and every re-shoot fired into it was also
@@ -8304,8 +8307,9 @@ class PurchaseExecutor:
         if _cd <= 0:
             return
         self._fast_selling_until = time.time() + _cd
-        self._fs_note_tcin(getattr(self, '_exec_tcin', ''), self._fast_selling_until)
-        print(f"[THROTTLE] FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION — holding checkout "
+        _t = str(tcin or getattr(self, '_exec_tcin', '') or '')
+        self._fs_note_tcin(_t, self._fast_selling_until)
+        print(f"[THROTTLE] FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION tcin={_t or '-'} — holding checkout "
               f"POSTs for {_cd:.0f}s (re-shooting into this limiter went 0-for-~20 on 07-21)")
 
     def _fs_note_tcin(self, tcin, until: float) -> None:
@@ -8343,8 +8347,8 @@ class PurchaseExecutor:
         """True while the fast-selling back-off window is still open."""
         _left = self._fs_cooldown_left(tcin)
         if _left > 0:
-            print(f"[THROTTLE] FAST_SELLING cooldown active ({_left:.0f}s left) — "
-                  f"not spending a checkout POST")
+            print(f"[THROTTLE] FAST_SELLING cooldown active ({_left:.0f}s left) "
+                  f"tcin={tcin or getattr(self, '_exec_tcin', '') or '-'} — not spending a checkout POST")
             return True
         return False
 
