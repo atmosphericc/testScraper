@@ -65,6 +65,10 @@ STRIKE_ENV = {"TARGET_HELD_LINE_FLIP_STRIKE": "1", "TARGET_FASTLANE_QTY_GUARD": 
               "TARGET_HELD_CART_REENTRY": "1"}
 BOOT_ENV = {"TARGET_HELD_CART_REENTRY": "1", "TARGET_BOOT_CART_AUDIT": "1"}
 ERR_A2C = "ERR_A2C_TCIN_RATE_LIMITED"
+# Fix round 5: the purchase entry waits for an in-flight probe of this account (default bound 17 s); the tests
+# that write an own-pid in_flight entry with no probe behind it shorten the bound (the default is asserted).
+DEFAULT_WAIT_S = pe._LIMKEY_PROBE_WAIT_S
+pe._LIMKEY_PROBE_WAIT_S = 0.3
 
 
 def check(name, cond, detail=""):
@@ -1758,13 +1762,305 @@ def test_legacy_checkout_guard_runs_under_a_marker():
     fresh()
 
 
+# ───────────────────── fix round 5 (10-16 evaluator): items 1-2 ─────────────────────
+U = "1010892069"           # the purchase TCIN (S.TCIN); the probe's TCIN is A (a DIFFERENT TCIN, same account)
+
+
+def _race_rig(wait_enabled=True):
+    """A real PurchaseExecutor whose probe (TCIN A, answers 201 and LANDS the line) and whose purchase of U
+    share ONE simulated cart (CartTab.lines). The purchase's fast lane is a Python simulation of the real
+    one: ATC adds U, ONE pre_checkout cart read (the foreign-line check), a yield, then place-order buys the
+    WHOLE cart. The probe's evaluate starts the purchase of U (on_probe_async) and returns only after U has
+    done its pre_checkout read (or 0.5 s passed: U is waiting on the probe)."""
+    st = {"events": [], "place_order_cart": None, "pre_read": None, "cleared": 0, "task": None,
+          "hook_saw_pre_read": None}
+    ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
+    ex._cvv_required = False
+    ex.session_manager.account_id = "primary"
+    ptab = S.ImplTab()
+    st["evt"] = [None]
+
+    async def get_page():
+        return ptab
+    sm.get_page = get_page
+
+    async def alive(t):
+        return True, "ok"
+
+    async def setup(t, persistent=False):
+        return None
+
+    async def save():
+        return None
+    sm.save_session_state = save
+    ex._cdp_alive_probe = alive
+    ex._setup_cdp_fetch_interceptor = setup
+    ex._consume_fresh_capture = lambda: False
+    ex._shot_ttl_refresh_on = False
+    ex._notify_status = lambda tcin, status, data=None: None
+
+    async def sim_fl(t, tcin, qty, hdrs):
+        st["events"].append("SHOT")
+        tab.add_line(tcin)                                   # the ATC
+        seen = tab.tcins()                                   # the ONE pre_checkout cart read
+        st["pre_read"] = list(seen)
+        foreign = [x for x in seen if x != tcin]
+        if st["evt"][0] is not None:
+            st["evt"][0].set()
+        await asyncio.sleep(0.05)                            # pre_checkout -> place-order: the probe's POST can land here
+        if foreign:
+            return {"atc": {"status": 201, "body": "", "cart_items": [{"tcin": x, "quantity": 1} for x in seen]},
+                    "pre": {"status": 200, "n": len(seen), "tcins": list(seen), "qty": 1, "pi": []},
+                    "po": {"status": 0, "body": "", "fired": False}, "skip": "foreign_cart_item"}
+        st["place_order_cart"] = tab.tcins()                 # place-order buys the WHOLE cart
+        st["events"].append("PLACE_ORDER")
+        return {"atc": {"status": 201, "body": "", "cart_items": [{"tcin": tcin, "quantity": 1}]},
+                "pre": {"status": 200, "n": 1, "tcins": [tcin], "qty": 1, "pi": []},
+                "po": {"status": 200, "body": S.ORDER_BODY, "fired": True}, "skip": ""}
+    ex._api_fast_lane = sim_fl
+
+    async def clear_cart(t):
+        st["cleared"] += 1
+        return True
+    ex._clear_cart = clear_cart
+
+    async def hook(t):
+        st["evt"][0] = asyncio.Event()
+        sm.purchase_in_progress = True                       # the purchase of U owns the session now
+        st["task"] = asyncio.ensure_future(ex._execute_purchase_impl(U, 1))
+        try:
+            await asyncio.wait_for(st["evt"][0].wait(), 0.5)
+            st["hook_saw_pre_read"] = True
+        except asyncio.TimeoutError:
+            st["hook_saw_pre_read"] = False
+    tab.on_probe_async = hook
+    if not wait_enabled:
+        async def no_wait(tcin):
+            return None
+        ex._limkey_wait_probe = no_wait
+    return ex, tab, sm, st
+
+
+def _race_run(wait_enabled):
+    fresh()
+    real = pe._LIMKEY_PROBE_WAIT_S
+    pe._LIMKEY_PROBE_WAIT_S = 5.0
+    try:
+        with env(**{**ENV_ON, "TARGET_FAST_LANE": "1", "TARGET_API_PLACE_ORDER": "true", "TARGET_WONCART_DIRECT": "0",
+                    "TARGET_HELD_CART_REENTRY": "0"}):
+            ex, tab, sm, st = _race_rig(wait_enabled)
+
+            async def both():
+                await ex._limkey_probe_tick(0, now=time.time())
+                r = None
+                if st["task"] is not None:
+                    try:
+                        r = await asyncio.wait_for(st["task"], 10.0)
+                    except BaseException as e:               # noqa: BLE001
+                        r = {"_raised": type(e).__name__}
+                return r
+            r, out = arun(both())
+    finally:
+        pe._LIMKEY_PROBE_WAIT_S = real
+    return ex, tab, sm, st, r, out
+
+
+def test_probe_in_flight_vs_purchase_of_another_tcin():
+    # (1) the evaluator's race: the probe on T=A is mid-evaluate, a purchase of U (a DIFFERENT TCIN, the same
+    # account) starts during its await, the probe's line lands AFTER U's pre_checkout read.
+    # Control: with the wait removed the race is real (place-order fires on a cart that holds A) -> the harness bites.
+    ex, tab, sm, st, r, out = _race_run(wait_enabled=False)
+    check("race_control_without_the_wait_the_harness_buys_T_with_U",
+          st["place_order_cart"] is not None and A in st["place_order_cart"] and st["hook_saw_pre_read"] is True,
+          f"{st} {out[-300:]}")
+    # With the wait (the fix): U waits for the probe, the landed line is in the cart before U's first read,
+    # the existing foreign-line guard sees it, NO place-order fires on a cart containing A.
+    ex, tab, sm, st, r, out = _race_run(wait_enabled=True)
+    check("race_fixed_no_place_order_on_a_cart_containing_T", st["place_order_cart"] is None
+          and "PLACE_ORDER" not in st["events"], f"{st} {out[-400:]}")
+    check("race_fixed_the_purchase_waited_for_the_probe", st["hook_saw_pre_read"] is False
+          and "is in flight on this account — waiting for its answer before the shot for" in out
+          and "the probe answered after" in out, f"{st['hook_saw_pre_read']} {out[-600:]}")
+    check("race_fixed_the_pre_checkout_read_saw_the_probe_line", st["pre_read"] is not None and A in st["pre_read"]
+          and U in st["pre_read"], str(st["pre_read"]))
+    check("race_fixed_foreign_cart_guard_cleared_the_cart_and_re_raced", st["cleared"] == 1
+          and isinstance(r, dict) and r.get("reason") == "foreign_cart_cleared", f"{st['cleared']} {r}")
+    check("race_fixed_the_probe_marker_names_the_account_after_the_answer", pe.limkey_marker_has("primary", A)
+          or A not in tab.tcins(), str(marker_entries()))
+    fresh()
+
+    # the wait itself: bounded, own pid only, own account only, and a no-op without a marker file
+    ex, tab, sm = make()
+
+    fresh()
+    t0 = time.time()
+    r0, out0 = arun(ex._limkey_wait_probe(U))
+    check("wait_no_marker_file_returns_at_once_and_prints_nothing", r0 is None and out0 == "" and time.time() - t0 < 0.2, out0)
+    src = Path(pe.__file__).read_text(encoding="utf-8")
+    i = src.index("await self._limkey_wait_probe(tcin)")
+    check("wait_call_site_is_gated_on_limkey_marker_any_and_precedes_the_marked_check",
+          "if limkey_marker_any():" in src[i - 400:i]
+          and i < src.index("if self._limkey_marked(tcin):", i)
+          and i < src.index("_lk_res = await self._limkey_purge_entry(tab, tcin, start_time)")
+          and i < src.index("_woncart_dirty_release(tab, tcin, start_time, quantity)")
+          and i < src.index("_held_cart_entry(tab, tcin, quantity, start_time)")
+          and i < src.index("_api_fast_lane(tab, tcin, quantity, extra_headers_js)"))
+    # a readable marker with nothing in flight (plain / late entry of this process): no wait
+    for label, writer in (("plain_entry", lambda: pe.limkey_marker_write("primary", A, "x")),
+                          ("late_entry", lambda: pe.limkey_marker_write("primary", A, "x", late=True)),
+                          ("other_account_in_flight", lambda: pe.limkey_marker_write("alt-1", A, "in_flight", state="in_flight"))):
+        fresh()
+        writer()
+        t0 = time.time()
+        r0, out0 = arun(ex._limkey_wait_probe(U))
+        check(f"wait_{label}_no_wait", out0 == "" and time.time() - t0 < 0.2, out0)
+    # an in_flight entry of ANOTHER pid is an orphan (the late rule handles it): never waited on
+    fresh()
+    pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
+    ents = marker_entries()
+    ents[0]["pid"] = os.getpid() + 1
+    pe._lk_marker_store(ents)
+    t0 = time.time()
+    r0, out0 = arun(ex._limkey_wait_probe(U))
+    check("wait_orphan_in_flight_of_another_pid_is_not_waited_on", out0 == "" and time.time() - t0 < 0.2, out0)
+    # a stale own-pid in_flight entry (older than the probe's evaluate bound): no wait
+    fresh()
+    pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
+    ents = marker_entries()
+    ents[0]["ts"] = time.time() - pe._LIMKEY_PROBE_WAIT_S - 5
+    pe._lk_marker_store(ents)
+    t0 = time.time()
+    r0, out0 = arun(ex._limkey_wait_probe(U))
+    check("wait_stale_own_in_flight_entry_is_not_waited_on", out0 == "" and time.time() - t0 < 0.2, out0)
+    # an own live in_flight entry that never answers: the wait is bounded (patched to 0.3 s) and then continues
+    fresh()
+    pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
+    real = pe._LIMKEY_PROBE_WAIT_S
+    pe._LIMKEY_PROBE_WAIT_S = 0.3
+    try:
+        t0 = time.time()
+        r0, out0 = arun(ex._limkey_wait_probe(U))
+        dt = time.time() - t0
+    finally:
+        pe._LIMKEY_PROBE_WAIT_S = real
+    check("wait_is_bounded_and_then_continues", 0.25 <= dt < 1.5 and "did not answer within" in out0
+          and pe.limkey_marker_entry("primary", A)["state"] == "in_flight", f"{dt} {out0}")
+    check("wait_default_bound_covers_the_probe_evaluate_timeout", DEFAULT_WAIT_S >= 15.0, str(DEFAULT_WAIT_S))
+    # the entry clearing (the probe answered) ends the wait early
+    fresh()
+    pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
+
+    async def clearer():
+        await asyncio.sleep(0.2)
+        pe.limkey_marker_clear("primary", A, owner=True)
+
+    async def both():
+        c = asyncio.ensure_future(clearer())
+        t0 = time.time()
+        await ex._limkey_wait_probe(U)
+        await c
+        return time.time() - t0
+    pe._LIMKEY_PROBE_WAIT_S = 5.0
+    try:
+        dt, out0 = arun(both())
+    finally:
+        pe._LIMKEY_PROBE_WAIT_S = real
+    check("wait_ends_when_the_probe_answers", 0.15 <= dt < 1.5 and "the probe answered after" in out0, f"{dt} {out0}")
+    # never raises
+    fresh()
+    pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
+    real_entries = pe.limkey_marker_entries_for
+    pe.limkey_marker_entries_for = lambda a: (_ for _ in ()).throw(ValueError("boom"))
+    try:
+        r0, out0 = arun(ex._limkey_wait_probe(U))
+    finally:
+        pe.limkey_marker_entries_for = real_entries
+    check("wait_never_raises", r0 is None and "probe wait errored" in out0, out0)
+    fresh()
+
+
+UNREADABLE_CONTENTS = (("corrupt_json", "{corrupt"), ("blank", ""), ("empty_list", "[]"), ("wrong_shape", '["x"]'),
+                       ("entry_without_tcin", '[{"acct": "primary", "ts": 1}]'))
+
+
+def test_unreadable_marker_fails_closed_for_the_adopting_paths():
+    one = [{"id": "CI0001", "tcin": A, "qty": 1}]
+    for label, content in UNREADABLE_CONTENTS:
+        # the boot cart audit: a single line of A + an unreadable marker file -> NOT held, nothing adopted
+        fresh()
+        Path(pe._LIMKEY_MARKER_PATH).write_text(content, encoding="utf-8")
+        with env(**BOOT_ENV):
+            ex, tab, sm = make(lines=list(one))
+            r, out = _boot(ex, tab)
+        check(f"unreadable_{label}_boot_audit_adopts_nothing", r == "limkey_marker_unreadable" and ex._held_cart is None
+              and "is unreadable — adopting nothing" in out and "HELD" not in out, f"{r} {out}")
+        check(f"unreadable_{label}_boot_audit_leaves_the_cart_and_the_file_alone", tab.tcins() == [A]
+              and "delete" not in tab.kinds() and marker_file_exists()
+              and Path(pe._LIMKEY_MARKER_PATH).read_text(encoding="utf-8") == content)
+        # the silent-hold check: never a hold, no cart read
+        fresh()
+        Path(pe._LIMKEY_MARKER_PATH).write_text(content, encoding="utf-8")
+        ex, tab, sm = make(lines=list(one))
+        ex._cart_hold_check_on = True
+        ex._last_cart_hold_check_ts = 0.0
+        ex._cart_hold_check_interval_s = 0.0
+        r, out = arun(ex._check_cart_hold(tab, A, 429))
+        check(f"unreadable_{label}_check_cart_hold_is_false_and_reads_nothing", r is False and "hold" not in tab.kinds()
+              and "unreadable" in out, f"{r} {out} {tab.log}")
+        # the held-line strike: inactive for every TCIN
+        fresh()
+        Path(pe._LIMKEY_MARKER_PATH).write_text(content, encoding="utf-8")
+        with env(**STRIKE_ENV):
+            ex, tab, sm = make()
+            check(f"unreadable_{label}_strike_inactive", ex._held_line_strike_active(A) is False
+                  and ex._held_line_strike_active(B) is False)
+    # the purchase entry does NOT start refusing every shot on an unreadable file (availability): the
+    # per-TCIN purge needs a readable entry, the account-wide guards (legacy cart guard, won-cart suspect) already fail closed
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
+    cart = SimCart([])
+    ex, c = _impl_ex(cart)
+    _impl_run(ex)
+    check("unreadable_purchase_entry_still_shoots", cart.events[:1] == ["SHOT"], str(cart.events))
+    # differential: no file / a readable marker for another account -> every path is as before
+    fresh()
+    check("unreadable_helper_false_without_a_file", pe.limkey_marker_unreadable() is False)
+    pe.limkey_marker_write("alt-1", A, "x")
+    check("unreadable_helper_false_for_a_readable_file", pe.limkey_marker_unreadable() is False)
+    with env(**STRIKE_ENV):
+        ex, tab, sm = make()
+        check("unreadable_readable_file_of_another_account_leaves_the_strike_on", ex._held_line_strike_active(A) is True)
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=list(one))
+        r, out = _boot(ex, tab)
+    check("unreadable_readable_file_of_another_account_still_adopts", r == "held" and ex._held_cart["tcin"] == A, f"{r} {out}")
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
+    check("unreadable_helper_true_for_a_corrupt_file", pe.limkey_marker_unreadable() is True)
+    real_load = pe._lk_marker_load
+    pe._lk_marker_load = lambda: (_ for _ in ()).throw(ValueError("boom"))
+    try:
+        check("unreadable_helper_fails_closed_on_an_error", pe.limkey_marker_unreadable() is True)
+    finally:
+        pe._lk_marker_load = real_load
+    # fixing the file restores the old behaviour (a readable marker for the line's own TCIN: deleted, not adopted)
+    fresh()
+    pe.limkey_marker_write("primary", A, "status_201")
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=list(one))
+        r, out = _boot(ex, tab)
+    check("unreadable_fixed_file_gets_the_normal_delete_not_adopt", r == "limkey_deleted" and ex._held_cart is None, f"{r} {out}")
+    fresh()
+
+
 def test_source_hygiene():
     src = Path(pe.__file__).read_text(encoding="utf-8")
     for name in ("_limkey_busy_why", "_limkey_cleanup", "_limkey_purge_entry", "_limkey_boot_delete",
                  "limkey_marked_for", "limkey_marker_write", "limkey_marker_clear", "limkey_marker_has",
                  "limkey_proven_non_landing", "limkey_marker_entry", "limkey_marker_block", "_lk_clear_block",
                  "_limkey_latch_stop_at_start", "limkey_marker_acct", "limkey_marker_other_any", "limkey_sweep_stale",
-                 "limkey_marker_entries_for", "_limkey_sweep_stale_log", "_limkey_stale_tick"):
+                 "limkey_marker_entries_for", "_limkey_sweep_stale_log", "_limkey_stale_tick",
+                 "limkey_marker_unreadable", "_limkey_wait_probe"):
         m = re.search(rf"def {name}\(.*?(?=\n    (?:async )?def |\n(?:async )?def |\Z)", src, re.S)
         body = m.group(0) if m else ""
         check(f"{name}_is_try_guarded", "try:" in body and "except" in body, body[:120])
@@ -1785,7 +2081,8 @@ def main():
                test_woncart_suspect_while_a_marker_names_the_account, test_purchase_entry_waits_out_an_open_window,
                test_other_executors_in_flight_entry_does_not_stop_the_probe, test_stale_marker_lifecycle,
                test_unreadable_hand_made_file_advice, test_status_zero_with_a_seen_status, test_legacy_checkout_guard_runs_under_a_marker,
-               test_source_hygiene):
+               test_probe_in_flight_vs_purchase_of_another_tcin,
+               test_unreadable_marker_fails_closed_for_the_adopting_paths, test_source_hygiene):
         try:
             fn()
         except Exception as e:                 # noqa: BLE001
