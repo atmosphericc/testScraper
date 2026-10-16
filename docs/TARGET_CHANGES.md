@@ -305,6 +305,21 @@ Entry format:
   docs/CLAIMS.md C-1011-01..10 and the 2026-10-11 section of CURRENT_STATE.
 - **Confidence:** [REPORTED] for the docs; [INFERRED] for what it implies.
 
+## 2026-10-16 — the home line's first contact stopped getting past the edge limiter after 10-01 (OBSERVED; cause NOT ESTABLISHED)
+
+- **What:** each account's first add-to-cart on a hot TCIN (earliest home shot per run x account x TCIN, before any
+  volume of ours on it) got past the edge limiter 21/59 on 09-11..09-30a and 2/69 on 10-02 / 10-09 / 10-16; per volley
+  14/31 vs 2/23 (one-sided Fisher p=0.0035, `q.py first_shot_era`); inside both clock bands (before 03:40 5/17 -> 1/45,
+  from 03:40 16/41 -> 1/24). 10-01 (13/15, our first hot order) is kept apart. C-1016-06.
+- **Target-side or ours?** NOT ESTABLISHED. No src / bat / config commit between the 10-01 and 10-02 runs, but 10-02
+  is only 3 volleys; many flags were armed 10-04..10-08, the TCIN mix changed (8 new TCINs from 10-09), the home line
+  had a power outage on 10-01 (whether the public IP changed is unknown: it was never logged; logged from 10-16 by
+  `tools/ops/home_ip.py`), and HUMAN/PX "Press & hold" on the harvest tabs began ~10-04. An analyst is diffing
+  what we send on first shots between the eras.
+- **Detection gap:** ~15 days and 2 drop nights. Each post-10-01 night was read on its own (10-02 "1/9 vs 15/65,
+  p=0.67"; 10-09 "night x TCIN"; 10-16 first written up as "cadence NOT ESTABLISHED") because the post-run compared one
+  night against a pooled baseline per shot. Fixed by the R-ERA volley query and post-run v3 (C-1016-10).
+
 ## Known-unknowns about the opponent
 
 Things we would need to see their side to answer. Listed so they are not
