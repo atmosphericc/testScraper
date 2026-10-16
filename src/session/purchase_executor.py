@@ -368,6 +368,66 @@ def limkey_marker_entry(acct, tcin):
         return None
 
 
+def limkey_marker_entries_for(acct):
+    """Every readable entry (file first, then in-process fallback entries the file does not list)
+    that names this account, any TCIN, any state. Never raises."""
+    try:
+        a = str(acct or '').strip().lower()
+        out = []
+        with _LIMKEY_MARKER_LOCK:
+            entries, _st = _lk_marker_load()
+            out = [dict(e) for e in entries if e['acct'] == a]
+            for (fa, ft), fe in list(_LIMKEY_FALLBACK.items()):
+                if fa == a and not any(o['tcin'] == ft for o in out):
+                    out.append(dict(fe))
+        return out
+    except Exception:
+        return []
+
+
+def limkey_marker_acct(acct) -> bool:
+    """LIMKEY-GUARD-1016 fix round 2 (1): True while ANY marker entry (file or fallback, any TCIN, any
+    state) names this account, or the file exists but is unreadable (we cannot tell whose it is: fail
+    closed). A po_only won-cart ticket buys the whole cart unread, so a possibly-landed probe line of
+    ANY TCIN on this account makes the cart suspect. No marker file = one os.path.exists, False.
+    Never raises (error = True)."""
+    try:
+        if not _LIMKEY_FALLBACK and not os.path.exists(_LIMKEY_MARKER_PATH):
+            return False
+        with _LIMKEY_MARKER_LOCK:
+            entries, st = _lk_marker_load()
+        if st == 'unreadable':
+            return True
+        a = str(acct or '').strip().lower()
+        if any(e['acct'] == a for e in entries):
+            return True
+        return any(fa == a for (fa, _ft) in list(_LIMKEY_FALLBACK))
+    except Exception:
+        return True
+
+
+def limkey_marker_other_any() -> bool:
+    """LIMKEY-GUARD-1016 fix round 2 (3): the per-tick 'a probe line may be in a cart' check. Like
+    limkey_marker_any, but it ignores this process's OWN live in_flight entries (state 'in_flight' and
+    pid == this pid): another executor's probe mid-evaluate must not stop this one. A previous
+    process's leftovers (any state) are caught by the start latch; this process's landings stop
+    the probe in _limkey_cleanup. An unreadable file counts (fail closed). Never raises (error = True)."""
+    try:
+        if not os.path.exists(_LIMKEY_MARKER_PATH):
+            return any(not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid())
+                       for e in list(_LIMKEY_FALLBACK.values()))
+        with _LIMKEY_MARKER_LOCK:
+            entries, st = _lk_marker_load()
+        if st == 'unreadable':
+            return True
+        if any(not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid()) for e in entries):
+            return True
+        return any(not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid())
+                   for e in list(_LIMKEY_FALLBACK.values()))
+    except Exception:
+        return True
+
+
 def _lk_clear_block(e, owner: bool = False, now=None) -> str:
     """'' when the entry may be cleared (the caller's cart read proved the line gone); else why not:
     'in_flight' (the live probe of THIS process has not answered yet; only that probe clears it,
@@ -481,6 +541,37 @@ def limkey_marker_clear(acct, tcin, owner: bool = False) -> bool:
             return _lk_marker_store(keep)
     except Exception:
         return False
+
+
+def limkey_sweep_stale(acct, read, t_read: float):
+    """LIMKEY-GUARD-1016 fix round 2 (4): clear every entry of this account that may be cleared now
+    (limkey_marker_block == '': no live in_flight probe, late-add window passed) once ONE successful
+    cart read (`read`, a _cart_items_read result taken at/after `t_read`) proves no line of its TCIN.
+    Only entries written at or before `t_read` count: a newer entry (a probe that answered after the
+    read started) may belong to a line the read could not see. Synchronous under the marker lock, so
+    no writer can interleave between the check and the clear. -> list of cleared TCINs. Never raises."""
+    cleared = []
+    try:
+        if isinstance(read, dict) and isinstance(read.get('items'), list) and len(read['items']) >= 50:
+            return cleared                  # the read's 50-line cap: 'no line of T' proves nothing
+        a = str(acct or '').strip().lower()
+        with _LIMKEY_MARKER_LOCK:
+            for e in limkey_marker_entries_for(a):
+                try:
+                    ts = float(e.get('ts'))
+                except (TypeError, ValueError):
+                    continue
+                if ts > float(t_read):
+                    continue
+                if _lk_clear_block(e) != '':
+                    continue
+                if woncart_read_has_tcin(read, e['tcin']) is not False:
+                    continue
+                if limkey_marker_clear(a, e['tcin']):
+                    cleared.append(e['tcin'])
+    except Exception:
+        pass
+    return cleared
 
 
 def limkey_marked_for(ex, tcin) -> bool:
@@ -2765,6 +2856,13 @@ class PurchaseExecutor:
             if (dts > 0 and float(getattr(self, '_woncart_suspect_cleared_ts', 0.0) or 0.0)
                     < dts + _WONCART_LATE_ADD_WINDOW_S):
                 return 'dummy_add'
+            # LIMKEY-GUARD-1016 fix round 2 (1): the limiter-key probe's POST may have landed a line
+            # (of the loop's TCIN, merged into its qty, or of another TCIN on this account) that no
+            # process flag records: while ANY marker entry names this account, every po_only ticket
+            # re-reads the cart (the cleanup's own delete is aborted while a buy loop owns the cart).
+            # Inert with no marker file.
+            if limkey_marker_acct(self._ident_tag()):
+                return 'limkey_marker'
         except Exception:
             return ''
         return ''
@@ -4451,10 +4549,15 @@ class PurchaseExecutor:
                                  f"{tag} -- the purchase entry and the boot audit delete it; "
                                  f"{LIMKEY_MARKER_REL} lists it")
             if not wrote and not (gone and cleared):
+                # fix round 2 (5): a hand-made file that does not match the schema loads as 'unreadable'
+                # and guards no buy-path consumer, so print the exact line the loader accepts.
+                _hand = json.dumps([{'acct': str(acct).strip().lower(), 'tcin': str(tcin).strip(),
+                                     'ts': round(time.time(), 1), 'reason': 'manual'}])
                 self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=marker ok=False ALERT {tag} -- the line is "
                                  f"not proven gone (or the late-add window is open) and NOTHING durable guards "
-                                 f"it: delete the tcin={tcin} line by hand (or create {LIMKEY_MARKER_REL}) "
-                                 f"before the next drop; this process still refuses it, a relaunch would not")
+                                 f"it: delete the tcin={tcin} line by hand, or write EXACTLY this content to "
+                                 f"{LIMKEY_MARKER_REL}: {_hand} -- before the next drop; this process still "
+                                 f"refuses it, a relaunch would not")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -4471,8 +4574,10 @@ class PurchaseExecutor:
         """LIMKEY-GUARD-1016: the purchase entry for an account x TCIN with a probe-line marker.
         Delete the line before any shot (no strike branch), clear the marker only when a cart read
         proves it gone, drop any held / dirty tracking of that TCIN. None = continue with the shot;
-        a result dict = nothing fired (the delete could not be proven; the marker stays and the
-        next dispatch retries). Never raises (CancelledError excepted)."""
+        a result dict = nothing fired (the delete could not be proven, or the marker's window is
+        still open - an in_flight probe or a late-add window: a POST that lands after this purge
+        would be indistinguishable from the shot's own line; the marker stays and the next
+        dispatch retries). Never raises (CancelledError excepted)."""
         T = str(tcin)
         ident = self._ident_tag()
         try:
@@ -4488,11 +4593,20 @@ class PurchaseExecutor:
                 if cleared:
                     print(f"[LIMKEY_GUARD] probe line of {T} deleted before the shot (delete_ok={ok} lines={n}), "
                           f"marker cleared ident={ident}")
-                else:
-                    # an in_flight entry (the probe has not answered) or a late-add window still open: the
-                    # line is gone NOW, but the probe's POST may still land, so the marker stays.
-                    print(f"[LIMKEY_GUARD] probe line of {T} deleted before the shot (delete_ok={ok} lines={n}), "
-                          f"marker KEPT ({why_kept or 'clear_failed'}) ident={ident}")
+                    return None
+                # an in_flight entry (the probe has not answered) or a late-add window still open: the
+                # line is gone NOW, but the probe's POST may still land, so the marker stays.
+                print(f"[LIMKEY_GUARD] probe line of {T} deleted before the shot (delete_ok={ok} lines={n}), "
+                      f"marker KEPT ({why_kept or 'clear_failed'}) ident={ident}")
+                if why_kept:
+                    # fix round 2 (2): a probe POST that lands AFTER this purge is indistinguishable
+                    # from the shot's own line (DOM badge confirmation, won-cart po_only ticket, a
+                    # merged qty Q+1 line the legacy guard does not check) -> fire NOTHING while the
+                    # window is open (at most the late-add window, on this account x TCIN only).
+                    print(f"[LIMKEY_GUARD] probe window open for {T} ({why_kept}) — nothing fired; the "
+                          f"next dispatch retries once the window has passed ident={ident}")
+                    return self._held_skip(T, 'limkey_window_open',
+                                           'probe line window still open, nothing fired', start_time)
                 return None
             print(f"[LIMKEY_GUARD] probe line of {T} could NOT be proven removed (delete_ok={ok} lines={n}) "
                   f"— nothing fired; the marker stays and the next dispatch retries ident={ident}")
@@ -4504,6 +4618,52 @@ class PurchaseExecutor:
             print(f"[LIMKEY_GUARD] purge errored ({type(e).__name__}) — nothing fired ident={ident}")
             return self._held_skip(T, 'held_cart_error',
                                    f'probe line purge errored: {type(e).__name__}', start_time)
+
+    def _limkey_sweep_stale_log(self, read, t_read: float, tag: str) -> list:
+        """LIMKEY-GUARD-1016 fix round 2 (4): limkey_sweep_stale for this account + one print when
+        something was cleared. Silent and read-free with no marker file. Never raises."""
+        try:
+            if not limkey_marker_any():
+                return []
+            ident = self._ident_tag()
+            done = limkey_sweep_stale(ident, read, t_read)
+            if done:
+                print(f"{tag} stale probe marker(s) cleared: a cart read shows no line of "
+                      f"{','.join(done)} ident={ident}")
+            return done
+        except Exception:
+            return []
+
+    async def _limkey_stale_tick(self, idx: int) -> None:
+        """LIMKEY-GUARD-1016 fix round 2 (4): the refill loop's sweep. An account with a clearable
+        stale marker (no live in_flight probe, late-add window passed) reads its cart once per 5 min
+        and clears the marker when the read proves its TCIN has no line (the boot audit runs once,
+        30-60 s after start, so a late marker written later would otherwise survive to the next boot
+        and turn the first drop-time purchase into a purge with two cart reads). Reads only; a line
+        that IS there is left to the purchase entry / boot audit. No marker file = one os.path.exists.
+        Never raises (CancelledError excepted)."""
+        try:
+            if idx != 0 or not limkey_marker_any():
+                return
+            now = time.time()
+            if now - float(getattr(self, '_limkey_stale_ts', 0.0) or 0.0) < 300.0:
+                return
+            ident = self._ident_tag()
+            if not any(_lk_clear_block(e) == '' for e in limkey_marker_entries_for(ident)):
+                return
+            if self._boot_audit_busy() or self._limkey_busy_why():
+                return
+            self._limkey_stale_ts = now
+            tab = self._warmup_tabs[idx]
+            t_read = time.time()
+            rd = await self._cart_items_read(tab, timeout=5.0)
+            if self._boot_audit_busy() or self._limkey_busy_why():
+                return                      # a purchase took the cart during the read
+            self._limkey_sweep_stale_log(rd, t_read, '[LIMKEY_GUARD]')
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     async def _limkey_boot_delete(self, wt, items, tag: str):
         """LIMKEY-GUARD-1016 boot cart audit: delete the lines of this account whose TCIN has a probe
@@ -4550,10 +4710,12 @@ class PurchaseExecutor:
                 return
             now = time.time() if now is None else float(now)
             acct = getattr(self.session_manager, 'account_id', None) or 'session'
-            if limkey_marker_any():
+            if limkey_marker_other_any():
                 # LIMKEY-GUARD-1016 step 3: a probe line may still be in a cart -> no probe for the
                 # whole process (the stop persists even after the marker is cleared; the start latch
                 # in _start_background_refill sets it before the boot audit can clear the marker).
+                # Fix round 2 (3): this process's own live in_flight entry (another executor's probe
+                # mid-evaluate) is not a reason to stop; limkey_marker_other_any ignores it.
                 with _LIMKEY_LOCK:
                     _LIMKEY_STATE['stopped'] = True
                     first = not _LIMKEY_STATE.get('marker_logged')
@@ -4632,6 +4794,25 @@ class PurchaseExecutor:
                     break
             if key in ('', '-', '?') and parsed['key']:
                 key = parsed['key']
+            if parsed['status'] == 0 and not err:
+                # LIMKEY-GUARD-1016 fix round 2 (6): the page's fetch threw (status 0, e.g. a response
+                # blocked by CORS) but the interceptor may have captured a REAL status for the probe's
+                # POST: the POST was sent and answered, so classify on that status (its body length is
+                # unknown, n stays -1, so only a keyless 401 / 400 / 403 / 404 / 424 still counts as
+                # a proven non-landing; a 2xx takes the STOP + cleanup branch below).
+                try:
+                    for st, k, h in reversed(seen):
+                        if isinstance(st, int) and not isinstance(st, bool) and st != 0:
+                            self._limkey_log(f"[LIMKEY_PROBE] event=reclassify acct={acct} tcin={tcin} "
+                                             f"page_status=0 seen_status={st} -- classified on the status the "
+                                             f"interceptor captured")
+                            parsed = dict(parsed, status=st)
+                            key, hop = k, h
+                            if key in ('', '-', '?') and parsed['key']:
+                                key = parsed['key']
+                            break
+                except Exception:
+                    pass
             self._limkey_log(limkey_result_line(acct, tcin, parsed, key, hop, line, n_at, err))
             if 200 <= parsed['status'] < 300:
                 with _LIMKEY_LOCK:
@@ -4709,6 +4890,10 @@ class PurchaseExecutor:
                     # no-op (one env read, no await) with TARGET_WARMUP_PROBE_TCINS unset.
                     if limkey_probe_cfg() is not None:
                         await self._limkey_probe_tick(idx)
+                    # LIMKEY-GUARD-1016 fix round 2 (4): clear a stale probe marker once a cart
+                    # read proves its line gone (no-op, no await, with no marker file).
+                    if idx == 0 and limkey_marker_any():
+                        await self._limkey_stale_tick(idx)
                 # R1 review (R1-ARM-4): retire an expired WC-3 marker here, so
                 # its bounded delete never runs in front of a drop's ATC.
                 if idx == 0 and held_cart_reentry_on() and getattr(self, '_held_cart', None) is not None:
@@ -11647,6 +11832,7 @@ class PurchaseExecutor:
                 if wt is None:
                     print(f"{tag} no warmup tab — no action ident={self._ident_tag()}")
                     return 'no_tab'
+                _lk_t_read = time.time()
                 r = await self._cart_items_read(wt, timeout=5.0)
             if not r.get('ok'):
                 print(f"{tag} cart read failed (status={r.get('status')} err={r.get('error', '-')}) "
@@ -11656,6 +11842,10 @@ class PurchaseExecutor:
                     or getattr(self, '_woncart_dirty', None) is not None):
                 print(f"{tag} a purchase took the cart during the read — no action")
                 return 'busy'
+            # LIMKEY-GUARD-1016 fix round 2 (4): a stale probe marker whose TCIN has no line in this
+            # read (also on an EMPTY cart) is cleared here, before the early returns below. A no-op
+            # with no marker file.
+            self._limkey_sweep_stale_log(r, _lk_t_read, tag)
             items = r.get('items') or []
             if not items:
                 print(f"{tag} cart empty — nothing to adopt ident={self._ident_tag()}")

@@ -1005,8 +1005,10 @@ def test_late_landing_after_a_timeout():
         # a second late landing, then the purchase entry: deletes before the shot but keeps the marker
         tab.add_line(A)
         res, out4 = arun(ex._limkey_purge_entry(tab, A, time.time()))
-        check("late_purchase_entry_deletes_the_line_and_keeps_the_marker", res is None and A not in tab.tcins()
-              and pe.limkey_marker_has("primary", A) and "marker KEPT (late_add_window_" in out4, f"{res} {out4}")
+        check("late_purchase_entry_deletes_the_line_keeps_the_marker_and_fires_nothing",
+              isinstance(res, dict) and res.get("reason") == "limkey_window_open" and res.get("success") is False
+              and A not in tab.tcins() and pe.limkey_marker_has("primary", A)
+              and "marker KEPT (late_add_window_" in out4, f"{res} {out4}")
         # the window passes: a proven-gone read now clears the marker
         ents = marker_entries()
         ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 1
@@ -1141,7 +1143,8 @@ def test_in_flight_entry():
     check("in_flight_check_cart_hold_is_false_and_reads_nothing", seen.get("hold") is False and seen.get("hold_reads") is False,
           str(seen))
     check("in_flight_strike_inactive", seen.get("strike") is False)
-    check("in_flight_purchase_entry_deleted_the_line_but_did_not_clear_the_entry", seen.get("purge") is None
+    check("in_flight_purchase_entry_deleted_the_line_fired_nothing_and_did_not_clear_the_entry",
+          isinstance(seen.get("purge"), dict) and seen["purge"].get("reason") == "limkey_window_open"
           and seen.get("entry_after_purge") and seen["entry_after_purge"]["state"] == "in_flight", str(seen.get("entry_after_purge")))
     check("in_flight_boot_audit_did_not_adopt_and_kept_the_entry", seen.get("boot") == "limkey_deleted"
           and seen.get("held") is None and seen.get("entry_after_boot") and seen["entry_after_boot"]["state"] == "in_flight",
@@ -1188,12 +1191,442 @@ def test_in_flight_entry():
 
 
 
+# ───────────────────── fix round 2 (10-16 evaluator): items 1-6 ─────────────────────
+TERMINAL_TOKENS = ("oos", "out_of_stock", "sold_out", "reservation", "unavailable")
+
+
+def test_woncart_suspect_while_a_marker_names_the_account():
+    # (1) the evaluator's harness: a probe answers 429 WITH a body (n=120, no key) while a won-cart ride
+    # becomes active during the await. Nothing recorded the cart as suspect before this fix.
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 429, "key": "-", "hop": "-", "n": 120}, lines=[{"id": "L1", "tcin": A, "qty": 1}],
+                           on_probe=lambda t: setattr(t.ex, "_won_cart_ride_until", time.time() + 60))
+        out = tick(ex)
+    check("suspect_harness_cart_still_holds_T_the_delete_was_aborted", A in tab.tcins() and "delete" not in tab.kinds(),
+          f"{tab.log} {out[-300:]}")
+    check("suspect_harness_marker_exists_and_dummy_ts_is_unset", marker_file_exists()
+          and not float(getattr(ex, "_dummy_landed_suspect_ts", 0.0) or 0.0))
+    check("suspect_harness_woncart_cart_suspect_names_the_marker", ex._woncart_cart_suspect() == "limkey_marker",
+          repr(ex._woncart_cart_suspect()))
+    # any TCIN on that account, any state: the loop may be for another TCIN U
+    for label, writer in (("late_entry", lambda: pe.limkey_marker_write("primary", B, "x", late=True)),
+                          ("in_flight_entry", lambda: pe.limkey_marker_write("primary", B, "in_flight", state="in_flight")),
+                          ("plain_entry", lambda: pe.limkey_marker_write("primary", B, "x"))):
+        fresh()
+        ex, tab, sm = make()
+        check(f"suspect_clean_before_{label}", ex._woncart_cart_suspect() == "")
+        writer()
+        check(f"suspect_{label}_other_tcin_same_account", ex._woncart_cart_suspect() == "limkey_marker")
+        ex2, _, _ = make(acct="alt-1")
+        check(f"suspect_{label}_other_account_untouched", ex2._woncart_cart_suspect() == "")
+        ents = marker_entries()
+        ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 1
+        pe._lk_marker_store(ents)
+        pe.limkey_marker_clear("primary", B, owner=True)
+        check(f"suspect_clears_with_the_marker_{label}", ex._woncart_cart_suspect() == "" and not marker_file_exists())
+    # the in-process fallback (a failed disk write) and an unreadable file count too
+    fresh()
+    ex, tab, sm = make()
+    pe._LIMKEY_FALLBACK[("primary", B)] = {"acct": "primary", "tcin": B, "ts": time.time(), "reason": "x",
+                                          "state": "", "pid": None, "late": False}
+    check("suspect_fallback_entry", ex._woncart_cart_suspect() == "limkey_marker")
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
+    check("suspect_unreadable_file_fails_closed", ex._woncart_cart_suspect() == "limkey_marker")
+    fresh()
+    # the other suspect reasons still win, and no marker file = '' (differential)
+    ex, tab, sm = make()
+    ex._orphan_atc_ts = time.time()
+    pe.limkey_marker_write("primary", B, "x")
+    check("suspect_orphan_atc_keeps_its_own_name", ex._woncart_cart_suspect() == "orphan_atc")
+    fresh()
+    ex, tab, sm = make()
+    check("suspect_no_marker_is_empty", ex._woncart_cart_suspect() == "" and not marker_file_exists())
+    fresh()
+
+
+def test_purchase_entry_waits_out_an_open_window():
+    T = S.TCIN
+    # (2) late marker, window open, line present: deleted, marker KEPT, NOTHING fires
+    fresh()
+    pe.limkey_marker_write("primary", T, "evaluate_TimeoutError", late=True)
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    ex, c = _impl_ex(cart)
+    r = _impl_run(ex)
+    check("window_open_late_nothing_fired", "SHOT" not in cart.events and r.get("success") is False
+          and r.get("reason") == "limkey_window_open", f"{r} {cart.events}")
+    check("window_open_late_line_deleted_marker_kept", not cart.lines and pe.limkey_marker_has("primary", T))
+    check("window_open_result_is_digit_free_and_not_terminal",
+          not re.search(r"\d", str(r.get("error", ""))) and "1011" not in str(r)
+          and not any(t in str(r.get("reason", "")).lower() or t in str(r.get("error", "")).lower()
+                      for t in TERMINAL_TOKENS), str(r))
+    # in_flight (the probe has not answered): same
+    fresh()
+    pe.limkey_marker_write("primary", T, "in_flight", state="in_flight")
+    cart = SimCart([])
+    ex, c = _impl_ex(cart)
+    r = _impl_run(ex)
+    check("window_open_in_flight_nothing_fired", "SHOT" not in cart.events and r.get("reason") == "limkey_window_open"
+          and pe.limkey_marker_entry("primary", T)["state"] == "in_flight", f"{r} {cart.events}")
+    # the window passes: the next dispatch purges, clears and the shot goes out
+    fresh()
+    pe.limkey_marker_write("primary", T, "evaluate_TimeoutError", late=True)
+    ents = marker_entries()
+    ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 1
+    pe._lk_marker_store(ents)
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    ex, c = _impl_ex(cart)
+    _impl_run(ex)
+    check("window_passed_purge_clears_and_the_shot_fires", cart.events[:3] == [f"delete:{T}", "read", "SHOT"]
+          and not marker_file_exists(), str(cart.events))
+    # window open but the delete cannot be proven: still nothing fires (release_failed, as before)
+    fresh()
+    pe.limkey_marker_write("primary", T, "x", late=True)
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    cart.fail_delete = True
+    ex, c = _impl_ex(cart)
+    r = _impl_run(ex)
+    check("window_open_unproven_delete_still_fires_nothing", "SHOT" not in cart.events
+          and r.get("reason") == "held_cart_release_failed", f"{r} {cart.events}")
+    # the held marker of that TCIN is dropped even while the window is open
+    fresh()
+    pe.limkey_marker_write("primary", T, "x", late=True)
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    ex, c = _impl_ex(cart)
+    ex._held_cart = {"tcin": T, "created": c.t, "source": "boot"}
+    _impl_run(ex)
+    check("window_open_drops_the_held_marker_and_fires_nothing", ex._held_cart is None and "SHOT" not in cart.events)
+    # another TCIN / account on an open window is untouched
+    for label, marked in (("other_account", ("alt-1", T)), ("other_tcin", ("primary", OTHER))):
+        fresh()
+        pe.limkey_marker_write(*marked, "x", late=True)
+        cart = SimCart([])
+        ex, c = _impl_ex(cart)
+        _impl_run(ex)
+        check(f"window_open_{label}_does_not_block_this_purchase", cart.events[:1] == ["SHOT"], str(cart.events))
+    fresh()
+
+
+def test_other_executors_in_flight_entry_does_not_stop_the_probe():
+    # helper semantics
+    fresh()
+    pe.limkey_marker_write("business", A, "in_flight", state="in_flight")
+    check("other_any_ignores_this_process_in_flight", pe.limkey_marker_other_any() is False and pe.limkey_marker_any() is True)
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text(json.dumps([{"acct": "business", "tcin": A, "ts": time.time(), "reason": "in_flight",
+                                                          "state": "in_flight", "pid": os.getpid() + 1}]), encoding="utf-8")
+    check("other_any_counts_a_previous_process_in_flight", pe.limkey_marker_other_any() is True)
+    for label, kw in (("late", dict(late=True)), ("plain", {})):
+        fresh()
+        pe.limkey_marker_write("business", A, "x", **kw)
+        check(f"other_any_counts_a_{label}_entry", pe.limkey_marker_other_any() is True)
+    fresh()
+    pe.limkey_marker_write("business", A, "in_flight", state="in_flight")
+    pe.limkey_marker_write("alt-1", B, "x", late=True)
+    check("other_any_counts_a_second_entry_that_is_not_in_flight", pe.limkey_marker_other_any() is True)
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
+    check("other_any_unreadable_fails_closed", pe.limkey_marker_other_any() is True)
+    fresh()
+    check("other_any_no_marker_false", pe.limkey_marker_other_any() is False)
+
+    # (3) the evaluator's two-executor harness: account primary's probe is mid-flight when 'business' ticks
+    fresh()
+    seen = {}
+    with env(**{**ENV_ON, "TARGET_WARMUP_PROBE_IDENTS": "primary,business"}):
+        exb, tabb, smb = make(acct="business")
+
+        async def mid(t):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                await exb._limkey_probe_tick(0, now=time.time() + 1)
+            seen["b_out"] = buf.getvalue()
+            seen["stopped_mid"] = pe._LIMKEY_STATE["stopped"]
+            seen["file_mid"] = marker_file_exists()
+        ex, tab, sm = make(probe={"status": 429, "key": ERR_A2C, "hop": "-", "n": 0}, on_probe_async=mid)
+        out = tick(ex)
+        stopped_after = pe._LIMKEY_STATE["stopped"]
+        out2 = tick(ex, time.time() + 120)
+    check("two_exec_business_tick_mid_flight_did_not_stop_the_process", seen.get("stopped_mid") is False, str(seen))
+    check("two_exec_business_tick_logged_no_false_marker_present", "marker_present" not in seen.get("b_out", "x")
+          and "marker_present" not in out, f"{seen.get('b_out')!r} {out!r}")
+    check("two_exec_marker_file_was_down_then_cleared_by_the_proven_non_landing", seen.get("file_mid") is True
+          and not marker_file_exists() and stopped_after is False)
+    check("two_exec_next_tick_120s_later_still_probes", probes_sent(tab) == 2, f"{tab.kinds()} {out2!r}")
+    # a PREVIOUS process's in_flight entry still stops everything (the start latch / tick check)
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text(json.dumps([{"acct": "primary", "tcin": A, "ts": time.time(), "reason": "in_flight",
+                                                          "state": "in_flight", "pid": os.getpid() + 1}]), encoding="utf-8")
+    with env(**ENV_ON):
+        ex, tab, sm = make()
+        out = tick(ex)
+    check("previous_process_in_flight_still_stops_the_probe", probes_sent(tab) == 0 and "marker_present" in out
+          and pe._LIMKEY_STATE["stopped"] is True)
+    # this process's landing (a non-in_flight entry) still stops a tick
+    fresh()
+    pe.limkey_marker_write("alt-1", B, "status_201")
+    with env(**ENV_ON):
+        ex, tab, sm = make()
+        out = tick(ex)
+    check("this_process_landed_entry_still_stops_the_probe", probes_sent(tab) == 0 and "marker_present" in out)
+    fresh()
+
+
+def _age(acct, tcin, ts):
+    ents = marker_entries()
+    for e in ents:
+        if e["acct"] == acct and e["tcin"] == tcin:
+            e["ts"] = ts
+    pe._lk_marker_store(ents)
+    return True
+
+
+def _stale(acct="primary", tcin=A):
+    pe.limkey_marker_write(acct, tcin, "status_201", late=True)
+    return _age(acct, tcin, time.time() - 3 * 86400)
+
+
+def test_stale_marker_lifecycle():
+    old_ts = time.time() - 3 * 86400
+    # (4) boot audit, EMPTY cart: the 3-day-old late marker is cleared (it returned 'empty' with the marker kept before)
+    fresh()
+    _stale()
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[])
+        r, out = _boot(ex, tab)
+    check("stale_boot_empty_cart_returns_empty", r == "empty", f"{r} {out}")
+    check("stale_boot_empty_cart_clears_the_marker", not marker_file_exists() and "stale probe marker(s) cleared" in out, out)
+    # cart with ANOTHER TCIN: still 'held', marker cleared
+    fresh()
+    _stale()
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[{"id": "CI9", "tcin": OTHER, "qty": 1}])
+        r, out = _boot(ex, tab)
+    check("stale_boot_other_tcin_cart_still_held_and_marker_cleared", r == "held" and ex._held_cart["tcin"] == OTHER
+          and not marker_file_exists(), f"{r} {out}")
+    # a marker whose window is still open stays (the POST may still land)
+    fresh()
+    pe.limkey_marker_write("primary", A, "evaluate_TimeoutError", late=True)
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[])
+        r, out = _boot(ex, tab)
+    check("stale_boot_open_window_marker_stays", r == "empty" and pe.limkey_marker_has("primary", A))
+    # a live in_flight entry of this process stays
+    fresh()
+    pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[])
+        r, out = _boot(ex, tab)
+    check("stale_boot_live_in_flight_stays", pe.limkey_marker_entry("primary", A)["state"] == "in_flight")
+    # an in_flight entry of a dead process past the window is an orphan: cleared
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text(json.dumps([{"acct": "primary", "tcin": A, "ts": old_ts, "reason": "in_flight",
+                                                          "state": "in_flight", "pid": os.getpid() + 1}]), encoding="utf-8")
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[])
+        r, out = _boot(ex, tab)
+    check("stale_boot_orphan_in_flight_past_the_window_cleared", not marker_file_exists())
+    # another account's stale marker is untouched; this account's is cleared
+    fresh()
+    _stale("alt-1", B)
+    _stale("primary", A)
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[])
+        _boot(ex, tab)
+    check("stale_boot_only_this_accounts_entries_cleared", not pe.limkey_marker_has("primary", A)
+          and pe.limkey_marker_has("alt-1", B))
+    # a read that carries no cart_items array proves nothing: marker stays
+    fresh()
+    _stale()
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[], read_mode="no_array")
+        r, out = _boot(ex, tab)
+    check("stale_boot_read_without_the_array_keeps_the_marker", pe.limkey_marker_has("primary", A), f"{r} {out}")
+    # a failed read keeps it too
+    fresh()
+    _stale()
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[], read_mode="fail")
+        r, out = _boot(ex, tab)
+    check("stale_boot_failed_read_keeps_the_marker", r == "read_failed" and pe.limkey_marker_has("primary", A))
+    # an entry written AFTER the read started is not swept (its line may be invisible to that read)
+    fresh()
+    _stale()
+    t_read = old_ts - 10
+    rd = {"ok": True, "status": 200, "items": [], "has_items": True}
+    check("sweep_skips_entries_newer_than_the_read", pe.limkey_sweep_stale("primary", rd, t_read) == []
+          and pe.limkey_marker_has("primary", A))
+    check("sweep_clears_entries_older_than_the_read", pe.limkey_sweep_stale("primary", rd, time.time()) == [A]
+          and not marker_file_exists())
+    # a 50-line read proves nothing
+    fresh()
+    _stale()
+    big = {"ok": True, "status": 200, "has_items": True,
+           "items": [{"id": f"I{i}", "tcin": f"20{i:06d}", "qty": 1} for i in range(50)]}
+    check("sweep_50_line_cap_proves_nothing", pe.limkey_sweep_stale("primary", big, time.time()) == []
+          and pe.limkey_marker_has("primary", A))
+    # the line is still in the cart: the sweep leaves it (the purchase entry / boot delete handle it)
+    rd_has = {"ok": True, "status": 200, "has_items": True, "items": [{"id": "L1", "tcin": A, "qty": 1}]}
+    check("sweep_keeps_a_marker_whose_line_is_still_there", pe.limkey_sweep_stale("primary", rd_has, time.time()) == []
+          and pe.limkey_marker_has("primary", A))
+    fresh()
+    # no marker: the boot audit prints and reads exactly as before (differential covers adoption)
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[])
+        r, out = _boot(ex, tab)
+    check("stale_boot_no_marker_no_sweep_output", r == "empty" and "stale probe" not in out and tab.kinds() == ["read"],
+          str(tab.log))
+
+    # the refill loop's sweep (the boot audit runs once; a late marker written after it needs this)
+    fresh()
+    _stale()
+    with env(**{FLAG: None}):
+        ex, tab, sm = make(lines=[])
+        lout, _n = arun(L.run_loop(ex))
+    check("loop_sweep_clears_a_stale_marker_with_the_probe_off", not marker_file_exists()
+          and "stale probe marker(s) cleared" in lout[0], str(lout)[-300:])
+    fresh()
+    _stale()
+    with env(**{FLAG: None}):
+        ex, tab, sm = make(lines=[])
+        arun(ex._limkey_stale_tick(0))
+        reads1 = tab.kinds().count("read")
+        _stale()
+        arun(ex._limkey_stale_tick(0))                 # inside 300 s: rate limited, no second read
+        reads2 = tab.kinds().count("read")
+    check("loop_sweep_reads_once_per_5_minutes", reads1 == 1 and reads2 == 1, f"{reads1} {reads2}")
+    fresh()
+    _stale()
+    with env(**{FLAG: None}):
+        ex, tab, sm = make(lines=[])
+        ex.session_manager.purchase_in_progress = True
+        arun(ex._limkey_stale_tick(0))
+        busy_reads = tab.kinds().count("read")
+        ex.session_manager.purchase_in_progress = False
+        arun(ex._limkey_stale_tick(1))
+        idx1_reads = tab.kinds().count("read")
+    check("loop_sweep_skips_while_a_purchase_owns_the_cart_and_on_other_tabs", busy_reads == 0 and idx1_reads == 0
+          and pe.limkey_marker_has("primary", A))
+    fresh()
+    pe.limkey_marker_write("primary", A, "x", late=True)         # window open: nothing clearable -> no read at all
+    with env(**{FLAG: None}):
+        ex, tab, sm = make(lines=[])
+        arun(ex._limkey_stale_tick(0))
+    check("loop_sweep_no_read_when_nothing_is_clearable", tab.kinds() == [] and pe.limkey_marker_has("primary", A))
+    fresh()
+    with env(**{FLAG: None}):
+        ex, tab, sm = make(lines=[])
+        arun(ex._limkey_stale_tick(0))
+    check("loop_sweep_no_marker_no_read", tab.kinds() == [])
+    fresh()
+    _stale()
+    with env(**{FLAG: None}):
+        ex, tab, sm = make(lines=[{"id": "L1", "tcin": A, "qty": 1}])
+        arun(ex._limkey_stale_tick(0))
+    check("loop_sweep_leaves_a_marker_whose_line_is_present", pe.limkey_marker_has("primary", A) and A in tab.tcins()
+          and "delete" not in tab.kinds())
+    src = Path(pe.__file__).read_text(encoding="utf-8")
+    check("loop_calls_the_sweep_after_the_probe_tick",
+          src.index("await self._limkey_probe_tick(idx)") < src.index("await self._limkey_stale_tick(idx)"))
+    fresh()
+
+
+def test_unreadable_hand_made_file_advice():
+    # (5) the ALERT prints the exact content the loader accepts; the printed line round-trips
+    fresh()
+    real = pe._LIMKEY_MARKER_PATH
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "afile"
+        f.write_text("x")
+
+        def break_disk(t, _bad=str(f / "sub" / "m.json")):
+            pe._LIMKEY_MARKER_PATH = _bad           # the in_flight entry went down; now the disk goes away
+        try:
+            with env(**ENV_ON):
+                ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True,
+                                   delete_status=500, on_probe=break_disk)
+                out = tick(ex)
+        finally:
+            pe._LIMKEY_MARKER_PATH = real
+    check("alert_printed", "ALERT" in out and "NOTHING durable guards" in out, out[-500:])
+    check("alert_no_longer_suggests_creating_a_free_form_file", "(or create" not in out)
+    m = re.search(r"write EXACTLY this content to \S+: (\[.*?\]) --", out)
+    check("alert_prints_the_exact_json_to_write", m is not None, out[-600:])
+    if m:
+        body = json.loads(m.group(1))
+        pe._LIMKEY_FALLBACK.clear()
+        Path(real).write_text(m.group(1), encoding="utf-8")
+        check("alert_json_loads_as_a_readable_entry", pe._lk_marker_load()[1] == "ok"
+              and pe.limkey_marker_has("primary", A) and body[0]["acct"] == "primary" and body[0]["tcin"] == A,
+              str(body))
+        ex2 = pe.PurchaseExecutor(session_manager=L.FakeSM("primary"))
+        check("alert_json_guards_the_buy_path_consumers", pe.limkey_marked_for(ex2, A) is True)
+    fresh()
+
+
+def test_status_zero_with_a_seen_status():
+    # (6) the page's fetch threw (status 0) but the interceptor captured the POST's real status
+    cases = [
+        # (label, interceptor-seen answer, expect_cleanup)
+        ("seen_201", {"status": 201, "key": "-", "hop": "-", "n": 0}, True),
+        ("seen_500", {"status": 500, "key": "-", "hop": "-", "n": 0}, True),
+        ("seen_429_a2c_body_unknown", {"status": 429, "key": ERR_A2C, "hop": "-", "n": 0}, True),
+        ("seen_401_keyless", {"status": 401, "key": "-", "hop": "231", "n": 0}, False),
+        ("seen_424", {"status": 424, "key": "X", "hop": "-", "n": 0}, False),
+    ]
+    for label, p, cleanup in cases:
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe=p, probe_raw=0, lands=(label == "seen_201"))
+            out = tick(ex)
+        got_cleanup = "event=cleanup" in out
+        check(f"status0_{label}_reclassified_in_the_log", f"event=reclassify acct=primary tcin={A} page_status=0 "
+              f"seen_status={p['status']}" in out and f"status={p['status']} " in out, out[-400:])
+        check(f"status0_{label}_cleanup_is_{cleanup}", got_cleanup is cleanup and (marker_file_exists() is False),
+              f"{got_cleanup} {out[-400:]}")
+        if label == "seen_201":
+            check("status0_seen_201_hits_the_stop_branch_and_deletes_the_line", "event=STOP reason=probe_2xx" in out
+                  and A not in tab.tcins() and pe._LIMKEY_STATE["stopped"] is True)
+        if not cleanup:
+            check(f"status0_{label}_proven_leaves_probing_on", pe._LIMKEY_STATE["stopped"] is False)
+    # nothing seen: status 0 is still the page-threw / preflight case = proven, as before
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 0, "key": "-", "hop": "-", "n": 0})
+        out = tick(ex)
+    check("status0_seen_0_stays_proven", "reclassify" not in out and "event=cleanup" not in out
+          and pe._LIMKEY_STATE["stopped"] is False and not marker_file_exists(), out[-300:])
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 0, "key": "-", "hop": "-", "n": 0})
+        orig = tab.evaluate
+
+        async def quiet(script, await_promise=False):
+            r = await orig(script, await_promise)
+            if "JSON.stringify({s: resp.status" in script and ex._limkey_wait:
+                ex._limkey_wait.clear()         # the interceptor saw nothing
+            return r
+        tab.evaluate = quiet
+        out = tick(ex)
+    check("status0_nothing_seen_is_still_proven", "reclassify" not in out and "event=cleanup" not in out
+          and pe._LIMKEY_STATE["stopped"] is False and not marker_file_exists(), out[-300:])
+    # an evaluate error is not reclassified (err branch is late, as before)
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe_raises=RuntimeError("x"))
+        out = tick(ex)
+    check("status0_evaluate_error_unchanged", "reclassify" not in out and marker_entries()[0]["late"] is True)
+    fresh()
+
+
 def test_source_hygiene():
     src = Path(pe.__file__).read_text(encoding="utf-8")
     for name in ("_limkey_busy_why", "_limkey_cleanup", "_limkey_purge_entry", "_limkey_boot_delete",
                  "limkey_marked_for", "limkey_marker_write", "limkey_marker_clear", "limkey_marker_has",
                  "limkey_proven_non_landing", "limkey_marker_entry", "limkey_marker_block", "_lk_clear_block",
-                 "_limkey_latch_stop_at_start"):
+                 "_limkey_latch_stop_at_start", "limkey_marker_acct", "limkey_marker_other_any", "limkey_sweep_stale",
+                 "limkey_marker_entries_for", "_limkey_sweep_stale_log", "_limkey_stale_tick"):
         m = re.search(rf"def {name}\(.*?(?=\n    (?:async )?def |\n(?:async )?def |\Z)", src, re.S)
         body = m.group(0) if m else ""
         check(f"{name}_is_try_guarded", "try:" in body and "except" in body, body[:120])
@@ -1210,7 +1643,10 @@ def main():
                test_proven_non_landing_does_nothing, test_cleanup_failures_keep_the_marker, test_cleanup_never_raises,
                test_guards_reread_after_the_await, test_marker_stops_the_probe_for_the_process, test_check_cart_hold,
                test_strike_inactive_under_a_marker, test_boot_audit_deletes_instead_of_adopting,
-               test_purchase_entry, test_differential_against_the_pre_change_executor, test_source_hygiene):
+               test_purchase_entry, test_differential_against_the_pre_change_executor,
+               test_woncart_suspect_while_a_marker_names_the_account, test_purchase_entry_waits_out_an_open_window,
+               test_other_executors_in_flight_entry_does_not_stop_the_probe, test_stale_marker_lifecycle,
+               test_unreadable_hand_made_file_advice, test_status_zero_with_a_seen_status, test_source_hygiene):
         try:
             fn()
         except Exception as e:                 # noqa: BLE001
