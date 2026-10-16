@@ -2297,6 +2297,49 @@ def test_v7_limkey_dedupe():
     check('v7_forty_probes_forty_rows', len(res['limkey']) == 40 and check_of(res, 'limkey_twins_collapsed') == '40', len(res['limkey']))
 
 
+def test_v7_limkey_glue():
+    """Text glued behind a print copy (its newline is a second write): the probe line is closed at the end of its segment, an event's
+    account is repaired against the worker pool, and a print copy that cannot be read is COUNTED -- never a second row, never an invented value."""
+    base = [POOL, flip(TC, 1, T, 1)]
+    # (1) a digit glued after n=: 'n=5' + '0 items' must not read as n=50, and the probe must not be counted twice
+    glued_n = lk_res('primary', TC, 429, n=5) + '0 items'
+    res = parse(base + [glued_n, L(T + 1000, lk_res('primary', TC, 429, n=5), name=LK_NAME)])
+    check('v7_glue_digit_after_n_one_row_right_n', [(r['n'], r['ts_src']) for r in res['limkey']] == [(5, 'logger')], res['limkey'])
+    check('v7_glue_digit_after_n_counted_unparsed', _unp(res).get('LIMKEY') == (2, 1, 1)
+          and next(u['first_line'] for u in res['unparsed'] if u['marker'] == 'LIMKEY') == 3, _unp(res))
+    # the same glued print with NO logger twin: no row at all (never n=50), counted
+    res = parse(base + [glued_n])
+    check('v7_glue_digit_after_n_alone_no_invented_row', res['limkey'] == [] and _unp(res).get('LIMKEY') == (1, 0, 1), (res['limkey'], _unp(res)))
+    # a glued '[' tail (another line's stamp / tag) still closes the probe line
+    res = parse(base + [lk_res('primary', TC, -1, key='?', err='TimeoutError', bl=-1) + L(T + 400, '[STOCK] other', name='x.y')])
+    check('v7_glue_bracket_tail_after_err_still_parses', [(r['n'], r['err']) for r in res['limkey']] == [(1, 'TimeoutError')], res['limkey'])
+    # (2) a word glued after acct= on an event line (the pool is known): one row, the right ident, the repair counted in checks
+    ev_txt = "[LIMKEY_PROBE] event=skip reason=gap acct=primary"
+    res = parse(base + [ev_txt + 'Waiting for something', L(T + 1000, ev_txt, name=LK_NAME)])
+    check('v7_glue_word_after_acct_one_row_right_ident', [(r['event'], r['ident'], r['reason'], r['ts_src']) for r in res['limkey']] ==
+          [('skip', 'primary', 'gap', 'logger')], res['limkey'])
+    check('v7_glue_word_after_acct_repair_counted', check_of(res, 'limkey_ident_glue_repaired') == "{'primarywaiting': 1}"
+          and check_of(res, 'limkey_twins_collapsed') == '1', (check_of(res, 'limkey_ident_glue_repaired'), check_of(res, 'limkey_twins_collapsed')))
+    # ... print-only: the ident is repaired from the pool, the row is kept once, the glue is not in its detail
+    res = parse(base + [ev_txt + 'Waiting for something'])
+    check('v7_glue_word_after_acct_print_only_repaired', [(r['ident'], r['detail']) for r in res['limkey']] == [('primary', 'reason=gap acct=primary')]
+          and check_of(res, 'limkey_ident_glue_repaired') == "{'primarywaiting': 1}", res['limkey'])
+    # word glued after a non-account last token (reason=): the print copy pairs with its logger twin by the text before the glue
+    ev2 = "[LIMKEY_PROBE] event=cleanup step=marker_kept reason=line_not_proven_gone"
+    res = parse(base + [ev2 + 'Waiting', L(T + 1000, ev2, name=LK_NAME)])
+    check('v7_glue_after_reason_pairs_with_logger_twin', [(r['reason'], r['ts_src']) for r in res['limkey']] == [('line_not_proven_gone', 'logger')]
+          and check_of(res, 'limkey_twins_collapsed') == '1', (res['limkey'], check_of(res, 'limkey_twins_collapsed')))
+    # a glued tcin= (letters behind the digits) is never kept as a tcin and is counted
+    ev3 = f"[LIMKEY_PROBE] event=skip reason=marker_write_failed acct=primary tcin={TC}"
+    res = parse(base + [ev3 + 'oops'])
+    check('v7_glue_after_tcin_not_kept_and_counted', [(r['ident'], r['tcin']) for r in res['limkey']] == [('primary', None)]
+          and check_of(res, 'limkey_value_unreadable') == '1', (res['limkey'], check_of(res, 'limkey_value_unreadable')))
+    # two genuinely different events whose texts are prefixes of each other are NOT merged
+    res = parse(base + lk(T + 1000, "[LIMKEY_PROBE] event=skip reason=gap acct=primary") +
+                ["[LIMKEY_PROBE] event=skip reason=gap_long acct=primary"])
+    check('v7_glue_distinct_events_not_merged', sorted(r['reason'] for r in res['limkey']) == ['gap', 'gap_long'], res['limkey'])
+
+
 def test_v7_warm_dummy():
     base = [POOL, flip(TC, 1, T, 1)]
     lines = base + [L(T + 100, '[STOCK] x', name='a.b'), wdummy(1, 'primary', 424), wdummy(0, 'Alt-1', 401), wdummy(2, 'business', 429),
@@ -2503,9 +2546,14 @@ def test_v7_limkey_query():
                                         ('primary', TC, 500, '-'), ('primary', TC, 401, '-'), ('primary', TC, 429, 'SOME_OTHER_KEY'),
                                         ('primary', TC, 429, 'FAST_SELLING', 120), ('primary', TC, 429, A2, 80), ('primary', TC, 401, 'SOME_KEY'),
                                         ('primary', TC, 429, A2, 0), ('primary', TC, 424, K424), ('primary', TC, 0, '-'),
-                                        ('primary', TC, 429, A2, -1), ('primary', TC, 429, A2 + ',OTHER', 0)], clean,
+                                        ('primary', TC, 429, A2, -1), ('primary', TC, 429, A2 + ',OTHER', 0), ('primary', TC, 401, '?')], clean,
                                        events=[f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct=primary tcin={TC} status=201{LK_STOP_TAIL}",
-                                               "[LIMKEY_PROBE] event=skip reason=gap acct=primary"]),
+                                               "[LIMKEY_PROBE] event=skip reason=gap acct=primary",
+                                               f"[LIMKEY_PROBE] event=cleanup step=delete ok=True lines=1 proven_gone=True acct=primary tcin={TC}",
+                                               f"[LIMKEY_PROBE] event=cleanup step=delete ok=False lines=1 proven_gone=False acct=primary tcin={TC}",
+                                               f"[LIMKEY_PROBE] event=cleanup step=marker ok=False ALERT reason=probe_2xx late=False acct=primary tcin={TC} -- x ok=True",
+                                               f"[LIMKEY_PROBE] event=cleanup step=marker_kept reason=line_not_proven_gone acct=primary tcin={TC}",
+                                               f"[LIMKEY_PROBE] event=cleanup step=error ValueError: boom ok=True proven_gone=True acct=primary tcin={TC}"]),
         # fix 1: every answer is a 429 whose key was not read ('?' on one TCIN, '-' on the other), >= 30 each: unknown, never DEMAND-SWITCHED
         'run_20990814_000000': _lk_run(_n(TC, 429, '?', 30) + _n(TC2, 429, '-', 30), clean),
         # ... one unkeyed 429 among otherwise clean answers blocks DEMAND-SWITCHED too
@@ -2581,12 +2629,21 @@ def test_v7_limkey_query():
             ('ERR_A2C', 'ERR_A2C_TCIN_RATE_LIMITED', 'ERR_A2C with a body (body_len > 0)'): '1',
             ('ERR_A2C', 'ERR_A2C_TCIN_RATE_LIMITED', 'ERR_A2C, body length unknown'): '1',
             ('ERR_A2C', A2 + ',OTHER', 'ERR_A2C inside a combined key (not the exact key)'): '1',
-            ('401', 'SOME_KEY', '401 with a key (not keyless)'): '1'}, rem)
+            ('401', 'SOME_KEY', '401 with a key (not keyless)'): '1',
+            # a 401 whose key was never read ('?') is listed under its own reason (the bot lane counts it as keyless; the readout stays cautious)
+            ('401', '?', '401, key unread (the bot counts it as keyless; listed here, the cautious side)'): '1'}, rem)
         check('v7_remainder_hides_only_proven_non_landings', not any(k[0] in ('424', '0', 'preflight(0)') for k in rem) and not any(k[:2] == ('401', '-') for k in rem)
               # the empty-body exact-key 429 (body_len 0) stays hidden; body_len -1 and a combined key stay listed (the bot's own limkey_proven_non_landing)
               and sum(int(n) for k, n in rem.items() if k[0] == 'ERR_A2C') == 3, rem)
         ev_ = {(r['event'], r['reason']): (r['n'], r['status_2xx']) for r in rs[4]}
-        check('v7_events_statement_shows_stop_2xx', ev_ == {('stop', 'probe_2xx'): ('1', '201'), ('skip', 'gap'): ('1', '')}, ev_)
+        check('v7_events_statement_shows_stop_2xx', {k: v for k, v in ev_.items() if k[0] != 'cleanup'} ==
+              {('stop', 'probe_2xx'): ('1', '201'), ('skip', 'gap'): ('1', '')}, ev_)
+        # fix 5: the cleanup outcomes that matter for money safety are their own rows (step / ok / proven_gone mined from detail;
+        # a step=error line's free text is never mined, a ' -- ' tail's ok= is not the line's ok=)
+        cl = {(r['step'], r['ok'], r['proven_gone'], r['reason']): r['n'] for r in rs[4] if r['event'] == 'cleanup'}
+        check('v7_cleanup_outcomes_split_by_step', cl == {
+            ('delete', 'True', 'True', '-'): '1', ('delete', 'False', 'False', '-'): '1', ('marker', 'False', '-', 'probe_2xx'): '1',
+            ('marker_kept', '-', '-', 'line_not_proven_gone'): '1', ('error', '-', '-', '-'): '1'}, cl)
         check('v7_parser_accounting_statement_empty', rs[6] == [], rs[6])
         # no limkey rows -> statements still run, the other result sets are just empty
         rc, rs = q('limkey', '--run', '20990810')
@@ -2636,6 +2693,7 @@ if __name__ == "__main__":
     test_v7_limkey_rows()
     test_v7_limkey_events()
     test_v7_limkey_dedupe()
+    test_v7_limkey_glue()
     test_v7_warm_dummy()
     test_v7_decoy_exclusion()
     test_v7_other_tables_unchanged()

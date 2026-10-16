@@ -134,22 +134,34 @@ SELECT s.n_tcin AS hot_tcins, s.total_posts AS posts, s.min_posts AS min_posts_p
          ELSE 'ERR_A2C seen (' || s.total_a2c || ') but not >= 50% on every hot TCIN (lowest ' || ROUND(s.min_share, 1) || '%)' END AS why
 FROM s, ctl c;
 
--- Statement 5: other [LIMKEY_PROBE] events (skip / stop / error / cleanup / ...) by kind and reason; a 'stop' is a LANDED hot-TCIN line
-SELECT event, COALESCE(reason, '-') AS reason, COUNT(*) AS n, MIN(line) AS first_line, MIN(run_id) AS first_run,
+-- Statement 5: other [LIMKEY_PROBE] events (skip / stop / error / cleanup / ...) by kind and reason; a 'stop' is a LANDED hot-TCIN line.
+--   A cleanup row is split by step= and, for the steps that print them, ok= / proven_gone= (mined from detail; a step=error line's
+--   free exception text is never mined). The money-safety outcomes are step=delete proven_gone=False, step=marker ok=False (ALERT) and step=marker_kept.
+SELECT event, COALESCE(reason, '-') AS reason, COALESCE(step, '-') AS step, COALESCE(ok, '-') AS ok, COALESCE(proven_gone, '-') AS proven_gone,
+       COUNT(*) AS n, MIN(line) AS first_line, MIN(run_id) AS first_run,
        MAX(CASE WHEN status BETWEEN 200 AND 299 THEN status END) AS status_2xx
-FROM limkey WHERE event <> 'probe' GROUP BY event, COALESCE(reason, '-') ORDER BY event, n DESC;
+FROM (SELECT *,
+             CASE WHEN event = 'cleanup' AND detail LIKE 'step=%'
+                  THEN substr(detail, 6, instr(substr(detail, 6) || ' ', ' ') - 1) END AS step,
+             CASE WHEN event = 'cleanup' AND detail LIKE 'step=%' AND detail NOT LIKE 'step=error%' AND detail LIKE '%ok=%'
+                  THEN substr(substr(detail, instr(detail, ' ok=') + 4), 1, instr(substr(detail, instr(detail, ' ok=') + 4) || ' ', ' ') - 1) END AS ok,
+             CASE WHEN event = 'cleanup' AND detail LIKE 'step=%' AND detail NOT LIKE 'step=error%' AND detail LIKE '%proven_gone=%'
+                  THEN substr(substr(detail, instr(detail, 'proven_gone=') + 12), 1, instr(substr(detail, instr(detail, 'proven_gone=') + 12) || ' ', ' ') - 1) END AS proven_gone
+      FROM limkey WHERE event <> 'probe')
+GROUP BY event, COALESCE(reason, '-'), COALESCE(step, '-'), COALESCE(ok, '-'), COALESCE(proven_gone, '-') ORDER BY event, n DESC;
 
 -- Statement 6: the unclassified remainder -- every probe row that is NOT a proven non-landing (LIMKEY_GUARD_SPEC step 1).
 --   Proven non-landings (hidden here): a 429 with the EXACT key ERR_A2C_TCIN_RATE_LIMITED and a known EMPTY body (body_len = 0), a keyless 401 (err_key '' / '-'),
 --   424 / 400 / 403 / 404, and status 0 (the preflight rejected the request). Everything else is listed as possibly landed:
 --   2xx, unreadable (<0), any 429 whose key is not ERR_A2C (an unkeyed 429, a keyed FAST_SELLING / DCO soft landing), an ERR_A2C row
---   with body_len > 0 or unknown (-1) or a combined key, a 401 with a key ('?' counts: an unread key is not keyless), 5xx, 3xx, anything else. why_listed names the reason.
+--   with body_len > 0 or unknown (-1) or a combined key, a 401 with a key, and a 401 whose key was never read ('?': the bot's limkey_proven_non_landing counts it as keyless, this readout lists it under its own reason), 5xx, 3xx, anything else. why_listed names the reason.
 SELECT ans, cls, err_key,
        CASE WHEN status < 0 THEN 'unreadable'
             WHEN status = 429 AND ans = 'ERR_A2C' AND err_key <> 'ERR_A2C_TCIN_RATE_LIMITED' THEN 'ERR_A2C inside a combined key (not the exact key)'
             WHEN status = 429 AND ans = 'ERR_A2C' AND COALESCE(body_len, -1) < 0 THEN 'ERR_A2C, body length unknown'
             WHEN status = 429 AND ans = 'ERR_A2C' THEN 'ERR_A2C with a body (body_len > 0)'
             WHEN status = 429 THEN '429 whose key is not ERR_A2C (possibly a soft landing)'
+            WHEN status = 401 AND err_key = '?' THEN '401, key unread (the bot counts it as keyless; listed here, the cautious side)'
             WHEN status = 401 THEN '401 with a key (not keyless)'
             ELSE 'not a known non-landing answer' END AS why_listed,
        COUNT(*) AS n, MIN(line) AS first_line, MIN(run_id) AS first_run, MIN(err) AS err_sample

@@ -229,6 +229,11 @@ exclusion below)
               stamp before it (ts_src 'logger_prior'). Two probes that really share one n and one text stay two
               rows. The collapsed twin count is in checks.limkey_twins_collapsed. status 0 = the page's fetch threw
               (preflight rejected), -1 = unreadable answer / evaluate error; both are kept as they were printed.
+              Glue (fix round 3): the result regex is closed (a glued '[' or the end of the segment only), so 'n=5' +
+              '0 items' is an unparsed LIMKEY line, never n=50 and never a second row (the logger twin gives the row).
+              An event line's acct is repaired against the run's [WORKER_POOL] idents like norm()
+              (checks.limkey_ident_glue_repaired); a print copy with text glued behind it pairs with its logger twin by
+              the text before the glue; a tcin= value that is not 6-13 digits is not kept (checks.limkey_value_unreadable).
   warm_dummy  one row per "[WARMUP#<idx>/<acct>] dummy POST status <S> -- write-auth alive" (print-only heartbeat
               line; ts = the last logger stamp before it, ts_src 'logger_prior'). It is the per-ACCOUNT decoy control
               the probe is read against (decoys has no account). "dummy POST ADDED its line" is not read: the status
@@ -398,9 +403,10 @@ LOCK_RE = re.compile(r'\[PURCHASE_LOCK\] Purchase (?:(?P<st>started - validation
 # v7 (2026-10-16, INS-LIMKEY-1016): S2-LIMKEY-PROBE result / event lines + the heartbeat dummy POST status line
 LIMKEY_RES = re.compile(r'\[LIMKEY_PROBE\] acct=(?P<acct>[^\s\[]+) tcin=(?P<tcin>\d{6,13}) status=(?P<status>-?\d+) '
                         r'err_key=(?P<key>[^\s\[]+) hop=(?P<hop>[^\s\[]+) line=(?P<net>[^\s\[]+) '
-                        r'body_len=(?P<bl>-?\d+) n=(?P<n>\d+)(?: err=(?P<err>[^\s\[]*))?')
+                        r'body_len=(?P<bl>-?\d+) n=(?P<n>\d+)(?: err=(?P<err>[^\s\[]*))?(?=\[|\s*$)')   # closed tail: text glued behind it (n=5 + '0 items') is unparsed, never n=50
 LIMKEY_EV = re.compile(r'\[LIMKEY_PROBE\] event=(?P<ev>[A-Za-z][A-Za-z0-9_]*)(?P<rest>[^\[]*)')
 LIMKEY_KV = re.compile(r'(?<![\w-])(reason|acct|tcin|status)=([^\s\[]+)')
+LIMKEY_TCIN = re.compile(r'\d{6,13}$')
 LIMKEY_STEP_ERR = re.compile(r'\s*step=error\b')
 LIMKEY_TAG = re.compile(r'\blimkey_probe=1\b')
 WARM_DUMMY = re.compile(r'\[WARMUP#(?P<idx>\d+)/(?P<acct>[^\]\s\[]+)\] dummy POST status (?P<st>-?\d+)')
@@ -1065,8 +1071,12 @@ class RunParser:
         if ev != 'error':                  # an error line's tail is free text: never mined for fields
             kv = {k: v for k, v in LIMKEY_KV.findall(body)}
         acct = kv.get('acct')
+        tcin = kv.get('tcin')
+        if tcin is not None and not LIMKEY_TCIN.match(tcin):   # text glued behind a bare tcin=<digits>: never kept as a tcin
+            tcin = None
+            self._add('limkey_bad_value', field='tcin')
         self._add('limkey', key=m.group(0).strip(), is_logger=lg, event=ev, ident=acct.lower() if acct else None,
-                  tcin=kv.get('tcin'), n=None, status=_int(kv.get('status')), err_key=None, hop=None,
+                  tcin=tcin, n=None, status=_int(kv.get('status')), err_key=None, hop=None,
                   net_line=None, body_len=None, reason=kv.get('reason'), err=None, detail=rest[:240])
         return True
 
@@ -1931,12 +1941,56 @@ class RunParser:
                        for e in sorted(E['lock'], key=lambda e: e['seq'])]
 
         # v7 INS-LIMKEY-1016: probe / event rows (print + logger twins collapsed per identical text) + heartbeat dummy POSTs
+        # An event line's account is repaired against the run's [WORKER_POOL] ident list the way norm() does (text glued behind
+        # 'acct=primary' is not part of the ident); a print copy with text glued behind the line is paired to its logger twin
+        # by the text before the glue. Anything that cannot be anchored stays a row of its own and is counted in checks.
+        lk_glue = Counter()
+        for e in E['limkey']:
+            raw = e['ident']
+            if raw and known and raw not in known:
+                best = max((k for k in known if raw.startswith(k)), key=len, default=None)
+                if best:
+                    lk_glue[raw] += 1
+                    i = e['key'].lower().rfind('acct=' + raw)
+                    if i >= 0:
+                        e['key'] = e['key'][:i + 5 + len(best)]
+                    if e['detail']:
+                        j = e['detail'].lower().rfind('acct=' + raw)
+                        if j >= 0:
+                            e['detail'] = e['detail'][:j + 5 + len(best)]
+                    e['ident'] = best
+        if lk_glue:
+            checks['limkey_ident_glue_repaired'] = dict(lk_glue)
+        if E['limkey_bad_value']:
+            checks['limkey_value_unreadable'] = len(E['limkey_bad_value'])
         lk_groups = {}
         for e in sorted(E['limkey'], key=lambda e: e['seq']):
             lk_groups.setdefault(e['key'], ([], []))[1 if e['is_logger'] else 0].append(e)
+        lk_absorbed, lk_dropped = Counter(), {}
+        for gk, (pr_, lg_) in lk_groups.items():
+            excess = len(pr_) - len(lg_)
+            if excess <= 0 or not pr_ or pr_[0]['event'] == 'probe':
+                continue
+            for k in sorted((k for k in lk_groups if k != gk and gk.startswith(k)), key=len, reverse=True):
+                p2, l2 = lk_groups[k]
+                if excess <= 0:
+                    break
+                if not l2 or l2[0]['event'] != pr_[0]['event']:
+                    continue
+                if p2 and p2[0]['event'] == 'probe':
+                    continue
+                if l2[0]['ident'] != pr_[0]['ident'] and not (not known and (pr_[0]['ident'] or '').startswith(l2[0]['ident'] or '#')):
+                    continue
+                take = min(len(l2) - len(p2) - lk_absorbed[k], excess)
+                if take > 0:
+                    lk_absorbed[k] += take
+                    lk_dropped[gk] = lk_dropped.get(gk, 0) + take
+                    excess -= take
         lk_pick, lk_twins = [], 0
-        for pr_, lg_ in lk_groups.values():
+        for gk, (pr_, lg_) in lk_groups.items():
             chosen = list(lg_) + pr_[len(lg_):]
+            if lk_dropped.get(gk):
+                chosen = list(lg_) + pr_[len(lg_) + lk_dropped[gk]:]
             lk_twins += len(pr_) + len(lg_) - len(chosen)
             lk_pick.extend(chosen)
         lk_pick.sort(key=lambda e: e['seq'])
