@@ -1260,9 +1260,9 @@ def shot_with(ident, tc, t0, cred_lines, status=429, key=A2C, rt=120):
     return [fire(tc)] + cred_lines + resp(t0 + rt, status, key) + [chain(ident, status, t0, rt)]
 
 
-def exposure(ident):
+def exposure(ident, proxied='no'):
     return (f"[EXPOSURE] ident=W1/{ident} tcin=1010892076 kind=edge run_shots=1 run_s=0 win_age_s=0 "
-            f"chrome_age_s=2674 proxied=no resting=no")
+            f"chrome_age_s=2674 proxied={proxied} resting=no")
 
 
 def test_v5_harvest_rows():
@@ -1404,6 +1404,17 @@ def _ps_shots_lines(n):
     return lines
 
 
+def _ps_mixed_lines(n_home, n_prox):
+    """n_home page-signed past-limiter shots by a HOME account (exposure proxied=no) and n_prox by a PROXIED one
+    (exposure proxied=yes) in the same run; the shots run one after another, 4 s apart."""
+    lines = [POOL, exposure('primary', 'no'), exposure('business', 'yes'), flip(TC, 1, T, 1),
+             race(TC, ['primary', 'business'])]
+    for i in range(n_home + n_prox):
+        ident = 'primary' if i < n_home else 'business'
+        lines += shot_with(ident, TC, T + 47 + i * 4000, hv_empty(ident, T + 40 + i * 4000), status=401, key='-')
+    return lines
+
+
 def _overlap_lines():
     """TC opens at T and keeps reading; TC2 opens 5 s later while TC's window is still open (overlapped):
     TC's first shot lands 47 ms in, TC2's 1.5 s in."""
@@ -1445,6 +1456,20 @@ def test_v5_phase_query():
             'run_20990405_000000': _ps_shots_lines(20),
             'run_20990406_000000': _overlap_lines(),
             'run_20990407_000000': _volley_lines(),
+            # INS-STORE-HARVEST-1015 fix round 2: the C-1015-04 gate counts HOME shots only
+            'run_20990409_000000': _ps_mixed_lines(0, 25),            # 25 page-signed past-limiter shots, all PROXIED
+            'run_20990410_000000': _ps_mixed_lines(5, 20),            # 25 over all lines, 5 on the home line
+            'run_20990411_000000': _ps_mixed_lines(20, 5),            # 20 home + 5 proxied
+            # R-BANK 300 s window pinned from below (290 s: live) and from above (310 s: not live)
+            'run_20990412_000000': _rbank_lines({'primary': (-290000, False), 'business': (-290000, False),
+                                                 'alt-1': (-290000, False)}),
+            'run_20990413_000000': _rbank_lines({'primary': (-310000, False), 'business': (-310000, False),
+                                                 'alt-1': (-310000, False)}),
+            # 25 page-signed past-limiter shots whose account has no exposure / boot-forwarder evidence (proxied NULL)
+            'run_20990414_000000': [flip(TC, 1, T, 1), race(TC, ['primary'])] + [
+                ln for i in range(25)
+                for ln in shot_with('primary', TC, T + 47 + i * 4000, hv_empty('primary', T + 40 + i * 4000),
+                                    status=401, key='-')],
         }
         for name, lines in runs.items():
             (logs / (name + '.log')).write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
@@ -1452,7 +1477,7 @@ def test_v5_phase_query():
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
-        check('v5_phase_db_built', '8 file(s) parsed' in buf.getvalue(), buf.getvalue())
+        check('v5_phase_db_built', '14 file(s) parsed' in buf.getvalue(), buf.getvalue())
         con = sqlite3.connect(str(db))
         nh = con.execute('SELECT COUNT(*) FROM harvest').fetchone()[0]
         con.close()
@@ -1483,7 +1508,7 @@ def test_v5_phase_query():
 
         rc, res = q('phase')
         check('v5_phase_runs_all_13_statements', rc == 0 and len(res) == 13, (rc, len(res)))
-        check('v5_verdict_scope_pooled_over_many_runs', res[12][0]['scope'] == 'POOLED over 8 runs: pass --run for one night',
+        check('v5_verdict_scope_pooled_over_many_runs', res[12][0]['scope'] == 'POOLED over 14 runs: pass --run for one night',
               res[12])
         rc, rs = q('phase', '--run', '20990401')
         s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13 = rs
@@ -1538,6 +1563,37 @@ def test_v5_phase_query():
         a20 = rs[12][0]
         check('v5_c1015_04_gate_at_20', (a19['ps_past_limiter'], a19['c_1015_04'].startswith('C-1015-04 stays')) == ('19', True)
               and (a20['ps_past_limiter'], a20['c_1015_04'].startswith('C-1015-04 may move')) == ('20', True), (a19, a20))
+        # fix round 2: the gate is the HOME population (the claim's own). 25 page-signed past-limiter shots on a PROXIED
+        # account (exposure proxied=yes) leave it at 0 and C-1015-04 NOT ESTABLISHED; the all-lines count is shown only
+        rc, rs = q('phase', '--run', '20990409')
+        p25 = rs[12][0]
+        check('v5_c1015_04_proxied_shots_do_not_count', (p25['ps_past_limiter'], p25['ps_past_limiter_all_lines']) == ('0', '25')
+              and p25['c_1015_04'].startswith('C-1015-04 stays NOT ESTABLISHED'), p25)
+        # 5 home + 20 proxied: 25 over all lines (>= 20) but 5 home -> still NOT ESTABLISHED
+        rc, rs = q('phase', '--run', '20990410')
+        mx = rs[12][0]
+        check('v5_c1015_04_mixed_25_all_5_home_stays', (mx['ps_past_limiter'], mx['ps_past_limiter_all_lines']) == ('5', '25')
+              and mx['c_1015_04'].startswith('C-1015-04 stays NOT ESTABLISHED'), mx)
+        # 20 home + 5 proxied: the home count alone reaches 20
+        rc, rs = q('phase', '--run', '20990411')
+        mv = rs[12][0]
+        check('v5_c1015_04_20_home_plus_proxied_may_move', (mv['ps_past_limiter'], mv['ps_past_limiter_all_lines']) == ('20', '25')
+              and mv['c_1015_04'].startswith('C-1015-04 may move'), mv)
+        # a NULL-proxied shot is in neither population of the gate: 25 shots, no line evidence -> 0 home
+        rc, rs = q('phase', '--run', '20990414')
+        nl = rs[12][0]
+        check('v5_c1015_04_null_proxied_shots_do_not_count', (nl['ps_past_limiter'], nl['ps_past_limiter_all_lines']) == ('0', '25')
+              and nl['c_1015_04'].startswith('C-1015-04 stays NOT ESTABLISHED'), nl)
+        # R-BANK 300 s window pinned from below: a banked CAPTURED ~290 s before each shot IS live (a window narrowed
+        # to 200 s drops all three), and from above: ~310 s before is NOT
+        rc, rs = q('phase', '--run', '20990412')
+        v290 = rs[12][0]
+        check('v5_rbank_capture_290s_before_is_live', (v290['n_first'], v290['n_pagesigned_live'], v290['n_pagesigned_live_any_capture']) ==
+              ('3', '3', '3') and v290['r_bank'].startswith('R-BANK MET'), v290)
+        rc, rs = q('phase', '--run', '20990413')
+        v310 = rs[12][0]
+        check('v5_rbank_capture_310s_before_not_live', (v310['n_first'], v310['n_pagesigned_live'], v310['n_pagesigned_live_any_capture']) ==
+              ('3', '0', '0') and v310['r_bank'] == 'R-BANK NOT MET (< 3)', v310)
         # statement 2: the two past-limiter shots of run 0401 sit in the first 3 s of the window, page-signed
         rc, rs = q('phase', '--run', '20990401')
         s2 = rs[1]

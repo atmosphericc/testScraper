@@ -32,10 +32,12 @@
 --     (a CAPTURED that added a set; the no-token variant is shown separately as n_..._any_capture, 4 of 47,734 CAPTURED
 --     lines across the 213 logs). Fewer than 3 => rule NOT MET (the reservation is not justified by this drop). No
 --     fresh-flip first shots, or no harvest rows in the store => NO DATA, never NOT MET.
---     C-1015-04 ("page-signed shots convert worse") moves only with >= 20 page-signed PAST-LIMITER shots (statement 13,
---     which counts every shot of the selected runs -- pass --run so it counts one night); below that it stays NOT
---     ESTABLISHED whatever the rates look like (home shots, runs 2026-09-06..10-14: 8 page-signed past-limiter shots,
---     1 early + 7 late in statement 2, n=8).
+--     C-1015-04 ("page-signed shots convert worse") moves only with >= 20 page-signed PAST-LIMITER shots on the HOME
+--     line (statement 13, ps_past_limiter = cred_source 'page_signed' AND proxied = 0, i.e. the claim's own population;
+--     a proxied account's shots and a NULL-proxied shot never count toward it -- pass --run so it counts one night);
+--     below that it stays NOT ESTABLISHED whatever the rates look like (home shots, runs 2026-09-06..10-14: 8 page-signed
+--     past-limiter shots, 1 early + 7 late in statement 2, n=8 [MEASURED, main store copy as of 10-14]; the same store
+--     pools 42 over all lines, 34 of them proxied -- shown beside it as ps_past_limiter_all_lines, information only).
 --   INSTRUMENT (statements 1-6, 8-9): a reading is trusted only if the references below still reproduce on the same runs.
 --     FAIL = any difference => read nothing from this query for that night, find the parser regression first.
 --       2  on the store as of 2026-10-15 (runs 2026-09-07..2026-10-14; later runs add rows) [MEASURED, main store copy]:
@@ -58,7 +60,8 @@
 --            < primary (...199); atc_t0 order alt-1 LAST (106 vs 101 / 104); alt-1 was the FAST_SELLING pass. shots.ts_ms is
 --            atc_t0 and does not give wire order.
 --   Statements 3-9 and 10-12 are descriptive: no verdict is pre-registered for them. Nothing here is an established
---   unit lever [NOT ESTABLISHED]; statements 10-13 count home and proxied shots alike (pass --run for one night).
+--   unit lever [NOT ESTABLISHED]; statements 10-12 and the R-BANK part of 13 count home and proxied shots alike (pass --run
+--   for one night); only the C-1015-04 gate in 13 is home-only.
 
 -- 1) harvest rows per run x account, and agreement with the shot join. cred_rows (replay + empty + stale) are the very
 --    lines that feed shots.cred_source: cred_rows >= shots_with_cred, the gap = lines no shot claimed (checks.cred_unclaimed).
@@ -324,9 +327,12 @@ ORDER BY run_id, 2;
 
 -- 13) R-BANK 4/4: the verdicts (pre-registered rules in the header). n_pagesigned_live = fresh-flip first shots that went
 --     page-signed while the account's harvest was live (>= 3 => MET). n_..._any_capture counts a CAPTURED of either kind.
---     ps_past_limiter = page-signed past-limiter shots (>= 20 => C-1015-04 may move). The rules are per DROP NIGHT:
---     scope says 'POOLED over k runs' when the selection holds more than one run with shots -- then pass --run for the
---     night (a pooled history is not a verdict; the 2026-09-06..10-14 store pools 42 page-signed past-limiter shots).
+--     ps_past_limiter = page-signed past-limiter shots on the HOME line only (proxied = 0; a proxied or NULL-proxied shot
+--     is not in the claim's population) -- >= 20 => C-1015-04 may move. ps_past_limiter_all_lines = the same count over
+--     every line, information only: it never gates anything. The rules are per DROP NIGHT: scope says 'POOLED over k runs'
+--     when the selection holds more than one run with shots -- then pass --run for the night (a pooled history is not a
+--     verdict; the 2026-09-06..10-14 store has 8 home page-signed past-limiter shots, 42 over all lines [MEASURED,
+--     main store copy as of 10-14]).
 WITH f AS (
   SELECT s.cred_source,
          (SELECT COUNT(*) FROM harvest h WHERE h.run_id = s.run_id AND h.acct = s.ident AND h.event = 'captured'
@@ -343,8 +349,10 @@ t AS (
          (SELECT COUNT(*) FROM harvest WHERE event = 'captured') AS n_captured,
          (SELECT COUNT(*) FROM f WHERE cred_source = 'page_signed' AND live > 0) AS n_pagesigned_live,
          (SELECT COUNT(*) FROM f WHERE cred_source = 'page_signed' AND live_any > 0) AS n_pagesigned_live_any_capture,
+         (SELECT COUNT(*) FROM shots WHERE cred_source = 'page_signed' AND proxied = 0
+            AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS ps_past_limiter,
          (SELECT COUNT(*) FROM shots WHERE cred_source = 'page_signed'
-            AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS ps_past_limiter
+            AND gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS ps_past_limiter_all_lines
 )
 SELECT CASE WHEN n_runs > 1 THEN 'POOLED over ' || n_runs || ' runs: pass --run for one night'
             ELSE 'one run' END AS scope,
@@ -353,7 +361,7 @@ SELECT CASE WHEN n_runs > 1 THEN 'POOLED over ' || n_runs || ' runs: pass --run 
             WHEN n_harvest_rows = 0 THEN 'NO DATA (no harvest rows: rebuild the store with parser v5)'
             WHEN n_pagesigned_live >= 3 THEN 'R-BANK MET: build the flag-gated BANK-RESERVE (offline tests + Opus verifier)'
             ELSE 'R-BANK NOT MET (< 3)' END AS r_bank,
-       ps_past_limiter,
-       CASE WHEN ps_past_limiter >= 20 THEN 'C-1015-04 may move (>= 20 page-signed past-limiter shots)'
-            ELSE 'C-1015-04 stays NOT ESTABLISHED (< 20 page-signed past-limiter shots)' END AS c_1015_04
+       ps_past_limiter, ps_past_limiter_all_lines,
+       CASE WHEN ps_past_limiter >= 20 THEN 'C-1015-04 may move (>= 20 home page-signed past-limiter shots)'
+            ELSE 'C-1015-04 stays NOT ESTABLISHED (< 20 home page-signed past-limiter shots)' END AS c_1015_04
 FROM t;
