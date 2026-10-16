@@ -79,7 +79,7 @@ import threading as _lk_threading                     # noqa: E402  (probe state
 _LIMKEY_LOCK = _lk_threading.Lock()
 _LIMKEY_STATE: Dict[str, Any] = {
     'last_ts': 0.0, 'times': deque(), 'total': 0, 'stopped': False, 'rr': 0,
-    'first_seen': {}, 'skip_ts': {}, 'errs': 0,
+    'first_seen': {}, 'skip_ts': {}, 'errs': 0, 'marker_logged': False,
 }
 
 
@@ -87,7 +87,8 @@ def limkey_probe_reset() -> None:
     """Forget all fleet-wide probe state (tests only; a process restart does the same)."""
     with _LIMKEY_LOCK:
         _LIMKEY_STATE.update({'last_ts': 0.0, 'times': deque(), 'total': 0, 'stopped': False,
-                              'rr': 0, 'first_seen': {}, 'skip_ts': {}, 'errs': 0})
+                              'rr': 0, 'first_seen': {}, 'skip_ts': {}, 'errs': 0,
+                              'marker_logged': False})
 
 
 def limkey_set_stock_fn(fn) -> None:
@@ -253,6 +254,163 @@ def limkey_result_line(acct, tcin, parsed, key, hop, line, n, err='') -> str:
     if err:
         msg += f" err={err}"
     return msg
+
+
+# ── 2026-10-16 LIMKEY-GUARD-1016: the probe must never leave a hot-TCIN line the buy path adopts ──
+# A probe POST that LANDS a line of the probe TCIN T in the probe account's cart would be read by
+# the armed purchase path as the bot's own line (silent-hold checkout, FX-1001-A strike, boot cart
+# audit adoption, dirty / TTL strike). Active ONLY while the probe is configured
+# (limkey_probe_cfg() is not None) or a durable marker exists; with the probe unset and no marker
+# file every branch below is a no-op (one os.path.exists on the cold marker consumers).
+#   1. any answer that is NOT a proven non-landing -> marker FIRST, stop probing, delete T's line,
+#      confirm with a cart read, clear the marker only when the read proves the line gone;
+#   2. state/limkey_probe_line.json lists (account, tcin, ts, reason): while an entry exists
+#      _check_cart_hold says False, the held-line strike is off, the boot audit deletes (never
+#      adopts) the line and the purchase entry deletes it before any shot;
+#   3. a marker at probe time = no probe for the whole process (stopped persists across relaunch);
+#   4. the purchase / won-cart / held / ride guards are re-read AFTER the evaluate returns.
+# Kill: empty TARGET_WARMUP_PROBE_TCINS (the marker consumers stay until the line is proven gone).
+_LIMKEY_MARKER_PATH = str(Path(__file__).resolve().parents[2] / 'state' / 'limkey_probe_line.json')
+_LIMKEY_MARKER_LOCK = _lk_threading.RLock()
+_LIMKEY_KEYLESS = ('', '-', '?')
+LIMKEY_MARKER_REL = 'state/limkey_probe_line.json'
+
+
+def _lk_marker_load():
+    """(entries, state): state 'none' (no file), 'ok' (parsed) or 'unreadable' (exists but blank,
+    corrupt or the wrong shape). Entries are {'acct' (lower-case), 'tcin', 'ts', 'reason'}.
+    Never raises."""
+    try:
+        p = _LIMKEY_MARKER_PATH
+        if not os.path.exists(p):
+            return [], 'none'
+        with open(p, 'r', encoding='utf-8') as f:
+            d = json.loads(f.read())
+        if isinstance(d, dict):
+            d = [d]
+        if not isinstance(d, list) or not d:
+            return [], 'unreadable'
+        out = []
+        for e in d:
+            if not isinstance(e, dict):
+                return [], 'unreadable'
+            a, t = str(e.get('acct') or '').strip().lower(), str(e.get('tcin') or '').strip()
+            if not a or not t:
+                return [], 'unreadable'
+            out.append({'acct': a, 'tcin': t, 'ts': e.get('ts'), 'reason': str(e.get('reason') or '')})
+        return out, 'ok'
+    except Exception:
+        return [], 'unreadable'
+
+
+def limkey_marker_any() -> bool:
+    """True when the marker file exists at all (a corrupt / blank file counts: fail closed for the
+    PROBE). Never raises."""
+    try:
+        return os.path.exists(_LIMKEY_MARKER_PATH)
+    except Exception:
+        return True
+
+
+def limkey_marker_has(acct, tcin) -> bool:
+    """True when a readable marker entry names exactly this account x TCIN (the consumers on the buy
+    path; an unreadable file matches nothing here, it only stops the probe). Never raises."""
+    try:
+        if not os.path.exists(_LIMKEY_MARKER_PATH):
+            return False
+        with _LIMKEY_MARKER_LOCK:
+            entries, _st = _lk_marker_load()
+        a, t = str(acct or '').strip().lower(), str(tcin or '').strip()
+        return any(e['acct'] == a and e['tcin'] == t for e in entries)
+    except Exception:
+        return False
+
+
+def _lk_marker_store(entries) -> bool:
+    """Atomic write (tmp + replace), or remove the file when there is nothing left."""
+    try:
+        if not entries:
+            try:
+                os.remove(_LIMKEY_MARKER_PATH)
+            except FileNotFoundError:
+                pass
+            return True
+        d = os.path.dirname(_LIMKEY_MARKER_PATH)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = _LIMKEY_MARKER_PATH + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(entries, f)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp, _LIMKEY_MARKER_PATH)
+        return True
+    except Exception:
+        return False
+
+
+def limkey_marker_write(acct, tcin, reason='') -> bool:
+    """Add (or refresh) the (account, tcin) entry. True = durably written. Never raises."""
+    try:
+        with _LIMKEY_MARKER_LOCK:
+            entries, st = _lk_marker_load()
+            a, t = str(acct or '').strip().lower(), str(tcin or '').strip()
+            if not a or not t:
+                return False
+            entries = [e for e in entries if not (e['acct'] == a and e['tcin'] == t)]
+            entries.append({'acct': a, 'tcin': t, 'ts': time.time(), 'reason': str(reason or '')[:120]})
+            return _lk_marker_store(entries)
+    except Exception:
+        return False
+
+
+def limkey_marker_clear(acct, tcin) -> bool:
+    """Drop the (account, tcin) entry (the file goes when it was the last). True = cleared / absent.
+    Callers clear only after a cart read PROVED the line gone. Never raises."""
+    try:
+        with _LIMKEY_MARKER_LOCK:
+            entries, st = _lk_marker_load()
+            if st == 'none':
+                return True
+            if st == 'unreadable':
+                return False
+            a, t = str(acct or '').strip().lower(), str(tcin or '').strip()
+            keep = [e for e in entries if not (e['acct'] == a and e['tcin'] == t)]
+            if len(keep) == len(entries):
+                return True
+            return _lk_marker_store(keep)
+    except Exception:
+        return False
+
+
+def limkey_marked_for(ex, tcin) -> bool:
+    """True when a probe-line marker names ex's account x `tcin`. Module-level (not a method) because
+    _check_cart_hold is also called unbound on lightweight executors (tests, the DCO burst). Never raises."""
+    try:
+        return limkey_marker_has(ex._ident_tag(), tcin)
+    except Exception:
+        return False
+
+
+def limkey_proven_non_landing(parsed, key) -> bool:
+    """True only for the answers that cannot have added a line: an EMPTY-body 429 whose error key
+    is ERR_A2C_TCIN_RATE_LIMITED, a keyless 401, 424, 400, 403, 404, or status 0 (the page's fetch
+    threw: preflight rejected). Anything else (2xx, 5xx, an evaluate error / timeout / unparseable
+    answer = -1, a 429 WITH a body or another key) may have landed. Never raises (error = False)."""
+    try:
+        s = int(parsed.get('status', -1))
+        if s in (0, 400, 403, 404, 424):
+            return True
+        if s == 401:
+            return str(key or '') in _LIMKEY_KEYLESS
+        if s == 429:
+            return parsed.get('n') == 0 and str(key or '') == 'ERR_A2C_TCIN_RATE_LIMITED'
+    except Exception:
+        pass
+    return False
 
 
 def fast_lane_atc_body_literal(tcin, quantity, bytematch: bool) -> str:
@@ -2675,10 +2833,17 @@ class PurchaseExecutor:
                 # v10 (verifier #9, 3b path B): without re-entry a strike's
                 # won-cart loop could end with no held marker to keep its line.
                 return False
+            if self._limkey_marked(tcin):
+                # LIMKEY-GUARD-1016: a line of this TCIN may be the limiter-key probe's, not ours.
+                return False
             s = getattr(self, '_ordered_tcins', None)
             return not (isinstance(s, set) and str(tcin) in s)
         except Exception:
             return False
+
+    def _limkey_marked(self, tcin) -> bool:
+        """LIMKEY-GUARD-1016: a durable probe-line marker names this account x `tcin`. Never raises."""
+        return limkey_marked_for(self, tcin)
 
     def _strike_loop_ok(self) -> bool:
         """FX-1001-A: may a kept line be struck through the won-cart ticket loop
@@ -4114,6 +4279,132 @@ class PurchaseExecutor:
         except Exception:
             return None
 
+    def _limkey_busy_why(self) -> str:
+        """LIMKEY-GUARD-1016 step 4: the purchase / won-cart / held / ride guards of
+        _limkey_guard_why, read again AFTER the probe evaluate returned. '' = none active.
+        Any error counts as active (fail closed)."""
+        try:
+            now = time.time()
+            _sm = self.session_manager
+            if _sm.is_purchase_in_progress() or getattr(_sm, 'purchase_in_progress', False):
+                return 'purchase_live'
+            if self._woncart_quiet():
+                return 'woncart_quiet'
+            if self._held_cart_active():
+                return 'held_cart'
+            if float(getattr(self, '_won_cart_ride_until', 0.0) or 0.0) > now:
+                return 'won_cart_ride'
+            return ''
+        except Exception:
+            return 'guard_error'
+
+    async def _limkey_line_proven_gone(self, tab, tcin) -> bool:
+        """One cart read that carried a cart_items array and shows no line of `tcin`. Never raises
+        (CancelledError excepted)."""
+        try:
+            return await self._strike_line_proven_gone(tab, str(tcin))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    async def _limkey_cleanup(self, tab, acct, tcin, reason: str) -> None:
+        """LIMKEY-GUARD-1016 step 1: the probe answer may have LANDED a line of `tcin`.
+        (a) durable marker FIRST, (b) stop probing fleet-wide, (c) bounded delete of that TCIN's
+        lines (aborted if a purchase / won-cart takes the cart: that purchase's own line of the
+        TCIN is not ours to delete, the marker keeps the line from being adopted and the purchase
+        entry deletes it), (d) clear the marker only when a cart read proves the line gone.
+        Every step logs [LIMKEY_PROBE] event=cleanup. Never raises (CancelledError excepted)."""
+        tag = f"acct={acct} tcin={tcin}"
+        try:
+            wrote = limkey_marker_write(acct, tcin, reason)
+            self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=marker ok={wrote} reason={reason} {tag}")
+            with _LIMKEY_LOCK:
+                _LIMKEY_STATE['stopped'] = True
+            self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=stopped {tag}")
+            ok, n = await self._delete_cart_items(
+                tab, only_tcin=tcin, budget_s=15.0,
+                abort_fn=lambda: self._limkey_busy_why() != '')
+            gone = await self._limkey_line_proven_gone(tab, tcin)
+            self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=delete ok={ok} lines={n} "
+                             f"proven_gone={gone} {tag}")
+            if gone:
+                cleared = limkey_marker_clear(acct, tcin)
+                self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=marker_cleared ok={cleared} {tag}")
+            else:
+                self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=marker_kept reason=line_not_proven_gone "
+                                 f"{tag} -- the purchase entry and the boot audit delete it; "
+                                 f"{LIMKEY_MARKER_REL} lists it")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            try:
+                self._limkey_log(f"[LIMKEY_PROBE] event=cleanup step=error {type(e).__name__}: {e} {tag} "
+                                 f"(marker kept if it was written)")
+            except Exception:
+                pass
+
+    async def _limkey_purge_entry(self, tab, tcin, start_time: float):
+        """LIMKEY-GUARD-1016: the purchase entry for an account x TCIN with a probe-line marker.
+        Delete the line before any shot (no strike branch), clear the marker only when a cart read
+        proves it gone, drop any held / dirty tracking of that TCIN. None = continue with the shot;
+        a result dict = nothing fired (the delete could not be proven; the marker stays and the
+        next dispatch retries). Never raises (CancelledError excepted)."""
+        T = str(tcin)
+        ident = self._ident_tag()
+        try:
+            ok, n = await self._delete_cart_items(tab, only_tcin=T, budget_s=15.0)
+            gone = await self._limkey_line_proven_gone(tab, T)
+            if gone:
+                limkey_marker_clear(ident, T)
+                for attr in ('_held_cart', '_woncart_dirty'):
+                    h = getattr(self, attr, None)
+                    if isinstance(h, dict) and str(h.get('tcin') or '') == T:
+                        setattr(self, attr, None)
+                print(f"[LIMKEY_GUARD] probe line of {T} deleted before the shot (delete_ok={ok} lines={n}), "
+                      f"marker cleared ident={ident}")
+                return None
+            print(f"[LIMKEY_GUARD] probe line of {T} could NOT be proven removed (delete_ok={ok} lines={n}) "
+                  f"— nothing fired; the marker stays and the next dispatch retries ident={ident}")
+            return self._held_skip(T, 'held_cart_release_failed',
+                                   'probe line could not be proven removed before the shot', start_time)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[LIMKEY_GUARD] purge errored ({type(e).__name__}) — nothing fired ident={ident}")
+            return self._held_skip(T, 'held_cart_error',
+                                   f'probe line purge errored: {type(e).__name__}', start_time)
+
+    async def _limkey_boot_delete(self, wt, items, tag: str):
+        """LIMKEY-GUARD-1016 boot cart audit: delete the lines of this account whose TCIN has a probe
+        marker (never adopt them). Returns (state, deleted_ids): (None, []) = no marked line (the audit
+        goes on unchanged); ('filter', ids) = the marked lines are proven gone (the audit goes on with
+        the rest of the cart); ('failed', []) = a marked line could not be proven gone (the audit
+        adopts nothing). Never raises (CancelledError excepted)."""
+        try:
+            ident = self._ident_tag()
+            marked = [i for i in items if limkey_marker_has(ident, i.get('tcin'))]
+            if not marked:
+                return None, []
+            ok, n = await self._delete_cart_items(
+                wt, budget_s=15.0, ids=[i.get('id') for i in marked],
+                abort_fn=lambda: (self._boot_audit_busy()
+                                  or getattr(self, '_held_cart', None) is not None))
+            allgone = True
+            for t in sorted({str(i.get('tcin') or '') for i in marked}):
+                if await self._limkey_line_proven_gone(wt, t):
+                    limkey_marker_clear(ident, t)
+                else:
+                    allgone = False
+            print(f"{tag} {len(marked)} probe-marked line(s) -> DELETED, not adopted ok={ok} lines={n} "
+                  f"proven_gone={allgone} ident={ident}")
+            return ('filter', [i.get('id') for i in marked]) if allgone else ('failed', [])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"{tag} probe-marked line delete errored ({type(e).__name__}) ident={self._ident_tag()}")
+            return 'failed', []
+
     async def _limkey_probe_tick(self, idx: int, now=None) -> None:
         """S2-LIMKEY-PROBE: after the heartbeat on warmup tab `idx` returned, maybe fire ONE
         probe POST at a hot out-of-stock TCIN on the same tab. The answer goes to the
@@ -4125,6 +4416,16 @@ class PurchaseExecutor:
                 return
             now = time.time() if now is None else float(now)
             acct = getattr(self.session_manager, 'account_id', None) or 'session'
+            if limkey_marker_any():
+                # LIMKEY-GUARD-1016 step 3: a probe line may still be in a cart -> no probe for the
+                # whole process (the stop persists even after the marker is cleared).
+                with _LIMKEY_LOCK:
+                    _LIMKEY_STATE['stopped'] = True
+                    first = not _LIMKEY_STATE.get('marker_logged')
+                    _LIMKEY_STATE['marker_logged'] = True
+                if first:
+                    self._limkey_log(f"[LIMKEY_PROBE] event=skip reason=marker_present acct={acct}")
+                return
             if str(acct).strip().lower() not in cfg['idents']:
                 self._limkey_skip('ident_not_listed', str(acct), now)
                 return
@@ -4191,6 +4492,18 @@ class PurchaseExecutor:
                     f"status={parsed['status']} -- a HOT-TCIN LINE WAS ADDED to this account's cart; "
                     f"probing is OFF for the rest of this run; audit the cart and delete the line "
                     f"before the next drop")
+            # LIMKEY-GUARD-1016 steps 1 + 4: anything that is not a proven non-landing is cleaned up
+            # (marker first); the purchase / won-cart / held / ride guards are re-read here, AFTER
+            # the evaluate's await, so a purchase that started during it keeps its own line.
+            _proven = (not err) and limkey_proven_non_landing(parsed, key)
+            if not _proven:
+                _raced = self._limkey_busy_why()
+                _why = (f"evaluate_{err}" if err else f"status_{parsed['status']}")
+                if parsed['status'] == 429 and not err:
+                    _why += f"_body_{parsed.get('n')}_key_{key}"
+                if _raced:
+                    _why += f"_raced_{_raced}"
+                await self._limkey_cleanup(tab, acct, tcin, _why[:120])
         except Exception as e:
             try:
                 _LIMKEY_STATE['errs'] += 1
@@ -5782,6 +6095,11 @@ class PurchaseExecutor:
             # earlier won-cart loop may have left behind with no marker; the
             # legacy path (taken while the FAST_SELLING cooldown runs) would buy
             # it with this purchase. Only the flag-gated loop sets the flag.
+            if self._limkey_marked(tcin):
+                # LIMKEY-GUARD-1016: delete a possibly-landed probe line before any shot.
+                _lk_res = await self._limkey_purge_entry(tab, tcin, start_time)
+                if _lk_res is not None:
+                    return _lk_res
             if getattr(self, '_woncart_dirty', None) is not None:
                 _dirty_res = await self._woncart_dirty_release(tab, tcin, start_time, quantity)
                 if _dirty_res is not None:
@@ -7829,6 +8147,12 @@ class PurchaseExecutor:
         if now - self._last_cart_hold_check_ts < self._cart_hold_check_interval_s:
             return False
         self._last_cart_hold_check_ts = now
+        if limkey_marked_for(self, tcin):
+            # LIMKEY-GUARD-1016: a line of this TCIN in this cart may be the limiter-key probe's;
+            # it is never a silent hold (the purchase entry deletes it before any shot).
+            print(f"[CART_HOLD] {tcin}: probe-line marker present for ident={self._ident_tag()} — "
+                  f"NOT reading the cart for a silent hold (LIMKEY-GUARD)")
+            return False
         # FX-1001-A v7: with the strike on, also report the raw line count, so
         # the legacy-checkout guard can tell a complete tcin list from one that
         # .filter(Boolean) shortened. Flag off: the JS is byte-identical.
@@ -11145,6 +11469,14 @@ class PurchaseExecutor:
             if not items:
                 print(f"{tag} cart empty — nothing to adopt ident={self._ident_tag()}")
                 return 'empty'
+            # LIMKEY-GUARD-1016: a line the limiter-key probe may have landed is DELETED, never adopted.
+            _lk_state, _lk_ids = await self._limkey_boot_delete(wt, items, tag)
+            if _lk_state is not None:
+                if _lk_state == 'failed':
+                    return 'limkey_delete_failed'
+                items = [i for i in items if i.get('id') not in _lk_ids]
+                if not items:
+                    return 'limkey_deleted'
             try:
                 q_ceiling = max(1, int(os.environ.get('TARGET_QTY_CEILING', '2')))
             except ValueError:

@@ -147,6 +147,12 @@ OFFLINE = [
     # PurchaseExecutor on stub tabs; flag-off differential against the pre-change executor via git
     # show; no browser, no network).
     "test_limkey_probe_1015",
+    # 2026-10-16 LIMKEY-GUARD-1016: the probe must never leave a hot-TCIN line the buy path adopts
+    # (durable state/limkey_probe_line.json marker, cleanup after any possibly-landed probe, marker
+    # consumers: silent-hold / strike / boot audit / purchase entry; stub tabs that simulate a cart,
+    # marker redirected to a temp dir; flag-off + no-marker differential against the pre-change
+    # executor via git show; no browser, no network).
+    "test_limkey_guard_1016",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

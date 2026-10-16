@@ -54,6 +54,21 @@ BOGUS = "81926151"
 RESULT_RE = re.compile(r"\[LIMKEY_PROBE\] acct=(\S+) tcin=(\d+) status=(-?\d+) err_key=(\S+) hop=(\S+) "
                        r"line=(\S+) body_len=(-?\d+) n=(\d+)( err=\S+)?")
 REAL_QUIET = pe.limkey_quiet_now
+# LIMKEY-GUARD-1016: a possibly-landed probe now writes a durable marker; keep it out of the real
+# state/ dir and give every case a clean slate (limkey_probe_reset also removes the temp marker).
+pe._LIMKEY_MARKER_PATH = os.path.join(tempfile.mkdtemp(prefix="limkey1015_marker_"), "limkey_probe_line.json")
+_REAL_RESET = pe.limkey_probe_reset
+
+
+def _reset_with_marker():
+    _REAL_RESET()
+    try:
+        os.remove(pe._LIMKEY_MARKER_PATH)
+    except OSError:
+        pass
+
+
+pe.limkey_probe_reset = _reset_with_marker
 pe.limkey_quiet_now = lambda now: False        # the wall clock must not decide a test
 
 
@@ -173,7 +188,9 @@ def seed_seen(tcins, ago=700.0, now=None):
 
 
 def probes(tab):
-    return [s for s in tab.scripts if "readyState" not in s and f"tcin: '{BOGUS}'" not in s]
+    # LIMKEY-GUARD-1016: a cleanup's cart read / DELETE is not a probe; a probe returns the JSON shape
+    return [s for s in tab.scripts if "readyState" not in s and f"tcin: '{BOGUS}'" not in s
+            and "JSON.stringify({s: resp.status" in s]
 
 
 async def tick(ex, now):
@@ -327,7 +344,7 @@ async def test_flag_off_differential():
 
 # ───────────────────────────── flag on ─────────────────────────────
 async def test_probe_fires_after_heartbeat_and_stays_out_of_write_auth():
-    for status, key, hop, n in [(401, "_ERR_AUTH_DENIED", "1", 231), (429, "ERR_A2C_TCIN_RATE_LIMITED", "-", 0),
+    for status, key, hop, n in [(401, "-", "1", 231), (429, "ERR_A2C_TCIN_RATE_LIMITED", "-", 0),
                                 (424, "ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND", "-", 90), (0, "-", "-", 0)]:
         pe.limkey_probe_reset()
         with env(**{FLAG: f"{A},{B}", "TARGET_WARMUP_PROBE_IDENTS": "primary"}):
@@ -568,8 +585,10 @@ async def test_errors_never_reach_the_heartbeat():
         check("evaluate_error_marks_cart_suspect",
               float(getattr(ex, "_dummy_landed_suspect_ts", 0.0) or 0.0) > 0.0 and ex._woncart_cart_suspect() == "dummy_add",
               str(getattr(ex, "_dummy_landed_suspect_ts", None)))
-        check("evaluate_error_still_not_a_stop", pe._LIMKEY_STATE["stopped"] is False
-              and "event=STOP" not in out and ex._limkey_tcin is None)
+        # LIMKEY-GUARD-1016: an evaluate error is not a proven non-landing -> cleanup stops probing
+        # (but it is not the 2xx STOP line)
+        check("evaluate_error_stops_via_cleanup_not_the_2xx_stop", pe._LIMKEY_STATE["stopped"] is True
+              and "event=STOP" not in out and "event=cleanup step=stopped" in out and ex._limkey_tcin is None)
     # the evaluate hangs: bounded by the 15 s wait_for (patched down), loop continues
     pe.limkey_probe_reset()
     with env(**{FLAG: A, "TARGET_WARMUP_PROBE_IDENTS": "primary"}):

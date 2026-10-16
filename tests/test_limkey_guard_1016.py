@@ -1,0 +1,892 @@
+#!/usr/bin/env python3
+"""Offline test: LIMKEY-GUARD-1016 (2026-10-16), the money-safety guard around S2-LIMKEY-PROBE.
+
+WHY: the off-window limiter-key probe POSTs an add-to-cart for a HOT TCIN T on a real account.
+If that POST ever LANDS a line of T, the armed purchase path would treat it as the bot's own line
+(silent-hold checkout, FX-1001-A strike, boot cart audit adoption, dirty / TTL strike). The guard:
+  1. any answer that is not a PROVEN non-landing -> durable marker FIRST, stop probing, delete T's
+     line, confirm with a cart read, clear the marker only when the read proves the line gone;
+  2. while a marker names (account, T): _check_cart_hold is False, the held-line strike is off,
+     the boot audit DELETES (never adopts) the line, the purchase entry deletes it before any shot;
+  3. a marker at probe time = no probe for the whole process;
+  4. the purchase / won-cart / held / ride guards are re-read AFTER the probe evaluate returns.
+With the probe unset and no marker, behaviour is byte-identical (differential against the
+pre-change executor loaded from git).
+
+Drives the REAL executor code with stub tabs that simulate a cart. No browser, no network, no bot.
+The marker is redirected to a temp dir; the real state/ is never touched.
+
+    python tests/test_limkey_guard_1016.py
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import io
+import json
+import os
+import re
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
+os.environ["TARGET_API_CAPTURE_CHECKOUT_STEPS"] = "false"
+os.environ["TARGET_API_CAPTURE_PLACE_ORDER"] = "false"
+os.environ.setdefault("TARGET_API_PLACE_ORDER", "true")
+
+import test_limkey_probe_1015 as L  # noqa: E402  (import only; redirects the marker to a temp dir)
+import test_won_cart_direct_smoke as S  # noqa: E402  (import only; its main() does not run)
+import src.session.purchase_executor as pe  # noqa: E402
+
+PRE_COMMIT = "ee1d653baf89975fb7d1d40bcaaee67a2873ab09"     # HEAD before LIMKEY-GUARD-1016 (probe, no guard)
+PASSED, FAILED = [], []
+FLAG = "TARGET_WARMUP_PROBE_TCINS"
+A, B = "1010892076", "1011960739"
+OTHER = "1010892067"
+BOGUS = "81926151"
+ENV_ON = {FLAG: A, "TARGET_WARMUP_PROBE_IDENTS": "primary"}
+STRIKE_ENV = {"TARGET_HELD_LINE_FLIP_STRIKE": "1", "TARGET_FASTLANE_QTY_GUARD": "1",
+              "TARGET_HELD_CART_REENTRY": "1"}
+BOOT_ENV = {"TARGET_HELD_CART_REENTRY": "1", "TARGET_BOOT_CART_AUDIT": "1"}
+ERR_A2C = "ERR_A2C_TCIN_RATE_LIMITED"
+
+
+def check(name, cond, detail=""):
+    (PASSED if cond else FAILED).append(name)
+    print(f"[{'PASS' if cond else 'FAIL'}] {name}" + ("" if cond else f"  {detail}"))
+
+
+def arun(coro):
+    """Run a coroutine, capture its stdout. -> (result, stdout)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        r = asyncio.run(coro)
+    return r, buf.getvalue()
+
+
+env = L.env
+
+
+def marker_entries():
+    return pe._lk_marker_load()[0]
+
+
+def marker_file_exists():
+    return os.path.exists(pe._LIMKEY_MARKER_PATH)
+
+
+def fresh():
+    pe.limkey_probe_reset()          # the 1015 test's wrapper also removes the temp marker file
+
+
+# ───────────────────────────── a tab that simulates the cart ─────────────────────────────
+class CartTab:
+    """Heartbeat (bogus TCIN) -> hb_status. Probe POST -> the configured answer (and, with
+    lands=True, a line of the probe TCIN appears in the simulated cart). Cart read / DELETE /
+    silent-hold read run against the simulated cart. `log` records (kind, marker_existed_then)."""
+
+    def __init__(self, ex, probe=None, lands=False, probe_raises=None, probe_raw=None, hb_status=424,
+                 delete_status=200, read_mode="ok", lines=None, on_probe=None, dead_after_probe=False):
+        self.url = "https://www.target.com/cart"
+        self.ex = ex
+        self.probe = probe or {"status": 429, "key": ERR_A2C, "hop": "-", "n": 0}
+        self.lands = lands
+        self.probe_raises = probe_raises
+        self.probe_raw = probe_raw
+        self.hb_status = hb_status
+        self.delete_status = delete_status
+        self.read_mode = read_mode                  # ok | fail | no_array
+        self.lines = list(lines or [])              # [{'id','tcin','qty'}]
+        self.on_probe = on_probe
+        self.dead_after_probe = dead_after_probe
+        self.dead = False
+        self.log = []
+        self.scripts = []
+        self._seq = 0
+
+    async def get(self, url):
+        return None
+
+    def add_line(self, tcin, qty=1):
+        self._seq += 1
+        self.lines.append({"id": f"CI{self._seq:04d}", "tcin": str(tcin), "qty": qty})
+
+    def tcins(self):
+        return [l["tcin"] for l in self.lines]
+
+    async def evaluate(self, script, await_promise=False):
+        self.scripts.append(script)
+        if "readyState" in script:
+            return "complete"
+        mk = marker_file_exists()
+        if f"tcin: '{BOGUS}'" in script:
+            self.ex._cached_cart_headers_ts = time.time()
+            return self.hb_status
+        if self.dead:
+            raise RuntimeError("tab dead")
+        if "JSON.stringify({s: resp.status" in script:
+            self.log.append(("probe", mk))
+            if self.on_probe:
+                self.on_probe(self)
+            if self.dead_after_probe:
+                self.dead = True
+            if self.probe_raises is not None:
+                raise self.probe_raises
+            p = self.probe
+            w = getattr(self.ex, "_limkey_wait", None)
+            if w is not None:
+                w.append((p["status"], p["key"], p["hop"]))
+            if self.lands:
+                self.add_line(re.search(r"tcin: '(\d+)'", script).group(1))
+            if self.probe_raw is not None:
+                return self.probe_raw
+            if p["status"] == 0:
+                return 0
+            return json.dumps({"s": p["status"], "k": "", "n": p["n"], "b": ""})
+        if script == pe._CART_ITEMS_READ_JS:
+            self.log.append(("read", mk))
+            if self.read_mode == "fail":
+                return {"ok": False, "status": 429, "items": []}
+            out = {"ok": True, "status": 200, "items": [dict(l) for l in self.lines]}
+            if self.read_mode != "no_array":
+                out["has_items"] = True
+            return out
+        if "method: 'DELETE'" in script:
+            self.log.append(("delete", mk))
+            cid = re.search(r"cart_items/([A-Za-z0-9_-]+)'", script).group(1)
+            if self.delete_status in (200, 204):
+                self.lines = [l for l in self.lines if l["id"] != cid]
+            return self.delete_status
+        if "field_groups=CART,CART_ITEMS" in script:
+            self.log.append(("hold", mk))
+            return {"ok": True, "tcins": self.tcins()}
+        return None
+
+    def kinds(self):
+        return [k for k, _ in self.log]
+
+
+def make(acct="primary", **tab_kw):
+    sm = L.FakeSM(acct)
+    ex = pe.PurchaseExecutor(session_manager=sm)
+    tab = CartTab(ex, **tab_kw)
+    ex._warmup_browser_ref = sm.browser
+    ex._warmup_tabs = [tab]
+    ex._warmup_tab_cart_ts = {0: time.time() - 5.2}
+    ex._stock_live_fn = L.stock_all("oos_never", time.time())
+    L.seed_seen([A], now=time.time())
+    return ex, tab, sm
+
+
+def tick(ex, now=None):
+    now = time.time() if now is None else now
+    return arun(ex._limkey_probe_tick(0, now=now))[1]
+
+
+def probes_sent(tab):
+    return sum(1 for k in tab.kinds() if k == "probe")
+
+
+# ───────────────────────────── pure helpers ─────────────────────────────
+def test_classifier():
+    P = pe.limkey_proven_non_landing
+    proven = [(429, ERR_A2C, 0), (401, "-", 231), (401, "", 5), (401, "?", 5), (424, "X", 90), (400, "-", 10),
+              (403, "-", 10), (404, "-", 10), (0, "-", 0)]
+    for s, k, n in proven:
+        check(f"classify_proven_{s}_{k}_{n}", P({"status": s, "n": n}, k) is True)
+    unproven = [(200, "-", 0), (201, "-", 900), (204, "-", 0), (500, "-", 0), (503, "-", 0), (302, "-", 0),
+                (429, ERR_A2C, 90), (429, ERR_A2C, -1), (429, "OTHER_KEY", 0), (429, "-", 0), (429, "?", 0),
+                (429, "", 0), (401, "_ERR_AUTH_DENIED", 231), (-1, "-", -1), (409, "-", 0), (422, "-", 0)]
+    for s, k, n in unproven:
+        check(f"classify_unproven_{s}_{k}_{n}", P({"status": s, "n": n}, k) is False)
+    check("classify_error_is_unproven", P(None, "-") is False and P({"status": "z"}, "-") is False
+          and P({}, "-") is False)
+
+
+def test_marker_io():
+    fresh()
+    check("marker_absent_at_start", not marker_file_exists() and not pe.limkey_marker_any()
+          and not pe.limkey_marker_has("primary", A))
+    check("marker_write_ok", pe.limkey_marker_write("Primary", A, "status_201") is True)
+    e = marker_entries()
+    check("marker_entry_fields", len(e) == 1 and e[0]["acct"] == "primary" and e[0]["tcin"] == A
+          and e[0]["reason"] == "status_201" and abs(float(e[0]["ts"]) - time.time()) < 5, str(e))
+    raw = json.loads(Path(pe._LIMKEY_MARKER_PATH).read_text(encoding="utf-8"))
+    check("marker_file_is_a_json_list_with_the_four_keys", isinstance(raw, list)
+          and set(raw[0]) == {"acct", "tcin", "ts", "reason"}, str(raw))
+    check("marker_has_is_account_and_tcin_exact", pe.limkey_marker_has("primary", A) and pe.limkey_marker_has("PRIMARY", A)
+          and not pe.limkey_marker_has("alt-1", A) and not pe.limkey_marker_has("primary", B)
+          and not pe.limkey_marker_has("primary", None) and not pe.limkey_marker_has(None, A))
+    pe.limkey_marker_write("alt-1", B, "x")
+    pe.limkey_marker_write("primary", A, "refreshed")
+    e = marker_entries()
+    check("marker_two_entries_refresh_not_duplicate", len(e) == 2
+          and sorted((x["acct"], x["tcin"]) for x in e) == [("alt-1", B), ("primary", A)]
+          and [x for x in e if x["acct"] == "primary"][0]["reason"] == "refreshed", str(e))
+    check("marker_clear_one_keeps_the_other", pe.limkey_marker_clear("primary", A) is True
+          and not pe.limkey_marker_has("primary", A) and pe.limkey_marker_has("alt-1", B) and marker_file_exists())
+    check("marker_clear_last_removes_the_file", pe.limkey_marker_clear("alt-1", B) is True and not marker_file_exists())
+    check("marker_clear_absent_is_true", pe.limkey_marker_clear("alt-1", B) is True)
+    check("marker_no_tmp_left_behind", not os.path.exists(pe._LIMKEY_MARKER_PATH + ".tmp"))
+    # unreadable: blank / corrupt / wrong shape -> stops the probe, matches no consumer, never cleared by guess
+    for label, body in (("blank", ""), ("corrupt", "{oops"), ("empty_list", "[]"), ("wrong_shape", '["x"]'),
+                        ("no_tcin", '[{"acct":"primary"}]')):
+        Path(pe._LIMKEY_MARKER_PATH).write_text(body, encoding="utf-8")
+        check(f"marker_unreadable_{label}_stops_the_probe_only",
+              pe.limkey_marker_any() is True and pe.limkey_marker_has("primary", A) is False
+              and pe.limkey_marker_clear("primary", A) is False)
+    fresh()
+    # never raises: a path under a regular file cannot be written
+    real = pe._LIMKEY_MARKER_PATH
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "afile"
+        f.write_text("x")
+        pe._LIMKEY_MARKER_PATH = str(f / "sub" / "m.json")
+        try:
+            check("marker_write_failure_returns_false", pe.limkey_marker_write("primary", A, "x") is False)
+            check("marker_has_on_bad_path_false", pe.limkey_marker_has("primary", A) is False)
+        finally:
+            pe._LIMKEY_MARKER_PATH = real
+    fresh()
+
+
+# ───────────────────────────── step 1: cleanup ─────────────────────────────
+def test_cleanup_after_a_landed_line():
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
+        out = tick(ex)
+    check("landed_line_probe_fired_once", probes_sent(tab) == 1)
+    check("landed_marker_written_before_any_cart_call", tab.log[0] == ("probe", False)
+          and all(mk for k, mk in tab.log[1:]), str(tab.log))
+    check("landed_line_deleted", A not in tab.tcins() and "delete" in tab.kinds(), str(tab.lines))
+    check("landed_marker_cleared_after_the_read_proved_it_gone", not marker_file_exists()
+          and tab.kinds()[-1] == "read", str(tab.log))
+    check("landed_stopped_fleet_wide", pe._LIMKEY_STATE["stopped"] is True)
+    order = [out.find(s) for s in ("event=STOP reason=probe_2xx", "event=cleanup step=marker ok=True",
+                                   "event=cleanup step=stopped", "event=cleanup step=delete ok=True",
+                                   "event=cleanup step=marker_cleared ok=True")]
+    check("landed_every_step_logged_in_order", all(i >= 0 for i in order) and order == sorted(order), out)
+    check("landed_cleanup_lines_are_limkey_probe_events",
+          all(ln.startswith("[LIMKEY_PROBE]") for ln in out.splitlines() if "cleanup" in ln))
+
+    # other lines in the cart are never deleted (only_tcin)
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True,
+                           lines=[{"id": "KEEP1", "tcin": OTHER, "qty": 1}])
+        tick(ex)
+    check("landed_foreign_line_survives_the_cleanup", tab.tcins() == [OTHER], str(tab.lines))
+
+    # the 2xx wait: second probe never fires fleet-wide
+    with env(**ENV_ON):
+        tick(ex, time.time() + 500)
+    check("landed_no_second_probe", probes_sent(tab) == 1)
+
+
+UNPROVEN = [
+    ("200", {"status": 200, "key": "-", "hop": "-", "n": 10}),
+    ("201", {"status": 201, "key": "-", "hop": "-", "n": 900}),
+    ("204", {"status": 204, "key": "-", "hop": "-", "n": 0}),
+    ("500", {"status": 500, "key": "-", "hop": "-", "n": 0}),
+    ("503", {"status": 503, "key": "-", "hop": "-", "n": 0}),
+    ("429_with_body", {"status": 429, "key": ERR_A2C, "hop": "-", "n": 90}),
+    ("429_other_key", {"status": 429, "key": "ERR_OTHER", "hop": "-", "n": 0}),
+    ("429_no_key", {"status": 429, "key": "-", "hop": "-", "n": 0}),
+    ("401_keyed", {"status": 401, "key": "_ERR_AUTH_DENIED", "hop": "1", "n": 231}),
+    ("302", {"status": 302, "key": "-", "hop": "-", "n": 0}),
+]
+PROVEN = [
+    ("429_empty_err_a2c", {"status": 429, "key": ERR_A2C, "hop": "-", "n": 0}),
+    ("401_keyless", {"status": 401, "key": "-", "hop": "1", "n": 231}),
+    ("424", {"status": 424, "key": "ITEM_NOT_READY_FOR_LAUNCH", "hop": "-", "n": 90}),
+    ("400", {"status": 400, "key": "-", "hop": "-", "n": 40}),
+    ("403", {"status": 403, "key": "-", "hop": "-", "n": 40}),
+    ("404", {"status": 404, "key": "-", "hop": "-", "n": 40}),
+    ("status_0", {"status": 0, "key": "-", "hop": "-", "n": 0}),
+]
+
+
+def test_cleanup_matrix():
+    for label, probe in UNPROVEN:
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe=probe, lands=True)
+            out = tick(ex)
+        check(f"unproven_{label}_cleans_up", probes_sent(tab) == 1 and "event=cleanup step=marker ok=True" in out
+              and A not in tab.tcins() and not marker_file_exists() and pe._LIMKEY_STATE["stopped"] is True,
+              f"{tab.log} {tab.lines} {out[-300:]}")
+        check(f"unproven_{label}_marker_first", tab.log and tab.log[0] == ("probe", False)
+              and all(mk for k, mk in tab.log[1:]), str(tab.log))
+    # an answer we could not read at all, an evaluate error, a timeout
+    cases = [("unparseable", dict(probe_raw="oops-not-json")), ("none", dict(probe_raw=None, probe_raises=RuntimeError("x"))),
+             ("evaluate_error", dict(probe_raises=RuntimeError("socket closed")))]
+    for label, kw in cases:
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(lands=True, **kw)
+            out = tick(ex)
+        check(f"unproven_{label}_cleans_up", "event=cleanup step=marker ok=True" in out and A not in tab.tcins()
+              and not marker_file_exists() and pe._LIMKEY_STATE["stopped"] is True, f"{tab.log} {out[-300:]}")
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(lands=True)
+
+        async def hang_probe(self_, script, await_promise=False, _orig=CartTab.evaluate):
+            if "JSON.stringify({s: resp.status" in script:
+                tab.log.append(("probe", marker_file_exists()))
+                tab.add_line(A)                              # it landed, but the answer never came back
+                await asyncio.sleep(30)
+            return await _orig(self_, script, await_promise)
+        tab.evaluate = lambda script, await_promise=False: hang_probe(tab, script, await_promise)
+        real_wait_for = pe.asyncio.wait_for
+        pe.asyncio.wait_for = lambda aw, timeout=None: real_wait_for(aw, timeout=0.3)
+        try:
+            out = tick(ex)
+        finally:
+            pe.asyncio.wait_for = real_wait_for
+    check("unproven_timeout_cleans_up", "err=TimeoutError" in out and "event=cleanup step=marker ok=True" in out
+          and A not in tab.tcins() and not marker_file_exists() and pe._LIMKEY_STATE["stopped"] is True,
+          f"{tab.log} {out[-300:]}")
+    # nothing landed (cart has no line of T): cleanup finds nothing to delete, proves it, clears the marker
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 500, "key": "-", "hop": "-", "n": 0}, lands=False)
+        out = tick(ex)
+    check("unproven_but_nothing_landed_clears_cleanly", "delete" not in tab.kinds() and not marker_file_exists()
+          and "step=marker_cleared ok=True" in out and pe._LIMKEY_STATE["stopped"] is True, f"{tab.log} {out[-300:]}")
+
+
+def test_proven_non_landing_does_nothing():
+    for label, probe in PROVEN:
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe=probe, lands=False)
+            out = tick(ex)
+        check(f"proven_{label}_no_cleanup", probes_sent(tab) == 1 and tab.kinds() == ["probe"]
+              and not marker_file_exists() and pe._LIMKEY_STATE["stopped"] is False and "cleanup" not in out
+              and "[LIMKEY_PROBE] acct=primary" in out, f"{tab.log} {out[-300:]}")
+        with env(**ENV_ON):
+            check(f"proven_{label}_can_probe_again", pe.limkey_reserve(pe.limkey_probe_cfg(), time.time() + 10_000) == "")
+
+
+def test_cleanup_failures_keep_the_marker():
+    for label, kw in (("delete_500", dict(delete_status=500)), ("delete_404", dict(delete_status=404)),
+                      ("read_fails", dict(read_mode="fail")), ("read_has_no_array", dict(read_mode="no_array"))):
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True, **kw)
+            out = tick(ex)
+        e = marker_entries()
+        check(f"cleanup_{label}_marker_stays", len(e) == 1 and e[0]["acct"] == "primary" and e[0]["tcin"] == A
+              and e[0]["reason"].startswith("status_201"), f"{e} {out[-300:]}")
+        check(f"cleanup_{label}_still_stopped_and_says_so", pe._LIMKEY_STATE["stopped"] is True
+              and "step=marker_kept reason=line_not_proven_gone" in out and "step=marker_cleared" not in out, out[-400:])
+    # a delete that "worked" but a re-read that still shows the line -> NOT proven gone
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True, delete_status=204)
+        real = tab.evaluate
+
+        async def sticky(script, await_promise=False):
+            r = await real(script, await_promise)
+            if "method: 'DELETE'" in script:
+                tab.add_line(A)                               # the delete reported ok; the line is still there
+            return r
+        tab.evaluate = sticky
+        tick(ex)
+    check("cleanup_ok_delete_but_line_still_there_keeps_marker", marker_file_exists() and pe.limkey_marker_has("primary", A))
+
+
+def test_cleanup_never_raises():
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True, dead_after_probe=True)
+        try:
+            out = tick(ex)
+            ok = True
+        except BaseException as e:               # noqa: BLE001
+            out, ok = repr(e), False
+    check("dead_tab_after_probe_never_raises", ok, out)
+    check("dead_tab_marker_written_and_kept_stopped", marker_file_exists() and pe._LIMKEY_STATE["stopped"] is True)
+    # marker cannot be written: still stops and still tries the delete
+    fresh()
+    real = pe._LIMKEY_MARKER_PATH
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "afile"
+        f.write_text("x")
+        pe._LIMKEY_MARKER_PATH = str(f / "sub" / "m.json")
+        try:
+            with env(**ENV_ON):
+                ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
+                out = tick(ex)
+        finally:
+            pe._LIMKEY_MARKER_PATH = real
+    check("marker_unwritable_still_stops_and_deletes", pe._LIMKEY_STATE["stopped"] is True and A not in tab.tcins()
+          and "event=cleanup step=marker ok=False" in out, out[-400:])
+    # an exception inside the cleanup itself is swallowed
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
+
+        async def boom(*a, **k):
+            raise ValueError("boom")
+        ex._delete_cart_items = boom
+        out = tick(ex)
+    check("cleanup_internal_error_is_logged_not_raised", "event=cleanup step=error ValueError" in out
+          and marker_file_exists() and pe._LIMKEY_STATE["stopped"] is True, out[-400:])
+
+
+# ───────────────────────────── step 4: the guards after the await ─────────────────────────────
+def test_guards_reread_after_the_await():
+    cases = [
+        ("purchase_in_progress", lambda t: setattr(t.ex.session_manager, "purchase_in_progress", True)),
+        ("woncart_quiet", lambda t: setattr(t.ex, "_woncart_active_until", time.time() + 60)),
+        ("held_cart", lambda t: setattr(t.ex, "_held_cart", {"created": time.time(), "tcin": OTHER})),
+        ("won_cart_ride", lambda t: setattr(t.ex, "_won_cart_ride_until", time.time() + 60)),
+    ]
+    for label, mutate in cases:
+        # not a proven non-landing + a guard became active during the await: marker, stop, NO delete
+        # (the purchase / ride owns the cart; its own line of T is not ours to delete)
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True, on_probe=mutate)
+            out = tick(ex)
+        e = marker_entries()
+        check(f"raced_{label}_marker_written_and_kept", len(e) == 1 and f"raced_" in e[0]["reason"], f"{e} {out[-300:]}")
+        check(f"raced_{label}_no_delete_while_the_cart_is_owned", "delete" not in tab.kinds(), str(tab.log))
+        check(f"raced_{label}_probing_stopped", pe._LIMKEY_STATE["stopped"] is True and "step=stopped" in out)
+        # a proven non-landing is untouched by a raced guard
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe={"status": 429, "key": ERR_A2C, "hop": "-", "n": 0}, on_probe=mutate)
+            out = tick(ex)
+        check(f"raced_{label}_proven_non_landing_is_left_alone", tab.kinds() == ["probe"] and not marker_file_exists()
+              and pe._LIMKEY_STATE["stopped"] is False and "cleanup" not in out, f"{tab.log} {out[-200:]}")
+    # the pre-evaluate guards still refuse before the await (unchanged)
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make()
+        ex.session_manager.purchase_in_progress = True
+        out = tick(ex)
+    check("pre_await_guard_still_refuses", probes_sent(tab) == 0 and "reason=purchase_live" in out)
+    # a guard that raises counts as busy
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
+        orig = ex._woncart_quiet
+        calls = {"n": 0}
+
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] >= 2:                   # the pre-await guard passes; the post-await read raises
+                raise RuntimeError("x")
+            return orig()
+        ex._woncart_quiet = flaky
+        out = tick(ex)
+    check("post_await_guard_error_counts_as_busy", "delete" not in tab.kinds() and marker_file_exists()
+          and "guard_error" in marker_entries()[0]["reason"], f"{tab.log} {marker_entries()}")
+
+
+# ───────────────────────────── step 3: the stop persists ─────────────────────────────
+def test_marker_stops_the_probe_for_the_process():
+    fresh()
+    pe.limkey_marker_write("primary", A, "left_by_a_previous_process")
+    with env(**ENV_ON):
+        ex, tab, sm = make()
+        out1 = tick(ex)
+        out2 = tick(ex, time.time() + 500)
+        ex2, tab2, _ = make(acct="primary")
+        out3 = tick(ex2, time.time() + 900)
+    check("marker_present_no_probe", probes_sent(tab) == 0 and probes_sent(tab2) == 0 and tab.kinds() == [])
+    check("marker_present_logged_once", out1.count("[LIMKEY_PROBE] event=skip reason=marker_present") == 1
+          and "marker_present" not in out2 and "marker_present" not in out3, f"{out1!r} {out2!r} {out3!r}")
+    check("marker_present_sets_stopped", pe._LIMKEY_STATE["stopped"] is True)
+    # the marker is cleared by the purchase entry / boot audit -> this process still does not probe
+    os.remove(pe._LIMKEY_MARKER_PATH)
+    with env(**ENV_ON):
+        out4 = tick(ex, time.time() + 2000)
+    check("stop_persists_after_the_marker_is_cleared", probes_sent(tab) == 0 and out4 == "", out4)
+    # a new process (reset) with no marker probes again
+    fresh()
+    with env(**ENV_ON):
+        ex3, tab3, _ = make()
+        tick(ex3)
+    check("new_process_without_marker_probes", probes_sent(tab3) == 1)
+    # an unreadable marker file also stops the probe
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
+    with env(**ENV_ON):
+        ex4, tab4, _ = make()
+        out5 = tick(ex4)
+    check("unreadable_marker_stops_the_probe", probes_sent(tab4) == 0 and "marker_present" in out5)
+    fresh()
+    # another account's marker also stops it (the whole process)
+    pe.limkey_marker_write("alt-1", B, "x")
+    with env(**ENV_ON):
+        ex5, tab5, _ = make()
+        tick(ex5)
+    check("any_accounts_marker_stops_the_probe", probes_sent(tab5) == 0)
+    fresh()
+    # probe unset + marker: the tick is a no-op (cfg None returns first) - and the loop never calls it
+    pe.limkey_marker_write("primary", A, "x")
+    with env(**{FLAG: None}):
+        ex6, tab6, _ = make()
+        out6 = tick(ex6)
+    check("probe_unset_marker_present_tick_is_silent", out6 == "" and tab6.kinds() == [])
+    fresh()
+
+
+# ───────────────────────────── step 2: the marker consumers ─────────────────────────────
+def test_check_cart_hold():
+    fresh()
+    for label, marked, expect in (("no_marker", None, True), ("marker_this_acct_tcin", ("primary", A), False),
+                                  ("marker_other_acct", ("alt-1", A), True), ("marker_other_tcin", ("primary", B), True)):
+        fresh()
+        if marked:
+            pe.limkey_marker_write(*marked, "x")
+        ex, tab, sm = make(lines=[{"id": "L1", "tcin": A, "qty": 1}])
+        ex._cart_hold_check_on = True
+        ex._last_cart_hold_check_ts = 0.0
+        ex._cart_hold_check_interval_s = 0.0
+        r, out = arun(ex._check_cart_hold(tab, A, 429))
+        check(f"cart_hold_{label}", r is expect, f"{r} {out}")
+        if not expect:
+            check(f"cart_hold_{label}_reads_nothing", "hold" not in tab.kinds(), str(tab.log))
+    fresh()
+    # the marker is gone once the line is proven gone -> the silent-hold check works again
+    pe.limkey_marker_write("primary", A, "x")
+    pe.limkey_marker_clear("primary", A)
+    ex, tab, sm = make(lines=[{"id": "L1", "tcin": A, "qty": 1}])
+    ex._cart_hold_check_on = True
+    ex._last_cart_hold_check_ts = 0.0
+    ex._cart_hold_check_interval_s = 0.0
+    r, _ = arun(ex._check_cart_hold(tab, A, 429))
+    check("cart_hold_works_again_after_the_marker_clears", r is True)
+
+
+def test_strike_inactive_under_a_marker():
+    fresh()
+    with env(**STRIKE_ENV):
+        ex, tab, sm = make()
+        check("strike_active_without_marker", ex._held_line_strike_active(A) is True)
+        pe.limkey_marker_write("primary", A, "x")
+        check("strike_inactive_for_the_marked_tcin", ex._held_line_strike_active(A) is False)
+        check("strike_active_for_another_tcin", ex._held_line_strike_active(B) is True)
+        ex2, _, _ = make(acct="alt-1")
+        check("strike_active_for_another_account", ex2._held_line_strike_active(A) is True)
+        pe.limkey_marker_clear("primary", A)
+        check("strike_active_again_after_the_marker_clears", ex._held_line_strike_active(A) is True)
+    fresh()
+
+
+def _boot(ex, tab):
+    async def go():
+        ex._warmup_pool_lock = asyncio.Lock()
+
+        async def ens(idx):
+            return tab
+        ex._ensure_warmup_tab = ens
+        ex._woncart_armed = lambda: True
+        ex._woncart_api_path_on = lambda: True
+        return await ex._boot_cart_audit(delay_s=0.0)
+    return arun(go())
+
+
+def test_boot_audit_deletes_instead_of_adopting():
+    one = [{"id": "CI0001", "tcin": A, "qty": 1}]
+    # differential: no marker -> the single clean line is ADOPTED (today's behaviour)
+    fresh()
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=list(one))
+        r, out = _boot(ex, tab)
+    check("boot_no_marker_adopts_as_before", r == "held" and isinstance(ex._held_cart, dict)
+          and ex._held_cart["tcin"] == A and tab.tcins() == [A] and "delete" not in tab.kinds(), f"{r} {out}")
+    # marker -> deleted, not adopted
+    fresh()
+    pe.limkey_marker_write("primary", A, "status_201")
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=list(one))
+        r, out = _boot(ex, tab)
+    check("boot_marker_deletes_not_adopts", r == "limkey_deleted" and ex._held_cart is None and tab.tcins() == []
+          and "DELETED, not adopted" in out, f"{r} {out}")
+    check("boot_marker_cleared_once_proven_gone", not marker_file_exists())
+    # a marker for another account / TCIN does not stop adoption
+    for label, marked in (("other_account", ("alt-1", A)), ("other_tcin", ("primary", B))):
+        fresh()
+        pe.limkey_marker_write(*marked, "x")
+        with env(**BOOT_ENV):
+            ex, tab, sm = make(lines=list(one))
+            r, out = _boot(ex, tab)
+        check(f"boot_{label}_marker_still_adopts", r == "held" and ex._held_cart["tcin"] == A and tab.tcins() == [A], f"{r}")
+    # probe line + one other clean line: the probe line goes, the rest is judged as before (adopted)
+    fresh()
+    pe.limkey_marker_write("primary", A, "x")
+    with env(**BOOT_ENV):
+        ex, tab, sm = make(lines=[{"id": "CI0001", "tcin": A, "qty": 1}, {"id": "CI0002", "tcin": OTHER, "qty": 1}])
+        r, out = _boot(ex, tab)
+    check("boot_marker_plus_other_line_probe_deleted_other_adopted", r == "held" and ex._held_cart["tcin"] == OTHER
+          and tab.tcins() == [OTHER] and not marker_file_exists(), f"{r} {tab.lines} {out}")
+    # delete that cannot be proven: nothing adopted, marker stays
+    for label, kw in (("delete_500", dict(delete_status=500)), ("read_after_fails", None)):
+        fresh()
+        pe.limkey_marker_write("primary", A, "x")
+        with env(**BOOT_ENV):
+            ex, tab, sm = make(lines=list(one), **(kw or {}))
+            if kw is None:
+                real = tab.evaluate
+                state = {"reads": 0}
+
+                async def flaky(script, await_promise=False):
+                    if script == pe._CART_ITEMS_READ_JS:
+                        state["reads"] += 1
+                        if state["reads"] >= 2:
+                            tab.read_mode = "fail"
+                    return await real(script, await_promise)
+                tab.evaluate = flaky
+            r, out = _boot(ex, tab)
+        check(f"boot_marker_{label}_adopts_nothing_keeps_marker", r == "limkey_delete_failed" and ex._held_cart is None
+              and pe.limkey_marker_has("primary", A), f"{r} {out}")
+    fresh()
+
+
+# ───────────────────────────── step 2: the purchase entry ─────────────────────────────
+class SimCart:
+    def __init__(self, lines):
+        self.lines = list(lines)
+        self.events = []
+        self.fail_delete = False
+        self.fail_read = False
+
+
+def _impl_ex(cart, ident="primary"):
+    c = S.Clock()
+    ex, tab = S.impl_ex(c, S.FL_PRE429)
+    ex.session_manager.account_id = ident
+
+    async def _read(t, timeout=2.5):
+        cart.events.append("read")
+        if cart.fail_read:
+            return {"ok": False, "status": 429, "items": []}
+        return {"ok": True, "status": 200, "has_items": True, "items": [dict(l) for l in cart.lines]}
+
+    async def _del(t, only_tcin=None, keep_tcin=None, budget_s=15.0, ids=None, abort_fn=None):
+        cart.events.append(f"delete:{only_tcin}")
+        if cart.fail_delete:
+            return False, 0
+        n = len([l for l in cart.lines if l["tcin"] == str(only_tcin)])
+        cart.lines = [l for l in cart.lines if l["tcin"] != str(only_tcin)]
+        return True, n
+
+    ex._cart_items_read = _read
+    ex._delete_cart_items = _del
+    real_fl = ex._api_fast_lane
+
+    async def _fl(t, tcin, qty, hdrs):
+        cart.events.append("SHOT")
+        return await real_fl(t, tcin, qty, hdrs)
+    ex._api_fast_lane = _fl
+    return ex, c
+
+
+def _impl_run(ex):
+    try:
+        return S.run_impl(ex)
+    except BaseException as e:                    # noqa: BLE001  (the stub chain ends in LegacyReached)
+        return {"_raised": type(e).__name__}
+
+
+def test_purchase_entry():
+    T = S.TCIN
+    # no marker: nothing is read or deleted before the shot (differential)
+    fresh()
+    cart = SimCart([])
+    ex, c = _impl_ex(cart)
+    _impl_run(ex)
+    check("entry_no_marker_goes_straight_to_the_shot", cart.events[:1] == ["SHOT"] and "delete:%s" % T not in cart.events,
+          str(cart.events))
+    # marker + probe line: deleted and proven gone BEFORE the shot, marker cleared
+    fresh()
+    pe.limkey_marker_write("primary", T, "status_201")
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    ex, c = _impl_ex(cart)
+    ex._held_cart = {"tcin": T, "created": c.t, "source": "boot"}
+    _impl_run(ex)
+    check("entry_marker_deletes_the_line_before_the_shot", cart.events[:3] == [f"delete:{T}", "read", "SHOT"]
+          and not cart.lines, str(cart.events))
+    check("entry_marker_cleared_once_proven", not marker_file_exists())
+    check("entry_marker_drops_a_held_marker_of_that_tcin_so_no_re_entry", ex._held_cart is None
+          and "SHOT" in cart.events)
+    # the dirty (strike) flag for that TCIN is dropped too
+    fresh()
+    pe.limkey_marker_write("primary", T, "x")
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    ex, c = _impl_ex(cart)
+    ex._woncart_dirty = {"tcin": T, "ts": c.t, "why": "x", "cvv_put": "none"}
+    _impl_run(ex)
+    check("entry_marker_drops_the_dirty_flag_of_that_tcin", getattr(ex, "_woncart_dirty", None) is None
+          and cart.events[0] == f"delete:{T}", str(cart.events))
+    # marker + delete cannot be proven: NOTHING fires, a skip result, marker stays
+    for label, setup in (("delete_fails", lambda cart: setattr(cart, "fail_delete", True)),
+                         ("read_fails", lambda cart: setattr(cart, "fail_read", True))):
+        fresh()
+        pe.limkey_marker_write("primary", T, "x")
+        cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+        setup(cart)
+        ex, c = _impl_ex(cart)
+        r = _impl_run(ex)
+        check(f"entry_marker_{label}_nothing_fired", "SHOT" not in cart.events and r.get("success") is False
+              and r.get("reason") == "held_cart_release_failed" and pe.limkey_marker_has("primary", T), f"{r} {cart.events}")
+        check(f"entry_marker_{label}_error_text_has_no_digits", not re.search(r"\d", str(r.get("error", ""))), str(r))
+    # a marker for another account / another TCIN does not touch this purchase
+    for label, marked in (("other_account", ("alt-1", T)), ("other_tcin", ("primary", OTHER))):
+        fresh()
+        pe.limkey_marker_write(*marked, "x")
+        cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+        ex, c = _impl_ex(cart)
+        _impl_run(ex)
+        check(f"entry_{label}_marker_ignored", cart.events[:1] == ["SHOT"] and cart.lines, str(cart.events))
+        pe.limkey_probe_reset()
+    # source order: the guard sits before every path that could ride or strike the line
+    src = Path(pe.__file__).read_text(encoding="utf-8")
+    i = src.index("_lk_res = await self._limkey_purge_entry(tab, tcin, start_time)")
+    after = src[i:]
+    check("entry_guard_precedes_dirty_release_held_entry_and_fast_lane",
+          0 < after.index("_woncart_dirty_release(tab, tcin, start_time, quantity)")
+          < after.index("_held_cart_entry(tab, tcin, quantity, start_time)")
+          < after.index("_api_fast_lane(tab, tcin, quantity, extra_headers_js)"))
+    fresh()
+
+
+# ───────────────────────────── flag off / no marker: byte-identical ─────────────────────────────
+def _norm(text):
+    return [re.sub(r"\d+(\.\d+)?s\b", "T", ln) for ln in text.splitlines()]
+
+
+def test_differential_against_the_pre_change_executor():
+    L.PRE_COMMIT = PRE_COMMIT
+    old = L.load_pre_change_module()
+    if old is None:
+        print("[SKIP] differential (git object not available)")
+        check("differential_skipped_no_git", True)
+        return
+    check("differential_old_module_has_no_guard", not hasattr(old, "limkey_marker_has"))
+
+    # 1. heartbeat cycle, probe unset
+    res = {}
+    for label, mod in (("old", old), ("new", pe)):
+        fresh()
+        with env(**{FLAG: None, "TARGET_WARMUP_PROBE_IDENTS": "primary"}):
+            ex, tab, sm = L.make_ex(mod.PurchaseExecutor)
+            out, sleeps = asyncio.run(L.run_loop(ex, mod=mod if mod is old else None))
+        res[label] = (list(tab.scripts), _norm(out), sleeps, sm.repairs)
+    check("diff_probe_unset_scripts_identical", res["old"][0] == res["new"][0] and len(res["old"][0]) == 1)
+    check("diff_probe_unset_prints_identical", res["old"][1] == res["new"][1], f"{res['old'][1]}\n{res['new'][1]}")
+    check("diff_probe_unset_no_marker_file_created", not marker_file_exists())
+
+    # 2. probe ON, answers that are proven non-landing: same scripts, same prints, no marker
+    for label, probe in PROVEN:
+        res = {}
+        for which, mod in (("old", old), ("new", pe)):
+            fresh()
+            old._LIMKEY_STATE.update({"last_ts": 0.0, "total": 0, "stopped": False, "rr": 0, "first_seen": {},
+                                      "skip_ts": {}, "errs": 0})
+            old._LIMKEY_STATE["times"].clear()
+            with env(**ENV_ON):
+                sm = L.FakeSM("primary")
+                ex = mod.PurchaseExecutor(session_manager=sm)
+                tab = L.FakeTab(ex, 424, probe)
+                ex._warmup_browser_ref = sm.browser
+                ex._warmup_tabs = [tab]
+                ex._warmup_tab_cart_ts = {0: time.time() - 5.2}
+                now = time.time()
+                ex._stock_live_fn = L.stock_all("oos_never", now)
+                for t in (A,):
+                    mod._LIMKEY_STATE["first_seen"][t] = now - 700.0
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    asyncio.run(ex._limkey_probe_tick(0, now=now))
+            res[which] = (list(tab.scripts), _norm(buf.getvalue()), mod._LIMKEY_STATE["stopped"])
+        check(f"diff_probe_on_{label}_identical", res["old"] == res["new"] and not marker_file_exists(),
+              f"{res['old']}\n{res['new']}")
+
+    # 3. no marker: _check_cart_hold, strike gate, boot audit behave exactly as before
+    holds = {}
+    for which, mod in (("old", old), ("new", pe)):
+        fresh()
+        sm = L.FakeSM("primary")
+        ex = mod.PurchaseExecutor(session_manager=sm)
+        tab = CartTab(ex, lines=[{"id": "L1", "tcin": A, "qty": 1}])
+        ex._cart_hold_check_on = True
+        ex._last_cart_hold_check_ts = 0.0
+        ex._cart_hold_check_interval_s = 0.0
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            r = asyncio.run(ex._check_cart_hold(tab, A, 429))
+            r2 = asyncio.run(ex._check_cart_hold(tab, B, 429))
+        holds[which] = (r, r2, [s for s in tab.scripts], _norm(buf.getvalue()))
+    check("diff_check_cart_hold_identical", holds["old"] == holds["new"] and holds["new"][0] is True and holds["new"][1] is False,
+          str(holds))
+    gates = {}
+    for which, mod in (("old", old), ("new", pe)):
+        with env(**STRIKE_ENV):
+            ex = mod.PurchaseExecutor(session_manager=L.FakeSM("primary"))
+            ex._ordered_tcins = {B}
+            gates[which] = [ex._held_line_strike_active(t) for t in (A, B, OTHER)]
+    check("diff_strike_gate_identical", gates["old"] == gates["new"] == [True, False, True], str(gates))
+    boots = {}
+    for which, mod in (("old", old), ("new", pe)):
+        fresh()
+        for lines in ([{"id": "CI1", "tcin": A, "qty": 1}],
+                      [{"id": "CI1", "tcin": A, "qty": 1}, {"id": "CI2", "tcin": OTHER, "qty": 1}],
+                      [{"id": "CI1", "tcin": A, "qty": 3}]):
+            with env(**BOOT_ENV):
+                sm = L.FakeSM("primary")
+                ex = mod.PurchaseExecutor(session_manager=sm)
+                tab = CartTab(ex, lines=lines)
+                r, out = _boot(ex, tab)
+            boots.setdefault(which, []).append((r, (ex._held_cart or {}).get("tcin"), tab.tcins(), tab.kinds(), _norm(out)))
+    check("diff_boot_audit_identical", boots["old"] == boots["new"], f"{boots['old']}\n{boots['new']}")
+    fresh()
+
+
+def test_source_hygiene():
+    src = Path(pe.__file__).read_text(encoding="utf-8")
+    for name in ("_limkey_busy_why", "_limkey_cleanup", "_limkey_purge_entry", "_limkey_boot_delete",
+                 "limkey_marked_for", "limkey_marker_write", "limkey_marker_clear", "limkey_marker_has",
+                 "limkey_proven_non_landing"):
+        m = re.search(rf"def {name}\(.*?(?=\n    (?:async )?def |\n(?:async )?def |\Z)", src, re.S)
+        body = m.group(0) if m else ""
+        check(f"{name}_is_try_guarded", "try:" in body and "except" in body, body[:120])
+    check("tick_cleanup_call_is_inside_the_ticks_outer_guard",
+          src.index("await self._limkey_cleanup(tab, acct, tcin") < src.index("async def _background_refill_loop"))
+    check("marker_path_is_state_limkey_probe_line_json",
+          pe._LIMKEY_MARKER_PATH.replace("\\", "/").endswith("/state/limkey_probe_line.json")
+          or pe._LIMKEY_MARKER_PATH.endswith("limkey_probe_line.json"))
+
+
+def main():
+    for fn in (test_classifier, test_marker_io, test_cleanup_after_a_landed_line, test_cleanup_matrix,
+               test_proven_non_landing_does_nothing, test_cleanup_failures_keep_the_marker, test_cleanup_never_raises,
+               test_guards_reread_after_the_await, test_marker_stops_the_probe_for_the_process, test_check_cart_hold,
+               test_strike_inactive_under_a_marker, test_boot_audit_deletes_instead_of_adopting,
+               test_purchase_entry, test_differential_against_the_pre_change_executor, test_source_hygiene):
+        try:
+            fn()
+        except Exception as e:                 # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            check(f"{fn.__name__}_ran_clean", False, repr(e))
+    fresh()
+    print(f"\n===== test_limkey_guard_1016: {len(PASSED)} passed, {len(FAILED)} failed =====")
+    for f in FAILED:
+        print("  FAILED:", f)
+    return 1 if FAILED else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
