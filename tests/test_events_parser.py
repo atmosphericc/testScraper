@@ -2228,14 +2228,21 @@ def test_v7_limkey_events():
     base = [POOL, flip(TC, 1, T, 1)]
     stop = f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct=primary tcin={TC} status=201{LK_STOP_TAIL}"
     err = "[LIMKEY_PROBE] event=error ValueError: bad probe tcin 'x' status=9 (#1; the heartbeat is unaffected)"
-    # the cleanup line is the bot lane's (LIMKEY-GUARD-1016, not merged when this was written): shape provisional, read generically
-    clean = f"[LIMKEY_PROBE] event=cleanup step=delete acct=primary tcin={TC} reason=probe_2xx status=200 line_gone=1"
+    # the cleanup / reclassify lines are the bot lane's (LIMKEY-GUARD-1016, feat_limkey_guard_1016 purchase_executor.py f-strings, copied verbatim in shape)
+    clean = f"[LIMKEY_PROBE] event=cleanup step=delete ok=True lines=1 proven_gone=True acct=primary tcin={TC}"
+    cerr = (f"[LIMKEY_PROBE] event=cleanup step=error ValueError: bad reply status=502 tcin=1234567 reason=oops acct=primary tcin={TC} "
+            f"(marker kept if it was written)")
+    cmark = (f"[LIMKEY_PROBE] event=cleanup step=marker ok=False ALERT reason=probe_2xx late=False acct=primary tcin={TC} "
+             f"-- state/limkey_markers.json could NOT be written; status=500 acct=other tcin=7654321")
+    recl = (f"[LIMKEY_PROBE] event=reclassify acct=primary tcin={TC} page_status=0 seen_status=429 -- classified on the status the "
+            f"interceptor captured")
     lines = base + lk(T + 1000, "[LIMKEY_PROBE] event=skip reason=in_stock_recent acct=primary")
     lines += lk(T + 2000, "[LIMKEY_PROBE] event=skip reason=in_stock_recent acct=primary")
     lines += lk(T + 3000, stop) + lk(T + 4000, err) + lk(T + 5000, clean) + lk(T + 6000, "[LIMKEY_PROBE] event=Future_Kind x=1")
+    lines += lk(T + 7000, cerr) + lk(T + 8000, cmark) + lk(T + 9000, recl)
     res = parse(lines)
     lkr = res['limkey']
-    check('v7_event_kinds_in_log_order', [r['event'] for r in lkr] == ['skip', 'skip', 'stop', 'error', 'cleanup', 'future_kind'],
+    check('v7_event_kinds_in_log_order', [r['event'] for r in lkr] == ['skip', 'skip', 'stop', 'error', 'cleanup', 'future_kind', 'cleanup', 'cleanup', 'reclassify'],
           [r['event'] for r in lkr])
     check('v7_skip_fields', (lkr[0]['reason'], lkr[0]['ident'], lkr[0]['tcin'], lkr[0]['status'], lkr[0]['n']) ==
           ('in_stock_recent', 'primary', None, None, None), lkr[0])
@@ -2245,9 +2252,17 @@ def test_v7_limkey_events():
     check('v7_error_tail_is_free_text_not_mined', (lkr[3]['status'], lkr[3]['ident'], lkr[3]['tcin']) == (None, None, None)
           and lkr[3]['detail'].startswith('ValueError: bad probe tcin'), lkr[3])
     check('v7_cleanup_read_generically', (lkr[4]['reason'], lkr[4]['ident'], lkr[4]['tcin'], lkr[4]['status']) ==
-          ('probe_2xx', 'primary', TC, 200), lkr[4])
+          (None, 'primary', TC, None), lkr[4])
+    # cleanup step=error: the exception text is free text -- its status= / tcin= / reason= are never mined, only the bot's trailing acct/tcin tag
+    check('v7_cleanup_step_error_text_not_mined', (lkr[6]['reason'], lkr[6]['ident'], lkr[6]['tcin'], lkr[6]['status']) ==
+          (None, 'primary', TC, None) and lkr[6]['detail'].startswith('step=error ValueError'), lkr[6])
+    # a cleanup ALERT line: the text after ' -- ' is not mined; reason= before it is
+    check('v7_cleanup_alert_tail_not_mined', (lkr[7]['reason'], lkr[7]['ident'], lkr[7]['tcin'], lkr[7]['status']) ==
+          ('probe_2xx', 'primary', TC, None), lkr[7])
+    # reclassify: page_status= / seen_status= are not the plain status= key
+    check('v7_reclassify_fields', (lkr[8]['event'], lkr[8]['ident'], lkr[8]['tcin'], lkr[8]['status']) == ('reclassify', 'primary', TC, None), lkr[8])
     check('v7_unknown_event_name_kept', lkr[5]['event'] == 'future_kind', lkr[5])
-    check('v7_events_family_clean', _unp(res).get('LIMKEY') == (12, 12, 0), _unp(res))
+    check('v7_events_family_clean', _unp(res).get('LIMKEY') == (18, 18, 0), _unp(res))
 
 
 def test_v7_limkey_dedupe():
@@ -2487,7 +2502,8 @@ def test_v7_limkey_query():
         'run_20990813_000000': _lk_run([('primary', TC, 201, '-'), ('primary', TC, 429, '?'), ('primary', TC, 429, '-'), ('primary', TC, -1, '?'),
                                         ('primary', TC, 500, '-'), ('primary', TC, 401, '-'), ('primary', TC, 429, 'SOME_OTHER_KEY'),
                                         ('primary', TC, 429, 'FAST_SELLING', 120), ('primary', TC, 429, A2, 80), ('primary', TC, 401, 'SOME_KEY'),
-                                        ('primary', TC, 429, A2, 0), ('primary', TC, 424, K424), ('primary', TC, 0, '-')], clean,
+                                        ('primary', TC, 429, A2, 0), ('primary', TC, 424, K424), ('primary', TC, 0, '-'),
+                                        ('primary', TC, 429, A2, -1), ('primary', TC, 429, A2 + ',OTHER', 0)], clean,
                                        events=[f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct=primary tcin={TC} status=201{LK_STOP_TAIL}",
                                                "[LIMKEY_PROBE] event=skip reason=gap acct=primary"]),
         # fix 1: every answer is a 429 whose key was not read ('?' on one TCIN, '-' on the other), >= 30 each: unknown, never DEMAND-SWITCHED
@@ -2556,15 +2572,19 @@ def test_v7_limkey_query():
         rem = {r['ans']: r['n'] for r in rs[5]}
         # fix 3: a keyed non-A2C 429 (FAST_SELLING / a DCO soft landing), an ERR_A2C with a body and a 401 with a key are possibly landed
         # and listed; an empty-body ERR_A2C, a keyless 401, 424 and status 0 are the only hidden answers
-        rem = {(r['ans'], r['err_key']): (r['n'], r['why_listed']) for r in rs[5]}
+        rem = {(r['ans'], r['err_key'], r['why_listed']): r['n'] for r in rs[5]}
         check('v7_unclassified_remainder', rem == {
-            ('201', '-'): ('1', 'not a known non-landing answer'), ('429:unkeyed', '?'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'),
-            ('429:unkeyed', '-'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'), ('unreadable(-1)', '?'): ('1', 'unreadable'),
-            ('500', '-'): ('1', 'not a known non-landing answer'), ('429:SOME_OTHER_KEY', 'SOME_OTHER_KEY'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'),
-            ('429:FAST_SELLING', 'FAST_SELLING'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'),
-            ('ERR_A2C', 'ERR_A2C_TCIN_RATE_LIMITED'): ('1', 'ERR_A2C with a body (body_len > 0)'),
-            ('401', 'SOME_KEY'): ('1', '401 with a key (not keyless)')}, rem)
-        check('v7_remainder_hides_only_proven_non_landings', not any(k[0] in ('424', '0', 'preflight(0)') for k in rem) and ('401', '-') not in rem, rem)
+            ('201', '-', 'not a known non-landing answer'): '1', ('429:unkeyed', '?', '429 whose key is not ERR_A2C (possibly a soft landing)'): '1',
+            ('429:unkeyed', '-', '429 whose key is not ERR_A2C (possibly a soft landing)'): '1', ('unreadable(-1)', '?', 'unreadable'): '1',
+            ('500', '-', 'not a known non-landing answer'): '1', ('429:SOME_OTHER_KEY', 'SOME_OTHER_KEY', '429 whose key is not ERR_A2C (possibly a soft landing)'): '1',
+            ('429:FAST_SELLING', 'FAST_SELLING', '429 whose key is not ERR_A2C (possibly a soft landing)'): '1',
+            ('ERR_A2C', 'ERR_A2C_TCIN_RATE_LIMITED', 'ERR_A2C with a body (body_len > 0)'): '1',
+            ('ERR_A2C', 'ERR_A2C_TCIN_RATE_LIMITED', 'ERR_A2C, body length unknown'): '1',
+            ('ERR_A2C', A2 + ',OTHER', 'ERR_A2C inside a combined key (not the exact key)'): '1',
+            ('401', 'SOME_KEY', '401 with a key (not keyless)'): '1'}, rem)
+        check('v7_remainder_hides_only_proven_non_landings', not any(k[0] in ('424', '0', 'preflight(0)') for k in rem) and not any(k[:2] == ('401', '-') for k in rem)
+              # the empty-body exact-key 429 (body_len 0) stays hidden; body_len -1 and a combined key stay listed (the bot's own limkey_proven_non_landing)
+              and sum(int(n) for k, n in rem.items() if k[0] == 'ERR_A2C') == 3, rem)
         ev_ = {(r['event'], r['reason']): (r['n'], r['status_2xx']) for r in rs[4]}
         check('v7_events_statement_shows_stop_2xx', ev_ == {('stop', 'probe_2xx'): ('1', '201'), ('skip', 'gap'): ('1', '')}, ev_)
         check('v7_parser_accounting_statement_empty', rs[6] == [], rs[6])

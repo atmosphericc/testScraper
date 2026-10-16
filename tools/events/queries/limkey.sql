@@ -140,12 +140,14 @@ SELECT event, COALESCE(reason, '-') AS reason, COUNT(*) AS n, MIN(line) AS first
 FROM limkey WHERE event <> 'probe' GROUP BY event, COALESCE(reason, '-') ORDER BY event, n DESC;
 
 -- Statement 6: the unclassified remainder -- every probe row that is NOT a proven non-landing (LIMKEY_GUARD_SPEC step 1).
---   Proven non-landings (hidden here): an EMPTY-body 429 keyed ERR_A2C_TCIN_RATE_LIMITED, a keyless 401 (err_key '' / '-'),
+--   Proven non-landings (hidden here): a 429 with the EXACT key ERR_A2C_TCIN_RATE_LIMITED and a known EMPTY body (body_len = 0), a keyless 401 (err_key '' / '-'),
 --   424 / 400 / 403 / 404, and status 0 (the preflight rejected the request). Everything else is listed as possibly landed:
 --   2xx, unreadable (<0), any 429 whose key is not ERR_A2C (an unkeyed 429, a keyed FAST_SELLING / DCO soft landing), an ERR_A2C row
---   with body_len > 0, a 401 with a key ('?' counts: an unread key is not keyless), 5xx, 3xx, anything else. why_listed names the reason.
+--   with body_len > 0 or unknown (-1) or a combined key, a 401 with a key ('?' counts: an unread key is not keyless), 5xx, 3xx, anything else. why_listed names the reason.
 SELECT ans, cls, err_key,
        CASE WHEN status < 0 THEN 'unreadable'
+            WHEN status = 429 AND ans = 'ERR_A2C' AND err_key <> 'ERR_A2C_TCIN_RATE_LIMITED' THEN 'ERR_A2C inside a combined key (not the exact key)'
+            WHEN status = 429 AND ans = 'ERR_A2C' AND COALESCE(body_len, -1) < 0 THEN 'ERR_A2C, body length unknown'
             WHEN status = 429 AND ans = 'ERR_A2C' THEN 'ERR_A2C with a body (body_len > 0)'
             WHEN status = 429 THEN '429 whose key is not ERR_A2C (possibly a soft landing)'
             WHEN status = 401 THEN '401 with a key (not keyless)'
@@ -153,7 +155,7 @@ SELECT ans, cls, err_key,
        COUNT(*) AS n, MIN(line) AS first_line, MIN(run_id) AS first_run, MIN(err) AS err_sample
 FROM lk_probe
 WHERE NOT (cls = 'preflight'
-           OR (ans = 'ERR_A2C' AND COALESCE(body_len, 0) <= 0)
+           OR (status = 429 AND err_key = 'ERR_A2C_TCIN_RATE_LIMITED' AND body_len = 0)
            OR (status = 401 AND COALESCE(err_key, '') IN ('', '-'))
            OR status IN (424, 400, 403, 404))
 GROUP BY ans, cls, err_key, why_listed ORDER BY n DESC;
