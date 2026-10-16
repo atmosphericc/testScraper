@@ -147,6 +147,10 @@ OFFLINE = [
     # PurchaseExecutor on stub tabs; flag-off differential against the pre-change executor via git
     # show; no browser, no network).
     "test_limkey_probe_1015",
+    # 2026-10-16 EXP-LIMKEY guest experiments: the guest probe's classify / verdict / window /
+    # port helpers and the in-window follower's log parsing, log tailing, config read and
+    # pre-registered readout (no Chrome, no network, no bot).
+    "test_guest_follow_1016",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
