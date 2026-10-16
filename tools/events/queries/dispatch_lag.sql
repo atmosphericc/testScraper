@@ -13,7 +13,7 @@
 --                 completes with ts_ms before first_read_ms (one thread = one account's purchase)
 --   busy_class    idle        no thread live at the first read
 --                 busy_other  >= 1 thread live, and the first shot came from a race started AT/AFTER the first read (a new
---                             dispatch had to happen: the R-LAG population)
+--                             dispatch had to happen: the R-LAG population, less the redispatched ones, see intervening_starts)
 --                 busy_same   >= 1 thread live, and the first shot came from a race of this TCIN that was already running
 --                             (first race start before first_read: a window-3 racer fired into window 4): no dispatch involved
 --                 no_shot     the window has no timed shot (atc_t0)      unknown   the run has no lock_events at all
@@ -33,20 +33,25 @@
 --   intervening_starts  lock starts after the flip but BEFORE the final dispatch cluster: the fleet was sent somewhere else
 --               first (window 9 of run_20261009_000934: 3). Such a window's wait is not the plain release-then-tick case
 --               [INFERRED: the 10-15 replay_w9.py stub replay puts window 9 on the flicker / defer logic, not on the
---               tick], so the split in statement 4 leaves it out
+--               tick], so the split in statement 4 and the R-LAG verdict in statement 5 leave it out
 --   late        first_shot_any_ms > 500 (the hand classification's line)
 --
--- PRE-REGISTERED RULE R-LAG (written 2026-10-15, before the 10-16 drop; copied from MISS-PHASE-TICK-1015's measurement)
---   Population: busy_other windows (flip windows opened while another race was live, first shot from a NEW dispatch), over
---   the runs selected (a drop night: pass --run). Statistic: first_shot_any_ms. Median = mean of the two middle values (n even),
+-- PRE-REGISTERED RULE R-LAG (written 2026-10-15, before the 10-16 drop; copied from MISS-PHASE-TICK-1015's measurement;
+--   amended in fix round 2, same day, before any 10-16 data was read: redispatched / FAIR-FRESH windows are excluded)
+--   Population: busy_other windows (flip windows opened while another race was live, first shot from a NEW dispatch) that were
+--   NOT redispatched (intervening_starts = 0 -- no lock start between the flip and the window's own dispatch), over the runs
+--   selected (a drop night: pass --run). A redispatched window is the w9 / FAIR-FRESH class: the fleet was sent to another
+--   TCIN first, so its wait is the flicker / defer logic, not the level-re-arm tick that C2 changes, and MISS-PHASE-TICK-1015's
+--   evaluator requires it out of the build trigger. Statistic: first_shot_any_ms. Median = mean of the two middle values (n even),
 --   p90 = nearest rank (rank ceil(0.9 n)).
 --     n_busy < 3                                    => NO DATA (the rule needs the first dense night: >= 3 busy windows)
 --     median > 1,500 ms  OR  >= 20% of them > 2,000 => R-LAG BUILD C2 (MISS-PHASE-TICK-1015: pull the next level-re-arm tick to
 --                                                      flip + 0.6 s and poll the yield every 0.1 s)
 --     median <= 1,000 ms AND p90 <= 2,000           => R-LAG SKIP C2
 --     anything else                                 => R-LAG INCONCLUSIVE (between the lines: keep observing, build nothing)
---   busy_same windows are counted and shown but are NOT in the population (no dispatch happened; the 10-09 baseline below
---   is the 5 other-TCIN windows). Fast cadence is not expected to change the busy lag [INFERRED: research workflow d3153804, the
+--   busy_same windows (no dispatch happened) and redispatched busy_other windows are counted and shown (busy_same_not_counted,
+--   redispatched_not_counted in statement 5) but are NOT in the population; the 10-09 baseline below is the 4 other-TCIN windows
+--   left (windows 10-13). Fast cadence is not expected to change the busy lag [INFERRED: research workflow d3153804, the
 --   lag is tick-bound], so a fast night is a valid sample. The rule says nothing about WHY a window was late: statement 1 shows release / tick / start so a build is
 --   aimed at the 74% (tick), not at the 3% (start).
 --
@@ -57,7 +62,8 @@
 --     starts + 370 completes. Windows 10-13 (no intervening starts) split release / tick / start = 1,584 / 5,031 / 198 ms of
 --     6,813 = 23.2 / 73.8 / 2.9 % (the hand table's 23 / 74 / 3 %; its w13 row read start 35 ms against the third start of the
 --     cluster, 5 ms off its own 804 ms lag). Window 9 = 6,736 ms with intervening_starts 3 (redispatched = 1).
---     R-LAG on this run alone: n_busy 5, median 2,337, 3 of 5 > 2,000 => BUILD C2.
+--     R-LAG on this run alone (redispatched window 9 and busy_same window 4 out): n_busy 4, median 1,641 ms, p90 2,727 ms,
+--     2 of 4 > 2,000 => BUILD C2 (the median alone is over 1,500; with window 9 in it read n_busy 5, median 2,337, 3 of 5, same verdict).
 --   the five flip-logged run files (run_20260930_014647, _233818, run_20261002_011217, _021547, run_20261009_000934), 37 flip
 --     windows [MEASURED, a worktree store rebuilt from the main logs at parser v6]: 30 idle, 0 of them late (31-110 ms, median 40), 6 busy, 1
 --     no_shot (run_20261002_011217: no race ever fired, so no shot; counted as no_shot, never as idle). 0 unknown, ord_bad 0.
@@ -232,14 +238,15 @@ WHERE busy_class = 'busy_other' AND release_ms IS NOT NULL AND intervening_start
 --    the selection holds more than one run with flip windows -- then pass --run for the night. The verdict is read on
 --    first_shot_any_ms (atc_t0, the series of the 10-09 baseline). r_lag_wire is the same rule on first_wire_any_ms (the request
 --    leaving the wire, 70-135 ms later than atc_t0 on 10-09): if it differs from r_lag the night sits within one wire gap of a
---    rule line, so say so and read nothing off the verdict.
+--    rule line, so say so and read nothing off the verdict. Both read the same population: busy_other and NOT redispatched
+--    (the w9 / FAIR-FRESH class, intervening_starts > 0, is counted in redispatched_not_counted and left out).
 WITH p AS (
   SELECT first_shot_any_ms AS v, first_wire_any_ms AS vw,
          ROW_NUMBER() OVER (ORDER BY first_shot_any_ms) AS rn,
          ROW_NUMBER() OVER (ORDER BY first_wire_any_ms) AS rw,
          COUNT(*) OVER () AS n
   FROM dl_windows
-  WHERE busy_class = 'busy_other' AND first_shot_any_ms IS NOT NULL
+  WHERE busy_class = 'busy_other' AND first_shot_any_ms IS NOT NULL AND COALESCE(intervening_starts, 0) = 0
 ),
 s AS (
   SELECT COUNT(*) AS n_busy,
@@ -255,13 +262,15 @@ t AS (
   SELECT s.*,
          (SELECT COUNT(*) FROM dl_windows) AS n_win,
          (SELECT COUNT(*) FROM dl_windows WHERE busy_class = 'unknown') AS n_unknown,
-         (SELECT COUNT(*) FROM dl_windows WHERE busy_class = 'busy_same') AS n_same
+         (SELECT COUNT(*) FROM dl_windows WHERE busy_class = 'busy_same') AS n_same,
+         (SELECT COUNT(*) FROM dl_windows WHERE busy_class = 'busy_other' AND first_shot_any_ms IS NOT NULL
+             AND COALESCE(intervening_starts, 0) > 0) AS n_redisp
   FROM s
 )
 SELECT CASE WHEN (SELECT COUNT(DISTINCT run) FROM dl_windows) > 1
             THEN 'POOLED over ' || (SELECT COUNT(DISTINCT run) FROM dl_windows) || ' runs: pass --run for one night'
             ELSE 'one run' END AS scope,
-       n_win AS windows, n_unknown AS unknown, n_same AS busy_same_not_counted,
+       n_win AS windows, n_unknown AS unknown, n_same AS busy_same_not_counted, n_redisp AS redispatched_not_counted,
        n_busy, median_ms, p90_ms, gt_2s,
        ROUND(100.0 * gt_2s / NULLIF(n_busy, 0), 1) AS pct_gt_2s,
        CASE WHEN n_win = 0 THEN 'NO DATA (no flip windows)'

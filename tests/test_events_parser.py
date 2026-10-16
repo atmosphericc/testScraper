@@ -59,9 +59,15 @@ Pins:
     identical with and without the lock lines; PARSER_VERSION 6 re-parses a v5 store and re-creates the table
   - dispatch_lag.sql: idle / busy_other / busy_same / no_shot / unknown classes, release + tick + start == the first
     shot by ANY race, the intervening-dispatch (redispatched) window, wire-order check, R-LAG build / skip / inconclusive
-    / NO DATA verdicts (median, p90, the 20%-over-2 s line, the < 3 busy windows line)
+    / NO DATA verdicts (median, p90, the 20%-over-2 s line, the < 3 busy windows line); fix round 2: a redispatched
+    (w9 / FAIR-FRESH) busy_other window is shown and counted (redispatched_not_counted) but is not in the R-LAG
+    population on either basis (3 clean + 1 redispatched => n_busy 3), and disp_last is bounded by the window's first
+    shot (per-window release / tick / start and the statement-4 sum on a multi-window run; a lock start after the first
+    shot is not the dispatch)
   - reflip.sql: later shots within 2 s after a re-flip counted once, wire vs atc_t0 basis, the capped (flip-log cap)
-    exclusion, unclassified gates shown not folded in, R-REFLIP met / not met (n, rate, vacuous 0 >= 0) / NO DATA
+    exclusion, unclassified gates shown not folded in, R-REFLIP met / not met (n, rate, vacuous 0 >= 0) / NO DATA;
+    fix round 2: a later shot (is_first = 0, a racer already running) within 2 s after a new_window = 1 flip is NOT after
+    a re-flip on either basis (the `new_window = 0` predicate is pinned for both the wire and the atc_t0 test)
 
 No browser, no network, no bot. Run: python tests/test_events_parser.py
 """
@@ -1820,6 +1826,14 @@ def _same_run():
             [lock('start', T + 27212), race(TC, ['business'])] + shot('business', TC, T + 27242))
 
 
+def _busy_redisp_run(lags, redisp_lag, wire_gap=None):
+    """`_busy_run(lags)` plus one REDISPATCHED busy_other window (the 20990503 / 10-09 window 9 shape: the fleet is sent to
+    another TCIN at +3,000 before this window's own dispatch at redisp_lag - 30)."""
+    return _busy_run(lags, wire_gap=wire_gap) + _win_lines(
+        '1010892199', T + len(lags) * 100000, redisp_lag,
+        [('start', -500), ('complete', 100), ('start', 3000), ('complete', 3200)], wire_gap=wire_gap)
+
+
 def test_v6_dispatch_lag_query():
     runs = {
         'run_20990501_000000': [POOL] + _win_lines(TC3, T, 45, [], disp=12),                       # idle
@@ -1842,6 +1856,13 @@ def test_v6_dispatch_lag_query():
         'run_20990517_000000': _busy_run([3000, 4000]),                          # 2 busy windows                => NO DATA
         'run_20990518_000000': _busy_run([1480, 1490, 1495]),                    # t0 median 1490 / wire 1520 differ
         'run_20990519_000000': _busy_run([1480, 1490, 1495], wire_gap=30),       #   (the wire basis flips the verdict)
+        # R-LAG excludes the redispatched (w9 / FAIR-FRESH) window: 3 clean busy windows + 1 redispatched one at 6,030 ms
+        'run_20990520_000000': _busy_redisp_run([600, 700, 800], 6030),          # n_busy 3 => SKIP (with it in: 25 % > 2 s => BUILD)
+        'run_20990521_000000': _busy_redisp_run([600, 700, 800], 6030, wire_gap=30),   # the wire basis excludes it too
+        'run_20990522_000000': _busy_redisp_run([600, 700], 6030),               # 2 clean + 1 redispatched => NO DATA (not n = 3)
+        # a lock start AFTER the window's first shot (another account's purchase thread) must not become the dispatch
+        'run_20990523_000000': [POOL] + _win_lines(TC, T, 1830, [('start', -500), ('complete', 300), ('start', 2330),
+                                                                 ('complete', 2700)]),
     }
     with tempfile.TemporaryDirectory() as tmp:
         db, out = _build_store(tmp, runs)
@@ -1914,6 +1935,47 @@ def test_v6_dispatch_lag_query():
         rc, rs = q('dispatch_lag', '--run', '20990511')
         v = rs[4][0]
         check('v6_dl_rlag_share_line_is_gt_2000', (v['gt_2s'], v['pct_gt_2s']) == ('1', '20.0'), v)
+        # a REDISPATCHED busy_other window (intervening_starts > 0) is shown and counted, but is not in the R-LAG population:
+        # 3 clean windows (600 / 700 / 800 ms) + the 6,030 ms redispatched one => n_busy 3, SKIP. Were it in, 1 of 4 > 2 s = 25 %
+        # >= 20 % would read BUILD C2 off a window the tick does not explain.
+        rc, rs = q('dispatch_lag', '--run', '20990520')
+        v, i, bc = rs[4][0], rs[1][0], {r['busy_class']: r for r in rs[2]}
+        red = [r for r in rs[0] if r['interv'] == '1']
+        check('v6_dl_redispatched_window_is_in_the_rows_not_in_the_verdict',
+              (i['busy_other'], len(rs[0]), len(red), red[0]['first_shot_any_ms'], bc['busy_other']['windows'], bc['busy_other']['max_ms'])
+              == ('4', 4, 1, '6030', '4', '6030'), (i, red, bc))
+        med = '%d' % round(float(v['median_ms'])) if v['median_ms'] else v['median_ms']       # '' when no row feeds it: a FAIL, not a crash
+        check('v6_dl_rlag_excludes_redispatched_n_busy', (v['n_busy'], v['redispatched_not_counted'], v['busy_same_not_counted'],
+                                                          v['gt_2s'], med, v['p90_ms']) == ('3', '1', '0', '0', '700', '800'), v)
+        check('v6_dl_rlag_excludes_redispatched_verdict', v['r_lag'] == 'R-LAG SKIP C2' and v['r_lag_wire'] == 'R-LAG SKIP C2', v)
+        rc, rs = q('dispatch_lag', '--run', '20990521')
+        v = rs[4][0]
+        check('v6_dl_rlag_wire_excludes_redispatched_too', (v['n_busy'], v['redispatched_not_counted'], v['r_lag'], v['r_lag_wire']) ==
+              ('3', '1', 'R-LAG SKIP C2', 'R-LAG SKIP C2'), v)
+        rc, rs = q('dispatch_lag', '--run', '20990522')
+        v = rs[4][0]
+        check('v6_dl_rlag_redispatched_does_not_make_up_n3', (v['n_busy'], v['redispatched_not_counted'], v['r_lag'], v['r_lag_wire']) ==
+              ('2', '1', 'NO DATA (< 3 busy windows)', ''), v)
+        # a run with no redispatched window counts 0 of them
+        rc, rs = q('dispatch_lag', '--run', '20990510')
+        check('v6_dl_no_redispatched_when_none', rs[4][0]['redispatched_not_counted'] == '0', rs[4][0])
+        # disp_last is bounded by the window's first shot: in a multi-window run the LATER windows' lock starts (and a lock start
+        # after the first shot in the same window) must not become this window's dispatch. release + tick + start per window,
+        # and the summed split of statement 4 (run 20990510 = lags 1600 / 1700 / 1800, release 300, start 30, tick = lag - 330)
+        rc, rs = q('dispatch_lag', '--run', '20990510')
+        split = [(r['busy_class'], r['release_ms'], r['tick_ms'], r['start_ms'], r['interv'], r['first_shot_any_ms'], r['ord_ok'])
+                 for r in rs[0]]
+        check('v6_dl_dispatch_bounded_by_first_shot_per_window', split ==
+              [('busy_other', '300', '1270', '30', '0', '1600', '1'), ('busy_other', '300', '1370', '30', '0', '1700', '1'),
+               ('busy_other', '300', '1470', '30', '0', '1800', '1')], split)
+        s4 = rs[3][0]
+        check('v6_dl_split_statement_multi_window', (s4['windows'], s4['release_ms'], s4['tick_ms'], s4['start_ms'], s4['total_ms'],
+                                                     s4['redispatched']) == ('3', '900', '4110', '90', '5100', '0'), s4)
+        rc, rs = q('dispatch_lag', '--run', '20990523')
+        w = rs[0][0]
+        check('v6_dl_lock_start_after_first_shot_is_not_the_dispatch',
+              (w['busy_class'], w['release_ms'], w['tick_ms'], w['start_ms'], w['interv'], w['first_shot_any_ms'], w['ord_ok']) ==
+              ('busy_other', '300', '1500', '30', '0', '1830', '1'), w)
         # the wire basis is a separate column: a night within one wire gap of a rule line says so
         rc, rs = q('dispatch_lag', '--run', '20990518')
         v = rs[4][0]
@@ -1996,6 +2058,10 @@ def test_v6_reflip_query():
         'run_20990610_000000': _reflip_run([20000], [('primary', 30000, 429, A2C)]),          # no later shot after the re-flip
         'run_20990611_000000': [POOL, race(TC, ['primary'])] + shot('primary', TC, T + 40) + shot('primary', TC, T + 5000),   # no flip log
         'run_20990612_000000': _many_reflips(61, 6, 0, n_other=0),     # nothing to compare with     => NO DATA
+        # a later shot (is_first = 0, a racer already running) within 2 s after a new_window = 1 flip is NOT after a re-flip
+        'run_20990613_000000': _same_run(),
+        # ... and the same run with one real re-flip (new_window = 0) at +30 s and a later shot 400 ms after it: only that one counts
+        'run_20990614_000000': _same_run() + [flip(TC, 3, T + 30000, 0)] + shot('primary', TC, T + 30400),
     }
     with tempfile.TemporaryDirectory() as tmp:
         db, out = _build_store(tmp, runs)
@@ -2020,6 +2086,16 @@ def test_v6_reflip_query():
         rc, rs = q('reflip', '--run', '20990604')
         r = rs[0][0]
         check('v6_rf_capped_window_not_folded_into_other', (r['after_reflip'], r['other'], r['capped']) == ('2', '0', '2'), r)
+        # a flip that OPENS a window (new_window = 1) is not a re-flip: the busy_same shot (primary's racer from the earlier window
+        # re-firing 757 ms into window 2, is_first = 0) sits inside 2 s of a flip row of its own TCIN, on both bases
+        rc, rs = q('reflip', '--run', '20990613')
+        r = rs[0][0]
+        check('v6_rf_new_window_flip_is_not_a_reflip', (r['reflips'], r['after_reflip'], r['after_reflip_t0'], r['other'],
+                                                        r['ot_limited'], r['capped']) == ('0', '0', '0', '1', '1', '0'), r)
+        rc, rs = q('reflip', '--run', '20990614')
+        r = rs[0][0]
+        check('v6_rf_only_the_real_reflip_counts', (r['reflips'], r['after_reflip'], r['after_reflip_t0'], r['other'], r['re_limited'],
+                                                    r['ot_limited'], r['capped']) == ('1', '1', '1', '1', '1', '1', '0'), r)
         # verdicts
         want = {'20990605': ('70', '8.6', '0.0', 'R-REFLIP MET: design FLIP-WAKE (a design, not a build)'),
                 '20990606': ('70', '5.7', '4.3', 'R-REFLIP NOT MET (rate): drop FLIP-WAKE'),
