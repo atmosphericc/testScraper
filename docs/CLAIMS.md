@@ -378,3 +378,37 @@ Source run: `logs/runs/run_20261009_000934.log` (00:09 → 07:59, the 10-09 02:0
 - **C-1016-12 — The off-window limiter probe (S2-LIMKEY-PROBE) is NOT money-safe as built.** A probe-landed line of T is treated as the bot's own: (1) silent-hold checkout on a later 401 / DCO 429 (`_check_cart_hold`, no qty guard: probe 1 + DCO 2 could buy 3 > Q), (2) the FX-1001-A in-chain strike, (3) the boot cart audit adopts any qty 1..2 line as HELD and checks out with NO ATC (bypasses the limiter); `stopped` is per process, an evaluate timeout only sets a suspect mark, and the pre-probe guards are checked before a 15 s unlocked await (Opus claims-verifier, REFUTED; live evidence the paths fire: silent hold n=7 in run_20260930_233818, boot adoption n=2). Fire rate (Sonnet verifier, PARTIALLY CONFIRMED): ~47 probes/h on primary (~29/h on alt-1 or business, which run at BG_SLOW x2), ~2.7 h to 30 per TCIN; probe TCINs must be enabled + monitored; each probe prints 2 lines; the event store had no parser. Guards + ingest being built as LIMKEY-GUARD-1016 / INS-LIMKEY-1016 (`logs/analysis_2026_10_16/postrun/LIMKEY_GUARD_SPEC.md`). Status: **REFUTED (as-built money safety)** — not armed.
 - **C-1016-13 — New pool fault, 10-16 09:56 onward (observation).** `[MULTI_SESSION] sNN launch failed: Failed to connect to browser` x25 on monitor sessions s12-s15 (09:56:41 -> 10:26+) with 2 orphan-Chrome kills; 0 such lines in the 10-09 (50 h), 10-06, 10-07, 10-01 runs; started before the 09:58 merge and the 09:59-10:07 offline suite; host 25.7 GB free, CPU 15% at 10:37; monitor stayed 2.98 sweeps/s, 0 403 / 429, sessions 16-18r and self-healing. Cause NOT ESTABLISHED. Status: **MEASURED**; watch it after the 23:15 restart.
 - **C-1016-14 — Nothing in how we BUILD the first add-to-cart changed across the break; no revert candidate.** Opus antibot-analyst + Sonnet refuter (PARTIALLY CONFIRMED) over run_20260925_004139, run_20260930_014647, run_20260930_233818 (good) vs run_20261009_000934, run_20261015_231603 (bad): the fast-lane ATC URL + `key=` (purchase_executor.py:9242-9245; `git log -L` no change since 09-22), the byte-matched JSON body (:258-271, qty 2 on all 3,719 firings), the PDP referrer / Origin / x-application-name / replay merge, the 16 header names at Fetch.requestPaused (n=3,991; ASCII-sorted, so no wire-order evidence), the Shape prefix X-GyJwza5Z-{a,b,c,d,f,z}, and every request-shaping bat flag (ATC_BYTEMATCH, ATC_REFERRER_PDP, FAST_LANE, SHAPE_HARVEST, HARVEST_REPLAY, UA_MODE=engine, FP_CHROMIUM=0, FASTLANE_*) are identical; 10-02 ran the 10-01 commit; Target's edge 429 is byte-identical (9 headers) in every era. Differences found, none of which separates the eras: Chrome 153 (09-25) / 154 (09-30a, 09-30b, 10-09) / 155 (10-16); page-signed shots 09-25 82% (good) and 10-16 74% (bad) vs 09-30 ~0%; ATC-URL CORS preflights present on 09-30b and 10-09, absent on 09-25 and 10-16 (a cache / cadence effect); 09-30b fired 11 legacy-URL POSTs (5 first shots); parked main-tab page `/` on 09-25, `/account` elsewhere, `/login` x228 only on 10-09; INS-ATC-NET's passive Network handlers on 10-09 / 10-16 only (log-only; 10-02, before it, was already 1/3). Not loggable today: the wire header order, Accept-Encoding / Sec-Fetch-* / Priority, cookie names and values. Corrections: HUMAN/PX is intermittent (10-04/05, 10-09, 10-14; 0 on 10-16), not a regime from 10-04; unexpected shutdowns (Kernel-Power 41) also hit the good era 5 times, so the 10-01 outage is no marker for an IP change. Status: **PARTIALLY CONFIRMED** — the break is Target-side or network-side (home IP / edge reached), not separable from our logs.
+- **C-1016-15 — The 10-16 pool "launch failed" streaks (C-1016-13): a hung Chrome survives teardown, and a Parsec connect is the likely trigger.** Opus stock-pipeline-analyst, read-only, 2026-10-16 ~12:35, on run_20261015_231603.
+  - Mechanism [MEASURED]:
+    - A pool Chrome's UI thread hangs (`Responding=False`). Its normal ~67-min heartbeat failure starts teardown.
+    - `_teardown_browser` (multi_session_pool.py:625-635) cancels zendriver `stop()` after 5 s. That happens before `terminate()`, because `cdp.browser.close()` has no timeout. So the hung Chrome keeps its profile dir.
+    - Every relaunch then fails "Failed to connect to browser" (69/69 carry the text; it starts with a newline, so the first log line looks empty). The orphan-kill after 5 failures heals it (14/14), median ~11.5 min per Chrome.
+    - Prospective check on s18 held (`Responding=False` 12:20:42, predicted relaunch failure 12:24:48).
+  - Trigger [INFERRED, strong, n=2 events]:
+    - Both onsets follow a Parsec client connect (09:52:32, 11:49:43; DXGI_ERROR_ACCESS_LOST, encode-resolution change).
+    - Chromes >= 51.9 min old at the event hung 14/15; those <= 49.8 min old hung 0/21.
+    - 0 Parsec events in the clean 10.6 h before (156/156 relaunches clean). Earlier runs with a Parsec connect all ended within 1-6 min of it.
+  - Ruled out: the offline suite (none of 52 files starts Chrome), worktree builds, host load, other host events.
+  - Impact:
+    - The monitor held 2.98 sweeps/s, 0 403/429, ready >= 13 (6 needed). No orphan accumulation.
+    - The alt-1 BUYER Chrome wedged too: harvest OK 11:48:41, reload timeout 11:50:21, watchdog relaunch 11:54:47.
+    - So **a Parsec connect while the bot is armed can wedge a buyer for ~5 min**. The boot checklist's "no Parsec / RDP during a window" now has a measured reason.
+  - Optional fix (not built): FX-1016-POOLKILL (taskkill the Popen pid when `stop()` leaves it alive), or `ORPHAN_KILL_AFTER_FAILURES` env = 1.
+  - Detail: `logs/analysis_2026_10_16/postrun/pool_launch_fail_C-1016-15.md`.
+  - Status: mechanism MEASURED; trigger INFERRED (n=2); not verified by a second agent (nothing armed rests on it).
+- **C-1016-16 — post-run v3 calibration (wf_8caef505-a12, run_20261015_231603, max_rounds 1, max_claims 1, 25 agents).**
+  - Verification is not rubber-stamping: canaries 3/3 REFUTED, 0 false confirms.
+    - X1: alt-1 past the limiter on 1012644666.
+    - X2: first window at 01:48 on 1010892065.
+    - X3: bat FAST_CADENCE=alt-1.
+  - Answer-key recall 1.5/4: K1 found, K3 partly, K2 (R-ERA break) and K4 (night uninformative) missed.
+    - With one claim per analyst verified, each analyst's first claim was a single-night tally the fact sheet already had.
+    - The R-ERA break WAS in the facts' regime flags and in the Experiment stage, and K4 was the Experiment verdict ("target-wall-test-next", "no code lever is left that the data can rank"). Neither became a verified claim.
+    - Fixed as v3.1: claims ordered by decision weight, and the regime analyst's first two claims are the cross-night R-ERA comparison and what the night can and cannot discriminate.
+  - Experiment stage output: EXP-LIMKEY-STATIC on primary, off-window, TCINs 1010892076 + 1012644665, >= 30 answered per TCIN, readout `q.py limkey` P1; then EXP-LIMKEY-LINE (alt-1 on a hotspot) only if TESTBED.
+  - Composition check on C-1016-06 (Sonnet facts agent, own python, NOT verified):
+    - On the 10-16 TCINs only, post-break 2/12 vs pre-break 5/14 volleys, p=0.26.
+    - On TCINs not flipped on 10-16, 0/11 vs 9/17, p=0.0035.
+    - 1010892076 was 0/5 before the break.
+    - So the break is not one TCIN's doing, but the matched-TCIN cut is underpowered: "which SKUs restocked" is not excluded.
+  - Status: MEASURED (workflow output).

@@ -1,6 +1,6 @@
 export const meta = {
   name: 'post-run',
-  description: 'Post-mortem a bot run in rounds until a round adds nothing: event-store facts, analysts routed to the wall that lost units, every load-bearing claim checked by a BLIND replicator (never sees the claimed value) + a refuter + a neutral judge, then a critic whose gaps start the next round. Optional answer key + known-false canaries grade the process itself. v3 (2026-10-16): race / volley unit + era query, outside-in lane, frame gaps, an Experiment stage that leaves a test runnable before the next drop. Analysis only - never edits code, arms flags or launches anything.',
+  description: 'Post-mortem a bot run in rounds until a round adds nothing: event-store facts, analysts routed to the wall that lost units, every load-bearing claim checked by a BLIND replicator (never sees the claimed value) + a refuter + a neutral judge, then a critic whose gaps start the next round. Optional answer key + known-false canaries grade the process itself. v3 (2026-10-16): race / volley unit + era query, outside-in lane, frame gaps, an Experiment stage that leaves a test runnable before the next drop; v3.1: claims ordered by decision weight (calibration wf_8caef505-a12: canaries 3/3 refuted, recall 1.5/4 at max_claims 1). Analysis only - never edits code, arms flags or launches anything.',
   whenToUse: 'After every run with a restock, an anomaly or an operator complaint. args (all optional): {run: "run_20260930_014647", note: "operator note", max_rounds: 2, max_claims: 3, max_gaps: 3, answer_key: ["finding", ...], canaries: [{claim, check_against, question, expected, kind}]}. answer_key and canaries exist to grade the workflow; they are never shown to analysts, replicators, refuters or judges.',
   phases: [
     { title: 'Facts', detail: 'event store build + saved queries + regime check' },
@@ -294,7 +294,8 @@ const FACTS_BLOCK = `\nFACTS FROM THE EVENT STORE (run ${facts.run_id}, ${facts.
   `loop end reasons: ${(facts.loop_end_reasons || []).join('; ') || '-'}\nregime flags: ${(facts.regime_flags || []).join('; ') || 'none'}\n${clip(facts.tables_md, 12000)}\n`
 
 const CLAIM_RULES = `
-CLAIMS: for each load-bearing claim give kind, a replication QUESTION that an independent agent can answer from primary evidence WITHOUT being told your number or conclusion, and your own answer to it (expected). check_against holds pointers only - no numbers, no conclusions. The claims go to a blind replicator, a refuter and a judge; a claim whose question leaks its answer is wasted.`
+CLAIMS: for each load-bearing claim give kind, a replication QUESTION that an independent agent can answer from primary evidence WITHOUT being told your number or conclusion, and your own answer to it (expected). check_against holds pointers only - no numbers, no conclusions. The claims go to a blind replicator, a refuter and a judge; a claim whose question leaks its answer is wasted.
+ORDER (v3.1): only the first max_claims claims get verified, so list them MOST DECISION-RELEVANT FIRST - the claim your verdict, experiment or fix rests on (a cross-night / era comparison, a cause, what the night can and cannot discriminate) before any single-night tally. Do not spend a claim on a number the FACTS block already shows unless you dispute it.`
 
 // ── round 1 routing ─────────────────────────────────────────────────────────
 const round1 = []
@@ -315,7 +316,8 @@ YOUR TASK: every won cart, hop by hop with elapsed times: in-chain pre_checkout 
 }
 if ((facts.regime_flags || []).length > 0) {
   round1.push({ key: 'regime', agentType: 'failure-forensics', prompt: DOCTRINE + FACTS_BLOCK + `
-YOUR TASK: the regime flags above. For each: real (re-derive from the raw log)? when did it start? Target-side or ours? how long did we take to notice (the detection gap)? Draft the docs/TARGET_CHANGES.md entry text in your report (do not write the file).` + CLAIM_RULES })
+YOUR TASK: the regime flags above. For each: real (re-derive from the raw log)? when did it start? Target-side or ours? how long did we take to notice (the detection gap)? Draft the docs/TARGET_CHANGES.md entry text in your report (do not write the file).
+Your FIRST claim is the cross-night one: the R-ERA first-contact comparison (q.py first_shot_era, volleys, pooled by era) and whether it survives the composition check (same TCINs only, dominant TCIN left out). Your SECOND claim says what this night can and cannot discriminate (is there any within-night contrast - account, network line, cadence arm - or none?).` + CLAIM_RULES })
 }
 
 // ── rounds: investigate -> (replicate || refute) -> judge -> critic ──────────

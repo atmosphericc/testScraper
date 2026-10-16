@@ -155,6 +155,6 @@ without telling us — a collapse went unnoticed for six weeks once.
 - No source files are off-limits. `src/session/purchase_executor.py` is editable (overrides prior "DO NOT modify" guidance from the AIO refactor memory).
 
 ## Test Before Deploy
-- **Offline suite is the gate:** `python tests/run_offline_suite.py` (37 files, ~7 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
+- **Offline suite is the gate:** `python tests/run_offline_suite.py` (the files in its `OFFLINE` list — 52 on 2026-10-16 — ~8 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
 - **After any boot:** `python tools/predrop/boot_check.py --follow` (read-only) must reach GREEN before anyone is told the bot is up; a startup exception can leave the process alive and unable to buy (10-07).
 - Target resilient stack: `RESILIENT_TEST_DURATION_S=120 RESILIENT_TEST_NUM_IPS=1 python test_resilient_stack.py` (fast smoke) or `python test_resilient_stack.py` (default 30 min).

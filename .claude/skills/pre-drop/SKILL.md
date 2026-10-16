@@ -29,7 +29,7 @@ not by eye.
   restarts inside the window unless the bot is dead.
 - **Never run `validate_proxies.py` while the bot is up** (it shares the forwarder ports
   and launches 18 Chromes). Never run it from inside an agent or the Workflow.
-- **The gate is `python tests/run_offline_suite.py`** (37 files, ~7 min). Never a blanket
+- **The gate is `python tests/run_offline_suite.py`** (its `OFFLINE` list, 52 files on 2026-10-16, ~8 min). Never a blanket
   `tests/` run. Save its output under `logs/analysis_<date>/predrop/`.
 - **Every change ships flag-gated with a byte-identical off-state**, or it does not ship.
   "It's only a log line" is not an exemption — log lines have exact-match assertions.

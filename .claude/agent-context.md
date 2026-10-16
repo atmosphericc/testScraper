@@ -29,7 +29,7 @@ credit card**. It is not a simulation.
   glob, no `pytest tests/`, no `pytest -k` over a directory, no loop over `ls tests` — the
   hook blocks those (the 09-14 incident). The gate stays:
   ```
-  python tests/run_offline_suite.py      # 41 files, ~7 min — this is THE gate
+  python tests/run_offline_suite.py      # its OFFLINE list (52 files 2026-10-16), ~8 min — this is THE gate
   ```
 - **NEVER run anything in `tools/analysis/` without being explicitly told to.**
   Those scripts are read-only readouts, but they are slow and they are
