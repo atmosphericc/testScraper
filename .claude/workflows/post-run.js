@@ -1,6 +1,6 @@
 export const meta = {
   name: 'post-run',
-  description: 'Post-mortem a bot run in rounds until a round adds nothing: event-store facts, analysts routed to the wall that lost units, every load-bearing claim checked by a BLIND replicator (never sees the claimed value) + a refuter + a neutral judge, then a critic whose gaps start the next round. Optional answer key + known-false canaries grade the process itself. Analysis only - never edits code, arms flags or launches anything.',
+  description: 'Post-mortem a bot run in rounds until a round adds nothing: event-store facts, analysts routed to the wall that lost units, every load-bearing claim checked by a BLIND replicator (never sees the claimed value) + a refuter + a neutral judge, then a critic whose gaps start the next round. Optional answer key + known-false canaries grade the process itself. v3 (2026-10-16): race / volley unit + era query, outside-in lane, frame gaps, an Experiment stage that leaves a test runnable before the next drop. Analysis only - never edits code, arms flags or launches anything.',
   whenToUse: 'After every run with a restock, an anomaly or an operator complaint. args (all optional): {run: "run_20260930_014647", note: "operator note", max_rounds: 2, max_claims: 3, max_gaps: 3, answer_key: ["finding", ...], canaries: [{claim, check_against, question, expected, kind}]}. answer_key and canaries exist to grade the workflow; they are never shown to analysts, replicators, refuters or judges.',
   phases: [
     { title: 'Facts', detail: 'event store build + saved queries + regime check' },
@@ -8,10 +8,22 @@ export const meta = {
     { title: 'Replicate', detail: 'blind re-measurement from a question that does not reveal the claimed answer' },
     { title: 'Refute', detail: 'adversarial check of the bare claim, no reasoning attached' },
     { title: 'Judge', detail: 'neutral verdict: confirmed only when the blind measurement agrees and the refutation fails' },
-    { title: 'Critic', detail: 'gaps that could change units lost or a fix decision; none new = done' },
+    { title: 'Critic', detail: 'gaps that could change units lost or a fix decision, plus frame gaps; none new = done' },
+    { title: 'Experiment', detail: 'v3: >= 1 discriminating experiment runnable before the next drop, power-checked; parked operator items escalated' },
     { title: 'Grade', detail: 'optional: canaries must not be confirmed; recall against the answer key' },
   ],
 }
+
+// v3 (2026-10-16, after the frame audit wf_6b668b87-b07, operator: "we have done this for weeks with no
+// advancement ... idk if our workflow is advanced enough, has too much bias or what we are missing"). The
+// audit found v2 sound as a FACT-CHECKER (canaries 3/3 refuted) but not as a learning loop: 80/81 judged
+// claims confirmed, 37 fix specs and 0 unit effects, 0 of 6 armed wall-1 features ever moved wall 1; its
+// inputs were only our own logs, the critic could only ask questions inside the frame, every comparison
+// was per shot and per night (power ~50x odds), and the discriminating experiments sat parked with the
+// operator for weeks. v3 adds: the race / volley as the unit + the era query (R-ERA), the track record
+// in every prompt, an outside-in lane, frame gaps that can start a round, power + off-window fields and
+// a 'retire' kind on fix specs, and an Experiment stage that must leave >= 1 test runnable before the
+// next drop and must surface every operator-parked item older than 7 days.
 
 // Why this shape (operator, 2026-09-30: "loop repeatedly til complete or figure out a way
 // to be 100% confident and not have inherent bias"):
@@ -43,6 +55,8 @@ Read .claude/agent-context.md sections 1, 2, 2C and 4 first. HARD RULES: never l
 Facts come from the event store: python tools/events/build.py --only <run_id> (idempotent), then python tools/events/q.py <regime|regime_tcin|monitor_hours|walls|windows|checkout|per_tcin|arms> --run <run_id>, or q.py "<SQL>" (tables: runs, shots, races, flips, windows, tickets, loop_ends, decoys, monitor_stats, orders, unparsed). Grep the raw log only for what the store does not parse, and say so.
 Gate model (C-0930-03): edge limiter first (429 ERR_A2C_TCIN_RATE_LIMITED, ~130 ms, no x-ssx-hop) -> SSX hop (keyless 401 = the Shape verdict) -> cart service (201 / FAST_SELLING 429 / 424). A 401 is a shot that got PAST the limiter. Segment by account, first vs later shot, and network.
 Tag every claim [MEASURED]/[REPORTED]/[INFERRED]/[NOT ESTABLISHED]/[REFUTED] with n and path:line; report the unmatched remainder of every tally. Baselines: .claude/state/CURRENT_STATE.md (newest run on top; REGIME WATCH near the end).
+UNIT (v3): home accounts pass or fail the limiter TOGETHER (C-1015-01), so every comparison across nights or arms counts RACES / first volleys, never shots; a shot-level p-value across nights is not evidence (C-1016-04 cited p=0.017 per shot = p=1.0 per race). Read q.py first_shot_era (R-ERA: the home line's first-contact pass rate by night, pooled by era) before calling anything "inside the range" or "night x TCIN".
+TRACK RECORD (v3): read the TRACK RECORD section of CURRENT_STATE before proposing a fix. Since 09-01 ~170 flags were armed and 0 of 6 wall-1 features ever showed a better wall-1 pass rate; a new spec must say why it would differ, and a flag with no effect after its readout is a 'retire' candidate. Prefer a discriminating EXPERIMENT (one account, off-window if possible) over another feature on a wall nothing gets past.
 ` + (NOTE ? `\nOPERATOR NOTE: ${NOTE}\n` : '')
 
 // ── schemas ─────────────────────────────────────────────────────────────────
@@ -71,7 +85,7 @@ const CLAIM_ITEM = {
     id: { type: 'string' },
     claim: { type: 'string', description: 'Bare, falsifiable, no reasoning attached.' },
     check_against: { type: 'string', description: 'Files / log lines / queries where it can be checked. Pointers only - NO numbers, NO conclusions.' },
-    kind: { type: 'string', enum: ['count', 'code', 'causal'], description: 'count = a number from the logs; code = what the code / .bat does; causal = why something happened.' },
+    kind: { type: 'string', enum: ['count', 'code', 'causal', 'external'], description: 'count = a number from the logs; code = what the code / .bat does; causal = why something happened; external = what an outside source (vendor doc, public report) says.' },
     question: { type: 'string', description: 'A question whose independent answer would confirm or refute the claim WITHOUT revealing the claimed value or the conclusion (e.g. "How many ... and what did each return?", never "Confirm that 248 ...").' },
     expected: { type: 'string', description: 'The claim\'s own answer to that question, concise (withheld from the replicator).' },
   },
@@ -89,8 +103,10 @@ const ANALYSIS_SCHEMA = {
         type: 'object',
         properties: {
           id: { type: 'string' }, title: { type: 'string' },
-          kind: { type: 'string', enum: ['fix', 'experiment', 'instrument'] },
+          kind: { type: 'string', enum: ['fix', 'experiment', 'instrument', 'retire'], description: 'retire = disarm / remove an armed flag whose readout showed no effect (v3).' },
           flag: { type: 'string', description: 'Env flag; default = current behaviour. Prefer a per-account scope when the effect is uncertain.' },
+          power: { type: 'string', description: 'v3: how many drop nights (or off-window POSTs) the readout needs at ~80% power for the effect you expect, with the arithmetic, counting RACES not shots. More than 4 nights => scope it to one account (same-race controls) or label it "armed on priors, unreadable".' },
+          off_window: { type: 'boolean', description: 'v3: true if it can be run and read without waiting for a drop.' },
           change: { type: 'string' }, where: { type: 'string' },
           readout_rule: { type: 'string', description: 'Pre-registered: the saved query + worked / failed / inconclusive rule with the n it needs.' },
           kill_rule: { type: 'string' }, risk: { type: 'string', description: 'Including any double-order risk.' },
@@ -139,7 +155,7 @@ const JUDGE_SCHEMA = {
   required: ['claim_id', 'verdict', 'replication_agrees', 'narrowed_claim', 'basis'],
 }
 
-const AGENTS = ['antibot-analyst', 'purchase-flow-engineer', 'stock-pipeline-analyst', 'failure-forensics', 'log-miner']
+const AGENTS = ['antibot-analyst', 'purchase-flow-engineer', 'stock-pipeline-analyst', 'failure-forensics', 'log-miner', 'retailer-researcher']
 const CRITIC_SCHEMA = {
   type: 'object',
   properties: {
@@ -161,6 +177,16 @@ const CRITIC_SCHEMA = {
       description: 'Worth answering later, but no answer would change a verdict or a fix decision in THIS report. These do not start another round.',
       items: { type: 'object', properties: { question: { type: 'string' }, why: { type: 'string' } }, required: ['question', 'why'] },
     },
+    frame_gaps: {
+      type: 'array',
+      description: 'v3: questions about whether this report\'s FRAME is wrong - the wrong unit, the wrong wall, a cause outside our logs (Target-side, network, account standing), a trend across nights that a one-night read cannot see, an outside source that would decide it. Up to 1 starts a job next round.',
+      items: {
+        type: 'object',
+        properties: { question: { type: 'string' }, why: { type: 'string' }, agent: { type: 'string', enum: AGENTS } },
+        required: ['question', 'why', 'agent'],
+      },
+    },
+    stop_fixing: { type: 'boolean', description: 'v3: true when the units were lost at a wall no armed or proposed code change has ever moved (see TRACK RECORD) - the next step is a discriminating experiment, not a feature.' },
     disagreements: { type: 'array', items: { type: 'string' } },
     specs_on_weak_claims: { type: 'array', items: { type: 'string' } },
     stale_facts_to_correct: { type: 'array', items: { type: 'string' }, description: 'file:line carrying a belief this run contradicts' },
@@ -233,11 +259,13 @@ const pickAgent = (name) => (AGENTS.includes(name) ? name : 'failure-forensics')
 // counts, reads code and judges (the judge compares two finished checks); Opus only where the
 // claim is causal. The analysts and the critic stay on their Opus agent definitions.
 const verifyClaim = (c, tag) => {
-  const kind = ['count', 'code', 'causal'].includes(c.kind) ? c.kind : 'causal'
+  const kind = ['count', 'code', 'causal', 'external'].includes(c.kind) ? c.kind : 'causal'
   const deep = kind === 'causal' ? {} : { model: 'sonnet' }
   const repOpts = kind === 'count'
     ? { label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'log-miner', model: 'sonnet', schema: REPLICATION_SCHEMA, effort: 'high' }
-    : Object.assign({ label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'claims-verifier', schema: REPLICATION_SCHEMA, effort: 'high' }, deep)
+    : kind === 'external'   // v3: an outside source is re-read by a researcher who is given only the question
+      ? { label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'retailer-researcher', model: 'sonnet', schema: REPLICATION_SCHEMA, effort: 'high' }
+      : Object.assign({ label: `replicate:${tag}:${c.id}`, phase: 'Replicate', agentType: 'claims-verifier', schema: REPLICATION_SCHEMA, effort: 'high' }, deep)
   return parallel([
     () => agent(replicatePrompt(c), repOpts),
     () => agent(refutePrompt(c), Object.assign({ label: `refute:${tag}:${c.id}`, phase: 'Refute', agentType: 'claims-verifier', schema: VERDICT_SCHEMA, effort: 'high' }, deep)),
@@ -251,7 +279,7 @@ phase('Facts')
 const facts = await agent(DOCTRINE + `
 YOUR TASK: establish the facts of run ${RUN || 'the newest logs/runs/run_*.log larger than 1 MB (by modification time)'}.
 1. Build the store for that run; report the per-marker unparsed remainder.
-2. Run q.py regime, regime_tcin, monitor_hours, walls, windows, checkout and per_tcin for it (monitor_hours also for the previous run, for a like-for-like hour comparison); put the tables in tables_md (trim long ones to 40 rows and say so). If q.py arms returns rows, include it.
+2. Run q.py regime, regime_tcin, monitor_hours, walls, windows, checkout and per_tcin for it (monitor_hours also for the previous run, for a like-for-like hour comparison); put the tables in tables_md (trim long ones to 40 rows and say so). If q.py arms returns rows, include it. ALSO run q.py first_shot_era with NO --run filter (it needs the history) and include both result sets; if its r_era column says REGIME BREAK or WATCH, that is a regime flag (quote the volley counts and the p).
 3. Compare against CURRENT_STATE.md REGIME WATCH: list in regime_flags every metric that moved more than ~3x, went to zero over a meaningful n, showed a new error string, or recovered - with both numbers. For every rate-based flag also compute it PER TCIN and with the TCIN that has the most shots left out; a flag that does not survive both is COMPOSITION (which SKUs restocked), not a regime change - say which. Compare monitor loss like-for-like: the same clock hours on earlier restock and no-stock nights, not a whole-run average.
 Return the schema; put anything the store could not answer in gaps.`,
   { label: 'facts', phase: 'Facts', agentType: 'log-miner', model: 'sonnet', schema: FACTS_SCHEMA })
@@ -276,6 +304,10 @@ YOUR TASK: no raced restock in this run. Did we MISS one, or did none happen? Sw
 } else {
   round1.push({ key: 'carting', agentType: 'antibot-analyst', prompt: DOCTRINE + FACTS_BLOCK + `
 YOUR TASK: the carting walls. For every shot class (account x first/later x network): how many died at the limiter (ERR_A2C), passed it and died at the SSX hop (keyless 401), were admitted and throttled (FAST_SELLING), carted. Compare with CURRENT_STATE baselines; read any registered experiment arm (q.py arms) exactly as pre-registered. Name the single highest-loss stage and separate Target's limits from OUR behaviour (cadence, dispatch, gates, what the bot did after an admitted shot).` + CLAIM_RULES })
+  // v3 outside-in lane: our logs cannot tell "closed to everyone tonight" from "we lost"; the only
+  // independent signal is what others report about the same TCINs and what the vendors now say.
+  round1.push({ key: 'outside-in', agentType: 'retailer-researcher', prompt: DOCTRINE + FACTS_BLOCK + `
+YOUR TASK (outside-in, read-only): for the TCINs that flipped in this run and the run's date, find public evidence of (a) whether anyone reports carting / checking out these items from Target that night, and with what setup; (b) any change in Target's add-to-cart / anti-bot behaviour reported in the last ~3 weeks; (c) what the leading bot vendors' Target docs say NOW about ERR_A2C_TCIN_RATE_LIMITED, task counts and proxies - diff against the in-repo Refract corpus logs/analysis_2026_09_21/research/refract_llms_full_2026_09_21.txt (Target module ~L3062-4351) and say what changed. Quote verbatim with URL and date; vendor marketing and user reports kept apart; "found nothing" is a result. Out of scope (operator boundary): account generation, jigging, VoIP, fabricated identities. Claims about sources use kind "external".` + CLAIM_RULES })
   if ((facts.carts || 0) > 0) {
     round1.push({ key: 'checkout', agentType: 'purchase-flow-engineer', prompt: DOCTRINE + FACTS_BLOCK + `
 YOUR TASK: every won cart, hop by hop with elapsed times: in-chain pre_checkout / place-order, the won-cart loop (tickets, gaps, statuses, loop end reasons), and what happened to the line afterwards. For each cart answer plainly: did TARGET end it (evicted, out of stock, 424) or did OUR limits end it (a cap, a deadline, a gate, a delete)? Was the line proven present and the TCIN live when it ended? Cite path:line for every gate and the armed value in run_bot_with_nightly_restart.bat.` + CLAIM_RULES })
@@ -301,7 +333,7 @@ const research = []
 const canaryIds = CANARIES.map((_, i) => `X${i + 1}`)
 const canaryClaims = CANARIES.map((c, i) => ({
   id: canaryIds[i], claim: String(c.claim || ''), check_against: String(c.check_against || ''),
-  kind: ['count', 'code', 'causal'].includes(c.kind) ? c.kind : 'count',
+  kind: ['count', 'code', 'causal', 'external'].includes(c.kind) ? c.kind : 'count',
   question: String(c.question || ''), expected: String(c.expected || ''),
 }))
 
@@ -337,6 +369,7 @@ while (round <= MAX_ROUNDS && jobs.length > 0) {
 YOUR TASK: completeness critic after round ${R}. Below: every report so far and each claim's verdict (a blind replication + an adversarial check + a neutral judge). Put in gaps ONLY a question whose answer could flip a verdict below, or change which fix spec is eligible or ranked first - each as one answerable question with the agent best placed to answer it. Put everything else worth knowing (history, mechanism, curiosity) in research_questions; those do NOT start another round. The loop exists to settle decisions, not to exhaust the topic. Do NOT repeat anything already investigated:
 ${investigated.join('\n')}
 Also list disagreements between reports / verdicts / the event store, fix specs resting on claims that are not CONFIRMED (say whether a PARTIALLY CONFIRMED narrowing still supports them), and file:line of any doc, memory or code comment this run contradicts. Return an empty gaps list when the investigation is complete.
+v3 - FRAME: separately, in frame_gaps, ask whether the whole report is asking the wrong question: the wrong unit (shots instead of races), the wrong wall, a cause our logs cannot see (Target-side, the network line, account standing), a trend across nights (q.py first_shot_era) that a one-night read hides, or an outside source that would decide it. Set stop_fixing = true when the units were lost at a wall that no armed or proposed code change has ever moved (CURRENT_STATE TRACK RECORD): then the useful output is an experiment, not a fix.
 
 REPORTS:
 ${digest}
@@ -351,13 +384,27 @@ ${verdicts || '(none)'}`, { label: `critic:r${R}`, phase: 'Critic', agentType: '
     return true
   })
   ;((critic && critic.research_questions) || []).forEach(q => { if (!research.some(x => norm(x.question) === norm(q.question))) research.push(q) })
+  // v3: one frame gap per round becomes a job too (a frame question never 'changes a verdict in THIS report', so
+  // under v2 it could only land in research_questions, which nothing reads).
+  const frame = ((critic && critic.frame_gaps) || []).filter(g => {
+    const k = norm(g.question)
+    if (!k || seenGaps.has(k)) return false
+    seenGaps.add(k)
+    return true
+  })
+  if (frame.length > 1) log(`round ${R}: ${frame.length} frame gaps; taking 1; deferred: ${frame.slice(1).map(g => g.question).join(' | ')}`)
+  frame.slice(1).forEach(g => { if (!research.some(x => norm(x.question) === norm(g.question))) research.push({ question: g.question, why: `[frame] ${g.why}` }) })
+  if (frame.length) fresh.push(Object.assign({ frame: true }, frame[0]))
   if (fresh.length === 0) { log(`round ${R}: the critic found no decision-changing gap - complete`); openGaps = []; break }
-  if (fresh.length > MAX_GAPS) log(`round ${R}: ${fresh.length} new gaps; taking ${MAX_GAPS}; deferred: ${fresh.slice(MAX_GAPS).map(g => g.question).join(' | ')}`)
+  // the frame gap (if any) is last in `fresh` and always gets a slot on top of MAX_GAPS decision gaps
+  const decision = fresh.filter(g => !g.frame)
+  const frameJob = fresh.filter(g => g.frame)
+  if (decision.length > MAX_GAPS) log(`round ${R}: ${decision.length} new gaps; taking ${MAX_GAPS}; deferred: ${decision.slice(MAX_GAPS).map(g => g.question).join(' | ')}`)
   openGaps = fresh
-  jobs = fresh.slice(0, MAX_GAPS).map((g, i) => ({
-    key: `gap${R}.${i + 1}`, agentType: pickAgent(g.agent), question: g.question,
+  jobs = decision.slice(0, MAX_GAPS).concat(frameJob).map((g, i) => ({
+    key: `${g.frame ? 'frame' : 'gap'}${R}.${i + 1}`, agentType: pickAgent(g.agent), question: g.question,
     prompt: DOCTRINE + FACTS_BLOCK + `
-A completeness critic reviewing this post-mortem asked a question nobody has answered yet:
+A completeness critic reviewing this post-mortem asked a ${g.frame ? 'FRAME question (is the report asking the wrong question?)' : 'question'} nobody has answered yet:
 QUESTION: ${g.question}
 WHY IT MATTERS: ${g.why}
 Answer it from primary evidence. Report what you found, including a negative result.` + CLAIM_RULES,
@@ -373,7 +420,7 @@ const specs = reports.flatMap(r => (r.fix_specs || []).map(f => {
   const vs = ids.map(verdictOf)
   const ok = ids.length > 0 && vs.every(v => v === 'CONFIRMED' || v === 'PARTIALLY CONFIRMED')
   return { source: `r${r.round}:${r.key}`, id: f.id, title: f.title, kind: f.kind, flag: f.flag, change: f.change, where: f.where,
-    readout_rule: f.readout_rule, kill_rule: f.kill_rule, risk: f.risk, expected_value: f.expected_value,
+    readout_rule: f.readout_rule, kill_rule: f.kill_rule, risk: f.risk, expected_value: f.expected_value, power: f.power, off_window: f.off_window,
     rests_on: ids.map((x, i) => `${x}=${vs[i]}`), eligible: ok }
 }))
 const calibration = results.filter(v => v.source === 'calibration').map(v => ({
@@ -382,6 +429,55 @@ const calibration = results.filter(v => v.source === 'calibration').map(v => ({
   review: !!(v.judgment && v.judgment.verdict === 'PARTIALLY CONFIRMED'),
 }))
 if (calibration.length) log(`calibration: ${calibration.filter(c => c.pass).length}/${calibration.length} known-false claims refuted; FALSE CONFIRMS: ${calibration.filter(c => c.verdict === 'CONFIRMED').map(c => c.id).join(', ') || 'none'}`)
+
+// ── v3 Experiment stage: leave >= 1 discriminating test runnable before the next drop ─────
+const EXPERIMENT_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['code-fixable', 'target-wall-test-next', 'mixed'], description: 'Were tonight\'s units lost to something OUR code can change, or to a wall where the next step is a test?' },
+    experiments: {
+      type: 'array',
+      description: '1-3 experiments, best first. At least one must be runnable BEFORE the next drop (off-window, or zero-money in-window) and scoped to ONE account so the others are same-race controls.',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, question: { type: 'string', description: 'The hypothesis it discriminates, as a yes/no question.' },
+          design: { type: 'string', description: 'Exactly what runs, on which account / line / TCINs, and what is held fixed.' },
+          off_window: { type: 'boolean' },
+          already_built: { type: 'string', description: 'Flag / tool / branch that already implements it, or "needs build: <what>".' },
+          n_and_power: { type: 'string', description: 'Units (races, volleys or off-window POSTs) needed and the arithmetic.' },
+          readout_rule: { type: 'string', description: 'Pre-registered: which result means what; a saved query name if one exists.' },
+          money_risk: { type: 'string' },
+          operator_steps: { type: 'string', description: 'Numbered, plain-language steps if the operator must do anything; "none" otherwise.' },
+        },
+        required: ['id', 'question', 'design', 'off_window', 'n_and_power', 'readout_rule', 'money_risk', 'operator_steps'],
+      },
+    },
+    parked: {
+      type: 'array',
+      description: 'Every experiment / decision waiting on the operator for more than 7 days (CURRENT_STATE, CLAIMS): what, first proposed, days waiting, drops it has missed, and the one step that would unblock it.',
+      items: { type: 'object', properties: { what: { type: 'string' }, since: { type: 'string' }, days: { type: 'integer' }, drops_missed: { type: 'integer' }, unblock: { type: 'string' } }, required: ['what', 'since', 'unblock'] },
+    },
+    retire: { type: 'array', items: { type: 'string' }, description: 'Armed flags whose readout showed no effect and that add risk or noise: flag, evidence, proposed action.' },
+  },
+  required: ['verdict', 'experiments', 'parked'],
+}
+phase('Experiment')
+const expDigest = reports.map(r => `## r${r.round}:${r.key}\n${clip(r.report, 4000)}`).join('\n\n')
+const expVerdicts = results.filter(v => v.source !== 'calibration').map(v =>
+  `- ${v.claim.id}: ${clip(v.claim.claim, 300)} => ${v.judgment ? v.judgment.verdict + ' / ' + clip(v.judgment.narrowed_claim, 300) : 'NO JUDGMENT'}`).join('\n')
+const experiment = await agent(DOCTRINE + FACTS_BLOCK + `
+YOUR TASK: experiment design. You did not write the reports below. Decide whether tonight's units were lost to something OUR code can change or to a wall where the next step is a TEST, then design 1-3 experiments that would most change what we know, best first. At least one must be runnable before the next drop (off-window - e.g. the merged-but-unarmed S2-LIMKEY-PROBE TARGET_WARMUP_PROBE_TCINS / _IDENTS - or zero-money in-window) and scoped to ONE account. Count races / volleys, not shots, and show the power arithmetic. The main session may run the bot for an off-window experiment (agent-context section 1); sub-agents never do. Read the TRACK RECORD and the parked operator decisions in CURRENT_STATE and docs/CLAIMS.md: list every item waiting on the operator for more than 7 days, with the one step that would unblock it (for anything physical, numbered plain-language steps). List armed flags that are retire candidates. Critic stop_fixing = ${critic && critic.stop_fixing ? 'true' : 'false'}.
+
+REPORTS:
+${expDigest}
+
+VERDICTS:
+${expVerdicts || '(none)'}
+
+ELIGIBLE FIX SPECS: ${specs.filter(s => s.eligible).map(s => `${s.id} ${s.title}`).join('; ') || 'none'}`,
+  { label: 'experiment', phase: 'Experiment', agentType: 'antibot-analyst', schema: EXPERIMENT_SCHEMA, effort: 'high' })
+if (experiment) log(`experiment: verdict=${experiment.verdict}; ${(experiment.experiments || []).length} experiments (${(experiment.experiments || []).filter(e => e.off_window).length} off-window); parked>7d: ${(experiment.parked || []).length}`)
 
 // ── optional grading against an answer key (never shown to anyone above) ──
 let grade = null
@@ -416,6 +512,7 @@ return {
   })),
   fix_specs: specs,
   critic,
+  experiment,
   calibration,
   grade,
 }

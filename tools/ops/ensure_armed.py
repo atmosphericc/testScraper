@@ -354,4 +354,15 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    # 2026-10-16 (C-1016-06): record the home public IP on every scheduled run (full IP only in
+    # the gitignored state/home_ip_history.log; masked here). Script runs only - tests import main().
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import home_ip as _home_ip
+        log(_home_ip.record("ensure_armed"))
+    except Exception as _e:
+        try:
+            log(f"[HOME_IP] skipped ({type(_e).__name__})")
+        except Exception:
+            pass
     sys.exit(main())

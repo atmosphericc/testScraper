@@ -16,8 +16,21 @@ instead of a new regex every night.
 
 ## Non-negotiables
 
-- **Never launch the bot** (or a browser, harvester, login or live checkout) to "check"
-  something. A question only a live run can answer becomes a pre-registered experiment.
+- **Sub-agents never launch anything.** The main session does not launch the bot to
+  "check" something either, but it MAY run a pre-registered, one-account, off-window
+  experiment through `tools/ops/bot_ctl.py` (agent-context §1, operator 2026-10-14), with
+  boot_check GREEN after and never a restart of a GREEN bot inside 00-06. A question only
+  a live run can answer becomes such an experiment, not a theory.
+- **The unit is the race, not the shot** (v3, 2026-10-16). Home accounts pass or fail the
+  limiter together (C-1015-01): count races / first volleys in every comparison across
+  nights or arms, and read `q.py first_shot_era` (R-ERA) before calling a night "inside the
+  range". A shot-level p across nights is not evidence (C-1016-04: p=0.017 per shot, 1.0 per race).
+- **Every post-run leaves at least one experiment runnable before the next drop**, and lists
+  every operator-parked decision older than 7 days, with how long it has waited and the one
+  step that unblocks it (v3; the second-line test sat parked 7 proposals over 14+ days).
+- **Read the TRACK RECORD in CURRENT_STATE before proposing a fix.** While nothing gets past
+  wall 1, rank a wall-1 experiment above any new wall-2 / wall-3 feature, and propose
+  retiring flags whose readout showed no effect.
 - **The gate is `python tests/run_offline_suite.py`.** Never a blanket `tests/` run.
 - **Nothing gets armed on a theory.** Every fix traces to a claim a fresh-context
   verifier did not refute. A PARTIALLY CONFIRMED claim supports only its narrowed version.
@@ -52,7 +65,15 @@ confident without inherent bias"). It runs in ROUNDS until a round adds nothing:
 4. **Critic** — gaps that could change units lost, a fix decision or a verdict. Each new
    gap becomes the next round's question; no new gap = complete. `max_rounds` (default
    2) and `max_claims` (default 3 per analyst) bound cost and every unfinished gap is
-   logged, never dropped silently.
+   logged, never dropped silently. **v3:** the critic also returns `frame_gaps` (is the
+   report asking the wrong question?) — one per round becomes a job — and `stop_fixing`.
+4b. **Outside-in (v3)** — a retailer-researcher lane on every restock: did anyone cart these
+   TCINs, what changed at Target, what the vendors' docs say now vs the in-repo corpus.
+   Our logs alone cannot tell "closed to everyone" from "we lost".
+4c. **Experiment (v3)** — an Opus designer returns `experiment`: a verdict (code-fixable /
+   target-wall-test-next / mixed), 1-3 discriminating experiments (≥1 runnable before the
+   next drop, one account, with race-level power arithmetic and a pre-registered readout),
+   the operator-parked items older than 7 days, and retire candidates. Step 2 starts here.
 
 **Size it to the night.** The workflow routes on restock / carts / regime flags. A night
 with no shots (a boot loop, the bot down) has nothing for it to route on — run a Sonnet
