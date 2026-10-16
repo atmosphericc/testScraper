@@ -2432,11 +2432,13 @@ def test_v7_store_and_cli():
 
 
 def _lk_run(probes, dummies=(), decoys=(), events=(), t0=0):
-    """A synthetic run: `probes` = (acct, tcin, status, key) in order, one per second from T + t0; `dummies` = (acct, status);
+    """A synthetic run: `probes` = (acct, tcin, status, key[, body_len]) in order, one per second from T + t0; `dummies` = (acct, status);
     `decoys` = (status, key) warmup-tab responses; `events` = raw [LIMKEY_PROBE] event texts."""
     lines = [POOL, flip(TC, 1, T, 1)]
-    for i, (acct, tcin, status, key) in enumerate(probes):
-        lines += lk(T + t0 + 1000 * (i + 1), lk_res(acct, tcin, status, key=key, n=i + 1, bl=-1 if status <= 0 else 0,
+    for i, pr in enumerate(probes):
+        acct, tcin, status, key = pr[:4]
+        bl = pr[4] if len(pr) > 4 else (-1 if status <= 0 else 0)        # optional 5th element: body_len
+        lines += lk(T + t0 + 1000 * (i + 1), lk_res(acct, tcin, status, key=key, n=i + 1, bl=bl,
                                                     err='TimeoutError' if status < 0 else ''))
     at = T + t0 + 1000 * (len(probes) + 1)
     for j, (acct, status) in enumerate(dummies):
@@ -2483,9 +2485,21 @@ def test_v7_limkey_query():
         'run_20990812_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30), clean + [('alt-1', 429)]),
         # 2xx / unkeyed 429 / unreadable + STOP + skip events: the remainder and the events
         'run_20990813_000000': _lk_run([('primary', TC, 201, '-'), ('primary', TC, 429, '?'), ('primary', TC, 429, '-'), ('primary', TC, -1, '?'),
-                                        ('primary', TC, 500, '-'), ('primary', TC, 401, '-'), ('primary', TC, 429, 'SOME_OTHER_KEY')], clean,
+                                        ('primary', TC, 500, '-'), ('primary', TC, 401, '-'), ('primary', TC, 429, 'SOME_OTHER_KEY'),
+                                        ('primary', TC, 429, 'FAST_SELLING', 120), ('primary', TC, 429, A2, 80), ('primary', TC, 401, 'SOME_KEY'),
+                                        ('primary', TC, 429, A2, 0), ('primary', TC, 424, K424), ('primary', TC, 0, '-')], clean,
                                        events=[f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct=primary tcin={TC} status=201{LK_STOP_TAIL}",
                                                "[LIMKEY_PROBE] event=skip reason=gap acct=primary"]),
+        # fix 1: every answer is a 429 whose key was not read ('?' on one TCIN, '-' on the other), >= 30 each: unknown, never DEMAND-SWITCHED
+        'run_20990814_000000': _lk_run(_n(TC, 429, '?', 30) + _n(TC2, 429, '-', 30), clean),
+        # ... one unkeyed 429 among otherwise clean answers blocks DEMAND-SWITCHED too
+        'run_20990815_000000': _lk_run(_n(TC, 424, K424, 30) + _n(TC2, 424, K424, 29) + _n(TC2, 429, '-', 1), clean),
+        # fix 2: TCIN A 15 ERR_A2C + 15 x 424 + 40 unreadable = 15/70 = 21% (passes 50% only if the unreadable are left out), TCIN B clean 30 ERR_A2C
+        'run_20990816_000000': _lk_run(_n(TC, 429, A2, 15) + _n(TC, 424, K424, 15) + _n(TC, -1, '?', 40) + _n(TC2, 429, A2, 30), clean),
+        # ... and unreadable rows alone block DEMAND-SWITCHED (30 clean answers per TCIN + 2 timeouts)
+        'run_20990817_000000': _lk_run(_n(TC, 424, K424, 30) + _n(TC2, 424, K424, 30) + _n(TC2, -1, '?', 2), clean),
+        # ... while a few unreadable rows do not stop a clear testbed (30 ERR_A2C + 2 timeouts = 93.8%)
+        'run_20990818_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC, -1, '?', 2) + _n(TC2, 429, A2, 30), clean),
     }
     with tempfile.TemporaryDirectory() as tmp:
         db, out = _build_store(tmp, runs)
@@ -2499,7 +2513,8 @@ def test_v7_limkey_query():
         want = {'20990801': 'P1 TESTBED EXISTS', '20990802': 'P1 DEMAND-SWITCHED', '20990803': 'P1 INCONCLUSIVE', '20990804': 'P1 INCONCLUSIVE',
                 '20990805': 'P1 INCONCLUSIVE', '20990806': 'P1 INCONCLUSIVE', '20990807': 'P1 INCONCLUSIVE', '20990808': 'P1 INCONCLUSIVE',
                 '20990809': 'P1 TESTBED EXISTS', '20990810': 'NO DATA', '20990811': 'P1 TESTBED EXISTS', '20990812': 'P1 TESTBED EXISTS',
-                '20990813': 'P1 INCONCLUSIVE'}
+                '20990813': 'P1 INCONCLUSIVE', '20990814': 'P1 INCONCLUSIVE', '20990815': 'P1 INCONCLUSIVE',
+                '20990816': 'P1 INCONCLUSIVE', '20990817': 'P1 INCONCLUSIVE', '20990818': 'P1 TESTBED EXISTS'}
         got, bad = {}, {}
         for run in want:
             rc, rs = verdict(run)
@@ -2508,6 +2523,15 @@ def test_v7_limkey_query():
             if v.get('verdict') != want[run]:
                 bad[run] = (v.get('verdict'), want[run], v.get('why'))
         check('v7_verdict_table', not bad, bad)
+        # fix 1: the why line names the unknown count; fix 2: the share the rule used is over answered + unreadable
+        check('v7_unknown_answers_named_in_why', 'unknown answer(s)' in got['20990814']['why'] and '(unkeyed 429: 60, unreadable: 0)' in got['20990814']['why']
+              and 'unkeyed 429: 1,' in got['20990815']['why'] and 'unreadable: 2)' in got['20990817']['why']
+              and got['20990814']['unkeyed_429'] == '60', {k: got[k]['why'] for k in ('20990814', '20990815', '20990817')})
+        check('v7_unreadable_in_share_denominator', got['20990816']['min_a2c_pct'] == '21.4' and 'lowest 21.4%' in got['20990816']['why']
+              and got['20990816']['unreadable'] == '40' and got['20990818']['min_a2c_pct'] == '93.8', (got['20990816'], got['20990818']))
+        rc, rs = q('limkey', '--run', '20990816')
+        by16 = {r['tcin']: r for r in rs[0]}
+        check('v7_unreadable_column_kept_posts_exclude_it', (by16[TC]['posts'], by16[TC]['unreadable'], by16[TC]['a2c_pct']) == ('30', '40', '21.4'), by16)
         v = got['20990801']
         check('v7_testbed_counts', (v['hot_tcins'], v['posts'], v['min_posts_per_tcin'], v['err_a2c'], v['min_a2c_pct'], v['dummy_posts'],
                                     v['dummy_429'], v['decoy_err_a2c']) == ('2', '60', '30', '60', '100.0', '2', '0', '0'), v)
@@ -2530,7 +2554,17 @@ def test_v7_limkey_query():
         # the remainder: 2xx, unkeyed 429 (both '?' and '-'), unreadable, 5xx are listed; 401 / keyed non-A2C 429 are known non-landing
         rc, rs = q('limkey', '--run', '20990813')
         rem = {r['ans']: r['n'] for r in rs[5]}
-        check('v7_unclassified_remainder', rem == {'201': '1', '429:unkeyed': '2', 'unreadable(-1)': '1', '500': '1'}, rem)
+        # fix 3: a keyed non-A2C 429 (FAST_SELLING / a DCO soft landing), an ERR_A2C with a body and a 401 with a key are possibly landed
+        # and listed; an empty-body ERR_A2C, a keyless 401, 424 and status 0 are the only hidden answers
+        rem = {(r['ans'], r['err_key']): (r['n'], r['why_listed']) for r in rs[5]}
+        check('v7_unclassified_remainder', rem == {
+            ('201', '-'): ('1', 'not a known non-landing answer'), ('429:unkeyed', '?'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'),
+            ('429:unkeyed', '-'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'), ('unreadable(-1)', '?'): ('1', 'unreadable'),
+            ('500', '-'): ('1', 'not a known non-landing answer'), ('429:SOME_OTHER_KEY', 'SOME_OTHER_KEY'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'),
+            ('429:FAST_SELLING', 'FAST_SELLING'): ('1', '429 whose key is not ERR_A2C (possibly a soft landing)'),
+            ('ERR_A2C', 'ERR_A2C_TCIN_RATE_LIMITED'): ('1', 'ERR_A2C with a body (body_len > 0)'),
+            ('401', 'SOME_KEY'): ('1', '401 with a key (not keyless)')}, rem)
+        check('v7_remainder_hides_only_proven_non_landings', not any(k[0] in ('424', '0', 'preflight(0)') for k in rem) and ('401', '-') not in rem, rem)
         ev_ = {(r['event'], r['reason']): (r['n'], r['status_2xx']) for r in rs[4]}
         check('v7_events_statement_shows_stop_2xx', ev_ == {('stop', 'probe_2xx'): ('1', '201'), ('skip', 'gap'): ('1', '')}, ev_)
         check('v7_parser_accounting_statement_empty', rs[6] == [], rs[6])
