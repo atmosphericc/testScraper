@@ -1834,6 +1834,17 @@ def _busy_redisp_run(lags, redisp_lag, wire_gap=None):
         [('start', -500), ('complete', 100), ('start', 3000), ('complete', 3200)], wire_gap=wire_gap)
 
 
+def _busy_nodisp_run(lags):
+    """`_busy_run(lags)` plus one busy_other window with NO dispatch found (INS-LAG-1015 fix round 3): a race took the lock
+    1,000 ms before the new_window = 1 flip (outside the [first_read - 200 ms, first shot] dispatch search) and its first shot
+    fires 20 ms after the read, so the window is busy and its first race starts at/after the read, yet no lock start explains
+    it -> intervening_starts NULL, release / tick / start NULL."""
+    fr = T + len(lags) * 100000
+    tc = '1010892150'
+    return _busy_run(lags) + [lock('start', fr - 1000), race(tc, ['primary']), flip(tc, 1, fr, 1)] + \
+        shot('primary', tc, fr + 20) + [done(tc, 1, 1, [('primary', 'rate_limited_429')]), lock('complete', fr + 2000)]
+
+
 def test_v6_dispatch_lag_query():
     runs = {
         'run_20990501_000000': [POOL] + _win_lines(TC3, T, 45, [], disp=12),                       # idle
@@ -1863,6 +1874,9 @@ def test_v6_dispatch_lag_query():
         # a lock start AFTER the window's first shot (another account's purchase thread) must not become the dispatch
         'run_20990523_000000': [POOL] + _win_lines(TC, T, 1830, [('start', -500), ('complete', 300), ('start', 2330),
                                                                  ('complete', 2700)]),
+        # a busy_other window with NO dispatch found (intervening_starts NULL) is out of the R-LAG population on both bases and is
+        # counted: 3 clean busy windows + one whose lock start is outside the dispatch search (its 20 ms would drag the median)
+        'run_20990524_000000': _busy_nodisp_run([600, 700, 800]),
     }
     with tempfile.TemporaryDirectory() as tmp:
         db, out = _build_store(tmp, runs)
@@ -1956,9 +1970,32 @@ def test_v6_dispatch_lag_query():
         v = rs[4][0]
         check('v6_dl_rlag_redispatched_does_not_make_up_n3', (v['n_busy'], v['redispatched_not_counted'], v['r_lag'], v['r_lag_wire']) ==
               ('2', '1', 'NO DATA (< 3 busy windows)', ''), v)
-        # a run with no redispatched window counts 0 of them
+        # a run with no redispatched window counts 0 of them (and 0 no-dispatch windows)
         rc, rs = q('dispatch_lag', '--run', '20990510')
-        check('v6_dl_no_redispatched_when_none', rs[4][0]['redispatched_not_counted'] == '0', rs[4][0])
+        check('v6_dl_no_redispatched_when_none', rs[4][0]['redispatched_not_counted'] == '0'
+              and rs[4][0]['no_dispatch_not_counted'] == '0', rs[4][0])
+        # a busy_other window with NO dispatch found (intervening_starts NULL, no release / tick / start) is shown in the rows and
+        # counted in no_dispatch_not_counted, but is in neither basis of the R-LAG population: n_busy 3 (600 / 700 / 800), median 700,
+        # SKIP on both. Were it in (the old COALESCE(intervening_starts, 0) = 0), n_busy 4 and the median 650 would read off a
+        # window no dispatch explains.
+        rc, rs = q('dispatch_lag', '--run', '20990524')
+        v, i, bc = rs[4][0], rs[1][0], {r['busy_class']: r for r in rs[2]}
+        nd = [r for r in rs[0] if r['busy_class'] == 'busy_other' and r['interv'] == '']
+        check('v6_dl_nodispatch_window_is_in_the_rows_not_in_the_verdict',
+              (i['busy_other'], len(rs[0]), len(nd), nd[0]['first_shot_any_ms'] if nd else None, nd[0]['release_ms'] if nd else None,
+               nd[0]['tick_ms'] if nd else None, nd[0]['start_ms'] if nd else None, bc['busy_other']['windows'])
+              == ('4', 4, 1, '20', '', '', '', '4'), (i, nd, bc))
+        med = '%d' % round(float(v['median_ms'])) if v['median_ms'] else v['median_ms']
+        check('v6_dl_rlag_excludes_nodispatch_n_busy', (v['n_busy'], v['no_dispatch_not_counted'], v['redispatched_not_counted'],
+                                                        v['busy_same_not_counted'], v['gt_2s'], med, v['p90_ms']) ==
+              ('3', '1', '0', '0', '0', '700', '800'), v)
+        check('v6_dl_rlag_excludes_nodispatch_verdict_both_bases', v['r_lag'] == 'R-LAG SKIP C2' and v['r_lag_wire'] == 'R-LAG SKIP C2', v)
+        s4 = rs[3][0]
+        check('v6_dl_split_leaves_out_the_nodispatch_window', (s4['windows'], s4['total_ms'], s4['redispatched']) == ('3', '2100', '0'), s4)
+        # the other not-counted classes leave the new counter at 0
+        for run_, why in (('20990504', 'busy_same'), ('20990520', 'redispatched')):
+            rc, rs = q('dispatch_lag', '--run', run_)
+            check('v6_dl_nodispatch_counter_zero_for_' + why, rs[4][0]['no_dispatch_not_counted'] == '0', rs[4][0])
         # disp_last is bounded by the window's first shot: in a multi-window run the LATER windows' lock starts (and a lock start
         # after the first shot in the same window) must not become this window's dispatch. release + tick + start per window,
         # and the summed split of statement 4 (run 20990510 = lags 1600 / 1700 / 1800, release 300, start 30, tick = lag - 330)
