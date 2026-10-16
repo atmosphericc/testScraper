@@ -264,6 +264,17 @@ def _egress_bind_map(flog=None) -> Dict[str, str]:
 _EGRESS_ALIAS: Dict[str, str] = {}
 
 
+def _egress_unmark(w) -> None:
+    """S1-EGRESS-READY: clear a worker's age-relaunch exemption mark (no-op when
+    it was never set). Called wherever an egress worker's proxy_url is reverted
+    to None, so a reverted account can never keep the exemption. Never raises."""
+    try:
+        if getattr(w.cfg, 'egress_age_exempt', False):
+            w.cfg.egress_age_exempt = False
+    except Exception:
+        pass
+
+
 def _egress_dns_server(alias: str, timeout_s: float = 10.0) -> str:
     """The first IPv4 DNS server Windows lists for adapter `alias` ('' on any
     error -> the forwarder uses the OS resolver)."""
@@ -4033,6 +4044,14 @@ class BulletproofPurchaseManager:
             _eg_connect_s = float(os.environ.get('TARGET_ACCOUNT_EGRESS_CONNECT_S', '4') or 4)
         except (TypeError, ValueError):
             _eg_connect_s = 4.0
+        # S1-EGRESS-READY: TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1 exempts a SUCCESSFULLY
+        # bound egress account from the proxied-Chrome age relaunch (the mark is set
+        # next to proxy_url below and cleared wherever proxy_url is reverted).
+        # Unset / 0 / junk = off: nothing is marked and the relaunch is unchanged.
+        try:
+            _eg_age_exempt = os.environ.get('TARGET_ACCOUNT_EGRESS_AGE_EXEMPT', '0').strip() == '1'
+        except Exception:
+            _eg_age_exempt = False
         for w, _ip in egress_workers:
             port = self.PURCHASE_FORWARDER_PORT_BASE + w.cfg.worker_id
             try:
@@ -4042,14 +4061,23 @@ class BulletproofPurchaseManager:
                                dns_server=_dns)
                 print(f"[EGRESS] {w.label()}: DNS via {_dns or 'the OS resolver (home line)'}")
                 w.cfg.proxy_url = f"127.0.0.1:{port}"
+                if _eg_age_exempt:
+                    w.cfg.egress_age_exempt = True   # S1-EGRESS-READY: same path as proxy_url
                 needing.append(w)   # reverted with the BD workers on a start failure
                 print(f"[EGRESS] {w.label()} → 127.0.0.1:{port} (DIRECT, bound to {_ip}; "
                       f"fallback_home={'on' if _eg_fallback else 'off'})")
                 _flog(f"  bind OK: {w.label()} → 127.0.0.1:{port} (EGRESS bound to {_ip})")
+                if _eg_age_exempt:
+                    try:   # log only: never let this line undo a good bind
+                        print(f"[EGRESS] {w.label()}: age relaunch EXEMPT (TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1)")
+                        _flog(f"  egress age-relaunch EXEMPT: {w.label()}")
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[EGRESS] [WARN] {w.label()} egress setup failed ({e}); HOME IP.")
                 _flog(f"  [WARN] {w.label()} egress setup failed ({e}) → HOME IP")
                 w.cfg.proxy_url = None
+                _egress_unmark(w)
 
         if not fwd.upstreams:
             # Everything failed to parse — tear the loop back down, no forwarder.
@@ -4065,6 +4093,7 @@ class BulletproofPurchaseManager:
             _flog(f"[ERROR] start_all FAILED ({e}) — reverting workers to HOME IP")
             for w in needing:
                 w.cfg.proxy_url = None
+                _egress_unmark(w)   # S1-EGRESS-READY
             loop.call_soon_threadsafe(loop.stop)
             return
 
