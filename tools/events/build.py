@@ -26,7 +26,9 @@ LOG FORMAT RULES THIS PARSER IS BUILT ON (all seen in real logs)
                           "[INTERCEPTOR:<tab>] [ATC_RESP]" (the only form naming the
                           tab before 09-22). Chosen per file; runs.atc_resp_form says
                           which; the other form's count is kept in `checks`.
-        [ATC_RESP_HDRS]   logger form.   [HARVEST/<acct>] REPLAY/bank EMPTY  logger form.
+        [ATC_RESP_HDRS]   logger form.   [HARVEST/<acct>] REPLAY/bank EMPTY/STALE/CAPTURED/
+                          pre-shot  logger form (v5: _harvest_log print()s AND logger.info()s
+                          every line; the print twin is never read, so each line counts once).
         [STOCK][FLIP], [STOCK STATS]      logger (they have no print copy).
         [RACE], [FAST_LANE], [EXPOSURE], [FS_TICKET], [WON_CART_DIRECT], [STOCK] IN
         STOCK, [API_CYCLE], [PURCHASE] ATC fetch, [FORWARDER] W.., [WORKER_POOL],
@@ -179,6 +181,25 @@ GATE_EVENTS (v3) one row per print-only gate marker; ts_ms = the last logger sta
     health               [HEALTH]               rss / threads / handles / chrome_procs / cpu / mem / disk
     monitor_other        [STOCK][OTHER]         (logger) the monitor's 'other' bucket by status / error / exit
     subnet_steer         [MULTI_SESSION] pick_session steering away (logger) a /16 excluded from sweeps
+
+HARVEST (v5, 2026-10-15, INS-STORE-HARVEST-1015; additive table, no existing table changes)
+  one row per logger-form "[HARVEST/<acct>] ..." bank line, ts_ms = that line's own logger stamp
+  (ts_src 'logger'), acct as printed (== shots.ident for the three buyer accounts). event:
+    captured   CAPTURED tokens=.. a0=.. a_len=.. a0_len=.. hdr_bytes=.. cookie=.. clicks_since_nav=..
+               hdrs=.. url=.. body=.. | bank=n/6 newest_age=Ns ..  banked = 1, or 0 for the
+               "(NO Shape tokens -- not banked)" variant (the harvest click produced no tokens).
+               bank_n is the count AFTER the push. url / body are never stored.
+    pre_shot   "pre-shot bank=n/6 newest_age=Ns .. replay=on|OFF" (one per fast-lane shot attempt)
+    replay     "REPLAY on main shot: banked set age=Ns tokens=.. a0=.. hdr_bytes=.. (cookie= shape= a0=)
+               | bank=.."   set_age_s = the banked set's age   -- the shots.cred_source banked_replay line
+    empty      "bank EMPTY at shot time .. (bank=..)"            -- shots.cred_source page_signed/empty
+    stale      "bank STALE at shot time .. (bank=..)"            -- shots.cred_source page_signed/stale
+  replay / empty / stale are the SAME lines that feed shots.cred_source (one parse, two readers).
+  bank_n / bank_max / newest_age_s = the ShapeBank.summary() counters on the line (newest_age_s NULL
+  when the line prints "newest_age=-", an empty bank); c_harvested / c_replayed / c_expired / c_stale
+  are its cumulative per-account counters. A line whose bank counters cannot be read still gets a row
+  (NULL counters) AND is counted in `unparsed` (marker CRED): a gap is counted, never guessed.
+  Only counters and lengths are stored -- no url, body, header or cookie text.
 """
 from __future__ import annotations
 
@@ -193,7 +214,8 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 4       # 2026-10-06: gate_events also carry the FX-1006 dispatch markers + run diagnostics
+PARSER_VERSION = 5       # 2026-10-15: harvest table ([HARVEST] CAPTURED / pre-shot / REPLAY / EMPTY / STALE bank lines)
+#                          (2026-10-06 v4: gate_events also carry the FX-1006 dispatch markers + run diagnostics)
 #                          (2026-10-05 v3: atc_net ([ATC_NET] + shot join), gate_events (BOOT_SKIP/PO2XX/foreign))
 #                          v2 2026-10-01: legacy_retry shots, place_orders, 400 body code/cart_limit, episodes
 
@@ -319,6 +341,18 @@ WARM_CAP = re.compile(r'\[INTERCEPTOR:warmup\] (?:Captured \d+ headers \(Shape t
                       r'|Preserved cache \(\d+ Shape tokens, age=-?[\d.]+s\) — new capture had only (?P<tok2>\d+) Shape tokens)')
 CRED = re.compile(r'\[HARVEST/(?P<acct>[\w-]+)\] (?:(?P<replay>REPLAY on main shot: banked set age=(?P<age>\d+)s)'
                   r'|(?P<empty>bank EMPTY at shot time)|(?P<stale>bank STALE at shot time))')
+# v5 (2026-10-15, INS-STORE-HARVEST-1015): the bank-counter group every [HARVEST] bank line ends with
+# (shape_harvest.py ShapeBank.summary(): "bank=n/6 newest_age=24s harvested=.. replayed=.. expired=..
+# stale=.."; newest_age is "-" for an empty bank). Counters only -- a url / body / cookie is never read.
+BANK_TAIL = re.compile(r'\bbank=(?P<bn>\d+)/(?P<bmax>\d+) newest_age=(?:(?P<bage>-?\d+)s|-)'
+                       r'(?: harvested=(?P<bhv>\d+))?(?: replayed=(?P<brp>\d+))?'
+                       r'(?: expired=(?P<bex>\d+))?(?: stale=(?P<bst>\d+))?')
+HV_CAPTURED = re.compile(r'\[HARVEST/(?P<acct>[\w-]+)\] CAPTURED(?P<nb> \(NO Shape tokens[^)]*\))?')
+HV_PRESHOT = re.compile(r'\[HARVEST/(?P<acct>[\w-]+)\] pre-shot (?=bank=)')
+HV_KV = re.compile(r'\b([a-z][a-z_0-9]*)=(yes|no|-?\d+)(?![\w-])')
+HV_REPLAY_ON = re.compile(r'\breplay=(on|off)\b', re.I)
+HV_REPLAY_DET = re.compile(r' tokens=(?P<tok>\d+) a0=(?P<a0>yes|no)(?: src_tcin=\S+)? hdr_bytes=(?P<hb>\d+) '
+                           r'\(cookie=(?P<ck>\d+) shape=\d+ a0=(?P<a0b>\d+)\)')
 WORKER_POOL = re.compile(r'\[WORKER_POOL\] sized from \S+: \d+ account\(s\) -> \[(?P<list>[^\]]*)\]')
 FWD_BIND = re.compile(r'\[FORWARDER\] W\d+/(?P<ident>[\w-]+?) → [\d.]+:\d+ \(exit via account proxy\)')
 FWD_WARN = re.compile(r'\[FORWARDER\] \[WARN\] W\d+/(?P<ident>[\w-]+?) proxy unparseable')
@@ -445,7 +479,10 @@ LOGGER_FAMILIES = [
     ('HDRS', r'^\[ATC_RESP_HDRS\] '),
     ('FLIP', r'\[STOCK\]\[FLIP\] '),
     ('STATS', r'\[STOCK STATS\] '),
-    ('CRED', r'\[HARVEST/[\w-]+\] (?:REPLAY on main shot|bank EMPTY at shot time|bank STALE at shot time)'),
+    # v5: the family also takes CAPTURED / pre-shot (one accounting row, unchanged table shape);
+    # _h_CRED hands those to _h_harvest, so the cred events that feed shots.cred_source are untouched
+    ('CRED', r'\[HARVEST/[\w-]+\] (?:REPLAY on main shot|bank EMPTY at shot time|bank STALE at shot time'
+             r'|CAPTURED|pre-shot bank=)'),
     ('WATCH', r'\[STOCK WATCH\] '),
     ('STATUS', r'\[STOCK STATUS\] '),
     ('SELLOOS', r'\[STOCK\] SELLABLE-PARSED-OOS '),
@@ -883,13 +920,61 @@ class RunParser:
     def _h_CRED(self, t, p, lg):
         m = CRED.match(t, p)
         if not m:
-            return False
+            return self._h_harvest(t, p)                 # v5: CAPTURED / pre-shot
         if m.group('replay'):
             src, det = 'banked_replay', 'replay'
         else:
             src, det = 'page_signed', ('empty' if m.group('empty') else 'stale')
-        self._add('cred', acct=m.group('acct'), src=src, det=det, age=_int(m.group('age')))
+        # v5 INS-STORE-HARVEST-1015: the same line's bank counters ride on the cred event (extra
+        # keys; the shot join reads only acct / src / det / age) and become its harvest row
+        ex = self._bank_tail(t, m.end())
+        if m.group('replay'):
+            d = HV_REPLAY_DET.match(t, m.end())
+            if d:
+                ex.update(tokens=int(d.group('tok')), a0=_bool(d.group('a0')), hdr_bytes=int(d.group('hb')),
+                          cookie_bytes=int(d.group('ck')), a0_len=int(d.group('a0b')))
+        self._add('cred', acct=m.group('acct'), src=src, det=det, age=_int(m.group('age')), **ex)
         return True
+
+    # -- v5 (2026-10-15): INS-STORE-HARVEST-1015 ----------------------------------------
+    @staticmethod
+    def _bank_tail(t, start):
+        """The LAST 'bank=n/6 newest_age=..' counter group at/after `start` ({} when there is none);
+        the last one, so a url / body echo earlier on the line can never be read as the bank."""
+        last = None
+        for last in BANK_TAIL.finditer(t, start):
+            pass
+        if last is None:
+            return {}
+        g = last.groupdict()
+        return dict(bank_n=int(g['bn']), bank_max=int(g['bmax']), newest_age_s=_int(g['bage']),
+                    c_harvested=_int(g['bhv']), c_replayed=_int(g['brp']), c_expired=_int(g['bex']),
+                    c_stale=_int(g['bst']))
+
+    def _h_harvest(self, t, p):
+        """CAPTURED / pre-shot -> a 'harvest' event. The row is kept even when its bank counters are
+        unreadable (NULLs); the handler then returns False so the gap is counted in `unparsed`."""
+        m = HV_CAPTURED.match(t, p)
+        if m:
+            u = t.find(' url=', m.end())                 # only the counters before url=/body= are read
+            kv = dict(HV_KV.findall(t, m.end(), u if u >= 0 else len(t)))
+            ev = dict(acct=m.group('acct'), event='captured', banked=0 if m.group('nb') else 1,
+                      tokens=_int(kv.get('tokens')), a0=_bool(kv.get('a0')), a_len=_int(kv.get('a_len')),
+                      a0_len=_int(kv.get('a0_len')), hdr_bytes=_int(kv.get('hdr_bytes')),
+                      cookie_bytes=_int(kv.get('cookie')), clicks_since_nav=_int(kv.get('clicks_since_nav')),
+                      n_hdrs=_int(kv.get('hdrs')))
+            ev.update(self._bank_tail(t, m.end()))
+            self._add('harvest', **ev)
+            return 'bank_n' in ev and ev['tokens'] is not None
+        m = HV_PRESHOT.match(t, p)
+        if m:
+            ev = dict(acct=m.group('acct'), event='pre_shot')
+            ev.update(self._bank_tail(t, m.end()))
+            r = HV_REPLAY_ON.search(t, m.end())
+            ev['replay_on'] = None if r is None else (1 if r.group(1).lower() == 'on' else 0)
+            self._add('harvest', **ev)
+            return 'bank_n' in ev
+        return False
 
     def _h_WORKER_POOL(self, t, p, lg):
         m = WORKER_POOL.match(t, p)
@@ -1724,6 +1809,21 @@ class RunParser:
 
         place_orders, po_unparsed = self._place_orders(E, shots, races, ep, event_window, norm, idents)
 
+        # v5 INS-STORE-HARVEST-1015: one row per [HARVEST] bank line (logger form, each line once).
+        # replay / empty / stale are the cred events that feed shots.cred_source; captured / pre_shot
+        # are the new harvest events. acct stays as printed (no norm(): no ident_glue_repaired check).
+        harvest = []
+        for e in sorted(E['cred'] + E['harvest'], key=lambda e: e['seq']):
+            harvest.append(dict(
+                line=e['line'], ts_ms=ep(e['naive']), ts_src='logger' if e['naive'] is not None else None,
+                acct=e['acct'], event=e.get('event') or e.get('det'), banked=e.get('banked'),
+                bank_n=e.get('bank_n'), bank_max=e.get('bank_max'), newest_age_s=e.get('newest_age_s'),
+                set_age_s=e.get('age'), tokens=e.get('tokens'), a0=e.get('a0'), a_len=e.get('a_len'),
+                a0_len=e.get('a0_len'), hdr_bytes=e.get('hdr_bytes'), cookie_bytes=e.get('cookie_bytes'),
+                clicks_since_nav=e.get('clicks_since_nav'), n_hdrs=e.get('n_hdrs'),
+                c_harvested=e.get('c_harvested'), c_replayed=e.get('c_replayed'),
+                c_expired=e.get('c_expired'), c_stale=e.get('c_stale'), replay_on=e.get('replay_on')))
+
         # ---- decoys (warmup-tab responses, one row each) --------------------------------
         decoys = []
         posts, reqs = deque(), deque()
@@ -1941,7 +2041,7 @@ class RunParser:
                     tickets=tickets, loop_ends=loop_ends, decoys=decoys, monitor_stats=stats,
                     stock_status=stock_status, sellable_oos=sellable_oos, shadow206=shadow206,
                     orders=orders, idents=list(idents.values()), unparsed=unparsed,
-                    place_orders=place_orders, atc_net=atc_net, gate_events=gate_events,
+                    place_orders=place_orders, atc_net=atc_net, gate_events=gate_events, harvest=harvest,
                     checks=[dict(name=k, value=repr(v)) for k, v in sorted(checks.items())])
 
     PO_PAIR_GAP = 400      # lines: a [CHECKOUT_RESPONSE] HTTP pairs with a pending POST at most this far back
@@ -2423,6 +2523,13 @@ SCHEMA = {
                 'shot_idx INTEGER', 'is_first INTEGER', 'flip_opened_race INTEGER'],
     'gate_events': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'kind TEXT',
                     'ident_or_acct TEXT', 'detail TEXT'],
+    # v5 (2026-10-15, INS-STORE-HARVEST-1015): counters and lengths only (module doc, HARVEST)
+    'harvest': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'acct TEXT', 'event TEXT',
+                'banked INTEGER', 'bank_n INTEGER', 'bank_max INTEGER', 'newest_age_s INTEGER',
+                'set_age_s INTEGER', 'tokens INTEGER', 'a0 INTEGER', 'a_len INTEGER', 'a0_len INTEGER',
+                'hdr_bytes INTEGER', 'cookie_bytes INTEGER', 'clicks_since_nav INTEGER', 'n_hdrs INTEGER',
+                'c_harvested INTEGER', 'c_replayed INTEGER', 'c_expired INTEGER', 'c_stale INTEGER',
+                'replay_on INTEGER'],
 }
 RUN_TABLES = [t for t in SCHEMA if t not in ('runs', 'ingested')]
 INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, ident)',
@@ -2431,7 +2538,8 @@ INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, i
            'CREATE INDEX IF NOT EXISTS ix_stats_run ON monitor_stats(run_id, line)',
            'CREATE INDEX IF NOT EXISTS ix_po_run ON place_orders(run_id, line)',
            'CREATE INDEX IF NOT EXISTS ix_atc_net_run ON atc_net(run_id, ident)',
-           'CREATE INDEX IF NOT EXISTS ix_gate_run ON gate_events(run_id, kind)']
+           'CREATE INDEX IF NOT EXISTS ix_gate_run ON gate_events(run_id, kind)',
+           'CREATE INDEX IF NOT EXISTS ix_harvest_run ON harvest(run_id, acct, event, ts_ms)']
 
 
 def connect(db: Path) -> sqlite3.Connection:
@@ -2490,6 +2598,9 @@ def summarize(run_id, res) -> str:
         parts[0] += ' atc_net=%d (POST joined %d/%d) gate_events=%s' % (
             len(net), sum(1 for x in net if x['method'] == 'POST' and x['shot_line'] is not None),
             sum(1 for x in net if x['method'] == 'POST'), dict(sorted(Counter(x['kind'] for x in gev).items())))
+    hv = res.get('harvest') or []
+    if hv:                                             # v5
+        parts[0] += ' harvest=%s' % dict(sorted(Counter(x['event'] for x in hv).items()))
     parts.append('    unparsed remainder: ' + (', '.join('%s %d/%d (first line %s)' % (
         u['marker'], u['n'], u['seen'], u['first_line']) for u in bad) if bad else 'none'))
     return '\n'.join(parts)

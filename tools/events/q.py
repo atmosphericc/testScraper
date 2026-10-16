@@ -17,7 +17,7 @@ result set is printed). Anything else is run as SQL.
 
 Tables: runs, shots, races, flips, windows, tickets, loop_ends, decoys, monitor_stats,
 orders, idents, unparsed, checks, place_orders (v2), stock_status, sellable_oos, shadow206,
-atc_net, gate_events (v3), ingested. Read-only; stdlib only.
+atc_net, gate_events (v3), harvest (v5), ingested. Read-only; stdlib only.
 """
 from __future__ import annotations
 
@@ -36,7 +36,8 @@ DEFAULT_DB = HERE.parents[1] / 'logs' / 'events' / 'events.sqlite'
 RUN_TABLES = ['runs', 'shots', 'races', 'flips', 'windows', 'tickets', 'loop_ends', 'decoys',
               'monitor_stats', 'orders', 'idents', 'unparsed', 'checks', 'place_orders',
               'stock_status', 'sellable_oos', 'shadow206',        # 2026-10-05
-              'atc_net', 'gate_events']                           # 2026-10-05 parser v3
+              'atc_net', 'gate_events',                           # 2026-10-05 parser v3
+              'harvest']                                          # 2026-10-15 parser v5
 
 
 def statements(sql: str):

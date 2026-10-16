@@ -42,6 +42,15 @@ Pins:
     incl. a reason that wraps the line) / won-cart late-add (foreign_entry = FOREIGN-KEEP) /
     foreign-bail line, glued lines, prior-logger time, a skipped account kept as printed
   - the atc_net (coverage + first-volley wire rank / reuse / edge IP) and gate_events queries
+  v5 (2026-10-15):
+  - INS-STORE-HARVEST-1015: every logger-form [HARVEST/x] bank line -> one `harvest` row (CAPTURED incl. the
+    "(NO Shape tokens - not banked)" variant banked=0, pre-shot, and the REPLAY / EMPTY / STALE lines that feed
+    shots.cred_source), counters and lengths only; the print twin is never read (a glued twin, a print-only line,
+    20 pairs = 20 rows); the LAST bank= group wins over a body echo; an unreadable tail keeps its row (NULLs) and is
+    counted in `unparsed`; every other table, `checks` and the unparsed remainders are identical with and without
+    the harvest lines; PARSER_VERSION 5 re-parses and replaces the rows without duplicates
+  - phase.sql: R-BANK met / not met / NO DATA, the >= 20 page-signed gate of C-1015-04, early-phase page-signed
+    admissions, an overlapped window's first-shot lag, wire order vs atc_t0 order of a first volley
 
 No browser, no network, no bot. Run: python tests/test_events_parser.py
 """
@@ -1207,7 +1216,355 @@ def test_v4_fx1006_and_diag_gate_events():
     check('v4_remainder_zero', all(u.get(k, (0, 0))[0] == 0 for k in ('FX1006', 'STALL', 'HEALTH', 'OTHER', 'STEER')), u)
     check('v4_stack_lines_no_rows', sum(1 for r in res['gate_events'] if r['kind'].startswith('stall')) == 2,
           [r['kind'] for r in res['gate_events']])
-    check('v4_parser_version', ev.PARSER_VERSION == 4, ev.PARSER_VERSION)
+    check('v4_parser_version', ev.PARSER_VERSION >= 4, ev.PARSER_VERSION)
+
+
+# ---------------------------------------------------------------------------------
+# v5 (2026-10-15, INS-STORE-HARVEST-1015): the harvest table + phase.sql
+# ---------------------------------------------------------------------------------
+CAP_URL = ("https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART%2CCART_ITEMS%2CSUMMARY"
+           "&key=9f36aeafbe60771e321a7c")
+CAP_BODY = ("body='{\"cart_item\":{\"item_channel_id\":\"10\",\"tcin\":\"21516452\",\"quantity\":1},"
+            "\"cart_type\":\"REGULAR\",\"channel_id\":\"10\",\"shopping_context\":\"DIGITAL\"}'")
+
+
+def hv_captured(ident, ep_ms, bank=1, age=0, tokens=6, nb=False, body=CAP_BODY, tail=True, harvested=1):
+    """A [HARVEST/x] CAPTURED line pair (print twin + logger twin), shaped like run_20260925_004139 L603-604."""
+    m = (f"[HARVEST/{ident}] CAPTURED{' (NO Shape tokens — not banked)' if nb else ''} tokens={tokens} a0=no "
+         f"a_len=7807 a0_len=0 hdr_bytes=13782 cookie=5198 clicks_since_nav=1 hdrs=16 url={CAP_URL} {body}")
+    if tail:
+        m += f" | bank={bank}/6 newest_age={age}s harvested={harvested} replayed=0 expired=0 stale=0"
+    return [m, L(ep_ms, m)]
+
+
+def hv_preshot(ident, ep_ms, bank=5, age='24s', replay='on'):
+    m = (f"[HARVEST/{ident}] pre-shot bank={bank}/6 newest_age={age} harvested=190 replayed=2 expired=183 "
+         f"stale=0 replay={replay}")
+    return [m, L(ep_ms, m)]
+
+
+def hv_empty(ident, ep_ms):
+    m = (f"[HARVEST/{ident}] bank EMPTY at shot time — shot goes page-signed "
+         f"(bank=0/6 newest_age=- harvested=3 replayed=3 expired=0 stale=0)")
+    return [m, L(ep_ms, m)]
+
+
+def hv_stale(ident, ep_ms):
+    m = (f"[HARVEST/{ident}] bank STALE at shot time (past the replay cap) — shot goes page-signed "
+         f"(bank=2/6 newest_age=130s harvested=9 replayed=4 expired=3 stale=1)")
+    return [m, L(ep_ms, m)]
+
+
+def shot_with(ident, tc, t0, cred_lines, status=429, key=A2C, rt=120):
+    """shot() with a caller-chosen [HARVEST] cred line pair (replay / empty / stale)."""
+    return [fire(tc)] + cred_lines + resp(t0 + rt, status, key) + [chain(ident, status, t0, rt)]
+
+
+def exposure(ident):
+    return (f"[EXPOSURE] ident=W1/{ident} tcin=1010892076 kind=edge run_shots=1 run_s=0 win_age_s=0 "
+            f"chrome_age_s=2674 proxied=no resting=no")
+
+
+def test_v5_harvest_rows():
+    base = [POOL, flip(TC, 1, T, 1)]                   # the flip fixes the UTC offset (ts_ms = the real epoch)
+    # (1) a print + logger CAPTURED pair is ONE row; counters and lengths only
+    res = parse(base + hv_captured('alt-1', T + 5000, bank=1, age=0))
+    hv = res['harvest']
+    check('v5_captured_pair_is_one_row', len(hv) == 1, hv)
+    h = hv[0] if hv else {}
+    check('v5_captured_fields', (h.get('acct'), h.get('event'), h.get('banked'), h.get('bank_n'), h.get('bank_max'),
+                                 h.get('newest_age_s'), h.get('ts_ms'), h.get('ts_src')) ==
+          ('alt-1', 'captured', 1, 1, 6, 0, T + 5000, 'logger'), h)
+    check('v5_captured_lengths', (h.get('tokens'), h.get('a0'), h.get('a_len'), h.get('a0_len'), h.get('hdr_bytes'),
+                                  h.get('cookie_bytes'), h.get('clicks_since_nav'), h.get('n_hdrs')) ==
+          (6, 0, 7807, 0, 13782, 5198, 1, 16), h)
+    check('v5_captured_counters', (h.get('c_harvested'), h.get('c_replayed'), h.get('c_expired'), h.get('c_stale'),
+                                   h.get('set_age_s'), h.get('replay_on')) == (1, 0, 0, 0, None, None), h)
+    strs = {k: v for r in hv for k, v in r.items() if isinstance(v, str)}
+    check('v5_only_acct_event_and_ts_src_are_text', set(strs) == {'acct', 'event', 'ts_src'}
+          and not any('carts.target' in v or 'cart_item' in v for v in strs.values()), strs)
+    # (2) the "(NO Shape tokens — not banked)" variant: still a row, banked = 0
+    res = parse(base + hv_captured('primary', T + 5000, bank=3, age=31, tokens=0, nb=True))
+    h = (res['harvest'] or [{}])[0]
+    check('v5_no_token_variant_banked_0', (len(res['harvest']), h.get('event'), h.get('banked'), h.get('tokens'),
+                                           h.get('bank_n'), h.get('newest_age_s')) == (1, 'captured', 0, 0, 3, 31), h)
+    # (3) pre-shot pair: one row, replay flag, an empty bank prints newest_age=-
+    res = parse(base + hv_preshot('business', T + 6000) + hv_preshot('primary', T + 7000, bank=0, age='-', replay='OFF'))
+    hv = res['harvest']
+    check('v5_preshot_pairs_are_two_rows', [(r['acct'], r['event'], r['bank_n'], r['bank_max'], r['newest_age_s'],
+                                             r['replay_on'], r['c_harvested'], r['c_stale']) for r in hv] ==
+          [('business', 'pre_shot', 5, 6, 24, 1, 190, 0), ('primary', 'pre_shot', 0, 6, None, 0, 190, 0)], hv)
+    # (4) REPLAY / EMPTY / STALE rows are the very lines that feed shots.cred_source
+    lines = base + [race(TC, ['primary', 'business', 'alt-1'])]
+    lines += shot_with('primary', TC, T + 47, cred('primary', T + 42, age=12))
+    lines += shot_with('business', TC, T + 50, hv_empty('business', T + 44))
+    lines += shot_with('alt-1', TC, T + 55, hv_stale('alt-1', T + 49))
+    res = parse(lines)
+    hv, sh = res['harvest'], res['shots']
+    check('v5_cred_rows_agree_with_shots', [r['event'] for r in hv] == ['replay', 'empty', 'stale']
+          and [(s['cred_source'], s['cred_detail']) for s in sh] ==
+          [('banked_replay', 'replay'), ('page_signed', 'empty'), ('page_signed', 'stale')]
+          and [r['acct'] for r in hv] == [s['ident'] for s in sh], (hv, sh))
+    rp, em, st = hv
+    check('v5_replay_row_fields', (rp['set_age_s'], rp['tokens'], rp['a0'], rp['hdr_bytes'], rp['cookie_bytes'],
+                                   rp['a0_len'], rp['bank_n'], rp['bank_max'], rp['newest_age_s'], rp['c_harvested'],
+                                   rp['c_replayed'], rp['c_expired'], rp['c_stale'], rp['ts_ms']) ==
+          (12, 6, 0, 13757, 5152, 0, 4, 6, 39, 50, 4, None, None, T + 42), rp)
+    check('v5_empty_and_stale_row_fields', (em['bank_n'], em['newest_age_s'], em['set_age_s'], em['c_replayed'],
+                                            st['bank_n'], st['newest_age_s'], st['c_expired'], st['c_stale']) ==
+          (0, None, None, 3, 2, 130, 3, 1), (em, st))
+    check('v5_cred_unclaimed_unchanged', check_of(res, 'cred_unclaimed') == '0', check_of(res, 'cred_unclaimed'))
+
+
+def test_v5_harvest_dedupe_and_remainder():
+    base = [POOL, flip(TC, 1, T, 1)]
+    # a print copy glued in front of its own logger twin (the 09-25 L33940 shape) is still ONE row
+    pair = hv_captured('alt-1', T + 5000)
+    res = parse(base + [pair[0] + pair[1]])
+    check('v5_glued_print_plus_logger_is_one_row', len(res['harvest']) == 1 and res['harvest'][0]['bank_n'] == 1,
+          res['harvest'])
+    # a print-only line (no logger twin) is not read: the logger form is the one form, as for [HARVEST] REPLAY
+    res = parse(base + [pair[0]])
+    check('v5_print_only_line_is_not_a_row', res['harvest'] == [], res['harvest'])
+    # 20 pairs on one account = 20 rows, in log order, each with its own stamp
+    lines = base[:]
+    for i in range(20):
+        lines += hv_captured('alt-1', T + 5000 + i * 3000, bank=min(i + 1, 6))
+    res = parse(lines)
+    check('v5_twenty_pairs_twenty_rows', len(res['harvest']) == 20
+          and [r['ts_ms'] for r in res['harvest']] == [T + 5000 + i * 3000 for i in range(20)]
+          and res['harvest'][-1]['bank_n'] == 6, len(res['harvest']))
+    # a url / body echo that itself looks like a bank counter never wins over the line's real tail
+    body = "body='{\"note\":\"bank=9/9 newest_age=99s harvested=9 tokens=99 hdrs=77\"}'"
+    res = parse(base + hv_captured('primary', T + 5000, bank=2, age=7, body=body))
+    h = (res['harvest'] or [{}])[0]
+    check('v5_last_bank_group_wins', (h.get('bank_n'), h.get('bank_max'), h.get('newest_age_s')) == (2, 6, 7), h)
+    check('v5_counters_read_only_before_url', (h.get('tokens'), h.get('n_hdrs'), h.get('a_len')) == (6, 16, 7807), h)
+    # a CAPTURED line whose bank counters cannot be read: the row is kept (NULLs) AND counted in unparsed
+    res = parse(base + hv_captured('primary', T + 5000, tail=False))
+    h = (res['harvest'] or [{}])[0]
+    u = {r['marker']: (r['n'], r['seen'], r['first_line']) for r in res['unparsed']}
+    check('v5_unreadable_tail_counted_not_guessed', len(res['harvest']) == 1 and h.get('bank_n') is None
+          and h.get('event') == 'captured' and u.get('CRED', (0,))[0] == 1, (h, u.get('CRED')))
+    # the family accounting: seen = parsed for well-formed CAPTURED / pre-shot lines
+    res = parse(base + hv_captured('primary', T + 5000) + hv_preshot('primary', T + 6000) + cred('primary', T + 7000))
+    u = {r['marker']: (r['n'], r['seen']) for r in res['unparsed']}
+    check('v5_family_accounting_clean', u.get('CRED') == (0, 3), u.get('CRED'))
+
+
+def test_v5_other_tables_unchanged():
+    """The harvest lines add rows to `harvest` and to nothing else: the same log with and without them gives
+    identical rows in every other table (the cred events still feed the shot join exactly as in v4)."""
+    core = [POOL, flip(TC, 1, T, 1), race(TC, ['primary', 'business'])]
+    core += shot('primary', TC, T + 47) + shot('business', TC, T + 50, status=429, key=FSK)
+    core += shot('primary', TC, T + 60000, status=401, key='-')
+    # appended after the core lines so every core line keeps its line number (rows are compared whole)
+    extra = hv_captured('primary', T - 3000) + hv_captured('business', T - 2000) + hv_preshot('primary', T + 40) + \
+        hv_preshot('business', T + 41, bank=0, age='-') + hv_captured('primary', T + 20000, bank=2, age=0)
+    with_ = parse(core + extra)
+    without = parse(core)
+    same = all(with_[t] == without[t] for t in ('shots', 'races', 'flips', 'windows', 'tickets', 'loop_ends', 'decoys',
+                                                 'monitor_stats', 'orders', 'idents', 'place_orders', 'atc_net',
+                                                 'gate_events', 'stock_status'))
+    bad = [t for t in ('shots', 'races', 'flips', 'windows', 'decoys', 'place_orders', 'gate_events', 'idents')
+           if with_[t] != without[t]]
+    check('v5_every_other_table_identical', same, bad)
+    check('v5_checks_identical', with_['checks'] == without['checks'], (with_['checks'], without['checks']))
+    ua = {r['marker']: (r['n'], r['first_line']) for r in with_['unparsed']}
+    ub = {r['marker']: (r['n'], r['first_line']) for r in without['unparsed']}
+    check('v5_unparsed_same_markers_and_remainders', ua == ub, (ua, ub))
+    check('v5_no_extra_unparsed_row', len(with_['unparsed']) == len(without['unparsed']),
+          (len(with_['unparsed']), len(without['unparsed'])))
+    check('v5_harvest_counts', [r['event'] for r in with_['harvest']].count('captured') == 3
+          and [r['event'] for r in with_['harvest']].count('pre_shot') == 2
+          and [r['event'] for r in with_['harvest']].count('replay') == 3, [r['event'] for r in with_['harvest']])
+    check('v5_parser_version', ev.PARSER_VERSION == 5, ev.PARSER_VERSION)
+
+
+def _rbank_lines(live, extra=None):
+    """A flip-opened race, 3 home accounts, every first shot page-signed (bank EMPTY). `live` maps each account
+    to when its CAPTURED sits relative to the flip (ms, negative = before) and whether it banked."""
+    lines = [POOL, exposure('primary'), exposure('business'), exposure('alt-1')]
+    for ident, (off_ms, nb) in live.items():
+        lines += hv_captured(ident, T + off_ms, bank=0 if nb else 1, tokens=0 if nb else 6, nb=nb)
+    if extra:
+        lines += extra
+    lines += [flip(TC, 1, T, 1), race(TC, ['primary', 'business', 'alt-1'])]
+    lines += shot_with('primary', TC, T + 47, hv_empty('primary', T + 40), status=401, key='-')
+    lines += shot_with('business', TC, T + 50, hv_empty('business', T + 41), status=429, key=A2C)
+    lines += shot_with('alt-1', TC, T + 55, hv_empty('alt-1', T + 42), status=429, key=FSK)
+    return lines
+
+
+def _ps_shots_lines(n):
+    """n page-signed past-limiter shots (keyless 401s) by one home account."""
+    lines = [POOL, exposure('primary'), flip(TC, 1, T, 1), race(TC, ['primary'])]
+    for i in range(n):
+        lines += shot_with('primary', TC, T + 47 + i * 4000, hv_empty('primary', T + 40 + i * 4000), status=401, key='-')
+    return lines
+
+
+def _overlap_lines():
+    """TC opens at T and keeps reading; TC2 opens 5 s later while TC's window is still open (overlapped):
+    TC's first shot lands 47 ms in, TC2's 1.5 s in."""
+    return [POOL, exposure('primary'), exposure('business'),
+            flip(TC, 1, T, 1), flip(TC2, 1, T + 5000, 1), flip(TC, 2, T + 20000, 0),
+            race(TC, ['primary'])] + shot('primary', TC, T + 47) + \
+        [race(TC2, ['business'])] + shot('business', TC2, T + 6500)
+
+
+def _volley_lines():
+    """One flip-opened volley: atc_t0 order primary / business / alt-1, WIRE order alt-1 / primary / business;
+    alt-1 is the FAST_SELLING pass. The two orders disagree for all three accounts."""
+    inst = "[ATC_NET] Network meta instrument installed on the main tab ident="
+    lines = [POOL, inst + 'primary', inst + 'business', inst + 'alt-1', flip(TC, 1, T, 1),
+             race(TC, ['primary', 'business', 'alt-1'])]
+    lines += [fire(TC), fire(TC), fire(TC)] + cred('primary', T + 40) + cred('business', T + 41) + cred('alt-1', T + 42)
+    lines += [net('alt-1', 'POST', 429, T + 100, rid='1.1'), net('primary', 'POST', 429, T + 120, rid='1.2'),
+              net('business', 'POST', 429, T + 140, rid='1.3')]
+    lines += resp(T + 165, 429, FSK) + resp(T + 167, 429, A2C) + resp(T + 180, 429, A2C)
+    lines += [chain('primary', 429, T + 47, 120), chain('business', 429, T + 50, 130), chain('alt-1', 429, T + 55, 110)]
+    return lines
+
+
+def test_v5_phase_query():
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / 'runs'
+        logs.mkdir()
+        runs = {
+            'run_20990401_000000': _rbank_lines({'primary': (-60000, False), 'business': (-120000, False),
+                                                 'alt-1': (-30000, False)},
+                                                extra=[f for f in shot('primary', TC2, T - 50000)]),
+            'run_20990402_000000': _rbank_lines({'primary': (-60000, False), 'business': (-120000, False),
+                                                 'alt-1': (-60000, True)}),
+            'run_20990408_000000': _rbank_lines({'primary': (-60000, False), 'business': (-400000, False),
+                                                 'alt-1': (-60000, True)}),
+            'run_20990403_000000': [POOL, flip(TC, 1, T, 1), race(TC, ['primary'])] +
+            shot_with('primary', TC, T + 47, hv_empty('primary', T + 40)),      # shots, no [HARVEST] bank lines but EMPTY
+            'run_20990404_000000': _ps_shots_lines(19),
+            'run_20990405_000000': _ps_shots_lines(20),
+            'run_20990406_000000': _overlap_lines(),
+            'run_20990407_000000': _volley_lines(),
+        }
+        for name, lines in runs.items():
+            (logs / (name + '.log')).write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
+        db = Path(tmp) / 'ev.sqlite'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        check('v5_phase_db_built', '8 file(s) parsed' in buf.getvalue(), buf.getvalue())
+        con = sqlite3.connect(str(db))
+        nh = con.execute('SELECT COUNT(*) FROM harvest').fetchone()[0]
+        con.close()
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet', '--only', 'run_20990401_000000'])
+        con = sqlite3.connect(str(db))
+        check('v5_harvest_rows_not_duplicated_by_reparse', '0 file(s) parsed, 1 unchanged' in out2.getvalue()
+              and con.execute('SELECT COUNT(*) FROM harvest').fetchone()[0] == nh, (out2.getvalue(), nh))
+        con.execute("UPDATE ingested SET parser_version = parser_version - 1 WHERE file = 'run_20990401_000000.log'")
+        con.commit()
+        con.close()
+        with contextlib.redirect_stdout(io.StringIO()):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v5_version_reparse_replaces_harvest_rows', con.execute('SELECT COUNT(*) FROM harvest').fetchone()[0] == nh, nh)
+        con.close()
+
+        def q(*args):
+            b = io.StringIO()
+            with contextlib.redirect_stdout(b):
+                rc = evq.main(['--db', str(db), '--csv'] + list(args))
+            res_ = []
+            for blk in b.getvalue().strip().split('\n\n'):
+                rows_ = list(csv.reader(io.StringIO(blk.strip())))
+                res_.append([dict(zip(rows_[0], r)) for r in rows_[1:]] if rows_ else [])
+            return rc, res_
+
+        rc, res = q('phase')
+        check('v5_phase_runs_all_13_statements', rc == 0 and len(res) == 13, (rc, len(res)))
+        check('v5_verdict_scope_pooled_over_many_runs', res[12][0]['scope'] == 'POOLED over 8 runs: pass --run for one night',
+              res[12])
+        rc, rs = q('phase', '--run', '20990401')
+        s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13 = rs
+        # R-BANK met: 3 page-signed fresh-flip first shots, each with a banked CAPTURED within 300 s
+        v = s13[0]
+        check('v5_verdict_scope_one_run', v['scope'] == 'one run', v)
+        check('v5_rbank_met_3_live', (v['n_first'], v['n_captured'], v['n_pagesigned_live'],
+                                      v['n_pagesigned_live_any_capture']) == ('3', '3', '3', '3')
+              and v['r_bank'].startswith('R-BANK MET') and v['ps_past_limiter'] == '2'
+              and v['c_1015_04'].startswith('C-1015-04 stays NOT ESTABLISHED'), v)
+        g = sorted((r['ident'], r['other_tcin_110s'], r['cred_source'], r['harvest_live'], r['n'], r['past']) for r in s10)
+        check('v5_rbank_fresh_flip_split', g == [('alt-1', 'no', 'page_signed', 'yes', '1', '1'),
+                                                  ('business', 'no', 'page_signed', 'yes', '1', '0'),
+                                                  ('primary', 'yes', 'page_signed', 'yes', '1', '1')], g)
+        a = sorted((r['acct'], r['captured'], r['pre_shot'], r['empty'], r['cred_rows'], r['shots_with_cred'], r['bank_null'])
+                   for r in s1)
+        check('v5_phase_harvest_coverage_row', a == [('alt-1', '1', '0', '1', '1', '1', '0'),
+                                                      ('business', '1', '0', '1', '1', '1', '0'),
+                                                      ('primary', '1', '0', '1', '2', '2', '0')], a)
+        # R-BANK not met at 2 (the rule is >= 3): primary and business live, alt-1's capture banked nothing
+        rc, rs = q('phase', '--run', '20990402')
+        v = rs[12][0]
+        check('v5_rbank_not_met_at_2_live_3_any', (v['n_first'], v['n_pagesigned_live'], v['n_pagesigned_live_any_capture'],
+                                                   v['r_bank']) == ('3', '2', '3', 'R-BANK NOT MET (< 3)'), v)
+        # ... and a capture 400 s before the shot is outside the 5-minute window: only primary is live
+        rc, rs = q('phase', '--run', '20990408')
+        v = rs[12][0]
+        check('v5_rbank_capture_older_than_5min_not_live', (v['n_first'], v['n_pagesigned_live'],
+                                                            v['n_pagesigned_live_any_capture'], v['r_bank']) ==
+              ('3', '1', '2', 'R-BANK NOT MET (< 3)'), v)
+        # shots but no [HARVEST] bank lines other than EMPTY: harvest rows exist (the EMPTY), no CAPTURED -> NOT MET
+        rc, rs = q('phase', '--run', '20990403')
+        v = rs[12][0]
+        check('v5_rbank_no_captured_is_not_met', (v['n_first'], v['n_captured'], v['n_pagesigned_live'], v['r_bank']) ==
+              ('1', '0', '0', 'R-BANK NOT MET (< 3)'), v)
+        # no run at all -> NO DATA, never NOT MET
+        rc, rs = q('phase', '--run', 'no_such_run')
+        v = rs[12][0]
+        check('v5_rbank_no_data_when_no_first_shots', v['r_bank'] == 'NO DATA (no fresh-flip first shots)', v)
+        # a store whose runs carry no harvest rows: shots exist but harvest table empty -> NO DATA
+        con = sqlite3.connect(str(db))
+        con.execute("DELETE FROM harvest WHERE run_id = 'run_20990403_000000'")
+        con.commit()
+        con.close()
+        rc, rs = q('phase', '--run', '20990403')
+        v = rs[12][0]
+        check('v5_rbank_no_data_when_no_harvest_rows', v['r_bank'].startswith('NO DATA (no harvest rows'), v)
+        # C-1015-04 moves only with >= 20 page-signed past-limiter shots
+        rc, rs = q('phase', '--run', '20990404')
+        a19 = rs[12][0]
+        rc, rs = q('phase', '--run', '20990405')
+        a20 = rs[12][0]
+        check('v5_c1015_04_gate_at_20', (a19['ps_past_limiter'], a19['c_1015_04'].startswith('C-1015-04 stays')) == ('19', True)
+              and (a20['ps_past_limiter'], a20['c_1015_04'].startswith('C-1015-04 may move')) == ('20', True), (a19, a20))
+        # statement 2: the two past-limiter shots of run 0401 sit in the first 3 s of the window, page-signed
+        rc, rs = q('phase', '--run', '20990401')
+        s2 = rs[1]
+        check('v5_phase_stmt2_early_page_signed', [(r['phase'], r['cs'], r['past'], r['d401'], r['adm']) for r in s2] ==
+              [('early<=3s', 'page_signed', '2', '1', '1')], s2)
+        # statements 3-4: one overlapped window (TC2, lag 1500 ms, opened while TC was open), one plain (47 ms)
+        rc, rs = q('phase', '--run', '20990406')
+        s3, s4 = rs[2], rs[3]
+        check('v5_phase_overlapped_window_row', [(r['tcin'], r['first_lag'], r['open_others'], r['which']) for r in s3] ==
+              [(TC2, '1500', '1', TC)], s3)
+        check('v5_phase_overlap_summary', [(r['windows'], r['overlapped'], r['ov_lag_gt_500ms'], r['plain'],
+                                            r['plain_lag_le_100ms'], r['plain_lag_gt_100ms'], r['unclassified'])
+                                           for r in s4] == [('2', '1', '1', '1', '1', '0', '0')], s4)
+        # statements 7-9: wire order alt-1 < primary < business, atc_t0 order primary < business < alt-1
+        rc, rs = q('phase', '--run', '20990407')
+        s7, s8, s9 = rs[6], rs[7], rs[8]
+        check('v5_phase_volley_wire_order', [(r['ident'], r['wire_rank'], r['t0_rank'], r['wire_behind_ms'], r['pass'],
+                                              r['order_differs']) for r in s8] ==
+              [('alt-1', '1', '3', '0', '1', '1'), ('primary', '2', '1', '20', '0', '1'),
+               ('business', '3', '2', '40', '0', '1')], s8)
+        check('v5_phase_volley_summary', (s7[0]['volleys'], s7[0]['joined_first_posts']) == ('1', '3')
+              and [(r['volleys'], r['order_differs'], r['mixed'], r['mixed_wire_first_is_pass'],
+                    r['mixed_t0_first_is_pass']) for r in s9] == [('1', '1', '1', '1', '0')], (s7, s9))
+        # --run applies to the new table too
+        rc, rs = q('SELECT COUNT(*) AS n FROM harvest', '--run', 'no_such_run')
+        check('v5_q_run_filter_covers_harvest', rs[0][0]['n'] == '0', rs)
+        check('v5_q_run_tables_has_harvest', 'harvest' in evq.RUN_TABLES and 'harvest' in ev.RUN_TABLES, evq.RUN_TABLES)
 
 
 if __name__ == "__main__":
@@ -1231,5 +1588,9 @@ if __name__ == "__main__":
     test_v3_gate_events()
     test_v3_net_gate_queries()
     test_v4_fx1006_and_diag_gate_events()
+    test_v5_harvest_rows()
+    test_v5_harvest_dedupe_and_remainder()
+    test_v5_other_tables_unchanged()
+    test_v5_phase_query()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)
