@@ -130,6 +130,10 @@ OFFLINE = [
     "test_guest_seen_1014",
     # 2026-10-14 late: FX-1014-KICK / SENTSTAGGER / live-guest recovery / egress DNS (stubs, loopback).
     "test_kick_stagger_guest_dns_1014",
+    # 2026-10-15: OPS-ORDER-PING, tools/ops/order_watch.py, the read-only order / ambiguous-commit
+    # run-log watcher (synthetic lines, temp dirs, one local subprocess of the tool; the real-log
+    # replays run only when the main tree's gitignored logs/runs is reachable, else they SKIP).
+    "test_order_watch_1015",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
