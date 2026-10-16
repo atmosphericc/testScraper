@@ -134,6 +134,10 @@ OFFLINE = [
     # place-order / CVV PUT beside [ATC_NET] (stub Network handlers, temp sqlite for the two saved
     # queries, build.py on synthetic lines; no browser, no network).
     "test_chain_net_meta",
+    # 2026-10-15 DCO-PROBE-1015: TARGET_DCO_PROBE_P, the sub-second DCO burst re-POST as a randomized
+    # A/B arm (real race loop + the real _check_cart_hold on stub workers / a stub tab, a differential
+    # against the pre-change manager via git show; no browser, no network).
+    "test_dco_probe_1015",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
