@@ -924,7 +924,7 @@ def test_purchase_entry():
         pe.limkey_probe_reset()
     # source order: the guard sits before every path that could ride or strike the line
     src = Path(pe.__file__).read_text(encoding="utf-8")
-    i = src.index("_lk_res = await self._limkey_purge_entry(tab, tcin, start_time)")
+    i = src.index("_lk_res = await self._limkey_purge_entry(tab, tcin, start_time, unreadable=_lk_unreadable)")
     after = src[i:]
     check("entry_guard_precedes_dirty_release_held_entry_and_fast_lane",
           0 < after.index("_woncart_dirty_release(tab, tcin, start_time, quantity)")
@@ -1361,14 +1361,21 @@ def test_purchase_entry_waits_out_an_open_window():
     ex._held_cart = {"tcin": T, "created": c.t, "source": "boot"}
     _impl_run(ex)
     check("window_open_drops_the_held_marker_and_fires_nothing", ex._held_cart is None and "SHOT" not in cart.events)
-    # another TCIN / account on an open window is untouched
-    for label, marked in (("other_account", ("alt-1", T)), ("other_tcin", ("primary", OTHER))):
-        fresh()
-        pe.limkey_marker_write(*marked, "x", late=True)
-        cart = SimCart([])
-        ex, c = _impl_ex(cart)
-        _impl_run(ex)
-        check(f"window_open_{label}_does_not_block_this_purchase", cart.events[:1] == ["SHOT"], str(cart.events))
+    # another ACCOUNT on an open window is untouched; another TCIN on the SAME account now holds the shot
+    # (fix round 6: the open window's POST may still land, a shot of any TCIN there would merge with it)
+    fresh()
+    pe.limkey_marker_write("alt-1", T, "x", late=True)
+    cart = SimCart([])
+    ex, c = _impl_ex(cart)
+    _impl_run(ex)
+    check("window_open_other_account_does_not_block_this_purchase", cart.events[:1] == ["SHOT"], str(cart.events))
+    fresh()
+    pe.limkey_marker_write("primary", OTHER, "x", late=True)
+    cart = SimCart([])
+    ex, c = _impl_ex(cart)
+    r = _impl_run(ex)
+    check("window_open_other_tcin_same_account_holds_this_purchase", "SHOT" not in cart.events
+          and r.get("success") is False and r.get("reason") == "limkey_window_open", f"{r} {cart.events}")
     fresh()
 
 
@@ -1766,7 +1773,7 @@ def test_legacy_checkout_guard_runs_under_a_marker():
 U = "1010892069"           # the purchase TCIN (S.TCIN); the probe's TCIN is A (a DIFFERENT TCIN, same account)
 
 
-def _race_rig(wait_enabled=True):
+def _race_rig(wait_enabled=True, late=False, old_wait=False):
     """A real PurchaseExecutor whose probe (TCIN A, answers 201 and LANDS the line) and whose purchase of U
     share ONE simulated cart (CartTab.lines). The purchase's fast lane is a Python simulation of the real
     one: ATC adds U, ONE pre_checkout cart read (the foreign-line check), a yield, then place-order buys the
@@ -1774,7 +1781,11 @@ def _race_rig(wait_enabled=True):
     done its pre_checkout read (or 0.5 s passed: U is waiting on the probe)."""
     st = {"events": [], "place_order_cart": None, "pre_read": None, "cleared": 0, "task": None,
           "hook_saw_pre_read": None}
-    ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
+    if late:
+        # fix round 6: the answer never comes back (evaluate TimeoutError), the POST has NOT landed yet
+        ex, tab, sm = make(probe_raises=asyncio.TimeoutError(), lands=False)
+    else:
+        ex, tab, sm = make(probe={"status": 201, "key": "-", "hop": "-", "n": 900}, lands=True)
     ex._cvv_required = False
     ex.session_manager.account_id = "primary"
     ptab = S.ImplTab()
@@ -1834,23 +1845,45 @@ def _race_rig(wait_enabled=True):
         except asyncio.TimeoutError:
             st["hook_saw_pre_read"] = False
     tab.on_probe_async = hook
+    if late:
+        async def adder():
+            # the page's fetch (still running after the timeout) lands the probe line once U's pre_checkout
+            # read event is set -- i.e. between U's pre_checkout read and its place-order
+            while st["evt"][0] is None:
+                await asyncio.sleep(0.01)
+            await st["evt"][0].wait()
+            tab.add_line(A)
+            st["late_landed"] = True
+        st["adder_factory"] = adder
+    if old_wait:
+        # the PRE-fix wait: poll until the own in_flight entry is gone, then continue (returns None)
+        async def old_wait_fn(tcin, start_time=None):
+            end = time.time() + pe._LIMKEY_PROBE_WAIT_S
+            while time.time() < end:
+                await asyncio.sleep(0.05)
+                if not [e for e in pe.limkey_marker_entries_for("primary")
+                        if e.get("state") == "in_flight" and e.get("pid") == os.getpid()]:
+                    break
+            return None
+        ex._limkey_wait_probe = old_wait_fn
     if not wait_enabled:
-        async def no_wait(tcin):
+        async def no_wait(tcin, start_time=None):
             return None
         ex._limkey_wait_probe = no_wait
     return ex, tab, sm, st
 
 
-def _race_run(wait_enabled):
+def _race_run(wait_enabled, late=False, old_wait=False):
     fresh()
     real = pe._LIMKEY_PROBE_WAIT_S
     pe._LIMKEY_PROBE_WAIT_S = 5.0
     try:
         with env(**{**ENV_ON, "TARGET_FAST_LANE": "1", "TARGET_API_PLACE_ORDER": "true", "TARGET_WONCART_DIRECT": "0",
                     "TARGET_HELD_CART_REENTRY": "0"}):
-            ex, tab, sm, st = _race_rig(wait_enabled)
+            ex, tab, sm, st = _race_rig(wait_enabled, late=late, old_wait=old_wait)
 
             async def both():
+                ad = asyncio.ensure_future(st["adder_factory"]()) if st.get("adder_factory") else None
                 await ex._limkey_probe_tick(0, now=time.time())
                 r = None
                 if st["task"] is not None:
@@ -1858,6 +1891,8 @@ def _race_run(wait_enabled):
                         r = await asyncio.wait_for(st["task"], 10.0)
                     except BaseException as e:               # noqa: BLE001
                         r = {"_raised": type(e).__name__}
+                if ad is not None:
+                    ad.cancel()
                 return r
             r, out = arun(both())
     finally:
@@ -1897,23 +1932,24 @@ def test_probe_in_flight_vs_purchase_of_another_tcin():
     r0, out0 = arun(ex._limkey_wait_probe(U))
     check("wait_no_marker_file_returns_at_once_and_prints_nothing", r0 is None and out0 == "" and time.time() - t0 < 0.2, out0)
     src = Path(pe.__file__).read_text(encoding="utf-8")
-    i = src.index("await self._limkey_wait_probe(tcin)")
+    i = src.index("await self._limkey_wait_probe(tcin, start_time)")
     check("wait_call_site_is_gated_on_limkey_marker_any_and_precedes_the_marked_check",
           "if limkey_marker_any():" in src[i - 400:i]
-          and i < src.index("if self._limkey_marked(tcin):", i)
-          and i < src.index("_lk_res = await self._limkey_purge_entry(tab, tcin, start_time)")
+          and i < src.index("if self._limkey_marked(tcin) or _lk_unreadable:", i)
+          and i < src.index("_lk_res = await self._limkey_purge_entry(tab, tcin, start_time, unreadable=_lk_unreadable)")
           and i < src.index("_woncart_dirty_release(tab, tcin, start_time, quantity)")
           and i < src.index("_held_cart_entry(tab, tcin, quantity, start_time)")
           and i < src.index("_api_fast_lane(tab, tcin, quantity, extra_headers_js)"))
     # a readable marker with nothing in flight (plain / late entry of this process): no wait
-    for label, writer in (("plain_entry", lambda: pe.limkey_marker_write("primary", A, "x")),
-                          ("late_entry", lambda: pe.limkey_marker_write("primary", A, "x", late=True)),
-                          ("other_account_in_flight", lambda: pe.limkey_marker_write("alt-1", A, "in_flight", state="in_flight"))):
+    for label, writer, held in (("plain_entry", lambda: pe.limkey_marker_write("primary", A, "x"), False),
+                                ("late_entry", lambda: pe.limkey_marker_write("primary", A, "x", late=True), True),
+                                ("other_account_in_flight", lambda: pe.limkey_marker_write("alt-1", A, "in_flight", state="in_flight"), False)):
         fresh()
         writer()
         t0 = time.time()
         r0, out0 = arun(ex._limkey_wait_probe(U))
-        check(f"wait_{label}_no_wait", out0 == "" and time.time() - t0 < 0.2, out0)
+        check(f"wait_{label}_no_wait", "waiting for its answer" not in out0 and time.time() - t0 < 0.2
+              and (isinstance(r0, dict) and r0.get("reason") == "limkey_window_open") is held, f"{r0} {out0}")
     # an in_flight entry of ANOTHER pid is an orphan (the late rule handles it): never waited on
     fresh()
     pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
@@ -1922,7 +1958,8 @@ def test_probe_in_flight_vs_purchase_of_another_tcin():
     pe._lk_marker_store(ents)
     t0 = time.time()
     r0, out0 = arun(ex._limkey_wait_probe(U))
-    check("wait_orphan_in_flight_of_another_pid_is_not_waited_on", out0 == "" and time.time() - t0 < 0.2, out0)
+    check("wait_orphan_in_flight_of_another_pid_is_not_waited_on", "waiting for its answer" not in out0
+          and time.time() - t0 < 0.2 and isinstance(r0, dict) and r0.get("reason") == "limkey_window_open", f"{r0} {out0}")
     # a stale own-pid in_flight entry (older than the probe's evaluate bound): no wait
     fresh()
     pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
@@ -1931,7 +1968,8 @@ def test_probe_in_flight_vs_purchase_of_another_tcin():
     pe._lk_marker_store(ents)
     t0 = time.time()
     r0, out0 = arun(ex._limkey_wait_probe(U))
-    check("wait_stale_own_in_flight_entry_is_not_waited_on", out0 == "" and time.time() - t0 < 0.2, out0)
+    check("wait_stale_own_in_flight_entry_is_not_waited_on", "waiting for its answer" not in out0
+          and time.time() - t0 < 0.2 and isinstance(r0, dict) and r0.get("reason") == "limkey_window_open", f"{r0} {out0}")
     # an own live in_flight entry that never answers: the wait is bounded (patched to 0.3 s) and then continues
     fresh()
     pe.limkey_marker_write("primary", A, "in_flight", state="in_flight")
@@ -2014,14 +2052,15 @@ def test_unreadable_marker_fails_closed_for_the_adopting_paths():
             ex, tab, sm = make()
             check(f"unreadable_{label}_strike_inactive", ex._held_line_strike_active(A) is False
                   and ex._held_line_strike_active(B) is False)
-    # the purchase entry does NOT start refusing every shot on an unreadable file (availability): the
-    # per-TCIN purge needs a readable entry, the account-wide guards (legacy cart guard, won-cart suspect) already fail closed
+    # fix round 6: the purchase entry does NOT refuse every shot on an unreadable file (availability), but it
+    # deletes + proves any line of its own TCIN before the shot (one read + one delete), file left alone
     fresh()
     Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
     cart = SimCart([])
     ex, c = _impl_ex(cart)
     _impl_run(ex)
-    check("unreadable_purchase_entry_still_shoots", cart.events[:1] == ["SHOT"], str(cart.events))
+    check("unreadable_purchase_entry_deletes_then_shoots", cart.events[:3] == [f"delete:{U}", "read", "SHOT"],
+          str(cart.events))
     # differential: no file / a readable marker for another account -> every path is as before
     fresh()
     check("unreadable_helper_false_without_a_file", pe.limkey_marker_unreadable() is False)
@@ -2050,6 +2089,168 @@ def test_unreadable_marker_fails_closed_for_the_adopting_paths():
         ex, tab, sm = make(lines=list(one))
         r, out = _boot(ex, tab)
     check("unreadable_fixed_file_gets_the_normal_delete_not_adopt", r == "limkey_deleted" and ex._held_cart is None, f"{r} {out}")
+    fresh()
+
+
+# ───────────────────── fix round 6 (10-16 evaluator 2) ─────────────────────
+def test_late_landing_vs_purchase_of_another_tcin():
+    # (1) the probe's answer never comes back (evaluate TimeoutError), its POST has not landed. The cleanup
+    # rewrites the in_flight entry as late=True; the old wait ended there and U fired. The page's fetch lands
+    # line A between U's pre_checkout read and place-order.
+    ex, tab, sm, st, r, out = _race_run(wait_enabled=True, late=True, old_wait=True)
+    check("late_control_pre_fix_wait_buys_U_and_A", st["place_order_cart"] is not None
+          and sorted(st["place_order_cart"]) == sorted([U, A]) and st.get("late_landed") is True,
+          f"{st['place_order_cart']} {st['events']} {out[-300:]}")
+    # the fix: the wait returns a limkey_window_open skip; no shot, no place-order, the line never lands
+    ex, tab, sm, st, r, out = _race_run(wait_enabled=True, late=True)
+    check("late_fixed_no_place_order", "PLACE_ORDER" not in st["events"] and st["place_order_cart"] is None
+          and "SHOT" not in st["events"], f"{st['events']} {out[-400:]}")
+    check("late_fixed_limkey_window_open_skip", isinstance(r, dict) and r.get("success") is False
+          and r.get("reason") == "limkey_window_open", str(r))
+    check("late_fixed_the_marker_is_late_and_stays", (pe.limkey_marker_entry("primary", A) or {}).get("late") is True)
+    check("late_fixed_logs_the_open_window", "probe window open on this account for" in out
+          and "nothing fired for" in out, out[-500:])
+    fresh()
+    # the window passing lifts the hold for another TCIN (late entry aged past the window)
+    ex, tab, sm = make()
+    fresh()
+    pe.limkey_marker_write("primary", A, "evaluate_TimeoutError", late=True)
+    r0, out0 = arun(ex._limkey_wait_probe(U, time.time()))
+    check("late_window_open_wait_returns_a_skip_for_another_tcin", isinstance(r0, dict)
+          and r0.get("reason") == "limkey_window_open", str(r0))
+    r0, _ = arun(ex._limkey_wait_probe(A, time.time()))
+    check("late_window_open_wait_leaves_the_entry_of_the_same_tcin_to_the_purge", r0 is None, str(r0))
+    ents = marker_entries()
+    ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 1
+    pe._lk_marker_store(ents)
+    r0, _ = arun(ex._limkey_wait_probe(U, time.time()))
+    check("late_window_passed_wait_returns_none", r0 is None, str(r0))
+    # a plain (non-late, non-in_flight) entry of another TCIN does not hold the shot (the cart guards cover it)
+    fresh()
+    pe.limkey_marker_write("primary", A, "status_201")
+    r0, _ = arun(ex._limkey_wait_probe(U, time.time()))
+    check("plain_entry_of_another_tcin_does_not_hold_the_shot", r0 is None, str(r0))
+    # another account's late window does not hold this account
+    fresh()
+    pe.limkey_marker_write("alt-1", A, "x", late=True)
+    r0, _ = arun(ex._limkey_wait_probe(U, time.time()))
+    check("late_window_of_another_account_does_not_hold", r0 is None, str(r0))
+    # the cost is bounded: the hold is at most the late-add window from the entry's ts
+    fresh()
+    pe.limkey_marker_write("primary", A, "x", late=True)
+    ents = marker_entries()
+    ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S + 5
+    pe._lk_marker_store(ents)
+    r0, _ = arun(ex._limkey_wait_probe(U, time.time()))
+    check("late_window_hold_lifts_at_ts_plus_the_window", isinstance(r0, dict), str(r0))
+    ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 5
+    pe._lk_marker_store(ents)
+    r0, _ = arun(ex._limkey_wait_probe(U, time.time()))
+    check("late_window_hold_lifted", r0 is None, str(r0))
+    # call site returns the wait's result
+    src = Path(pe.__file__).read_text(encoding="utf-8")
+    i = src.index("_lk_wait = await self._limkey_wait_probe(tcin, start_time)")
+    check("late_call_site_returns_the_wait_result", "return _lk_wait" in src[i:i + 300])
+    fresh()
+
+
+def test_failed_owner_clear_leaves_no_permanent_block():
+    # (2) the probe proves a non-landing (empty-body ERR_A2C 429) but its owner clear fails (a disk error on
+    # removing the last entry): the own-pid in_flight entry stays. Before the fix it blocked non-owners forever.
+    fresh()
+    real_store = pe._lk_marker_store
+    state = {"fail": True}
+
+    def flaky(entries):
+        if state["fail"] and not entries:
+            return False
+        return real_store(entries)
+    pe._lk_marker_store = flaky
+    try:
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe={"status": 429, "key": ERR_A2C, "hop": "-", "n": 0}, lands=False)
+            tick(ex)
+    finally:
+        pe._lk_marker_store = real_store
+    e = pe.limkey_marker_entry("primary", A)
+    check("failed_clear_the_in_flight_entry_is_still_there", e is not None and e.get("state") == "in_flight"
+          and e.get("pid") == os.getpid(), str(e))
+    # fresh (inside the probe's evaluate bound): it is the live probe's, blocked for non-owners, ignored by other_any
+    real_w = pe._LIMKEY_PROBE_WAIT_S
+    pe._LIMKEY_PROBE_WAIT_S = 60.0
+    try:
+        check("fresh_own_in_flight_blocks_non_owners", pe.limkey_marker_block("primary", A) == "in_flight")
+        check("fresh_own_in_flight_is_ignored_by_other_any", pe.limkey_marker_other_any() is False)
+    finally:
+        pe._LIMKEY_PROBE_WAIT_S = real_w
+    # older than the bound: treated like an orphan -> the late rule applies
+    time.sleep(0.4)                                # > the patched 0.3 s bound
+    why = pe.limkey_marker_block("primary", A)
+    check("stale_own_in_flight_follows_the_late_rule", why.startswith("late_add_window"), why)
+    check("stale_own_in_flight_counts_in_other_any", pe.limkey_marker_other_any() is True)
+    check("stale_own_in_flight_owner_may_still_clear", pe.limkey_marker_block("primary", A, owner=True) == "")
+    # the shot of another TCIN is held only inside the window ...
+    ex2, tab2, sm2 = make()
+    r0, _ = arun(ex2._limkey_wait_probe(U, time.time()))
+    check("stale_own_in_flight_holds_another_tcin_inside_the_window", isinstance(r0, dict)
+          and r0.get("reason") == "limkey_window_open", str(r0))
+    # ... and the entry's own TCIN is purged but the window keeps the marker
+    cart = SimCart([])
+    ex3, c3 = _impl_ex(cart)
+    # ... after the window the block lifts, nothing is permanent
+    ents = marker_entries()
+    ents[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 1
+    pe._lk_marker_store(ents)
+    check("stale_own_in_flight_block_lifts_after_the_window", pe.limkey_marker_block("primary", A) == "")
+    r0, _ = arun(ex2._limkey_wait_probe(U, time.time()))
+    check("stale_own_in_flight_no_longer_holds_another_tcin", r0 is None, str(r0))
+    check("stale_own_in_flight_clears_once_the_window_passed", pe.limkey_marker_clear("primary", A) is True
+          and not marker_file_exists(), str(marker_entries()))
+    # the purchase entry of the entry's TCIN: window open -> line deleted, nothing fired; passed -> clears + shoots
+    T = S.TCIN
+    for label, age, expect_shot in (("open", 1.0, False), ("passed", pe._WONCART_LATE_ADD_WINDOW_S + 1, True)):
+        fresh()
+        pe.limkey_marker_write("primary", T, "in_flight", state="in_flight")
+        ents = marker_entries()
+        ents[0]["ts"] = time.time() - age
+        pe._lk_marker_store(ents)
+        cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+        ex, c = _impl_ex(cart)
+        r = _impl_run(ex)
+        check(f"stale_own_in_flight_purchase_entry_{label}", ("SHOT" in cart.events) is expect_shot
+              and (expect_shot or r.get("reason") == "limkey_window_open") and not cart.lines
+              and (marker_file_exists() is (not expect_shot)), f"{r} {cart.events} {marker_entries()}")
+    fresh()
+
+
+def test_unreadable_marker_purchase_deletes_the_line_of_its_tcin():
+    # (3) the marker file exists but does not parse: limkey_marker_has matches nothing, so before the fix a
+    # probe line of T sat in the cart and the shot's ATC merged with it.
+    T = S.TCIN
+    for label, content in UNREADABLE_CONTENTS:
+        fresh()
+        Path(pe._LIMKEY_MARKER_PATH).write_text(content, encoding="utf-8")
+        cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}, {"id": "CI2", "tcin": OTHER, "qty": 1}])
+        ex, c = _impl_ex(cart)
+        _impl_run(ex)
+        check(f"unreadable_{label}_line_of_T_deleted_before_the_shot", cart.events[:3] == [f"delete:{T}", "read", "SHOT"]
+              and [l["tcin"] for l in cart.lines] == [OTHER], f"{cart.events} {cart.lines}")
+        check(f"unreadable_{label}_file_left_alone", Path(pe._LIMKEY_MARKER_PATH).read_text(encoding="utf-8") == content)
+    # the delete cannot be proven: nothing fires
+    fresh()
+    Path(pe._LIMKEY_MARKER_PATH).write_text("{corrupt", encoding="utf-8")
+    cart = SimCart([{"id": "CI1", "tcin": T, "qty": 1}])
+    cart.fail_delete = True
+    ex, c = _impl_ex(cart)
+    r = _impl_run(ex)
+    check("unreadable_unproven_delete_fires_nothing", "SHOT" not in cart.events and r.get("success") is False
+          and r.get("reason") == "held_cart_release_failed", f"{r} {cart.events}")
+    # no marker file at all: straight to the shot (differential)
+    fresh()
+    cart = SimCart([])
+    ex, c = _impl_ex(cart)
+    _impl_run(ex)
+    check("no_file_no_delete_no_read_before_the_shot", cart.events[:1] == ["SHOT"], str(cart.events))
     fresh()
 
 
@@ -2082,7 +2283,9 @@ def main():
                test_other_executors_in_flight_entry_does_not_stop_the_probe, test_stale_marker_lifecycle,
                test_unreadable_hand_made_file_advice, test_status_zero_with_a_seen_status, test_legacy_checkout_guard_runs_under_a_marker,
                test_probe_in_flight_vs_purchase_of_another_tcin,
-               test_unreadable_marker_fails_closed_for_the_adopting_paths, test_source_hygiene):
+               test_unreadable_marker_fails_closed_for_the_adopting_paths,
+               test_late_landing_vs_purchase_of_another_tcin, test_failed_owner_clear_leaves_no_permanent_block,
+               test_unreadable_marker_purchase_deletes_the_line_of_its_tcin, test_source_hygiene):
         try:
             fn()
         except Exception as e:                 # noqa: BLE001

@@ -426,24 +426,37 @@ def limkey_marker_acct(acct) -> bool:
         return True
 
 
+def _lk_own_live_in_flight(e, now=None) -> bool:
+    """Fix round 6 (evaluator 2): True for an in_flight entry of THIS pid that is still inside the
+    probe's evaluate bound (age <= _LIMKEY_PROBE_WAIT_S). An own-pid in_flight entry older than that
+    is stale (the owner's clear failed, e.g. a disk write error after a proven non-landing): it is
+    treated like an orphan, so the late rule (ts + _WONCART_LATE_ADD_WINDOW_S) applies instead of an
+    'in_flight' block that would never lift. An unreadable ts = stale. Never raises (error = False)."""
+    try:
+        if not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid()):
+            return False
+        now = time.time() if now is None else float(now)
+        return 0.0 <= now - float(e.get('ts')) <= _LIMKEY_PROBE_WAIT_S
+    except Exception:
+        return False
+
+
 def limkey_marker_other_any() -> bool:
     """LIMKEY-GUARD-1016 fix round 2 (3): the per-tick 'a probe line may be in a cart' check. Like
-    limkey_marker_any, but it ignores this process's OWN live in_flight entries (state 'in_flight' and
-    pid == this pid): another executor's probe mid-evaluate must not stop this one. A previous
+    limkey_marker_any, but it ignores this process's OWN live in_flight entries (state 'in_flight',
+    pid == this pid, age <= _LIMKEY_PROBE_WAIT_S; an older one is stale = counts): another executor's probe mid-evaluate must not stop this one. A previous
     process's leftovers (any state) are caught by the start latch; this process's landings stop
     the probe in _limkey_cleanup. An unreadable file counts (fail closed). Never raises (error = True)."""
     try:
         if not os.path.exists(_LIMKEY_MARKER_PATH):
-            return any(not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid())
-                       for e in list(_LIMKEY_FALLBACK.values()))
+            return any(not _lk_own_live_in_flight(e) for e in list(_LIMKEY_FALLBACK.values()))
         with _LIMKEY_MARKER_LOCK:
             entries, st = _lk_marker_load()
         if st == 'unreadable':
             return True
-        if any(not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid()) for e in entries):
+        if any(not _lk_own_live_in_flight(e) for e in entries):
             return True
-        return any(not (e.get('state') == 'in_flight' and e.get('pid') == os.getpid())
-                   for e in list(_LIMKEY_FALLBACK.values()))
+        return any(not _lk_own_live_in_flight(e) for e in list(_LIMKEY_FALLBACK.values()))
     except Exception:
         return True
 
@@ -452,15 +465,18 @@ def _lk_clear_block(e, owner: bool = False, now=None) -> str:
     """'' when the entry may be cleared (the caller's cart read proved the line gone); else why not:
     'in_flight' (the live probe of THIS process has not answered yet; only that probe clears it,
     owner=True) or 'late_add_window_<n>s' (the answer never came back, so the POST may still land;
-    no clear until now - ts >= _WONCART_LATE_ADD_WINDOW_S). An in_flight entry of another pid is an
-    orphan: it follows the late rule. Never raises (error = blocked)."""
+    no clear until now - ts >= _WONCART_LATE_ADD_WINDOW_S). An in_flight entry of another pid, or of
+    this pid but older than _LIMKEY_PROBE_WAIT_S (the owner's clear failed), is an orphan: it follows
+    the late rule. Never raises (error = blocked)."""
     try:
         now = time.time() if now is None else float(now)
         late = bool(e.get('late'))
         if e.get('state') == 'in_flight':
             if e.get('pid') == os.getpid():
                 if not owner:
-                    return 'in_flight'
+                    if _lk_own_live_in_flight(e, now):
+                        return 'in_flight'
+                    late = True      # fix round 6: a stale own in_flight (failed owner clear) = orphan
             else:
                 late = True
         if late:
@@ -4594,46 +4610,70 @@ class PurchaseExecutor:
             except Exception:
                 pass
 
-    async def _limkey_wait_probe(self, tcin) -> None:
+    async def _limkey_wait_probe(self, tcin, start_time=None):
         """LIMKEY-GUARD-1016 fix round 5 (evaluator): the purchase entry (any TCIN) on an account
         whose OWN process has a probe mid-evaluate (an 'in_flight' marker entry with this pid naming
         the account) waits for the probe's answer before any shot, bounded by the probe's 15 s
         evaluate (_LIMKEY_PROBE_WAIT_S from the entry's ts, and from now). A line the probe landed is
         then in the cart before the purchase's first read, and the existing guards catch it (fast-lane
         foreign_cart_item, the legacy cart guard under limkey_marker_acct, the won-cart suspect).
-        The probe replaces its entry synchronously when it answers, so the poll sees it go. An entry of
-        another pid is an orphan (the late rule handles it), never waited on. No marker file = one
-        os.path.exists, no await. Never raises (CancelledError excepted)."""
+        The probe replaces its entry synchronously when it answers, so the poll sees it go. No marker
+        file = one os.path.exists, no await.
+        Fix round 6 (evaluator 2): the wait ending is NOT the all-clear. An answer that never came back
+        (evaluate TimeoutError, 408, 5xx, -1, a cancel, a tick error) leaves the page's fetch running:
+        _limkey_cleanup rewrites the entry as late=True the moment the in_flight entry stops, and a
+        purchase of another TCIN U would fire at the worst time. After the wait, any entry of this
+        account for a TCIN other than `tcin` that is still blocked (_lk_clear_block: an own in_flight
+        that did not answer, a stale own in_flight, an orphan, a late entry inside its late-add window)
+        returns a 'limkey_window_open' held-skip: nothing fires, the next dispatch retries (at most
+        _WONCART_LATE_ADD_WINDOW_S on this account). The entry of `tcin` itself is _limkey_purge_entry's
+        (it deletes the line first). None = continue. Never raises (CancelledError excepted)."""
         try:
             if not limkey_marker_any():
-                return
+                return None
             ident = self._ident_tag()
             pid = os.getpid()
 
             def _mine():
                 return [e for e in limkey_marker_entries_for(ident)
                         if e.get('state') == 'in_flight' and e.get('pid') == pid]
-            ents = _mine()
-            if not ents:
-                return
-            t0 = time.time()
-            deadline = t0 + _LIMKEY_PROBE_WAIT_S
-            try:
-                deadline = min(deadline, max(float(e.get('ts')) for e in ents) + _LIMKEY_PROBE_WAIT_S)
-            except (TypeError, ValueError):
-                pass
-            if time.time() >= deadline:
-                return
-            print(f"[LIMKEY_GUARD] a probe of {','.join(sorted({str(e.get('tcin')) for e in ents}))} is in flight on "
-                  f"this account — waiting for its answer before the shot for {tcin} ident={ident}")
-            while time.time() < deadline:
-                await asyncio.sleep(0.05)
-                if not _mine():
-                    print(f"[LIMKEY_GUARD] the probe answered after {time.time() - t0:.2f}s — continuing "
-                          f"with the shot for {tcin} ident={ident}")
-                    return
-            print(f"[LIMKEY_GUARD] the probe did not answer within {time.time() - t0:.1f}s — continuing "
-                  f"(its entry stays; the cart guards apply) ident={ident}")
+            ents = [e for e in _mine() if _lk_own_live_in_flight(e)]
+            if ents:
+                t0 = time.time()
+                deadline = t0 + _LIMKEY_PROBE_WAIT_S
+                try:
+                    deadline = min(deadline, max(float(e.get('ts')) for e in ents) + _LIMKEY_PROBE_WAIT_S)
+                except (TypeError, ValueError):
+                    pass
+                if time.time() < deadline:
+                    print(f"[LIMKEY_GUARD] a probe of {','.join(sorted({str(e.get('tcin')) for e in ents}))} is in flight on "
+                          f"this account — waiting for its answer before the shot for {tcin} ident={ident}")
+                    answered = False
+                    while time.time() < deadline:
+                        await asyncio.sleep(0.05)
+                        if not _mine():
+                            print(f"[LIMKEY_GUARD] the probe answered after {time.time() - t0:.2f}s — continuing "
+                                  f"with the shot for {tcin} ident={ident}")
+                            answered = True
+                            break
+                    if not answered:
+                        print(f"[LIMKEY_GUARD] the probe did not answer within {time.time() - t0:.1f}s — "
+                              f"(its entry stays; the cart guards apply) ident={ident}")
+            # fix round 6: the wait's end is not the all-clear. Any other-TCIN entry of this account whose
+            # POST may still land (blocked clear) holds the shot until its window has passed.
+            T = str(tcin)
+            now = time.time()
+            blocked = [(str(e.get('tcin')), _lk_clear_block(e, False, now))
+                       for e in limkey_marker_entries_for(ident) if str(e.get('tcin')) != T]
+            blocked = [(t, why) for t, why in blocked if why]
+            if blocked:
+                print(f"[LIMKEY_GUARD] probe window open on this account for "
+                      f"{','.join(f'{t}({why})' for t, why in blocked)} — nothing fired for {T}; the next "
+                      f"dispatch retries once the window has passed ident={ident}")
+                return self._held_skip(T, 'limkey_window_open',
+                                       'probe line window still open, nothing fired',
+                                       time.time() if start_time is None else start_time)
+            return None
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -4641,20 +4681,28 @@ class PurchaseExecutor:
                 print(f"[LIMKEY_GUARD] probe wait errored ({type(e).__name__}) — continuing ident={self._ident_tag()}")
             except Exception:
                 pass
+            return None
 
-    async def _limkey_purge_entry(self, tab, tcin, start_time: float):
+    async def _limkey_purge_entry(self, tab, tcin, start_time: float, unreadable: bool = False):
         """LIMKEY-GUARD-1016: the purchase entry for an account x TCIN with a probe-line marker.
         Delete the line before any shot (no strike branch), clear the marker only when a cart read
         proves it gone, drop any held / dirty tracking of that TCIN. None = continue with the shot;
         a result dict = nothing fired (the delete could not be proven, or the marker's window is
         still open - an in_flight probe or a late-add window: a POST that lands after this purge
         would be indistinguishable from the shot's own line; the marker stays and the next
-        dispatch retries). Never raises (CancelledError excepted)."""
+        dispatch retries). unreadable=True (fix round 6): the marker FILE exists but does not parse, so
+        no entry can be matched or cleared: delete T's lines and prove it, never touch the file, and
+        continue with the shot only when the read proves them gone (one read + one delete per shot).
+        Never raises (CancelledError excepted)."""
         T = str(tcin)
         ident = self._ident_tag()
         try:
             ok, n = await self._delete_cart_items(tab, only_tcin=T, budget_s=15.0)
             gone = await self._limkey_line_proven_gone(tab, T)
+            if gone and unreadable:
+                print(f"[LIMKEY_GUARD] marker file unreadable — any line of {T} deleted before the shot "
+                      f"(delete_ok={ok} lines={n}), file left alone ident={ident}")
+                return None
             if gone:
                 why_kept = limkey_marker_block(ident, T)
                 cleared = limkey_marker_clear(ident, T)
@@ -6559,10 +6607,15 @@ class PurchaseExecutor:
             if limkey_marker_any():
                 # LIMKEY-GUARD-1016 fix round 5: a probe of ANY TCIN still in flight on this account
                 # must answer before the first read / shot (its line, if it lands, is then seen).
-                await self._limkey_wait_probe(tcin)
-            if self._limkey_marked(tcin):
-                # LIMKEY-GUARD-1016: delete a possibly-landed probe line before any shot.
-                _lk_res = await self._limkey_purge_entry(tab, tcin, start_time)
+                _lk_wait = await self._limkey_wait_probe(tcin, start_time)
+                if _lk_wait is not None:
+                    return _lk_wait      # fix round 6: another TCIN's probe window is still open
+            _lk_unreadable = limkey_marker_unreadable()
+            if self._limkey_marked(tcin) or _lk_unreadable:
+                # LIMKEY-GUARD-1016: delete a possibly-landed probe line before any shot. Fix round 6:
+                # also with an unreadable marker file (limkey_marker_has matches nothing then, so a
+                # probe line of this TCIN would otherwise merge with our ATC): delete + prove, no clear.
+                _lk_res = await self._limkey_purge_entry(tab, tcin, start_time, unreadable=_lk_unreadable)
                 if _lk_res is not None:
                     return _lk_res
             if getattr(self, '_woncart_dirty', None) is not None:
