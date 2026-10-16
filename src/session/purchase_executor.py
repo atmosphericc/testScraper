@@ -647,6 +647,128 @@ def atc_net_line(ident, d) -> str:
         return '[ATC_NET] ident=? (format error)'
 
 
+# ── 2026-10-15 CHK-1 (log-only): the wire under pre_checkout / place-order / CVV PUT ──
+_CHAIN_NET_HEAD = 20          # per (u, method) per cart: the first N requests are all logged ...
+_CHAIN_NET_EVERY = 10         # ... then every 10th (a ride-to-OOS cart can run 1,200 tickets)
+_CHAIN_NET_MAX_LINES = 3000   # hard ceiling of logged requests per process
+_CHAIN_NET_METHODS = {'pre': ('POST', 'OPTIONS'), 'po': ('POST', 'OPTIONS'),
+                      'cvv': ('PUT', 'OPTIONS')}
+
+
+def chain_net_meta_on() -> bool:
+    """TARGET_CHAIN_NET_META=1 (CHK-1, 2026-10-15): one [CHAIN_NET] line per
+    pre_checkout (u=pre), place-order (u=po) and CVV payment_instructions PUT
+    (u=cvv) request on the MAIN tab -- the POST / PUT and its OPTIONS preflight --
+    from the SAME CDP Network handlers INS-ATC-NET installs (so it only has an
+    effect while TARGET_ATC_NET_META=1): the wall-clock ms the request left
+    Chrome (send_ms), how long it sat between requestWillBeSent and the wire
+    (pause_ms, which on a NEW connection also holds dns / connect -- connect_ms is
+    printed beside it), time-to-first-byte, connection id / reuse, protocol. Why:
+    the 1.3-1.7 s between the ATC response and the place-order in a won chain is
+    ~65% of flip-to-PO#1 and nothing splits it, and every winning first
+    place-order carries a logger-stamp LOWER-bound age (place_orders.ts_src).
+    Log-only: no new handler, never awaits, never in the Fetch path, every branch
+    inside the handlers' own try/except; lines are capped per cart (first 20 per
+    (u, method), then every 10th, reset by the next successful ATC) and per
+    process. Default '0' (unset / junk = off). Kill-switch: =0."""
+    return os.environ.get('TARGET_CHAIN_NET_META', '0').strip() == '1'
+
+
+def chain_net_class(url, method):
+    """Pure: 'pre' | 'po' | 'cvv' for a chain request, else None. pre = POST/OPTIONS
+    .../web_checkouts/v1/pre_checkout, po = POST/OPTIONS .../web_checkouts/v1/checkout,
+    cvv = PUT/OPTIONS .../checkout_payments/v1/payment_instructions[/<id>]. The query
+    string is ignored; cart_items, /cart GETs and every other method are not chain
+    requests. Never raises."""
+    try:
+        m = str(method or '').upper()
+        path = str(url or '').split('#', 1)[0].split('?', 1)[0].rstrip('/')
+        if path.endswith('/web_checkouts/v1/pre_checkout'):
+            u = 'pre'
+        elif path.endswith('/web_checkouts/v1/checkout'):
+            u = 'po'
+        elif '/checkout_payments/v1/payment_instructions' in path:
+            u = 'cvv'
+        else:
+            return None
+        return u if m in _CHAIN_NET_METHODS[u] else None
+    except Exception:
+        return None
+
+
+def chain_net_sampled(n) -> bool:
+    """Pure: is the n-th (1-based) request of one (u, method) in the current cart
+    logged -- the first _CHAIN_NET_HEAD, then every _CHAIN_NET_EVERY-th. Never raises."""
+    try:
+        n = int(n)
+        return n >= 1 and (n <= _CHAIN_NET_HEAD or (n - _CHAIN_NET_HEAD) % _CHAIN_NET_EVERY == 0)
+    except Exception:
+        return False
+
+
+def chain_net_pause_ms(will_wall_s, send_ms):
+    """Pure: ms from requestWillBeSent (wall_time, seconds) to the wire (send_ms,
+    from atc_net_send_wall_ms). None when either is missing. Never raises."""
+    try:
+        if will_wall_s is None or send_ms is None:
+            return None
+        return int(round(float(send_ms) - float(will_wall_s) * 1000.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def chain_net_fields(r, rec, rid):
+    """Pure: the dict chain_net_line prints, from a ResponseReceived `r` and the
+    requestWillBeSent record rec = (wall_s, mono_s, method, u, n). A response that
+    cannot be read still yields u / method / n / rid (the rest prints '-'); a
+    record that cannot be unpacked yields {}. Never raises."""
+    try:
+        w, mono, meth, u, n = rec
+        d = {'u': u, 'method': meth, 'n': n, 'rid': str(rid)}
+    except Exception:
+        return {}
+    try:
+        t = getattr(r, 'timing', None)
+        g = (lambda k: getattr(t, k, None)) if t is not None else (lambda k: None)
+
+        def _span(a, b):
+            x, y = g(a), g(b)
+            return (y - x) if (x is not None and y is not None and x >= 0 and y >= 0) else None
+        send_ms = atc_net_send_wall_ms(w, mono, g('request_time'), g('send_start'))
+        d.update({'status': getattr(r, 'status', None),
+                  'pause_ms': chain_net_pause_ms(w, send_ms), 'send_ms': send_ms,
+                  'ttfb_ms': _span('send_end', 'receive_headers_end'),
+                  'conn': getattr(r, 'connection_id', None),
+                  'reused': getattr(r, 'connection_reused', None),
+                  'proto': getattr(r, 'protocol', None),
+                  'connect_ms': _span('connect_start', 'connect_end')})
+    except Exception:
+        pass
+    return d
+
+
+def chain_net_line(ident, d) -> str:
+    """Pure: the [CHAIN_NET] line for one chain response dict `d` (keys: u, method,
+    status, pause_ms, send_ms, ttfb_ms, conn, reused, proto, connect_ms, n, rid).
+    Missing values print '-'. Never raises."""
+    def _v(k):
+        x = d.get(k) if isinstance(d, dict) else None
+        if x is None or x == '':
+            return '-'
+        if isinstance(x, bool):
+            return '1' if x else '0'
+        if isinstance(x, float):
+            return str(int(round(x)))
+        return str(x)[:64]
+    try:
+        return (f"[CHAIN_NET] ident={ident} u={_v('u')} m={_v('method')} st={_v('status')} "
+                f"pause_ms={_v('pause_ms')} send_ms={_v('send_ms')} ttfb_ms={_v('ttfb_ms')} "
+                f"conn={_v('conn')} reused={_v('reused')} proto={_v('proto')} "
+                f"connect_ms={_v('connect_ms')} n={_v('n')} rid={_v('rid')}")
+    except Exception:
+        return '[CHAIN_NET] ident=? (format error)'
+
+
 def atc_resp_hdrs_line(label, status, raw_headers, max_val: int = 160,
                        max_len: int = 2400) -> str:
     """Pure; never raises. The [ATC_RESP_HDRS] message for one cart_items POST
@@ -3185,6 +3307,43 @@ class PurchaseExecutor:
             if cdp.network not in getattr(tab, 'enabled_domains', [cdp.network]):
                 tab.enabled_domains.append(cdp.network)
 
+            # CHK-1 (TARGET_CHAIN_NET_META, read once): the same two handlers also log the
+            # pre_checkout / place-order / CVV PUT wire. Its own records (chain_sent), so
+            # chain traffic can never evict a cart_items record from `sent`.
+            chain_on = chain_net_meta_on()
+            chain_sent: Dict[str, Any] = {}
+            chain_cnt: Dict[Any, int] = {}
+            chain_st = {'recorded': 0, 'capped': False}
+
+            def _chain_note_send(ev, req):
+                # CHK-1: sampling is decided HERE, so an unsampled request's response finds
+                # no record and prints nothing.
+                meth = str(getattr(req, 'method', '') or '').upper()
+                u = chain_net_class(getattr(req, 'url', ''), meth)
+                if u is None:
+                    return
+                n = chain_cnt.get((u, meth), 0) + 1
+                chain_cnt[(u, meth)] = n
+                if not chain_net_sampled(n):
+                    return
+                if chain_st['recorded'] >= _CHAIN_NET_MAX_LINES:
+                    if not chain_st['capped']:
+                        chain_st['capped'] = True
+                        print(f"[CHAIN_NET] ident={self._ident_tag()} cap={_CHAIN_NET_MAX_LINES} "
+                              f"reached - further requests unlogged")
+                    return
+                chain_st['recorded'] += 1
+                if len(chain_sent) > 200:
+                    chain_sent.clear()
+                chain_sent[str(ev.request_id)] = (getattr(ev, 'wall_time', None),
+                                                  getattr(ev, 'timestamp', None), meth, u, n)
+
+            def _chain_note_response(ev, r):
+                rec = chain_sent.pop(str(ev.request_id), None)
+                if rec is not None:
+                    print(chain_net_line(self._ident_tag(),
+                                         chain_net_fields(r, rec, ev.request_id)))
+
             async def _on_will_send(ev):
                 try:
                     req = ev.request
@@ -3194,6 +3353,8 @@ class PurchaseExecutor:
                         sent[str(ev.request_id)] = (getattr(ev, 'wall_time', None),
                                                     getattr(ev, 'timestamp', None),
                                                     str(getattr(req, 'method', '') or ''))
+                    elif chain_on:
+                        _chain_note_send(ev, req)
                 except Exception:
                     pass
 
@@ -3201,6 +3362,8 @@ class PurchaseExecutor:
                 try:
                     r = ev.response
                     if 'cart_items' not in str(getattr(r, 'url', '') or ''):
+                        if chain_on:
+                            _chain_note_response(ev, r)
                         return
                     w, mono, meth = sent.pop(str(ev.request_id), (None, None, '?'))
                     t = getattr(r, 'timing', None)
@@ -3221,6 +3384,8 @@ class PurchaseExecutor:
                          'ssl_ms': _span('ssl_start', 'ssl_end'),
                          'rid': str(ev.request_id)}
                     print(atc_net_line(self._ident_tag(), d))
+                    if chain_on and meth == 'POST' and d['status'] in (200, 201):
+                        chain_cnt.clear()      # CHK-1: a new cart -- its first tickets are logged afresh
                 except Exception:
                     pass
 
@@ -3237,6 +3402,10 @@ class PurchaseExecutor:
             self._atc_net_enable_task = asyncio.ensure_future(_enable_quietly())   # keep a ref
             print(f"[ATC_NET] Network meta instrument installed on the main tab "
                   f"ident={self._ident_tag()}")
+            if chain_on:
+                print(f"[CHAIN_NET] chain wire stamps on (u=pre|po|cvv, first {_CHAIN_NET_HEAD} per "
+                      f"cart then every {_CHAIN_NET_EVERY}th, cap {_CHAIN_NET_MAX_LINES}) "
+                      f"ident={self._ident_tag()}")
         except Exception as e:
             print(f"[ATC_NET] install failed ({type(e).__name__}: {e}) — instrument off")
 

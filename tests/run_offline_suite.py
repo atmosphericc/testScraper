@@ -130,6 +130,10 @@ OFFLINE = [
     "test_guest_seen_1014",
     # 2026-10-14 late: FX-1014-KICK / SENTSTAGGER / live-guest recovery / egress DNS (stubs, loopback).
     "test_kick_stagger_guest_dns_1014",
+    # 2026-10-15 CHK-1: TARGET_CHAIN_NET_META, log-only [CHAIN_NET] wire stamps for pre_checkout /
+    # place-order / CVV PUT beside [ATC_NET] (stub Network handlers, temp sqlite for the two saved
+    # queries, build.py on synthetic lines; no browser, no network).
+    "test_chain_net_meta",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
