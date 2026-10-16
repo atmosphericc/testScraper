@@ -69,6 +69,18 @@ Pins:
     fix round 2: a later shot (is_first = 0, a racer already running) within 2 s after a new_window = 1 flip is NOT after
     a re-flip on either basis (the `new_window = 0` predicate is pinned for both the wire and the atc_t0 test)
 
+  v7 (2026-10-16):
+  - INS-LIMKEY-1016: every [LIMKEY_PROBE] result line -> one `limkey` row (event 'probe'; acct / tcin / status / err_key / hop /
+    net_line / body_len / n / err), every event=<name> line its own event kind (skip, stop, error, cleanup, unknown names kept);
+    the print and logger twins collapse to one row per identical text (print-only and logger-only lines keep a row, two real
+    probes with the same text stay two); a glued print, an unreadable line counted and never guessed; the heartbeat
+    "[WARMUP#N/acct] dummy POST status S" lines -> `warm_dummy` (the ADDED line is not read, a logger-form copy is counted
+    @wrong_form); the probe's own warmup [ATC_RESP] (limkey_probe=1) is left out of `decoys` without disturbing the
+    pairing of the others; every other table is identical with and without the new lines; the real limkey_result_line()
+    output parses; PARSER_VERSION 7 re-parses a v6 store and re-creates both tables
+  - limkey.sql (pre-registered rule P1): TESTBED EXISTS / DEMAND-SWITCHED / INCONCLUSIVE (n < 30, share < 50%, limited
+    decoy by dummy status or by ERR_A2C key, empty control) / NO DATA; status 0 and -1 never in the rate; the control is the
+    same accounts in the same local hours; the unclassified remainder, the event table and the parser accounting
 No browser, no network, no bot. Run: python tests/test_events_parser.py
 """
 from __future__ import annotations
@@ -2159,6 +2171,384 @@ def test_v6_reflip_query():
         con.close()
 
 
+# ---------------------------------------------------------------------------------
+# v7 (2026-10-16, INS-LIMKEY-1016): limkey + warm_dummy tables, decoy exclusion, limkey.sql (rule P1)
+# ---------------------------------------------------------------------------------
+LK_NAME = 'src.session.purchase_executor'
+LK_STOP_TAIL = (" -- a HOT-TCIN LINE WAS ADDED to this account's cart; probing is OFF for the rest of this run; "
+                "audit the cart and delete the line before the next drop")
+
+
+def lk_res(acct, tcin, status, key='ERR_A2C_TCIN_RATE_LIMITED', hop='-', line='home', bl=0, n=1, err=''):
+    """limkey_result_line() (purchase_executor.py): acct= tcin= status= err_key= hop= line= body_len= n= [err=]."""
+    m = (f"[LIMKEY_PROBE] acct={acct} tcin={tcin} status={status} err_key={key or '-'} hop={hop or '-'} "
+         f"line={line} body_len={bl} n={n}")
+    return m + (f" err={err}" if err else '')
+
+
+def lk(ep_ms, msg):
+    """_limkey_log(): print() first, then logger.info() -- the same text twice."""
+    return [msg, L(ep_ms, msg, name=LK_NAME)]
+
+
+def wdummy(idx, acct, status):
+    return f"[WARMUP#{idx}/{acct}] dummy POST status {status} — write-auth alive"
+
+
+def test_v7_limkey_rows():
+    base = [POOL, flip(TC, 1, T, 1)]
+    lines = base + lk(T + 1000, lk_res('primary', TC, 429, n=1))
+    lines += lk(T + 61000, lk_res('Alt-1', TC2, 424, key='ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND', hop='1', line='egress', bl=95, n=2))
+    lines += lk(T + 121000, lk_res('primary', TC, -1, key='?', err='TimeoutError', bl=-1, n=3))
+    lines += lk(T + 181000, lk_res('business', TC3, 0, key='-', line='proxy', bl=-1, n=4))
+    res = parse(lines)
+    lkr = res['limkey']
+    check('v7_four_probes_four_rows', len(lkr) == 4 and {r['event'] for r in lkr} == {'probe'}, lkr)
+    check('v7_probe_fields', (lkr[0]['ident'], lkr[0]['tcin'], lkr[0]['n'], lkr[0]['status'], lkr[0]['err_key'], lkr[0]['hop'],
+                              lkr[0]['net_line'], lkr[0]['body_len'], lkr[0]['err'], lkr[0]['ts_ms'], lkr[0]['ts_src']) ==
+          ('primary', TC, 1, 429, 'ERR_A2C_TCIN_RATE_LIMITED', '-', 'home', 0, None, T + 1000, 'logger'), lkr[0])
+    check('v7_key_with_comma_and_hop_and_egress_line', (lkr[1]['ident'], lkr[1]['err_key'], lkr[1]['hop'], lkr[1]['net_line'],
+                                                         lkr[1]['body_len'], lkr[1]['status']) ==
+          ('alt-1', 'ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND', '1', 'egress', 95, 424), lkr[1])
+    check('v7_evaluate_error_row', (lkr[2]['status'], lkr[2]['err'], lkr[2]['err_key'], lkr[2]['body_len']) == (-1, 'TimeoutError', '?', -1), lkr[2])
+    check('v7_status0_row_kept_as_printed', (lkr[3]['status'], lkr[3]['net_line'], lkr[3]['tcin']) == (0, 'proxy', TC3), lkr[3])
+    check('v7_log_line_is_the_logger_copys', [r['line'] for r in lkr] == [4, 6, 8, 10], [r['line'] for r in lkr])
+    check('v7_family_accounting_clean', _unp(res).get('LIMKEY') == (8, 8, 0) and not [m for m in _unp(res) if m.endswith('@wrong_form')],
+          _unp(res))
+    check('v7_twins_collapsed_counted', check_of(res, 'limkey_twins_collapsed') == '4', check_of(res, 'limkey_twins_collapsed'))
+    check('v7_columns', set(lkr[0]) == {'line', 'ts_ms', 'ts_src', 'event', 'ident', 'tcin', 'n', 'status', 'err_key', 'hop',
+                                         'net_line', 'body_len', 'reason', 'err', 'detail'}, set(lkr[0]))
+    # an unreadable result line keeps no row and is counted, never guessed
+    res = parse(base + lk(T + 1000, "[LIMKEY_PROBE] acct=primary tcin=oops status=429"))
+    check('v7_unreadable_limkey_counted_not_guessed', res['limkey'] == [] and _unp(res).get('LIMKEY') == (2, 0, 2)
+          and next(u['first_line'] for u in res['unparsed'] if u['marker'] == 'LIMKEY') == 3, (res['limkey'], _unp(res)))
+
+
+def test_v7_limkey_events():
+    base = [POOL, flip(TC, 1, T, 1)]
+    stop = f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct=primary tcin={TC} status=201{LK_STOP_TAIL}"
+    err = "[LIMKEY_PROBE] event=error ValueError: bad probe tcin 'x' status=9 (#1; the heartbeat is unaffected)"
+    # the cleanup line is the bot lane's (LIMKEY-GUARD-1016, not merged when this was written): shape provisional, read generically
+    clean = f"[LIMKEY_PROBE] event=cleanup step=delete acct=primary tcin={TC} reason=probe_2xx status=200 line_gone=1"
+    lines = base + lk(T + 1000, "[LIMKEY_PROBE] event=skip reason=in_stock_recent acct=primary")
+    lines += lk(T + 2000, "[LIMKEY_PROBE] event=skip reason=in_stock_recent acct=primary")
+    lines += lk(T + 3000, stop) + lk(T + 4000, err) + lk(T + 5000, clean) + lk(T + 6000, "[LIMKEY_PROBE] event=Future_Kind x=1")
+    res = parse(lines)
+    lkr = res['limkey']
+    check('v7_event_kinds_in_log_order', [r['event'] for r in lkr] == ['skip', 'skip', 'stop', 'error', 'cleanup', 'future_kind'],
+          [r['event'] for r in lkr])
+    check('v7_skip_fields', (lkr[0]['reason'], lkr[0]['ident'], lkr[0]['tcin'], lkr[0]['status'], lkr[0]['n']) ==
+          ('in_stock_recent', 'primary', None, None, None), lkr[0])
+    check('v7_identical_skips_stay_two_rows', lkr[0]['ts_ms'] == T + 1000 and lkr[1]['ts_ms'] == T + 2000, (lkr[0], lkr[1]))
+    check('v7_stop_fields_text_after_dashes_not_mined', (lkr[2]['reason'], lkr[2]['ident'], lkr[2]['tcin'], lkr[2]['status']) ==
+          ('probe_2xx', 'primary', TC, 201) and lkr[2]['detail'].startswith('reason=probe_2xx'), lkr[2])
+    check('v7_error_tail_is_free_text_not_mined', (lkr[3]['status'], lkr[3]['ident'], lkr[3]['tcin']) == (None, None, None)
+          and lkr[3]['detail'].startswith('ValueError: bad probe tcin'), lkr[3])
+    check('v7_cleanup_read_generically', (lkr[4]['reason'], lkr[4]['ident'], lkr[4]['tcin'], lkr[4]['status']) ==
+          ('probe_2xx', 'primary', TC, 200), lkr[4])
+    check('v7_unknown_event_name_kept', lkr[5]['event'] == 'future_kind', lkr[5])
+    check('v7_events_family_clean', _unp(res).get('LIMKEY') == (12, 12, 0), _unp(res))
+
+
+def test_v7_limkey_dedupe():
+    base = [POOL, flip(TC, 1, T, 1)]
+    # print twin first, then the logger twin: one row, the logger's own stamp
+    res = parse(base + lk(T + 1000, lk_res('primary', TC, 429, n=7)))
+    check('v7_twins_one_row_logger_stamp', len(res['limkey']) == 1 and res['limkey'][0]['ts_src'] == 'logger'
+          and res['limkey'][0]['ts_ms'] == T + 1000, res['limkey'])
+    # print-only (no logger copy): one row, the last logger stamp before it, ts_src logger_prior
+    res = parse(base + [L(T + 500, '[STOCK] other line', name='x.y'), lk_res('primary', TC, 429, n=7)])
+    r = res['limkey']
+    check('v7_print_only_row_uses_prior_stamp', len(r) == 1 and r[0]['ts_src'] == 'logger_prior' and r[0]['ts_ms'] == T + 500, r)
+    # logger-only
+    res = parse(base + [L(T + 800, lk_res('primary', TC, 429, n=7), name=LK_NAME)])
+    check('v7_logger_only_row', len(res['limkey']) == 1 and res['limkey'][0]['ts_src'] == 'logger', res['limkey'])
+    # same n and same text from two real probes (two twin pairs) stay two rows; a different text with the same n is its own row
+    lines = base + lk(T + 1000, lk_res('primary', TC, 429, n=9)) + lk(T + 2000, lk_res('primary', TC, 429, n=9))
+    lines += lk(T + 3000, lk_res('business', TC, 429, n=9))
+    res = parse(lines)
+    check('v7_same_text_twice_two_rows_other_acct_own_row', [(r['ident'], r['ts_ms']) for r in res['limkey']] ==
+          [('primary', T + 1000), ('primary', T + 2000), ('business', T + 3000)]
+          and check_of(res, 'limkey_twins_collapsed') == '3', (res['limkey'], check_of(res, 'limkey_twins_collapsed')))
+    # print text cut by a glued logger stamp (a print writes its text and its newline in two writes), and glued behind a print
+    glued = lk_res('primary', TC, 429, n=5) + L(T + 400, '[STOCK] other', name='x.y')
+    behind = '[PURCHASE] something printed' + lk_res('primary', TC2, 424, key='-', n=6)
+    res = parse(base + [glued, L(T + 410, lk_res('primary', TC, 429, n=5), name=LK_NAME), behind,
+                        L(T + 420, lk_res('primary', TC2, 424, key='-', n=6), name=LK_NAME)])
+    check('v7_glued_lines_one_row_each', [(r['n'], r['tcin'], r['ts_src']) for r in res['limkey']] ==
+          [(5, TC, 'logger'), (6, TC2, 'logger')] and _unp(res).get('LIMKEY') == (4, 4, 0), (res['limkey'], _unp(res)))
+    # 40 probes with twins = 40 rows (the count a readout divides by)
+    res = parse(base + sum([lk(T + 1000 * (i + 1), lk_res('primary', TC, 429, n=i + 1)) for i in range(40)], []))
+    check('v7_forty_probes_forty_rows', len(res['limkey']) == 40 and check_of(res, 'limkey_twins_collapsed') == '40', len(res['limkey']))
+
+
+def test_v7_warm_dummy():
+    base = [POOL, flip(TC, 1, T, 1)]
+    lines = base + [L(T + 100, '[STOCK] x', name='a.b'), wdummy(1, 'primary', 424), wdummy(0, 'Alt-1', 401), wdummy(2, 'business', 429),
+                    f"[WARMUP#1/primary] dummy POST ADDED its line (status 201) — a won-cart po_only ticket re-checks the cart first (dummy_add)",
+                    wdummy(1, 'primary', 201), "[WARMUP#1] Firing dummy POST to trigger Shape header capture..."]
+    res = parse(lines)
+    wd = res['warm_dummy']
+    check('v7_warm_dummy_rows', [(r['ident'], r['idx'], r['status']) for r in wd] ==
+          [('primary', 1, 424), ('alt-1', 0, 401), ('business', 2, 429), ('primary', 1, 201)], wd)
+    check('v7_warm_dummy_ts_is_prior_stamp', {(r['ts_ms'], r['ts_src']) for r in wd} == {(T + 100, 'logger_prior')}, wd)
+    check('v7_warm_dummy_family_clean_and_added_line_not_read', _unp(res).get('WDUMMY') == (4, 4, 0), _unp(res))
+    res = parse(base + [L(T + 100, wdummy(1, 'primary', 424), name=LK_NAME)])
+    check('v7_warm_dummy_logger_form_counted_wrong_form', res['warm_dummy'] == [] and _unp(res).get('WDUMMY@wrong_form') == (1, 0, 1), _unp(res))
+
+
+def _warm_decoy(ep_ms, status, key, tag=False):
+    post = "[INTERCEPTOR:warmup]  POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART%2CCART_IT"
+    cap = "[INTERCEPTOR:warmup] Captured 16 headers (Shape tokens: 6, prev cache had 0): ['Accept', 'Content-Type']"
+    m = resp_msg(status, key, 'warmup') + (' limkey_probe=1' if tag else '')
+    return [post, cap, f"[INTERCEPTOR:warmup] {m}", L(ep_ms, m)]
+
+
+def test_v7_decoy_exclusion():
+    base = [POOL, flip(TC, 1, T, 1)]
+    plain = _warm_decoy(T + 1000, 424, 'ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND') + _warm_decoy(T + 9000, 401, '-')
+    with_probe = (_warm_decoy(T + 1000, 424, 'ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND') +
+                  _warm_decoy(T + 5000, 429, 'ERR_A2C_TCIN_RATE_LIMITED', tag=True) + _warm_decoy(T + 9000, 401, '-'))
+    a, b = parse(base + plain), parse(base + with_probe)
+    sig = lambda r: [(d['status'], d['key'], d['shape_tokens'], d['pair_q'], d['selftest']) for d in r['decoys']]
+    check('v7_probe_response_is_not_a_decoy_row', len(a['decoys']) == 2 and sig(a) == sig(b), (sig(a), sig(b)))
+    check('v7_exclusion_counted_in_checks', check_of(b, 'limkey_probe_resps_not_decoys') == '1'
+          and check_of(a, 'limkey_probe_resps_not_decoys') is None, check_of(b, 'limkey_probe_resps_not_decoys'))
+    check('v7_untagged_429_decoy_stays', [d['status'] for d in parse(base + _warm_decoy(T + 5000, 429, 'ERR_A2C_TCIN_RATE_LIMITED'))['decoys']] == [429])
+    # the HDRS twin carries limkey_probe=1 as one more '| name=value' pair: the HDRS parser is untouched
+    hd = "[ATC_RESP_HDRS] tab=warmup status=401 n=3 | a=b | limkey_probe=1"
+    res = parse(base + [L(T + 100, hd)])
+    check('v7_hdrs_tag_does_not_break_hdrs_parse', _unp(res).get('HDRS') == (1, 1, 0), _unp(res))
+
+
+def test_v7_other_tables_unchanged():
+    """limkey / warm_dummy lines add rows to those two tables and to nothing else."""
+    core = [POOL, flip(TC, 1, T, 1), race(TC, ['primary', 'business'])]
+    core += shot('primary', TC, T + 47) + shot('business', TC, T + 50, status=429, key=FSK)
+    core += shot('primary', TC, T + 60000, status=401, key='-')
+    core += _warm_decoy(T + 70000, 424, 'ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND')
+    extra = (lk(T + 1000, lk_res('primary', TC2, 429, n=1)) + lk(T + 61000, "[LIMKEY_PROBE] event=skip reason=gap acct=primary") +
+             [wdummy(1, 'primary', 424), wdummy(2, 'business', 424)])
+    with_, without = parse(core + extra), parse(core)
+    tabs = ('shots', 'races', 'flips', 'windows', 'tickets', 'loop_ends', 'decoys', 'monitor_stats', 'orders', 'idents',
+            'place_orders', 'atc_net', 'gate_events', 'stock_status', 'sellable_oos', 'shadow206', 'harvest', 'lock_events')
+    bad = [t for t in tabs if with_[t] != without[t]]
+    check('v7_every_other_table_identical', not bad, bad)
+    ck = lambda r: [c for c in r['checks'] if not c['name'].startswith('limkey_')]
+    check('v7_checks_identical_but_the_limkey_counter', ck(with_) == ck(without) and check_of(with_, 'limkey_twins_collapsed') == '2',
+          (ck(with_), ck(without)))
+    ua = {r['marker']: (r['n'], r['first_line']) for r in with_['unparsed'] if r['marker'] not in ('LIMKEY', 'WDUMMY')}
+    ub = {r['marker']: (r['n'], r['first_line']) for r in without['unparsed']}
+    check('v7_unparsed_same_markers_and_remainders', ua == ub, (ua, ub))
+    check('v7_exactly_two_new_unparsed_rows_n0', len(with_['unparsed']) == len(without['unparsed']) + 2
+          and _unp(with_).get('LIMKEY') == (4, 4, 0) and _unp(with_).get('WDUMMY') == (2, 2, 0), _unp(with_))
+    check('v7_new_tables_empty_without_lines', without['limkey'] == [] and without['warm_dummy'] == [], (without['limkey'], without['warm_dummy']))
+    check('v7_parser_version', ev.PARSER_VERSION >= 7, ev.PARSER_VERSION)
+
+
+def test_v7_real_format_drift():
+    """The lines above are built from copies of the format; build the same lines with the REAL limkey_result_line() and parse
+    them, so a change to the bot's format cannot silently orphan this ingest. Skipped (printed, not counted) when the executor
+    cannot be imported in this process."""
+    try:
+        os.environ.setdefault('TARGET_API_CAPTURE_CHECKOUT_STEPS', 'false')
+        os.environ.setdefault('TARGET_API_CAPTURE_PLACE_ORDER', 'false')
+        sys.path.insert(0, str(ROOT))
+        import src.session.purchase_executor as pe
+        fn = pe.limkey_result_line
+    except Exception as e:                              # noqa: BLE001
+        print(f"  skip v7_real_format_drift (executor not importable here: {type(e).__name__})")
+        return
+    msgs = [fn('primary', TC, {'status': 429, 'n': 0}, 'ERR_A2C_TCIN_RATE_LIMITED', '', 'home', 12),
+            fn('alt-1', TC2, {'status': -1, 'n': -1}, '?', '', 'egress', 13, 'TimeoutError'),
+            fn('business', TC3, {'status': 401, 'n': 88}, '', '1', 'proxy', 14)]
+    res = parse([POOL, flip(TC, 1, T, 1)] + sum([lk(T + 1000 * (i + 1), m) for i, m in enumerate(msgs)], []))
+    r = res['limkey']
+    check('v7_real_limkey_result_line_parses', [(x['ident'], x['tcin'], x['status'], x['err_key'], x['hop'], x['net_line'], x['body_len'], x['n'], x['err'])
+                                                for x in r] ==
+          [('primary', TC, 429, 'ERR_A2C_TCIN_RATE_LIMITED', '-', 'home', 0, 12, None),
+           ('alt-1', TC2, -1, '?', '-', 'egress', -1, 13, 'TimeoutError'),
+           ('business', TC3, 401, '-', '1', 'proxy', 88, 14, None)] and _unp(res).get('LIMKEY') == (6, 6, 0), (r, _unp(res)))
+
+
+def test_v7_store_and_cli():
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / 'runs'
+        logs.mkdir()
+        lines = [POOL, flip(TC, 1, T, 1)] + lk(T + 1000, lk_res('primary', TC, 429, n=1)) + lk(T + 61000, lk_res('primary', TC, 424, key='-', n=2))
+        lines += lk(T + 62000, "[LIMKEY_PROBE] event=skip reason=gap acct=primary") + [wdummy(1, 'primary', 424), wdummy(2, 'business', 424)]
+        (logs / 'run_20990701_000000.log').write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
+        db = Path(tmp) / 'ev.sqlite'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ev.main(['--db', str(db), '--logs', str(logs)])
+        check('v7_summary_names_limkey_and_warm_dummy', "limkey={'probe': 2, 'skip': 1}" in buf.getvalue() and 'warm_dummy=2' in buf.getvalue(), buf.getvalue()[:500])
+        check('v7_unparsed_remainder_empty', 'unparsed remainder: none' in buf.getvalue(), buf.getvalue()[-300:])
+        con = sqlite3.connect(str(db))
+        cols = [r[1] for r in con.execute('PRAGMA table_info(limkey)')]
+        check('v7_limkey_table_columns', cols == ['run_id', 'line', 'ts_ms', 'ts_src', 'event', 'ident', 'tcin', 'n', 'status', 'err_key', 'hop',
+                                                  'net_line', 'body_len', 'reason', 'err', 'detail'], cols)
+        check('v7_warm_dummy_table_columns', [r[1] for r in con.execute('PRAGMA table_info(warm_dummy)')] ==
+              ['run_id', 'line', 'ts_ms', 'ts_src', 'ident', 'idx', 'status'])
+        check('v7_rows_stored', con.execute('SELECT event, COUNT(*) FROM limkey GROUP BY event ORDER BY event').fetchall() == [('probe', 2), ('skip', 1)]
+              and con.execute('SELECT COUNT(*) FROM warm_dummy').fetchone()[0] == 2)
+        check('v7_indexes_exist', con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('ix_limkey_run', 'ix_wdummy_run')").fetchone()[0] == 2)
+        con.close()
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v7_unchanged_file_skipped_no_duplicates', '0 file(s) parsed, 1 unchanged' in out2.getvalue()
+              and con.execute('SELECT COUNT(*) FROM limkey').fetchone()[0] == 3, out2.getvalue())
+        # a v6 store: no limkey / warm_dummy tables, the file ingested at parser_version 6 -> the bump re-parses it and the tables return
+        con.execute('DROP TABLE limkey')
+        con.execute('DROP TABLE warm_dummy')
+        con.execute('UPDATE ingested SET parser_version = 6')
+        con.commit()
+        con.close()
+        out3 = io.StringIO()
+        with contextlib.redirect_stdout(out3):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v7_v6_store_reparsed_and_tables_recreated', '1 file(s) parsed' in out3.getvalue()
+              and con.execute('SELECT COUNT(*) FROM limkey').fetchone()[0] == 3
+              and con.execute('SELECT COUNT(*) FROM warm_dummy').fetchone()[0] == 2
+              and con.execute('SELECT parser_version FROM ingested').fetchone()[0] == ev.PARSER_VERSION, out3.getvalue())
+        con.execute('UPDATE ingested SET parser_version = parser_version - 1')
+        con.commit()
+        con.close()
+        with contextlib.redirect_stdout(io.StringIO()):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v7_version_reparse_replaces_rows', con.execute('SELECT COUNT(*) FROM limkey').fetchone()[0] == 3
+              and con.execute('SELECT COUNT(*) FROM warm_dummy').fetchone()[0] == 2)
+        con.close()
+        for t in ('limkey', 'warm_dummy'):
+            qb = io.StringIO()
+            with contextlib.redirect_stdout(qb):
+                evq.main(['--db', str(db), '--csv', 'SELECT COUNT(*) AS n FROM %s' % t, '--run', 'no_such_run'])
+            check('v7_q_run_filter_covers_' + t, qb.getvalue().split() == ['n', '0'], qb.getvalue())
+        check('v7_q_run_tables_has_new_tables', all(t in evq.RUN_TABLES and t in ev.RUN_TABLES for t in ('limkey', 'warm_dummy')), evq.RUN_TABLES)
+
+
+def _lk_run(probes, dummies=(), decoys=(), events=(), t0=0):
+    """A synthetic run: `probes` = (acct, tcin, status, key) in order, one per second from T + t0; `dummies` = (acct, status);
+    `decoys` = (status, key) warmup-tab responses; `events` = raw [LIMKEY_PROBE] event texts."""
+    lines = [POOL, flip(TC, 1, T, 1)]
+    for i, (acct, tcin, status, key) in enumerate(probes):
+        lines += lk(T + t0 + 1000 * (i + 1), lk_res(acct, tcin, status, key=key, n=i + 1, bl=-1 if status <= 0 else 0,
+                                                    err='TimeoutError' if status < 0 else ''))
+    at = T + t0 + 1000 * (len(probes) + 1)
+    for j, (acct, status) in enumerate(dummies):
+        lines += [L(at + j, '[STOCK] tick', name='a.b'), wdummy(1, acct, status)]
+    for j, (status, key) in enumerate(decoys):
+        lines += _warm_decoy(at + 100 + j, status, key)
+    for j, txt in enumerate(events):
+        lines += lk(at + 200 + j, txt)
+    return lines
+
+
+def _n(tcin, status, key, count):
+    return [('primary', tcin, status, key)] * count
+
+
+def test_v7_limkey_query():
+    A2, K424 = 'ERR_A2C_TCIN_RATE_LIMITED', 'ITEM_NOT_READY_FOR_LAUNCH,NOT_FOUND'
+    clean = [('primary', 424), ('primary', 424), ('business', 424)]
+    far = T + 3 * 3600 * 1000                       # three hours later: a different local hour
+    runs = {
+        # TESTBED: 2 hot TCINs x 30 ERR_A2C, a non-empty clean control
+        'run_20990801_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30), clean),
+        # DEMAND-SWITCHED: 30 answered POSTs per TCIN, none limited
+        'run_20990802_000000': _lk_run(_n(TC, 424, K424, 30) + _n(TC2, 401, '-', 30), clean),
+        # one TCIN at 29 answered POSTs -> INCONCLUSIVE (n)
+        'run_20990803_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 29), clean),
+        # 14 / 30 = 46.7% on one TCIN -> INCONCLUSIVE (share), not TESTBED and not DEMAND-SWITCHED
+        'run_20990804_000000': _lk_run(_n(TC, 429, A2, 14) + _n(TC, 424, K424, 16) + _n(TC2, 429, A2, 30), clean),
+        # the decoy was limited too (status 429 heartbeat dummy POST) -> not a per-TCIN policy
+        'run_20990805_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30), clean + [('primary', 429)]),
+        # ... or a warmup-tab decoy with the ERR_A2C key
+        'run_20990806_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30), clean, decoys=[(429, A2)]),
+        # an empty control cannot support TESTBED
+        'run_20990807_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30)),
+        # status 0 (preflight) and -1 are never in the rate: 29 answered + 100 preflight is still 29 POSTs
+        'run_20990808_000000': _lk_run(_n(TC, 429, A2, 29) + _n(TC, 0, '-', 100) + _n(TC2, 429, A2, 30) + _n(TC2, -1, '?', 5), clean),
+        # ... and 30 answered + 100 preflight is TESTBED on the 30, share 100%
+        'run_20990809_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC, 0, '-', 100) + _n(TC2, 429, A2, 30), clean),
+        # no probe line at all
+        'run_20990810_000000': [POOL, flip(TC, 1, T, 1)] + [wdummy(1, 'primary', 424)],
+        # a 429 dummy in ANOTHER hour, another account's 429 -> not the control of these hours
+        'run_20990811_000000': (_lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30), clean) +
+                                [L(far, '[STOCK] later', name='a.b'), wdummy(1, 'primary', 429)]),
+        'run_20990812_000000': _lk_run(_n(TC, 429, A2, 30) + _n(TC2, 429, A2, 30), clean + [('alt-1', 429)]),
+        # 2xx / unkeyed 429 / unreadable + STOP + skip events: the remainder and the events
+        'run_20990813_000000': _lk_run([('primary', TC, 201, '-'), ('primary', TC, 429, '?'), ('primary', TC, 429, '-'), ('primary', TC, -1, '?'),
+                                        ('primary', TC, 500, '-'), ('primary', TC, 401, '-'), ('primary', TC, 429, 'SOME_OTHER_KEY')], clean,
+                                       events=[f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct=primary tcin={TC} status=201{LK_STOP_TAIL}",
+                                               "[LIMKEY_PROBE] event=skip reason=gap acct=primary"]),
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        db, out = _build_store(tmp, runs)
+        q = _q_for(db)
+        check('v7_q_db_built', '%d file(s) parsed' % len(runs) in out, out)
+
+        def verdict(run):
+            rc, rs = q('limkey', '--run', run)
+            return rc, rs
+
+        want = {'20990801': 'P1 TESTBED EXISTS', '20990802': 'P1 DEMAND-SWITCHED', '20990803': 'P1 INCONCLUSIVE', '20990804': 'P1 INCONCLUSIVE',
+                '20990805': 'P1 INCONCLUSIVE', '20990806': 'P1 INCONCLUSIVE', '20990807': 'P1 INCONCLUSIVE', '20990808': 'P1 INCONCLUSIVE',
+                '20990809': 'P1 TESTBED EXISTS', '20990810': 'NO DATA', '20990811': 'P1 TESTBED EXISTS', '20990812': 'P1 TESTBED EXISTS',
+                '20990813': 'P1 INCONCLUSIVE'}
+        got, bad = {}, {}
+        for run in want:
+            rc, rs = verdict(run)
+            v = rs[3][0] if rc == 0 and len(rs) > 3 else {}
+            got[run] = v
+            if v.get('verdict') != want[run]:
+                bad[run] = (v.get('verdict'), want[run], v.get('why'))
+        check('v7_verdict_table', not bad, bad)
+        v = got['20990801']
+        check('v7_testbed_counts', (v['hot_tcins'], v['posts'], v['min_posts_per_tcin'], v['err_a2c'], v['min_a2c_pct'], v['dummy_posts'],
+                                    v['dummy_429'], v['decoy_err_a2c']) == ('2', '60', '30', '60', '100.0', '2', '0', '0'), v)
+        check('v7_why_texts', '< 30 answered POSTs (min 29)' in got['20990803']['why'] and 'lowest 46.7%' in got['20990804']['why']
+              and 'decoy was limited' in got['20990805']['why'] and 'decoy was limited' in got['20990806']['why']
+              and 'decoy control is empty' in got['20990807']['why'] and 'no [LIMKEY_PROBE]' in got['20990810']['why'], {k: got[k]['why'] for k in got})
+        # status 0 / -1 are counted separately and never in the rate
+        rc, rs = q('limkey', '--run', '20990808')
+        by = {r['tcin']: r for r in rs[0]}
+        check('v7_status0_and_unreadable_never_in_rate', (by[TC]['posts'], by[TC]['err_a2c'], by[TC]['a2c_pct'], by[TC]['preflight_0'], by[TC]['unreadable']) ==
+              ('29', '29', '100.0', '100', '0') and (by[TC2]['posts'], by[TC2]['unreadable']) == ('30', '5'), by)
+        # a dummy 429 from another hour / from an account that did not probe is not this hour's control
+        check('v7_control_is_same_hours_same_accounts', got['20990811']['dummy_429'] == '0' and got['20990812']['dummy_429'] == '0'
+              and got['20990812']['dummy_posts'] == '2', (got['20990811'], got['20990812']))
+        # statement 2/3: per TCIN x answer, per hour
+        rc, rs = q('limkey', '--run', '20990804')
+        s2 = {(r['tcin'], r['ans']): r['n'] for r in rs[1]}
+        check('v7_per_tcin_answer_counts', s2 == {(TC, 'ERR_A2C'): '14', (TC, '424'): '16', (TC2, 'ERR_A2C'): '30'}, s2)
+        check('v7_per_hour_rows', len(rs[2]) == 2 and {r['posts'] for r in rs[2]} == {'30'} and rs[2][0]['dummy_posts'] == '2', rs[2])
+        # the remainder: 2xx, unkeyed 429 (both '?' and '-'), unreadable, 5xx are listed; 401 / keyed non-A2C 429 are known non-landing
+        rc, rs = q('limkey', '--run', '20990813')
+        rem = {r['ans']: r['n'] for r in rs[5]}
+        check('v7_unclassified_remainder', rem == {'201': '1', '429:unkeyed': '2', 'unreadable(-1)': '1', '500': '1'}, rem)
+        ev_ = {(r['event'], r['reason']): (r['n'], r['status_2xx']) for r in rs[4]}
+        check('v7_events_statement_shows_stop_2xx', ev_ == {('stop', 'probe_2xx'): ('1', '201'), ('skip', 'gap'): ('1', '')}, ev_)
+        check('v7_parser_accounting_statement_empty', rs[6] == [], rs[6])
+        # no limkey rows -> statements still run, the other result sets are just empty
+        rc, rs = q('limkey', '--run', '20990810')
+        check('v7_no_data_run_runs_clean', rc == 0 and rs[0] == [] and rs[3][0]['verdict'] == 'NO DATA' and rs[3][0]['hot_tcins'] == '0', rs[3])
+        # pooled over every run: still runs (the verdict then pools hot TCINs across the synthetic nights)
+        rc, rs = q('limkey')
+        check('v7_all_runs_pooled_runs', rc == 0 and rs[3][0]['verdict'] in ('P1 TESTBED EXISTS', 'P1 DEMAND-SWITCHED', 'P1 INCONCLUSIVE'), rs[3])
+        con = sqlite3.connect(str(db))
+        check('v7_query_leaves_no_view_in_the_store', con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'view'").fetchone()[0] == 0)
+        con.close()
+    lst = io.StringIO()
+    with contextlib.redirect_stdout(lst):
+        evq.main(['--list'])
+    check('v7_limkey_query_listed', any(l.startswith('limkey ') and 'P1' in l for l in lst.getvalue().splitlines()), lst.getvalue()[:300])
+
+
 if __name__ == "__main__":
     test_glued_lines()
     test_duplicates_counted_once()
@@ -2189,5 +2579,14 @@ if __name__ == "__main__":
     test_v6_store_and_cli()
     test_v6_dispatch_lag_query()
     test_v6_reflip_query()
+    test_v7_limkey_rows()
+    test_v7_limkey_events()
+    test_v7_limkey_dedupe()
+    test_v7_warm_dummy()
+    test_v7_decoy_exclusion()
+    test_v7_other_tables_unchanged()
+    test_v7_real_format_drift()
+    test_v7_store_and_cli()
+    test_v7_limkey_query()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

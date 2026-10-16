@@ -212,6 +212,31 @@ LOCK_EVENTS (v6, 2026-10-15, INS-LAG-1015; additive table, no existing table cha
   burst (completes) and the dispatch (starts) from here. The print twin "[SESSION] Purchase in progress /
   complete" is a different text and is never read; a [PURCHASE_LOCK] marker in print text is counted in
   `unparsed` as "LOCK@wrong_form", and a [PURCHASE_LOCK] line this regex cannot read as "LOCK".
+
+LIMKEY + WARM_DUMMY (v7, 2026-10-16, INS-LIMKEY-1016; additive tables, no existing table changes except one
+exclusion below)
+  limkey      one row per probe / event of the off-window limiter-key probe S2-LIMKEY-PROBE
+              (purchase_executor.py _limkey_log: printed AND logged, so every line has a print twin and a logger twin).
+              event 'probe' = the result line "[LIMKEY_PROBE] acct= tcin= status= err_key= hop= line= body_len= n=
+              [err=]" (limkey_result_line); every other "[LIMKEY_PROBE] event=<name> ..." line is its own event kind,
+              lower-cased: skip (reason, acct), stop (the 2xx STOP line: reason, acct, tcin, status), error, cleanup
+              (LIMKEY-GUARD-1016, bot lane: read generically, reason / acct / tcin / status when present) and any
+              other event= name. `detail` keeps the first 240 chars of the event's text. Columns: line = LOG line
+              number (like every table), net_line = the probe's own line= field (home / proxy / egress), ident = acct.
+              Dedupe: the print and logger twins carry the same text, so rows are collapsed per identical text (which
+              includes the fleet-wide n= counter for a probe): k = max(print copies, logger copies) rows per text;
+              the logger copy is used when there is one (ts_src 'logger'), a print-only copy takes the last logger
+              stamp before it (ts_src 'logger_prior'). Two probes that really share one n and one text stay two
+              rows. The collapsed twin count is in checks.limkey_twins_collapsed. status 0 = the page's fetch threw
+              (preflight rejected), -1 = unreadable answer / evaluate error; both are kept as they were printed.
+  warm_dummy  one row per "[WARMUP#<idx>/<acct>] dummy POST status <S> -- write-auth alive" (print-only heartbeat
+              line; ts = the last logger stamp before it, ts_src 'logger_prior'). It is the per-ACCOUNT decoy control
+              the probe is read against (decoys has no account). "dummy POST ADDED its line" is not read: the status
+              line follows it for the same heartbeat. A logger-form copy is counted as WDUMMY@wrong_form.
+  decoys      the probe's own warmup-tab [ATC_RESP] carries "limkey_probe=1" (S2 fix round 2): that response is NOT
+              emitted as a decoy row (it would pollute the control), but still takes its place in the
+              POST/capture/response pairing so every other decoy row pairs exactly as before;
+              checks.limkey_probe_resps_not_decoys counts them (only present when there are some).
 """
 from __future__ import annotations
 
@@ -226,7 +251,8 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 6       # 2026-10-15 v6: lock_events table ([PURCHASE_LOCK] start / complete, INS-LAG-1015)
+PARSER_VERSION = 7       # 2026-10-16 v7: limkey + warm_dummy tables ([LIMKEY_PROBE] lines, heartbeat dummy POST status lines, INS-LIMKEY-1016)
+#                          (2026-10-15 v6: lock_events table ([PURCHASE_LOCK] start / complete, INS-LAG-1015))
 #                          (2026-10-15 v5: harvest table -- [HARVEST] CAPTURED / pre-shot / REPLAY / EMPTY / STALE bank lines)
 #                          (2026-10-06 v4: gate_events also carry the FX-1006 dispatch markers + run diagnostics)
 #                          (2026-10-05 v3: atc_net ([ATC_NET] + shot join), gate_events (BOOT_SKIP/PO2XX/foreign))
@@ -369,6 +395,14 @@ HV_REPLAY_DET = re.compile(r' tokens=(?P<tok>\d+) a0=(?P<a0>yes|no)(?: src_tcin=
 # v6 (2026-10-15, INS-LAG-1015): session_manager.py set_purchase_in_progress() -- logger form only
 LOCK_RE = re.compile(r'\[PURCHASE_LOCK\] Purchase (?:(?P<st>started - validation paused)'
                      r'|(?P<cp>complete - validation resumed))')
+# v7 (2026-10-16, INS-LIMKEY-1016): S2-LIMKEY-PROBE result / event lines + the heartbeat dummy POST status line
+LIMKEY_RES = re.compile(r'\[LIMKEY_PROBE\] acct=(?P<acct>[^\s\[]+) tcin=(?P<tcin>\d{6,13}) status=(?P<status>-?\d+) '
+                        r'err_key=(?P<key>[^\s\[]+) hop=(?P<hop>[^\s\[]+) line=(?P<net>[^\s\[]+) '
+                        r'body_len=(?P<bl>-?\d+) n=(?P<n>\d+)(?: err=(?P<err>[^\s\[]*))?')
+LIMKEY_EV = re.compile(r'\[LIMKEY_PROBE\] event=(?P<ev>[A-Za-z][A-Za-z0-9_]*)(?P<rest>[^\[]*)')
+LIMKEY_KV = re.compile(r'(?<![\w-])(reason|acct|tcin|status)=([^\s\[]+)')
+LIMKEY_TAG = re.compile(r'\blimkey_probe=1\b')
+WARM_DUMMY = re.compile(r'\[WARMUP#(?P<idx>\d+)/(?P<acct>[^\]\s\[]+)\] dummy POST status (?P<st>-?\d+)')
 WORKER_POOL = re.compile(r'\[WORKER_POOL\] sized from \S+: \d+ account\(s\) -> \[(?P<list>[^\]]*)\]')
 FWD_BIND = re.compile(r'\[FORWARDER\] W\d+/(?P<ident>[\w-]+?) → [\d.]+:\d+ \(exit via account proxy\)')
 FWD_WARN = re.compile(r'\[FORWARDER\] \[WARN\] W\d+/(?P<ident>[\w-]+?) proxy unparseable')
@@ -490,6 +524,8 @@ PRINT_FAMILIES = [
     ('SELLOOS@wrong_form', r'\[STOCK\] SELLABLE-PARSED-OOS '),
     ('SHADOW206@wrong_form', r'\[STOCK\]\[206-SHADOW\] '),
     ('LOCK@wrong_form', r'\[PURCHASE_LOCK\] '),                     # v6 (2026-10-15): logger-only marker
+    ('LIMKEY', r'\[LIMKEY_PROBE\] '),                               # v7 (2026-10-16): printed AND logged
+    ('WDUMMY', r'\[WARMUP#\d+/[^\]\s\[]+\] dummy POST status '),      # v7: print-only heartbeat line
 ]
 LOGGER_FAMILIES = [
     ('ATC_RESP_L', r'^\[ATC_RESP\] '),
@@ -507,6 +543,8 @@ LOGGER_FAMILIES = [
     ('VERIFY', r'\[STOCK\] VERIFY \(cache-bust\): '),
     ('OTHER', r'\[STOCK\]\[OTHER\] '),                            # v4 (2026-10-06)
     ('LOCK', r'\[PURCHASE_LOCK\] '),                              # v6 (2026-10-15): INS-LAG-1015
+    ('LIMKEY', r'\[LIMKEY_PROBE\] '),                             # v7 (2026-10-16): INS-LIMKEY-1016 (logger twin)
+    ('WDUMMY@wrong_form', r'\[WARMUP#\d+/[^\]\s\[]+\] dummy POST status '),
     ('STEER', r'\[MULTI_SESSION\] pick_session steering away from souring '),
     ('RACE@wrong_form', r'\[RACE\] '),
     ('FL_CHAIN@wrong_form', r'\[FAST_LANE\] chain done'),
@@ -750,7 +788,7 @@ class RunParser:
         st = SELFTEST_RE.search(rest)
         self._add('resp_' + form, tab=tab, status=_int(m.group('status')), key=m.group('key'),
                   envoy=env.group(1) if env else None, selftest=st.group(1) if st else None,
-                  is_logger=lg)
+                  is_logger=lg, limkey=bool(LIMKEY_TAG.search(rest)))
 
     def _h_ATC_RESP_P(self, t, p, lg):
         m = ATC_RESP_P.match(t, p)
@@ -1001,6 +1039,37 @@ class RunParser:
         if not m:
             return False
         self._add('lock', kind='start' if m.group('st') else 'complete')
+        return True
+
+    # -- v7 (2026-10-16): INS-LIMKEY-1016 --------------------------------------------------
+    def _h_LIMKEY(self, t, p, lg):
+        """[LIMKEY_PROBE] result line -> a 'probe' event; any other event=<name> line -> an event of that kind."""
+        m = LIMKEY_RES.match(t, p)
+        if m:
+            self._add('limkey', key=m.group(0), is_logger=lg, event='probe', ident=m.group('acct').lower(),
+                      tcin=m.group('tcin'), n=_int(m.group('n')), status=_int(m.group('status')),
+                      err_key=m.group('key'), hop=m.group('hop'), net_line=m.group('net'),
+                      body_len=_int(m.group('bl')), reason=None, err=m.group('err') or None, detail=None)
+            return True
+        m = LIMKEY_EV.match(t, p)
+        if not m:
+            return False
+        ev = m.group('ev').lower()
+        rest = m.group('rest').strip()
+        kv = {}
+        if ev != 'error':                  # an error line's tail is free text: never mined for fields
+            kv = {k: v for k, v in LIMKEY_KV.findall(rest.split(' -- ')[0])}
+        acct = kv.get('acct')
+        self._add('limkey', key=m.group(0).strip(), is_logger=lg, event=ev, ident=acct.lower() if acct else None,
+                  tcin=kv.get('tcin'), n=None, status=_int(kv.get('status')), err_key=None, hop=None,
+                  net_line=None, body_len=None, reason=kv.get('reason'), err=None, detail=rest[:240])
+        return True
+
+    def _h_WDUMMY(self, t, p, lg):
+        m = WARM_DUMMY.match(t, p)
+        if not m:
+            return False
+        self._add('warm_dummy', ident=m.group('acct').lower(), idx=_int(m.group('idx')), status=_int(m.group('st')))
         return True
 
     def _h_WORKER_POOL(self, t, p, lg):
@@ -1856,8 +1925,29 @@ class RunParser:
                             kind=e['kind'])
                        for e in sorted(E['lock'], key=lambda e: e['seq'])]
 
+        # v7 INS-LIMKEY-1016: probe / event rows (print + logger twins collapsed per identical text) + heartbeat dummy POSTs
+        lk_groups = {}
+        for e in sorted(E['limkey'], key=lambda e: e['seq']):
+            lk_groups.setdefault(e['key'], ([], []))[1 if e['is_logger'] else 0].append(e)
+        lk_pick, lk_twins = [], 0
+        for pr_, lg_ in lk_groups.values():
+            chosen = list(lg_) + pr_[len(lg_):]
+            lk_twins += len(pr_) + len(lg_) - len(chosen)
+            lk_pick.extend(chosen)
+        lk_pick.sort(key=lambda e: e['seq'])
+        limkey = [dict(line=e['line'], ts_ms=ep(e['naive']), ts_src='logger' if e['is_logger'] else 'logger_prior',
+                       event=e['event'], ident=e['ident'], tcin=e['tcin'], n=e['n'], status=e['status'],
+                       err_key=e['err_key'], hop=e['hop'], net_line=e['net_line'], body_len=e['body_len'],
+                       reason=e['reason'], err=e['err'], detail=e['detail']) for e in lk_pick]
+        if lk_twins:
+            checks['limkey_twins_collapsed'] = lk_twins
+        warm_dummy = [dict(line=e['line'], ts_ms=ep(e['naive']), ts_src='logger_prior', ident=e['ident'],
+                           idx=e['idx'], status=e['status'])
+                      for e in sorted(E['warm_dummy'], key=lambda e: e['seq'])]
+
         # ---- decoys (warmup-tab responses, one row each) --------------------------------
         decoys = []
+        limkey_resps = 0
         posts, reqs = deque(), deque()
         wstream = sorted([('p', e) for e in E['warm_post']] + [('c', e) for e in E['warm_cap']] +
                          [('r', e) for e in warm_resps], key=lambda x: x[1]['seq'])
@@ -1877,11 +1967,16 @@ class RunParser:
                 if reqs:
                     tok, _ = reqs.popleft()
                     q = 'adjacent' if last_kind == 'c' and not reqs else 'fifo'
+                last_kind = 'r'
+                if e.get('limkey'):            # v7: the probe's own answer is not a heartbeat decoy
+                    limkey_resps += 1
+                    continue
                 decoys.append(dict(line=e['line'], ts_ms=ep(e['naive']), ts=e['stamp'],
                                    status=e['status'], key=e['key'],
                                    shape_tokens=tok, selftest=e['selftest'], envoy_ms=_int(e['envoy']),
                                    pair_q=q, ts_src='logger' if e['is_logger'] else 'logger_prior'))
-                last_kind = 'r'
+        if limkey_resps:
+            checks['limkey_probe_resps_not_decoys'] = limkey_resps
 
         # ---- tickets / loop ends / stats / orders ------------------------------------
         tickets = []
@@ -2074,7 +2169,7 @@ class RunParser:
                     stock_status=stock_status, sellable_oos=sellable_oos, shadow206=shadow206,
                     orders=orders, idents=list(idents.values()), unparsed=unparsed,
                     place_orders=place_orders, atc_net=atc_net, gate_events=gate_events, harvest=harvest,
-                    lock_events=lock_events,
+                    lock_events=lock_events, limkey=limkey, warm_dummy=warm_dummy,
                     checks=[dict(name=k, value=repr(v)) for k, v in sorted(checks.items())])
 
     PO_PAIR_GAP = 400      # lines: a [CHECKOUT_RESPONSE] HTTP pairs with a pending POST at most this far back
@@ -2565,6 +2660,12 @@ SCHEMA = {
                 'replay_on INTEGER'],
     # v6 (2026-10-15, INS-LAG-1015): kind + ts only (module doc, LOCK_EVENTS)
     'lock_events': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'kind TEXT'],
+    # v7 (2026-10-16, INS-LIMKEY-1016): module doc, LIMKEY + WARM_DUMMY
+    'limkey': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'event TEXT', 'ident TEXT', 'tcin TEXT',
+               'n INTEGER', 'status INTEGER', 'err_key TEXT', 'hop TEXT', 'net_line TEXT', 'body_len INTEGER',
+               'reason TEXT', 'err TEXT', 'detail TEXT'],
+    'warm_dummy': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'ident TEXT', 'idx INTEGER',
+                   'status INTEGER'],
 }
 RUN_TABLES = [t for t in SCHEMA if t not in ('runs', 'ingested')]
 INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, ident)',
@@ -2575,7 +2676,9 @@ INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, i
            'CREATE INDEX IF NOT EXISTS ix_atc_net_run ON atc_net(run_id, ident)',
            'CREATE INDEX IF NOT EXISTS ix_gate_run ON gate_events(run_id, kind)',
            'CREATE INDEX IF NOT EXISTS ix_harvest_run ON harvest(run_id, acct, event, ts_ms)',
-           'CREATE INDEX IF NOT EXISTS ix_lock_run ON lock_events(run_id, ts_ms, kind)']
+           'CREATE INDEX IF NOT EXISTS ix_lock_run ON lock_events(run_id, ts_ms, kind)',
+           'CREATE INDEX IF NOT EXISTS ix_limkey_run ON limkey(run_id, event, tcin, ts_ms)',
+           'CREATE INDEX IF NOT EXISTS ix_wdummy_run ON warm_dummy(run_id, ident, ts_ms)']
 
 
 def connect(db: Path) -> sqlite3.Connection:
@@ -2640,6 +2743,11 @@ def summarize(run_id, res) -> str:
     lk = res.get('lock_events') or []
     if lk:                                             # v6
         parts[0] += ' lock_events=%s' % dict(sorted(Counter(x['kind'] for x in lk).items()))
+    lkp = res.get('limkey') or []
+    if lkp:                                            # v7
+        parts[0] += ' limkey=%s' % dict(sorted(Counter(x['event'] for x in lkp).items()))
+    if res.get('warm_dummy'):
+        parts[0] += ' warm_dummy=%d' % len(res['warm_dummy'])
     parts.append('    unparsed remainder: ' + (', '.join('%s %d/%d (first line %s)' % (
         u['marker'], u['n'], u['seen'], u['first_line']) for u in bad) if bad else 'none'))
     return '\n'.join(parts)
