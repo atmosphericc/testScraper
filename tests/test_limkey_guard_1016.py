@@ -17,6 +17,11 @@ Fix round (evaluator 10-16):
   6. the stop is latched at START (before the boot audit can clear the marker), not at the first tick;
   7. an 'in_flight' marker entry is written BEFORE the evaluate; only the probe clears it;
   8. a marker the disk would not take stays in an in-process fallback + a loud ALERT.
+Fix round 4 (evaluator):
+  9. a gateway 5xx / 408 answer is late too (the cart service may still land the add): marker kept
+     until the late-add window has passed;
+ 10. the whole-cart legacy checkout runs its sink guard while a marker names the account, even with
+     the held-line strike killed (TARGET_HELD_LINE_FLIP_STRIKE=0).
 With the probe unset and no marker, behaviour is byte-identical (differential against the
 pre-change executor loaded from git).
 
@@ -347,12 +352,16 @@ def test_cleanup_after_a_landed_line():
     check("landed_no_second_probe", probes_sent(tab) == 1)
 
 
+LATE_STATUS_LABELS = ("500", "503", "502", "504", "408")
 UNPROVEN = [
     ("200", {"status": 200, "key": "-", "hop": "-", "n": 10}),
     ("201", {"status": 201, "key": "-", "hop": "-", "n": 900}),
     ("204", {"status": 204, "key": "-", "hop": "-", "n": 0}),
     ("500", {"status": 500, "key": "-", "hop": "-", "n": 0}),
     ("503", {"status": 503, "key": "-", "hop": "-", "n": 0}),
+    ("502", {"status": 502, "key": "-", "hop": "-", "n": 0}),
+    ("504", {"status": 504, "key": "-", "hop": "-", "n": 0}),
+    ("408", {"status": 408, "key": "-", "hop": "-", "n": 0}),
     ("429_with_body", {"status": 429, "key": ERR_A2C, "hop": "-", "n": 90}),
     ("429_other_key", {"status": 429, "key": "ERR_OTHER", "hop": "-", "n": 0}),
     ("429_no_key", {"status": 429, "key": "-", "hop": "-", "n": 0}),
@@ -376,9 +385,16 @@ def test_cleanup_matrix():
         with env(**ENV_ON):
             ex, tab, sm = make(probe=probe, lands=True)
             out = tick(ex)
+        # fix round 4: a gateway 5xx / 408 may still be working on the add -> late=True (the marker is
+        # kept until the late-add window has passed), exactly like an evaluate timeout
+        _late = label in LATE_STATUS_LABELS
+        e = marker_entries()
         check(f"unproven_{label}_cleans_up", probes_sent(tab) == 1 and "event=cleanup step=marker ok=True" in out
-              and A not in tab.tcins() and not marker_file_exists() and pe._LIMKEY_STATE["stopped"] is True,
-              f"{tab.log} {tab.lines} {out[-300:]}")
+              and A not in tab.tcins() and pe._LIMKEY_STATE["stopped"] is True
+              and ((len(e) == 1 and e[0]["late"] is True and e[0]["state"] == ""
+                    and "step=marker_kept reason=late_add_window_" in out and "step=marker_cleared" not in out)
+                   if _late else (not marker_file_exists() and "late=True" not in out)),
+              f"{tab.log} {tab.lines} {e} {out[-300:]}")
         check(f"unproven_{label}_marker_first", tab.log and tab.log[0] == ("probe", True)
               and tab.marker_snap and tab.marker_snap[0]["state"] == "in_flight"
               and all(mk for k, mk in tab.log[1:]), str(tab.log))
@@ -425,13 +441,57 @@ def test_cleanup_matrix():
     check("unproven_timeout_cleans_up_and_keeps_the_late_marker", "err=TimeoutError" in out
           and "event=cleanup step=marker ok=True" in out and A not in tab.tcins() and pe._LIMKEY_STATE["stopped"] is True
           and len(e) == 1 and e[0]["late"] is True, f"{tab.log} {e} {out[-300:]}")
-    # nothing landed (cart has no line of T): cleanup finds nothing to delete, proves it, clears the marker
+    # nothing landed (cart has no line of T) on a status that is NOT late (200 with no line: the cart read
+    # proves it): cleanup finds nothing to delete, proves it, clears the marker at once
     fresh()
     with env(**ENV_ON):
-        ex, tab, sm = make(probe={"status": 500, "key": "-", "hop": "-", "n": 0}, lands=False)
+        ex, tab, sm = make(probe={"status": 302, "key": "-", "hop": "-", "n": 0}, lands=False)
         out = tick(ex)
     check("unproven_but_nothing_landed_clears_cleanly", "delete" not in tab.kinds() and not marker_file_exists()
           and "step=marker_cleared ok=True" in out and pe._LIMKEY_STATE["stopped"] is True, f"{tab.log} {out[-300:]}")
+    # fix round 4 (evaluator 1): a 500 where nothing has landed YET is NOT cleared at once -- the marker is kept
+    # with late=True and clears only after _WONCART_LATE_ADD_WINDOW_S
+    for st in (500, 502, 503, 504, 408):
+        fresh()
+        with env(**ENV_ON):
+            ex, tab, sm = make(probe={"status": st, "key": "-", "hop": "-", "n": 0}, lands=False)
+            out = tick(ex)
+        e = marker_entries()
+        check(f"status_{st}_nothing_landed_yet_keeps_the_marker_late", "delete" not in tab.kinds() and marker_file_exists()
+              and len(e) == 1 and e[0]["late"] is True and e[0]["acct"] == "primary" and e[0]["tcin"] == A
+              and "step=marker_cleared" not in out and "step=marker_kept reason=late_add_window_" in out
+              and f"late=True" in out and pe._LIMKEY_STATE["stopped"] is True, f"{tab.log} {e} {out[-300:]}")
+        check(f"status_{st}_marker_not_clearable_inside_the_window", pe.limkey_marker_clear("primary", A, owner=True) is False
+              and pe.limkey_marker_has("primary", A))
+        e[0]["ts"] = time.time() - pe._WONCART_LATE_ADD_WINDOW_S - 1
+        pe._lk_marker_store(e)
+        check(f"status_{st}_marker_clears_after_the_window", pe.limkey_marker_clear("primary", A, owner=True) is True
+              and not marker_file_exists())
+    # ... and the 503 whose line lands AFTER the cleanup's cart read: the line sits in the cart, the marker is
+    # still there, so the buy path (strike, silent hold, boot adoption) still treats it as not-ours
+    fresh()
+    with env(**ENV_ON):
+        ex, tab, sm = make(probe={"status": 503, "key": "-", "hop": "-", "n": 0}, lands=False)
+        real_ev = tab.evaluate
+        state = {"reads_after_probe": 0}
+
+        async def land_after_read(script, await_promise=False):
+            r = await real_ev(script, await_promise)
+            if script == pe._CART_ITEMS_READ_JS and probes_sent(tab) >= 1:
+                state["reads_after_probe"] += 1
+                if state["reads_after_probe"] == 1:
+                    tab.add_line(A)                    # the cart service finishes the add just after the read
+            return r
+        tab.evaluate = land_after_read
+        out = tick(ex)
+    e = marker_entries()
+    check("503_line_lands_after_the_cleanup_read_marker_still_there", A in tab.tcins() and marker_file_exists()
+          and len(e) == 1 and e[0]["late"] is True and "step=marker_cleared" not in out,
+          f"{tab.log} {tab.lines} {e} {out[-300:]}")
+    with env(**STRIKE_ENV):
+        check("503_late_line_not_adoptable_strike_inactive_for_it", ex._held_line_strike_active(A) is False
+              and pe.limkey_marker_acct("primary") is True)
+    fresh()
 
 
 def test_proven_non_landing_does_nothing():
@@ -1016,9 +1076,9 @@ def test_late_landing_after_a_timeout():
         res, out5 = arun(ex._limkey_purge_entry(tab, A, time.time()))
         check("late_marker_clears_once_the_window_has_passed", res is None and not marker_file_exists(), out5)
     fresh()
-    # a 2xx / 5xx / body-429 (an answer that DID come back) is not late: cleared at once on a proven-gone read
+    # a 2xx / body-429 (an answer that DID come back) is not late: cleared at once on a proven-gone read.
+    # (a gateway 5xx / 408 is late since fix round 4: see test_cleanup_matrix)
     for label, probe in (("201", {"status": 201, "key": "-", "hop": "-", "n": 900}),
-                         ("500", {"status": 500, "key": "-", "hop": "-", "n": 0}),
                          ("429_body", {"status": 429, "key": ERR_A2C, "hop": "-", "n": 90})):
         fresh()
         with env(**ENV_ON):
@@ -1583,7 +1643,9 @@ def test_status_zero_with_a_seen_status():
         got_cleanup = "event=cleanup" in out
         check(f"status0_{label}_reclassified_in_the_log", f"event=reclassify acct=primary tcin={A} page_status=0 "
               f"seen_status={p['status']}" in out and f"status={p['status']} " in out, out[-400:])
-        check(f"status0_{label}_cleanup_is_{cleanup}", got_cleanup is cleanup and (marker_file_exists() is False),
+        # seen_500 is late (fix round 4): its marker is kept until the late-add window has passed
+        check(f"status0_{label}_cleanup_is_{cleanup}",
+              got_cleanup is cleanup and (marker_file_exists() is (label == "seen_500")),
               f"{got_cleanup} {out[-400:]}")
         if label == "seen_201":
             check("status0_seen_201_hits_the_stop_branch_and_deletes_the_line", "event=STOP reason=probe_2xx" in out
@@ -1620,6 +1682,82 @@ def test_status_zero_with_a_seen_status():
     fresh()
 
 
+def test_legacy_checkout_guard_runs_under_a_marker():
+    """Fix round 4 (evaluator 2): the whole-cart legacy checkout ran its sink guard only
+    `if held_line_strike_on(ident)`. With the strike killed (TARGET_HELD_LINE_FLIP_STRIKE=0) a purchase of
+    another TCIN X on the probe account was cart-confirmed and the legacy checkout then bought the whole
+    cart, including the marked probe line of T. The guard now also runs while a marker names the account."""
+    import test_held_line_strike as H            # import only (its main() does not run)
+    T, X = H.ST, H.SO
+    added = {"status": 201, "body": "{}", "cart_items": [{"tcin": X, "quantity": 2}]}
+
+    def run_purchase(strike, marker, cart, route):
+        fresh()
+        if marker:
+            pe.limkey_marker_write("primary", T, "status_201")
+        c, ex, tab = H._world_ex(H.ATC401_5, [], cart)
+        ex.session_manager.account_id = "primary"
+        tab.throttled = False
+        if route == "legacy201":                  # ATC 201 on the legacy add (fast lane cooling down)
+            tab.legacy = [dict(added)]
+            ex._fast_selling_until = c.t + 300
+        with S.in_tmp_cwd(), S.env(**dict(H.ENV5, TARGET_HELD_LINE_FLIP_STRIKE=strike)), S.fake_time(c):
+            r = S.run(ex._execute_purchase_impl(X, quantity=2))
+        return r, ex, tab
+
+    for route in ("legacy201", "silent_hold"):
+        # armed config reference: strike on + marker -> guard ran (T line gone), as before
+        r, ex, tab = run_purchase("1", True, [T, X], route)
+        cart = [i["tcin"] for i in tab.cart_items]
+        check(f"legacy_guard_{route}_strike_on_marker_removes_the_T_line", "checking_out" in ex.statuses
+              and cart == [X], f"r={r} cart={cart} statuses={ex.statuses}")
+        # the evaluator's case: strike OFF + marker (primary, T), purchase of X with a T line in the cart
+        r, ex, tab = run_purchase("0", True, [T, X], route)
+        cart = [i["tcin"] for i in tab.cart_items]
+        skipped = "checking_out" not in ex.statuses
+        check(f"legacy_guard_{route}_strike_off_marker_T_line_deleted_or_checkout_skipped",
+              (T not in cart) or skipped, f"r={r} cart={cart} statuses={ex.statuses}")
+        check(f"legacy_guard_{route}_strike_off_marker_deleted_the_T_line_and_checked_out_clean",
+              "checking_out" in ex.statuses and cart == [X], f"r={r} cart={cart} statuses={ex.statuses}")
+        check(f"legacy_guard_{route}_strike_off_marker_guard_issued_a_delete", bool(ex.deletes), str(ex.deletes))
+        # differential: strike OFF, NO marker -> head behaviour (guard does not run, the other line is bought)
+        r, ex, tab = run_purchase("0", False, [T, X], route)
+        cart = [i["tcin"] for i in tab.cart_items]
+        check(f"legacy_guard_{route}_strike_off_no_marker_unchanged", "checking_out" in ex.statuses and T in cart
+              and not ex.deletes, f"r={r} cart={cart} deletes={ex.deletes}")
+        # a marker for another account does not switch the guard on
+        fresh()
+        pe.limkey_marker_write("alt-1", T, "status_201")
+        c, ex, tab = H._world_ex(H.ATC401_5, [], [T, X])
+        ex.session_manager.account_id = "primary"
+        tab.throttled = False
+        if route == "legacy201":
+            tab.legacy = [dict(added)]
+            ex._fast_selling_until = c.t + 300
+        with S.in_tmp_cwd(), S.env(**dict(H.ENV5, TARGET_HELD_LINE_FLIP_STRIKE="0")), S.fake_time(c):
+            S.run(ex._execute_purchase_impl(X, quantity=2))
+        check(f"legacy_guard_{route}_other_accounts_marker_does_not_switch_it_on",
+              "checking_out" in ex.statuses and not ex.deletes, str(ex.deletes))
+    # strike off + marker + the delete cannot be proven: NOTHING is bought
+    fresh()
+    pe.limkey_marker_write("primary", T, "status_201")
+    c, ex, tab = H._world_ex(H.ATC401_5, [], [T, X], fail_delete=True)
+    ex.session_manager.account_id = "primary"
+    tab.throttled = False
+    tab.legacy = [dict(added)]
+    ex._fast_selling_until = c.t + 300
+    with S.in_tmp_cwd(), S.env(**dict(H.ENV5, TARGET_HELD_LINE_FLIP_STRIKE="0")), S.fake_time(c):
+        r = S.run(ex._execute_purchase_impl(X, quantity=2))
+    check("legacy_guard_strike_off_marker_delete_fails_no_checkout", "checking_out" not in ex.statuses
+          and r.get("reason") == "held_cart_release_failed", f"r={r} statuses={ex.statuses}")
+    # source: the call site is gated on the strike OR the marker
+    src = Path(pe.__file__).read_text(encoding="utf-8")
+    i = src.index("_lg = await self._legacy_checkout_cart_guard(tab, tcin, start_time)")
+    check("legacy_guard_call_site_is_gated_on_strike_or_marker",
+          "held_line_strike_on(self._ident_tag()) or limkey_marker_acct(self._ident_tag())" in src[i - 400:i])
+    fresh()
+
+
 def test_source_hygiene():
     src = Path(pe.__file__).read_text(encoding="utf-8")
     for name in ("_limkey_busy_why", "_limkey_cleanup", "_limkey_purge_entry", "_limkey_boot_delete",
@@ -1646,7 +1784,8 @@ def main():
                test_purchase_entry, test_differential_against_the_pre_change_executor,
                test_woncart_suspect_while_a_marker_names_the_account, test_purchase_entry_waits_out_an_open_window,
                test_other_executors_in_flight_entry_does_not_stop_the_probe, test_stale_marker_lifecycle,
-               test_unreadable_hand_made_file_advice, test_status_zero_with_a_seen_status, test_source_hygiene):
+               test_unreadable_hand_made_file_advice, test_status_zero_with_a_seen_status, test_legacy_checkout_guard_runs_under_a_marker,
+               test_source_hygiene):
         try:
             fn()
         except Exception as e:                 # noqa: BLE001

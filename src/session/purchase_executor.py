@@ -4842,8 +4842,14 @@ class PurchaseExecutor:
                 if _raced:
                     _why += f"_raced_{_raced}"
                 _lk_pending = None                              # the cleanup rewrites the entry first
+                # fix round 4 (evaluator): a gateway 5xx / 408 can mean the cart service is STILL working
+                # on the add, so it is as "late" as an evaluate timeout: the line may land after the
+                # cleanup's cart read, so the marker stays until the late-add window has passed.
+                _st = parsed['status']
+                _late_status = (isinstance(_st, int) and not isinstance(_st, bool)
+                                and (_st == -1 or _st == 408 or 500 <= _st <= 599))
                 await self._limkey_cleanup(tab, acct, tcin, _why[:120],
-                                           late=bool(err) or parsed['status'] == -1)
+                                           late=bool(err) or _late_status)
         except Exception as e:
             try:
                 if _lk_pending is not None:
@@ -7369,7 +7375,11 @@ class PurchaseExecutor:
             # 2026-10-02 FX-1001-A v6 (sink guard): the legacy checkout buys the
             # WHOLE cart. With the strike on, it runs only on a cart that holds
             # nothing but this TCIN, however a line of another item got there.
-            if not self._fastlane_placed and held_line_strike_on(self._ident_tag()):
+            # LIMKEY-GUARD-1016 fix round 4: also while a probe marker names this account, so the kill
+            # switch TARGET_HELD_LINE_FLIP_STRIKE=0 cannot let the whole-cart checkout buy a marked
+            # probe line (no marker file = one os.path.exists, byte-identical).
+            if (not self._fastlane_placed
+                    and (held_line_strike_on(self._ident_tag()) or limkey_marker_acct(self._ident_tag()))):
                 _lg = await self._legacy_checkout_cart_guard(tab, tcin, start_time)
                 if _lg is not None:
                     return _lg
