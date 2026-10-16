@@ -412,3 +412,19 @@ Source run: `logs/runs/run_20261009_000934.log` (00:09 → 07:59, the 10-09 02:0
     - 1010892076 was 0/5 before the break.
     - So the break is not one TCIN's doing, but the matched-TCIN cut is underpowered: "which SKUs restocked" is not excluded.
   - Status: MEASURED (workflow output).
+
+- **C-1016-17 — Off-window, the edge limiter does NOT limit hot TCINs: EXP-LIMKEY-GUEST verdict DEMAND-SWITCHED (pre-registered, N=30).** `tools/experiments/limkey_guest_probe.py` (commit `396a9391`, 3 Opus verifier rounds on money safety) ran 2026-10-16 14:28-15:30 CT on the home line from a fresh guest Chrome, sending the fast lane's exact add-to-cart: TARGET_ATC_BYTEMATCH URL + body, base headers, PDP referrer, page-signed.
+  - **Hot TCINs:** 1010892076 (30th ETB) and 1012644665 (Ascended Heroes tin), both OUT_OF_STOCK, each 30/30 past the limiter, 0 `ERR_A2C_TCIN_RATE_LIMITED`.
+    - The first 3 and 6 answers were 424 `INVENTORY_UNAVAILABLE` with x-ssx-hop, i.e. past the limiter AND Shape.
+    - The rest were keyless 401: Shape denied the stale page after ~10 min, and the control did the same 6/30.
+  - **Control:** 81926151 30/30 answered, 0 limited.
+  - **Smoke 14:18:** 3/3 hot 424 + 10/10 control.
+  - Outputs: `logs/experiments/limkey_guest_20261016_142851.{log,json}` and `..._141805.*`.
+  - The same TCIN 1010892076 went 0/1,208 at the edge limiter in the 10-16 drop (02:25-02:35) from the same line.
+  - **So the limiter's per-TCIN state is not a standing policy: it appears only in-window.** It is switched by live demand or by the in-stock state; the two are not separable off-window.
+    - This explains why first-ever POSTs at a fresh drop were limited (C-1011-03): the state comes with the drop, not with our traffic.
+    - It means off-window tests cannot answer what the limiter keys on (line / account / session). That needs an in-window comparison.
+  - Caveats:
+    - A guest, not a member, and page-signed rather than banked Shape headers. Neither should matter at the limiter, which answers first (C-0930-03), and the hot answers carried x-ssx-hop.
+    - Clock hours 14-15 only, one afternoon.
+  - Status: **MEASURED** (pre-registered rule, n=60 hot + 30 control).

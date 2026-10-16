@@ -305,6 +305,11 @@ Entry format:
   docs/CLAIMS.md C-1011-01..10 and the 2026-10-11 section of CURRENT_STATE.
 - **Confidence:** [REPORTED] for the docs; [INFERRED] for what it implies.
 
+## 2026-10-16 (afternoon) — the edge limiter on hot TCINs is OFF outside a drop (MEASURED, EXP-LIMKEY-GUEST, C-1016-17)
+
+- A fresh guest browser on the home line sent the bot's exact add-to-cart at two hot, out-of-stock TCINs. 1010892076 and 1012644665 were each 30/30 past the limiter (424 INVENTORY_UNAVAILABLE with x-ssx-hop, later keyless 401), with 0 `ERR_A2C_TCIN_RATE_LIMITED`; the control was 30/30 clean. That was 14:28-15:30 CT, and the same line was 0/1,208 on 1010892076 in the 02:25 drop.
+- The per-TCIN limiter state comes with the drop (live demand or in-stock state), not with a standing hot list or our own traffic history. Consequence: what the limiter keys on (network line, account, session) can only be measured in-window.
+
 ## 2026-10-16 — the home line's first contact stopped getting past the edge limiter after 10-01 (OBSERVED; cause NOT ESTABLISHED)
 
 - **What:** each account's first add-to-cart on a hot TCIN (earliest home shot per run x account x TCIN, before any
