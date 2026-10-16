@@ -401,6 +401,7 @@ LIMKEY_RES = re.compile(r'\[LIMKEY_PROBE\] acct=(?P<acct>[^\s\[]+) tcin=(?P<tcin
                         r'body_len=(?P<bl>-?\d+) n=(?P<n>\d+)(?: err=(?P<err>[^\s\[]*))?')
 LIMKEY_EV = re.compile(r'\[LIMKEY_PROBE\] event=(?P<ev>[A-Za-z][A-Za-z0-9_]*)(?P<rest>[^\[]*)')
 LIMKEY_KV = re.compile(r'(?<![\w-])(reason|acct|tcin|status)=([^\s\[]+)')
+LIMKEY_STEP_ERR = re.compile(r'\s*step=error\b')
 LIMKEY_TAG = re.compile(r'\blimkey_probe=1\b')
 WARM_DUMMY = re.compile(r'\[WARMUP#(?P<idx>\d+)/(?P<acct>[^\]\s\[]+)\] dummy POST status (?P<st>-?\d+)')
 WORKER_POOL = re.compile(r'\[WORKER_POOL\] sized from \S+: \d+ account\(s\) -> \[(?P<list>[^\]]*)\]')
@@ -1057,8 +1058,12 @@ class RunParser:
         ev = m.group('ev').lower()
         rest = m.group('rest').strip()
         kv = {}
+        body = rest.split(' -- ')[0]
+        if ev == 'cleanup' and LIMKEY_STEP_ERR.match(body):   # 'step=error <Type>: <exception text> acct=.. tcin=..': the exception text is free text
+            i = body.rfind(' acct=')                          # (it may hold status= / tcin= / reason=); only the bot's own trailing tag is mined
+            body = body[i:] if i >= 0 else ''
         if ev != 'error':                  # an error line's tail is free text: never mined for fields
-            kv = {k: v for k, v in LIMKEY_KV.findall(rest.split(' -- ')[0])}
+            kv = {k: v for k, v in LIMKEY_KV.findall(body)}
         acct = kv.get('acct')
         self._add('limkey', key=m.group(0).strip(), is_logger=lg, event=ev, ident=acct.lower() if acct else None,
                   tcin=kv.get('tcin'), n=None, status=_int(kv.get('status')), err_key=None, hop=None,
