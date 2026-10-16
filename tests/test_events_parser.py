@@ -51,6 +51,17 @@ Pins:
     the harvest lines; PARSER_VERSION 5 re-parses and replaces the rows without duplicates
   - phase.sql: R-BANK met / not met / NO DATA, the >= 20 page-signed gate of C-1015-04, early-phase page-signed
     admissions, an overlapped window's first-shot lag, wire order vs atc_t0 order of a first volley
+  v6 (2026-10-15):
+  - INS-LAG-1015: every logger-form [PURCHASE_LOCK] started / complete line -> one `lock_events` row (kind + its own
+    millisecond stamp, no ident); three same-ms starts, a line glued behind a print, two stamped lines on one physical
+    line = every one a row, none twice; the print twin and a print-form marker are no rows (the marker counted
+    @wrong_form), an unreadable [PURCHASE_LOCK] line is counted, never guessed; every other table and `checks` are
+    identical with and without the lock lines; PARSER_VERSION 6 re-parses a v5 store and re-creates the table
+  - dispatch_lag.sql: idle / busy_other / busy_same / no_shot / unknown classes, release + tick + start == the first
+    shot by ANY race, the intervening-dispatch (redispatched) window, wire-order check, R-LAG build / skip / inconclusive
+    / NO DATA verdicts (median, p90, the 20%-over-2 s line, the < 3 busy windows line)
+  - reflip.sql: later shots within 2 s after a re-flip counted once, wire vs atc_t0 basis, the capped (flip-log cap)
+    exclusion, unclassified gates shown not folded in, R-REFLIP met / not met (n, rate, vacuous 0 >= 0) / NO DATA
 
 No browser, no network, no bot. Run: python tests/test_events_parser.py
 """
@@ -1378,7 +1389,7 @@ def test_v5_other_tables_unchanged():
     check('v5_harvest_counts', [r['event'] for r in with_['harvest']].count('captured') == 3
           and [r['event'] for r in with_['harvest']].count('pre_shot') == 2
           and [r['event'] for r in with_['harvest']].count('replay') == 3, [r['event'] for r in with_['harvest']])
-    check('v5_parser_version', ev.PARSER_VERSION == 5, ev.PARSER_VERSION)
+    check('v5_parser_version', ev.PARSER_VERSION >= 5, ev.PARSER_VERSION)       # v6 (INS-LAG-1015) bumped it
 
 
 def _rbank_lines(live, extra=None):
@@ -1623,6 +1634,418 @@ def test_v5_phase_query():
         check('v5_q_run_tables_has_harvest', 'harvest' in evq.RUN_TABLES and 'harvest' in ev.RUN_TABLES, evq.RUN_TABLES)
 
 
+# ---------------------------------------------------------------------------------
+# v6 (2026-10-15, INS-LAG-1015): lock_events + dispatch_lag.sql + reflip.sql
+# ---------------------------------------------------------------------------------
+LOCK_NAME = 'src.session.session_manager'
+LOCK_ST = '[PURCHASE_LOCK] Purchase started - validation paused'
+LOCK_CP = '[PURCHASE_LOCK] Purchase complete - validation resumed'
+
+
+def lock(kind, ep_ms):
+    """The logger line session_manager.set_purchase_in_progress() writes (its print twin is a different text)."""
+    return L(ep_ms, LOCK_ST if kind == 'start' else LOCK_CP, name=LOCK_NAME)
+
+
+def _unp(res):
+    return {r['marker']: (r['seen'], r['parsed'], r['n']) for r in res['unparsed']}
+
+
+def test_v6_lock_events():
+    base = [POOL, flip(TC, 1, T, 1)]
+    # (1) the 10-09 shapes: three starts in one ms on three physical lines, a start glued behind a [DISPATCH] print
+    #     (run_20261009_000934 L17979), one behind another print (L18433), two stamped lines on ONE physical line
+    glued_a = f"[DISPATCH] {TC} → W3/alt-1" + lock('start', T + 102)
+    glued_b = "[REAL_PURCHASE_THREAD] [QTY] qty=2 (manager decision; see [QTY] reason line)" + lock('start', T + 103)
+    two_on_one = lock('start', T + 104) + lock('start', T + 105)
+    res = parse(base + [lock('start', T + 100), lock('start', T + 100), lock('start', T + 100), glued_a, glued_b, two_on_one])
+    lk = res['lock_events']
+    check('v6_seven_starts_seven_rows', len(lk) == 7 and {r['kind'] for r in lk} == {'start'}, lk)
+    check('v6_ts_is_the_lines_own_stamp', [r['ts_ms'] for r in lk] == [T + 100] * 3 + [T + 102, T + 103, T + 104, T + 105]
+          and {r['ts_src'] for r in lk} == {'logger'}, lk)
+    check('v6_one_row_per_stamped_segment_in_log_order', [r['line'] for r in lk] == [3, 4, 5, 6, 7, 8, 8], [r['line'] for r in lk])
+    check('v6_kind_and_ts_only_no_ident', set(lk[0]) == {'line', 'ts_ms', 'ts_src', 'kind'}, set(lk[0]))
+    check('v6_family_accounting_clean', _unp(res).get('LOCK') == (7, 7, 0) and 'LOCK@wrong_form' not in _unp(res), _unp(res))
+    # (2) completes and the start / complete mix keep log order
+    res = parse(base + [lock('start', T + 100), lock('complete', T + 900), lock('complete', T + 901)])
+    check('v6_complete_rows', [(r['kind'], r['ts_ms']) for r in res['lock_events']] ==
+          [('start', T + 100), ('complete', T + 900), ('complete', T + 901)], res['lock_events'])
+    # (3) the print twin is no row and no remainder; the marker in PRINT text is counted @wrong_form; an unreadable
+    #     [PURCHASE_LOCK] line keeps no row and is counted (never guessed into start / complete)
+    res = parse(base + ["[SESSION] Purchase in progress - validation paused", "[SESSION] Purchase complete - validation resumed"])
+    check('v6_print_twin_is_not_a_row', res['lock_events'] == [] and 'LOCK' not in _unp(res) and 'LOCK@wrong_form' not in _unp(res),
+          (res['lock_events'], _unp(res)))
+    res = parse(base + [LOCK_ST])
+    check('v6_print_form_counted_wrong_form', res['lock_events'] == [] and _unp(res).get('LOCK@wrong_form') == (1, 0, 1), _unp(res))
+    res = parse(base + [L(T + 100, '[PURCHASE_LOCK] Purchase aborted - validation paused', name=LOCK_NAME)])
+    u = {r['marker']: (r['n'], r['first_line']) for r in res['unparsed']}
+    check('v6_unreadable_lock_line_counted_not_guessed', res['lock_events'] == [] and u.get('LOCK') == (1, 3), (res['lock_events'], u))
+
+
+def test_v6_other_tables_unchanged():
+    """The lock lines add rows to `lock_events` and to nothing else: the same log with and without them gives identical
+    rows in every other table, identical `checks`, and the same unparsed remainders (plus the one accounting row for
+    the new LOCK family -- the only change to a pre-existing table, and n = 0)."""
+    core = [POOL, flip(TC, 1, T, 1), race(TC, ['primary', 'business'])]
+    core += shot('primary', TC, T + 47) + shot('business', TC, T + 50, status=429, key=FSK)
+    core += shot('primary', TC, T + 60000, status=401, key='-')
+    extra = [lock('start', T + 10), lock('start', T + 11), "[SESSION] Purchase in progress - validation paused",
+             lock('complete', T + 900), lock('complete', T + 901)]
+    with_, without = parse(core + extra), parse(core)
+    tabs = ('shots', 'races', 'flips', 'windows', 'tickets', 'loop_ends', 'decoys', 'monitor_stats', 'orders', 'idents',
+            'place_orders', 'atc_net', 'gate_events', 'stock_status', 'sellable_oos', 'shadow206', 'harvest')
+    bad = [t for t in tabs if with_[t] != without[t]]
+    check('v6_every_other_table_identical', not bad, bad)
+    check('v6_checks_identical', with_['checks'] == without['checks'], (with_['checks'], without['checks']))
+    ua = {r['marker']: (r['n'], r['first_line']) for r in with_['unparsed'] if r['marker'] != 'LOCK'}
+    ub = {r['marker']: (r['n'], r['first_line']) for r in without['unparsed']}
+    check('v6_unparsed_same_markers_and_remainders', ua == ub, (ua, ub))
+    check('v6_exactly_one_new_unparsed_row_n0', len(with_['unparsed']) == len(without['unparsed']) + 1
+          and _unp(with_).get('LOCK') == (4, 4, 0), _unp(with_))
+    check('v6_lock_counts', [r['kind'] for r in with_['lock_events']] == ['start', 'start', 'complete', 'complete']
+          and without['lock_events'] == [], with_['lock_events'])
+    check('v6_parser_version', ev.PARSER_VERSION >= 6, ev.PARSER_VERSION)
+
+
+def test_v6_store_and_cli():
+    with tempfile.TemporaryDirectory() as tmp:
+        logs = Path(tmp) / 'runs'
+        logs.mkdir()
+        lines = [POOL, flip(TC, 1, T, 1), lock('start', T + 100), lock('start', T + 101), lock('complete', T + 900)]
+        (logs / 'run_20990501_000000.log').write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
+        db = Path(tmp) / 'ev.sqlite'
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ev.main(['--db', str(db), '--logs', str(logs)])
+        check('v6_summary_line_names_lock_events', "lock_events={'complete': 1, 'start': 2}" in buf.getvalue(), buf.getvalue()[:400])
+        check('v6_unparsed_remainder_printed_and_empty', 'unparsed remainder: none' in buf.getvalue()
+              and 'unparsed remainder over the parsed files: none' in buf.getvalue(), buf.getvalue()[-300:])
+        con = sqlite3.connect(str(db))
+        cols = [r[1] for r in con.execute('PRAGMA table_info(lock_events)')]
+        check('v6_table_columns', cols == ['run_id', 'line', 'ts_ms', 'ts_src', 'kind'], cols)
+        check('v6_rows_stored', con.execute('SELECT kind, COUNT(*) FROM lock_events GROUP BY kind ORDER BY kind').fetchall()
+              == [('complete', 1), ('start', 2)])
+        check('v6_index_exists', con.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'ix_lock_run'").fetchone()[0] == 1)
+        con.close()
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v6_unchanged_file_is_skipped_no_duplicates', '0 file(s) parsed, 1 unchanged' in out2.getvalue()
+              and con.execute('SELECT COUNT(*) FROM lock_events').fetchone()[0] == 3, out2.getvalue())
+        # a v5 store: no lock_events table, the file ingested at parser_version 5 -> the bump re-parses it and the table returns
+        con.execute('DROP TABLE lock_events')
+        con.execute('UPDATE ingested SET parser_version = 5')
+        con.commit()
+        con.close()
+        out3 = io.StringIO()
+        with contextlib.redirect_stdout(out3):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v6_v5_store_reparsed_and_table_recreated', '1 file(s) parsed' in out3.getvalue()
+              and con.execute('SELECT COUNT(*) FROM lock_events').fetchone()[0] == 3
+              and con.execute('SELECT parser_version FROM ingested').fetchone()[0] == ev.PARSER_VERSION, out3.getvalue())
+        con.close()
+        # a stale-version re-parse replaces the rows (no duplicates)
+        con = sqlite3.connect(str(db))
+        con.execute('UPDATE ingested SET parser_version = parser_version - 1')
+        con.commit()
+        con.close()
+        with contextlib.redirect_stdout(io.StringIO()):
+            ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+        con = sqlite3.connect(str(db))
+        check('v6_version_reparse_replaces_rows', con.execute('SELECT COUNT(*) FROM lock_events').fetchone()[0] == 3)
+        con.close()
+        qb = io.StringIO()
+        with contextlib.redirect_stdout(qb):
+            evq.main(['--db', str(db), '--csv', 'SELECT COUNT(*) AS n FROM lock_events', '--run', 'no_such_run'])
+        check('v6_q_run_filter_covers_lock_events', qb.getvalue().split() == ['n', '0'], qb.getvalue())
+        check('v6_q_run_tables_has_lock_events', 'lock_events' in evq.RUN_TABLES and 'lock_events' in ev.RUN_TABLES, evq.RUN_TABLES)
+
+
+def _q_for(db):
+    def q(*args):
+        b = io.StringIO()
+        with contextlib.redirect_stdout(b):
+            rc = evq.main(['--db', str(db), '--csv'] + list(args))
+        res_ = []
+        for blk in b.getvalue().strip().split('\n\n'):
+            rows_ = list(csv.reader(io.StringIO(blk.strip())))
+            res_.append([dict(zip(rows_[0], r)) for r in rows_[1:]] if rows_ else [])
+        return rc, res_
+    return q
+
+
+def _build_store(tmp, runs):
+    logs = Path(tmp) / 'runs'
+    logs.mkdir()
+    for name, lines in runs.items():
+        (logs / (name + '.log')).write_bytes(('\r\n'.join(lines) + '\r\n').encode('utf-8'))
+    db = Path(tmp) / 'ev.sqlite'
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        ev.main(['--db', str(db), '--logs', str(logs), '--quiet'])
+    return db, buf.getvalue()
+
+
+def _win_lines(tc, fr, lag, locks, ident='primary', wire_gap=None, disp=None):
+    """One flip window of `tc` read at `fr`: [PURCHASE_LOCK] lines at fr + offset (`locks`, (kind, ms)), the dispatch start at
+    fr + lag - 30 (or `disp`), a single-account race whose first shot leaves at fr + lag (an [ATC_NET] POST wire_gap ms
+    after it when given), then the race ends and its thread completes."""
+    ev_ = sorted([(off, k) for k, off in locks] + [((lag - 30) if disp is None else disp, 'start')])
+    out = [lock(k, fr + off) for off, k in ev_ if off < 0]
+    out.append(flip(tc, 1, fr, 1))
+    out += [lock(k, fr + off) for off, k in ev_ if off >= 0]
+    out.append(race(tc, [ident]))
+    if wire_gap is not None:
+        out.append(net(ident, 'POST', 429, fr + lag + wire_gap))
+    out += shot(ident, tc, fr + lag, rt=120)
+    out += [done(tc, 1, 1, [(ident, 'rate_limited_429')]), lock('complete', fr + lag + 2000)]
+    return out
+
+
+def _busy_run(lags, wire_gap=None):
+    """One busy_other window per lag: a thread live at the flip (start at -500, complete at +300)."""
+    lines = [POOL]
+    for i, lag in enumerate(lags):
+        lines += _win_lines(str(1010892100 + i), T + i * 100000, lag, [('start', -500), ('complete', 300)], wire_gap=wire_gap)
+    return lines
+
+
+def _same_run():
+    """TC opens at T (idle: its racer A starts at +12, never ends), re-opens at T + 20 s while A still shoots: A re-fires at
+    +757 ms of the new window, the new window's own race B only at +7,242 ms (the 10-09 window 4 shape)."""
+    return ([POOL, lock('start', T + 12), flip(TC, 1, T, 1), race(TC, ['primary'])] + shot('primary', TC, T + 45) +
+            [flip(TC, 2, T + 20000, 1)] + shot('primary', TC, T + 20757) +
+            [lock('start', T + 27212), race(TC, ['business'])] + shot('business', TC, T + 27242))
+
+
+def test_v6_dispatch_lag_query():
+    runs = {
+        'run_20990501_000000': [POOL] + _win_lines(TC3, T, 45, [], disp=12),                       # idle
+        'run_20990502_000000': [POOL] + _win_lines(TC, T, 1830, [('start', -500), ('complete', 300)], wire_gap=90),
+        'run_20990503_000000': [POOL] + _win_lines(TC2, T, 6030, [('start', -500), ('complete', 100), ('start', 3000),
+                                                                  ('complete', 3200)]),             # redispatched
+        'run_20990504_000000': _same_run(),                                                         # busy_same
+        'run_20990505_000000': [POOL, lock('start', T - 500), flip(TC, 1, T, 1)],                   # no_shot
+        'run_20990506_000000': [POOL, flip(TC, 1, T, 1), race(TC, ['primary'])] + shot('primary', TC, T + 45),   # unknown
+        'run_20990507_000000': [POOL] + _win_lines(TC, T, 1830, [('start', -500), ('complete', 300)], disp=1825,
+                                                   wire_gap=-8),                                    # wire before dispatch
+        # R-LAG verdict runs
+        'run_20990510_000000': _busy_run([1600, 1700, 1800]),                    # median 1700 > 1500            => BUILD
+        'run_20990511_000000': _busy_run([600, 600, 600, 600, 2500]),            # 1 of 5 = 20% over 2 s         => BUILD
+        'run_20990512_000000': _busy_run([700, 800, 900, 1900]),                 # median 850, p90 1900          => SKIP
+        'run_20990513_000000': _busy_run([1200, 1300, 1400, 1450]),              # median 1350                   => INCONCLUSIVE
+        'run_20990514_000000': _busy_run([500, 600, 700, 800, 900, 2100]),       # median 750 but p90 2100, 16.7% => INCONCLUSIVE
+        'run_20990515_000000': _busy_run([1500, 1500, 1500]),                    # exactly 1500 is NOT over      => INCONCLUSIVE
+        'run_20990516_000000': _busy_run([1000, 1000, 2000]),                    # exactly 1000 / 2000 are inside => SKIP
+        'run_20990517_000000': _busy_run([3000, 4000]),                          # 2 busy windows                => NO DATA
+        'run_20990518_000000': _busy_run([1480, 1490, 1495]),                    # t0 median 1490 / wire 1520 differ
+        'run_20990519_000000': _busy_run([1480, 1490, 1495], wire_gap=30),       #   (the wire basis flips the verdict)
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        db, out = _build_store(tmp, runs)
+        q = _q_for(db)
+        check('v6_dl_db_built', '%d file(s) parsed' % len(runs) in out, out)
+
+        def win(run, n=1):
+            rc, rs = q('dispatch_lag', '--run', run)
+            assert rc == 0, (run, rc)
+            return rs[0][:n] if n else rs[0], rs
+
+        # idle: the flip dispatches within a few ms, no release, no wait for a tick
+        (w,), rs = win('20990501')
+        check('v6_dl_idle_window', (w['busy_class'], w['busy'], w['release_ms'], w['tick_ms'], w['start_ms'], w['first_shot_any_ms'],
+                                    w['lag_flip_race'], w['late']) == ('idle', '0', '0', '12', '33', '45', '45', '0'), w)
+        # busy_other: release 300 + tick 1,500 + start 30 = the first shot at 1,830; ordering on the WIRE (+90 ms)
+        (w,), rs = win('20990502')
+        check('v6_dl_busy_other_split_adds_up', (w['busy_class'], w['busy'], w['release_ms'], w['tick_ms'], w['start_ms'], w['interv'],
+                                                 w['first_shot_any_ms'], w['lag_flip_race'], w['first_is_flip'], w['late']) ==
+              ('busy_other', '1', '300', '1500', '30', '0', '1830', '1830', '1', '1')
+              and 300 + 1500 + 30 == 1830, w)
+        check('v6_dl_wire_basis_and_order_ok', (w['first_wire_any_ms'], w['ord_ok']) == ('1920', '1'), w)
+        # a dispatch to ANOTHER TCIN between the flip and the window's own dispatch is counted, not hidden
+        (w,), rs = win('20990503')
+        check('v6_dl_redispatched_window', (w['busy_class'], w['release_ms'], w['tick_ms'], w['start_ms'], w['interv'],
+                                            w['first_shot_any_ms']) == ('busy_other', '3200', '2800', '30', '1', '6030'), w)
+        rc, rs = q('dispatch_lag', '--run', '20990502,20990503')
+        s4 = rs[3][0]
+        check('v6_dl_split_leaves_out_the_redispatched_window', (s4['windows'], s4['release_ms'], s4['tick_ms'], s4['start_ms'],
+                                                                  s4['total_ms'], s4['redispatched']) ==
+              ('1', '300', '1500', '30', '1830', '1'), s4)
+        # busy_same: the first shot comes from a racer already running (757 ms), the flip-opened race only at 7,242 ms
+        ws, rs = win('20990504', 0)
+        w = ws[1]
+        check('v6_dl_busy_same_window', (ws[0]['busy_class'], w['busy_class'], w['busy'], w['first_shot_any_ms'], w['lag_flip_race'],
+                                         w['first_ident'], w['first_is_flip'], w['release_ms'], w['tick_ms'], w['start_ms'],
+                                         w['late']) ==
+              ('idle', 'busy_same', '1', '757', '7242', 'primary', '0', '', '', '', '1'), (ws[0], w))
+        s3 = {r['busy_class']: r for r in rs[2]}
+        check('v6_dl_by_class_late_counts', (s3['busy_same']['windows'], s3['busy_same']['late'], s3['busy_same']['late_flip_race'],
+                                             s3['idle']['late']) == ('1', '1', '1', '0'), s3)
+        # no_shot / unknown are classes of their own, never idle
+        (w,), rs = win('20990505')
+        check('v6_dl_no_shot_class', (w['busy_class'], w['busy'], w['first_shot_any_ms']) == ('no_shot', '1', ''), w)
+        (w,), rs = win('20990506')
+        i = rs[1][0]
+        check('v6_dl_unknown_when_no_lock_events', (w['busy_class'], w['busy'], w['release_ms'], i['unknown'], i['idle']) ==
+              ('unknown', '', '', '1', '0'), (w, i))
+        check('v6_dl_unknown_verdict_no_data', rs[4][0]['r_lag'].startswith('NO DATA (no lock_events'), rs[4])
+        # wire order check: a dispatch logged AFTER the first request left on the wire is flagged
+        (w,), rs = win('20990507')
+        i = rs[1][0]
+        check('v6_dl_ord_bad_flagged', (w['ord_ok'], w['start_ms'], i['ord_bad'], i['wire_before_t0']) == ('0', '5', '1', '0'), (w, i))
+        check('v6_dl_instrument_lock_balance', (i['lock_starts'], i['lock_completes'], i['imbalance']) == ('2', '2', '0'), i)
+        # R-LAG verdicts: the build line, the share line, the skip line, the gap between, the edges, too few busy windows
+        want = {'20990510': ('3', '1700', '1800', 'R-LAG BUILD C2 (MISS-PHASE-TICK-1015)'),
+                '20990511': ('5', '600', '2500', 'R-LAG BUILD C2 (MISS-PHASE-TICK-1015)'),
+                '20990512': ('4', '850', '1900', 'R-LAG SKIP C2'),
+                '20990513': ('4', '1350', '1450', 'R-LAG INCONCLUSIVE (between the build and skip lines)'),
+                '20990514': ('6', '750', '2100', 'R-LAG INCONCLUSIVE (between the build and skip lines)'),
+                '20990515': ('3', '1500', '1500', 'R-LAG INCONCLUSIVE (between the build and skip lines)'),
+                '20990516': ('3', '1000', '2000', 'R-LAG SKIP C2'),
+                '20990517': ('2', '3500', '4000', 'NO DATA (< 3 busy windows)')}
+        got = {}
+        for run in want:
+            rc, rs = q('dispatch_lag', '--run', run)
+            v = rs[4][0]
+            got[run] = (v['n_busy'], '%d' % round(float(v['median_ms'])), v['p90_ms'], v['r_lag'])
+        check('v6_dl_rlag_verdict_table', got == want, {k: (got[k], want[k]) for k in want if got[k] != want[k]})
+        rc, rs = q('dispatch_lag', '--run', '20990511')
+        v = rs[4][0]
+        check('v6_dl_rlag_share_line_is_gt_2000', (v['gt_2s'], v['pct_gt_2s']) == ('1', '20.0'), v)
+        # the wire basis is a separate column: a night within one wire gap of a rule line says so
+        rc, rs = q('dispatch_lag', '--run', '20990518')
+        v = rs[4][0]
+        check('v6_dl_no_wire_rows_both_bases_agree', v['r_lag'].startswith('R-LAG INCONCLUSIVE')
+              and v['r_lag_wire'] == v['r_lag'], v)
+        rc, rs = q('dispatch_lag', '--run', '20990519')
+        v = rs[4][0]
+        check('v6_dl_wire_basis_flips_verdict', v['r_lag'].startswith('R-LAG INCONCLUSIVE') and v['r_lag_wire'].startswith('R-LAG BUILD')
+              and rs[0][0]['first_wire_any_ms'] == '1510', (v, rs[0][0]))
+        # busy_same and idle windows are NOT in the R-LAG population
+        rc, rs = q('dispatch_lag', '--run', '20990504')
+        v = rs[4][0]
+        check('v6_dl_population_excludes_busy_same', (v['n_busy'], v['busy_same_not_counted']) == ('0', '1')
+              and v['r_lag'].startswith('NO DATA (< 3 busy'), v)
+        rc, rs = q('dispatch_lag')
+        check('v6_dl_pooled_scope', rs[4][0]['scope'] == 'POOLED over %d runs: pass --run for one night' % len(runs), rs[4][0])
+        rc, rs = q('dispatch_lag', '--run', '20990501')
+        check('v6_dl_one_run_scope', rs[4][0]['scope'] == 'one run', rs[4][0])
+        # statement 0 is a TEMP view: the store itself gains nothing
+        con = sqlite3.connect(str(db))
+        check('v6_dl_leaves_no_view_in_the_store', con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'view'").fetchone()[0] == 0)
+        con.close()
+
+
+def _reflip_run(reflips, later, extra=None):
+    """TC opens at T; a 3-account race fires a limited first volley; `reflips` = [offset ms] of new_window = 0 flips;
+    `later` = [(ident, offset ms, status, key)] later shots (is_first = 0), fired in time order."""
+    lines = [POOL, flip(TC, 1, T, 1)]
+    lines += [flip(TC, 2 + i, T + off, 0) for i, off in enumerate(reflips)]
+    lines += extra or []
+    lines += [race(TC, ['primary', 'business', 'alt-1'])]
+    lines += shot('primary', TC, T + 40) + shot('business', TC, T + 50) + shot('alt-1', TC, T + 60)
+    for ident, off, st, key in sorted(later, key=lambda x: x[1]):
+        lines += shot(ident, TC, T + off, status=st, key=key)
+    return lines
+
+
+def _many_reflips(n_re, re_pass, other_pass, n_other=None):
+    """n_re re-flips 10 s apart; after each, a later shot 500 ms on (the first `re_pass` are 401s = past the limiter) and an
+    'other' later shot 5 s on (the first `other_pass` of them 401s)."""
+    n_other = n_re if n_other is None else n_other
+    ids = ['primary', 'business', 'alt-1']
+    re_off = [20000 + k * 10000 for k in range(n_re)]
+    later = []
+    for k in range(n_re):
+        later.append((ids[k % 3], re_off[k] + 500, 401 if k < re_pass else 429, '-' if k < re_pass else A2C))
+    for k in range(n_other):
+        later.append((ids[(k + 1) % 3], 20000 + k * 10000 + 5000, 401 if k < other_pass else 429, '-' if k < other_pass else A2C))
+    return _reflip_run(re_off, later)
+
+
+def test_v6_reflip_query():
+    cap = L(T + 20100, f"[STOCK][FLIP] tcin={TC}: 50 flips logged this run", name='src.monitoring.stock_check_resilient')
+    runs = {
+        # the detail run: re-flips at +20000, +20800, +30000
+        'run_20990601_000000': _reflip_run([20000, 20800, 30000], [
+            ('primary', 19990, 429, A2C),       # before the first re-flip                 -> other (limited)
+            ('primary', 20500, 429, A2C),       # 500 ms after                              -> after (limited)
+            ('business', 20900, 429, FSK),      # inside BOTH 2 s windows: counted ONCE     -> after (past: admitted)
+            ('alt-1', 21990, 429, A2C),         # 1,990 ms after the first                  -> after (limited)
+            ('alt-1', 22850, 429, A2C),         # outside both                              -> other (limited)
+            ('primary', 30010, 401, '-'),       # after the third                           -> after (past)
+            ('business', 30500, 503, '-'),      # an 'other' answer                         -> after (unclassified)
+            ('business', 40000, 429, A2C),      #                                           -> other (limited)
+            ('business', 50000, 401, '-')]),    #                                           -> other (past)
+        # basis: t0 = +19,980 (before the re-flip) but the POST left at +20,060 (after it)
+        'run_20990602_000000': _reflip_run([20000], [('primary', 19980, 429, A2C)],
+                                           extra=[net('primary', 'POST', 429, T + 20060)]),
+        # basis: t0 = +21,950 (inside) but the POST left at +22,030 (outside)
+        'run_20990603_000000': _reflip_run([20000], [('business', 21950, 429, A2C)],
+                                           extra=[net('business', 'POST', 429, T + 22030)]),
+        # the flip-log cap: nothing after the last logged flip (+20,000) can be called 'other' beyond 2 s
+        'run_20990604_000000': _reflip_run([20000], [('primary', 20500, 429, A2C), ('primary', 21999, 429, A2C),
+                                                     ('business', 25000, 429, A2C), ('alt-1', 26000, 429, A2C)], extra=[cap]),
+        'run_20990605_000000': _many_reflips(70, 6, 0),       # 6/70 = 8.6 % vs 0 %            => MET
+        'run_20990606_000000': _many_reflips(70, 4, 3),       # 5.7 % vs 4.3 %                 => NOT MET (rate)
+        'run_20990607_000000': _many_reflips(60, 0, 0),       # n = 60 but no pass at all      => NOT MET (rate): 0 >= 0 is vacuous
+        'run_20990608_000000': _many_reflips(59, 6, 0),       # n = 59                         => NOT MET (n < 60)
+        'run_20990609_000000': _many_reflips(60, 6, 0),       # n = 60 exactly                 => MET
+        'run_20990610_000000': _reflip_run([20000], [('primary', 30000, 429, A2C)]),          # no later shot after the re-flip
+        'run_20990611_000000': [POOL, race(TC, ['primary'])] + shot('primary', TC, T + 40) + shot('primary', TC, T + 5000),   # no flip log
+        'run_20990612_000000': _many_reflips(61, 6, 0, n_other=0),     # nothing to compare with     => NO DATA
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        db, out = _build_store(tmp, runs)
+        q = _q_for(db)
+        check('v6_rf_db_built', '%d file(s) parsed' % len(runs) in out, out)
+        rc, rs = q('reflip', '--run', '20990601')
+        r, v = rs[0][0], rs[1][0]
+        check('v6_rf_detail_counts', (r['reflips'], r['after_reflip'], r['after_reflip_t0'], r['re_past'], r['re_limited'],
+                                      r['re_unclass'], r['re_past_pct'], r['other'], r['ot_past'], r['ot_limited'], r['ot_unclass'],
+                                      r['ot_past_pct'], r['capped'], r['first_shot_unknown']) ==
+              ('3', '5', '5', '2', '2', '1', '50.0', '4', '1', '3', '0', '25.0', '0', '0'), r)
+        check('v6_rf_detail_verdict_is_n_under_60', v['scope'] == 'one run' and v['later_after_reflip'] == '5'
+              and v['reflip_pct'] == '50.0' and v['other_pct'] == '25.0' and v['r_reflip'].startswith('R-REFLIP NOT MET (n < 60)'), v)
+        # wire vs atc_t0 basis: the same shot is in on one and out on the other
+        rc, rs = q('reflip', '--run', '20990602')
+        r = rs[0][0]
+        check('v6_rf_wire_basis_in_t0_basis_out', (r['after_reflip'], r['after_reflip_t0'], r['other']) == ('1', '0', '0'), r)
+        rc, rs = q('reflip', '--run', '20990603')
+        r = rs[0][0]
+        check('v6_rf_wire_basis_out_t0_basis_in', (r['after_reflip'], r['after_reflip_t0'], r['other']) == ('0', '1', '1'), r)
+        # the cap: the +25 s / +26 s shots are neither after a re-flip nor 'other'
+        rc, rs = q('reflip', '--run', '20990604')
+        r = rs[0][0]
+        check('v6_rf_capped_window_not_folded_into_other', (r['after_reflip'], r['other'], r['capped']) == ('2', '0', '2'), r)
+        # verdicts
+        want = {'20990605': ('70', '8.6', '0.0', 'R-REFLIP MET: design FLIP-WAKE (a design, not a build)'),
+                '20990606': ('70', '5.7', '4.3', 'R-REFLIP NOT MET (rate): drop FLIP-WAKE'),
+                '20990607': ('60', '0.0', '0.0', 'R-REFLIP NOT MET (rate): drop FLIP-WAKE'),
+                '20990608': ('59', '10.2', '0.0', 'R-REFLIP NOT MET (n < 60)'),
+                '20990609': ('60', '10.0', '0.0', 'R-REFLIP MET: design FLIP-WAKE (a design, not a build)'),
+                '20990610': ('0', '', '0.0', 'NO DATA (no later shot within 2 s after a re-flip)'),
+                '20990611': ('', '', '', 'NO DATA (no flip log in the selected runs)'),
+                '20990612': ('61', '9.8', '', 'NO DATA (no classified other later shot to compare with)')}
+        got = {}
+        for run in want:
+            rc, rs = q('reflip', '--run', run)
+            v = rs[1][0]
+            got[run] = (v['later_after_reflip'], v['reflip_pct'], v['other_pct'], v['r_reflip'])
+        bad = {k: (got[k], want[k]) for k in want if not (got[k][:3] == want[k][:3] and got[k][3].startswith(want[k][3]))}
+        check('v6_rf_verdict_table', not bad, bad)
+        rc, rs = q('reflip')
+        check('v6_rf_pooled_scope', rs[1][0]['scope'].startswith('POOLED over '), rs[1][0])
+        # a run with no flip log has no statement-1 row (it is not folded into a zero)
+        rc, rs = q('reflip', '--run', '20990611')
+        check('v6_rf_no_flip_log_run_has_no_row', rs[0] == [], rs[0])
+        con = sqlite3.connect(str(db))
+        check('v6_rf_leaves_no_view_in_the_store', con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'view'").fetchone()[0] == 0)
+        con.close()
+
+
 if __name__ == "__main__":
     test_glued_lines()
     test_duplicates_counted_once()
@@ -1648,5 +2071,10 @@ if __name__ == "__main__":
     test_v5_harvest_dedupe_and_remainder()
     test_v5_other_tables_unchanged()
     test_v5_phase_query()
+    test_v6_lock_events()
+    test_v6_other_tables_unchanged()
+    test_v6_store_and_cli()
+    test_v6_dispatch_lag_query()
+    test_v6_reflip_query()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)

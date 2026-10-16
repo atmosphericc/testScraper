@@ -200,6 +200,18 @@ HARVEST (v5, 2026-10-15, INS-STORE-HARVEST-1015; additive table, no existing tab
   are its cumulative per-account counters. A line whose bank counters cannot be read still gets a row
   (NULL counters) AND is counted in `unparsed` (marker CRED): a gap is counted, never guessed.
   Only counters and lengths are stored -- no url, body, header or cookie text.
+
+LOCK_EVENTS (v6, 2026-10-15, INS-LAG-1015; additive table, no existing table changes)
+  one row per logger-form "[PURCHASE_LOCK] Purchase started - validation paused" (kind 'start') /
+  "[PURCHASE_LOCK] Purchase complete - validation resumed" (kind 'complete'), session_manager.py
+  set_purchase_in_progress(): called when a purchase thread starts / ends. ts_ms = the line's own logger
+  stamp (ts_src 'logger'; millisecond), kind + ts only -- the line names no account and no TCIN, so none
+  is stored or inferred (three starts in one ms are three rows; (line, kind) is the key). These are the
+  only millisecond-stamped dispatch markers: [MULTI_SKU_MISS] / [WAVE_YIELD] / [LEVEL_REARM] are bare
+  print()s (their nearest logger line was off by up to 6.7 s), so dispatch_lag.sql reads the release
+  burst (completes) and the dispatch (starts) from here. The print twin "[SESSION] Purchase in progress /
+  complete" is a different text and is never read; a [PURCHASE_LOCK] marker in print text is counted in
+  `unparsed` as "LOCK@wrong_form", and a [PURCHASE_LOCK] line this regex cannot read as "LOCK".
 """
 from __future__ import annotations
 
@@ -214,7 +226,8 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 5       # 2026-10-15: harvest table ([HARVEST] CAPTURED / pre-shot / REPLAY / EMPTY / STALE bank lines)
+PARSER_VERSION = 6       # 2026-10-15 v6: lock_events table ([PURCHASE_LOCK] start / complete, INS-LAG-1015)
+#                          (2026-10-15 v5: harvest table -- [HARVEST] CAPTURED / pre-shot / REPLAY / EMPTY / STALE bank lines)
 #                          (2026-10-06 v4: gate_events also carry the FX-1006 dispatch markers + run diagnostics)
 #                          (2026-10-05 v3: atc_net ([ATC_NET] + shot join), gate_events (BOOT_SKIP/PO2XX/foreign))
 #                          v2 2026-10-01: legacy_retry shots, place_orders, 400 body code/cart_limit, episodes
@@ -353,6 +366,9 @@ HV_KV = re.compile(r'\b([a-z][a-z_0-9]*)=(yes|no|-?\d+)(?![\w-])')
 HV_REPLAY_ON = re.compile(r'\breplay=(on|off)\b', re.I)
 HV_REPLAY_DET = re.compile(r' tokens=(?P<tok>\d+) a0=(?P<a0>yes|no)(?: src_tcin=\S+)? hdr_bytes=(?P<hb>\d+) '
                            r'\(cookie=(?P<ck>\d+) shape=\d+ a0=(?P<a0b>\d+)\)')
+# v6 (2026-10-15, INS-LAG-1015): session_manager.py set_purchase_in_progress() -- logger form only
+LOCK_RE = re.compile(r'\[PURCHASE_LOCK\] Purchase (?:(?P<st>started - validation paused)'
+                     r'|(?P<cp>complete - validation resumed))')
 WORKER_POOL = re.compile(r'\[WORKER_POOL\] sized from \S+: \d+ account\(s\) -> \[(?P<list>[^\]]*)\]')
 FWD_BIND = re.compile(r'\[FORWARDER\] W\d+/(?P<ident>[\w-]+?) → [\d.]+:\d+ \(exit via account proxy\)')
 FWD_WARN = re.compile(r'\[FORWARDER\] \[WARN\] W\d+/(?P<ident>[\w-]+?) proxy unparseable')
@@ -473,6 +489,7 @@ PRINT_FAMILIES = [
     ('STATUS@wrong_form', r'\[STOCK STATUS\] '),
     ('SELLOOS@wrong_form', r'\[STOCK\] SELLABLE-PARSED-OOS '),
     ('SHADOW206@wrong_form', r'\[STOCK\]\[206-SHADOW\] '),
+    ('LOCK@wrong_form', r'\[PURCHASE_LOCK\] '),                     # v6 (2026-10-15): logger-only marker
 ]
 LOGGER_FAMILIES = [
     ('ATC_RESP_L', r'^\[ATC_RESP\] '),
@@ -489,6 +506,7 @@ LOGGER_FAMILIES = [
     ('SHADOW206', r'\[STOCK\]\[206-SHADOW\] '),
     ('VERIFY', r'\[STOCK\] VERIFY \(cache-bust\): '),
     ('OTHER', r'\[STOCK\]\[OTHER\] '),                            # v4 (2026-10-06)
+    ('LOCK', r'\[PURCHASE_LOCK\] '),                              # v6 (2026-10-15): INS-LAG-1015
     ('STEER', r'\[MULTI_SESSION\] pick_session steering away from souring '),
     ('RACE@wrong_form', r'\[RACE\] '),
     ('FL_CHAIN@wrong_form', r'\[FAST_LANE\] chain done'),
@@ -975,6 +993,15 @@ class RunParser:
             self._add('harvest', **ev)
             return 'bank_n' in ev
         return False
+
+    # -- v6 (2026-10-15): INS-LAG-1015 ----------------------------------------------------
+    def _h_LOCK(self, t, p, lg):
+        """[PURCHASE_LOCK] start / complete -> a 'lock' event (kind only: the line names no account / TCIN)."""
+        m = LOCK_RE.match(t, p)
+        if not m:
+            return False
+        self._add('lock', kind='start' if m.group('st') else 'complete')
+        return True
 
     def _h_WORKER_POOL(self, t, p, lg):
         m = WORKER_POOL.match(t, p)
@@ -1824,6 +1851,11 @@ class RunParser:
                 c_harvested=e.get('c_harvested'), c_replayed=e.get('c_replayed'),
                 c_expired=e.get('c_expired'), c_stale=e.get('c_stale'), replay_on=e.get('replay_on')))
 
+        # v6 INS-LAG-1015: one row per logger-form [PURCHASE_LOCK] line (kind + its own ms stamp only)
+        lock_events = [dict(line=e['line'], ts_ms=ep(e['naive']), ts_src='logger' if e['naive'] is not None else None,
+                            kind=e['kind'])
+                       for e in sorted(E['lock'], key=lambda e: e['seq'])]
+
         # ---- decoys (warmup-tab responses, one row each) --------------------------------
         decoys = []
         posts, reqs = deque(), deque()
@@ -2042,6 +2074,7 @@ class RunParser:
                     stock_status=stock_status, sellable_oos=sellable_oos, shadow206=shadow206,
                     orders=orders, idents=list(idents.values()), unparsed=unparsed,
                     place_orders=place_orders, atc_net=atc_net, gate_events=gate_events, harvest=harvest,
+                    lock_events=lock_events,
                     checks=[dict(name=k, value=repr(v)) for k, v in sorted(checks.items())])
 
     PO_PAIR_GAP = 400      # lines: a [CHECKOUT_RESPONSE] HTTP pairs with a pending POST at most this far back
@@ -2530,6 +2563,8 @@ SCHEMA = {
                 'hdr_bytes INTEGER', 'cookie_bytes INTEGER', 'clicks_since_nav INTEGER', 'n_hdrs INTEGER',
                 'c_harvested INTEGER', 'c_replayed INTEGER', 'c_expired INTEGER', 'c_stale INTEGER',
                 'replay_on INTEGER'],
+    # v6 (2026-10-15, INS-LAG-1015): kind + ts only (module doc, LOCK_EVENTS)
+    'lock_events': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'kind TEXT'],
 }
 RUN_TABLES = [t for t in SCHEMA if t not in ('runs', 'ingested')]
 INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, ident)',
@@ -2539,7 +2574,8 @@ INDEXES = ['CREATE INDEX IF NOT EXISTS ix_shots_run ON shots(run_id, race_seq, i
            'CREATE INDEX IF NOT EXISTS ix_po_run ON place_orders(run_id, line)',
            'CREATE INDEX IF NOT EXISTS ix_atc_net_run ON atc_net(run_id, ident)',
            'CREATE INDEX IF NOT EXISTS ix_gate_run ON gate_events(run_id, kind)',
-           'CREATE INDEX IF NOT EXISTS ix_harvest_run ON harvest(run_id, acct, event, ts_ms)']
+           'CREATE INDEX IF NOT EXISTS ix_harvest_run ON harvest(run_id, acct, event, ts_ms)',
+           'CREATE INDEX IF NOT EXISTS ix_lock_run ON lock_events(run_id, ts_ms, kind)']
 
 
 def connect(db: Path) -> sqlite3.Connection:
@@ -2601,6 +2637,9 @@ def summarize(run_id, res) -> str:
     hv = res.get('harvest') or []
     if hv:                                             # v5
         parts[0] += ' harvest=%s' % dict(sorted(Counter(x['event'] for x in hv).items()))
+    lk = res.get('lock_events') or []
+    if lk:                                             # v6
+        parts[0] += ' lock_events=%s' % dict(sorted(Counter(x['kind'] for x in lk).items()))
     parts.append('    unparsed remainder: ' + (', '.join('%s %d/%d (first line %s)' % (
         u['marker'], u['n'], u['seen'], u['first_line']) for u in bad) if bad else 'none'))
     return '\n'.join(parts)
