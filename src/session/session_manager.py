@@ -277,6 +277,11 @@ class SessionManager:
         self._genuine_wedge_at = 0.0
         self._proactive_relaunch_at = 0.0   # last age-based relaunch (rate-limit)
         self._age_relaunch_deferred_at = 0.0   # R1-ARM-2: one-tick deferral stamp (0 = none this cycle)
+        # S1-EGRESS-READY: True only when this account's proxy_url is the FX-1014-EGRESS
+        # forwarder AND TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1 (Worker.build_components sets it
+        # from WorkerConfig); the age relaunch then skips it. False for everyone otherwise.
+        self.egress_age_exempt = False
+        self._egress_exempt_noted_at = 0.0
         if self.proxy_url is not None:
             try:
                 with _AGE_PEERS_LOCK:
@@ -2312,6 +2317,26 @@ class SessionManager:
         except Exception:
             return False
 
+    def _egress_exempt_note(self, max_age) -> None:
+        """S1-EGRESS-READY: one [EGRESS-AGE] line per max_age while the exemption
+        skips a due age relaunch (its own tag: the soak counts `[CHROME-AGE]
+        <acct>` lines, which must stay at zero). Never raises."""
+        try:
+            now = time.time()
+            if now - float(getattr(self, '_egress_exempt_noted_at', 0.0) or 0.0) < max(float(max_age), 60.0):
+                return
+            self._egress_exempt_noted_at = now
+            msg = (f"[EGRESS-AGE] {self.account_id}: Chrome is "
+                   f"{(now - self._browser_launched_at) / 60.0:.0f} min old; age relaunch SKIPPED "
+                   f"(egress-bound, TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1) -- watch for a CDP wedge")
+            print(msg)
+            try:
+                self.logger.info(msg)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     async def ensure_logged_in(self) -> bool:
         """Escalation ladder that GUARANTEES a valid logged-in session or reports
         failure. Used by the per-account Session Sentinel:
@@ -2353,6 +2378,11 @@ class SessionManager:
                     and self._browser_launched_at > 0
                     and (time.time() - self._browser_launched_at) > _max_age
                     and (time.time() - self._proactive_relaunch_at) > _max_age)
+            # S1-EGRESS-READY: an egress-bound account (TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1)
+            # skips the age relaunch; BD accounts and the deferral logic below are untouched.
+            if _due and getattr(self, 'egress_age_exempt', False):
+                self._egress_exempt_note(_max_age)
+                _due = False
             if _due and self._age_relaunch_deferred(_max_age):
                 _due = False
             if _due:

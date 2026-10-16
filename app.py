@@ -2188,6 +2188,17 @@ def monitoring_loop():
     except Exception as _wire_err:
         print(f"[MONITORING_LOOP] [WARN] Could not wire stock_monitor onto manager: {_wire_err}")
 
+    # S2-LIMKEY-PROBE (TARGET_WARMUP_PROBE_TCINS unset = nothing happens): the warmup limiter-key
+    # probe needs a read-only stock view before any dispatch has handed one to the executors.
+    # Guarded: a failure here leaves the probe without a view, i.e. it never fires.
+    try:
+        if os.environ.get('TARGET_WARMUP_PROBE_TCINS', '').strip() and global_purchase_manager is not None:
+            from src.session import purchase_executor as _pe_limkey
+            _pe_limkey.limkey_set_stock_fn(global_purchase_manager.stock_snapshot)
+            print("[MONITORING_LOOP] LIMKEY probe: manager stock view wired")
+    except Exception as _lk_wire_err:
+        print(f"[MONITORING_LOOP] [WARN] LIMKEY probe stock view not wired (probe stays idle): {_lk_wire_err}")
+
     # Wire stock_monitor onto purchase_thread so _handle_stock_update can report
     # worker-liveness counts in the heartbeat log entries.
     try:

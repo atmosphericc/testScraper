@@ -139,6 +139,25 @@ def _keep_live_failed_on() -> bool:
     return os.environ.get('TARGET_STOCK_RESET_KEEP_LIVE_FAILED', '0').strip() == '1'
 
 
+# FAIR-FRESH-1015 (10-09 window 9: a flickered newest flip was deferred behind a TCIN
+# already raced, first shot +6.7 s). Default OFF = the exact prior code.
+_FAIR_FRESH_LOCK = threading.Lock()
+
+
+def _fair_fresh_on() -> bool:
+    """FAIR-FRESH-1015 TARGET_FAIR_FRESH_FIX=1 (acts only where FX-1006-FAIR
+    consults it): (A) a window's freshness tests the out-of-stock read BEFORE the
+    window opened -- remembered per (TCIN, window_start) the first time this
+    manager sees the window -- not the latest one, so a flicker inside the first
+    seconds no longer makes the newest flip look old; (B) a TCIN already
+    dispatched inside its CURRENT window is never a FAIR contender (its first
+    volley is spent, even when the emergency reset made its row 'ready' again),
+    unless that race's accounts all sat out (no shot left); (C) the FAIR defer
+    print has its own rate-limit kind instead of sharing the MISS print's.
+    Only '1' arms it; unset / junk = off. Kill: =0."""
+    return os.environ.get('TARGET_FAIR_FRESH_FIX', '0').strip() == '1'
+
+
 def _rebuy_on() -> bool:
     """FX-1014-REBUY TARGET_REBUY_NONBUYERS=1 (needs TARGET_MULTI_SKU_MISS_REARM=1,
     whose all-free-sit-out check keeps an all-bought TCIN from opening empty
@@ -243,6 +262,17 @@ def _egress_bind_map(flog=None) -> Dict[str, str]:
 
 
 _EGRESS_ALIAS: Dict[str, str] = {}
+
+
+def _egress_unmark(w) -> None:
+    """S1-EGRESS-READY: clear a worker's age-relaunch exemption mark (no-op when
+    it was never set). Called wherever an egress worker's proxy_url is reverted
+    to None, so a reverted account can never keep the exemption. Never raises."""
+    try:
+        if getattr(w.cfg, 'egress_age_exempt', False):
+            w.cfg.egress_age_exempt = False
+    except Exception:
+        pass
 
 
 def _egress_dns_server(alias: str, timeout_s: float = 10.0) -> str:
@@ -525,13 +555,21 @@ def _fx1006_fresh_snap(snap, now: float) -> bool:
     TARGET_MULTI_SKU_FAIR_FRESH_S (20) by a GENUINE flip -- the last out-of-stock
     read came no more than that long before the window opened. A window renewed
     by a read gap alone (no 200 for > TARGET_STOCK_HYST_S, no out-of-stock read)
-    or a first-ever read is not a flip, and nothing will publish it."""
+    or a first-ever read is not a flip, and nothing will publish it. With
+    TARGET_FAIR_FRESH_FIX=1 'the last out-of-stock read' is the one before the
+    window opened (snap['pre_false']), so a flicker after the open is not a miss."""
     try:
         if not _fx1006_reads_in_stock(snap, now):
             return False
         young_s = _env_float_clamped('TARGET_MULTI_SKU_FAIR_FRESH_S', 20.0, 2.0, 60.0)
         ws = float(snap.get('window_start') or 0.0)
         lf = float(snap.get('last_false') or 0.0)
+        if _fair_fresh_on():
+            # FAIR-FRESH-1015 (A): the out-of-stock read BEFORE this window opened
+            # (stock_snapshot adds it); a missing / non-finite stamp keeps `lf`.
+            _pf = snap.get('pre_false')
+            if _valid_started_at(_pf):
+                lf = float(_pf)
         return ws > 0.0 and now - ws <= young_s and lf > 0.0 and 0.0 <= ws - lf <= young_s
     except Exception:
         return False
@@ -1097,8 +1135,11 @@ def _park_banner() -> str:
 # cold re-entry like an edge 429). MAX = re-POSTs per race thread after DCO
 # 429s (clamped 1..12, default 2 — short on purpose, see the [DCO_BURST] block;
 # MAX=0 clamps to 1, the flag is the only kill); MIN/MAX_S = the inter-shot
-# sleep (MIN floor 1.0 s = the per-IP floor the edge cadence enforces, MAX >=
-# MIN; defaults 1.0/1.5). Evidence: docs/HOT_SKU_FIX_2026_09_16.md section 13,
+# sleep (MIN floor 1.0 s = a conservative floor we chose, inferred from Refract's
+# "some users run as low as 1000" task delay and "too low delays will result in
+# proxy/IP bans" -- NOT a documented per-IP ban floor, no such number is in any
+# saved vendor doc; DCO-PROBE-1015 tests the sub-second band; MAX >= MIN;
+# defaults 1.0/1.5). Evidence: docs/HOT_SKU_FIX_2026_09_16.md section 13,
 # docs/CLAIMS.md C-0917-03.
 def _dco_burst_cfg(env=None) -> Dict[str, object]:
     env = os.environ if env is None else env
@@ -1255,6 +1296,95 @@ def _dco_burst_wait_s(cfg, executor):
         return (0.0, why) if why else (w, '')
     except Exception:
         return w, ''
+
+
+# DCO-PROBE-1015 (2026-10-15): sub-second DCO burst re-POST as a randomized in-night A/B arm.
+# TARGET_DCO_PROBE_P=<0..1>   unset / 0 / junk / NaN / inf = OFF: byte-identical (the probe branch is
+#     never entered, no RNG draw, no log line). Otherwise, for each burst-eligible ATC-level
+#     FAST_SELLING event that would be re-POST #1, the race thread draws the arm BEFORE the bank
+#     wait: probe (probability P) or std (the 09-17 burst, untouched = the concurrent control on the
+#     same accounts and drops).
+# TARGET_DCO_PROBE_MIN_S / _MAX_S   probe sleep counted from the FS response (default 0.15 / 0.40,
+#     floor 0.05, cap 1.0). The wire gap from shot 1 is that plus the first-shot RTT (~0.35-0.6 s) and
+#     the interceptor pause (~86 ms), i.e. ~0.5-1.0 s: the band no same-account shot has ever fired in
+#     (min observed gap 1.31 s, 2/28 past the edge at 1.3-4.3 s). The readout bins by the MEASURED wire
+#     gap (atc_net send_ms), not by the arm label.
+# Probe arm: no bank wait (a banked set if one is ready at t=0, else page-signed -- logged as cred=;
+#     REQUIRE_BANK=1 is still honoured), no 1.0 s clamp, no cart-hold-interval floor. The F6 protection
+#     (review 2026-09-20) is kept differently: the executor's cart-hold read is FORCED after the
+#     probe's answer (_dco_probe_force_hold, applied at the top of the next loop pass). Everything else
+#     (re-POST #2, the _dco_body test, the room check, the cap, every edge / 401 path) is untouched.
+# One [DCO_PROBE] line per drawn event for BOTH arms: arm= delay= ident= tcin= waited= cred= bank_age=
+#     (seconds; cred = banked|page; bank_age = newest banked set's age or na); an event drawn but not
+#     fired (REQUIRE_BANK=1, no set at t=0) logs nofire=no_bank instead of delay=.
+# Kill: TARGET_DCO_PROBE_P=0 (or unset).
+def _dco_probe_cfg(env=None) -> Dict[str, float]:
+    env = os.environ if env is None else env
+
+    def _num(name, default, lo, hi):
+        try:
+            v = float(str(env.get(name, default)).strip())
+        except (TypeError, ValueError):
+            v = float(default)
+        if not (v == v) or v in (float('inf'), float('-inf')):
+            v = float(default)
+        return min(hi, max(lo, v))
+    try:
+        p = float(str(env.get('TARGET_DCO_PROBE_P', '0')).strip())
+    except (TypeError, ValueError):
+        p = 0.0
+    if not (p == p) or p in (float('inf'), float('-inf')):
+        p = 0.0
+    lo = _num('TARGET_DCO_PROBE_MIN_S', 0.15, 0.05, 1.0)
+    hi = max(lo, _num('TARGET_DCO_PROBE_MAX_S', 0.40, 0.05, 1.0))
+    return {'p': min(1.0, max(0.0, p)), 'lo': lo, 'hi': hi}
+
+
+def _dco_probe_draw(cfg) -> bool:
+    """True = probe arm for this event. P<=0 (or a bad cfg) never draws a random number."""
+    try:
+        p = float(cfg.get('p', 0.0) or 0.0)
+        return p > 0.0 and random.random() < p
+    except Exception:
+        return False
+
+
+def _dco_probe_force_hold(executor) -> bool:
+    """Make the executor's NEXT _check_cart_hold read run instead of skipping inside its
+    rate-limit interval (reset the stamp it compares against). Called just before the probe
+    re-POST fires, so the read that follows the probe's answer is never skipped and a silently
+    landed add is seen before any further add. True when reset; never raises."""
+    try:
+        if hasattr(executor, '_last_cart_hold_check_ts'):
+            executor._last_cart_hold_check_ts = 0.0
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _dco_probe_bank_age(executor):
+    """Age (s) of the newest banked Shape set, or None. Log-only; never raises."""
+    try:
+        bank = getattr(executor, '_shape_bank', None)
+        age = bank.newest_age() if bank is not None else None
+        return None if age is None else float(age)
+    except Exception:
+        return None
+
+
+def _dco_probe_line(arm, delay, ident, tcin, waited=0.0, bank_ready=False, bank_age=None,
+                    nofire='') -> str:
+    """The one [DCO_PROBE] line (format in the DCO-PROBE-1015 block above). Never raises."""
+    try:
+        age = 'na' if bank_age is None else f"{float(bank_age):.0f}"
+        tail = (f"waited={float(waited):.1f} cred={'banked' if bank_ready else 'page'} "
+                f"bank_age={age}")
+        if nofire:
+            return f"[DCO_PROBE] arm={arm} nofire={nofire} ident={ident} tcin={tcin} {tail}"
+        return f"[DCO_PROBE] arm={arm} delay={float(delay):.2f} ident={ident} tcin={tcin} {tail}"
+    except Exception:
+        return f"[DCO_PROBE] arm={arm} ident={ident} tcin={tcin}"
 
 
 # ── 2026-09-16 hot-sku plan P7 (DX-1) + P9 recorder: exposure / census ───────
@@ -2185,6 +2315,11 @@ class BulletproofPurchaseManager:
 
     def reset_completed_purchases_by_stock_status(self, stock_data):
         """Stock-aware reset: only reset completed purchases for products that are OUT OF STOCK"""
+        if _fair_fresh_on():
+            try:
+                self._fair_fresh_prime(stock_data)   # FAIR-FRESH-1015 (A): first sight of a new window
+            except Exception:
+                pass
         with self._state_lock:
             # Load current states
             states = self._load_states_unsafe()
@@ -2982,6 +3117,13 @@ class BulletproofPurchaseManager:
                     _dco_burst_n = 0
                     _dco_burst_capped = False
                     _dco_burst_waited = 0.0
+                    # DCO-PROBE-1015: parsed once per race thread; P unset / 0 = never entered.
+                    try:
+                        _dco_probe = _dco_probe_cfg()
+                    except Exception:
+                        _dco_probe = {'p': 0.0, 'lo': 0.15, 'hi': 0.40}
+                    _dco_probe_label = ''
+                    _dco_probe_hold_pending = False
                     # FX-1011-CADENCE: parsed once per race thread (helpers above the class).
                     _fast_cfg = _fast_cadence_cfg()
                     _fast_on = _fast_cadence_applies(_fast_cfg, _race_wlbl)
@@ -3031,6 +3173,12 @@ class BulletproofPurchaseManager:
                             target_purchase_executor._mgr_submit_ts = time.time()
                         except Exception:
                             pass
+                        # DCO-PROBE-1015: the probe re-POST fires inside the cart-hold read
+                        # interval, so force the executor's next hold read (the one after the
+                        # probe's answer) instead of letting the interval skip it (F6).
+                        if _dco_probe_hold_pending:
+                            _dco_probe_hold_pending = False
+                            _dco_probe_force_hold(target_purchase_executor)
                         # Submit to the Worker's own loop so N workers run concurrently.
                         if worker is not None:
                             future = worker.run_async(
@@ -3181,11 +3329,15 @@ class BulletproofPurchaseManager:
                         # 2.5/3.5 (Shape-scoped denials must NOT be sped up; the
                         # reset-layer 10s shape gate is untouched). Online research
                         # (help.refractbot.com/modules/target; guides.stellaraio)
-                        # puts the tested-safe band at 1000-4000ms with an explicit
-                        # ~1s per-IP proxy/ban floor and endorses ~2000ms as the
-                        # safe tightening move, so the edge default 2.0/3.0 stays
-                        # >=2x that floor. ROLLBACK: set the EDGE knobs = 2.5/3.5
-                        # (== no behaviour change).
+                        # puts the tested-safe band at 1000-4000ms ("some users run
+                        # as low as 1000"; "too low delays will result in proxy/IP
+                        # bans" names no number) and endorses ~2000ms as the safe
+                        # tightening move, so the edge default 2.0/3.0 stays >=2x
+                        # the 1.0 s low end. That 1.0 s is OUR inference from "as
+                        # low as 1000", NOT a documented per-IP ban floor (2026-10-15
+                        # correction; DCO-PROBE-1015 probes the sub-second band).
+                        # ROLLBACK: set the EDGE knobs = 2.5/3.5 (== no behaviour
+                        # change).
                         _gk = str((result or {}).get('gate_kind', ''))
                         # 2026-09-09 CENSUS (see the WAVE_FIRST block below): the wave-first
                         # policy owns ATC-level 401s and, when TARGET_WAVE_FIRST_EDGE=1 (bat
@@ -3230,7 +3382,7 @@ class BulletproofPurchaseManager:
                         # each, slept ~60 s each time and got edge-429 on all 4
                         # re-entries; 09-16 the same at the Tin flip. So on a DCO,
                         # re-POST at TARGET_ATC_DCO_BURST_MIN/MAX_S (defaults 1.0/1.5,
-                        # floor 1.0 = the per-IP floor the edge cadence also enforces)
+                        # floor 1.0 = our inferred low end, not a documented ban floor)
                         # up to TARGET_ATC_DCO_BURST_MAX (default 2) times per race
                         # thread, and only with a replayable banked Shape set (see
                         # _dco_burst_cfg); the first edge-429 (bucket closed) or 401
@@ -3261,6 +3413,7 @@ class BulletproofPurchaseManager:
                                      or os.environ.get('TARGET_ATC_DCO_BURST_ANY_BODY', '0').strip() == '1'
                                      or not _gb)          # no body head (older executor) = prior behaviour
                         _dco_burst_take = False
+                        _dco_probe_label = ''         # DCO-PROBE-1015: '' | 'probe' | 'std'
                         if _gk == 'dco' and _dco_burst['on'] and _dco_body:
                             _room = _retry_deadline - time.time()
                             if _dco_burst_n >= _dco_burst['max']:
@@ -3272,10 +3425,19 @@ class BulletproofPurchaseManager:
                                 print(f"[DCO_BURST] {_room:.0f}s of window left on {tcin} — no burst "
                                       f"re-POST, wave-first decides ident={_race_wlbl or 'auto'}")
                             else:
+                                # DCO-PROBE-1015: draw the arm for re-POST #1 BEFORE the bank
+                                # wait (P=0 = no draw, no RNG use, label stays '').
+                                if _dco_burst_n == 0 and _dco_probe['p'] > 0.0:
+                                    _dco_probe_label = 'probe' if _dco_probe_draw(_dco_probe) else 'std'
                                 # 2026-09-18: never a page-signed burst re-POST (6/6 edge
                                 # 429 on the first live night). bank= / waited= feed the
                                 # readout.
-                                _burst_wait, _burst_stuck = _dco_burst_wait_s(_dco_burst, target_purchase_executor)
+                                if _dco_probe_label == 'probe':
+                                    # probe arm: no bank wait -- a banked set if one is ready at
+                                    # t=0, else page-signed (REQUIRE_BANK=1 still refuses below).
+                                    _burst_wait, _burst_stuck = 0.0, ''
+                                else:
+                                    _burst_wait, _burst_stuck = _dco_burst_wait_s(_dco_burst, target_purchase_executor)
                                 if _burst_stuck:      # FX-1014-BURSTSTUCK (flag-set only)
                                     print(f"[DCO_BURST] harvest stuck ({_burst_stuck}) — no bank wait "
                                           f"on {tcin} ident={_race_wlbl or 'auto'}")
@@ -3286,13 +3448,21 @@ class BulletproofPurchaseManager:
                                     print(f"[DCO_BURST] no replayable banked set within "
                                           f"{_burst_wait:.0f}s on {tcin} — no page-signed "
                                           f"re-POST, wave-first decides ident={_race_wlbl or 'auto'}")
+                                    if _dco_probe_label:      # DCO-PROBE-1015: the readout's denominator
+                                        print(_dco_probe_line(
+                                            _dco_probe_label, 0.0, _race_wlbl or 'auto', tcin,
+                                            _dco_burst_waited, _bank_ready,
+                                            _dco_probe_bank_age(target_purchase_executor), nofire='no_bank'))
                                 else:
                                     _dco_burst_n += 1
                                     _dco_burst_take = True
                                     _wf_kinds = tuple(k for k in _wf_kinds if k != 'dco')
+                                    _rp_band = (f"{_dco_probe['lo']:.2f}-{_dco_probe['hi']:.2f}s"
+                                                if _dco_probe_label == 'probe' else
+                                                f"{_dco_burst['lo']:.1f}-{_dco_burst['hi']:.1f}s")
                                     print(f"[DCO_BURST] ATC-level FAST_SELLING on {tcin} — the edge admitted "
                                           f"this shot; re-POST {_dco_burst_n}/{_dco_burst['max']} in "
-                                          f"{_dco_burst['lo']:.1f}-{_dco_burst['hi']:.1f}s instead of the cold "
+                                          f"{_rp_band} instead of the cold "
                                           f"re-entry bank={_bank_ready} waited={_dco_burst_waited:.1f}s "
                                           f"ident={_race_wlbl or 'auto'}")
                         _wf_takes = _wf_only and _gk in _wf_kinds
@@ -3308,9 +3478,10 @@ class BulletproofPurchaseManager:
                             if _fast_on:
                                 # FX-1011-CADENCE: this account's own band (floor 1.0 s below).
                                 _edge_lo, _edge_hi = float(_fast_cfg['lo']), float(_fast_cfg['hi'])
-                            # Hard clamp: MIN>=1.0 (the documented ~1s per-IP ban
-                            # floor — help.refractbot.com), MAX>=MIN. Guards env
-                            # overrides; defaults 2.0/3.0 sit >=2x the floor.
+                            # Hard clamp: MIN>=1.0 (our inferred low end from Refract's
+                            # "as low as 1000" -- NOT a documented per-IP ban floor;
+                            # no such number is in any saved vendor doc), MAX>=MIN.
+                            # Guards env overrides; defaults 2.0/3.0 sit >=2x that.
                             _edge_lo = max(1.0, _edge_lo)
                             _edge_hi = max(_edge_hi, _edge_lo)
                             _std_lo, _std_hi = _atc_lo, _atc_hi
@@ -3318,7 +3489,14 @@ class BulletproofPurchaseManager:
                             if (_edge_lo, _edge_hi) != (_std_lo, _std_hi) and not _wf_takes and not _dco_burst_take:
                                 print(f"[RETRY_CADENCE] edge-429 lottery cadence "
                                       f"{_edge_lo:.1f}-{_edge_hi:.1f}s (std {_std_lo:.1f}-{_std_hi:.1f}s)")
-                        if _dco_burst_take:
+                        if _dco_burst_take and _dco_probe_label == 'probe':
+                            # DCO-PROBE-1015 probe arm: the sub-second sleep from the FS response;
+                            # no 1.0 s clamp and no cart-hold-interval floor (F6) -- the executor's
+                            # hold read is forced instead (applied at the top of the next pass).
+                            # The draw is made here so the log line carries the exact delay.
+                            _atc_lo = _atc_hi = random.uniform(_dco_probe['lo'], _dco_probe['hi'])
+                            _dco_probe_hold_pending = True
+                        elif _dco_burst_take:
                             # DCO burst cadence wins over the std/edge ranges above;
                             # time spent waiting for the banked set counts toward it.
                             # Review 2026-09-20 (F6): never below the cart-hold read
@@ -3332,6 +3510,15 @@ class BulletproofPurchaseManager:
                             _hold_iv = max(0.0, min(_hold_iv, _dco_burst['hi']))
                             _atc_lo = max(_hold_iv, _dco_burst['lo'] - _dco_burst_waited)
                             _atc_hi = max(_atc_lo, _dco_burst['hi'] - _dco_burst_waited)
+                        if _dco_burst_take and _dco_probe_label:
+                            # DCO-PROBE-1015: the std arm's delay is drawn here too (one draw, the
+                            # same distribution the sleep site would draw) so BOTH arms log it.
+                            if _dco_probe_label == 'std':
+                                _atc_lo = _atc_hi = random.uniform(_atc_lo, _atc_hi)
+                            print(_dco_probe_line(
+                                _dco_probe_label, _atc_lo, _race_wlbl or 'auto', tcin,
+                                _dco_burst_waited, _bank_ready,
+                                _dco_probe_bank_age(target_purchase_executor)))
                         # Wave-first pulse bookkeeping (knobs + evidence above the
                         # loop): consecutive carts-401s trigger a 15-25s pause in
                         # place of ONE cadence sleep; edge-429s neither count nor
@@ -4001,6 +4188,14 @@ class BulletproofPurchaseManager:
             _eg_connect_s = float(os.environ.get('TARGET_ACCOUNT_EGRESS_CONNECT_S', '4') or 4)
         except (TypeError, ValueError):
             _eg_connect_s = 4.0
+        # S1-EGRESS-READY: TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1 exempts a SUCCESSFULLY
+        # bound egress account from the proxied-Chrome age relaunch (the mark is set
+        # next to proxy_url below and cleared wherever proxy_url is reverted).
+        # Unset / 0 / junk = off: nothing is marked and the relaunch is unchanged.
+        try:
+            _eg_age_exempt = os.environ.get('TARGET_ACCOUNT_EGRESS_AGE_EXEMPT', '0').strip() == '1'
+        except Exception:
+            _eg_age_exempt = False
         for w, _ip in egress_workers:
             port = self.PURCHASE_FORWARDER_PORT_BASE + w.cfg.worker_id
             try:
@@ -4010,14 +4205,23 @@ class BulletproofPurchaseManager:
                                dns_server=_dns)
                 print(f"[EGRESS] {w.label()}: DNS via {_dns or 'the OS resolver (home line)'}")
                 w.cfg.proxy_url = f"127.0.0.1:{port}"
+                if _eg_age_exempt:
+                    w.cfg.egress_age_exempt = True   # S1-EGRESS-READY: same path as proxy_url
                 needing.append(w)   # reverted with the BD workers on a start failure
                 print(f"[EGRESS] {w.label()} → 127.0.0.1:{port} (DIRECT, bound to {_ip}; "
                       f"fallback_home={'on' if _eg_fallback else 'off'})")
                 _flog(f"  bind OK: {w.label()} → 127.0.0.1:{port} (EGRESS bound to {_ip})")
+                if _eg_age_exempt:
+                    try:   # log only: never let this line undo a good bind
+                        print(f"[EGRESS] {w.label()}: age relaunch EXEMPT (TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1)")
+                        _flog(f"  egress age-relaunch EXEMPT: {w.label()}")
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[EGRESS] [WARN] {w.label()} egress setup failed ({e}); HOME IP.")
                 _flog(f"  [WARN] {w.label()} egress setup failed ({e}) → HOME IP")
                 w.cfg.proxy_url = None
+                _egress_unmark(w)
 
         if not fwd.upstreams:
             # Everything failed to parse — tear the loop back down, no forwarder.
@@ -4033,6 +4237,7 @@ class BulletproofPurchaseManager:
             _flog(f"[ERROR] start_all FAILED ({e}) — reverting workers to HOME IP")
             for w in needing:
                 w.cfg.proxy_url = None
+                _egress_unmark(w)   # S1-EGRESS-READY
             loop.call_soon_threadsafe(loop.stop)
             return
 
@@ -5031,7 +5236,9 @@ class BulletproofPurchaseManager:
         firing any callback (stock_check_resilient.py:937-980). Never counted:
         a TCIN on an old window (a flicker back inside the hysteresis included)
         or one already raced ('failed') -- it re-races with whatever is free and
-        must not shrink a fresh flip's volley. Never raises."""
+        must not shrink a fresh flip's volley. (TARGET_FAIR_FRESH_FIX=1 extends
+        'already raced' to a TCIN dispatched in its current window whose row the
+        emergency reset made 'ready' again: _fair_fresh_raced.) Never raises."""
         try:
             now = time.time() if now is None else float(now)
             try:
@@ -5049,6 +5256,10 @@ class BulletproofPurchaseManager:
                 row = states.get(t) or {'status': 'ready'}
                 if row.get('status', 'ready') != 'ready':
                     continue
+                # FAIR-FRESH-1015 (B): a wave already raced in this window is no
+                # contender, even when the emergency reset made its row 'ready'.
+                if _fair_fresh_on() and self._fair_fresh_raced(t, snap):
+                    continue
                 if self._tcin_has_live_racer(t) or self._fx1006_recently_purchased(t, now, snap):
                     continue
                 if not free_workers or all(self._fx1006_worker_sits_out(w, t) for w in free_workers):
@@ -5057,6 +5268,29 @@ class BulletproofPurchaseManager:
             return out
         except Exception:
             return []
+
+    def _fair_fresh_raced(self, tcin, snap) -> bool:
+        """FAIR-FRESH-1015 (B): True when `tcin` was dispatched inside its CURRENT
+        stock window -- _fx1006_last_dispatch >= window_start - 0.5 s -- so its
+        first volley has left. Not when its last dispatch was in an earlier window
+        (or never recorded: a restart), nor when that dispatch's accounts all sat
+        out (_record_race_result noted it in _fair_fresh_noshot: no shot left, the
+        first volley is still owed). Never raises (False = still a contender)."""
+        try:
+            ws = (snap or {}).get('window_start')
+            if not _valid_started_at(ws):
+                return False
+            t = str(tcin)
+            with _FX1006_LOCK:
+                ld = self._fx1006_dict('_fx1006_last_dispatch').get(t)
+                ns = self._fx1006_dict('_fair_fresh_noshot').get(t)
+            if not _valid_started_at(ld) or float(ld) < float(ws) - 0.5:
+                return False
+            if _valid_started_at(ns) and float(ns) >= float(ld) - 1.0:
+                return False
+            return True
+        except Exception:
+            return False
 
     def _fair_share_plan(self, tcin, ready_workers, limit, others):
         """FX-1006-FAIR: (limit, reserve order) for `tcin`. Only free workers
@@ -5367,6 +5601,22 @@ class BulletproofPurchaseManager:
             for w, r in results_snapshot.items()
         }
 
+        if all_done and _fair_fresh_on():
+            # FAIR-FRESH-1015 (B): a race whose every account sat out (or never got a
+            # session) left no shot -- note it, so _fair_fresh_raced still counts the
+            # TCIN as owed its first volley. Never raises; touches no state.
+            try:
+                if not any_success and all(
+                        _is_sit_out_reason((r or {}).get('reason'))
+                        or (r or {}).get('reason') == 'session_init_timeout'
+                        for r in results_snapshot.values()):
+                    _t0 = race_agg.get('t0')
+                    with _FX1006_LOCK:
+                        self._fx1006_dict('_fair_fresh_noshot')[str(tcin)] = (
+                            float(_t0) if _valid_started_at(_t0) else time.time())
+            except Exception:
+                pass
+
         with self._state_lock:
             states = self._load_states_unsafe()
             cur = states.get(tcin, {}) or {}
@@ -5545,10 +5795,63 @@ class BulletproofPurchaseManager:
             checker = getattr(getattr(self, 'stock_monitor', None), '_resilient_checker', None)
             statuses = getattr(checker, '_tcin_status', None) if checker is not None else None
             s = statuses.get(str(tcin)) if statuses is not None else None
-            return _stock_status_snapshot(s, now)
+            snap = _stock_status_snapshot(s, now)
+            if _fair_fresh_on():
+                try:
+                    self._fair_fresh_stamp(tcin, snap)   # FAIR-FRESH-1015 (A)
+                except Exception:
+                    pass
+            return snap
         except Exception:
             return {'live': None, 'window_start': 0.0, 'last_true': 0.0,
                     'last_false': 0.0, 'age': None}
+
+    def _fair_fresh_stamp(self, tcin, snap) -> None:
+        """FAIR-FRESH-1015 (A, TARGET_FAIR_FRESH_FIX=1): remember, per (TCIN,
+        window_start), the last out-of-stock read BEFORE the window opened, taken
+        the first time this manager sees the window (then last_false < window_start
+        still holds), and add it to `snap` as 'pre_false'. Nothing is added when
+        the first sight already shows a read after the open (a flicker beat us to
+        it) or the TCIN has never read out of stock: the freshness test then falls
+        back to the latest last_false, exactly as with the flag off. One entry per
+        TCIN (the newest window). Never raises."""
+        try:
+            ws = snap.get('window_start')
+            if not _valid_started_at(ws):
+                return
+            ws = float(ws)
+            t = str(tcin)
+            with _FAIR_FRESH_LOCK:
+                d = self._fx1006_dict('_fair_fresh_pre')
+                ent = d.get(t)
+                if ent is None or ent[0] != ws:
+                    lf = snap.get('last_false')
+                    ent = (ws, float(lf) if (_valid_started_at(lf) and float(lf) < ws) else 0.0)
+                    d[t] = ent
+            if ent[1] > 0.0:
+                snap['pre_false'] = ent[1]
+        except Exception:
+            pass
+
+    def _fair_fresh_prime(self, stock_data) -> None:
+        """FAIR-FRESH-1015 (A): the flip callbacks (the stock-aware reset and
+        process_stock_data) call this first, so the window's pre-open stamp is taken
+        as early as the manager hears of the flip -- before a flicker read can
+        overwrite last_false. stock_data: the event dict {tcin: {...}} or a list of
+        {'tcin', 'in_stock'}. Never raises."""
+        try:
+            if not _fair_fresh_on():
+                return
+            if isinstance(stock_data, dict):
+                tcins = [t for t, d in stock_data.items()
+                         if (d.get('in_stock') if isinstance(d, dict) else d)]
+            else:
+                tcins = [p.get('tcin') for p in (stock_data or ())
+                         if isinstance(p, dict) and p.get('in_stock') and p.get('tcin') is not None]
+            for t in tcins:
+                self.stock_snapshot(t)
+        except Exception:
+            pass
 
     def race_join_tick(self, now=None) -> list:
         """FX-1014-JOIN (TARGET_RACE_JOIN_FREE=1): for every race still open on a TCIN
@@ -5752,6 +6055,11 @@ class BulletproofPurchaseManager:
         """Process stock data with CRITICAL STATE RULES - atomic transitions only"""
         results = []
 
+        if _fair_fresh_on():
+            try:
+                self._fair_fresh_prime(stock_data)   # FAIR-FRESH-1015 (A): first sight of a new window
+            except Exception:
+                pass
         with self._state_lock:
             states = self._load_states_unsafe()
 
@@ -6118,7 +6426,11 @@ class BulletproofPurchaseManager:
                         if _fair_share_on() and _miss_rearm_on():
                             _fresh_c = self._fx1006_defer_for_fresh(tcin)
                             if _fresh_c:
-                                if self._fx1006_log_ok('miss', self._fx1006_window_key(tcin)):
+                                # FAIR-FRESH-1015 (C): its own rate-limit kind -- it shared
+                                # ('miss', window) with the MISS prints and was silent for
+                                # 30 s after one (0 lines on 10-09). Flag off: 'miss'.
+                                if self._fx1006_log_ok('fair_defer' if _fair_fresh_on() else 'miss',
+                                                       self._fx1006_window_key(tcin)):
                                     print(f"[MULTI_SKU_FAIR_SHARE] {tcin}: old window -- deferring to "
                                           f"fresh TCIN(s) {sorted(_fresh_c)[:6]}; re-offered next tick")
                                 self._stamp_miss_rearm_hint(states, tcin)
@@ -6173,7 +6485,9 @@ class BulletproofPurchaseManager:
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle
                             active_purchase = tcin
-                            if _miss_rearm_on():
+                            # FAIR-FRESH-1015 (B) reads the dispatch stamp too, so it is
+                            # written for the flag alone as well (MISS off).
+                            if _miss_rearm_on() or _fair_fresh_on():
                                 self._fx1006_note_dispatch(tcin)
 
                             # Reload states to get updated completion info

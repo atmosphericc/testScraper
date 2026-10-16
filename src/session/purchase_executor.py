@@ -52,6 +52,209 @@ _WARMUP_DUMMY_POST_JS = """(async () => {
 })()"""
 
 
+# ── 2026-10-15 S2-LIMKEY-PROBE: the home half of EXP-LIMKEY ─────────────────────
+# An off-window limiter-key probe. TARGET_WARMUP_PROBE_TCINS (unset / empty / junk =
+# OFF, nothing below runs) names published, out-of-stock hot-class TCINs;
+# TARGET_WARMUP_PROBE_IDENTS names the account(s) that may probe (empty = nobody).
+# After a background-refill heartbeat returns, ONE extra evaluate on the same warmup
+# tab fires the heartbeat's own request at a probe TCIN instead of the bogus
+# 81926151. Its answer goes ONLY to a [LIMKEY_PROBE] line: never to the heartbeat's
+# status, write-auth, DEAD / repair, the churn alert or the sentinel. Question it
+# answers (C-1011-05): does the edge limiter (429 ERR_A2C_TCIN_RATE_LIMITED) already
+# limit a hot out-of-stock TCIN when only our traffic touches it, i.e. is the limiter
+# state a static per-TCIN policy or switched on by live demand?
+# Guards (all fail closed): no probe 00:00-06:00 host-local (CT) time, none within
+# 10 min of an in-stock read of that TCIN (or before the TCIN has been watched for
+# 10 min), none during a purchase / won-cart quiet / ride / boot self-test, at most
+# one per MIN_GAP_S and 60 per hour FLEET-WIDE, a hard per-run total, and a 2xx (a
+# line was ADDED) stops probing for the run. Kill: empty TARGET_WARMUP_PROBE_TCINS.
+_LIMKEY_RETURN_JS = (
+    "let body = ''; try { body = await resp.text(); } catch(e) {}\n"
+    "        let key = ''; try { key = resp.headers.get('tgt-cart-error-key') || ''; } catch(e) {}\n"
+    "        return JSON.stringify({s: resp.status, k: key, n: body.length, b: body.slice(0, 120)});")
+_LIMKEY_QUIET_START_H, _LIMKEY_QUIET_END_H = 0, 6     # host-local hour window, [start, end)
+_LIMKEY_STOCK_LOOKBACK_S = 600.0                      # no probe within this of an in-stock read
+_LIMKEY_STOCK_FN = None                               # manager.stock_snapshot, wired by app.py
+import threading as _lk_threading                     # noqa: E402  (probe state is fleet-wide)
+_LIMKEY_LOCK = _lk_threading.Lock()
+_LIMKEY_STATE: Dict[str, Any] = {
+    'last_ts': 0.0, 'times': deque(), 'total': 0, 'stopped': False, 'rr': 0,
+    'first_seen': {}, 'skip_ts': {}, 'errs': 0,
+}
+
+
+def limkey_probe_reset() -> None:
+    """Forget all fleet-wide probe state (tests only; a process restart does the same)."""
+    with _LIMKEY_LOCK:
+        _LIMKEY_STATE.update({'last_ts': 0.0, 'times': deque(), 'total': 0, 'stopped': False,
+                              'rr': 0, 'first_seen': {}, 'skip_ts': {}, 'errs': 0})
+
+
+def limkey_set_stock_fn(fn) -> None:
+    """app.py hands the probe the manager's read-only stock_snapshot (the executors only
+    get their own copy at dispatch time, after the warmup has been running for hours)."""
+    global _LIMKEY_STOCK_FN
+    _LIMKEY_STOCK_FN = fn
+
+
+def _lk_num(env, name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        v = float(str(env.get(name, default)).strip())
+    except (TypeError, ValueError):
+        v = float(default)
+    if not (v == v) or v in (float('inf'), float('-inf')):
+        v = float(default)
+    return min(hi, max(lo, v))
+
+
+def limkey_probe_cfg(env=None):
+    """None = probe OFF (flag unset, empty or no valid TCIN). Otherwise {'tcins': [...],
+    'idents': {lower-case account ids}, 'min_gap_s', 'per_hour', 'per_run'}. Never raises."""
+    try:
+        env = os.environ if env is None else env
+        raw = str(env.get('TARGET_WARMUP_PROBE_TCINS', '') or '').strip()
+        if not raw:
+            return None
+        tcins = []
+        for tok in re.split(r'[,;\s]+', raw):
+            if re.fullmatch(r'\d{6,13}', tok) and tok != '81926151' and tok not in tcins:
+                tcins.append(tok)
+        if not tcins:
+            return None
+        idents = {x.strip().lower() for x in
+                  re.split(r'[,;\s]+', str(env.get('TARGET_WARMUP_PROBE_IDENTS', '') or '')) if x.strip()}
+        return {'tcins': tcins, 'idents': idents,
+                'min_gap_s': _lk_num(env, 'TARGET_WARMUP_PROBE_MIN_GAP_S', 60.0, 20.0, 3600.0),
+                'per_hour': int(_lk_num(env, 'TARGET_WARMUP_PROBE_MAX_PER_HOUR', 60, 1, 60)),
+                'per_run': int(_lk_num(env, 'TARGET_WARMUP_PROBE_MAX_PER_RUN', 240, 1, 1000))}
+    except Exception:
+        return None
+
+
+def limkey_probe_js(tcin) -> str:
+    """The heartbeat's own JS (_WARMUP_DUMMY_POST_JS: same URL, headers, body, order) with the
+    probe TCIN swapped in, returning a JSON string {s: status, k: error-key header if CORS
+    exposes it, n: body length, b: first 120 body chars} instead of the bare status. Raises
+    ValueError on a non-numeric TCIN (nothing is ever spliced into the JS unchecked) or when
+    the heartbeat template drifted from the two anchors replaced here."""
+    t = str(tcin).strip()
+    if not re.fullmatch(r'\d{6,13}', t):
+        raise ValueError(f"bad probe tcin {tcin!r}")
+    js = _WARMUP_DUMMY_POST_JS
+    if js.count("tcin: '81926151'") != 1 or js.count('return resp.status;') != 1:
+        raise ValueError("warmup dummy POST template changed; probe JS not derivable")
+    return js.replace("tcin: '81926151'", f"tcin: '{t}'").replace('return resp.status;', _LIMKEY_RETURN_JS)
+
+
+def limkey_parse_result(res) -> Dict[str, Any]:
+    """{'status': int (-1 = unreadable, 0 = the page's fetch threw), 'key', 'n', 'b'} from what
+    evaluate returned (the probe JSON string, a bare number, or a dict). Never raises."""
+    out = {'status': -1, 'key': '', 'n': -1, 'b': ''}
+    try:
+        if res is None or isinstance(res, bool):
+            return out
+        if isinstance(res, (int, float)):
+            out['status'] = int(res)
+            return out
+        d = res
+        if isinstance(res, (str, bytes)):
+            s = (res.decode('utf-8', 'replace') if isinstance(res, bytes) else res).strip()
+            if re.fullmatch(r'-?\d+', s):
+                out['status'] = int(s)
+                return out
+            d = json.loads(s)
+        if isinstance(d, dict):
+            out['status'] = int(d.get('s', -1))
+            out['key'] = str(d.get('k') or '')[:80]
+            out['n'] = int(d.get('n', -1))
+            out['b'] = str(d.get('b') or '')[:120]
+    except Exception:
+        pass
+    return out
+
+
+def limkey_quiet_now(now: float) -> bool:
+    """True inside the no-probe hours (00:00-06:00 on the host clock, which runs CT; this box
+    has no tzdata, so the zone is not converted). Never raises (error = quiet)."""
+    try:
+        h = datetime.fromtimestamp(float(now)).hour
+        return _LIMKEY_QUIET_START_H <= h < _LIMKEY_QUIET_END_H
+    except Exception:
+        return True
+
+
+def limkey_reserve(cfg, now: float) -> str:
+    """Take one fleet-wide probe slot: '' = granted (stamped), else the refusal reason
+    (stopped / run_cap / gap / hour_cap). One lock, so two executors on two worker loops
+    cannot both fire inside the gap. Never raises (error = refused)."""
+    try:
+        with _LIMKEY_LOCK:
+            st = _LIMKEY_STATE
+            if st['stopped']:
+                return 'stopped'
+            if st['total'] >= cfg['per_run']:
+                return 'run_cap'
+            if st['last_ts'] and now - st['last_ts'] < cfg['min_gap_s']:
+                return 'gap'
+            times = st['times']
+            while times and now - times[0] >= 3600.0:
+                times.popleft()
+            if len(times) >= cfg['per_hour']:
+                return 'hour_cap'
+            st['last_ts'] = now
+            times.append(now)
+            st['total'] += 1
+            return ''
+    except Exception:
+        return 'reserve_error'
+
+
+def limkey_pick_tcin(cfg, stock_fn, now: float):
+    """(tcin, '') for the next probe TCIN (round robin from the last one fired) that the monitor
+    shows OUT of stock on a fresh read, with no in-stock read in the last 10 min and watched for
+    at least 10 min since this process first saw it out of stock; else (None, reason).
+    No stock view = no probe."""
+    try:
+        if stock_fn is None:
+            return None, 'no_stock_view'
+        tcins = cfg['tcins']
+        with _LIMKEY_LOCK:
+            start = _LIMKEY_STATE['rr'] % len(tcins)
+        why = 'no_tcin'
+        for k in range(len(tcins)):
+            t = tcins[(start + k) % len(tcins)]
+            try:
+                snap = stock_fn(t)
+            except Exception:
+                snap = None
+            if not isinstance(snap, dict) or snap.get('live') is not False:
+                why = 'stock_live_or_unknown'
+                continue
+            lt = float(snap.get('last_true') or 0.0)
+            if lt > 0.0 and now - lt < _LIMKEY_STOCK_LOOKBACK_S:
+                why = 'in_stock_recent'
+                continue
+            with _LIMKEY_LOCK:
+                fs = _LIMKEY_STATE['first_seen'].setdefault(t, now)
+            if now - fs < _LIMKEY_STOCK_LOOKBACK_S:
+                why = 'observing'
+                continue
+            return t, ''
+        return None, why
+    except Exception:
+        return None, 'pick_error'
+
+
+def limkey_result_line(acct, tcin, parsed, key, hop, line, n, err='') -> str:
+    """The one greppable result line: [LIMKEY_PROBE] acct= tcin= status= err_key= hop= line= body_len= n=
+    (+ err= when the evaluate itself failed). Non-result lines use event= instead of acct=."""
+    msg = (f"[LIMKEY_PROBE] acct={acct} tcin={tcin} status={parsed.get('status', -1)} "
+           f"err_key={key or '-'} hop={hop or '-'} line={line} body_len={parsed.get('n', -1)} n={n}")
+    if err:
+        msg += f" err={err}"
+    return msg
+
+
 def fast_lane_atc_body_literal(tcin, quantity, bytematch: bool) -> str:
     """The JS object literal the fast lane passes to JSON.stringify for the
     add-to-cart body. PLAIN string (single braces) — it is substituted INTO the
@@ -645,6 +848,128 @@ def atc_net_line(ident, d) -> str:
                 f"connect_ms={_v('connect_ms')} ssl_ms={_v('ssl_ms')} rid={_v('rid')}")
     except Exception:
         return '[ATC_NET] ident=? (format error)'
+
+
+# ── 2026-10-15 CHK-1 (log-only): the wire under pre_checkout / place-order / CVV PUT ──
+_CHAIN_NET_HEAD = 20          # per (u, method) per cart: the first N requests are all logged ...
+_CHAIN_NET_EVERY = 10         # ... then every 10th (a ride-to-OOS cart can run 1,200 tickets)
+_CHAIN_NET_MAX_LINES = 3000   # hard ceiling of logged requests per process
+_CHAIN_NET_METHODS = {'pre': ('POST', 'OPTIONS'), 'po': ('POST', 'OPTIONS'),
+                      'cvv': ('PUT', 'OPTIONS')}
+
+
+def chain_net_meta_on() -> bool:
+    """TARGET_CHAIN_NET_META=1 (CHK-1, 2026-10-15): one [CHAIN_NET] line per
+    pre_checkout (u=pre), place-order (u=po) and CVV payment_instructions PUT
+    (u=cvv) request on the MAIN tab -- the POST / PUT and its OPTIONS preflight --
+    from the SAME CDP Network handlers INS-ATC-NET installs (so it only has an
+    effect while TARGET_ATC_NET_META=1): the wall-clock ms the request left
+    Chrome (send_ms), how long it sat between requestWillBeSent and the wire
+    (pause_ms, which on a NEW connection also holds dns / connect -- connect_ms is
+    printed beside it), time-to-first-byte, connection id / reuse, protocol. Why:
+    the 1.3-1.7 s between the ATC response and the place-order in a won chain is
+    ~65% of flip-to-PO#1 and nothing splits it, and every winning first
+    place-order carries a logger-stamp LOWER-bound age (place_orders.ts_src).
+    Log-only: no new handler, never awaits, never in the Fetch path, every branch
+    inside the handlers' own try/except; lines are capped per cart (first 20 per
+    (u, method), then every 10th, reset by the next successful ATC) and per
+    process. Default '0' (unset / junk = off). Kill-switch: =0."""
+    return os.environ.get('TARGET_CHAIN_NET_META', '0').strip() == '1'
+
+
+def chain_net_class(url, method):
+    """Pure: 'pre' | 'po' | 'cvv' for a chain request, else None. pre = POST/OPTIONS
+    .../web_checkouts/v1/pre_checkout, po = POST/OPTIONS .../web_checkouts/v1/checkout,
+    cvv = PUT/OPTIONS .../checkout_payments/v1/payment_instructions[/<id>]. The query
+    string is ignored; cart_items, /cart GETs and every other method are not chain
+    requests. Never raises."""
+    try:
+        m = str(method or '').upper()
+        path = str(url or '').split('#', 1)[0].split('?', 1)[0].rstrip('/')
+        if path.endswith('/web_checkouts/v1/pre_checkout'):
+            u = 'pre'
+        elif path.endswith('/web_checkouts/v1/checkout'):
+            u = 'po'
+        elif '/checkout_payments/v1/payment_instructions' in path:
+            u = 'cvv'
+        else:
+            return None
+        return u if m in _CHAIN_NET_METHODS[u] else None
+    except Exception:
+        return None
+
+
+def chain_net_sampled(n) -> bool:
+    """Pure: is the n-th (1-based) request of one (u, method) in the current cart
+    logged -- the first _CHAIN_NET_HEAD, then every _CHAIN_NET_EVERY-th. Never raises."""
+    try:
+        n = int(n)
+        return n >= 1 and (n <= _CHAIN_NET_HEAD or (n - _CHAIN_NET_HEAD) % _CHAIN_NET_EVERY == 0)
+    except Exception:
+        return False
+
+
+def chain_net_pause_ms(will_wall_s, send_ms):
+    """Pure: ms from requestWillBeSent (wall_time, seconds) to the wire (send_ms,
+    from atc_net_send_wall_ms). None when either is missing. Never raises."""
+    try:
+        if will_wall_s is None or send_ms is None:
+            return None
+        return int(round(float(send_ms) - float(will_wall_s) * 1000.0))
+    except (TypeError, ValueError):
+        return None
+
+
+def chain_net_fields(r, rec, rid):
+    """Pure: the dict chain_net_line prints, from a ResponseReceived `r` and the
+    requestWillBeSent record rec = (wall_s, mono_s, method, u, n). A response that
+    cannot be read still yields u / method / n / rid (the rest prints '-'); a
+    record that cannot be unpacked yields {}. Never raises."""
+    try:
+        w, mono, meth, u, n = rec
+        d = {'u': u, 'method': meth, 'n': n, 'rid': str(rid)}
+    except Exception:
+        return {}
+    try:
+        t = getattr(r, 'timing', None)
+        g = (lambda k: getattr(t, k, None)) if t is not None else (lambda k: None)
+
+        def _span(a, b):
+            x, y = g(a), g(b)
+            return (y - x) if (x is not None and y is not None and x >= 0 and y >= 0) else None
+        send_ms = atc_net_send_wall_ms(w, mono, g('request_time'), g('send_start'))
+        d.update({'status': getattr(r, 'status', None),
+                  'pause_ms': chain_net_pause_ms(w, send_ms), 'send_ms': send_ms,
+                  'ttfb_ms': _span('send_end', 'receive_headers_end'),
+                  'conn': getattr(r, 'connection_id', None),
+                  'reused': getattr(r, 'connection_reused', None),
+                  'proto': getattr(r, 'protocol', None),
+                  'connect_ms': _span('connect_start', 'connect_end')})
+    except Exception:
+        pass
+    return d
+
+
+def chain_net_line(ident, d) -> str:
+    """Pure: the [CHAIN_NET] line for one chain response dict `d` (keys: u, method,
+    status, pause_ms, send_ms, ttfb_ms, conn, reused, proto, connect_ms, n, rid).
+    Missing values print '-'. Never raises."""
+    def _v(k):
+        x = d.get(k) if isinstance(d, dict) else None
+        if x is None or x == '':
+            return '-'
+        if isinstance(x, bool):
+            return '1' if x else '0'
+        if isinstance(x, float):
+            return str(int(round(x)))
+        return str(x)[:64]
+    try:
+        return (f"[CHAIN_NET] ident={ident} u={_v('u')} m={_v('method')} st={_v('status')} "
+                f"pause_ms={_v('pause_ms')} send_ms={_v('send_ms')} ttfb_ms={_v('ttfb_ms')} "
+                f"conn={_v('conn')} reused={_v('reused')} proto={_v('proto')} "
+                f"connect_ms={_v('connect_ms')} n={_v('n')} rid={_v('rid')}")
+    except Exception:
+        return '[CHAIN_NET] ident=? (format error)'
 
 
 def atc_resp_hdrs_line(label, status, raw_headers, max_val: int = 160,
@@ -2834,6 +3159,7 @@ class PurchaseExecutor:
                     # cart-clear DELETE (cart_items/{id}) and GETs, which would
                     # pollute the census.
                     _atc_resp_msg = None
+                    _lk_probe = False       # S2-LIMKEY-PROBE: this paused response is the in-flight probe's own
                     if self._atc_resp_capture_on and 'web_checkouts/v1/cart_items' in url and method == 'POST':
                         try:
                             _err_key = resp_headers.get('tgt-cart-error-key') or '-'
@@ -2841,6 +3167,17 @@ class PurchaseExecutor:
                             _atc_resp_msg = (f"[ATC_RESP] status={status} method=POST "
                                              f"tgt-cart-error-key={_err_key} "
                                              f"x-request-id={_req_id_hdr} url=cart_items")
+                            # S2-LIMKEY-PROBE: page JS cannot read the error key (CORS); while a
+                            # probe is in flight the warmup tab's answers are noted here (list
+                            # append, before the continue). None / not warmup = nothing happens.
+                            _lkw = getattr(self, '_limkey_wait', None)
+                            if _lkw is not None and label == 'warmup':
+                                _lkw.append((status, str(_err_key)[:80],
+                                             str(resp_headers.get('x-ssx-hop') or '-')[:12]))
+                                # S2 fix round 2: tag the probe's OWN response (below) so the
+                                # event store can drop it from the decoy control; a concurrent
+                                # heartbeat on the other warmup tab is not tagged.
+                                _lk_probe = self._limkey_is_probe_req(event)
                             if status == 431:
                                 # 2026-09-13: Request Header Fields Too Large -- say how big
                                 # the request we sent on this tab was (dict reads only; the
@@ -2860,6 +3197,8 @@ class PurchaseExecutor:
                                 _atc_resp_msg += (
                                     f" tab={label} selftest="
                                     f"{'on' if getattr(self, '_harvest_selftest_armed', False) else 'off'}")
+                            if _lk_probe:
+                                _atc_resp_msg += " limkey_probe=1"      # S2-LIMKEY-PROBE (not a heartbeat decoy)
                         except Exception as _atc_resp_err:
                             self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
                     # 2026-09-30 TARGET_ATC_RESP_HDRS: every response header of a
@@ -2878,6 +3217,10 @@ class PurchaseExecutor:
                                 if _hn < _ATC_HDRS_WARMUP_CAP:
                                     self._atc_hdrs_warm_n = _hn + 1
                                     _atc_hdrs_msg = atc_resp_hdrs_line(label, status, raw_resp_headers)
+                                    if _lk_probe:
+                                        # S2-LIMKEY-PROBE: one more '| name=value' pair (the form
+                                        # build.py's HDRS parser already splits on)
+                                        _atc_hdrs_msg += " | limkey_probe=1"
                         except Exception:
                             _atc_hdrs_msg = None
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
@@ -3185,6 +3528,43 @@ class PurchaseExecutor:
             if cdp.network not in getattr(tab, 'enabled_domains', [cdp.network]):
                 tab.enabled_domains.append(cdp.network)
 
+            # CHK-1 (TARGET_CHAIN_NET_META, read once): the same two handlers also log the
+            # pre_checkout / place-order / CVV PUT wire. Its own records (chain_sent), so
+            # chain traffic can never evict a cart_items record from `sent`.
+            chain_on = chain_net_meta_on()
+            chain_sent: Dict[str, Any] = {}
+            chain_cnt: Dict[Any, int] = {}
+            chain_st = {'recorded': 0, 'capped': False}
+
+            def _chain_note_send(ev, req):
+                # CHK-1: sampling is decided HERE, so an unsampled request's response finds
+                # no record and prints nothing.
+                meth = str(getattr(req, 'method', '') or '').upper()
+                u = chain_net_class(getattr(req, 'url', ''), meth)
+                if u is None:
+                    return
+                n = chain_cnt.get((u, meth), 0) + 1
+                chain_cnt[(u, meth)] = n
+                if not chain_net_sampled(n):
+                    return
+                if chain_st['recorded'] >= _CHAIN_NET_MAX_LINES:
+                    if not chain_st['capped']:
+                        chain_st['capped'] = True
+                        print(f"[CHAIN_NET] ident={self._ident_tag()} cap={_CHAIN_NET_MAX_LINES} "
+                              f"reached - further requests unlogged")
+                    return
+                chain_st['recorded'] += 1
+                if len(chain_sent) > 200:
+                    chain_sent.clear()
+                chain_sent[str(ev.request_id)] = (getattr(ev, 'wall_time', None),
+                                                  getattr(ev, 'timestamp', None), meth, u, n)
+
+            def _chain_note_response(ev, r):
+                rec = chain_sent.pop(str(ev.request_id), None)
+                if rec is not None:
+                    print(chain_net_line(self._ident_tag(),
+                                         chain_net_fields(r, rec, ev.request_id)))
+
             async def _on_will_send(ev):
                 try:
                     req = ev.request
@@ -3194,6 +3574,8 @@ class PurchaseExecutor:
                         sent[str(ev.request_id)] = (getattr(ev, 'wall_time', None),
                                                     getattr(ev, 'timestamp', None),
                                                     str(getattr(req, 'method', '') or ''))
+                    elif chain_on:
+                        _chain_note_send(ev, req)
                 except Exception:
                     pass
 
@@ -3201,6 +3583,8 @@ class PurchaseExecutor:
                 try:
                     r = ev.response
                     if 'cart_items' not in str(getattr(r, 'url', '') or ''):
+                        if chain_on:
+                            _chain_note_response(ev, r)
                         return
                     w, mono, meth = sent.pop(str(ev.request_id), (None, None, '?'))
                     t = getattr(r, 'timing', None)
@@ -3221,6 +3605,8 @@ class PurchaseExecutor:
                          'ssl_ms': _span('ssl_start', 'ssl_end'),
                          'rid': str(ev.request_id)}
                     print(atc_net_line(self._ident_tag(), d))
+                    if chain_on and meth == 'POST' and d['status'] in (200, 201):
+                        chain_cnt.clear()      # CHK-1: a new cart -- its first tickets are logged afresh
                 except Exception:
                     pass
 
@@ -3237,6 +3623,10 @@ class PurchaseExecutor:
             self._atc_net_enable_task = asyncio.ensure_future(_enable_quietly())   # keep a ref
             print(f"[ATC_NET] Network meta instrument installed on the main tab "
                   f"ident={self._ident_tag()}")
+            if chain_on:
+                print(f"[CHAIN_NET] chain wire stamps on (u=pre|po|cvv, first {_CHAIN_NET_HEAD} per "
+                      f"cart then every {_CHAIN_NET_EVERY}th, cap {_CHAIN_NET_MAX_LINES}) "
+                      f"ident={self._ident_tag()}")
         except Exception as e:
             print(f"[ATC_NET] install failed ({type(e).__name__}: {e}) — instrument off")
 
@@ -3634,6 +4024,182 @@ class PurchaseExecutor:
               f"(POST may have been intercepted but skipped by preserve rule; cache age={cache_age:.0f}s)")
         return bool(self._cached_cart_headers)
 
+    def _limkey_log(self, msg: str) -> None:
+        """S2-LIMKEY-PROBE: print + logger line (the logger copy carries a timestamp). Never raises."""
+        try:
+            print(msg)
+        except Exception:
+            pass
+        try:
+            self.logger.info(msg)
+        except Exception:
+            pass
+
+    def _limkey_is_probe_req(self, event) -> bool:
+        """S2-LIMKEY-PROBE (fix round 2): True when the paused response belongs to the probe
+        that is in flight (self._limkey_tcin), judged from the request body the CDP event
+        already carries (dict/attribute reads only, no await: the interceptor's continue goes
+        first). A body naming another TCIN (the heartbeat's bogus 81926151 on the other warmup
+        tab) is NOT the probe. A body we cannot read, or no recorded TCIN, counts as the probe:
+        a probe response left untagged would pollute the decoy control, a tagged decoy only
+        costs one control sample. Never raises."""
+        try:
+            t = str(getattr(self, '_limkey_tcin', '') or '')
+            if not t:
+                return True
+            pd = getattr(event.request, 'post_data', None)
+            if isinstance(pd, (bytes, bytearray)):
+                pd = bytes(pd).decode('utf-8', 'replace')
+            if not isinstance(pd, str) or not pd:
+                return True
+            return t in pd
+        except Exception:
+            return True
+
+    def _limkey_skip(self, why: str, acct: str, now: float) -> None:
+        """One [LIMKEY_PROBE] event=skip line per reason per 10 min per process, so a probe
+        that never fires says why. Never raises."""
+        try:
+            k = f"{why}:{acct}"
+            with _LIMKEY_LOCK:
+                last = _LIMKEY_STATE['skip_ts'].get(k, 0.0)
+                if now - last < 600.0:
+                    return
+                _LIMKEY_STATE['skip_ts'][k] = now
+            self._limkey_log(f"[LIMKEY_PROBE] event=skip reason={why} acct={acct}")
+        except Exception:
+            pass
+
+    def _limkey_guard_why(self, idx: int, now: float) -> str:
+        """Why this executor must not probe right now, or ''. Any error = refused. The
+        stock rule lives in limkey_pick_tcin (it is per TCIN)."""
+        try:
+            if _LIMKEY_STATE['stopped']:
+                return 'stopped'
+            if limkey_quiet_now(now):
+                return 'quiet_hours'
+            if getattr(self, '_warmup_in_progress', False):
+                return 'warmup_in_progress'
+            _sm = self.session_manager
+            if _sm.is_purchase_in_progress() or getattr(_sm, 'purchase_in_progress', False):
+                return 'purchase_live'
+            if self._woncart_quiet():
+                return 'woncart_quiet'
+            if self._held_cart_active():
+                return 'held_cart'
+            if self._warmup_hold_why(now):
+                return 'warmup_hold'
+            if float(getattr(self, '_won_cart_ride_until', 0.0) or 0.0) > now:
+                return 'won_cart_ride'
+            if getattr(self, '_harvest_selftest_armed', False):
+                return 'boot_selftest'
+            try:
+                tab = self._warmup_tabs[idx]
+            except (IndexError, KeyError, TypeError):
+                tab = None
+            if tab is None:
+                return 'no_tab'
+            return ''
+        except Exception:
+            return 'guard_error'
+
+    def _limkey_stock(self, tcin):
+        """The manager's read-only stock view for `tcin` ({'live', 'last_true', ...}) or None."""
+        fn = getattr(self, '_stock_live_fn', None) or _LIMKEY_STOCK_FN
+        if fn is None:
+            return None
+        try:
+            r = fn(str(tcin))
+            return r if isinstance(r, dict) else None
+        except Exception:
+            return None
+
+    async def _limkey_probe_tick(self, idx: int, now=None) -> None:
+        """S2-LIMKEY-PROBE: after the heartbeat on warmup tab `idx` returned, maybe fire ONE
+        probe POST at a hot out-of-stock TCIN on the same tab. The answer goes to the
+        [LIMKEY_PROBE] line only. Never raises; an error is logged and the refill loop goes on.
+        `now` (epoch) is a test seam; None = the clock."""
+        try:
+            cfg = limkey_probe_cfg()
+            if cfg is None:
+                return
+            now = time.time() if now is None else float(now)
+            acct = getattr(self.session_manager, 'account_id', None) or 'session'
+            if str(acct).strip().lower() not in cfg['idents']:
+                self._limkey_skip('ident_not_listed', str(acct), now)
+                return
+            why = self._limkey_guard_why(idx, now)
+            if why:
+                if why != 'stopped':
+                    self._limkey_skip(why, str(acct), now)
+                return
+            tcin, why = limkey_pick_tcin(cfg, self._limkey_stock, now)
+            if tcin is None:
+                self._limkey_skip(why, str(acct), now)
+                return
+            js = limkey_probe_js(tcin)      # raises (-> logged below) before a slot is taken
+            why = limkey_reserve(cfg, now)
+            if why:
+                self._limkey_skip(why, str(acct), now)
+                return
+            n_at = _LIMKEY_STATE['total']       # this probe's count, read before the await
+            with _LIMKEY_LOCK:                  # rotate only on a probe that really goes out
+                _LIMKEY_STATE['rr'] = (cfg['tcins'].index(tcin) + 1) % len(cfg['tcins'])
+            tab = self._warmup_tabs[idx]
+            _sm = self.session_manager
+            line = 'home'
+            if getattr(_sm, 'proxy_url', None):
+                line = 'egress' if getattr(_sm, 'egress_age_exempt', False) else 'proxy'
+            self._limkey_tcin = tcin        # S2 fix round 2: the interceptor tags only this TCIN's POST
+            self._limkey_wait = []          # the interceptor appends (status, error key, hop) here
+            res, err = None, ''
+            try:
+                res = await asyncio.wait_for(tab.evaluate(js, await_promise=True), timeout=15.0)
+            except Exception as e:
+                err = type(e).__name__
+            finally:
+                seen = list(self._limkey_wait or [])
+                self._limkey_wait = None
+                self._limkey_tcin = None
+            if err:
+                try:
+                    # S2 fix round 2: a raised / timed-out evaluate can still land its POST (the
+                    # ATC path assumes the same with _orphan_atc_ts), so a won-cart po_only
+                    # ticket re-reads the cart before buying, as on the 2xx branch below.
+                    self._dummy_landed_suspect_ts = time.time()
+                except Exception:
+                    pass
+            parsed = limkey_parse_result(res)
+            key, hop = '?', '-'
+            for st, k, h in reversed(seen):
+                if st == parsed['status']:
+                    key, hop = k, h
+                    break
+            if key in ('', '-', '?') and parsed['key']:
+                key = parsed['key']
+            self._limkey_log(limkey_result_line(acct, tcin, parsed, key, hop, line, n_at, err))
+            if 200 <= parsed['status'] < 300:
+                with _LIMKEY_LOCK:
+                    _LIMKEY_STATE['stopped'] = True
+                try:
+                    # a line is in this cart now: a won-cart po_only ticket re-checks the cart first
+                    self._dummy_landed_suspect_ts = time.time()
+                except Exception:
+                    pass
+                self._limkey_log(
+                    f"[LIMKEY_PROBE] event=STOP reason=probe_2xx acct={acct} tcin={tcin} "
+                    f"status={parsed['status']} -- a HOT-TCIN LINE WAS ADDED to this account's cart; "
+                    f"probing is OFF for the rest of this run; audit the cart and delete the line "
+                    f"before the next drop")
+        except Exception as e:
+            try:
+                _LIMKEY_STATE['errs'] += 1
+                if _LIMKEY_STATE['errs'] <= 3 or _LIMKEY_STATE['errs'] % 20 == 0:
+                    self._limkey_log(f"[LIMKEY_PROBE] event=error {type(e).__name__}: {e} "
+                                     f"(#{_LIMKEY_STATE['errs']}; the heartbeat is unaffected)")
+            except Exception:
+                pass
+
     async def _background_refill_loop(self, idx: int) -> None:
         """Periodically refresh Shape headers on warmup tab `idx`.
 
@@ -3658,6 +4224,10 @@ class PurchaseExecutor:
                         await self._refresh_on_tab(idx)
                     except Exception as e:
                         print(f"[WARMUP_REFILL#{idx}] Refresh raised: {e}")
+                    # S2-LIMKEY-PROBE: a SEPARATE evaluate after the heartbeat returned;
+                    # no-op (one env read, no await) with TARGET_WARMUP_PROBE_TCINS unset.
+                    if limkey_probe_cfg() is not None:
+                        await self._limkey_probe_tick(idx)
                 # R1 review (R1-ARM-4): retire an expired WC-3 marker here, so
                 # its bounded delete never runs in front of a drop's ATC.
                 if idx == 0 and held_cart_reentry_on() and getattr(self, '_held_cart', None) is not None:

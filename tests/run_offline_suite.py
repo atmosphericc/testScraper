@@ -134,6 +134,19 @@ OFFLINE = [
     # run-log watcher (synthetic lines, temp dirs, one local subprocess of the tool; the real-log
     # replays run only when the main tree's gitignored logs/runs is reachable, else they SKIP).
     "test_order_watch_1015",
+    # 2026-10-15 CHK-1: TARGET_CHAIN_NET_META, log-only [CHAIN_NET] wire stamps for pre_checkout /
+    # place-order / CVV PUT beside [ATC_NET] (stub Network handlers, temp sqlite for the two saved
+    # queries, build.py on synthetic lines; no browser, no network).
+    "test_chain_net_meta",
+    # 2026-10-15 DCO-PROBE-1015: TARGET_DCO_PROBE_P, the sub-second DCO burst re-POST as a randomized
+    # A/B arm (real race loop + the real _check_cart_hold on stub workers / a stub tab, a differential
+    # against the pre-change manager via git show; no browser, no network).
+    "test_dco_probe_1015",
+    # 2026-10-15 S2-LIMKEY-PROBE: TARGET_WARMUP_PROBE_TCINS, the off-window limiter-key probe as a
+    # separate warmup-tab evaluate after the heartbeat (real refill loop + interceptor handler + real
+    # PurchaseExecutor on stub tabs; flag-off differential against the pre-change executor via git
+    # show; no browser, no network).
+    "test_limkey_probe_1015",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

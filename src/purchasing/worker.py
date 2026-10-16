@@ -55,6 +55,12 @@ class WorkerConfig:
     # for file-driven (multi-account) configs — legacy single-account leaves this
     # False so the established primary fingerprint is never altered.
     apply_fingerprint: bool = False
+    # S1-EGRESS-READY (TARGET_ACCOUNT_EGRESS_AGE_EXEMPT=1): set ONLY by
+    # BulletproofPurchaseManager._setup_purchase_forwarders, in the same code path
+    # that points proxy_url at the egress forwarder, and cleared wherever that
+    # proxy_url is reverted to None. build_components hands it to the
+    # SessionManager (which does not exist yet when the forwarders are set up).
+    egress_age_exempt: bool = False
 
     def __post_init__(self) -> None:
         # Coerce paths to plain strings so downstream comparisons stay simple.
@@ -110,6 +116,13 @@ class Worker:
             timezone=self.cfg.timezone,
             apply_fingerprint=self.cfg.apply_fingerprint,
         )
+        # S1-EGRESS-READY: only an account whose proxy_url really points at the egress
+        # forwarder keeps the mark (a reverted bind has proxy_url None and no mark).
+        try:
+            if getattr(self.cfg, 'egress_age_exempt', False) and self.cfg.proxy_url:
+                self.session_manager.egress_age_exempt = True
+        except Exception:
+            pass
 
         self.session_keepalive = SessionKeepAlive(
             self.session_manager,
