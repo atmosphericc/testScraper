@@ -11,6 +11,11 @@ interceptor handler) with stub tabs and a stub session manager. No browser, no n
 The flag-off differential loads the PRE-CHANGE executor from git (2a327fec) and compares what a
 stub heartbeat cycle evaluates and prints.
 
+Fix round 2 (unbiased evaluator): a probe's own warmup [ATC_RESP] / [ATC_RESP_HDRS] line carries
+` limkey_probe=1` (only the in-flight probe's POST, judged by its body; a concurrent heartbeat on
+the other warmup tab is not tagged), and a raised / timed-out probe evaluate sets
+_dummy_landed_suspect_ts like the 2xx branch.
+
     python tests/test_limkey_probe_1015.py
 """
 from __future__ import annotations
@@ -559,6 +564,12 @@ async def test_errors_never_reach_the_heartbeat():
         check("evaluate_error_logged_not_raised", len(m) == 1 and m[0][2] == "-1" and m[0][8].strip() == "err=RuntimeError", out[-400:])
         check("evaluate_error_loop_continues", sleeps == 1 and ex._warmup_tabs[0] is tab)
         check("evaluate_error_no_repair", sm.repairs == 0 and "WRITE-AUTH DEAD" not in out)
+        # S2 fix round 2: a raised evaluate may still have landed its POST -> po_only re-reads the cart
+        check("evaluate_error_marks_cart_suspect",
+              float(getattr(ex, "_dummy_landed_suspect_ts", 0.0) or 0.0) > 0.0 and ex._woncart_cart_suspect() == "dummy_add",
+              str(getattr(ex, "_dummy_landed_suspect_ts", None)))
+        check("evaluate_error_still_not_a_stop", pe._LIMKEY_STATE["stopped"] is False
+              and "event=STOP" not in out and ex._limkey_tcin is None)
     # the evaluate hangs: bounded by the 15 s wait_for (patched down), loop continues
     pe.limkey_probe_reset()
     with env(**{FLAG: A, "TARGET_WARMUP_PROBE_IDENTS": "primary"}):
@@ -581,7 +592,12 @@ async def test_errors_never_reach_the_heartbeat():
             pe.asyncio.wait_for = real_wait_for
         m = RESULT_RE.findall(out)
         check("evaluate_timeout_logged", len(m) == 1 and m[0][8].strip() == "err=TimeoutError", out)
-        check("evaluate_timeout_wait_list_cleared", ex._limkey_wait is None)
+        check("evaluate_timeout_wait_list_cleared", ex._limkey_wait is None and ex._limkey_tcin is None)
+        # S2 fix round 2: the POST can still land after the wait_for gave up (ATC path: _orphan_atc_ts)
+        check("evaluate_timeout_marks_cart_suspect",
+              float(getattr(ex, "_dummy_landed_suspect_ts", 0.0) or 0.0) > 0.0 and ex._woncart_cart_suspect() == "dummy_add",
+              str(getattr(ex, "_dummy_landed_suspect_ts", None)))
+        check("evaluate_timeout_write_auth_untouched", sm.repairs == 0 and not sm.alerts and len(ex._bg_token_repair_times) == 0)
     # the JS builder blows up: event=error, no slot taken, no raise
     pe.limkey_probe_reset()
     real_js = pe.limkey_probe_js
@@ -596,6 +612,9 @@ async def test_errors_never_reach_the_heartbeat():
             pe.limkey_probe_js = real_js
         check("js_builder_error_logged_not_raised", "[LIMKEY_PROBE] event=error ValueError: template drift" in out, out)
         check("js_builder_error_takes_no_slot", pe._LIMKEY_STATE["total"] == 0 and len(probes(tab)) == 0)
+        # nothing was sent, so there is nothing that could land: no suspect mark
+        check("js_builder_error_no_suspect_mark", float(getattr(ex, "_dummy_landed_suspect_ts", 0.0) or 0.0) == 0.0
+              and ex._woncart_cart_suspect() == "")
     # a guard that raises = refused
     pe.limkey_probe_reset()
     with env(**{FLAG: A, "TARGET_WARMUP_PROBE_IDENTS": "primary"}):
@@ -648,19 +667,21 @@ class _CdpTab:
         self.handlers.get(event_type, []).remove(handler)
 
 
-def _resp_event(req_id, status, key, hop=None):
+def _resp_event(req_id, status, key, hop=None, post_data=None):
     hdrs = [SimpleNamespace(name="tgt-cart-error-key", value=key)] if key else []
     if hop:
         hdrs.append(SimpleNamespace(name="x-ssx-hop", value=hop))
+    req = SimpleNamespace(url="https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART",
+                          method="POST", headers={"x-abc123": "t"})
+    if post_data is not None:           # S2 fix round 2: the response-stage event carries the request body
+        req.post_data = post_data
     return SimpleNamespace(
         request_id=cdp.fetch.RequestId(req_id), response_status_code=status, response_error_reason=None,
-        response_headers=hdrs,
-        request=SimpleNamespace(url="https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART",
-                                method="POST", headers={"x-abc123": "t"}))
+        response_headers=hdrs, request=req)
 
 
-def _bare_cdp_ex():
-    ex = object.__new__(pe.PurchaseExecutor)
+def _bare_cdp_ex(cls=None):
+    ex = object.__new__(cls or pe.PurchaseExecutor)
     ex._cdp_continued_ids = set()
     ex._cdp_dedup_hits = 0
     ex._cached_cart_headers = {}
@@ -754,6 +775,150 @@ async def test_err_key_unknown_is_question_mark():
         check("line_field_egress", "line=egress" in out, out)
 
 
+# ───────────────────────────── probe-tagged ATC_RESP lines (fix round 2) ─────────────────────────────
+def _body(tcin):
+    return json.dumps({"cart_item": {"tcin": tcin, "quantity": 1, "item_channel_id": "10"},
+                       "cart_type": "REGULAR", "channel_id": "10", "shopping_context": "DIGITAL"},
+                      separators=(",", ":"))
+
+
+def _tagged(text, kind="ATC_RESP"):
+    return [ln for ln in text.splitlines() if ln.startswith(f"[INTERCEPTOR:warmup] [{kind}] ")]
+
+
+async def _drive(ex, cls_events, label_env):
+    """Set up the REAL interceptor on a warmup-style stub tab, push each (id, status, key, hop,
+    post_data) through the real handler, return (printed [INTERCEPTOR:warmup] lines, handler)."""
+    out = io.StringIO()
+    with env(**label_env):
+        tab = _CdpTab(ex)
+        with contextlib.redirect_stdout(out):
+            await ex._setup_cdp_fetch_interceptor(tab, persistent=True)
+            h = tab.handlers[cdp.fetch.RequestPaused][-1]
+            for rid, st, key, hop, pd in cls_events:
+                await h(_resp_event(rid, st, key, hop=hop, post_data=pd))
+    return [ln for ln in out.getvalue().splitlines()
+            if ln.startswith("[INTERCEPTOR:warmup] [ATC_RESP")], h
+
+
+def test_is_probe_req_helper():
+    ex = _bare_cdp_ex()
+    ex._limkey_tcin = A
+    ev = lambda pd=None: _resp_event("h", 429, "K", post_data=pd)          # noqa: E731
+    check("is_probe_req_body_names_the_probe_tcin", ex._limkey_is_probe_req(ev(_body(A))) is True)
+    check("is_probe_req_heartbeat_body_is_not_the_probe", ex._limkey_is_probe_req(ev(_body(BOGUS))) is False)
+    check("is_probe_req_other_probe_tcin_is_not_the_probe", ex._limkey_is_probe_req(ev(_body(B))) is False)
+    check("is_probe_req_bytes_body", ex._limkey_is_probe_req(ev(_body(A).encode())) is True
+          and ex._limkey_is_probe_req(ev(_body(BOGUS).encode())) is False)
+    # a body the event does not carry cannot be judged: counted as the probe (an untagged probe would
+    # pollute the decoy control; a tagged decoy costs one control sample)
+    check("is_probe_req_unreadable_body_counts_as_the_probe",
+          ex._limkey_is_probe_req(ev(None)) is True and ex._limkey_is_probe_req(ev("")) is True
+          and ex._limkey_is_probe_req(SimpleNamespace(request=SimpleNamespace())) is True
+          and ex._limkey_is_probe_req(SimpleNamespace()) is True)
+    ex._limkey_tcin = None
+    check("is_probe_req_no_recorded_tcin_counts_as_the_probe", ex._limkey_is_probe_req(ev(_body(BOGUS))) is True)
+    del ex._limkey_tcin
+    check("is_probe_req_no_attribute_counts_as_the_probe", ex._limkey_is_probe_req(ev(_body(BOGUS))) is True)
+
+
+async def test_probe_marker_on_atc_resp_lines():
+    now = time.time()
+    lab = {"TARGET_ATC_RESP_LABEL": "1", "TARGET_ATC_RESP_HDRS": "1", "TARGET_ATC_RESPONSE_HEADER_CAPTURE": None}
+    # --- flag ON, probe in flight: the real tick, the real handler, a concurrent heartbeat on the other tab
+    pe.limkey_probe_reset()
+    with env(**{FLAG: A, "TARGET_WARMUP_PROBE_IDENTS": "primary", **lab}):
+        ex, tab, sm = make_ex(probe={"status": 429, "key": "ERR_A2C_TCIN_RATE_LIMITED", "hop": "-", "n": 0})
+        ex._stock_live_fn = stock_all("oos_never", now)
+        seed_seen([A], now=now)
+        cdp_tab = _CdpTab(ex)
+        with contextlib.redirect_stdout(io.StringIO()):
+            await ex._setup_cdp_fetch_interceptor(cdp_tab, persistent=True)
+        h = cdp_tab.handlers[cdp.fetch.RequestPaused][-1]
+        seen_in_flight = {}
+
+        async def probe_eval(script, await_promise=False):
+            tab.scripts.append(script)
+            seen_in_flight["tcin"] = getattr(ex, "_limkey_tcin", "unset")
+            _w = getattr(ex, "_limkey_wait", None)
+            seen_in_flight["wait"] = "unset" if _w is None else list(_w)      # snapshot: the handler appends below
+            await h(_resp_event("p1", 429, "ERR_A2C_TCIN_RATE_LIMITED", post_data=_body(A)))      # the probe
+            await h(_resp_event("p2", 424, "ITEM_NOT_READY_FOR_LAUNCH", post_data=_body(BOGUS)))   # other tab's heartbeat
+            await h(_resp_event("p3", 401, "_ERR_AUTH_DENIED", hop="1", post_data=_body(A)))       # a probe 401
+            await h(_resp_event("p4", 401, "_ERR_AUTH_DENIED", hop="1", post_data=_body(BOGUS)))   # heartbeat 401
+            return json.dumps({"s": 429, "k": "", "n": 0, "b": ""})
+        tab.evaluate = probe_eval
+        out = await tick(ex, now)
+    resp = _tagged(out)
+    hdrs = _tagged(out, "ATC_RESP_HDRS")
+    check("marker_in_flight_state_visible_to_the_handler",
+          seen_in_flight.get("tcin") == A and seen_in_flight.get("wait") == [], str(seen_in_flight))
+    check("marker_four_resp_lines_seen", len(resp) == 4, "\n".join(resp))
+    if len(resp) == 4:
+        check("marker_probe_429_line_tagged", "status=429" in resp[0] and resp[0].endswith(" tab=warmup selftest=off limkey_probe=1"), resp[0])
+        check("marker_heartbeat_424_line_not_tagged", "status=424" in resp[1] and "limkey_probe" not in resp[1], resp[1])
+        check("marker_probe_401_line_tagged", "status=401" in resp[2] and resp[2].endswith(" limkey_probe=1"), resp[2])
+        check("marker_heartbeat_401_line_not_tagged", "status=401" in resp[3] and "limkey_probe" not in resp[3], resp[3])
+    check("marker_two_warmup_401_hdrs_lines", len(hdrs) == 2, "\n".join(hdrs))
+    if len(hdrs) == 2:
+        check("marker_probe_401_hdrs_line_tagged", hdrs[0].endswith(" | limkey_probe=1"), hdrs[0][-120:])
+        check("marker_heartbeat_401_hdrs_line_not_tagged", "limkey_probe" not in hdrs[1], hdrs[1][-120:])
+    check("marker_handler_state_cleared_after_the_tick", ex._limkey_wait is None and ex._limkey_tcin is None)
+    check("marker_result_line_unchanged_by_the_marker", len(RESULT_RE.findall(out)) == 1
+          and "limkey_probe" not in "\n".join(ln for ln in out.splitlines() if ln.startswith("[LIMKEY_PROBE]")), out[-300:])
+    check("marker_stash_still_feeds_the_err_key",
+          RESULT_RE.findall(out)[0][3] in ("ERR_A2C_TCIN_RATE_LIMITED", "_ERR_AUTH_DENIED"), str(RESULT_RE.findall(out)))
+    # --- NO probe in flight (flag on, between ticks): the same events print the unchanged line
+    pe.limkey_probe_reset()
+    events = [("q1", 429, "ERR_A2C_TCIN_RATE_LIMITED", None, _body(A)),
+              ("q2", 424, "ITEM_NOT_READY_FOR_LAUNCH", None, _body(BOGUS)),
+              ("q3", 401, "_ERR_AUTH_DENIED", "1", _body(A)),
+              ("q4", 401, "_ERR_AUTH_DENIED", "1", _body(BOGUS))]
+    with env(**{FLAG: A, "TARGET_WARMUP_PROBE_IDENTS": "primary"}):
+        ex_on = _bare_cdp_ex()
+        lines_on, _ = await _drive(ex_on, events, lab)
+    check("marker_none_in_flight_nothing_tagged", len(lines_on) == 6 and not any("limkey_probe" in ln for ln in lines_on), "\n".join(lines_on))
+    # --- flag OFF: byte-identical to the PRE-CHANGE executor for the same events
+    old = load_pre_change_module()
+    if old is None:
+        print("[SKIP] marker flag-off differential (git object not available)")
+        check("marker_flag_off_differential_skipped_no_git", True)
+    else:
+        with env(**{FLAG: None}):
+            lines_old, _ = await _drive(_bare_cdp_ex(old.PurchaseExecutor), events, lab)
+            lines_new, _ = await _drive(_bare_cdp_ex(), events, lab)
+        check("marker_flag_off_old_printed_lines", len(lines_old) == 6, "\n".join(lines_old))
+        check("marker_flag_off_identical_to_pre_change", lines_old == lines_new, f"\nold={lines_old}\nnew={lines_new}")
+        # and with the label / hdrs knobs off too (the default production line)
+        plain = {"TARGET_ATC_RESP_LABEL": None, "TARGET_ATC_RESP_HDRS": None}
+        with env(**{FLAG: None}):
+            lo, _ = await _drive(_bare_cdp_ex(old.PurchaseExecutor), events, plain)
+            ln_, _ = await _drive(_bare_cdp_ex(), events, plain)
+        check("marker_flag_off_default_knobs_identical", lo == ln_ and len(lo) == 4, f"\nold={lo}\nnew={ln_}")
+    # --- the marker keeps build.py's ATC_RESP / ATC_RESP_HDRS parse intact (build.py itself is the tools lane's)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("events_build_limkey", ROOT / "tools" / "events" / "build.py")
+    evb = importlib.util.module_from_spec(spec)
+    sys.modules["events_build_limkey"] = evb
+    spec.loader.exec_module(evb)
+    if len(resp) == 4:
+        m = evb.ATC_RESP_P.match(resp[0])
+        check("marker_build_py_still_matches_the_resp_line", bool(m) and m.group("ptab") == "warmup"
+              and m.group("status") == "429" and m.group("key") == "ERR_A2C_TCIN_RATE_LIMITED", resp[0])
+        rest = m.group("rest") if m else ""
+        tm, sm_ = evb.TAB_RE.search(rest), evb.SELFTEST_RE.search(rest)
+        check("marker_build_py_tab_and_selftest_still_parse",
+              bool(tm) and tm.group(1) == "warmup" and bool(sm_) and sm_.group(1) == "off" and "limkey_probe=1" in rest, rest)
+        m2 = evb.ATC_RESP_P.match(resp[1])
+        check("marker_build_py_untagged_line_has_no_marker", bool(m2) and "limkey_probe" not in m2.group("rest"))
+    if len(hdrs) == 2:
+        hm = evb.HDRS.match(hdrs[0][len("[INTERCEPTOR:warmup] "):])
+        parts = [p.strip() for p in (hm.group("rest") if hm else "").split(" | ") if p.strip()]
+        hdr = {p.partition("=")[0].strip().lower(): p.partition("=")[2].strip() for p in parts}
+        check("marker_build_py_hdrs_pair_parses", bool(hm) and hdr.get("limkey_probe") == "1"
+              and hdr.get("tgt-cart-error-key") == "_ERR_AUTH_DENIED" and hdr.get("x-ssx-hop") == "1", str(hdr)[:300])
+
+
 async def amain():
     test_cfg_and_js()
     test_reserve_limits()
@@ -767,6 +932,8 @@ async def amain():
     await test_errors_never_reach_the_heartbeat()
     await test_interceptor_stash()
     await test_err_key_unknown_is_question_mark()
+    test_is_probe_req_helper()
+    await test_probe_marker_on_atc_resp_lines()
 
 
 def main():

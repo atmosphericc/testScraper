@@ -3159,6 +3159,7 @@ class PurchaseExecutor:
                     # cart-clear DELETE (cart_items/{id}) and GETs, which would
                     # pollute the census.
                     _atc_resp_msg = None
+                    _lk_probe = False       # S2-LIMKEY-PROBE: this paused response is the in-flight probe's own
                     if self._atc_resp_capture_on and 'web_checkouts/v1/cart_items' in url and method == 'POST':
                         try:
                             _err_key = resp_headers.get('tgt-cart-error-key') or '-'
@@ -3173,6 +3174,10 @@ class PurchaseExecutor:
                             if _lkw is not None and label == 'warmup':
                                 _lkw.append((status, str(_err_key)[:80],
                                              str(resp_headers.get('x-ssx-hop') or '-')[:12]))
+                                # S2 fix round 2: tag the probe's OWN response (below) so the
+                                # event store can drop it from the decoy control; a concurrent
+                                # heartbeat on the other warmup tab is not tagged.
+                                _lk_probe = self._limkey_is_probe_req(event)
                             if status == 431:
                                 # 2026-09-13: Request Header Fields Too Large -- say how big
                                 # the request we sent on this tab was (dict reads only; the
@@ -3192,6 +3197,8 @@ class PurchaseExecutor:
                                 _atc_resp_msg += (
                                     f" tab={label} selftest="
                                     f"{'on' if getattr(self, '_harvest_selftest_armed', False) else 'off'}")
+                            if _lk_probe:
+                                _atc_resp_msg += " limkey_probe=1"      # S2-LIMKEY-PROBE (not a heartbeat decoy)
                         except Exception as _atc_resp_err:
                             self.logger.debug(f"[ATC_RESP] capture failed: {_atc_resp_err}")
                     # 2026-09-30 TARGET_ATC_RESP_HDRS: every response header of a
@@ -3210,6 +3217,10 @@ class PurchaseExecutor:
                                 if _hn < _ATC_HDRS_WARMUP_CAP:
                                     self._atc_hdrs_warm_n = _hn + 1
                                     _atc_hdrs_msg = atc_resp_hdrs_line(label, status, raw_resp_headers)
+                                    if _lk_probe:
+                                        # S2-LIMKEY-PROBE: one more '| name=value' pair (the form
+                                        # build.py's HDRS parser already splits on)
+                                        _atc_hdrs_msg += " | limkey_probe=1"
                         except Exception:
                             _atc_hdrs_msg = None
                     await tab.send(cdp.fetch.continue_request(request_id=event.request_id))
@@ -4024,6 +4035,27 @@ class PurchaseExecutor:
         except Exception:
             pass
 
+    def _limkey_is_probe_req(self, event) -> bool:
+        """S2-LIMKEY-PROBE (fix round 2): True when the paused response belongs to the probe
+        that is in flight (self._limkey_tcin), judged from the request body the CDP event
+        already carries (dict/attribute reads only, no await: the interceptor's continue goes
+        first). A body naming another TCIN (the heartbeat's bogus 81926151 on the other warmup
+        tab) is NOT the probe. A body we cannot read, or no recorded TCIN, counts as the probe:
+        a probe response left untagged would pollute the decoy control, a tagged decoy only
+        costs one control sample. Never raises."""
+        try:
+            t = str(getattr(self, '_limkey_tcin', '') or '')
+            if not t:
+                return True
+            pd = getattr(event.request, 'post_data', None)
+            if isinstance(pd, (bytes, bytearray)):
+                pd = bytes(pd).decode('utf-8', 'replace')
+            if not isinstance(pd, str) or not pd:
+                return True
+            return t in pd
+        except Exception:
+            return True
+
     def _limkey_skip(self, why: str, acct: str, now: float) -> None:
         """One [LIMKEY_PROBE] event=skip line per reason per 10 min per process, so a probe
         that never fires says why. Never raises."""
@@ -4118,6 +4150,7 @@ class PurchaseExecutor:
             line = 'home'
             if getattr(_sm, 'proxy_url', None):
                 line = 'egress' if getattr(_sm, 'egress_age_exempt', False) else 'proxy'
+            self._limkey_tcin = tcin        # S2 fix round 2: the interceptor tags only this TCIN's POST
             self._limkey_wait = []          # the interceptor appends (status, error key, hop) here
             res, err = None, ''
             try:
@@ -4127,6 +4160,15 @@ class PurchaseExecutor:
             finally:
                 seen = list(self._limkey_wait or [])
                 self._limkey_wait = None
+                self._limkey_tcin = None
+            if err:
+                try:
+                    # S2 fix round 2: a raised / timed-out evaluate can still land its POST (the
+                    # ATC path assumes the same with _orphan_atc_ts), so a won-cart po_only
+                    # ticket re-reads the cart before buying, as on the 2xx branch below.
+                    self._dummy_landed_suspect_ts = time.time()
+                except Exception:
+                    pass
             parsed = limkey_parse_result(res)
             key, hop = '?', '-'
             for st, k, h in reversed(seen):
