@@ -139,6 +139,25 @@ def _keep_live_failed_on() -> bool:
     return os.environ.get('TARGET_STOCK_RESET_KEEP_LIVE_FAILED', '0').strip() == '1'
 
 
+# FAIR-FRESH-1015 (10-09 window 9: a flickered newest flip was deferred behind a TCIN
+# already raced, first shot +6.7 s). Default OFF = the exact prior code.
+_FAIR_FRESH_LOCK = threading.Lock()
+
+
+def _fair_fresh_on() -> bool:
+    """FAIR-FRESH-1015 TARGET_FAIR_FRESH_FIX=1 (acts only where FX-1006-FAIR
+    consults it): (A) a window's freshness tests the out-of-stock read BEFORE the
+    window opened -- remembered per (TCIN, window_start) the first time this
+    manager sees the window -- not the latest one, so a flicker inside the first
+    seconds no longer makes the newest flip look old; (B) a TCIN already
+    dispatched inside its CURRENT window is never a FAIR contender (its first
+    volley is spent, even when the emergency reset made its row 'ready' again),
+    unless that race's accounts all sat out (no shot left); (C) the FAIR defer
+    print has its own rate-limit kind instead of sharing the MISS print's.
+    Only '1' arms it; unset / junk = off. Kill: =0."""
+    return os.environ.get('TARGET_FAIR_FRESH_FIX', '0').strip() == '1'
+
+
 def _rebuy_on() -> bool:
     """FX-1014-REBUY TARGET_REBUY_NONBUYERS=1 (needs TARGET_MULTI_SKU_MISS_REARM=1,
     whose all-free-sit-out check keeps an all-bought TCIN from opening empty
@@ -525,13 +544,21 @@ def _fx1006_fresh_snap(snap, now: float) -> bool:
     TARGET_MULTI_SKU_FAIR_FRESH_S (20) by a GENUINE flip -- the last out-of-stock
     read came no more than that long before the window opened. A window renewed
     by a read gap alone (no 200 for > TARGET_STOCK_HYST_S, no out-of-stock read)
-    or a first-ever read is not a flip, and nothing will publish it."""
+    or a first-ever read is not a flip, and nothing will publish it. With
+    TARGET_FAIR_FRESH_FIX=1 'the last out-of-stock read' is the one before the
+    window opened (snap['pre_false']), so a flicker after the open is not a miss."""
     try:
         if not _fx1006_reads_in_stock(snap, now):
             return False
         young_s = _env_float_clamped('TARGET_MULTI_SKU_FAIR_FRESH_S', 20.0, 2.0, 60.0)
         ws = float(snap.get('window_start') or 0.0)
         lf = float(snap.get('last_false') or 0.0)
+        if _fair_fresh_on():
+            # FAIR-FRESH-1015 (A): the out-of-stock read BEFORE this window opened
+            # (stock_snapshot adds it); a missing / non-finite stamp keeps `lf`.
+            _pf = snap.get('pre_false')
+            if _valid_started_at(_pf):
+                lf = float(_pf)
         return ws > 0.0 and now - ws <= young_s and lf > 0.0 and 0.0 <= ws - lf <= young_s
     except Exception:
         return False
@@ -2185,6 +2212,11 @@ class BulletproofPurchaseManager:
 
     def reset_completed_purchases_by_stock_status(self, stock_data):
         """Stock-aware reset: only reset completed purchases for products that are OUT OF STOCK"""
+        if _fair_fresh_on():
+            try:
+                self._fair_fresh_prime(stock_data)   # FAIR-FRESH-1015 (A): first sight of a new window
+            except Exception:
+                pass
         with self._state_lock:
             # Load current states
             states = self._load_states_unsafe()
@@ -5031,7 +5063,9 @@ class BulletproofPurchaseManager:
         firing any callback (stock_check_resilient.py:937-980). Never counted:
         a TCIN on an old window (a flicker back inside the hysteresis included)
         or one already raced ('failed') -- it re-races with whatever is free and
-        must not shrink a fresh flip's volley. Never raises."""
+        must not shrink a fresh flip's volley. (TARGET_FAIR_FRESH_FIX=1 extends
+        'already raced' to a TCIN dispatched in its current window whose row the
+        emergency reset made 'ready' again: _fair_fresh_raced.) Never raises."""
         try:
             now = time.time() if now is None else float(now)
             try:
@@ -5049,6 +5083,10 @@ class BulletproofPurchaseManager:
                 row = states.get(t) or {'status': 'ready'}
                 if row.get('status', 'ready') != 'ready':
                     continue
+                # FAIR-FRESH-1015 (B): a wave already raced in this window is no
+                # contender, even when the emergency reset made its row 'ready'.
+                if _fair_fresh_on() and self._fair_fresh_raced(t, snap):
+                    continue
                 if self._tcin_has_live_racer(t) or self._fx1006_recently_purchased(t, now, snap):
                     continue
                 if not free_workers or all(self._fx1006_worker_sits_out(w, t) for w in free_workers):
@@ -5057,6 +5095,29 @@ class BulletproofPurchaseManager:
             return out
         except Exception:
             return []
+
+    def _fair_fresh_raced(self, tcin, snap) -> bool:
+        """FAIR-FRESH-1015 (B): True when `tcin` was dispatched inside its CURRENT
+        stock window -- _fx1006_last_dispatch >= window_start - 0.5 s -- so its
+        first volley has left. Not when its last dispatch was in an earlier window
+        (or never recorded: a restart), nor when that dispatch's accounts all sat
+        out (_record_race_result noted it in _fair_fresh_noshot: no shot left, the
+        first volley is still owed). Never raises (False = still a contender)."""
+        try:
+            ws = (snap or {}).get('window_start')
+            if not _valid_started_at(ws):
+                return False
+            t = str(tcin)
+            with _FX1006_LOCK:
+                ld = self._fx1006_dict('_fx1006_last_dispatch').get(t)
+                ns = self._fx1006_dict('_fair_fresh_noshot').get(t)
+            if not _valid_started_at(ld) or float(ld) < float(ws) - 0.5:
+                return False
+            if _valid_started_at(ns) and float(ns) >= float(ld) - 1.0:
+                return False
+            return True
+        except Exception:
+            return False
 
     def _fair_share_plan(self, tcin, ready_workers, limit, others):
         """FX-1006-FAIR: (limit, reserve order) for `tcin`. Only free workers
@@ -5367,6 +5428,22 @@ class BulletproofPurchaseManager:
             for w, r in results_snapshot.items()
         }
 
+        if all_done and _fair_fresh_on():
+            # FAIR-FRESH-1015 (B): a race whose every account sat out (or never got a
+            # session) left no shot -- note it, so _fair_fresh_raced still counts the
+            # TCIN as owed its first volley. Never raises; touches no state.
+            try:
+                if not any_success and all(
+                        _is_sit_out_reason((r or {}).get('reason'))
+                        or (r or {}).get('reason') == 'session_init_timeout'
+                        for r in results_snapshot.values()):
+                    _t0 = race_agg.get('t0')
+                    with _FX1006_LOCK:
+                        self._fx1006_dict('_fair_fresh_noshot')[str(tcin)] = (
+                            float(_t0) if _valid_started_at(_t0) else time.time())
+            except Exception:
+                pass
+
         with self._state_lock:
             states = self._load_states_unsafe()
             cur = states.get(tcin, {}) or {}
@@ -5545,10 +5622,63 @@ class BulletproofPurchaseManager:
             checker = getattr(getattr(self, 'stock_monitor', None), '_resilient_checker', None)
             statuses = getattr(checker, '_tcin_status', None) if checker is not None else None
             s = statuses.get(str(tcin)) if statuses is not None else None
-            return _stock_status_snapshot(s, now)
+            snap = _stock_status_snapshot(s, now)
+            if _fair_fresh_on():
+                try:
+                    self._fair_fresh_stamp(tcin, snap)   # FAIR-FRESH-1015 (A)
+                except Exception:
+                    pass
+            return snap
         except Exception:
             return {'live': None, 'window_start': 0.0, 'last_true': 0.0,
                     'last_false': 0.0, 'age': None}
+
+    def _fair_fresh_stamp(self, tcin, snap) -> None:
+        """FAIR-FRESH-1015 (A, TARGET_FAIR_FRESH_FIX=1): remember, per (TCIN,
+        window_start), the last out-of-stock read BEFORE the window opened, taken
+        the first time this manager sees the window (then last_false < window_start
+        still holds), and add it to `snap` as 'pre_false'. Nothing is added when
+        the first sight already shows a read after the open (a flicker beat us to
+        it) or the TCIN has never read out of stock: the freshness test then falls
+        back to the latest last_false, exactly as with the flag off. One entry per
+        TCIN (the newest window). Never raises."""
+        try:
+            ws = snap.get('window_start')
+            if not _valid_started_at(ws):
+                return
+            ws = float(ws)
+            t = str(tcin)
+            with _FAIR_FRESH_LOCK:
+                d = self._fx1006_dict('_fair_fresh_pre')
+                ent = d.get(t)
+                if ent is None or ent[0] != ws:
+                    lf = snap.get('last_false')
+                    ent = (ws, float(lf) if (_valid_started_at(lf) and float(lf) < ws) else 0.0)
+                    d[t] = ent
+            if ent[1] > 0.0:
+                snap['pre_false'] = ent[1]
+        except Exception:
+            pass
+
+    def _fair_fresh_prime(self, stock_data) -> None:
+        """FAIR-FRESH-1015 (A): the flip callbacks (the stock-aware reset and
+        process_stock_data) call this first, so the window's pre-open stamp is taken
+        as early as the manager hears of the flip -- before a flicker read can
+        overwrite last_false. stock_data: the event dict {tcin: {...}} or a list of
+        {'tcin', 'in_stock'}. Never raises."""
+        try:
+            if not _fair_fresh_on():
+                return
+            if isinstance(stock_data, dict):
+                tcins = [t for t, d in stock_data.items()
+                         if (d.get('in_stock') if isinstance(d, dict) else d)]
+            else:
+                tcins = [p.get('tcin') for p in (stock_data or ())
+                         if isinstance(p, dict) and p.get('in_stock') and p.get('tcin') is not None]
+            for t in tcins:
+                self.stock_snapshot(t)
+        except Exception:
+            pass
 
     def race_join_tick(self, now=None) -> list:
         """FX-1014-JOIN (TARGET_RACE_JOIN_FREE=1): for every race still open on a TCIN
@@ -5752,6 +5882,11 @@ class BulletproofPurchaseManager:
         """Process stock data with CRITICAL STATE RULES - atomic transitions only"""
         results = []
 
+        if _fair_fresh_on():
+            try:
+                self._fair_fresh_prime(stock_data)   # FAIR-FRESH-1015 (A): first sight of a new window
+            except Exception:
+                pass
         with self._state_lock:
             states = self._load_states_unsafe()
 
@@ -6118,7 +6253,11 @@ class BulletproofPurchaseManager:
                         if _fair_share_on() and _miss_rearm_on():
                             _fresh_c = self._fx1006_defer_for_fresh(tcin)
                             if _fresh_c:
-                                if self._fx1006_log_ok('miss', self._fx1006_window_key(tcin)):
+                                # FAIR-FRESH-1015 (C): its own rate-limit kind -- it shared
+                                # ('miss', window) with the MISS prints and was silent for
+                                # 30 s after one (0 lines on 10-09). Flag off: 'miss'.
+                                if self._fx1006_log_ok('fair_defer' if _fair_fresh_on() else 'miss',
+                                                       self._fx1006_window_key(tcin)):
                                     print(f"[MULTI_SKU_FAIR_SHARE] {tcin}: old window -- deferring to "
                                           f"fresh TCIN(s) {sorted(_fresh_c)[:6]}; re-offered next tick")
                                 self._stamp_miss_rearm_hint(states, tcin)
@@ -6173,7 +6312,9 @@ class BulletproofPurchaseManager:
                         if result.get('success'):
                             # Mark as active to prevent other purchases this cycle
                             active_purchase = tcin
-                            if _miss_rearm_on():
+                            # FAIR-FRESH-1015 (B) reads the dispatch stamp too, so it is
+                            # written for the flag alone as well (MISS off).
+                            if _miss_rearm_on() or _fair_fresh_on():
                                 self._fx1006_note_dispatch(tcin)
 
                             # Reload states to get updated completion info

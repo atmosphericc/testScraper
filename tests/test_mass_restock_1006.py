@@ -13,6 +13,10 @@ FX-1006-YIELD TARGET_WAVE_FIRST_YIELD_MISSED=1 -- a racer in the 55-70 s
               wave-first wait frees its account for a skipped live TCIN.
 FX-1006-LOCK  TARGET_SHARED_LOCK_ORDER_FIX=1 -- app.py takes the purchase-state
               snapshot before shared_data.lock (source pin only here).
+FAIR-FRESH-1015 TARGET_FAIR_FRESH_FIX=1 -- an already-raced wave is never a FAIR
+              contender, a flickered newest flip stays "fresh" (pre-open OOS
+              stamp), and the FAIR defer print has its own log kind (the 10-09
+              window-9 replay, section 9).
 
 Stub workers / stub checker only: no browser, no network.
 Run: python tests/test_mass_restock_1006.py
@@ -52,7 +56,8 @@ FLAGS = dict(TARGET_MULTI_SKU_FAIR_SHARE=None, TARGET_MULTI_SKU_MISS_REARM=None,
              TARGET_AMBIGUOUS_COMMIT_LATCH=None, TARGET_PARK_ACCOUNT_TCINS=None,
              TARGET_HOME_SHARE_GUARD=None, TARGET_IDENTITY_REST=None,
              TARGET_REARM_AFTER_EMERGENCY_RESET=None, TARGET_QTY_PER_TCIN=None,
-             TARGET_RACE_STATE_STARTED_AT_GUARD=None, TARGET_WARMUP_CYCLE_SKIP_ON_STOCK=None)
+             TARGET_RACE_STATE_STARTED_AT_GUARD=None, TARGET_WARMUP_CYCLE_SKIP_ON_STOCK=None,
+             TARGET_FAIR_FRESH_FIX=None)
 MSKU = dict(TARGET_MULTI_SKU_DISPATCH="1", TARGET_MULTI_SKU_MAX_CONCURRENT="3",
             TARGET_MULTI_SKU_WORKERS_PER_TCIN="3", TARGET_MULTI_SKU_CAP_ALWAYS="1",
             TARGET_MULTI_SKU_RESERVE_TTL_S="120", TARGET_STUCK_RESET_LIVE_GUARD="1")
@@ -1386,6 +1391,465 @@ def test_lock_order_source_pin():
           "time.time() - float(after_state.get('completed_at') or 0) < 10.5" in src[i:i + 900])
 
 
+# ── 9. FAIR-FRESH-1015 (TARGET_FAIR_FRESH_FIX) ───────────────────────────────
+# 10-09 window 9 (run_20261009_000934, TCIN 1013166576): the newest flip B flickered
+# out of stock 0.4 s into its window, so the freshness test (which read the LATEST
+# out-of-stock read) called it old; the wave A raced 17 s earlier -- failed, then
+# emergency-reset to 'ready' -- still counted as a fresh, un-raced FAIR contender, so
+# B was deferred behind it: first shot +6.7 s. A = the raced wave (573), B = the newest
+# flip (576); replay_w9.py V0..V4 are the cases below.
+
+FF = "TARGET_FAIR_FRESH_FIX"
+W9 = {**MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", "TARGET_MULTI_SKU_MISS_REARM": "1",
+      "TARGET_STOCK_RESET_KEEP_LIVE_FAILED": "1", "TARGET_WAVE_FIRST_YIELD_MISSED": "1"}
+EV_W9_B = {B: {"in_stock": True, "title": "B", "max_qty": 2}}
+EV_W9_AB = {B: {"in_stock": True, "title": "B", "max_qty": 2}, A: {"in_stock": True, "title": "A", "max_qty": 2}}
+
+
+def _flicker(b):
+    """The in-window out-of-stock read of the newest flip: after the window opened,
+    before the latest in-stock read (so the latest read still reads in stock)."""
+    b.last_false_at = b.last_true_at - 0.15
+
+
+def _w9_state(m_factory, a_row=None, a_win_ago=17.0, a_dispatched=True, flicker=True):
+    """The w9 state, inside the caller's env: A raced in its window and was reset to
+    'ready' with a hint; B's window is 0.75 s old and its flip callback has just seen
+    it (first sight) -- then the flicker read lands."""
+    now = time.time()
+    a = _st(win_ago=a_win_ago, lf_ago=a_win_ago + 0.1)
+    b = _st(win_ago=0.75)                          # genuine flip: last OOS read 0.34 s before the open
+    row = dict(a_row) if a_row is not None else {"status": "ready", "rearm_hint_ts": now - 0.1}
+    m = m_factory({A: row, B: {"status": "ready", "rearm_hint_ts": now - 0.7}}, {A: a, B: b})
+    if a_dispatched:
+        m._fx1006_dict("_fx1006_last_dispatch")[A] = now - a_win_ago
+    m.stock_snapshot(A)
+    m.stock_snapshot(B)                            # the flip callback's first sight of B's window
+    if flicker:
+        _flicker(b)
+    return m, a, b
+
+
+def _w9_view(m):
+    now = time.time()
+    return (bpm_mod._fx1006_fresh_snap(m.stock_snapshot(B), now),
+            sorted(m._fx1006_defer_for_fresh(B)),
+            sorted(m._fair_share_contenders(B, set(), m.worker_pool.ready_workers())))
+
+
+def test_fair_fresh_flag_default_off():
+    for v in (None, "", "0", "true", "yes", "01", "2", "junk", "on"):
+        with env(**{FF: v}):
+            check(f"fresh_flag_off_{v!r}", bpm_mod._fair_fresh_on() is False)
+    for v in ("1", " 1 "):
+        with env(**{FF: v}):
+            check(f"fresh_flag_on_{v!r}", bpm_mod._fair_fresh_on() is True)
+
+
+def test_fair_fresh_w9_replay_flag_off_is_old_behaviour():
+    """Flag unset / junk: V1 reproduces the 10-09 deferral, the snapshot dict has no
+    new key and nothing is stored (byte-identical)."""
+    for flag in (None, "0", "true"):
+        with env(**{**FLAGS, **W9, FF: flag}):
+            m, a, b = _w9_state(lambda s, st: _mgr(states=s, statuses=st))
+            fresh, defer_b, cont_b = _w9_view(m)
+            check(f"w9_off_{flag}_B_not_fresh", fresh is False)
+            check(f"w9_off_{flag}_B_defers_to_A", defer_b == [A], defer_b)
+            check(f"w9_off_{flag}_A_is_contender", cont_b == [A], cont_b)
+            _, out = quiet(m.process_stock_data, EV_W9_B)
+            check(f"w9_off_{flag}_V1_started_nothing", m.started == [], (m.started, out[-600:]))
+            check(f"w9_off_{flag}_no_pre_key", "pre_false" not in m.stock_snapshot(B))
+            check(f"w9_off_{flag}_nothing_stored", not hasattr(m, "_fair_fresh_pre")
+                  and not hasattr(m, "_fair_fresh_noshot"))
+    # V2 (tick event with both): A goes first and takes the fleet; V3, V4 are unchanged
+    with env(**{**FLAGS, **W9}):
+        m, _, _ = _w9_state(lambda s, st: _mgr(states=s, statuses=st))
+        quiet(m.process_stock_data, EV_W9_AB)
+        check("w9_off_V2_A_first", m.started[:1] == [A], m.started)
+
+
+def test_fair_fresh_w9_replay_flag_on():
+    with env(**{**FLAGS, **W9, FF: "1"}):
+        # V0: B without a flicker -- fresh with or without the fix
+        m, _, _ = _w9_state(lambda s, st: _mgr(states=s, statuses=st), flicker=False)
+        fresh, defer_b, cont_b = _w9_view(m)
+        check("w9_on_V0_fresh", fresh is True and defer_b == [] and cont_b == [], (fresh, defer_b, cont_b))
+        # V1: B flickered, event carries B only
+        m, a, b = _w9_state(lambda s, st: _mgr(states=s, statuses=st))
+        fresh, defer_b, cont_b = _w9_view(m)
+        check("w9_on_V1_B_fresh", fresh is True)
+        check("w9_on_V1_B_not_deferred", defer_b == [], defer_b)
+        check("w9_on_V1_raced_A_not_a_contender", cont_b == [], cont_b)
+        _, out = quiet(m.process_stock_data, EV_W9_B)
+        check("w9_on_V1_B_started", m.started == [B], (m.started, out[-600:]))
+        check("w9_on_V1_B_dispatch_stamped", B in m._fx1006_dict("_fx1006_last_dispatch"))
+        # V2: the tick event carries A and B -- B first (A is dispatched in its window)
+        m, _, _ = _w9_state(lambda s, st: _mgr(states=s, statuses=st))
+        quiet(m.process_stock_data, EV_W9_AB)
+        check("w9_on_V2_B_first_then_A", m.started == [B, A], m.started)
+        # V3: A's row still 'failed' -- not a contender either way; B goes
+        m, _, _ = _w9_state(lambda s, st: _mgr(states=s, statuses=st),
+                            a_row={"status": "failed", "completed_at": time.time() - 0.6})
+        quiet(m.process_stock_data, EV_W9_B)
+        check("w9_on_V3_B_started", m.started == [B], m.started)
+        # V4: A's window is 22.4 s old -- stale, not a contender; both go, B first
+        m, _, _ = _w9_state(lambda s, st: _mgr(states=s, statuses=st), a_win_ago=22.4)
+        quiet(m.process_stock_data, EV_W9_AB)
+        check("w9_on_V4_both_B_first", m.started == [B, A], m.started)
+        # Part A alone is enough for B to be dispatched, Part B alone too (the other
+        # half is neutralised by hand): B's freshness and A's non-contender status
+        m, a, b = _w9_state(lambda s, st: _mgr(states=s, statuses=st))
+        m._fx1006_dict("_fair_fresh_pre").clear()                  # no stamp -> today's freshness for B
+        check("w9_partB_alone_B_not_fresh", bpm_mod._fx1006_fresh_snap(m.stock_snapshot(B), time.time()) is False)
+        check("w9_partB_alone_A_not_contender",
+              m._fair_share_contenders(B, set(), m.worker_pool.ready_workers()) == [])
+        m, a, b = _w9_state(lambda s, st: _mgr(states=s, statuses=st), a_dispatched=False)
+        check("w9_partA_alone_B_fresh", bpm_mod._fx1006_fresh_snap(m.stock_snapshot(B), time.time()) is True)
+        check("w9_partA_alone_A_still_contender",
+              m._fair_share_contenders(B, set(), m.worker_pool.ready_workers()) == [A])
+
+
+def test_fair_fresh_e2e_tick_first_volley_width():
+    """V2 through the REAL dispatch: with the fix B's first volley is all 3 free
+    accounts and A (raced already) gets none; without it A takes the fleet."""
+    for flag in ("1", None):
+        with env(**{**FLAGS, **W9, **E2E_ENV, FF: flag}):
+            gate = threading.Event()
+            now = time.time()
+            a = _st(win_ago=17.0, lf_ago=17.1)
+            b = _st(win_ago=0.75)
+            m, ws = _e2e_mgr({A: a, B: b}, gate)
+            m._states[A] = {"status": "ready", "rearm_hint_ts": now - 0.1}
+            m._states[B] = {"status": "ready", "rearm_hint_ts": now - 0.7}
+            m._fx1006_dict("_fx1006_last_dispatch")[A] = now - 17.0
+            m.stock_snapshot(B)
+            _flicker(b)
+            try:
+                _, out = quiet(m.process_stock_data, EV_W9_AB)
+                time.sleep(0.3)
+                shots = _shots(ws)
+                a_row = dict(m._states.get(A) or {})
+            finally:
+                _settle(m, gate, ws)
+            fired = sorted(t for v in shots.values() for t in v)
+            if flag:
+                check("e2e_on_B_gets_all_three", fired == [B, B, B], (shots, out[-1200:]))
+                check("e2e_on_A_zero_accounts", not any(A in v for v in shots.values()), shots)
+                check("e2e_on_A_stays_on_offer", bool(a_row.get("rearm_hint_ts")), a_row)
+            else:
+                check("e2e_off_A_takes_the_fleet", fired == [A, A, A], (shots, out[-1200:]))
+
+
+def test_fair_fresh_unraced_contender_splits_with_flickered_flip():
+    """A flickered newest flip B beside a genuinely fresh, UNRACED X: with Part A on
+    they split by the FAIR cap (ceil(3/2) = 2) and neither is deferred; off, B reads
+    old and defers to X."""
+    with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", "TARGET_MULTI_SKU_MISS_REARM": "1", FF: "1"}):
+        b = _st(win_ago=0.75)
+        m = _mgr(statuses={B: b, C: _st(win_ago=2.0)})
+        m.stock_snapshot(B)
+        _flicker(b)
+        check("split_B_fresh", m._fx1006_fresh_window(B) is True)
+        check("split_B_not_deferred", m._fx1006_defer_for_fresh(B) == [])
+        check("split_X_not_deferred", m._fx1006_defer_for_fresh(C) == [])
+        check("split_cap_is_2", _fair(m, B) == 2, _fair(m, B))
+        check("split_cap_X_is_2", _fair(m, C) == 2)
+    with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", "TARGET_MULTI_SKU_MISS_REARM": "1"}):
+        b = _st(win_ago=0.75)
+        m = _mgr(statuses={B: b, C: _st(win_ago=2.0)})
+        m.stock_snapshot(B)
+        _flicker(b)
+        check("split_off_B_defers_to_X", m._fx1006_defer_for_fresh(B) == [C])
+
+
+def test_fair_fresh_pre_stamp_rules():
+    with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", FF: "1"}):
+        b = _st(win_ago=0.75)
+        m = _mgr(statuses={B: b})
+        pre = b.last_false_at
+        s1 = m.stock_snapshot(B)
+        check("pre_taken_at_first_sight", s1.get("pre_false") == pre, s1)
+        _flicker(b)
+        s2 = m.stock_snapshot(B)
+        check("pre_survives_flicker", s2.get("pre_false") == pre and s2["last_false"] > s2["window_start"], s2)
+        check("pre_flickered_flip_is_fresh", bpm_mod._fx1006_fresh_snap(s2, time.time()) is True)
+        # first sight AFTER the flicker: no stamp -> today's answer (not fresh)
+        b = _st(win_ago=0.75, lf_ago=0.35)
+        m = _mgr(statuses={B: b})
+        s = m.stock_snapshot(B)
+        check("pre_absent_when_flicker_came_first", "pre_false" not in s, s)
+        check("pre_absent_falls_back_not_fresh", bpm_mod._fx1006_fresh_snap(s, time.time()) is False)
+        # never read out of stock: no stamp, not a flip
+        b = _st(win_ago=0.75)
+        b.last_false_at = 0.0
+        m = _mgr(statuses={B: b})
+        s = m.stock_snapshot(B)
+        check("pre_absent_never_oos", "pre_false" not in s and not bpm_mod._fx1006_fresh_snap(s, time.time()), s)
+        # a read-gap renewal (last OOS read 300 s before the open) is not a flip
+        b = _st(win_ago=1.0, lf_ago=300.0)
+        m = _mgr(statuses={B: b})
+        s = m.stock_snapshot(B)
+        check("pre_gap_renewal_stamped_but_not_fresh",
+              s.get("pre_false") and bpm_mod._fx1006_fresh_snap(s, time.time()) is False, s)
+        # an old window that flickers back stays old (no stamp: the flicker is after the open)
+        b = _st(win_ago=300.0, lf_ago=3.0)
+        m = _mgr(statuses={A: _st(), B: b})
+        check("pre_old_window_flicker_back_not_contender", _fair(m, A) == 3)
+        # a window past FAIR_FRESH_S is old even with a clean stamp
+        m = _mgr(statuses={A: _st(), B: _st(win_ago=25.0)})
+        check("pre_window_past_young_s_not_contender", _fair(m, A) == 3)
+        # a NEW window of the same TCIN takes its own stamp
+        b = _st(win_ago=30.0)
+        m = _mgr(statuses={B: b})
+        old = m.stock_snapshot(B)["pre_false"]
+        t = time.time()
+        b.window_start_at = t - 0.5
+        b.last_false_at = t - 0.9
+        b.last_true_at = b.last_checked_at = t - 0.1
+        s = m.stock_snapshot(B)
+        check("pre_new_window_own_stamp", s["pre_false"] == t - 0.9 != old, (s, old))
+        _flicker(b)
+        check("pre_new_window_fresh_after_flicker", bpm_mod._fx1006_fresh_snap(m.stock_snapshot(B), time.time()) is True)
+        # one entry per TCIN: memory is bounded by the TCIN count
+        check("pre_one_entry_per_tcin", len(m._fx1006_dict("_fair_fresh_pre")) == 1)
+        # probe off / no checker: no window, no stamp, no exception
+        m = _mgr(statuses={B: _st(win_ago=0.75)})
+        m.stock_monitor = None
+        check("pre_no_checker_no_stamp", "pre_false" not in m.stock_snapshot(B))
+        with env(TARGET_STOCK_PROBE="0"):
+            m = _mgr(statuses={B: _st(win_ago=0.75)})
+            check("pre_probe_off_no_stamp", "pre_false" not in m.stock_snapshot(B))
+
+
+def test_fair_fresh_snapshot_without_stamp_falls_back():
+    """A snapshot with no usable pre-window stamp (older monitor, missing / None /
+    NaN / inf / bool / text) keeps today's last_false behaviour and never raises."""
+    now = time.time()
+    genuine = {"age": 0.2, "last_true": now - 0.2, "last_false": now - 1.1, "window_start": now - 0.75}
+    flicker = {"age": 0.2, "last_true": now - 0.2, "last_false": now - 0.35, "window_start": now - 0.75}
+    with env(**{**FLAGS, FF: "1"}):
+        for bad in (None, 0, 0.0, -1.0, float("nan"), float("inf"), "x", True, [], {}):
+            g = dict(genuine, pre_false=bad)
+            f = dict(flicker, pre_false=bad)
+            check(f"fallback_{bad!r}_genuine_fresh", bpm_mod._fx1006_fresh_snap(g, now) is True)
+            check(f"fallback_{bad!r}_flicker_not_fresh", bpm_mod._fx1006_fresh_snap(f, now) is False)
+        check("fallback_key_missing", bpm_mod._fx1006_fresh_snap(dict(flicker), now) is False)
+        check("pre_stamp_rescues_flicker", bpm_mod._fx1006_fresh_snap(dict(flicker, pre_false=now - 1.1), now) is True)
+        check("pre_stamp_too_old_is_not_fresh",
+              bpm_mod._fx1006_fresh_snap(dict(flicker, pre_false=now - 100.0), now) is False)
+        check("pre_stamp_after_open_is_not_fresh",
+              bpm_mod._fx1006_fresh_snap(dict(flicker, pre_false=now - 0.3), now) is False)
+        check("fresh_snap_garbage_never_raises",
+              bpm_mod._fx1006_fresh_snap(None, now) is False and bpm_mod._fx1006_fresh_snap({"age": "x"}, now) is False)
+    with env(**{**FLAGS}):
+        # flag off: the key is ignored entirely
+        check("flag_off_ignores_pre_false", bpm_mod._fx1006_fresh_snap(dict(flicker, pre_false=now - 1.1), now) is False)
+
+
+def test_fair_fresh_callbacks_take_first_sight():
+    """The stock-aware reset and process_stock_data are the flip callbacks: each takes
+    the window's pre-open stamp for the in-stock TCINs of the event (dict or list
+    format) before any later flicker can overwrite last_false."""
+    ev = {B: {"in_stock": True, "title": "B"}, C: {"in_stock": False, "title": "C"}}
+    for label, call in (("reset_dict", lambda m: m.reset_completed_purchases_by_stock_status(ev)),
+                        ("reset_list", lambda m: m.reset_completed_purchases_by_stock_status(
+                            [{"tcin": B, "in_stock": True}, {"tcin": C, "in_stock": False}])),
+                        ("process", lambda m: m.process_stock_data(ev))):
+        with env(**{**FLAGS, **MSKU, FF: "1"}):
+            b = _st(win_ago=0.75)
+            pre = b.last_false_at
+            m = _mgr(statuses={B: b, C: _st(in_stock=False)})
+            quiet(call, m)
+            _flicker(b)
+            s = m.stock_snapshot(B)
+            check(f"callback_{label}_pre_taken", s.get("pre_false") == pre, s)
+            check(f"callback_{label}_oos_tcin_skipped", C not in m._fx1006_dict("_fair_fresh_pre"),
+                  m._fx1006_dict("_fair_fresh_pre"))
+        with env(**{**FLAGS, **MSKU}):
+            b = _st(win_ago=0.75)
+            m = _mgr(statuses={B: b, C: _st(in_stock=False)})
+            quiet(call, m)
+            check(f"callback_{label}_flag_off_inert", not hasattr(m, "_fair_fresh_pre"))
+    with env(**{**FLAGS, FF: "1"}):
+        m = _mgr(statuses={B: _st(win_ago=0.75)})
+        check("prime_garbage_never_raises",
+              all(m._fair_fresh_prime(x) is None for x in (None, 5, "x", [None, 3], {B: None}, {B: 1}, [{"tcin": None, "in_stock": True}])))
+
+
+def test_fair_fresh_part_b_contender_rules():
+    """Part B: a TCIN dispatched in its CURRENT window is no contender; one whose last
+    dispatch was before window_start - 0.5 s (an earlier window) still is."""
+    def mk(rel=None, noshot_rel=None, row=None, flag="1"):
+        st = {A: _st(win_ago=17.0), B: _st(win_ago=0.5)}
+        m = _mgr(states={A: row or {"status": "ready"}}, statuses=st)
+        ws = st[A].window_start_at
+        if rel is not None:
+            m._fx1006_dict("_fx1006_last_dispatch")[A] = ws + rel
+        if noshot_rel is not None:
+            m._fx1006_dict("_fair_fresh_noshot")[A] = ws + rel + noshot_rel
+        return m
+    with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", FF: "1"}):
+        check("partB_never_dispatched_is_contender", _fair(mk(), B) == 2)
+        check("partB_dispatched_in_window_not_contender", _fair(mk(rel=0.2), B) == 3)
+        check("partB_dispatched_long_after_open_not_contender", _fair(mk(rel=16.0), B) == 3)
+        check("partB_within_half_second_before_open_not_contender", _fair(mk(rel=-0.3), B) == 3)
+        check("partB_earlier_window_dispatch_is_contender", _fair(mk(rel=-0.7), B) == 2)
+        check("partB_long_ago_dispatch_is_contender", _fair(mk(rel=-60.0), B) == 2)
+        check("partB_row_ready_with_hint_still_excluded",
+              _fair(mk(rel=0.2, row={"status": "ready", "rearm_hint_ts": time.time()}), B) == 3)
+        # a race whose accounts all sat out left no shot: still owed its first volley
+        check("partB_noshot_same_dispatch_is_contender", _fair(mk(rel=0.2, noshot_rel=-0.05), B) == 2)
+        check("partB_noshot_of_an_earlier_race_does_not_count", _fair(mk(rel=0.2, noshot_rel=-5.0), B) == 3)
+        check("partB_garbage_stamps_never_raise_and_stay_contender",
+              all(_fair(_garbage_dispatch(v), B) == 2 for v in (None, 0, -5.0, float("nan"), "x", True)))
+        # a row that is not 'ready' was never a contender (unchanged)
+        check("partB_failed_row_unchanged", _fair(mk(rel=-60.0, row={"status": "failed"}), B) == 3)
+    with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1"}):
+        # flag off: today's rule -- the raced wave counts
+        check("partB_flag_off_raced_wave_still_contender", _fair(mk(rel=0.2), B) == 2)
+
+
+def _garbage_dispatch(v):
+    st = {A: _st(win_ago=17.0), B: _st(win_ago=0.5)}
+    m = _mgr(statuses=st)
+    m._fx1006_dict("_fx1006_last_dispatch")[A] = v
+    return m
+
+
+def _race_agg(n):
+    return {"lock": threading.Lock(), "total": n, "started": 0, "finished": 0, "results": {},
+            "units": 0, "t0": time.time()}
+
+
+def test_fair_fresh_race_with_no_shot_keeps_the_first_volley_owed():
+    """Through the real _record_race_result: a race whose every account sat out
+    (or never got a session) is noted; any real attempt, or a purchase, is not."""
+    sit = {"success": False, "reason": "account_parked_hot"}
+    held = {"success": False, "reason": "held_cart_other_tcin"}
+    nosession = {"success": False, "reason": "session_init_timeout"}
+    real = {"success": False, "reason": "rate_limited_429"}
+    won = {"success": True, "reason": None, "order_id": "123"}
+    cases = (("1", [sit, sit, sit], True), ("1", [sit, held, nosession], True),
+             ("1", [sit, real, sit], False), ("1", [sit, won, sit], False), ("1", [real] * 3, False),
+             (None, [sit, sit, sit], False))
+    for n, (flag, results, want) in enumerate(cases):
+        with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", FF: flag}):
+            st = {A: _st(win_ago=17.0), B: _st(win_ago=0.5)}
+            m = _mgr(states={A: {"status": "attempting", "started_at": time.time()}}, statuses=st)
+            agg = _race_agg(len(results))
+            m._fx1006_dict("_fx1006_last_dispatch")[A] = agg["t0"] + 0.01   # the dispatch stamp
+            for i, r in enumerate(results[:-1]):
+                quiet(m._record_race_result, A, dict(r), agg, f"W{i + 1}/x")
+            check(f"noshot_{n}_nothing_noted_before_the_last_account",
+                  A not in (getattr(m, "_fair_fresh_noshot", None) or {}))
+            quiet(m._record_race_result, A, dict(results[-1]), agg, f"W{len(results)}/x")
+            noted = A in (getattr(m, "_fair_fresh_noshot", None) or {})
+            check(f"noshot_{n}_{flag}_noted_{want}", noted is want, results)
+            if flag:
+                m._states[A] = {"status": "ready", "rearm_hint_ts": time.time()}   # the emergency reset
+                want_cap = 2 if want else 3
+                check(f"noshot_{n}_cap_for_B_is_{want_cap}", _fair(m, B) == want_cap, _fair(m, B))
+
+
+def test_fair_fresh_dispatch_stamp_without_miss_rearm():
+    """Part B reads _fx1006_last_dispatch, which only the MISS flag wrote: with the
+    new flag alone the dispatch is stamped too; with both off it is not."""
+    ev = {B: {"in_stock": True, "title": "B"}}
+    for flag, miss, want in (("1", None, True), (None, None, False), (None, "1", True), ("1", "1", True)):
+        with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", "TARGET_MULTI_SKU_MISS_REARM": miss, FF: flag}):
+            m = _mgr(statuses={B: _st()})
+            quiet(m.process_stock_data, ev)
+            stamped = B in (getattr(m, "_fx1006_last_dispatch", None) or {})
+            check(f"dispatch_stamp_{flag}_{miss}_{want}", m.started == [B] and stamped is want, (m.started, stamped))
+
+
+def test_fair_fresh_defer_print_has_its_own_log_kind():
+    """Part C: the FAIR defer print used to share ('miss', window) with the MISS prints
+    -- silent for 30 s after one (0 lines on 10-09). Own kind with the flag, and
+    rate-limited under it; flag off keeps the shared kind."""
+    ev = {O_: {"in_stock": True, "title": "O"}}
+    for flag in ("1", None):
+        with env(**{**FLAGS, **MSKU, "TARGET_MULTI_SKU_FAIR_SHARE": "1", "TARGET_MULTI_SKU_MISS_REARM": "1", FF: flag}):
+            m = _mgr(states={O_: {"status": "ready"}, F_: {"status": "ready"}},
+                     statuses={O_: _st(win_ago=90.0, lf_ago=1.0), F_: _st(win_ago=0.3)})
+            check("kind_setup_miss_slot_taken", m._fx1006_log_ok("miss", m._fx1006_window_key(O_)) is True)
+            _, o1 = quiet(m.process_stock_data, ev)
+            _, o2 = quiet(m.process_stock_data, ev)
+            n1, n2 = o1.count("old window -- deferring to fresh"), o2.count("old window -- deferring to fresh")
+            if flag:
+                check("kind_on_defer_printed_after_a_miss", n1 == 1, o1[-600:])
+                check("kind_on_defer_rate_limited_under_its_own_kind", n2 == 0, o2[-600:])
+                check("kind_on_text_unchanged", "[MULTI_SKU_FAIR_SHARE]" in o1 and "re-offered next tick" in o1)
+            else:
+                check("kind_off_defer_hidden_behind_the_miss_slot", n1 == 0 and n2 == 0, (o1[-600:], o2[-600:]))
+            check("kind_deferred_either_way_hinted", bool(_rows(m)[O_].get("rearm_hint_ts")), _rows(m)[O_])
+            check("kind_deferred_either_way_not_started", m.started == [], m.started)
+
+
+def test_fair_fresh_real_manager_constructs_with_flag_on():
+    """Startup-path rule: the REAL __init__ (state store, latch restore, banners) runs
+    with the flag on and builds a manager that handles a flip -- only the session /
+    browser system is stubbed out, and the cwd is a temp dir so 'logs/' lands there."""
+    import shutil
+    tmp = tempfile.mkdtemp(prefix="fairfresh_")
+    cwd = os.getcwd()
+    real_init_sessions = BulletproofPurchaseManager._initialize_session_system
+    m = None
+    try:
+        os.chdir(tmp)
+        os.makedirs("config", exist_ok=True)
+        with open(os.path.join("config", "product_config.json"), "w", encoding="utf-8") as f:
+            f.write('{"products": []}')     # process_stock_data reads its priority list from cwd
+        BulletproofPurchaseManager._initialize_session_system = lambda self: None
+        with env(**{**FLAGS, **W9, FF: "1"}):
+            m, out = quiet(BulletproofPurchaseManager)
+            check("real_init_constructed", isinstance(m, BulletproofPurchaseManager), out[-300:])
+            m.worker_pool = _Pool(_fleet())
+            m._maybe_run_session_sentinel = lambda: None
+            m._warmup_cycle_counter = 5
+            started = []
+            m.start_purchase = lambda tcin, title, max_qty=1: (started.append(tcin) or {"success": True, "duration": 1})
+            b = _st(win_ago=0.75)
+            _with_checker(m, {A: _st(win_ago=17.0, lf_ago=17.1), B: b})
+            m._fx1006_dict("_fx1006_last_dispatch")[A] = time.time() - 17.0
+            m.state_store.set(A, {"status": "ready", "rearm_hint_ts": time.time() - 0.1})
+            m.state_store.set(B, {"status": "ready", "rearm_hint_ts": time.time() - 0.7})
+            quiet(m.reset_completed_purchases_by_stock_status, EV_W9_B)
+            _flicker(b)
+            quiet(m.process_stock_data, EV_W9_B)
+            check("real_init_flickered_flip_dispatched", started == [B], started)
+            check("real_init_stamp_taken", "pre_false" in m.stock_snapshot(B))
+    finally:
+        try:
+            if m is not None:
+                m.shutdown()
+        except Exception:
+            pass
+        BulletproofPurchaseManager._initialize_session_system = real_init_sessions
+        os.chdir(cwd)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_fair_fresh_source_pins():
+    src = (ROOT / "src/purchasing/bulletproof_purchase_manager.py").read_text(encoding="utf-8")
+    mon = (ROOT / "src/monitoring/stock_check_resilient.py").read_text(encoding="utf-8")
+    i = src.index("def __init__(self, status_callback")
+    j = src.index("def _cleanup_stale_states", i)
+    check("pin_init_untouched", "fair_fresh" not in src[i:j] and "FAIR_FRESH" not in src[i:j])
+    check("pin_monitor_untouched", "pre_false" not in mon and "window_pre_false_at" not in mon)
+    check("pin_flag_exact_one", "os.environ.get('TARGET_FAIR_FRESH_FIX', '0').strip() == '1'" in src)
+    k = src.index("def _fx1006_fresh_snap")
+    seg = src[k:src.index("def _valid_started_at", k)]
+    check("pin_fresh_snap_flag_gated", "if _fair_fresh_on():" in seg and "snap.get('pre_false')" in seg, seg)
+    check("pin_note_dispatch_gate",
+          "if _miss_rearm_on() or _fair_fresh_on():\n                                self._fx1006_note_dispatch(tcin)" in src)
+    check("pin_defer_kind_switch", "'fair_defer' if _fair_fresh_on() else 'miss'" in src)
+    check("pin_contenders_gate", "if _fair_fresh_on() and self._fair_fresh_raced(t, snap):" in src)
+    check("pin_snapshot_stamp_gate_and_guard",
+          "if _fair_fresh_on():\n                try:\n                    self._fair_fresh_stamp(tcin, snap)" in src)
+    check("pin_prime_in_both_callbacks", src.count("self._fair_fresh_prime(stock_data)") == 2)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     order = [test_flags_default_off, test_reads_in_stock_pure, test_fair_share_limits,
@@ -1417,7 +1881,16 @@ def main():
              test_latched_line_holder_is_not_held_for_its_line,
              test_hold_back_only_for_a_contender_a_leftover_can_fire,
              test_two_line_holders_for_the_first_tcin_both_go_there,
-             test_yield_flag_off_source_pin, test_lock_order_source_pin]
+             test_yield_flag_off_source_pin, test_lock_order_source_pin,
+             test_fair_fresh_flag_default_off, test_fair_fresh_w9_replay_flag_off_is_old_behaviour,
+             test_fair_fresh_w9_replay_flag_on, test_fair_fresh_e2e_tick_first_volley_width,
+             test_fair_fresh_unraced_contender_splits_with_flickered_flip,
+             test_fair_fresh_pre_stamp_rules, test_fair_fresh_snapshot_without_stamp_falls_back,
+             test_fair_fresh_callbacks_take_first_sight, test_fair_fresh_part_b_contender_rules,
+             test_fair_fresh_race_with_no_shot_keeps_the_first_volley_owed,
+             test_fair_fresh_dispatch_stamp_without_miss_rearm,
+             test_fair_fresh_defer_print_has_its_own_log_kind,
+             test_fair_fresh_real_manager_constructs_with_flag_on, test_fair_fresh_source_pins]
     assert set(order) == set(tests), "every test must be listed in main()"
     for t in order:
         try:
