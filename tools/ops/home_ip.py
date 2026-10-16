@@ -2,8 +2,9 @@
 
 Why (2026-10-16 frame audit, C-1016-06): the home line's first shots got past the edge
 limiter 21/59 on the six nights 09-11..09-30a and 2/69 on 10-02 / 10-09 / 10-16, and the
-break lines up with the 10-01 power outage. The home public IP was never logged anywhere,
-so whether it changed then cannot be answered from our side.
+break is Target-side or network-side (nothing in what we send changed, 10-16 analyst). The home public IP
+was never logged anywhere, so whether it changed cannot be answered from our side. (Unexpected shutdowns
+are no marker: Kernel-Power 41 fires in the good era too - 09-24, 09-27, 09-28 x2, 09-29.)
 
     python tools/ops/home_ip.py            # record now, print the masked IP and whether it changed
     python tools/ops/home_ip.py --show     # print the recorded history (masked)

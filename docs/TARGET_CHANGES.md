@@ -311,11 +311,14 @@ Entry format:
   volume of ours on it) got past the edge limiter 21/59 on 09-11..09-30a and 2/69 on 10-02 / 10-09 / 10-16; per volley
   14/31 vs 2/23 (one-sided Fisher p=0.0035, `q.py first_shot_era`); inside both clock bands (before 03:40 5/17 -> 1/45,
   from 03:40 16/41 -> 1/24). 10-01 (13/15, our first hot order) is kept apart. C-1016-06.
-- **Target-side or ours?** NOT ESTABLISHED. No src / bat / config commit between the 10-01 and 10-02 runs, but 10-02
-  is only 3 volleys; many flags were armed 10-04..10-08, the TCIN mix changed (8 new TCINs from 10-09), the home line
-  had a power outage on 10-01 (whether the public IP changed is unknown: it was never logged; logged from 10-16 by
-  `tools/ops/home_ip.py`), and HUMAN/PX "Press & hold" on the harvest tabs began ~10-04. An analyst is diffing
-  what we send on first shots between the eras.
+- **Target-side or ours?** NOT ours, as far as the request goes (C-1016-14): an Opus analyst diffed the first
+  main-tab add-to-cart field by field (URL + key, body qty 2, 16 header names in order, Shape prefix and source,
+  Referer / Origin, page state, no preflight, round trip) and every request-shaping bat flag across the bat versions
+  - unchanged between 09-25 / 09-30a / 10-01 and 10-09 / 10-16; 10-02 ran the 10-01 commit; the edge 429 itself is
+  byte-identical (9 headers) in every era. Left: a Target-side policy change vs a network-side change (home public
+  IP, edge reached) - not separable from our logs (IP logged only from 10-16 by `tools/ops/home_ip.py`; unexpected
+  shutdowns are no marker, the good era had five). HUMAN/PX is intermittent (10-04/05, 10-09, 10-14; 0 on 10-16),
+  not a regime, and sits after the limiter anyway.
 - **Detection gap:** ~15 days and 2 drop nights. Each post-10-01 night was read on its own (10-02 "1/9 vs 15/65,
   p=0.67"; 10-09 "night x TCIN"; 10-16 first written up as "cadence NOT ESTABLISHED") because the post-run compared one
   night against a pooled baseline per shot. Fixed by the R-ERA volley query and post-run v3 (C-1016-10).
