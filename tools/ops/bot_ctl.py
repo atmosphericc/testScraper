@@ -41,6 +41,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BAT = ROOT / "run_bot_with_nightly_restart.bat"
 DASHBOARD_PORT = 5001
+STAMP = ROOT / "state" / "last_bot_ctl_stop.json"
+CMD_LOG = ROOT / "logs" / "bot_ctl.log"
 BOT_PROFILE = re.compile(r"nodriver-profile|session_profiles|smoke_profiles", re.I)
 
 # Runs as its own process: leave our console, join the target's, refuse if a protected
@@ -127,6 +129,16 @@ def send_ctrl_c(pid: int) -> int:
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     protect = ",".join(str(p) for p in _protected_pids())
     try:
+        # 10-19: stamp the stop so app.py's TARGET_SIGINT_ATTRIB line can tell "bot_ctl stop" from an
+        # unexplained console Ctrl+C. A failing write must never stop the signal.
+        STAMP.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STAMP.with_name(STAMP.name + ".tmp")
+        tmp.write_text(json.dumps({"ts": time.time(), "pid": pid, "argv": sys.argv, "by": "bot_ctl"}),
+                       encoding="utf-8")
+        os.replace(tmp, STAMP)
+    except Exception:
+        pass
+    try:
         return subprocess.run([sys.executable, "-c", CTRL_C_HELPER, str(pid), protect],
                               creationflags=flags, timeout=15).returncode
     except Exception as e:
@@ -203,6 +215,29 @@ def start(wait_s: float = 30.0) -> int:
     return 1
 
 
+def _ppid_chain(limit: int = 5) -> str:
+    """'name(pid) < name(pid) ...' for this process and up to `limit` parents (psutil). Never raises."""
+    try:
+        import psutil
+        me = psutil.Process()
+        procs = [me] + me.parents()
+        return " < ".join(f"{p.name()}({p.pid})" for p in procs[:limit])
+    except Exception:
+        return "?"
+
+
+def _log_cmd(cmd: str, argv) -> None:
+    """Append one audit line per start/stop/restart to logs/bot_ctl.log. Never raises."""
+    try:
+        CMD_LOG.parent.mkdir(parents=True, exist_ok=True)
+        line = (f"{datetime.now().isoformat(timespec='seconds')} {cmd} argv={list(argv)} "
+                f"ppid_chain={_ppid_chain()}")
+        with open(CMD_LOG, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -221,6 +256,7 @@ def main(argv=None) -> int:
                if s["running"] else f"not running (bot Chrome x{s['bot_chrome']}, dashboard "
                                     f"{'up' if s['dashboard_up'] else 'down'})"))
         return 0
+    _log_cmd(a.cmd, sys.argv if argv is None else ["bot_ctl.py"] + list(argv))
     if a.cmd == "stop":
         return stop(a.grace)
     if a.cmd == "start":

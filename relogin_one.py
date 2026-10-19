@@ -683,6 +683,100 @@ def _arm_deadman():
     t.start()
 
 
+def _sigint_attrib_line(signum=None):
+    """2026-10-19 TARGET_SIGINT_ATTRIB: one attribution line for a console Ctrl+C (same format as
+    app.py's helper). Reports last-input idle ms, the foreground window title and whether
+    tools/ops/bot_ctl.py stamped a stop in the last 30 s. Never raises, never sleeps."""
+    idle = fg = age = None
+    try:
+        import ctypes
+
+        class _LII(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+        lii = _LII()
+        lii.cbSize = ctypes.sizeof(_LII)
+        u32 = ctypes.WinDLL("user32")
+        k32 = ctypes.WinDLL("kernel32")
+        if u32.GetLastInputInfo(ctypes.byref(lii)):
+            idle = int((k32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF)
+    except Exception:
+        pass
+    try:
+        import ctypes
+        u32 = ctypes.WinDLL("user32")
+        u32.GetForegroundWindow.restype = ctypes.c_void_p
+        u32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        hwnd = u32.GetForegroundWindow()
+        fg = ""
+        if hwnd:
+            buf = ctypes.create_unicode_buffer(256)
+            u32.GetWindowTextW(hwnd, buf, 256)
+            fg = buf.value[:80]
+    except Exception:
+        fg = None
+    try:
+        import json
+        with open(ROOT / "state" / "last_bot_ctl_stop.json", "r", encoding="utf-8") as f:
+            age = time.time() - float(json.load(f)["ts"])
+    except Exception:
+        age = None
+    spid = ppid = None
+    anc = False
+    try:
+        import json
+        with open(ROOT / "state" / "last_bot_ctl_stop.json", "r", encoding="utf-8") as f:
+            spid = int(json.load(f)["pid"])
+    except Exception:
+        spid = None
+    try:
+        ppid = os.getppid()
+    except Exception:
+        ppid = None
+    try:
+        # a fresh stamp only counts when the stamped pid (the wrapper bot_ctl signalled) is OUR ancestor
+        import psutil
+        # probe only when the stamp is fresh (a stale stamp file is never deleted; psutil costs ~50 ms)
+        anc = bool(spid is not None and age is not None and -5.0 <= age < 30.0
+                   and spid in [p.pid for p in psutil.Process().parents()[:5]])
+    except Exception:
+        anc = False
+    try:
+        fg_txt = "?" if fg is None else "".join(
+            c if (c.isprintable() and c != '"') else "'" if c == '"' else " " for c in str(fg))[:80]
+        who = "bot_ctl stop" if (age is not None and -5.0 <= age < 30.0 and anc) else "UNATTRIBUTED"
+        return (f'[SYSTEM] [SIGINT_ATTRIB] signum={signum} '
+                f'idle_ms={"?" if idle is None else idle} fg="{fg_txt}" '
+                f'bot_ctl_stamp_age_s={"none" if age is None else int(age)} '
+                f'stamp_pid={"none" if spid is None else spid} ppid={"?" if ppid is None else ppid} -> {who}')
+    except Exception:
+        return f"[SYSTEM] [SIGINT_ATTRIB] signum={signum} (line build failed)"
+
+
+def _sigint_attrib_emit(signum=None):
+    """Write the attribution line to stderr and logs/relogin.log. Never raises."""
+    try:
+        line = _sigint_attrib_line(signum)
+        try:
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        try:
+            _LOGFILE.parent.mkdir(exist_ok=True)
+            with open(_LOGFILE, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat(timespec='seconds')} {line}\n")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     _arm_deadman()
-    raise SystemExit(asyncio.run(main()))
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        # 10-19 TARGET_SIGINT_ATTRIB: attribute an unexplained console Ctrl+C; exit path unchanged.
+        if os.environ.get("TARGET_SIGINT_ATTRIB") == "1":
+            _sigint_attrib_emit(2)
+        raise

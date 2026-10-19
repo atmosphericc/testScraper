@@ -4659,6 +4659,107 @@ def _reap_orphan_repo_chromes():
         print(f"[BOOT_REAP] reap failed (non-fatal): {e}")
 
 
+def _sa_idle_ms():
+    """Milliseconds since the last keyboard/mouse input (GetLastInputInfo), or None."""
+    class _LII(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+    lii = _LII()
+    lii.cbSize = ctypes.sizeof(_LII)
+    u32 = ctypes.WinDLL("user32")
+    k32 = ctypes.WinDLL("kernel32")
+    if not u32.GetLastInputInfo(ctypes.byref(lii)):
+        return None
+    return int((k32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF)
+
+
+def _sa_fg_title():
+    """Title of the foreground window (first 80 chars), or None."""
+    u32 = ctypes.WinDLL("user32")
+    u32.GetForegroundWindow.restype = ctypes.c_void_p
+    u32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+    hwnd = u32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    buf = ctypes.create_unicode_buffer(256)
+    u32.GetWindowTextW(hwnd, buf, 256)
+    return buf.value[:80]
+
+
+def _sa_stamp_age_s():
+    """Age in seconds of state/last_bot_ctl_stop.json (written by tools/ops/bot_ctl.py
+    send_ctrl_c just before it raises the Ctrl+C), or None when missing/unreadable."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state", "last_bot_ctl_stop.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return time.time() - float(json.load(f)["ts"])
+
+
+def _sa_stamp_pid():
+    """pid recorded in state/last_bot_ctl_stop.json (the process bot_ctl sent its Ctrl+C to), or None."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state", "last_bot_ctl_stop.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return int(json.load(f)["pid"])
+
+
+def _sa_pid_is_ancestor(pid):
+    """True when `pid` is one of this process's first 5 ancestors (guarded psutil parents)."""
+    import psutil
+    return int(pid) in [p.pid for p in psutil.Process().parents()[:5]]
+
+
+def _sigint_attrib_line(signum=None):
+    """2026-10-19 TARGET_SIGINT_ATTRIB: one attribution line for a console Ctrl+C / SIGTERM.
+    Three wrapper kills (10-18 19:05, 23:15:37, 10-19 08:02:11) had no known sender. Reports
+    how long ago the keyboard/mouse was last used, the foreground window, and whether
+    bot_ctl stop stamped a Ctrl+C in the last 30 s. Every probe is its own try/except; never
+    raises, never sleeps, no network."""
+    try:
+        idle = _sa_idle_ms()
+    except Exception:
+        idle = None
+    try:
+        fg = _sa_fg_title()
+    except Exception:
+        fg = None
+    try:
+        age = _sa_stamp_age_s()
+    except Exception:
+        age = None
+    try:
+        spid = _sa_stamp_pid()
+    except Exception:
+        spid = None
+    try:
+        ppid = os.getppid()
+    except Exception:
+        ppid = None
+    try:
+        # a fresh stamp only counts when the stamped pid (the wrapper bot_ctl signalled) is OUR ancestor:
+        # a later restart / forced login inside the 30 s window must not inherit the label
+        # the (~50 ms) psutil probe runs only for a FRESH stamp: a stale stamp file is never deleted, so
+        # every later Ctrl+C would otherwise pay for it
+        anc = bool(spid is not None and age is not None and -5.0 <= age < 30.0 and _sa_pid_is_ancestor(spid))
+    except Exception:
+        anc = False
+    try:
+        fg_txt = "?" if fg is None else "".join(
+            c if (c.isprintable() and c != '"') else "'" if c == '"' else " " for c in str(fg))[:80]
+        who = "bot_ctl stop" if (age is not None and -5.0 <= age < 30.0 and anc) else "UNATTRIBUTED"
+        return (f'[SYSTEM] [SIGINT_ATTRIB] signum={signum} '
+                f'idle_ms={"?" if idle is None else idle} fg="{fg_txt}" '
+                f'bot_ctl_stamp_age_s={"none" if age is None else int(age)} '
+                f'stamp_pid={"none" if spid is None else spid} ppid={"?" if ppid is None else ppid} -> {who}')
+    except Exception:
+        return f"[SYSTEM] [SIGINT_ATTRIB] signum={signum} (line build failed)"
+
+
+def _sigint_attrib_emit(signum=None):
+    """Print the attribution line (flush, so it lands before the wrapper reads the run log)."""
+    try:
+        print(_sigint_attrib_line(signum), flush=True)
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     setup_run_logging()
     print("=" * 60)
@@ -4666,9 +4767,15 @@ if __name__ == '__main__':
     print("=" * 60)
     # Reap crashed-run Chrome orphans BEFORE anything launches a browser —
     # otherwise the profile dirs are still locked and every launch fails.
-    _reap_orphan_repo_chromes()
-    # Then make the console click-proof for the unattended overnight run.
-    _disable_console_quickedit()
+    try:
+        _reap_orphan_repo_chromes()
+        # Then make the console click-proof for the unattended overnight run.
+        _disable_console_quickedit()
+    except KeyboardInterrupt:
+        # 10-19 TARGET_SIGINT_ATTRIB: the 10-18 23:15:37 kill landed here, before any handler existed.
+        if os.environ.get("TARGET_SIGINT_ATTRIB") == "1":
+            _sigint_attrib_emit(2)
+        raise
     print("[FEATURES] Real-time updates, infinite purchase loops")
     print("[SAFETY] Thread-safe, atomic operations, bulletproof error handling")
     print("[REALTIME] Server-Sent Events for immediate UI updates")
@@ -4936,6 +5043,11 @@ if __name__ == '__main__':
             os._exit(2)
         threading.Thread(target=_deadman, daemon=True, name="ShutdownDeadman").start()
 
+        try:
+            if os.environ.get("TARGET_SIGINT_ATTRIB") == "1":
+                _sigint_attrib_emit(signum)
+        except Exception:
+            pass
         print("\n[SYSTEM] Shutting down gracefully... (press Ctrl+C again to force-exit)")
         add_activity_log("Application shutting down", "info", "system")
 
