@@ -165,6 +165,11 @@ OFFLINE = [
     "test_band_coverage_1018",
     "test_thread_start_guard_1018",
     "test_start_validate_1018",
+    # 2026-10-19 bptests lane: the buy path is pre-order agnostic (node runs the chain JS, REGULAR vs
+    # PRE_ORDER_SELLABLE) + the over-limit first-add self-heal pinned with mutants; the wall-3 chain gaps
+    # under the wrapper's own manager settings (no browser, no network).
+    "test_preorder_chain_1019",
+    "test_wall3_chain_gaps_1019",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
