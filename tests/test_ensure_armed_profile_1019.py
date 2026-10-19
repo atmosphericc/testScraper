@@ -440,6 +440,11 @@ def _hardening_1019(three):
         f = T.Fake(t, running=True, age_h=3.0)
         EA.evening(T.A(), run=f, now=EVENING)
         check("B_evening_unwritable_state_no_login", not f.has("relogin_one.py"), f.cmds)
+        check("B_evening_unwritable_dir_no_stop_no_restart",
+              not f.has("bot_ctl.py stop") and not f.has("bot_ctl.py start"), f.cmds)
+        check("B_evening_unwritable_dir_logged",
+              "[LOGIN] state/ensure_armed.json not writable -- not restarting for a forced login"
+              in EA.LOG.read_text(encoding="utf-8"))
 
     with tempfile.TemporaryDirectory() as d:     # os.replace fails (AV lock / read-only): same
         t = Path(d); T.setup(t, three)
@@ -455,6 +460,27 @@ def _hardening_1019(three):
         finally:
             os.replace = real_replace
         check("B_os_replace_fails_no_login", not f.has("relogin_one.py"), f.cmds)
+        os.replace = boom                            # read-only state file: running GREEN bot, EVENING, fresh GUEST label
+        try:
+            f = T.Fake(t, running=True, age_h=3.0)
+            EA.evening(T.A(), run=f, now=EVENING)
+        finally:
+            os.replace = real_replace
+        check("B_evening_readonly_file_no_login_no_stop",
+              not f.has("relogin_one.py") and not f.has("bot_ctl.py stop") and not f.has("bot_ctl.py start"), f.cmds)
+        EA.STATE.write_text("{}", encoding="utf-8")
+        os.chmod(EA.STATE, 0o444)                    # a real read-only file (os.replace over it is refused on Windows)
+        try:
+            f = T.Fake(t, running=True, age_h=3.0)
+            EA.evening(T.A(), run=f, now=EVENING)
+        finally:
+            os.chmod(EA.STATE, 0o666)
+        ro_blocked = not f.has("bot_ctl.py stop")
+        check("B_evening_real_readonly_file_no_stop_or_(replace_allowed)", ro_blocked or os.name != "nt", f.cmds)
+        f = T.Fake(t, running=True, age_h=3.0)       # writable again: the same state DOES stop + login (the probe is not a blanket block)
+        EA.evening(T.A(), run=f, now=EVENING)
+        check("B_evening_writable_state_still_stops_for_login",
+              f.has("bot_ctl.py stop") and f.has("relogin_one.py"), f.cmds)
 
     with tempfile.TemporaryDirectory() as d:     # a write that "succeeds" but is not there on read-back
         t = Path(d); T.setup(t, three)

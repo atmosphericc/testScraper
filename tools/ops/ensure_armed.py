@@ -33,7 +33,9 @@ the only flag-off change is the [FLAGS] log line. With the flag on:
     under a lock (never overwrites another process's); a younger stamp already in the file at write time
     blocks the login (persist_stamp 'blocked');
   - it fails CLOSED when the state file cannot be read, is corrupt (incl. a non-dict last_forced_login),
-    cannot be locked / written / read back: no forced login, no stop of a running bot for a login;
+    cannot be locked / written / read back: no forced login, no stop of a running bot for a login
+    (evening() probes a lock + write + read-back of the state file before it may stop a bot for a login --
+    log line "[LOGIN] state/ensure_armed.json not writable -- not restarting for a forced login");
   - it also counts a login that happened outside ensure_armed: the newest "[ACCOUNT] <acct>: attempt 1/3"
     line in logs/relogin.log inside the gap. Limits: that is the TYPED-login mode only -- a hand login
     (relogin_one.py manual mode) logs [MANUAL]/[RESULT] and never "attempt 1/3", so it does NOT count;
@@ -236,6 +238,23 @@ def persist_stamp(acct: str, ts: float, gap_h: float | None = None) -> str:
             return "ok" if ok and abs(_stamps(back).get(acct, 0.0) - lf[acct]) < 1e-6 else "fail"
     except Exception:
         return "fail"
+
+
+def state_stamp_writable() -> bool:
+    """True when a stamp CAN be persisted right now: under the lock, write the current state back and read
+    it back identical. evening() asks this BEFORE it stops a running bot for a forced login -- a stop that
+    ends with 'stamp not persisted' (no login) would only bounce a GREEN bot for nothing."""
+    try:
+        with _StateLock() as lk:
+            if not lk.ok:
+                return False
+            cur, ok = load_state_strict(STATE)
+            if not ok or not save_json_strict(STATE, cur):
+                return False
+            back, ok = load_state_strict(STATE)
+            return bool(ok and back == cur)
+    except Exception:
+        return False
 
 
 def external_login_ts(acct: str, now: float, gap_h: float, root: Path | None = None) -> float:
@@ -624,6 +643,15 @@ def in_drop_band(now: float) -> bool:
     return 0 <= datetime.fromtimestamp(now).hour < 6
 
 
+def _require_writable(eligible: list) -> list:
+    """Flag on: an eligible forced login needs a persistable stamp BEFORE evening() may stop a running bot
+    for it. Not writable -> no eligible accounts (no stop, no login), one log line."""
+    if eligible and not state_stamp_writable():
+        log("[LOGIN] state/ensure_armed.json not writable -- not restarting for a forced login")
+        return []
+    return eligible
+
+
 def evening(args, run=default_run, now=None) -> int:
     now = time.time() if now is None else now
     t0 = time.time()
@@ -644,6 +672,7 @@ def evening(args, run=default_run, now=None) -> int:
         eligible = ([n for n in need
                      if now - effective_prev(n[0], [last], now, args.login_gap_h)[0] >= args.login_gap_h * 3600]
                     if state_ok else [])
+        eligible = _require_writable(eligible)
     else:
         last = state.get("last_forced_login", {})
         eligible = [n for n in need if now - float(last.get(n[0]) or 0) >= args.login_gap_h * 3600]
@@ -668,6 +697,7 @@ def evening(args, run=default_run, now=None) -> int:
                 eligible = ([n for n in need
                              if now2 - effective_prev(n[0], [last], now2, args.login_gap_h)[0] >= args.login_gap_h * 3600]
                             if state_ok else [])
+                eligible = _require_writable(eligible)
         result["verdict_before"] = verdict
         reasons = []
         if verdict != "GREEN":
