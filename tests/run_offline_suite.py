@@ -151,6 +151,11 @@ OFFLINE = [
     # port helpers and the in-window follower's log parsing, log tailing, config read and
     # pre-registered readout (no Chrome, no network, no bot).
     "test_guest_follow_1016",
+    # 2026-10-18 readiness S5: the composed wall-3 chain (3 real executors + the real manager race, REBUY,
+    # AC-1 + PO_2XX ambiguity, buyers file + restart) on one scripted Target model; and FX-1018-TEST-RELEASE
+    # (held/dirty release under a 429 cart read, RTO re-entry demotion). Stub tabs, no browser, no network.
+    "test_wall3_chain_1018",
+    "test_held_release_429_1018",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
