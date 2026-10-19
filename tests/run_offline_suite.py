@@ -151,6 +151,11 @@ OFFLINE = [
     # port helpers and the in-window follower's log parsing, log tailing, config read and
     # pre-registered readout (no Chrome, no network, no bot).
     "test_guest_follow_1016",
+    # 2026-10-18 readiness audit (tools lane): preflight FS-A3 (Windows Update pause vs the drop + 12 h, live
+    # active hours, fake registry rows) + F7 (stale `bat:NNNN` cites in CURRENT_STATE.md), and the saved query
+    # band_coverage.sql on a synthetic event store (temp dir, read-only q.py subprocess; no bot, no browser).
+    "test_preflight_wu_1018",
+    "test_band_coverage_1018",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

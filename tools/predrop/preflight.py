@@ -28,6 +28,9 @@ What it covers, and the night each check was learned the hard way:
   last_run  the newest run's boot (tools/predrop/boot_check.py), end, STATS, stalls, health,
             money markers                                                               10-07
   drop      hours to the drop, mode (FULL / SHORT / LAST-CALL), Windows Update overlap
+            2026-10-18: with --drop, host.wu_pause_vs_drop (the pause must end >= drop + 12 h), host.wu_active_hours (the
+            LIVE active hours vs the drop hour; Windows auto-adjusts them) and repo.state_bat_cites (a `bat:NNNN` cite in
+            the live sections of CURRENT_STATE.md that no longer lands on a `set` line of the wrapper)
 """
 from __future__ import annotations
 
@@ -151,6 +154,166 @@ def _parse_drop(s: str):
     return None
 
 
+# 2026-10-18 readiness audit (FS-A3): the Windows Update pause is compared with the DROP, not with now.
+WU_AFTER_DROP_S = 12 * 3600       # the pause must outlast the drop by this much (a restart after the window still loses the session)
+
+
+def _parse_iso_ts(s):
+    """ISO-8601 -> epoch seconds, or None (the registry's PauseUpdatesExpiryTime is e.g. 2026-10-22T05:01:59Z)."""
+    s = str(s or "").strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", s.replace("Z", "+00:00")))
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _hour_or_none(v):
+    try:
+        h = int(str(v).strip())
+    except Exception:
+        return None
+    return h if 0 <= h <= 23 else None
+
+
+def _in_active_hours(hour, start, end):
+    """True = the hour is inside the Windows Update ACTIVE hours (no automatic restart then); False = inside the
+    allowed-restart interval; None = unknown. start > end wraps midnight (19-13 means 19:00 .. 13:00 next day)."""
+    if start is None or end is None or start == end:
+        return None
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def wu_assess(reg, drop_ts=None, now=None):
+    """Pure: the Windows Update facts from the UX\\Settings registry row (a dict; {} when the key is unreadable)."""
+    now = time.time() if now is None else now
+    reg = reg or {}
+    exp_ts = _parse_iso_ts(reg.get("PauseUpdatesExpiryTime"))
+    pinned = {k: reg.get(k) for k in ("SmartActiveHoursState", "UserChoiceActiveHoursStart", "UserChoiceActiveHoursEnd")
+              if str(reg.get(k) if reg.get(k) is not None else "").strip()}
+    return {"have_reg": bool(reg), "exp_ts": exp_ts, "paused": exp_ts is not None and exp_ts > now,
+            "ah_start": _hour_or_none(reg.get("ActiveHoursStart")), "ah_end": _hour_or_none(reg.get("ActiveHoursEnd")),
+            "ah_values_present": pinned,
+            "covers_drop": (drop_ts is not None and exp_ts is not None and exp_ts > now and exp_ts >= drop_ts + WU_AFTER_DROP_S)}
+
+
+def wu_rows(R, info, drop_ts):
+    """The --drop-aware Windows Update rows. Adds NOTHING without a drop moment (default output unchanged)."""
+    A = "host"
+    if drop_ts is None:
+        return
+    if not info.get("have_reg"):
+        R.add(A, "wu_registry", "WARN", "HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings is not readable (key or values missing): the pause expiry and the active hours are UNKNOWN",
+              "check Settings -> Windows Update by hand: the pause must end after the drop + 12 h")
+    exp_ts = info.get("exp_ts")
+    need = drop_ts + WU_AFTER_DROP_S
+    if info.get("paused"):
+        d_h = (exp_ts - drop_ts) / 3600.0
+        if exp_ts < need:
+            R.add(A, "wu_pause_vs_drop", "WARN",
+                  f"the Windows Update pause ends {datetime.fromtimestamp(exp_ts):%Y-%m-%d %H:%M} = {abs(d_h):.1f} h {'BEFORE' if d_h < 0 else 'after'} the drop "
+                  f"({datetime.fromtimestamp(drop_ts):%Y-%m-%d %H:%M}); it must outlast the drop by 12 h (>= {datetime.fromtimestamp(need):%Y-%m-%d %H:%M}) or an update can install and restart the host in or right after the window",
+                  "extend the pause before the drop (Settings -> Windows Update -> Pause updates, or tools/ops/wu_drop_guard.ps1 elevated -Days N); the pause is the only durable control")
+        else:
+            R.add(A, "wu_pause_vs_drop", "OK",
+                  f"the Windows Update pause ends {datetime.fromtimestamp(exp_ts):%Y-%m-%d %H:%M} = {d_h:.1f} h after the drop (>= 12 h)")
+    hour = datetime.fromtimestamp(drop_ts).hour
+    s, e = info.get("ah_start"), info.get("ah_end")
+    if s is None or e is None:
+        R.add(A, "wu_active_hours", "WARN", "the live Windows Update active hours are not readable (ActiveHoursStart/End missing)",
+              "check Settings -> Windows Update -> Advanced -> Active hours by hand")
+        return
+    ah = f"{s:02d}:00-{e:02d}:00"
+    active = _in_active_hours(hour, s, e)
+    vals = info.get("ah_values_present") or {}
+    if vals:
+        auto = "; " + ", ".join(f"{k}={v}" for k, v in vals.items()) + " present in UX\\Settings (meaning not verified)"
+    else:
+        auto = ("; no SmartActiveHoursState / UserChoiceActiveHours value in UX\\Settings pins them, so Windows may auto-adjust them "
+                "(it rewrote 19-13 to 9-3 on 2026-10-16 01:22:59)")
+    covered = bool(info.get("covers_drop"))
+    if active is True:
+        where = "inside the active hours (no automatic restart)"
+    elif active is False:
+        where = "OUTSIDE the active hours = inside the allowed-restart interval"
+    else:
+        where = "of unknown position against the active hours"
+    if covered:
+        R.add(A, "wu_active_hours", "OK", f"live active hours {ah}; the drop hour {hour:02d}:00 is {where}; the pause covers the drop + 12 h, so no automatic restart is expected{auto}")
+    elif active is True and vals:
+        R.add(A, "wu_active_hours", "OK", f"live active hours {ah}; the drop hour {hour:02d}:00 is {where}{auto}")
+    else:
+        R.add(A, "wu_active_hours", "WARN",
+              f"live active hours {ah}; the drop hour {hour:02d}:00 is {where} and no pause covers the drop + 12 h{auto}",
+              "extend the Windows Update pause past the drop + 12 h; re-pinning the active hours alone is not durable")
+
+
+# F7 (2026-10-18): `bat:NNNN` line-number cites in CURRENT_STATE.md go stale on every wrapper edit.
+BAT_CITE = re.compile(r"\bbat:(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)")
+STATE_LIVE_DAYS = 14               # a dated `## ` section older than this (vs the file's As-of) is history, not a live section
+_FLAG_WORD = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){1,}\b")
+
+
+def _heading_date(h, year):
+    m = re.search(r"(20\d\d)-(\d\d)-(\d\d)", h)
+    try:
+        if m:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+        m = re.search(r"(?<![\d-])(\d\d)-(\d\d)(?![\d-])", h)
+        if m and year:
+            return datetime(year, int(m.group(1)), int(m.group(2))).date()
+    except ValueError:
+        pass
+    return None
+
+
+def stale_bat_cites(state_text, bat_sets, bat_nlines, asof=None, live_days=STATE_LIVE_DAYS):
+    """Pure. Which `bat:NNNN[-MMMM][,PPP]` cites in the LIVE sections of CURRENT_STATE.md do not resolve to a `set` line?
+    Live = the preamble, every undated `## ` section, `## STATE CARD`, and each dated section within `live_days` of `asof`
+    (the file's As-of date); older dated sections are history and are only counted. A single cite N resolves when line N is a
+    `set` line; a range A-B when it lies inside the file and holds at least one `set` line. `moved` lists cites that resolve to
+    a set line but not to any flag NAMED in the text just before the cite (since the previous cite, at most 140 characters): the line numbers shifted."""
+    set_at = {}
+    name_lines = {}
+    for n, _v, i in bat_sets:
+        set_at[i] = n
+        name_lines.setdefault(n, []).append(i)
+    live_cites = hist_cites = 0
+    stale, moved = [], []
+    live = True
+    for ln_no, line in enumerate(state_text.splitlines(), 1):
+        if line.startswith("## "):
+            d = _heading_date(line, asof.year if asof else None)
+            live = (d is None or asof is None or line.startswith("## STATE CARD") or (asof - d).days <= live_days)
+        prev_end = 0
+        for m in BAT_CITE.finditer(line):
+            seg_from, prev_end = max(prev_end, m.start() - 140), m.end()
+            if not live:
+                hist_cites += 1
+                continue
+            live_cites += 1
+            ok_all, lines_hit = True, []
+            for part in m.group(1).split(","):
+                a, _, b = part.partition("-")
+                lo, hi = int(a), int(b or a)
+                hit = [i for i in range(lo, min(hi, bat_nlines) + 1) if i in set_at]
+                lines_hit += hit
+                if (not b and lo not in set_at) or (b and (hi > bat_nlines or not hit)):
+                    ok_all = False
+                    why = (f"beyond the wrapper's {bat_nlines} lines" if hi > bat_nlines else "no `set` line there")
+                    stale.append({"state_line": ln_no, "cite": "bat:" + part, "why": why})
+            if ok_all:
+                names = [w for w in _FLAG_WORD.findall(line[seg_from:m.start()]) if w in name_lines]
+                if names and not any(set_at.get(i) in names for i in lines_hit):
+                    moved.append({"state_line": ln_no, "cite": m.group(0),
+                                  "now_at": {n: name_lines[n][:2] for n in names[-2:]}})
+    return {"live_cites": live_cites, "history_cites": hist_cites, "stale": stale, "moved": moved}
+
+
 # ── repo ───────────────────────────────────────────────────────────────────────
 
 def check_repo(R: Report, root: Path, git: bool, last_boot_ts):
@@ -191,6 +354,24 @@ def check_repo(R: Report, root: Path, git: bool, last_boot_ts):
                   "re-derive the armed flags from the wrapper itself (this pass does) and update the state file")
         else:
             R.add(A, "state_asof", "OK", f"CURRENT_STATE as-of {asof} is newer than the wrapper ({bat_d}) and the config ({cfg_d})")
+
+    def state_bat_cites():
+        st = root / ".claude" / "state" / "CURRENT_STATE.md"
+        txt = _read(st)
+        m = re.search(r"As of:\s*(\d{4})-(\d{2})-(\d{2})", txt[:4000])
+        asof = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date() if m else None
+        bat_nlines = len(_read(root / "run_bot_with_nightly_restart.bat").splitlines())
+        res = stale_bat_cites(txt, _bat_sets(root), bat_nlines, asof)
+        base = (f"{res['live_cites']} `bat:NNNN` cite(s) in the live sections of CURRENT_STATE.md "
+                f"({res['history_cites']} more in dated history sections not checked)")
+        if res["stale"] or res["moved"]:
+            parts = [f"L{x['state_line']} {x['cite']} ({x['why']})" for x in res["stale"][:6]]
+            parts += [f"L{x['state_line']} {x['cite']} (resolves to another flag; the named flag is now at {x['now_at']})" for x in res["moved"][:4]]
+            R.add(A, "state_bat_cites", "WARN",
+                  f"{base}: {len(res['stale'])} do not resolve to a `set` line, {len(res['moved'])} point at a different flag than the one named: " + "; ".join(parts),
+                  "cite the flag NAME (grep the wrapper for it), not a line number; re-derive the armed flags from the wrapper itself")
+        else:
+            R.add(A, "state_bat_cites", "OK", f"{base}: all resolve to a `set` line")
 
     def bat_sanity():
         b = (root / "run_bot_with_nightly_restart.bat").read_bytes()
@@ -286,6 +467,7 @@ def check_repo(R: Report, root: Path, git: bool, last_boot_ts):
         R.guarded(A, "head", head)
         R.guarded(A, "dirty", dirty)
     R.guarded(A, "state_asof", state_asof)
+    R.guarded(A, "state_bat_cites", state_bat_cites)
     R.guarded(A, "bat_sanity", bat_sanity)
     R.guarded(A, "flags_dead", flags_dead)
     R.guarded(A, "app_setdefaults", setdefaults)
@@ -351,7 +533,7 @@ def check_process(R: Report, root: Path):
     return info
 
 
-def check_host(R: Report):
+def check_host(R: Report, drop_ts=None):
     A = "host"
 
     def power():
@@ -377,7 +559,7 @@ def check_host(R: Report):
             R.add(A, "screensaver", "WARN", f"ScreenSaveActive={out.strip()}", "turn the screensaver off (it is a display state change)")
 
     def windows_update():
-        rows = _ps_json("Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings' -ErrorAction SilentlyContinue | Select-Object PauseUpdatesExpiryTime,ActiveHoursStart,ActiveHoursEnd")
+        rows = _ps_json("Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings' -ErrorAction SilentlyContinue | Select-Object PauseUpdatesExpiryTime,ActiveHoursStart,ActiveHoursEnd,SmartActiveHoursState,UserChoiceActiveHoursStart,UserChoiceActiveHoursEnd")
         r = rows[0] if rows else {}
         exp = (r.get("PauseUpdatesExpiryTime") or "").strip()
         ah = f"{r.get('ActiveHoursStart')}-{r.get('ActiveHoursEnd')}"
@@ -397,6 +579,10 @@ def check_host(R: Report):
         else:
             R.add(A, "wu_pause", "WARN", f"Windows Update NOT paused (AUOptions={au or '?'}: scheduled install ~03:00; active hours {ah} -> a restart is possible outside them; a forced restart hit 06-24 01:29)",
                   "Settings -> Windows Update -> Pause updates (1 week). The Startup link does auto-restart the bat after a reboot, but a reboot mid-window still loses the edge")
+        # 2026-10-18 FS-A3: compare the pause with the DROP (+12 h) and read the live active hours (rows only with --drop)
+        info = wu_assess(r, drop_ts)
+        R.wu_info = info
+        wu_rows(R, info, drop_ts)
 
     def events():
         rows = _ps_json("Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=(Get-Date).AddHours(-72)} -ErrorAction SilentlyContinue "
@@ -827,7 +1013,7 @@ def check_last_run(R: Report, root: Path):
 
 # ── drop timing ───────────────────────────────────────────────────────────────
 
-def check_drop(R: Report, drop_ts, wu_paused_ok: bool):
+def check_drop(R: Report, drop_ts, wu_paused_ok: bool, wu=None):
     A = "drop"
     if drop_ts is None:
         R.add(A, "time", "INFO", "no --drop given: mode FULL assumed (give --drop \"YYYY-MM-DD HH:MM\" local for the projections)")
@@ -839,8 +1025,12 @@ def check_drop(R: Report, drop_ts, wu_paused_ok: bool):
           f"(FULL > 3 h: audits + verified changes allowed; SHORT 1-3 h: config + proof + checklist only, no code; LAST-CALL < 1 h: checklist only)",
           "" if hours > 1 else "nothing new gets armed inside the last hour")
     hour = datetime.fromtimestamp(drop_ts).hour
-    if 2 <= hour < 11 and not wu_paused_ok:
-        R.add(A, "wu_overlap", "WARN", "the drop falls in 02:00-11:00, when Windows Update may restart the host (active hours end 02:00)", "pause Windows Update for the week")
+    s_, e_ = (wu or {}).get("ah_start"), (wu or {}).get("ah_end")
+    active = _in_active_hours(hour, s_, e_)
+    if not wu_paused_ok and (active is False if active is not None else 2 <= hour < 11):
+        live = (f"outside the live active hours {s_:02d}:00-{e_:02d}:00" if active is False
+                else "in 02:00-11:00 (the live active hours were not read)")
+        R.add(A, "wu_overlap", "WARN", f"the drop hour {hour:02d}:00 falls {live}, when Windows Update may restart the host", "pause Windows Update for the week")
     start = datetime.fromtimestamp(drop_ts - 20 * 60)
     R.add(A, "start_by", "INFO", f"start the bat by {start:%H:%M} (T-20 min): relogin pass ~45 s, boot GREEN at ~+4.5 min, then tools/predrop/boot_check.py --follow")
     return mode
@@ -897,14 +1087,15 @@ def run(root: Path, drop: str = "", tcins=None, host=True, readiness=True, git=T
     pinfo = {"bot_running": False}
     if host and WIN:
         pinfo = check_process(R, root)
-        check_host(R)
+        check_host(R, drop_ts)
     elif host:
         R.add("host", "skipped", "UNKNOWN", "host checks need Windows PowerShell")
     check_accounts(R, root, readiness, drop_ts)
     check_config(R, root, tcins)
     check_monitor(R, root, last_boot_ts)
-    wu_ok = any(r["id"] == "host.wu_pause" and r["status"] == "OK" for r in R.rows)
-    mode = check_drop(R, drop_ts, wu_ok)
+    wu_ok = any(r["id"] == "host.wu_pause" and r["status"] == "OK" for r in R.rows) \
+        and not any(r["id"] == "host.wu_pause_vs_drop" and r["status"] == "WARN" for r in R.rows)
+    mode = check_drop(R, drop_ts, wu_ok, getattr(R, "wu_info", None))
     rows = R.rows
     acts = [r for r in rows if r["status"] in ("FAIL", "WARN")]
     acts.sort(key=lambda r: ORDER.get(r["status"], 9))
