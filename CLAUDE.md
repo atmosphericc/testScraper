@@ -12,7 +12,7 @@
 ## Architecture — Resilient Stack (Round 2, validated 2026-05-13)
 Browser-native dispatcher: N persistent Chromes (one per BD ISP IP) fire bulk RedSky via `tab.evaluate(fetch(...))`. **99.95% over 60 min @ 3 RPS / 3 IPs / 33 TCINs** (zero 403s, 5 self-healed timeouts).
 
-- **Correction 2026-10-08:** since 09-09 (`RESILIENT_REDSKY_CHANNEL=apps_raw`, bat:106) the sweep is a raw urllib GET of `/v1/apps/tcin_product_list_v2` with app headers through the local forwarder (`src/monitoring/tab_dispatcher.py` ~194-245, `redsky_channel.py`), not `tab.evaluate(fetch)`; the pool Chromes carry heartbeats and cookies and gate `pick_session`. The browser-native path is the `web` channel, which HUMAN/PX walls on the BD prefixes. The 30-per-request cap is the web endpoint's; the apps endpoint is proven to 25 TCINs (25 once, 10-08 22:41 proof; 26-28 untested).
+- **Correction 2026-10-08:** since 09-09 (`RESILIENT_REDSKY_CHANNEL=apps_raw`, bat:106) the sweep is a raw urllib GET of `/v1/apps/tcin_product_list_v2` with app headers through the local forwarder (`src/monitoring/tab_dispatcher.py` ~194-245, `redsky_channel.py`), not `tab.evaluate(fetch)`; the pool Chromes carry heartbeats and cookies and gate `pick_session`. The browser-native path is the `web` channel, which HUMAN/PX walls on the BD prefixes. The 30-per-request cap is the web endpoint's; the apps endpoint runs 25 TCINs per request as routine since 10-09 (876,224 sweeps, 0 HTTP 400); the 10-08 22:41 proof itself returned 17; 26-28 were never sent (untested).
 - Architecture doc: `docs/RESILIENT_STACK.md`
 - Operational findings: `docs/RESILIENT_STACK_OPERATIONAL_NOTES.md`
 - Production: `USE_RESILIENT_STACK=1 python app.py` — rate via `RESILIENT_TARGET_RPS` (alias `TARGET_SWEEPS_PER_SEC`)
@@ -124,6 +124,9 @@ only a BLANKET run over `tests/` (a glob, an unexpanded `$var`, the directory, b
 `pytest`, xargs / find -exec / while over tests/). Since 2026-10-14 (operator) bot / login
 launches, a second bot and named live tests all pass; `python tools/ops/bot_ctl.py
 restart` is the way to (re)start the bot. Regression test: `tests/test_block_bot_launch_hook.py`.
+**Audit / review requests (operator, 2026-10-19 11:24):** when the request is an audit or a review, build / verify /
+merge / push freely, but ASK before any daytime `bot_ctl start` / `restart` or forced login. The nightly auto-arm and
+stopping a looping wrapper are exempt.
 Auto-mode classifier denials are final for that outcome — never route around one; handling
 in `.claude/agent-context.md` §1B.
 
@@ -155,6 +158,6 @@ without telling us — a collapse went unnoticed for six weeks once.
 - No source files are off-limits. `src/session/purchase_executor.py` is editable (overrides prior "DO NOT modify" guidance from the AIO refactor memory).
 
 ## Test Before Deploy
-- **Offline suite is the gate:** `python tests/run_offline_suite.py` (the files in its `OFFLINE` list — 53 on 2026-10-18; the count the runner prints is the authoritative one — ~8 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
+- **Offline suite is the gate:** `python tests/run_offline_suite.py` (the files in its `OFFLINE` list — 62 on 2026-10-19, 62/62 in 465 s; the count the runner prints is the authoritative one — ~8 min). Never blanket-run `tests/` — it holds live tests that launch browsers and can fire real purchases.
 - **After any boot:** `python tools/predrop/boot_check.py --follow` (read-only) must reach GREEN before anyone is told the bot is up; a startup exception can leave the process alive and unable to buy (10-07).
 - Target resilient stack: `RESILIENT_TEST_DURATION_S=120 RESILIENT_TEST_NUM_IPS=1 python test_resilient_stack.py` (fast smoke) or `python test_resilient_stack.py` (default 30 min).

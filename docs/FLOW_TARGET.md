@@ -202,7 +202,20 @@ Credentials: include. Returns `{cart_items: [{tcin, quantity}]}`. Use to detect 
 
 These appear on the `tgt-cart-error-key` response header of the checkout POST (`web_checkouts/v1/checkout`), intercepted via CDP RESPONSE stage. The CDP interceptor watches `*web_checkouts/v1/checkout*` at RESPONSE stage and `*carts.target.com*` at REQUEST stage simultaneously.
 
-## Step-by-Step Flow (SPA — all steps inside /checkout/start)
+## Step-by-Step Flow — the armed chain (production), then the legacy navigation flow (fallback only)
+
+With `TARGET_FAST_LANE=1` (armed in the bat) the buy path never navigates:
+1. ATC: `POST carts.target.com/web_checkouts/v1/cart_items` (fetch inside the warmed buyer tab, Shape headers from the bank or page-signed).
+2. `pre_checkout` is **awaited**, not fire-and-forget: up to 5 tries when the throttle answers 429
+   (`TARGET_FASTLANE_PRE_RETRY=1`, `_MAX=5`, `_GAP_MS=250`, `_BUDGET_MS=1500`; grep `pre_tries=` on the chain-done line).
+3. Place order (`POST .../web_checkouts/v1/checkout`) runs in the same `tab.evaluate` as steps 1-2: the whole chain
+   is one evaluate.
+4. The won-cart loop (`TARGET_WONCART_DIRECT=1`) takes over when the chain ends on a `pre_*` stop, a FAST_SELLING (FS) or
+   RESERVATION_FAILURE (RF) answer: it takes over from the chain instead of the legacy navigation path.
+5. The legacy navigation flow below runs only after an in-chain place-order 424 / other 4xx, and during the FAST_SELLING
+   cooldown. Kill switch for the whole chain: `TARGET_FAST_LANE=0`.
+
+### Legacy navigation flow (SPA — all steps inside /checkout/start; fallback only)
 1. Navigate to product page: `https://www.target.com/p/-/A-{TCIN}`
 2. (Optional) Select Shipping fulfillment option if product offers multiple fulfillment types
 3. ATC: `POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART_ITEMS,SUMMARY`
@@ -210,8 +223,8 @@ These appear on the `tgt-cart-error-key` response header of the checkout POST (`
    - Fallback: ATC button click if fetch returns non-200/201
    - On 401: wait for ATC button to enable (= token refresh complete), then retry fetch
 4. Verify cart: badge count > 0, flyout visible, or API GET confirms item in cart
-5. Fire pre_checkout (fire-and-forget, `keepalive: true`): `POST .../pre_checkout`
-6. Navigate to: `https://www.target.com/checkout/start`
+5. Fire pre_checkout (legacy path only: fire-and-forget, `keepalive: true`; the armed chain awaits it): `POST .../pre_checkout`
+6. Navigate to: `https://www.target.com/checkout/start` (legacy path only)
 7. Wait for either `[data-test="placeOrderButton"]` or `[data-test="save-and-continue-button"]` to appear
 8. If Place Order immediately visible and enabled → skip to step 10 (account pre-fills everything)
 9. S&C loop (max 6 iterations):

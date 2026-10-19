@@ -45,7 +45,7 @@ Chrome:
 - Owns a persistent profile dir (`state/session_profiles/sN/`) → cookies survive recycle
 - Connects through its own local forwarder port → pinned to one BD IP
 - Holds a long-lived target.com tab open
-- Refreshes cookies via tab heartbeat every ~30 min (no browser relaunch)
+- Refreshes cookies via a tab heartbeat (nominally every ~30 min per session). In practice each pool Chrome's homepage heartbeat times out (20 s) once at ~61-94 min age and the watchdog relaunches the Chrome (33 of 33 recycles on 10-19, same rotation on 10-16) — so pool Chromes are relaunched about every 61-94 min [MEASURED]
 
 A watchdog recycles individual Chromes that crash (one at a time, with cooldown).
 Initial launch staggered over `CHROME_STAGGER_TOTAL_S` (default 600s = 10 min)
@@ -225,7 +225,7 @@ In code:
   ~600-900ms end-to-end through one session.
 - **State persists** in `state/proxy_state.json` and `state/session_profiles/sN/`
 - **Watchdog recycle** uses RECYCLE_COOLDOWN_S=60 between attempts on the same session
-- **Cookie heartbeat** every ~30 min per session (round-robin with gap = 1800/N seconds)
+- **Cookie heartbeat** per session (round-robin with gap = 1800/N seconds = 100 s with 18 sessions; measured spacing ~120 s between heartbeats, gap plus the heartbeat's own duration)
 
 ## Architecture history
 

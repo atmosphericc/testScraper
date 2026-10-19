@@ -116,7 +116,7 @@ USE_RESILIENT_STACK=1 RESILIENT_TARGET_RPS=3.0 python app.py
 If the bot reports per-session 403 bursts (one IP getting hit hard):
 
 1. **proxy_state's auto-park kicks in** at 2 consecutive 403s, parking 3h
-2. The session's watchdog will recycle the Chrome at CONSECUTIVE_ERROR_RECYCLE_THRESHOLD=5 consecutive errors
+2. The session's watchdog will recycle the Chrome at CONSECUTIVE_ERROR_RECYCLE_THRESHOLD=10 consecutive errors (`multi_session_pool.py`, raised after 5/21)
 3. Other sessions continue serving
 4. After 3h park, the IP retests; if it succeeds, it auto-recovers
 
@@ -209,7 +209,7 @@ fires in the same second as the first `[STOCK STATS] t=30.0s` line (30 s after `
 - **>30-TCIN limitation**: `dispatch_verify` sends the full configured list
   UNCHUNKED and RedSky caps `product_summary_with_fulfillment_v1` at 30/req, so
   above 30 the ground-truth read fails every cycle and visibility goes UNKNOWN
-  (`verified=false`). The sweep chunks at 28 and is unaffected. Keep <=30 armed;
+  (`verified=false`). The sweep chunks at 28 and is unaffected only above 28 — on `apps_raw` at an apps cap between 25 and 28 the sweep is a single chunk of the same size as the ground-truth read and is blinded equally (the 28 and 30 caps are the web endpoint's; 25 per request is the only size proven on `apps_raw`, routine since 10-09, 26-28 untested). Keep <=25 armed;
   `check_session_readiness.py` and `preflight_fp_drop.py` warn up front
   when >30 TCINs are enabled.
 - `_note_tcin_visibility(missing, now, force_write=False) -> dict` with keys
@@ -268,5 +268,5 @@ All keys always present (schema 1; the round-3 keys are additive):
   verified visible by a fresh run) / PARTIAL (unchecked — added since the last
   run — or stale >24 h) / WARNING (an enabled TCIN is invisible) / UNKNOWN (no
   state file, unreadable config, or `verified=false`). Both scripts also warn
-  when >30 TCINs are enabled (the sweep chunks at 28; the unchunked ground-truth
-  read is what fails above 30).
+  when >30 TCINs are enabled (the web sweep chunks at 28; the unchunked ground-truth
+  read is what fails above 30; on `apps_raw`, 26-28 is untested and blinds both the sweep and the ground-truth read if rejected).

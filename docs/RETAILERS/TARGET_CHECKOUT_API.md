@@ -32,8 +32,8 @@ The existing ATC fetch at `src/session/purchase_executor.py:704-739` is the work
   ```
 - **Required headers:** Cached Shape headers from warmup tab + `Content-Type: application/json`, `Accept: application/json`, `Origin: https://www.target.com`, `Referer: https://www.target.com/p/-/A-<tcin>`, `x-application-name: web`.
 - **Success status:** 201
-- **Failure modes observed:** 401 (write token expired — retry after token refresh), 422/409 with `OUT_OF_STOCK`, 422/409 with `PURCHASE_LIMIT`/`MAX_QUANTITY` (qty fallback to 1), 403 with HTML body (Shape block).
-- **Code:** `purchase_executor.py:704-739` (primary), `:804-820` (auth retry), `:861-877` (qty fallback).
+- **Failure modes observed:** 401 (write token expired — retry after token refresh), 429 `ERR_A2C_TCIN_RATE_LIMITED` (edge limiter), 424 (`ITEM_NOT_READY_FOR_LAUNCH` and similar), 403 with HTML body (Shape block), and `400 MAX_PURCHASE_LIMIT_EXCEEDED` (4 times, all cumulative re-adds). The code also handles 422/409 `OUT_OF_STOCK` and 422/409 `PURCHASE_LIMIT`/`MAX_QUANTITY` (qty fallback to 1), but **0 of 18,785 shots ever got a 422 or 409** [MEASURED 10-19, C-1018-27].
+- **Code:** `src/session/purchase_executor.py` — the fast-lane chain and the legacy-path `cart_items` POST with its auth retry and qty fallback (the old line numbers 704-877 are dead: the file is ~12,260 lines now; grep `cart_items`).
 
 ---
 

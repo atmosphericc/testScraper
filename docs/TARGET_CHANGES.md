@@ -322,8 +322,11 @@ Entry format:
   - unchanged between 09-25 / 09-30a / 10-01 and 10-09 / 10-16; 10-02 ran the 10-01 commit; the edge 429 itself is
   byte-identical (9 headers) in every era. Left: a Target-side policy change vs a network-side change (home public
   IP, edge reached) - not separable from our logs (IP logged only from 10-16 by `tools/ops/home_ip.py`; unexpected
-  shutdowns are no marker, the good era had five). HUMAN/PX is intermittent (10-04/05, 10-09, 10-14; 0 on 10-16),
-  not a regime, and sits after the limiter anyway.
+  shutdowns are no marker, the good era had five). [CORRECTED 10-19, replaces an earlier "intermittent, not a
+  regime" reading; see the 2026-10-19 entry below.] HUMAN/PX Press & hold on the account
+  harvest tabs: 0 runs 09-21..10-02, 8 runs since 10-04 (10-04/05, 10-09 from 03:5x mid-drop, 10-11, 10-14 13:00,
+  10-19 x3 not cleared across 3 boots / ~3 h). It does not block `cart_items` (decoys ~80% 424 on walled profiles) but
+  it empties the Shape bank, so every shot goes page-signed. Measured on the home line since 09-11 (`proxied=0`): all 14 carts were `banked_replay`, and 0 of 2,258 page-signed shots carted (banked_replay 1,891 shots / 14 carts).
 - **Detection gap:** ~15 days and 2 drop nights. Each post-10-01 night was read on its own (10-02 "1/9 vs 15/65,
   p=0.67"; 10-09 "night x TCIN"; 10-16 first written up as "cadence NOT ESTABLISHED") because the post-run compared one
   night against a pooled baseline per shot. Fixed by the R-ERA volley query and post-run v3 (C-1016-10).
@@ -335,6 +338,42 @@ Entry format:
 - No Target Pokémon drop announced for 10-19..11-01 by Target or the trackers checked (Restockd, Swooper, TCG Drop Radar); the only published pattern is Fridays ~3-6 AM ET. Our own record: every covered Friday band since 09-11 had windows (6/6); Sat-Tue 0 of 9. [REPORTED + MEASURED; C-1018-08/10]
 - Nov 6 2026 street-date PDPs are live: 1012663804 30th Celebration Ditto Premium Collection $49.99, 1012793603 Figure Collection Mew $39.99, 1012850573 Figure Collection Mewtwo $39.99 (1012850569 is a 404). 1012663804 is not in `config/product_config.json` — the operator's list decision; agents never add. [MEASURED fetch; C-1018-10]
 - Still open from 10-16: the home line's first contact at the edge limiter (14/31 → 2/23 volleys after 10-01). New 10-18: the home line's public identity before 10-16 is unrecorded, 9 unclean host shutdowns clustered 09-27 → 10-04, and the local network identity did not change (C-1018-14). The Target-side vs network-side split stays NOT ESTABLISHED; the in-window guest follower (first scheduled run possible 10-18 23:40) is the next measurement.
+
+## 2026-10-19 — HUMAN/PX harvest wall regime (account Chromes, decoy-PDP harvest tabs) [MEASURED, run logs]
+
+- **Runs walled:** 0 runs 09-21..10-02; 8 runs since 10-04: 10-04/05, 10-09 (from 03:5x, mid-drop), 10-11, 10-14 13:00 and
+  three on 10-19. Cleared on its own in ~1 h on 10-14. On 10-19 the wall hit **all three profiles at onset in `_063954` (06:40:16-:20) and, from `_080803` on, only business + alt-1 (primary 2, then 0 px events), to at least
+  11:02:47 across 3 boots** (`run_20261019_063954`, `_080803`, `_094506`; `px=yes hits=px_container` x9 per account per
+  boot) and was not cleared by the 08:08 or 09:45 restarts. The 01:30 boot (`run_20261019_013059`) harvested normally:
+  0 px lines, 2 primary SELFTEST probes PASSED.
+- **Primary is distinct and NOT ESTABLISHED:** 6 / 2 / 0 px lines in the three boots; in `_094506` it had 0 px lines and
+  350 `click produced NO cart_items POST within 4s` instead. So "PX wall on all 3 harvest tabs on every 10-19 run" is wrong.
+- **Effect:** the wall does not block `cart_items` itself (decoys ~80% 424 on walled profiles) but no capture lands, the
+  bank is pruned after `TARGET_HARVEST_TTL_S=300`, and every main-tab shot goes PAGE-SIGNED (not "banked replay only").
+  On the home line since 09-11 all 14 carts were `banked_replay` and 0 of 2,258 page-signed shots carted; past wall 1 the
+  difference is NOT ESTABLISHED (n=8). The guest follower on the same line saw `px_wall=0` through 06:27.
+- **Link to a forced login:** onset (06:40) followed the 06:37/06:38 forced primary + business logins by 2-3 min, and the
+  10-14 13:00 wall followed a restart; whether a forced login precedes the wall is NOT ESTABLISHED (n=3). FR-1019-C3 CONFIRMED the regime count; the cause is open.
+
+## 2026-10-01 ~12:40-13:40 CT — the four 168.158/16 monitor exits' read share fell inside one process (cause NOT ESTABLISHED: Bright Data or Target) [MEASURED, monitor.M2 PARTIAL]
+
+- In `run_20260930_233818` the per-exit read share of the 168.158/16 exits against 31.105/16 fell from 0.96-1.03 to ~0.8
+  inside one running process, and to 0.55-0.76 by 10-14 .. 10-19. In-window `[STOCK][FLIP]` read p50 round trip:
+  627 ms (09-30) -> 1,385 ms (10-09) -> 6,248 ms (10-16). Onset 10-01 ~12:40-13:40 CT.
+- Descriptive only: the 11 slow `[STOCK][FLIP]` reads of 10-16 were all re-flips (`new_window=0`, 20-433 ms after an OOS
+  read) and 0 of the 9 window openings came via 168.158. We cannot tell whether Bright Data throttled those exits or
+  Target treats them differently. No action.
+
+## 2026-10-19 — outside-in: Refract / Stellar / trackers (live fetches; each fact tagged)
+
+- Refract `llms-full.txt` md5 `c74ab4d1e06707a99b88b47be7c384f0` is identical to the 10-18 fetch (the Target module is byte-identical
+  since 10-11). Stellar changed only in the Proxies / Accounts / IMAP pages; no other page differs. [MEASURED fetch]
+- TrackaLacker (Sep 22, Oct 8) and TCG Drop Radar (Oct 12) name no dated Target drop for 10-20..10-26. [REPORTED]
+- **Restockd, Oct 19 post: "Target: Releases seem to be shifting to Friday mornings, with the next potential drop on
+  10/23"** (a Friday), plus "Walmart: Another drawing is likely this Wednesday (10/21)". Dated but UNCONFIRMED. [REPORTED] Do not write "no public tracker lists a dated drop" (OUT-1 REFUTED as worded).
+- The three Nov-6 PDPs (1012663804, 1012793603, 1012850573) are Out of Stock with no pre-order text and
+  `purchase_limit: 1` in the item data (an UNSAVED capture, n=3). [MEASURED fetch] TrackaLacker's Oct 8 prices ($39.99
+  Ditto, $29.99 Mewtwo figure) conflict with the live PDP ($49.99 / $39.99). [REPORTED vs MEASURED fetch]
 
 ## Known-unknowns about the opponent
 

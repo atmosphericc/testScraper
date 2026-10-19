@@ -91,13 +91,13 @@ POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART
 }
 ```
 
-`{QUANTITY}` is the per-customer purchase cap from RedSky (`fulfillment.maximum_order_quantity.shipping.value` or `fulfillment.purchase_limit`), capped to ATP. Clamped [1, 10]. See `docs/FLOW_TARGET.md` for the propagation chain. Warmup POST stays `quantity: 1`.
+`{QUANTITY}` comes from the config pin (`TARGET_QTY_PER_TCIN=1` in the bat, plus the per-entry `qty`), applied as `min(pin, cap)` — **not** from RedSky `purchase_limit`: RedSky flips carry `purchase_limit='-'` in 302 of 302 unique flip reads [MEASURED 10-19; run logs and package logs each hold the same 302, so 604 would double-count]. Clamped [1, 10]. See `docs/FLOW_TARGET.md` for the propagation chain. Warmup POST stays `quantity: 1`.
 
 **Response status codes:**
 - `200` / `201` — success
 - `401` — auth token expired; wait for React to refresh, then retry
 - `403 + HTML body` — Shape Security block (stale/missing headers)
-- `409` / `422` — item OOS (body: `OUT_OF_STOCK`) or purchase-limit exceeded (body: `PURCHASE_LIMIT`/`MAX_QUANTITY`/`EXCEEDED`); executor falls back to `quantity: 1` once on the latter
+- `400 MAX_PURCHASE_LIMIT_EXCEEDED` — the only purchase-limit form ever observed (4 times, every one a cumulative re-add; each self-heal then ended 401 + a 90 s lockout). `409` / `422` with `OUT_OF_STOCK` / `PURCHASE_LIMIT` are what the executor handles in code, but **0 of 18,785 shots ever got a 422 or 409** [MEASURED 10-19, C-1018-27]
 - `424` — checkout POST rejected (see `tgt-cart-error-key` response header)
 
 ### `pre_checkout` API Call
@@ -400,10 +400,12 @@ plus community/web research (LordOfRestocks trick, Hidden AIO docs, r/PokemonDea
   PRE_ORDER_SELLABLE), not the street_date timestamp. The resilient stack
   already maps PRE_ORDER_SELLABLE to in_stock=True (live-proven 08-18
   1010892076). Hot street-dated TCINs are often publish-gated (absent from
-  RedSky entirely) until on-sale. Preorder opens (~3 AM ET, hours-long windows)
-  are far less contested than day-of restocks — being fast at the flip there is
-  the highest-value window. Next true test: **Sept 16, 2026, 3 AM ET** 30th
-  Celebration preorders, items published one at a time.
+  RedSky entirely) until on-sale. **Pre-orders: walls 2/3 are unproven.** Our code
+  has no pre-order branch, the one pre-order cart we ever got hit the same
+  `pre=429` (one pre-order cart, 0 orders, 0/78 races on 10-09; C-1018-26). "Far less contested than day-of restocks" is the vendors'
+  claim, not our measurement. The Nov-6 street-date PDPs (1012663804,
+  1012793603, 1012850573) were Out of Stock with no pre-order text on 10-19
+  [MEASURED fetch, unsaved].
 - **Win-shape calibration (all logged history)**: every first-201 ever landed at
   t=0.39–3.69s after window-open; only 3 persistence wins exist (61×/21×/68×
   429 before a 201, all through SOFT-429 walls, ~95–105s in). ZERO wins have
