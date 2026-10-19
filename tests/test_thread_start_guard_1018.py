@@ -53,6 +53,16 @@ class _Lock:
         return False
 
 
+class _Bus:
+    """Fake EventBus: records every subscription, like the real one (app.py EventBus.subscribe)."""
+
+    def __init__(self):
+        self.subs = []
+
+    def subscribe(self, event, cb):
+        self.subs.append((event, cb))
+
+
 class _Base:
     """Stub of StockMonitorThread / PurchaseManagerThread."""
     log = None
@@ -62,8 +72,14 @@ class _Base:
     short_lived = False     # worker thread exits at once (a started thread that has since died)
     made = None
     starts = None
+    SUBSCRIBES = False
 
     def __init__(self, *a, **kw):
+        # the real PurchaseManagerThread.__init__ subscribes _handle_stock_update to
+        # 'stock_updated' on the bus and nothing ever unsubscribes (app.py:1716), so every object
+        # built stays subscribed for the life of the process
+        if self.SUBSCRIBES and a:
+            a[0].subscribe('stock_updated', self._handle_stock_update)
         self.thread = None
         self.stock_monitor = object()
         self.stopped = False
@@ -83,6 +99,9 @@ class _Base:
         if failing and cls.fail_mode == "late":
             raise AttributeError(f"{self.NAME} diag boom")
 
+    def _handle_stock_update(self, *a, **k):
+        pass
+
     def set_stock_monitor(self, sm):
         pass
 
@@ -91,15 +110,17 @@ class _Base:
 
 
 def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fail_times=None,
-              stock_short_lived=False):
+              stock_short_lived=False, purchase_short_lived=False, purchase_fail_times=None):
     """Execute the real monitoring_loop with stubs."""
     log = []
+    bus = _Bus()
 
     class Stock(_Base):
         NAME = "stock"
 
     class Purchase(_Base):
         NAME = "purchase"
+        SUBSCRIBES = True
 
     for cls, fails in ((Stock, stock_fails), (Purchase, purchase_fails)):
         cls.log = log
@@ -111,6 +132,8 @@ def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fai
         cls.starts = 0
     Stock.fail_times = stock_fail_times
     Stock.short_lived = stock_short_lived
+    Purchase.fail_times = purchase_fail_times
+    Purchase.short_lived = purchase_short_lived
 
     shared = SimpleNamespace(lock=_Lock(), monitor_running=False)
     sleeps = {"n": 0}
@@ -123,7 +146,7 @@ def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fai
     ns = {
         "os": os, "time": SimpleNamespace(sleep=fake_sleep, time=time.time), "threading": threading,
         "StockMonitorThread": Stock, "PurchaseManagerThread": Purchase,
-        "event_bus": object(), "shared_data": shared,
+        "event_bus": bus, "shared_data": shared,
         "global_purchase_manager": None, "global_event_loop": None,
         "add_activity_log": lambda *a, **k: None,
     }
@@ -146,6 +169,7 @@ def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fai
             os.environ.pop("TARGET_THREAD_START_GUARD", None)
         else:
             os.environ["TARGET_THREAD_START_GUARD"] = old
+    Purchase.bus = bus
     return log, buf.getvalue(), err, Stock, Purchase
 
 
@@ -168,7 +192,8 @@ def main():
     check("OFF healthy: old order stock then purchase", log[:2] == ["stock", "purchase"], str(log))
     check("OFF healthy: old log markers",
           "Starting stock_thread..." in out and "[OK] purchase_thread started" in out)
-    check("OFF healthy: no new-code markers", "start failed" not in out)
+    check("OFF healthy: no new-code markers", "start failed" not in out and "NOT all threads" not in out)
+    check("OFF healthy: banner unchanged", "All threads started successfully" in out)
 
     # ---- OFF (explicit 0), stock start raises: today's behaviour = purchase never started
     log, out, err, S, P = _run_loop("0", stock_fails=True)
@@ -183,6 +208,7 @@ def main():
           "[OK] purchase_thread started (is_alive: True)" in out
           and "[OK] stock_thread started (is_alive: True)" in out)
     check("ON healthy: no [ERROR]", "[ERROR]" not in out, out[-300:])
+    check("ON healthy: banner says all threads started", "All threads started successfully" in out)
     check("ON healthy: no restarts", len(S.made) == 1 and len(P.made) == 1, f"{len(S.made)}/{len(P.made)}")
 
     # ---- ON, stock start raises: purchase alive, error line, process alive -------
@@ -247,6 +273,50 @@ def main():
     check("ON + purchase raises: error line names purchase_thread",
           "[MONITORING_LOOP] [ERROR] purchase_thread start failed: "
           "AttributeError('purchase diag boom')" in out)
+    check("ON + purchase raises: banner does NOT claim all threads started",
+          "All threads started successfully" not in out and "NOT all threads started" in out, out[-500:])
+
+    # ---- ON, purchase start() always fails over 10 cycles: ONE object, ONE subscriber ---------
+    # (the leak: a new PurchaseManagerThread every 10 s stays subscribed to stock_updated forever)
+    log, out, err, S, P = _run_loop("1", purchase_fails=True, cycles=10)
+    check("ON + purchase early raise x10 cycles: loop did not raise", err is None, repr(err))
+    check("ON + purchase early raise x10 cycles: exactly one PurchaseManagerThread built",
+          len(P.made) == 1, str(len(P.made)))
+    subs = [cb for (ev, cb) in P.bus.subs if ev == 'stock_updated']
+    check("ON + purchase early raise x10 cycles: exactly one stock_updated subscriber",
+          len(subs) == 1, str(len(subs)))
+    check("ON + purchase early raise x10 cycles: start() called 1 + one retry per health cycle",
+          P.starts == 1 + 10, str(P.starts))
+    check("ON + purchase early raise x10 cycles: retries use the same object, never 'died, restarting'",
+          "Purchase thread never started, retrying" in out and "Purchase thread died" not in out, out[-500:])
+    check("ON + purchase early raise x10 cycles: stock thread untouched",
+          len(S.made) == 1 and S.starts == 1 and S.made[0].thread.is_alive(), f"{len(S.made)}/{S.starts}")
+    n_err = out.count("purchase_thread restart failed")
+    check("ON + purchase early raise x10 cycles: [ERROR] line rate-limited to the first 3",
+          n_err == 3, str(n_err))
+
+    # ---- ON, purchase always fails over 65 cycles: still one object; log not flooded ----------
+    log, out, err, S, P = _run_loop("1", purchase_fails=True, cycles=65)
+    n_err = out.count("purchase_thread restart failed")
+    check("ON + purchase early raise x65 cycles: one object, one subscriber, never gives up",
+          len(P.made) == 1 and len([1 for (ev, cb) in P.bus.subs if ev == 'stock_updated']) == 1
+          and P.starts == 66, f"{len(P.made)}/{P.starts}")
+    check("ON + purchase early raise x65 cycles: [ERROR] lines = attempts 1,2,3,30,60 only",
+          n_err == 5, str(n_err))
+
+    # ---- ON, purchase fails twice then recovers: same object, becomes alive -------------------
+    log, out, err, S, P = _run_loop("1", purchase_fails=True, cycles=5, purchase_fail_times=2)
+    check("ON + purchase recovers on retry: same object, 3 start() calls, alive, one subscriber",
+          err is None and len(P.made) == 1 and P.starts == 3 and P.made[0].thread is not None
+          and P.made[0].thread.is_alive()
+          and len([1 for (ev, cb) in P.bus.subs if ev == 'stock_updated']) == 1,
+          f"{err!r} {len(P.made)}/{P.starts}")
+
+    # ---- ON, a started purchase thread that later died: rebuilt (flag-off behaviour) ----------
+    log, out, err, S, P = _run_loop("1", cycles=2, purchase_short_lived=True)
+    check("ON + started purchase thread died: rebuilt via the dead-thread path",
+          err is None and len(P.made) >= 2 and "Purchase thread died, restarting" in out,
+          f"{err!r} {len(P.made)}")
 
     # ---- ON, both raise: still no crash ------------------------------------------
     log, out, err, S, P = _run_loop("1", stock_fails=True, purchase_fails=True)
