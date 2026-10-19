@@ -157,6 +157,8 @@ OFFLINE = [
     # upstream: CONNECT/HTTP auth injection, 502 + stats.errors on a refusing upstream, and a
     # byte differential against `git show 73425568:src/proxy/local_forwarder.py` (loopback only).
     "test_forwarder_upstream_path_1018",
+    "test_wall3_chain_1018",
+    "test_held_release_429_1018",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
