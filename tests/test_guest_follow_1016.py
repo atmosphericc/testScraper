@@ -143,12 +143,12 @@ with tempfile.TemporaryDirectory() as d:
     wins.append({"tcin": "1010892076", "start_ms": base + 80_000, "end_ms": base + 90_000})
     con.commit()
     con.close()
-    for cls, exp in (("passed", "GUEST-DIFFERS"), ("limited", "SAME-FATE")):
+    for cls, exp in (("passed", "GUEST-DIFFERS"), ("limited", "SAME-FATE (concordant zero")):
         sh = [{"tcin": w["tcin"], "window_start_ms": w["start_ms"], "cls": cls} for w in wins for _ in range(3)]
         p = d / f"f_{cls}.json"
         p.write_text(json.dumps({"windows": wins, "shots": sh}), encoding="utf-8")
         r = F.readout(str(p), db)
-        check(f"readout_{cls}", r["verdict"] == exp and r["windows"] == 6, json.dumps({k: r[k] for k in ('verdict', 'windows')}))
+        check(f"readout_{cls}", r["verdict"].startswith(exp) and r["windows"] == 6, json.dumps({k: r[k] for k in ('verdict', 'windows')}))
     sh = [{"tcin": w["tcin"], "window_start_ms": w["start_ms"], "cls": "passed"} for w in wins[:4] for _ in range(3)]
     p = d / "f_few.json"
     p.write_text(json.dumps({"windows": wins[:4], "shots": sh}), encoding="utf-8")
@@ -225,6 +225,19 @@ check("rb_gm2_not_differs", run_mix([1, 1, 0, 0, 0], [0, 0, 0, 0, 0])["verdict"]
 check("rb_same4_gm1_samefate", run_mix([1, 0, 0, 0, 0], [0, 0, 0, 0, 0])["verdict"] == "SAME-FATE")
 check("rb_same3_inconclusive", run_mix([1, 0, 0, 0, 0], [0, 1, 0, 0, 0])["verdict"] == "INCONCLUSIVE")
 check("rb_all_pass_samefate", run_mix([1] * 5, [1] * 5)["verdict"] == "SAME-FATE")
+# FS-7 (1018): concordant-zero windows reported separately and labelled
+r = run_mix([0] * 5, [0] * 5)
+check("fs7_all_zero_label", r["verdict"] == "SAME-FATE (concordant zero: rules out member-account flagging only; "
+      "line vs TCIN-global not separated)", r["verdict"])
+check("fs7_all_zero_counts", r["both_zero"] == 5 and r["any_pass"] == 0 and r["windows"] == 5, json.dumps({k: r[k] for k in ("both_zero", "any_pass")}))
+r = run_mix([1] * 5, [1] * 5)
+check("fs7_all_pass_plain_samefate", r["verdict"] == "SAME-FATE" and r["both_zero"] == 0 and r["any_pass"] == 5, r["verdict"])
+r = run_mix([1, 0, 0, 0, 0], [0, 0, 0, 0, 0])
+check("fs7_one_pass_plain_samefate", r["verdict"] == "SAME-FATE" and r["both_zero"] == 4 and r["any_pass"] == 1, r["verdict"])
+r = run_mix([1] * 5, [0] * 5)
+check("fs7_differs_counts", r["verdict"] == "GUEST-DIFFERS" and r["both_zero"] == 0 and r["any_pass"] == 5)
+r = run_mix([0] * 4, [0] * 4)
+check("fs7_n4_zero_inconclusive", r["verdict"].startswith("INCONCLUSIVE") and r["both_zero"] == 4 and r["any_pass"] == 0)
 for g in ("cart", "admitted_fs", "inventory", "cart_limit", "wall2_denied"):
     r = scenario([W(0)], [mrow(0, g)], {(T, W(0)[1]): ["limited"] * 3})
     check(f"rb_gate_{g}_is_M", r["rows"] and r["rows"][0]["M"] is True)
