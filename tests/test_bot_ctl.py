@@ -17,6 +17,7 @@ Run: venv/Scripts/python.exe tests/test_bot_ctl.py
 """
 import importlib.util
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,6 +79,11 @@ bc.port_open = lambda port=5001: False
 bc.time.sleep = lambda s: None
 bc.send_ctrl_c = lambda pid: calls.append(("ctrl_c", pid)) or 0
 bc.wait_gone = lambda procs, timeout: calls.append(("wait", [p.pid for p in procs], timeout)) or []
+# 10-19: main() appends to logs/bot_ctl.log and send_ctrl_c stamps state/last_bot_ctl_stop.json - keep both
+# off the repo's real files, or every suite run writes real-looking `restart` lines into the audit log
+_tmp_ops = Path(tempfile.mkdtemp())
+bc.CMD_LOG = _tmp_ops / "bot_ctl.log"
+bc.STAMP = _tmp_ops / "last_bot_ctl_stop.json"
 
 
 class FakePopen:
@@ -135,6 +141,8 @@ check("restart_aborts_on_failed_stop", bc.main(["restart", "--grace", "1"]) == 1
 
 state.clear(); state.update(wrapper=[P(10)], app=[P(11)], chrome=[], _appear_on_start=True); calls.clear()
 check("restart_ok", bc.main(["restart", "--grace", "1"]) == 0 and any(c[0] == "popen" for c in calls), calls)
+check("restart_audit_line_goes_to_temp_log", bc.CMD_LOG.exists() and bc.CMD_LOG.parent == _tmp_ops
+      and bc.CMD_LOG != ROOT / "logs" / "bot_ctl.log")
 
 # ── the Ctrl+C helper ───────────────────────────────────────────────────────────
 try:

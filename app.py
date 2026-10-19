@@ -4693,6 +4693,19 @@ def _sa_stamp_age_s():
         return time.time() - float(json.load(f)["ts"])
 
 
+def _sa_stamp_pid():
+    """pid recorded in state/last_bot_ctl_stop.json (the process bot_ctl sent its Ctrl+C to), or None."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state", "last_bot_ctl_stop.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return int(json.load(f)["pid"])
+
+
+def _sa_pid_is_ancestor(pid):
+    """True when `pid` is one of this process's first 5 ancestors (guarded psutil parents)."""
+    import psutil
+    return int(pid) in [p.pid for p in psutil.Process().parents()[:5]]
+
+
 def _sigint_attrib_line(signum=None):
     """2026-10-19 TARGET_SIGINT_ATTRIB: one attribution line for a console Ctrl+C / SIGTERM.
     Three wrapper kills (10-18 19:05, 23:15:37, 10-19 08:02:11) had no known sender. Reports
@@ -4712,12 +4725,27 @@ def _sigint_attrib_line(signum=None):
     except Exception:
         age = None
     try:
+        spid = _sa_stamp_pid()
+    except Exception:
+        spid = None
+    try:
+        ppid = os.getppid()
+    except Exception:
+        ppid = None
+    try:
+        # a fresh stamp only counts when the stamped pid (the wrapper bot_ctl signalled) is OUR ancestor:
+        # a later restart / forced login inside the 30 s window must not inherit the label
+        anc = bool(spid is not None and _sa_pid_is_ancestor(spid))
+    except Exception:
+        anc = False
+    try:
         fg_txt = "?" if fg is None else "".join(
             c if (c.isprintable() and c != '"') else "'" if c == '"' else " " for c in str(fg))[:80]
-        who = "bot_ctl stop" if (age is not None and -5.0 <= age < 30.0) else "UNATTRIBUTED"
+        who = "bot_ctl stop" if (age is not None and -5.0 <= age < 30.0 and anc) else "UNATTRIBUTED"
         return (f'[SYSTEM] [SIGINT_ATTRIB] signum={signum} '
                 f'idle_ms={"?" if idle is None else idle} fg="{fg_txt}" '
-                f'bot_ctl_stamp_age_s={"none" if age is None else int(age)} -> {who}')
+                f'bot_ctl_stamp_age_s={"none" if age is None else int(age)} '
+                f'stamp_pid={"none" if spid is None else spid} ppid={"?" if ppid is None else ppid} -> {who}')
     except Exception:
         return f"[SYSTEM] [SIGINT_ATTRIB] signum={signum} (line build failed)"
 

@@ -45,11 +45,13 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 BASE_COMMIT = "3278ce7f"
 APP = (ROOT / "app.py").read_text(encoding="utf-8").replace("\r\n", "\n")
-HELPERS = ("_sa_idle_ms", "_sa_fg_title", "_sa_stamp_age_s", "_sigint_attrib_line", "_sigint_attrib_emit")
+HELPERS = ("_sa_idle_ms", "_sa_fg_title", "_sa_stamp_age_s", "_sa_stamp_pid", "_sa_pid_is_ancestor",
+           "_sigint_attrib_line", "_sigint_attrib_emit")
 FLAG = "TARGET_SIGINT_ATTRIB"
 LINE_RE = re.compile(
     r'^\[SYSTEM\] \[SIGINT_ATTRIB\] signum=(?P<sig>\S+) idle_ms=(?P<idle>\d+|\?) fg="(?P<fg>[^"\n]*)" '
-    r'bot_ctl_stamp_age_s=(?P<age>-?\d+|none) -> (?P<who>bot_ctl stop|UNATTRIBUTED)$')
+    r'bot_ctl_stamp_age_s=(?P<age>-?\d+|none) stamp_pid=(?P<spid>\d+|none) ppid=(?P<ppid>\d+|\?) '
+    r'-> (?P<who>bot_ctl stop|UNATTRIBUTED)$')
 
 _fails = []
 
@@ -96,7 +98,7 @@ def _helper_ns(**extra):
 
 
 # ---------------------------------------------------------------- 1. helper line
-def _line_with(idle=1234, fg="Windows Terminal", age=None, signum=2):
+def _line_with(idle=1234, fg="Windows Terminal", age=None, signum=2, spid=4242, anc=True):
     def _idle():
         if isinstance(idle, Exception):
             raise idle
@@ -112,7 +114,18 @@ def _line_with(idle=1234, fg="Windows Terminal", age=None, signum=2):
             raise age
         return age
 
-    ns = _helper_ns(_sa_idle_ms=_idle, _sa_fg_title=_fg, _sa_stamp_age_s=_age)
+    def _spid():
+        if isinstance(spid, Exception):
+            raise spid
+        return spid
+
+    def _anc(pid):
+        if isinstance(anc, Exception):
+            raise anc
+        return anc
+
+    ns = _helper_ns(_sa_idle_ms=_idle, _sa_fg_title=_fg, _sa_stamp_age_s=_age,
+                    _sa_stamp_pid=_spid, _sa_pid_is_ancestor=_anc)
     return ns["_sigint_attrib_line"](signum)
 
 
@@ -136,14 +149,34 @@ def test_helper_format():
                   line)
     line = _line_with(signum=15, age=1.0)
     check("helper_signum_in_line", " signum=15 " in line, line)
+    # 10-19 fix: a fresh stamp whose pid is NOT one of our ancestors (a restart / forced login that began
+    # inside the 30 s window) must not inherit the label
+    line = _line_with(idle=5, age=3.0, spid=4242, anc=False)
+    m = LINE_RE.match(line)
+    check("helper_fresh_stamp_wrong_pid_unattributed", bool(m) and m["who"] == "UNATTRIBUTED"
+          and m["spid"] == "4242" and m["age"] == "3", line)
+    line = _line_with(idle=5, age=3.0, spid=4242, anc=True)
+    m = LINE_RE.match(line)
+    check("helper_fresh_stamp_ancestor_pid_attributed", bool(m) and m["who"] == "bot_ctl stop"
+          and m["spid"] == "4242" and m["ppid"] == str(os.getppid()), line)
+    line = _line_with(idle=5, age=3.0, spid=RuntimeError("no pid"), anc=True)
+    m = LINE_RE.match(line)
+    check("helper_fresh_stamp_no_pid_unattributed", bool(m) and m["who"] == "UNATTRIBUTED"
+          and m["spid"] == "none", line)
+    line = _line_with(idle=5, age=3.0, spid=4242, anc=RuntimeError("psutil gone"))
+    m = LINE_RE.match(line)
+    check("helper_ancestor_probe_failure_unattributed", bool(m) and m["who"] == "UNATTRIBUTED", line)
+    line = _line_with(idle=5, age=400.0, spid=4242, anc=True)
+    m = LINE_RE.match(line)
+    check("helper_stale_stamp_ancestor_pid_unattributed", bool(m) and m["who"] == "UNATTRIBUTED", line)
 
 
 def test_helper_never_raises():
     boom = RuntimeError("boom")
-    line = _line_with(idle=boom, fg=boom, age=boom)
+    line = _line_with(idle=boom, fg=boom, age=boom, spid=boom, anc=boom)
     m = LINE_RE.match(line)
     check("helper_all_probes_fail", bool(m) and m["idle"] == "?" and m["fg"] == "?" and m["age"] == "none"
-          and m["who"] == "UNATTRIBUTED", line)
+          and m["spid"] == "none" and m["who"] == "UNATTRIBUTED", line)
 
     class _NoCtypes:
         def __getattr__(self, name):
@@ -194,9 +227,18 @@ def test_helper_real_ctypes_and_stamp_file():
         (Path(td) / "state").mkdir()
         stamp = Path(td) / "state" / "last_bot_ctl_stop.json"
         ns = _helper_ns(__file__=str(Path(td) / "app.py"), _sa_idle_ms=lambda: 7, _sa_fg_title=lambda: "t")
-        stamp.write_text(json.dumps({"ts": time.time() - 2, "pid": 1, "argv": [], "by": "bot_ctl"}))
+        # real psutil: our parent process is an ancestor, a made-up pid is not
+        stamp.write_text(json.dumps({"ts": time.time() - 2, "pid": os.getppid(), "argv": [], "by": "bot_ctl"}))
         m = LINE_RE.match(ns["_sigint_attrib_line"](2))
-        check("stamp_file_fresh_attributed", bool(m) and m["who"] == "bot_ctl stop", m and m.string)
+        check("stamp_file_fresh_attributed", bool(m) and m["who"] == "bot_ctl stop"
+              and m["spid"] == str(os.getppid()), m and m.string)
+        stamp.write_text(json.dumps({"ts": time.time() - 2, "pid": 4_000_000_001, "argv": [], "by": "bot_ctl"}))
+        m = LINE_RE.match(ns["_sigint_attrib_line"](2))
+        check("stamp_file_fresh_wrong_pid_unattributed", bool(m) and m["who"] == "UNATTRIBUTED", m and m.string)
+        stamp.write_text(json.dumps({"ts": time.time() - 2}))      # no pid key
+        m = LINE_RE.match(ns["_sigint_attrib_line"](2))
+        check("stamp_file_fresh_no_pid_key_unattributed", bool(m) and m["who"] == "UNATTRIBUTED"
+              and m["spid"] == "none", m and m.string)
         stamp.write_text(json.dumps({"ts": time.time() - 3600}))
         m = LINE_RE.match(ns["_sigint_attrib_line"](2))
         check("stamp_file_stale_unattributed", bool(m) and m["who"] == "UNATTRIBUTED", m and m.string)
