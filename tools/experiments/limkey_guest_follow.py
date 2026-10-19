@@ -57,6 +57,8 @@ PRE-REGISTERED READOUT (written 2026-10-16 before any in-window data):
     SAME-FATE      G == M in >= 80% of windows AND windows with G and not M <= 1
                    -> the guest shares the members' fate: the key is the line or the
                       TCIN; next test: the same guest over a second network
+                   (any_pass == 0, i.e. every window both_zero, is labelled 'SAME-FATE (concordant
+                   zero ...)': it rules out member-account flagging only)
     INCONCLUSIVE   anything else
   Descriptive, not decisive: shot-level pass shares of guest vs members per window.
 
@@ -601,6 +603,8 @@ def _readout_rows(d: dict, con) -> dict:
     gm = sum(1 for r in rows if r["G"] and not r["M"])
     mg = sum(1 for r in rows if r["M"] and not r["G"])
     same = sum(1 for r in rows if r["G"] == r["M"])
+    both_zero = sum(1 for r in rows if not r["G"] and not r["M"])
+    any_pass = sum(1 for r in rows if r["G"] or r["M"])
     n = len(rows)
     if n < 5:
         v = f"INCONCLUSIVE (only {n} windows; needs >= 5)"
@@ -608,10 +612,14 @@ def _readout_rows(d: dict, con) -> dict:
         v = "GUEST-DIFFERS"
     elif same >= 0.8 * n and gm <= 1:
         v = "SAME-FATE"
+        if any_pass == 0:
+            v = ("SAME-FATE (concordant zero: rules out member-account flagging only; "
+                 "line vs TCIN-global not separated)")
     else:
         v = "INCONCLUSIVE"
     return {"verdict": v, "windows": n, "no_member_data": no_member, "unclosed_windows": unclosed,
-            "guest_only": gm, "members_only": mg, "same": same, "rows": rows}
+            "guest_only": gm, "members_only": mg, "same": same,
+            "both_zero": both_zero, "any_pass": any_pass, "rows": rows}
 
 
 def main(argv=None) -> int:
