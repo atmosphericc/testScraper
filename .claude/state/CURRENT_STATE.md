@@ -438,7 +438,7 @@ code. Artifacts: `logs/analysis_2026_10_05/gate_audit/` (offline suite outputs).
 - **Withdrawn:** FX-1005-EDGE-REARM — the production `on_in_stock` (`stock_monitor._adapter`)
   swallows every exception, so the branch was unreachable; the code was removed.
 
-**ARMED 23:39, committed `eb8ebaba`** at bat:1208-1220 — see the PRE-DROP 2026-10-05 section
+**ARMED 23:39, committed `eb8ebaba`** at the bat's 10-05 gate block (`TARGET_BOOT_SKIP_FAILED_W1`, `TARGET_PO_2XX_AMBIGUOUS`, `TARGET_FOREIGN_KEEP_WON`, `TARGET_ATC_NET_META`) — see the PRE-DROP 2026-10-05 section
 above for the third verifier's fixes, the readout rules and the boot checklist. Kill: `=0` each.
 
 **Operator decisions / checks:** (1) confirm business's card CVV is its real code (it equals the
@@ -448,11 +448,11 @@ false red; (3) EXP-1002-NET — one buyer on a second, non-BD network — is the
 with a measured effect; (4) FX-1001-C (don't sit an account out of a different TCIN's flip) needs
 its own design pass.
 
-**Stale comments left in the wrapper (production file; not edited):** bat:299-311 (edge-429 delay
-knobs "~50% more tickets" — inert, G05); bat:443-452 ("FAST_SELLING never answers a wave's first
-checkout POST" — 4/8 in Sep-Oct did, G15); bat:747-748 and :847-856 (own-volume bucket — NOT
-ESTABLISHED, G04); bat:1349-1350 ("the ATC 401 is the WRITE-AUTH layer, not Shape" — 190/190 main
-401s since 09-11 are keyless, the Shape verdict); bat:1469-1470 ("TARGET_TOKEN_KEEPFRESH keep
+**Stale comments left in the wrapper (production file; not edited):** the bat's edge-429 delay REM block (lines as of 10-05) (edge-429 delay
+knobs "~50% more tickets" — inert, G05); the bat's FAST_SELLING REM block (lines as of 10-05) ("FAST_SELLING never answers a wave's first
+checkout POST" — 4/8 in Sep-Oct did, G15); the bat's own-volume REM lines (as of 10-05) and :847-856 (own-volume bucket — NOT
+ESTABLISHED, G04); the bat's ATC-401 REM lines (as of 10-05) ("the ATC 401 is the WRITE-AUTH layer, not Shape" — 190/190 main
+401s since 09-11 are keyless, the Shape verdict); the bat's KEEPFRESH REM lines (as of 10-05) ("TARGET_TOKEN_KEEPFRESH keep
 healing 24/7" — KEEPFRESH=0 since 09-28).
 
 ## POST-RUN 2026-10-05 — the 03:00 ET 30th slot: 0 bought because NOTHING WENT ON SALE; a RedSky 206 storm blinded 73% of reads in the slot (claims C-1005-*, `docs/CLAIMS.md`)
@@ -489,14 +489,14 @@ all issues and fix so that we can be ready for the next restock." Results:
 
 **ARMED 2026-10-05 (both LOG-ONLY, flag-gated, default off = unchanged; offline suite
 `logs/analysis_2026_10_05/postrun/offline_suite_after_status_shadow.txt`):**
-- **INS-STATUS-LOG `RESILIENT_STATUS_LOG=1`** (bat:128): `stock_monitor.redsky_status_fields` adds
+- **INS-STATUS-LOG `RESILIENT_STATUS_LOG=1`** (bat `RESILIENT_STATUS_LOG`): `stock_monitor.redsky_status_fields` adds
   `sd_rtc / sd_services / sd_loyalty / sd_oos_reason` under the flag (the DX-1 pattern);
   `_log_status_changes` writes `[STOCK STATUS] tcin= #n old= new=AVAIL|RTC|svcN|LOYALTY in_stock= …` per
   change (first sighting included, ≤200/TCIN) AFTER every on_in_stock callback, and
   `[STOCK] SELLABLE-PARSED-OOS tcin= reason=` (no_services / atp_zero / not_target_direct / loyalty_only /
   other; new reason or ≥300 s, ≤50/TCIN). Event store tables `stock_status`, `sellable_oos`; query
   `status_changes.sql`.
-- **FS-206-SHADOW `RESILIENT_206_INGEST=shadow`** (bat:129): `_fire_raw_on` sets `BulkResult.partial_raw`
+- **FS-206-SHADOW `RESILIENT_206_INGEST=shadow`** (bat `RESILIENT_206_INGEST`): `_fire_raw_on` sets `BulkResult.partial_raw`
   for a 206 (only value 'shadow' is on); `_dispatch_one` → `_shadow_206` keeps complete summaries with no
   fulfillment / item error (`shadow_filter_206`; an unattributable error disqualifies the body), parses
   them, and counts agreement with the TCIN's 200-sourced read ≤2 s old. One `[STOCK][206-SHADOW]` line a
@@ -538,7 +538,7 @@ ready as possible." Notes: `logs/analysis_2026_10_04/`.
   after ~10 s) refreshed primary the same way:** `logs/relogin.log:3261` "primary: already logged
   in ✅ (cookies refreshed …)", token iat 20:48:14. So **no hand login is needed tonight**: the
   bat's validate-first pass (`relogin_one.py:402-411`) refreshes an expired member token from a
-  live login-session, and the bat re-runs the readiness check after it (bat:1459-1463), so a pass
+  live login-session, and the bat re-runs the readiness check after it (the bat's post-relogin readiness re-check), so a pass
   that failed still shows ❌ at boot. A hand login is needed only for a dead login-session or a
   guest jar. The script's stale "nothing in the bot re-mints it; force a hand login" verdict is
   fixed (10-04, `READINESS_REMINT_AWARE`, default 1; =0 is byte-identical to `c1d24d8a`, checked).
@@ -678,7 +678,7 @@ first analysis session; the workflow was resumed from its journal.
   - An add-to-cart 400 MAX_PURCHASE (our line is held) continues IN THE SAME CHAIN to pre_checkout → place-order. That happens only when the cart holds nothing but our TCIN, with every quantity finite and the sum ≤ Q. Otherwise the line is kept and flagged.
   - A held or left-behind line in a NEW stock window is struck through the won-cart ticket loop.
   - **Sink guard:** the legacy whole-cart checkout runs only when a qualifying cart READ shows no line of another item. Other lines are deleted by exact id, then a qualifying re-read must come back clean. Otherwise the checkout is skipped.
-  - The strike requires the qty guard and `TARGET_HELD_CART_REENTRY`. REENTRY=1 is in the bat (bat:1173). `TARGET_FASTLANE_QTY_GUARD` itself is NOT in the bat; the guard is forced on by REENTRY=1 (`fastlane_qty_guard_on`, `purchase_executor.py:403-410`).
+  - The strike requires the qty guard and `TARGET_HELD_CART_REENTRY`. REENTRY=1 is in the bat (bat `TARGET_HELD_CART_REENTRY`). `TARGET_FASTLANE_QTY_GUARD` itself is NOT in the bat; the guard is forced on by REENTRY=1 (`fastlane_qty_guard_on`, `purchase_executor.py:403-410`).
 - **Gates:** `tests/test_held_line_strike.py` 194/194; every v4-v11 fix is mutation-checked (`scratchpad/mutate_v*.py`); offline suite 32/32 (`logs/analysis_2026_10_02/postrun/offline_suite_after_fx1001a_v11.txt`). Flag off: JS renders byte-identical to HEAD and the differential runs show 0 diffs.
 - **Known costs and residuals (verified, accepted):**
   - A strike evaluate that times out at the pre/cvv stage is terminal and trips the 1800 s AC-1 latch for that TCIN. That costs the window; it is safe.
@@ -686,7 +686,7 @@ first analysis session; the workflow was resumed from its journal.
   - HEAD's own release paths can still drop a line on a 0-line "success".
   - A line can land after the guard's last read.
   - Live trigger frequency is small: 3 fast-lane MAX_PURCHASE 400s ever, all on 10-01.
-- **ARMED 2026-10-04 by the operator, all 3 accounts:** `set TARGET_HELD_LINE_FLIP_STRIKE=1` at bat:1184 at the time, bat:1199 since the 10-05 insert (CRLF verified, assigned once, no IDENTS scope).
+- **ARMED 2026-10-04 by the operator, all 3 accounts:** `set TARGET_HELD_LINE_FLIP_STRIKE=1` at bat `TARGET_HELD_LINE_FLIP_STRIKE` (10-04 position) at the time, bat `TARGET_HELD_LINE_FLIP_STRIKE` since the 10-05 insert (CRLF verified, assigned once, no IDENTS scope).
 - **Readout rule** (pre-registered, grep on the run log):
   - WORKED = ≥1 `[HELD_LINE_STRIKE] order placed` or an order with `first_201_src=strike_400`.
   - FAILED = any `[LEGACY_CART_GUARD]` line reaching a checkout with a non-raced TCIN in the cart, or a strike place-order on a cart the guard would refuse. Kill-switch: `=0`.
