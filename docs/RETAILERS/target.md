@@ -91,7 +91,7 @@ POST https://carts.target.com/web_checkouts/v1/cart_items?field_groups=CART,CART
 }
 ```
 
-`{QUANTITY}` comes from the config pin (`TARGET_QTY_PER_TCIN=1` in the bat, plus the per-entry `qty`), applied as `min(pin, cap)` — **not** from RedSky `purchase_limit`: RedSky flips carry `purchase_limit='-'` in 604 of 604 cases [MEASURED 10-19]. Clamped [1, 10]. See `docs/FLOW_TARGET.md` for the propagation chain. Warmup POST stays `quantity: 1`.
+`{QUANTITY}` comes from the config pin (`TARGET_QTY_PER_TCIN=1` in the bat, plus the per-entry `qty`), applied as `min(pin, cap)` — **not** from RedSky `purchase_limit`: RedSky flips carry `purchase_limit='-'` in 302 of 302 unique flip reads [MEASURED 10-19; run logs and package logs each hold the same 302, so 604 would double-count]. Clamped [1, 10]. See `docs/FLOW_TARGET.md` for the propagation chain. Warmup POST stays `quantity: 1`.
 
 **Response status codes:**
 - `200` / `201` — success

@@ -326,7 +326,7 @@ Entry format:
   regime" reading; see the 2026-10-19 entry below.] HUMAN/PX Press & hold on the account
   harvest tabs: 0 runs 09-21..10-02, 8 runs since 10-04 (10-04/05, 10-09 from 03:5x mid-drop, 10-11, 10-14 13:00,
   10-19 x3 not cleared across 3 boots / ~3 h). It does not block `cart_items` (decoys ~80% 424 on walled profiles) but
-  it empties the Shape bank, so every shot goes page-signed, the class with 0 of 14 home hot carts since 09-11.
+  it empties the Shape bank, so every shot goes page-signed. Measured on the home line since 09-11 (`proxied=0`): all 14 carts were `banked_replay`, and 0 of 2,258 page-signed shots carted (banked_replay 1,891 shots / 14 carts).
 - **Detection gap:** ~15 days and 2 drop nights. Each post-10-01 night was read on its own (10-02 "1/9 vs 15/65,
   p=0.67"; 10-09 "night x TCIN"; 10-16 first written up as "cadence NOT ESTABLISHED") because the post-run compared one
   night against a pooled baseline per shot. Fixed by the R-ERA volley query and post-run v3 (C-1016-10).
@@ -342,7 +342,7 @@ Entry format:
 ## 2026-10-19 — HUMAN/PX harvest wall regime (account Chromes, decoy-PDP harvest tabs) [MEASURED, run logs]
 
 - **Runs walled:** 0 runs 09-21..10-02; 8 runs since 10-04: 10-04/05, 10-09 (from 03:5x, mid-drop), 10-11, 10-14 13:00 and
-  three on 10-19. Cleared on its own in ~1 h on 10-14. On 10-19 the wall hit **business + alt-1 from 06:40:16 to at least
+  three on 10-19. Cleared on its own in ~1 h on 10-14. On 10-19 the wall hit **all three profiles at onset in `_063954` (06:40:16-:20) and, from `_080803` on, only business + alt-1 (primary 2, then 0 px events), to at least
   11:02:47 across 3 boots** (`run_20261019_063954`, `_080803`, `_094506`; `px=yes hits=px_container` x9 per account per
   boot) and was not cleared by the 08:08 or 09:45 restarts. The 01:30 boot (`run_20261019_013059`) harvested normally:
   0 px lines, 2 primary SELFTEST probes PASSED.
