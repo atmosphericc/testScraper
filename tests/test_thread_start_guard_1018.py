@@ -8,6 +8,14 @@ the purchase thread is started FIRST and each start() has its own try/except; de
 
 The REAL monitoring_loop / helper source is lifted out of app.py with ast and executed
 against stub threads (importing app.py would pull in the whole bot). No browser, no network.
+
+v2 (2026-10-19): the Opus pre-arming verifier refuted "retries on the SAME object, never builds a
+new one" and "gives up after a bounded number of attempts". The real start() methods set
+self.thread BEFORE Thread.start(), so a Thread.start() that raises leaves a Thread object that
+exists but is not alive; v1 then took the "died" branch and built new objects forever. v2
+distinguishes "never became alive" (retry the SAME object, max 3, then abandon) from "was alive
+and died" (replacement capped at 3 per kind per process, never while an earlier object is alive).
+
 Run: python tests/test_thread_start_guard_1018.py
 """
 from __future__ import annotations
@@ -25,7 +33,9 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "app.py").read_text(encoding="utf-8").replace("\r\n", "\n")
 FUNCS = ("_thread_start_guard_on", "_start_buy_threads_guarded",
-         "_health_check_guarded", "monitoring_loop")
+         "_health_check_guarded", "monitoring_loop",
+         "_tsg_thread_alive", "_tsg_thread_ran", "_tsg_mark_alive_once", "_tsg_log_traceback",
+         "_tsg_abandon", "_tsg_start_attempt", "_tsg_health_one")
 
 _fails = []
 
@@ -69,6 +79,8 @@ class _Base:
     fail_start = False      # True / "early": raise before self.thread exists
     fail_mode = None        # "late": raise AFTER the worker thread started (the real 10-07 shape)
     fail_times = None       # None = always fail; N = fail the first N start() calls then succeed
+    fail_after = 0          # the first N start() calls succeed, later ones fail (a thread that died, then
+                            # its replacement cannot start)
     short_lived = False     # worker thread exits at once (a started thread that has since died)
     made = None
     starts = None
@@ -89,13 +101,20 @@ class _Base:
         cls = type(self)
         self.log.append(self.NAME)
         cls.starts += 1
-        failing = (cls.fail_start or cls.fail_mode) and (cls.fail_times is None or cls.starts <= cls.fail_times)
+        failing = ((cls.fail_start or cls.fail_mode) and cls.starts > cls.fail_after
+                   and (cls.fail_times is None or cls.starts <= cls.fail_times))
         if failing and not cls.fail_mode:
             raise AttributeError(f"{self.NAME} diag boom")
         self.running = True
+        # like the real start() methods (app.py ~1193 / ~1797): self.thread is assigned BEFORE
+        # Thread.start(), so a Thread.start() that raises leaves a Thread that exists, is not alive
         self.thread = threading.Thread(target=(lambda: None) if cls.short_lived else time.sleep,
                                        args=() if cls.short_lived else (30,), daemon=True)
+        if failing and cls.fail_mode == "unstarted":
+            raise RuntimeError("can't start new thread")
         self.thread.start()
+        if cls.short_lived:
+            self.thread.join()  # deterministic: the worker is gone before start() returns / raises
         if failing and cls.fail_mode == "late":
             raise AttributeError(f"{self.NAME} diag boom")
 
@@ -110,7 +129,8 @@ class _Base:
 
 
 def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fail_times=None,
-              stock_short_lived=False, purchase_short_lived=False, purchase_fail_times=None):
+              stock_short_lived=False, purchase_short_lived=False, purchase_fail_times=None,
+              stock_fail_after=0, purchase_fail_after=0):
     """Execute the real monitoring_loop with stubs."""
     log = []
     bus = _Bus()
@@ -124,13 +144,16 @@ def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fai
 
     for cls, fails in ((Stock, stock_fails), (Purchase, purchase_fails)):
         cls.log = log
-        cls.fail_mode = "late" if fails == "late" else None
-        cls.fail_start = bool(fails) and fails != "late"
+        cls.fail_mode = fails if fails in ("late", "unstarted") else None
+        cls.fail_start = bool(fails) and fails not in ("late", "unstarted")
         cls.fail_times = None
+        cls.fail_after = 0
         cls.short_lived = False
         cls.made = []
         cls.starts = 0
     Stock.fail_times = stock_fail_times
+    Stock.fail_after = stock_fail_after
+    Purchase.fail_after = purchase_fail_after
     Stock.short_lived = stock_short_lived
     Purchase.fail_times = purchase_fail_times
     Purchase.short_lived = purchase_short_lived
@@ -236,9 +259,10 @@ def main():
           len(S.made) == 1, str(len(S.made)))
     check("ON + stock early raise x6 cycles: start() called exactly 1 + 3 (cap) times",
           S.starts == 4, str(S.starts))
-    check("ON + stock early raise x6 cycles: capped restart lines 1/3 2/3 3/3, no 4th",
-          all(f"stock_thread restart failed ({i}/3)" in out for i in (1, 2, 3))
-          and "(4/3)" not in out, out[-600:])
+    check("ON + stock early raise x6 cycles: retry lines 1/3 2/3 3/3, no 4th, abandoned once",
+          all(f"stock_thread start retry {i}/3 failed" in out for i in (1, 2, 3))
+          and "retry 4/3" not in out
+          and out.count("stock_thread start abandoned after 3 attempts") == 1, out[-600:])
     check("ON + stock early raise x6 cycles: purchase alive and untouched",
           len(P.made) == 1 and P.starts == 1 and P.made[0].thread.is_alive(), f"{len(P.made)}/{P.starts}")
 
@@ -276,8 +300,8 @@ def main():
     check("ON + purchase raises: banner does NOT claim all threads started",
           "All threads started successfully" not in out and "NOT all threads started" in out, out[-500:])
 
-    # ---- ON, purchase start() always fails over 10 cycles: ONE object, ONE subscriber ---------
-    # (the leak: a new PurchaseManagerThread every 10 s stays subscribed to stock_updated forever)
+    # ---- ON, purchase start() always fails (early) over 10 cycles: ONE object, ONE subscriber,
+    # ---- exactly 1 + 3 start() calls, then abandoned (v2: bounded, was 1 + one per cycle forever)
     log, out, err, S, P = _run_loop("1", purchase_fails=True, cycles=10)
     check("ON + purchase early raise x10 cycles: loop did not raise", err is None, repr(err))
     check("ON + purchase early raise x10 cycles: exactly one PurchaseManagerThread built",
@@ -285,24 +309,23 @@ def main():
     subs = [cb for (ev, cb) in P.bus.subs if ev == 'stock_updated']
     check("ON + purchase early raise x10 cycles: exactly one stock_updated subscriber",
           len(subs) == 1, str(len(subs)))
-    check("ON + purchase early raise x10 cycles: start() called 1 + one retry per health cycle",
-          P.starts == 1 + 10, str(P.starts))
+    check("ON + purchase early raise x10 cycles: start() called 1 + 3 retries, then abandoned",
+          P.starts == 1 + 3, str(P.starts))
     check("ON + purchase early raise x10 cycles: retries use the same object, never 'died, restarting'",
           "Purchase thread never started, retrying" in out and "Purchase thread died" not in out, out[-500:])
     check("ON + purchase early raise x10 cycles: stock thread untouched",
           len(S.made) == 1 and S.starts == 1 and S.made[0].thread.is_alive(), f"{len(S.made)}/{S.starts}")
-    n_err = out.count("purchase_thread restart failed")
-    check("ON + purchase early raise x10 cycles: [ERROR] line rate-limited to the first 3",
-          n_err == 3, str(n_err))
+    check("ON + purchase early raise x10 cycles: retry lines 1/3 2/3 3/3 and ONE abandoned line",
+          all(f"purchase_thread start retry {i}/3 failed" in out for i in (1, 2, 3))
+          and out.count("purchase_thread start abandoned after 3 attempts") == 1, out[-700:])
 
-    # ---- ON, purchase always fails over 65 cycles: still one object; log not flooded ----------
+    # ---- ON, purchase always fails over 65 cycles: still bounded --------------------------------
     log, out, err, S, P = _run_loop("1", purchase_fails=True, cycles=65)
-    n_err = out.count("purchase_thread restart failed")
-    check("ON + purchase early raise x65 cycles: one object, one subscriber, never gives up",
+    check("ON + purchase early raise x65 cycles: one object, one subscriber, 1 + 3 starts (no 66)",
           len(P.made) == 1 and len([1 for (ev, cb) in P.bus.subs if ev == 'stock_updated']) == 1
-          and P.starts == 66, f"{len(P.made)}/{P.starts}")
-    check("ON + purchase early raise x65 cycles: [ERROR] lines = attempts 1,2,3,30,60 only",
-          n_err == 5, str(n_err))
+          and P.starts == 4, f"{len(P.made)}/{P.starts}")
+    check("ON + purchase early raise x65 cycles: log not flooded (<= 8 ERROR lines)",
+          out.count("[ERROR]") <= 8, str(out.count("[ERROR]")))
 
     # ---- ON, purchase fails twice then recovers: same object, becomes alive -------------------
     log, out, err, S, P = _run_loop("1", purchase_fails=True, cycles=5, purchase_fail_times=2)
@@ -317,6 +340,140 @@ def main():
     check("ON + started purchase thread died: rebuilt via the dead-thread path",
           err is None and len(P.made) >= 2 and "Purchase thread died, restarting" in out,
           f"{err!r} {len(P.made)}")
+
+    # ================= v2: the realistic shape (self.thread set, Thread.start() raised) ==========
+    for kind in ("stock", "purchase"):
+        kw = {f"{kind}_fails": "unstarted"}
+        log, out, err, S, P = _run_loop("1", cycles=12, **kw)
+        K, O = (S, P) if kind == "stock" else (P, S)
+        check(f"v2 {kind} unstarted Thread x12 cycles: loop did not raise", err is None, repr(err))
+        check(f"v2 {kind} unstarted Thread: NO new object built (first never became alive)",
+              len(K.made) == 1, str(len(K.made)))
+        check(f"v2 {kind} unstarted Thread: the Thread exists but is not alive (precondition)",
+              K.made[0].thread is not None and not K.made[0].thread.is_alive())
+        check(f"v2 {kind} unstarted Thread: start() 1 + exactly 3 retries on the same object",
+              K.starts == 4, str(K.starts))
+        check(f"v2 {kind} unstarted Thread: retry lines 1/3, 2/3, 3/3 with the exception repr",
+              all(f"{kind}_thread start retry {i}/3 failed: RuntimeError(\"can't start new thread\")" in out
+                  for i in (1, 2, 3)), out[-700:])
+        check(f"v2 {kind} unstarted Thread: abandoned line exactly once, no 4th retry",
+              out.count(f"{kind}_thread start abandoned after 3 attempts") == 1
+              and "retry 4/3" not in out, out[-500:])
+        check(f"v2 {kind} unstarted Thread: never took the 'died' branch",
+              "thread died" not in out)
+        check(f"v2 {kind} unstarted Thread: [OK] {kind}_thread started marker never printed (RED)",
+              f"[OK] {kind}_thread started" not in out)
+        check(f"v2 {kind} unstarted Thread: the other thread untouched and alive",
+              len(O.made) == 1 and O.starts == 1 and O.made[0].thread.is_alive(), f"{len(O.made)}/{O.starts}")
+    log, out, err, S, P = _run_loop("1", cycles=12, purchase_fails="unstarted")
+    check("v2 purchase unstarted: still ONE stock_updated subscriber (no leaked objects)",
+          len([1 for (ev, cb) in P.bus.subs if ev == 'stock_updated']) == 1)
+
+    # recovery inside the budget: fails twice, third retry works -> same object, alive, no abandon
+    log, out, err, S, P = _run_loop("1", cycles=8, purchase_fails="unstarted", purchase_fail_times=3)
+    check("v2 purchase unstarted x3 then ok: same object, 4 starts, alive, not abandoned",
+          len(P.made) == 1 and P.starts == 4 and P.made[0].thread.is_alive()
+          and "abandoned" not in out, f"{len(P.made)}/{P.starts}")
+    check("v2 purchase recovered: ran through the normal alive state afterwards (no 'died')",
+          "thread died" not in out)
+
+    # a Thread that was started once and is gone (never observed alive): never a 2nd Thread.start()
+    log, out, err, S, P = _run_loop("1", cycles=6, stock_fails="late", stock_short_lived=True)
+    check("v2 stock late raise + worker already gone: abandoned, NOT retried, NOT rebuilt",
+          err is None and len(S.made) == 1 and S.starts == 1
+          and out.count("stock_thread start abandoned after 0 attempts") == 1
+          and "already started once" in out, f"{err!r} {len(S.made)}/{S.starts}\n{out[-600:]}")
+
+    # traceback: once per distinct failure site (the stub raises from ONE line for every start)
+    check("v2 traceback printed exactly once per distinct site, truncated",
+          out.count("start failure traceback") == 1 and "Traceback (most recent call last)" in out)
+    tb_block = out.split("start failure traceback", 1)[1]
+    check("v2 traceback block <= ~1500 chars of traceback text",
+          len(tb_block.split("\n[MONITORING_LOOP]", 1)[0].split("\n", 1)[1]) <= 1500)
+
+    # ---- v2: a thread that WAS alive then died: replacements capped at 3 ------------------------
+    for kind in ("stock", "purchase"):
+        kw = {f"{kind}_short_lived": True}
+        log, out, err, S, P = _run_loop("1", cycles=12, **kw)
+        K, O = (S, P) if kind == "stock" else (P, S)
+        check(f"v2 {kind} started-then-died x12 cycles: loop did not raise", err is None, repr(err))
+        check(f"v2 {kind} started-then-died: replacements capped (1 original + 3)",
+              len(K.made) == 4, str(len(K.made)))
+        check(f"v2 {kind} started-then-died: each replacement was logged, then ONE cap line",
+              all(f"(replacement {i}/3)" in out for i in (1, 2, 3)) and "(replacement 4/3)" not in out
+              and out.count(f"{kind}_thread replacement cap reached") == 1, out[-800:])
+        check(f"v2 {kind} started-then-died: no never-started retries (it did run)",
+              "never started, retrying" not in out)
+        check(f"v2 {kind} started-then-died: the other kind untouched",
+              len(O.made) == 1 and O.starts == 1, f"{len(O.made)}/{O.starts}")
+    log, out, err, S, P = _run_loop("1", cycles=12, purchase_short_lived=True)
+    check("v2 purchase died x12: at most 1 + 3 stock_updated subscribers (leak bounded)",
+          len([1 for (ev, cb) in P.bus.subs if ev == 'stock_updated']) == 4)
+
+    # died, then every replacement fails to start (unstarted Thread): replacement retries stay on
+    # that one new object, bounded; no further constructions
+    log, out, err, S, P = _run_loop("1", cycles=14, purchase_fails="unstarted",
+                                    purchase_short_lived=True, purchase_fail_after=1)
+    check("v2 purchase died, replacement start raises: exactly ONE replacement built, 3 retries, abandoned",
+          err is None and len(P.made) == 2 and P.starts == 1 + 1 + 3
+          and out.count("purchase_thread start abandoned after 3 attempts") == 1,
+          f"{err!r} {len(P.made)}/{P.starts}\n{out[-700:]}")
+    check("v2 purchase died, replacement start raises: subscribers = original + 1 replacement",
+          len([1 for (ev, cb) in P.bus.subs if ev == 'stock_updated']) == 2)
+
+    # ---- v2: never a replacement while an earlier object of that kind is still alive ------------
+    alive_old = SimpleNamespace(thread=threading.Thread(target=time.sleep, args=(5,), daemon=True))
+    alive_old.thread.start()
+    dead_cur = SimpleNamespace(thread=threading.Thread(target=lambda: None), _tsg_alive_once=True)
+    dead_cur.thread.start()
+    dead_cur.thread.join()
+    built = []
+    g3 = {"os": os, "time": time, "threading": threading, "event_bus": None, "shared_data": None,
+          "global_purchase_manager": None, "global_event_loop": None,
+          "add_activity_log": lambda *a, **k: None,
+          "StockMonitorThread": lambda *a, **k: built.append("s"),
+          "PurchaseManagerThread": lambda *a, **k: built.append("p")}
+    exec(_load_funcs(), g3)
+    f3 = {"objs_purchase": [alive_old]}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        for _ in range(3):
+            r = g3["_tsg_health_one"]("purchase", dead_cur, f3, lambda: built.append("p") or SimpleNamespace())
+    check("v2 died while an earlier object is alive: NO replacement constructed",
+          built == [] and r is dead_cur and f3.get("repl_purchase", 0) == 0
+          and buf.getvalue().count("earlier purchase_thread object is still alive") == 1, buf.getvalue())
+
+    # ---- v2: healthy boot over many cycles: markers once each, nothing else ---------------------
+    log, out, err, S, P = _run_loop("1", cycles=8)
+    check("v2 healthy x8 cycles: [OK] markers exactly once each, no [ERROR], no new objects",
+          out.count("[OK] purchase_thread started") == 1 and out.count("[OK] stock_thread started") == 1
+          and "[ERROR]" not in out and len(S.made) == 1 and len(P.made) == 1)
+    check("v2 healthy: alive_once recorded on both wrappers",
+          getattr(S.made[0], "_tsg_alive_once", False) and getattr(P.made[0], "_tsg_alive_once", False))
+
+    # ---- v2: KeyboardInterrupt / SystemExit from start() still propagate --------------------------
+    for exc in (KeyboardInterrupt, SystemExit):
+        class _KI:
+            thread = None
+
+            def start(self):
+                raise exc()
+        g4 = {"os": os, "time": time, "threading": threading}
+        exec(_load_funcs(), g4)
+        got = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                g4["_start_buy_threads_guarded"](_KI(), _KI())
+        except BaseException as e:
+            got = e
+        check(f"v2 {exc.__name__} from the initial start() propagates", isinstance(got, exc), repr(got))
+        got = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                g4["_tsg_start_attempt"]("x", _KI(), {})
+        except BaseException as e:
+            got = e
+        check(f"v2 {exc.__name__} from a retry start() propagates", isinstance(got, exc), repr(got))
 
     # ---- ON, both raise: still no crash ------------------------------------------
     log, out, err, S, P = _run_loop("1", stock_fails=True, purchase_fails=True)

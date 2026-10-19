@@ -2162,101 +2162,234 @@ def _thread_start_guard_on():
         return False
 
 
-def _start_buy_threads_guarded(stock_thread, purchase_thread):
+def _tsg_thread_alive(wrapper):
+    """True when the wrapper's underlying threading.Thread exists and is alive. Never raises."""
+    try:
+        _t = getattr(wrapper, 'thread', None)
+        return bool(_t is not None and _t.is_alive())
+    except Exception:
+        return False
+
+
+def _tsg_thread_ran(wrapper):
+    """True when the wrapper's underlying Thread was ever started (alive now, or it has an ident)."""
+    try:
+        _t = getattr(wrapper, 'thread', None)
+        return bool(_t is not None and (_t.is_alive() or getattr(_t, 'ident', None) is not None))
+    except Exception:
+        return False
+
+
+def _tsg_mark_alive_once(wrapper):
+    """Record on the wrapper that its thread really ran (F1 v2, 2026-10-19): this is what tells a
+    start() that never produced a running thread ("never became alive": retry the SAME object)
+    from a thread that ran and then died ("died": bounded replacement). Never raises."""
+    try:
+        if _tsg_thread_ran(wrapper):
+            wrapper._tsg_alive_once = True
+    except Exception:
+        pass
+
+
+def _tsg_log_traceback(label, exc, seen):
+    """Print the traceback (<=1500 chars) once per distinct failure site (file:line of the
+    innermost frame). Never raises."""
+    try:
+        import traceback
+        _tb = traceback.extract_tb(exc.__traceback__)
+        _site = f"{_tb[-1].filename}:{_tb[-1].lineno}" if _tb else repr(type(exc))
+        if seen is None or _site in seen:
+            return
+        seen.add(_site)
+        _txt = traceback.format_exc()
+        if not _txt or _txt.strip() == 'NoneType: None':
+            _txt = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        print(f"[MONITORING_LOOP] [ERROR] {label} start failure traceback (site {_site}):\n{_txt[-1500:]}")
+    except Exception:
+        pass
+
+
+def _start_buy_threads_guarded(stock_thread, purchase_thread, fails=None):
     """Flag-on start sequence: purchase_thread FIRST, each start() in its own try/except.
-    Never raises. Returns {'purchase': bool, 'stock': bool} (True = start() returned)."""
+    Never raises. Returns {'purchase': bool, 'stock': bool} (True = start() returned).
+    A start() that returned with its thread running sets wrapper._tsg_alive_once = True."""
     started = {'purchase': False, 'stock': False}
+    _seen = fails.setdefault('tb_seen', set()) if isinstance(fails, dict) else set()
     for _label, _thr in (('purchase_thread', purchase_thread), ('stock_thread', stock_thread)):
         try:
             print(f"[MONITORING_LOOP] Starting {_label}...")
             _thr.start()
             started['purchase' if _label == 'purchase_thread' else 'stock'] = True
+            _tsg_mark_alive_once(_thr)
             _t = getattr(_thr, 'thread', None)
             print(f"[MONITORING_LOOP] [OK] {_label} started (is_alive: {_t.is_alive() if _t else 'N/A'})")
         except BaseException as _se:
             if isinstance(_se, (KeyboardInterrupt, SystemExit)):
                 raise
             try:
+                # start() raised AFTER its worker thread was running (the 10-07 shape): it did
+                # become alive, so a later death is a "died", not a "never started"
+                if _tsg_thread_alive(_thr):
+                    _thr._tsg_alive_once = True
+            except Exception:
+                pass
+            try:
                 print(f"[MONITORING_LOOP] [ERROR] {_label} start failed: {_se!r}")
+                _tsg_log_traceback(_label, _se, _seen)
             except Exception:
                 pass
     return started
 
 
+# Caps (literal 3 below): start() retries on the SAME never-alive object; replacement
+# constructions per thread kind per process.
+
+def _tsg_abandon(label, thr, fails, kind, why=''):
+    """Stop retrying thr; log once per kind. boot_check stays RED: the [OK] marker never prints."""
+    try:
+        thr._tsg_abandoned = True
+    except Exception:
+        pass
+    try:
+        _k = getattr(thr, '_tsg_retries', 0)
+        if not fails.get('abandon_logged_' + kind):
+            fails['abandon_logged_' + kind] = True
+            print(f"[MONITORING_LOOP] [ERROR] {label} start abandoned after {_k} attempts{why}")
+    except Exception:
+        pass
+
+
+def _tsg_start_attempt(label, thr, fails, retry_k=None):
+    """One guarded start() on thr. Returns True when start() returned. Never raises
+    (KeyboardInterrupt/SystemExit propagate)."""
+    try:
+        thr.start()
+        _tsg_mark_alive_once(thr)
+        return True
+    except BaseException as _e:
+        if isinstance(_e, (KeyboardInterrupt, SystemExit)):
+            raise
+        try:
+            if _tsg_thread_alive(thr):
+                thr._tsg_alive_once = True
+        except Exception:
+            pass
+        try:
+            if retry_k is None:
+                print(f"[MONITORING_LOOP] [ERROR] {label} start failed: {_e!r}")
+            else:
+                print(f"[MONITORING_LOOP] [ERROR] {label} start retry {retry_k}/3 failed: {_e!r}")
+            _tsg_log_traceback(label, _e, fails.setdefault('tb_seen', set()))
+        except Exception:
+            pass
+        return False
+
+
+def _tsg_health_one(kind, thr, fails, build):
+    """Health check for one buy-path thread kind ('stock' / 'purchase'). Returns the (possibly
+    replaced) wrapper. Never raises.
+      - alive: nothing to do (and remembered as having been alive).
+      - NEVER alive (start() raised before / without a running thread): retry start() on the SAME
+        object, at most 3 times, then abandon. No replacement is ever built for it, because a
+        replacement __init__ starts a resilient stack / subscribes to stock_updated for good.
+      - was alive and died: build a replacement (the flag-off behaviour), at most 3 per kind per
+        process, and never while any earlier object of that kind is still alive."""
+    label = f"{kind}_thread"
+    try:
+        _objs = fails.setdefault('objs_' + kind, [])
+        if not any(_o is thr for _o in _objs):
+            _objs.append(thr)
+        if _tsg_thread_alive(thr):
+            thr._tsg_alive_once = True
+            return thr
+        if getattr(thr, '_tsg_abandoned', False):
+            return thr
+
+        if not getattr(thr, '_tsg_alive_once', False):
+            # --- never became alive: retry on the same object ---
+            if _tsg_thread_ran(thr):
+                # its Thread was started once and is gone without ever being seen alive; a second
+                # Thread.start() would raise 'threads can only be started once'
+                _tsg_abandon(label, thr, fails, kind,
+                             " (underlying Thread already started once; no replacement built)")
+                return thr
+            _k = getattr(thr, '_tsg_retries', 0)
+            if _k >= 3:
+                _tsg_abandon(label, thr, fails, kind)
+                return thr
+            _k += 1
+            thr._tsg_retries = _k
+            print(f"[MONITOR] {kind.capitalize()} thread never started, retrying start() ({_k}/3)...")
+            if not _tsg_start_attempt(label, thr, fails, retry_k=_k) and _k >= 3:
+                _tsg_abandon(label, thr, fails, kind)
+            return thr
+
+        # --- was alive and died: bounded replacement ---
+        _n = fails.get('repl_' + kind, 0)
+        if _n >= 3:
+            if not fails.get('cap_logged_' + kind):
+                fails['cap_logged_' + kind] = True
+                print(f"[MONITORING_LOOP] [ERROR] {label} replacement cap reached "
+                      f"(3 per process); not restarting it again")
+            return thr
+        if any(_o is not thr and _tsg_thread_alive(_o) for _o in _objs):
+            if not fails.get('alive_logged_' + kind):
+                fails['alive_logged_' + kind] = True
+                print(f"[MONITORING_LOOP] [ERROR] {label} died but an earlier {label} object is still "
+                      f"alive; not constructing a replacement")
+            return thr
+        fails['repl_' + kind] = _n + 1  # counted before building: a raising constructor also burns one
+        print(f"[MONITOR] {kind.capitalize()} thread died, restarting "
+              f"(replacement {_n + 1}/3)...")
+        try:
+            add_activity_log(f"{kind.capitalize()} thread crashed, restarting", "error", "system")
+        except Exception:
+            pass
+        try:
+            _new = build()
+        except Exception as _be:
+            print(f"[MONITORING_LOOP] [ERROR] {label} replacement construction failed: {_be!r}")
+            return thr
+        _objs.append(_new)
+        _tsg_start_attempt(label, _new, fails)
+        return _new
+    except Exception as _e:
+        try:
+            print(f"[MONITORING_LOOP] [ERROR] {kind} health check failed: {_e!r}")
+        except Exception:
+            pass
+        return thr
+
+
 def _health_check_guarded(stock_thread, purchase_thread, fails):
-    """Flag-on version of monitoring_loop's 10 s health check: a thread whose start() failed
-    (thread is None) is retried on the same object (stock and purchase), a started one that has since died is replaced; a failing replacement is logged and retried next
-    cycle (stock gives up after 3 consecutive failures; purchase never does, its [ERROR] line is rate-limited) instead of raising
-    out of monitoring_loop, whose finally would stop the OTHER thread. Never raises."""
-    try:
-        _st = getattr(stock_thread, 'thread', None)
-        if (_st is None or not _st.is_alive()) and fails.get('stock', 0) < 3:
-            try:
-                if _st is None:
-                    # start() never created the thread: retry on the SAME object. Building a new
-                    # StockMonitorThread launches another resilient stack (no singleton guard) and
-                    # leaves the abandoned one publishing stock_updated (running=True is set first).
-                    print("[MONITOR] Stock thread never started, retrying start()...")
-                    stock_thread.start()
-                else:
-                    print("[MONITOR] Stock thread died, restarting...")
-                    try:
-                        add_activity_log("Stock monitor thread crashed, restarting", "error", "system")
-                    except Exception:
-                        pass
-                    _new = StockMonitorThread(
-                        event_bus, shared_data,
-                        purchase_manager=global_purchase_manager,
-                        event_loop=global_event_loop
-                    )
-                    stock_thread = _new
-                    _new.start()
-                fails['stock'] = 0
-            except Exception as _e:
-                fails['stock'] = fails.get('stock', 0) + 1
-                print(f"[MONITORING_LOOP] [ERROR] stock_thread restart failed ({fails['stock']}/3): {_e!r}")
-    except Exception as _e:
-        print(f"[MONITORING_LOOP] [ERROR] stock health check failed: {_e!r}")
-    try:
-        _pt = getattr(purchase_thread, 'thread', None)
-        if _pt is None or not _pt.is_alive():
-            try:
-                if _pt is None:
-                    # start() never created the thread: retry on the SAME object. Every
-                    # PurchaseManagerThread.__init__ subscribes to 'stock_updated' and nothing
-                    # unsubscribes, so building a new one every 10 s would leave each abandoned
-                    # object firing stock handling on every publish. Never gives up.
-                    print("[MONITOR] Purchase thread never started, retrying start()...")
-                    purchase_thread.start()
-                    fails['purchase'] = 0
-                else:
-                    print("[MONITOR] Purchase thread died, restarting...")
-                    try:
-                        add_activity_log("Purchase manager thread crashed, restarting", "error", "system")
-                    except Exception:
-                        pass
-                    _newp = PurchaseManagerThread(
-                        event_bus,
-                        shared_data,
-                        purchase_manager=global_purchase_manager,
-                        event_loop=global_event_loop
-                    )
-                    purchase_thread = _newp
-                    try:
-                        if getattr(stock_thread, 'stock_monitor', None) is not None:
-                            _newp.set_stock_monitor(stock_thread.stock_monitor)
-                    except Exception:
-                        pass
-                    _newp.start()
-                    fails['purchase'] = 0
-            except Exception as _e:
-                _n = fails.get('purchase', 0) + 1
-                fails['purchase'] = _n
-                # rate-limit the line: a start() that always fails retries every 10 s forever
-                if _n <= 3 or _n % 30 == 0:
-                    print(f"[MONITORING_LOOP] [ERROR] purchase_thread restart failed (attempt {_n}): {_e!r}")
-    except Exception as _e:
-        print(f"[MONITORING_LOOP] [ERROR] purchase health check failed: {_e!r}")
+    """Flag-on version of monitoring_loop's 10 s health check (F1 v2, 2026-10-19). A thread that
+    never became alive is retried on the SAME object (max 3 retries, then abandoned and logged);
+    one that was alive and died is replaced at most 3 times per kind per process, and never while
+    an earlier object of that kind is still alive. Never raises out of monitoring_loop, whose
+    finally would stop the OTHER thread."""
+    def _build_stock():
+        return StockMonitorThread(
+            event_bus, shared_data,
+            purchase_manager=global_purchase_manager,
+            event_loop=global_event_loop
+        )
+
+    def _build_purchase():
+        _newp = PurchaseManagerThread(
+            event_bus,
+            shared_data,
+            purchase_manager=global_purchase_manager,
+            event_loop=global_event_loop
+        )
+        try:
+            if getattr(stock_thread, 'stock_monitor', None) is not None:
+                _newp.set_stock_monitor(stock_thread.stock_monitor)
+        except Exception:
+            pass
+        return _newp
+
+    stock_thread = _tsg_health_one('stock', stock_thread, fails, _build_stock)
+    purchase_thread = _tsg_health_one('purchase', purchase_thread, fails, _build_purchase)
     return stock_thread, purchase_thread
 
 
@@ -2328,7 +2461,7 @@ def monitoring_loop():
     _tsg_all_started = True
     if _tsg:
         try:
-            _tsg_all_started = all(_start_buy_threads_guarded(stock_thread, purchase_thread).values())
+            _tsg_all_started = all(_start_buy_threads_guarded(stock_thread, purchase_thread, _tsg_fails).values())
         except Exception:
             _tsg_all_started = False
     else:
