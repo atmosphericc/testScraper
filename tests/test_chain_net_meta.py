@@ -600,6 +600,103 @@ def test_chain_net_sql():
     check("first_po_age_code_has_no_chain_net_dependency", "chain_net" not in code)
 
 
+# ──────────────────────── rto.sql (R-RTO readout) on a synthetic store ────────────────────────
+def _mk_rto_db(path):
+    """loop_ends + tickets with the real build.py column sets (SCHEMA), only the columns
+    rto.sql reads filled in."""
+    con = sqlite3.connect(path)
+    for t in ("loop_ends", "tickets"):
+        con.execute("CREATE TABLE %s (%s)" % (t, ", ".join(evb.SCHEMA[t])))
+
+    def le(line, ident, tcin, reason, live, tc, verdict="x", oos=0, held=0, run="run_R"):
+        con.execute("INSERT INTO loop_ends (run_id, line, ident, tcin, reason, verdict, tickets_call, "
+                    "tickets_cart, live, oos, held, dl_left_s) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (run, line, ident, tcin, reason, verdict, tc, tc, live, oos, held, 12.5))
+
+    # live cart ended by a cap BELOW 1200 tickets -> FAIL-mechanism (all three cap reasons)
+    le(10, "primary", "T1", "cart_ticket_cap", 1, 800)
+    le(11, "business", "T1", "yield_fleet", 1, 300)
+    le(12, "alt-1", "T1", "call_cap", 1, 40)
+    le(13, "primary", "T2", "call_cap", 1, None)         # unknown ticket count counts as 0 -> FAIL
+    le(14, "primary", "T3", "cart_ticket_cap", 1, 1199)  # one under the boundary -> FAIL
+    # clean rides -> ok
+    le(20, "primary", "T4", "cart_ticket_cap", 1, 1200)  # at the boundary
+    le(21, "business", "T4", "call_cap", 1, 1500)        # past it (the SQL does not flag this)
+    le(22, "alt-1", "T4", "budget_spent", 1, 50)
+    le(23, "primary", "T5", "tail_spent", 0, 900, oos=1, held=1)
+    le(24, "primary", "T6", "cart_ticket_cap", 0, 100)   # live=0: not the rule's business
+    le(25, "business", "T6", "placed", 1, 7)
+    le(26, "alt-1", "T6", "yield_fleet", 0, 5)
+    le(27, "primary", "T7", "cart_ticket_cap", 1, 100, run="run_S")   # a second run: FAIL there too
+
+    def tk(line, n, status, ms201, key="", cart="c1", ident="primary", tcin="T4", run="run_R"):
+        con.execute("INSERT INTO tickets (run_id, line, ident, tcin, cart_id, n, status, ms_since_201, key) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)", (run, line, ident, tcin, cart, n, status, ms201, key))
+
+    tk(100, 1, 201, 0)
+    tk(101, 2, 429, 900, "ERR_FAST_SELLING")
+    tk(102, 3, 429, 4000, "FAST_SELLING_X")
+    tk(103, 4, 500, 9000, "RESERVATION_FAILED")
+    tk(104, 41, 200, 60000)                    # n > 40 -> past the old caps
+    tk(105, 42, 200, 130000)                   # also > 120 s
+    tk(106, 43, 429, 131000)
+    tk(110, 1, 201, 0, cart="c2", ident="business")          # a clean short cart
+    tk(111, 2, 200, 3000, cart="c2", ident="business")       # inside the old caps
+    con.commit()
+    con.close()
+
+
+def test_rto_sql():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "ev_rto.sqlite"
+        _mk_rto_db(db)
+        rc, res, err = run_q("rto", db)
+        check("rto_runs_on_the_synthetic_store", rc == 0 and res is not None and len(res) == 2, (rc, err))
+        if not res:
+            return
+        by_key = {(r["run"], r["ident"], r["tcin"], r["reason"], r["tickets_cart"]): r["rule"] for r in res[0]}
+        check("rto_1_all_loop_ends_listed", len(res[0]) == 13, len(res[0]))
+        check("rto_1_live_cap_below_1200_is_FAIL_mechanism",
+              by_key[("run_R", "primary", "T1", "cart_ticket_cap", 800)] == "FAIL-mechanism"
+              and by_key[("run_R", "business", "T1", "yield_fleet", 300)] == "FAIL-mechanism"
+              and by_key[("run_R", "alt-1", "T1", "call_cap", 40)] == "FAIL-mechanism"
+              and by_key[("run_R", "primary", "T3", "cart_ticket_cap", 1199)] == "FAIL-mechanism", by_key)
+        check("rto_1_null_ticket_count_is_FAIL_mechanism",
+              by_key[("run_R", "primary", "T2", "call_cap", None)] == "FAIL-mechanism", by_key)
+        check("rto_1_other_run_also_flagged",
+              by_key[("run_S", "primary", "T7", "cart_ticket_cap", 100)] == "FAIL-mechanism", by_key)
+        check("rto_1_clean_rides_ok",
+              by_key[("run_R", "primary", "T4", "cart_ticket_cap", 1200)] == "ok"
+              and by_key[("run_R", "business", "T4", "call_cap", 1500)] == "ok"
+              and by_key[("run_R", "alt-1", "T4", "budget_spent", 50)] == "ok"
+              and by_key[("run_R", "primary", "T5", "tail_spent", 900)] == "ok"
+              and by_key[("run_R", "business", "T6", "placed", 7)] == "ok", by_key)
+        check("rto_1_not_live_is_ok_even_below_cap",
+              by_key[("run_R", "primary", "T6", "cart_ticket_cap", 100)] == "ok"
+              and by_key[("run_R", "alt-1", "T6", "yield_fleet", 5)] == "ok", by_key)
+        check("rto_1_exactly_six_FAIL_rows", sorted(r["rule"] for r in res[0]).count("FAIL-mechanism") == 6
+              and sorted(r["rule"] for r in res[0]).count("ok") == 7, [r["rule"] for r in res[0]])
+        carts = {(r["run"], r["ident"], r["cart_id"]): r for r in res[1]}
+        c1 = carts[("run_R", "primary", "c1")]
+        check("rto_2_cart_counts", (c1["tickets"], c1["ok_2xx"], c1["ok_past_old_caps"], c1["max_ticket_n"],
+                                    c1["last_s_since_201"], c1["fast_selling"], c1["reservation_fail"])
+              == (7, 3, 2, 43, 131.0, 2, 1), c1)
+        c2 = carts[("run_R", "business", "c2")]
+        check("rto_2_clean_short_cart_has_no_past_cap_ok",
+              (c2["tickets"], c2["ok_2xx"], c2["ok_past_old_caps"], c2["max_ticket_n"], c2["fast_selling"],
+               c2["reservation_fail"]) == (2, 2, 0, 2, 0, 0), c2)
+        # --run narrows through the TEMP views: only run_S remains, and it has no ticket rows
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc2 = evq.main(["rto", "--db", str(db), "--json", "--run", "run_S"])
+        res2 = json.loads(buf.getvalue()) if buf.getvalue().strip() else None
+        check("rto_run_filter", rc2 == 0 and res2 and [r["run"] for r in res2[0]] == ["run_S"] and res2[1] == [], (rc2, res2))
+    sql = (ROOT / "tools" / "events" / "queries" / "rto.sql").read_text(encoding="utf-8")
+    code = "\n".join(l for l in sql.splitlines() if not l.lstrip().startswith("--"))
+    check("rto_sql_threshold_and_reasons_pinned",
+          "'cart_ticket_cap', 'yield_fleet', 'call_cap'" in code and "< 1200" in code and "live = 1" in code)
+
+
 # ──────────────────────────── build.py must ignore [CHAIN_NET] ───────────────────────────
 def _strip_lines(x):
     if isinstance(x, dict):
@@ -660,6 +757,7 @@ if __name__ == "__main__":
     test_pins()
     test_first_po_age_sql()
     test_chain_net_sql()
+    test_rto_sql()
     test_build_ignores_chain_net()
     print(f"\n=== {PASS}/{PASS + FAIL} passed ===")
     sys.exit(1 if FAIL else 0)
