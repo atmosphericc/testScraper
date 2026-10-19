@@ -424,11 +424,65 @@ def test_real_tree_smoke():
     check("f7_real_tree_row", row is not None and row["status"] in ("OK", "WARN"), row)
 
 
+def test_profile_signals_env_row():
+    """2026-10-19 O1: host.profile_signals_env compares the USER environment value with the bat set line (fake _ps; no PowerShell, no registry, read-only)."""
+    real_ps, real_psj = PF._ps, PF._ps_json
+    name = "ENSURE_ARMED_PROFILE_SIGNALS"
+    scripts = []
+
+    def run_row(user, bat_lines, raises=None):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "run_bot_with_nightly_restart.bat").write_bytes(bat_lines.encode("ascii"))
+
+            def fake_ps(script, timeout=30):
+                scripts.append(script)
+                if name in script:
+                    if raises:
+                        raise raises
+                    return user
+                return "false" if "RebootRequired" in script else ""
+            PF._ps, PF._ps_json = fake_ps, (lambda script, timeout=30: [])
+            R = PF.Report()
+            PF.check_host(R, None, root)
+            return {x["id"]: x for x in R.rows}.get("host.profile_signals_env")
+    try:
+        bat1 = "@echo off\r\nset " + name + "=1\r\nset X=1\r\n"
+        row = run_row("1\r\n", bat1)
+        check("ps_env_equal_ok", row and row["status"] == "OK" and "agree" in row["detail"], row)
+        row = run_row("", bat1)
+        check("ps_env_missing_warn", row and row["status"] == "WARN" and "missing from the user environment" in row["detail"]
+              and "USER environment" in row["detail"] and "wrapper reads the bat" in row["detail"] and "setx" in row["fix"], row)
+        row = run_row("0", bat1)
+        check("ps_env_different_warn", row and row["status"] == "WARN" and "different from the bat" in row["detail"], row)
+        row = run_row("1", "@echo off\r\nset X=1\r\n")
+        check("ps_env_user_set_bat_unset_warn", row and row["status"] == "WARN", row)
+        row = run_row("", "@echo off\r\nset X=1\r\n")
+        check("ps_env_both_unset_ok", row and row["status"] == "OK", row)
+        row = run_row("", bat1, raises=RuntimeError("powershell not found"))
+        check("ps_env_helper_error_warn", row and row["status"] == "WARN" and "could not compare" in row["detail"] and "RuntimeError" in row["detail"], row)
+        row = run_row("", bat1, raises=TimeoutError("timed out"))
+        check("ps_env_timeout_warn", row and row["status"] == "WARN", row)
+        # read-only: the only script that names the variable is a Get-ItemProperty read
+        mine = [x for x in scripts if name in x]
+        check("ps_env_read_only", mine and all("Get-ItemProperty" in x and "Set-ItemProperty" not in x and "New-ItemProperty" not in x
+                                               and "reg add" not in x and "setx" not in x.lower() for x in mine), mine[:2])
+        # a bat that does not exist is a WARN row too (never a crash)
+        with tempfile.TemporaryDirectory() as d:
+            PF._ps = lambda script, timeout=30: ("1" if name in script else ("false" if "RebootRequired" in script else ""))
+            R = PF.Report()
+            PF.check_host(R, None, Path(d))
+            r2 = {x["id"]: x for x in R.rows}.get("host.profile_signals_env")
+            check("ps_env_no_bat_warn", r2 and r2["status"] == "WARN", r2)
+    finally:
+        PF._ps, PF._ps_json = real_ps, real_psj
+
+
 def main() -> int:
     for t in (test_active_hours_math, test_pause_vs_drop, test_active_hours_rows, test_missing_registry_never_crashes,
               test_check_drop_overlap, test_check_host_with_fake_registry, test_stale_bat_cites_pure,
               test_moved_cite_detected, test_range_cites_need_a_named_flag, test_quoted_set_lines, test_full_list_in_row_and_json,
-              test_repo_row, test_real_tree_smoke):
+              test_repo_row, test_real_tree_smoke, test_profile_signals_env_row):
         try:
             t()
         except Exception as e:

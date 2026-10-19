@@ -407,8 +407,54 @@ def test_preflight():
     check("bc_subprocess_real_repo", r.returncode in (0, 1, 2) and '"verdict"' in r.stdout, (r.returncode, r.stdout[-200:], r.stderr[-300:]))
 
 
+def test_preflight_1019b():
+    """2026-10-19 preflt lane: ENV_NAME carries the ENSURE_ prefix; the ground-truth row has an OK / WARN ladder at 25 / 26-28."""
+    pat = PF.ENV_NAME
+    check("env_name_ensure_prefix", pat.search('os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS", "0") == "1"') is not None
+          and pat.search("x = os.environ.get('TARGET_FOO')") is not None and pat.search("os.environ.get('UNRELATED_NAME')") is None)
+    # the real tree: the wrapper arms ENSURE_ARMED_PROFILE_SIGNALS and ensure_armed.py reads it -> the row is OK, not WARN
+    R = PF.Report()
+    PF.check_repo(R, ROOT, False, None)
+    row = {x["id"]: x for x in R.rows}.get("repo.flags_dead", {})
+    check("flags_dead_real_tree_ok", row.get("status") == "OK" and "ENSURE_ARMED_PROFILE_SIGNALS" not in row.get("detail", ""), row)
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        bat = BAT + "set ENSURE_ARMED_PROFILE_SIGNALS=1\r\nset TARGET_NEVER_READ_FLAG=1\r\n"
+        make_root(root, bat=bat, run_log=healthy_log())
+        # the make_root stub reads every bat name; drop the two under test, then re-add the ENSURE_ read from a tools/ file only
+        stub = root / "src" / "session" / "purchase_executor.py"
+        stub.write_text(stub.read_text(encoding="utf-8").replace("x = os.environ.get('TARGET_NEVER_READ_FLAG')\n", "")
+                        .replace("x = os.environ.get('ENSURE_ARMED_PROFILE_SIGNALS')\n", ""), encoding="utf-8")
+        (root / "tools" / "ops").mkdir(parents=True)
+        (root / "tools" / "ops" / "ensure_armed.py").write_text('def on():\n    return os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS", "0") == "1"\n', encoding="utf-8")
+        res = PF.run(root, drop="", tcins=None, host=False, readiness=False, git=False)
+        fd = ids(res)["repo.flags_dead"]
+        check("flags_dead_ensure_read_ok_unread_target_flagged",
+              fd["status"] == "WARN" and "TARGET_NEVER_READ_FLAG" in fd["detail"] and "ENSURE_ARMED_PROFILE_SIGNALS" not in fd["detail"], fd)
+        # without the tools/ reader the ENSURE_ name is dead again (the row still means something)
+        (root / "tools" / "ops" / "ensure_armed.py").write_text("pass\n", encoding="utf-8")
+        fd = ids(PF.run(root, drop="", tcins=None, host=False, readiness=False, git=False))["repo.flags_dead"]
+        check("flags_dead_ensure_unread_flagged", fd["status"] == "WARN" and "ENSURE_ARMED_PROFILE_SIGNALS" in fd["detail"], fd)
+
+        # ground-truth row: n = 25 OK; 26 / 27 / 28 WARN (one request, so a rejected size blinds the sweep AND the read); 29 WARN with the chunking note
+        det = ""
+        for n, want in ((25, "OK"), (26, "WARN"), (27, "WARN"), (28, "WARN"), (29, "WARN")):
+            tc = [str(1010000000 + i) for i in range(n)]
+            make_root(root, tcins=tc, run_log=healthy_log())
+            res = PF.run(root, drop="", tcins=None, host=False, readiness=False, git=False)
+            gt = ids(res).get("monitor.gt_read_unproven", {})
+            det, fix = gt.get("detail", ""), gt.get("fix", "")
+            check(f"gt_row_level_n{n}", gt.get("status") == want, gt)
+            if want == "OK":
+                check(f"gt_row_text_n{n}", "876,224" in det and "0 HTTP 400" in det and "since 2026-10-09" in det and "still detects" not in det + fix, gt)
+            else:
+                check(f"gt_row_text_n{n}", "untested" in det and "ONE request" in det and "blinds BOTH the sweep and the ground-truth read" in det
+                      and "26 / 27 / 28" in fix and "read-only RedSky GET" in fix and "still detects" not in det + fix, gt)
+        check("gt_row_n29_chunk_note", "client chunks the sweep" in det and "stays unchunked" in det, det)
+
+
 def main() -> int:
-    for t in (test_boot_check, test_preflight):
+    for t in (test_boot_check, test_preflight, test_preflight_1019b):
         try:
             t()
         except Exception as e:

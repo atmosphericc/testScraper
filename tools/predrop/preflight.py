@@ -60,7 +60,7 @@ except Exception:                      # pragma: no cover
     _bc = None
 
 WIN = os.name == "nt"
-ENV_NAME = re.compile(r"['\"]((?:TARGET|RESILIENT|STOCK|USE_RESILIENT|CHROME_|READINESS|RELOGIN|DROP_READINESS|SINGLE_INSTANCE|WRAPPER|VALIDATE|HARVEST|PX_|SHAPE_|BD_)[A-Z0-9_]*)['\"]")
+ENV_NAME = re.compile(r"['\"]((?:TARGET|ENSURE_|RESILIENT|STOCK|USE_RESILIENT|CHROME_|READINESS|RELOGIN|DROP_READINESS|SINGLE_INSTANCE|WRAPPER|VALIDATE|HARVEST|PX_|SHAPE_|BD_)[A-Z0-9_]*)['\"]")
 MONITOR_ENV_PREFIX = ("RESILIENT_", "STOCK_", "TARGET_SWEEPS_PER_SEC", "USE_RESILIENT_STACK", "CHROME_STAGGER_TOTAL_S")
 MAX_ONE_CHUNK = 28
 
@@ -598,7 +598,7 @@ def check_process(R: Report, root: Path):
     return info
 
 
-def check_host(R: Report, drop_ts=None):
+def check_host(R: Report, drop_ts=None, root=None):
     A = "host"
 
     def power():
@@ -622,6 +622,27 @@ def check_host(R: Report, drop_ts=None):
             R.add(A, "screensaver", "OK", "screensaver off")
         else:
             R.add(A, "screensaver", "WARN", f"ScreenSaveActive={out.strip()}", "turn the screensaver off (it is a display state change)")
+
+    def profile_signals_env():
+        # 2026-10-19 (O1): the scheduled tasks (tools/ops/ensure_armed.py) read the USER environment, the wrapper reads the bat;
+        # ENSURE_ARMED_PROFILE_SIGNALS must carry the same value in both. Read-only (Get-ItemProperty only); every failure is a WARN.
+        name = "ENSURE_ARMED_PROFILE_SIGNALS"
+        fix = (f"set both to the same value: `setx {name} <v>` (user env, read by the scheduled tasks) and `set {name}=<v>` in the bat; "
+               f"to disarm: `=0` in the bat AND `reg delete HKCU\\Environment /v {name} /f`")
+        try:
+            bat_val = _armed(root or ROOT).get(name, "").strip().strip('"')
+            raw = _ps(f"(Get-ItemProperty 'HKCU:\\Environment' -ErrorAction SilentlyContinue).{name}")
+            user_val = (raw or "").strip()
+        except Exception as e:
+            R.add(A, "profile_signals_env", "WARN", f"{name}: could not compare the user environment with the bat ({type(e).__name__}: {str(e)[:120]})", fix)
+            return
+        shown = lambda v: repr(v) if v else "(unset)"
+        if bat_val == user_val:
+            R.add(A, "profile_signals_env", "OK", f"{name} user environment {shown(user_val)} == bat {shown(bat_val)} (the scheduled tasks and the wrapper agree)")
+        else:
+            why = "missing from the user environment" if not user_val else "different from the bat"
+            R.add(A, "profile_signals_env", "WARN",
+                  f"{name}: user environment {shown(user_val)} is {why} (bat {shown(bat_val)}); the scheduled tasks read the USER environment, the wrapper reads the bat; both must match", fix)
 
     def windows_update():
         rows = _ps_json("Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\WindowsUpdate\\UX\\Settings' -ErrorAction SilentlyContinue | Select-Object PauseUpdatesExpiryTime,ActiveHoursStart,ActiveHoursEnd,SmartActiveHoursState,UserChoiceActiveHoursStart,UserChoiceActiveHoursEnd")
@@ -685,6 +706,7 @@ def check_host(R: Report, drop_ts=None):
             R.add(A, "autostart", "INFO", "no TargetBot.lnk in the Startup folder (a reboot leaves the bot down)")
 
     R.guarded(A, "power", power)
+    R.guarded(A, "profile_signals_env", profile_signals_env)
     R.guarded(A, "windows_update", windows_update)
     R.guarded(A, "events", events)
     R.guarded(A, "resources", resources)
@@ -1039,9 +1061,13 @@ def check_monitor(R: Report, root: Path, last_boot_ts):
         rps = float(armed.get("TARGET_SWEEPS_PER_SEC", armed.get("RESILIENT_TARGET_RPS", "3.0")) or 3.0)
         R.add(A, "chunking", "OK" if chunks == 1 else "WARN", f"{n} TCINs -> {chunks} chunk(s) of <= {MAX_ONE_CHUNK}; per-TCIN refresh ~{rps / chunks:.2f}/s at {rps} sweeps/s",
               "" if chunks == 1 else f"keep enabled TCINs <= {MAX_ONE_CHUNK}")
-        if n > 25:
-            R.add(A, "gt_read_unproven", "WARN", f"{n} TCINs: the apps-channel ground-truth read is unchunked and has only been proven with <= 25 TCINs (25 once, 2026-10-08 22:41); 26-28 is untested",
-                  "after boot, confirm `[GROUND-TRUTH] pool cache-bust ok` lines keep coming; 10 failures in a row = `[TCIN-VISIBILITY] UNKNOWN` (the sweep itself still detects)")
+        if n <= 25:
+            R.add(A, "gt_read_unproven", "OK", f"{n} TCINs: 25 per request is the routine apps-channel shape since 2026-10-09 (14 runs, 876,224 sweeps, 0 HTTP 400); the ground-truth read is the same request")
+        else:
+            R.add(A, "gt_read_unproven", "WARN",
+                  f"{n} TCINs: 26-28 per apps-channel request is untested (25 is proven); the sweep and the ground-truth read are ONE request, so a rejected request size blinds BOTH the sweep and the ground-truth read"
+                  + ("" if n <= MAX_ONE_CHUNK else f" (> {MAX_ONE_CHUNK}: the client chunks the sweep, the ground-truth read stays unchunked)"),
+                  "run the one-shot size proof before relying on it: three read-only RedSky GETs at 26 / 27 / 28 TCINs through the production path (operator or main session); until then keep enabled TCINs <= 25")
 
     def last_boot():
         if last_boot_ts is None or _bc is None:
@@ -1188,7 +1214,7 @@ def run(root: Path, drop: str = "", tcins=None, host=True, readiness=True, git=T
     pinfo = {"bot_running": False}
     if host and WIN:
         pinfo = check_process(R, root)
-        check_host(R, drop_ts)
+        check_host(R, drop_ts, root)
     elif host:
         R.add("host", "skipped", "UNKNOWN", "host checks need Windows PowerShell")
     check_accounts(R, root, readiness, drop_ts)
