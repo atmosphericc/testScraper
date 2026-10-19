@@ -615,6 +615,250 @@ def test_round3_q2_swap_skips_reserved_and_busy():
         check("q2_buyer_never_fires", shots["W1/primary"] == [], shots)
 
 
+# ── S6 (2026-10-18 readiness build): live-loop hand-off + buyers-file failure pins ──
+
+def _run_real_loop(m, until_n=1, max_s=8.0, interval=0.25):
+    """Run the REAL StockMonitorThread._level_rearm_loop (app.py) against the real
+    manager `m` (real rebuy_active / _rebuy_rearm_ok / get_all_states / race_join_tick /
+    rearm_kick_event) and the real _build_level_rearm_map. Only the event bus is a
+    recorder: the loop's publishes are collected, the loop is stopped after `until_n`
+    publishes (or max_s), and the publishes are returned as
+    (kind, source, [tcins], payload)."""
+    from types import SimpleNamespace
+    from app import StockMonitorThread
+    got = []
+    done = threading.Event()
+
+    class _Bus:
+        def publish(self, kind, data):
+            got.append((kind, data.get("source"), sorted(data["stock_data"]), data))
+            if len(got) >= until_n:
+                done.set()
+
+    obj = SimpleNamespace(running=True, _purchase_manager=m, event_bus=_Bus(),
+                          stock_monitor=m.stock_monitor,
+                          _build_level_rearm_map=StockMonitorThread._build_level_rearm_map)
+
+    def _go():
+        th = threading.Thread(target=StockMonitorThread._level_rearm_loop, args=(obj, interval),
+                              daemon=True)
+        th.start()
+        done.wait(max_s)
+        time.sleep(0.05)
+        obj.running = False
+        th.join(5)
+        return th.is_alive()
+
+    stuck, out = quiet(_go)
+    return got, out, stuck
+
+
+def test_s6_live_loop_hands_off_bought_tcin_to_non_buyers():
+    """S6(1): app.py:1385-1392 (rebuy_active() -> _rb_open = pm._rebuy_rearm_ok) executed
+    by the real loop. Flag on, W1/primary bought A and A still reads in stock: the loop's
+    stock_updated publish carries A, and the dispatch of that publish (steps 1 + 2 of
+    app.py's handler, on the real manager) fires only W2/W3. Flag off: the loop publishes
+    nothing for a 'purchased' row."""
+    for flag in ("1", None):
+        with env(**{**ON, **M.E2E_ENV, "TARGET_REBUY_NONBUYERS": flag, "TARGET_REARM_KICK": None,
+                    "TARGET_REBUY_FILE": _file()}):
+            gate = threading.Event()
+            m, ws = M._e2e_mgr({A: M._st(win_ago=40.0)}, gate)
+            m._states[A] = {"status": "purchased", "completed_at": time.time() - 5,
+                            "order_number": "X1"}
+            quiet(m._rebuy_note, A, "W1/primary")
+            m._fx1006_note_purchase(A)
+            try:
+                check(f"s6_{flag}_rebuy_active_is_flag", m.rebuy_active() is bool(flag))
+                got, lout, stuck = _run_real_loop(m, until_n=1, max_s=(8.0 if flag else 1.0))
+                check(f"s6_{flag}_loop_exits", stuck is False)
+                shots = {}
+                if flag:
+                    check("s6_on_publish_includes_A", len(got) >= 1 and got[0][2] == [A], got)
+                    check("s6_on_publish_kind_source",
+                          got and got[0][0] == "stock_updated" and got[0][1] == "level_rearm",
+                          [g[:2] for g in got])
+                    check("s6_on_log_line", "[LEVEL_REARM]" in lout and A in lout, lout[-400:])
+                    payload = got[0][3]["stock_data"][A] if got else {}
+                    check("s6_on_payload_in_stock", payload.get("in_stock") is True, payload)
+                    if got:
+                        ev = got[0][3]["stock_data"]
+                        _, o1 = quiet(m.reset_completed_purchases_by_stock_status, ev)
+                        _, o2 = quiet(m.process_stock_data, ev)
+                        time.sleep(0.3)
+                        shots = M._shots(ws)
+                        check("s6_on_buyer_never_fires", shots["W1/primary"] == [], (shots, (o1 + o2)[-600:]))
+                        check("s6_on_non_buyers_fire",
+                              shots["W2/business"] == [A] and shots["W3/alt-1"] == [A],
+                              (shots, (o1 + o2)[-600:]))
+                else:
+                    check("s6_off_nothing_published", got == [], got)
+            finally:
+                M._settle(m, gate, ws)
+            check(f"s6_{flag}_reservations_released", getattr(m, "_worker_reservations", {}) == {},
+                  getattr(m, "_worker_reservations", {}))
+
+
+def test_s6_live_loop_rebuy_open_error_fails_closed():
+    """S6(1b): if pm.rebuy_active() raises, the loop's try/except (app.py:1391) leaves
+    rebuy_open=None -> the 'purchased' row is excluded (HEAD behaviour), loop alive."""
+    with env(**{**ON, **M.E2E_ENV, "TARGET_REARM_KICK": None, "TARGET_REBUY_FILE": _file()}):
+        gate = threading.Event()
+        m, ws = M._e2e_mgr({A: M._st(win_ago=40.0)}, gate)
+        m._states[A] = {"status": "purchased", "completed_at": time.time() - 5}
+        quiet(m._rebuy_note, A, "W1/primary")
+
+        def _boom():
+            raise RuntimeError("x")
+        m.rebuy_active = _boom
+        try:
+            got, _, stuck = _run_real_loop(m, until_n=1, max_s=1.0)
+        finally:
+            M._settle(m, gate, ws)
+        check("s6_err_no_publish", got == [], got)
+        check("s6_err_loop_exits", stuck is False)
+
+
+def test_s6_buyers_file_bad_shape_is_warned_and_buyer_lost():
+    """S6(2a): a buyers file that parses but has the wrong shape ({'buyers': [...]},
+    a bare list) -> restore returns 0, WARNs 'unreadable (bad_shape ...)', the buyer
+    record is LOST and the buyer is free to re-race A (FAIL-OPEN).
+    POLICY QUESTION for the operator (not decided here): should an unreadable buyers
+    file fail CLOSED (every account sits the TCIN out for the hold time) instead? This
+    test pins today's behaviour."""
+    old = bpm_mod._REBUY_PROC_START
+    try:
+        for name, body in (("dict_with_list", {"buyers": [f"W1/primary|{A}"]}),
+                           ("bare_list", [f"W1/primary|{A}"]),
+                           ("buyers_str", {"buyers": "x"})):
+            path = _file()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(body, f)
+            with env(**{**ON, "TARGET_REBUY_FILE": path}):
+                bpm_mod._REBUY_PROC_START = time.time() + 1.0
+                m = M._mgr(statuses={A: M._st(win_ago=30.0)})
+                n, out = quiet(m._rebuy_restore)
+                check(f"s6_shape_{name}_restore_zero", n == 0, n)
+                check(f"s6_shape_{name}_warned",
+                      "[REBUY] [WARN] buyers file unreadable (bad_shape" in out
+                      and "buyer from the previous process is LOST" in out, out)
+                check(f"s6_shape_{name}_buyer_lost_failopen",
+                      m._thread_skip_reason("W1/primary", "primary", A) == "", "buyer unexpectedly still bound")
+                check(f"s6_shape_{name}_nothing_in_memory", not m._rebuy_state()[0], dict(m._rebuy_state()[0]))
+    finally:
+        bpm_mod._REBUY_PROC_START = old
+
+
+def test_s6_buyers_file_corrupt_json_is_warned_and_buyer_lost():
+    """S6(2b): corrupt / truncated / empty / binary JSON -> WARN naming the exception
+    class, buyer lost, fail-open (same policy question as 2a)."""
+    old = bpm_mod._REBUY_PROC_START
+    try:
+        for name, raw, exc in (("garbage", b"{garbage", "JSONDecodeError"),
+                               ("truncated", b'{"written_at": 1, "buyers": {"W1/pri', "JSONDecodeError"),
+                               ("empty", b"", "JSONDecodeError"),
+                               ("binary", b"\xff\xfe\x00\x80", "UnicodeDecodeError")):
+            path = _file()
+            with open(path, "wb") as f:
+                f.write(raw)
+            with env(**{**ON, "TARGET_REBUY_FILE": path}):
+                bpm_mod._REBUY_PROC_START = time.time() + 1.0
+                m = M._mgr(statuses={A: M._st(win_ago=30.0)})
+                n, out = quiet(m._rebuy_restore)
+                check(f"s6_corrupt_{name}_restore_zero", n == 0, n)
+                check(f"s6_corrupt_{name}_warned",
+                      f"buyers file unreadable ({exc}" in out and "check order history" in out, out)
+                check(f"s6_corrupt_{name}_buyer_lost_failopen",
+                      m._thread_skip_reason("W1/primary", "primary", A) == "")
+                # the next successful note repairs the file (atomic rewrite)
+                m._rebuy_path = path
+                quiet(m._rebuy_note, A, "W2/business")
+                data = json.load(open(path, encoding="utf-8"))
+                check(f"s6_corrupt_{name}_next_note_rewrites", f"W2/business|{A}" in data.get("buyers", {}), data)
+                check(f"s6_corrupt_{name}_old_buyer_still_gone", f"W1/primary|{A}" not in data.get("buyers", {}), data)
+    finally:
+        bpm_mod._REBUY_PROC_START = old
+
+
+def test_s6_buyers_file_valid_shape_bad_entries_dropped_silently():
+    """S6(2c): inside a well-shaped file, entries with a bad key / non-number / bool /
+    future / >1 day timestamp are dropped WITHOUT any WARN (info['unreadable'] is only
+    set for a file-level failure). The one valid entry is restored. Pins that silence."""
+    old = bpm_mod._REBUY_PROC_START
+    path = _file()
+    now = time.time()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"buyers": {f"W1/primary|{A}": "oops", "nolabel": now, f"W2/business|{A}": True,
+                              f"W3/alt-1|{A}": now + 3600, f"W4/x|{A}": now - 90000,
+                              f"W5/y|{B}": now - 30}}, f)
+    try:
+        with env(**{**ON, "TARGET_REBUY_FILE": path}):
+            bpm_mod._REBUY_PROC_START = time.time() + 1.0
+            m = M._mgr(statuses={A: M._st(win_ago=30.0), B: M._st(win_ago=30.0)})
+            n, out = quiet(m._rebuy_restore)
+            check("s6_entries_one_restored", n == 1, (n, out))
+            check("s6_entries_no_warn_for_dropped", "WARN" not in out and "unreadable" not in out, out)
+            check("s6_entries_bad_buyer_lost_failopen",
+                  m._thread_skip_reason("W1/primary", "primary", A) == ""
+                  and m._thread_skip_reason("W2/business", "business", A) == "")
+            check("s6_entries_valid_buyer_bound",
+                  m._thread_skip_reason("W5/y", "y", B) == "bought_this_window")
+    finally:
+        bpm_mod._REBUY_PROC_START = old
+
+
+def test_s6_buyers_file_unwritable_path_keeps_memory_record_and_warns():
+    """S6(2d): the buyers file cannot be written (parent is a regular file; target is a
+    directory). _rebuy_save returns False, never raises, leaves no tmp file;
+    _rebuy_note prints '[REBUY] [WARN] could not save ...' but the record stays in
+    MEMORY, so within this process the buyer still sits the TCIN out. After a restart
+    that record is LOST (file never written) -- fail-open, same policy question."""
+    base = tempfile.mkdtemp(dir=_TMP)
+    blocker = os.path.join(base, "iamafile")
+    with open(blocker, "w", encoding="utf-8") as f:
+        f.write("x")
+    a_dir = os.path.join(base, "isadir.json")
+    os.makedirs(a_dir)
+    now = time.time()
+    real_sleep = bpm_mod.time.sleep
+    # skip the os.replace PermissionError back-off (patched only while saving; the
+    # module's `time` is the global time module, so restore it in finally)
+    bpm_mod.time.sleep = lambda s: None
+    try:
+        r1 = bpm_mod._rebuy_save(os.path.join(blocker, "sub", "rebuy.json"), {("W1/primary", A): now}, now)
+        r2 = bpm_mod._rebuy_save(a_dir, {("W1/primary", A): now}, now)
+    finally:
+        bpm_mod.time.sleep = real_sleep
+    check("s6_save_parent_is_file_false", r1 is False, r1)
+    check("s6_save_target_is_dir_false", r2 is False, r2)
+    check("s6_save_no_tmp_left", not [n for n in os.listdir(base) if ".tmp." in n], os.listdir(base))
+    check("s6_save_empty_path_false", bpm_mod._rebuy_save("", {("W1/primary", A): now}, now) is False)
+    for name, path in (("parent_is_file", os.path.join(blocker, "sub", "rebuy.json")), ("target_is_dir", a_dir)):
+        with env(**{**ON, "TARGET_REBUY_FILE": path}):
+            m = M._mgr(statuses={A: M._st(win_ago=30.0)})
+            m._rebuy_path = path
+            bpm_mod.time.sleep = lambda s: None
+            try:
+                _, out = quiet(m._rebuy_note, A, "W1/primary")
+            finally:
+                bpm_mod.time.sleep = real_sleep
+            check(f"s6_note_{name}_warned_not_saved",
+                  "[REBUY] [WARN] could not save" in out and "in memory only" in out, out)
+            check(f"s6_note_{name}_memory_record_binds",
+                  m._thread_skip_reason("W1/primary", "primary", A) == "bought_this_window")
+            check(f"s6_note_{name}_others_fire", m._thread_skip_reason("W2/business", "business", A) == "")
+            # a restart: the buyer is gone (file unreadable or absent) -> fail-open
+            old = bpm_mod._REBUY_PROC_START
+            try:
+                bpm_mod._REBUY_PROC_START = time.time() + 1.0
+                m2 = M._mgr(statuses={A: M._st(win_ago=30.0)})
+                n, _o = quiet(m2._rebuy_restore)
+                check(f"s6_note_{name}_restart_loses_buyer",
+                      n == 0 and m2._thread_skip_reason("W1/primary", "primary", A) == "", n)
+            finally:
+                bpm_mod._REBUY_PROC_START = old
+
+
 def test_source_pins():
     src = (ROOT / "src" / "purchasing" / "bulletproof_purchase_manager.py").read_text(encoding="utf-8")
     check("pin_note_on_result_path", "self._rebuy_note(tcin, worker_label)" in src)
