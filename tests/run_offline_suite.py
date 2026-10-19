@@ -165,6 +165,7 @@ OFFLINE = [
     "test_held_release_429_1018",
     "test_preflight_wu_1018",
     "test_band_coverage_1018",
+    "test_readout_queries_1019",
     "test_thread_start_guard_1018",
     "test_start_validate_1018",
     "test_keepfresh_off_1019",
