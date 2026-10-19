@@ -1,0 +1,39 @@
+2026-10-19T01:30:20 [PLAN] [DEADMAN] armed 600s (scaled max(600, 120+90*3))
+2026-10-19T01:30:20 [PLAN] 3 account(s): primary(<masked>), business(<masked>), alt-1(<masked>)
+2026-10-19T01:30:21 [ACCOUNT] === primary | <masked> | profile=nodriver-profile | session=target.json | creds=OK ===
+2026-10-19T01:30:22 [INIT] primary: identity applied (tz=America/Chicago)
+2026-10-19T01:30:26 [RESULT] primary: already logged in ✅ (cookies refreshed, 55 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session'])
+2026-10-19T01:30:30 [PLAN] ...staggering 5.8s before next account...
+2026-10-19T01:30:35 [ACCOUNT] === business | <masked> | profile=nodriver-profile-2 | session=target-2.json | creds=OK ===
+2026-10-19T01:30:36 [INIT] business: identity applied (tz=America/Chicago)
+2026-10-19T01:30:40 [RESULT] business: already logged in ✅ (cookies refreshed, 54 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session']) ⚠ GUEST (sut=G) — the profile is signed out
+2026-10-19T01:30:44 [PLAN] ...staggering 5.0s before next account...
+2026-10-19T01:30:49 [ACCOUNT] === alt-1 | <masked> | profile=nodriver-profile-3 | session=target-3.json | creds=OK ===
+2026-10-19T01:30:50 [INIT] alt-1: identity applied (tz=America/Chicago)
+2026-10-19T01:30:54 [RESULT] alt-1: already logged in ✅ (cookies refreshed, 57 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session'])
+2026-10-19T01:31:41 [PLAN] [DEADMAN] armed 600s (scaled max(600, 120+90*3))
+2026-10-19T01:31:41 [PLAN] 3 account(s): primary(<masked>), business(<masked>), alt-1(<masked>)
+2026-10-19T01:31:42 [ACCOUNT] === primary | <masked> | profile=nodriver-profile | session=target.json | creds=OK ===
+2026-10-19T01:31:43 [INIT] primary: identity applied (tz=America/Chicago)
+2026-10-19T01:31:46 [RESULT] primary: already logged in ✅ (cookies refreshed, 61 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session']) ⚠ GUEST (sut=G) — the profile is signed out
+2026-10-19T01:31:50 [PLAN] ...staggering 5.2s before next account...
+2026-10-19T01:31:55 [ACCOUNT] === business | <masked> | profile=nodriver-profile-2 | session=target-2.json | creds=OK ===
+2026-10-19T01:31:56 [INIT] business: identity applied (tz=America/Chicago)
+2026-10-19T01:32:00 [RESULT] business: already logged in ✅ (cookies refreshed, 55 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session']) ⚠ GUEST (sut=G) — the profile is signed out
+2026-10-19T01:32:04 [PLAN] ...staggering 7.3s before next account...
+2026-10-19T01:32:11 [ACCOUNT] === alt-1 | <masked> | profile=nodriver-profile-3 | session=target-3.json | creds=OK ===
+2026-10-19T01:32:12 [INIT] alt-1: identity applied (tz=America/Chicago)
+2026-10-19T01:32:16 [RESULT] alt-1: already logged in ✅ (cookies refreshed, 62 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session'])
+2026-10-19T01:33:14 [PLAN] [DEADMAN] armed 600s (scaled max(600, 120+90*3))
+2026-10-19T01:33:14 [PLAN] 3 account(s): primary(<masked>), business(<masked>), alt-1(<masked>)
+2026-10-19T01:33:14 [ACCOUNT] === primary | <masked> | profile=nodriver-profile | session=target.json | creds=OK ===
+2026-10-19T01:33:15 [INIT] primary: identity applied (tz=America/Chicago)
+2026-10-19T01:33:19 [RESULT] primary: already logged in ✅ (cookies refreshed, 61 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session']) ⚠ GUEST (sut=G) — the profile is signed out
+2026-10-19T01:33:23 [PLAN] ...staggering 7.4s before next account...
+2026-10-19T01:33:30 [ACCOUNT] === business | <masked> | profile=nodriver-profile-2 | session=target-2.json | creds=OK ===
+2026-10-19T01:33:31 [INIT] business: identity applied (tz=America/Chicago)
+2026-10-19T01:33:35 [RESULT] business: already logged in ✅ (cookies refreshed, 55 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session']) ⚠ GUEST (sut=G) — the profile is signed out
+2026-10-19T01:33:39 [PLAN] ...staggering 7.6s before next account...
+2026-10-19T01:33:46 [ACCOUNT] === alt-1 | <masked> | profile=nodriver-profile-3 | session=target-3.json | creds=OK ===
+2026-10-19T01:33:47 [INIT] alt-1: identity applied (tz=America/Chicago)
+2026-10-19T01:33:51 [RESULT] alt-1: already logged in ✅ (cookies refreshed, 62 cookies, auth=['accessToken', 'idToken', 'refreshToken', 'login-session'])

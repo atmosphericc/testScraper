@@ -1,0 +1,2 @@
+[SYSTEM] [BOOT_SKIP] primary (Worker 1) recorded — the relaunch races WITHOUT it; hand-login it to restore
+[01:31:36] [SYSTEM] primary failed the boot login probe — next boot runs without it

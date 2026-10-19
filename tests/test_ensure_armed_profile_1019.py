@@ -593,14 +593,14 @@ def _hardening_1019(three):
                 lines = EA.LOG.read_text(encoding="utf-8").splitlines()
                 check(f"D_{mode}_{val!r}_flags_first", rc == 0 and bool(lines)
                       and lines[0].endswith("[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS" + want), (rc, lines[:2]))
-                check(f"D_{mode}_{val!r}_flags_once", sum("[FLAGS]" in ln for ln in lines) == 1, lines)
+                check(f"D_{mode}_{val!r}_flags_once", sum("[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS" in ln for ln in lines) == 1, lines)
     with tempfile.TemporaryDirectory() as d:     # even a disabled run starts with it
         t = Path(d); T.setup(t, three)
         set_flag("1"); EA._FLAGS_LOGGED = False
         EA.DISABLE.write_text("x", encoding="utf-8")
         rc = EA.main(["--mode", "exit87"], run=T.Fake(t))
         lines = EA.LOG.read_text(encoding="utf-8").splitlines()
-        check("D_disabled_run_flags_first", rc == 2 and "[FLAGS]" in lines[0] and "[DISABLED]" in lines[1], lines)
+        check("D_disabled_run_flags_first", rc == 2 and "[FLAGS]" in lines[0] and "[DISABLED]" in lines[-1], lines)   # 1019b: a second [FLAGS] line (STATUS_FAILCLOSED) now sits between
     EA._FLAGS_LOGGED = False
     set_flag("1")
 
