@@ -26,6 +26,12 @@ an account whose jar FILE reads member (TARGET_JAR_GUEST_GUARD keeps it so) but 
 PROFILE is guest also needs the forced login when, in the last 20 min, logs/relogin.log's newest
 "[RESULT] <acct>:" line says "GUEST (sut=G)" or the newest run log shows "[BOOT_SKIP] <acct> (Worker 1) recorded" /
 "<acct> failed the boot login probe". Same 6 h cap, same LOGIN_ENV, same force_logins() path.
+Hardening (C-1019, guestprof-v2): the 6 h cap re-reads state/ensure_armed.json right before every forced
+login and merges its stamp (never overwrites another process's), fails CLOSED when the stamp cannot be
+read / written / read back, and also counts a login that happened outside ensure_armed (the newest
+"[ACCOUNT] <acct>: attempt 1/3" line in logs/relogin.log inside the gap). Either profile signal is void
+when a NEWER relogin.log [RESULT] line for that account is a success without the GUEST label. Every run
+starts with one "[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS=<raw|unset> -> profile_signals=<on|off>" log line.
 Opt out for a night: create state/ensure_armed.disable (any content).
 Log: logs/ensure_armed.log; last result: state/ensure_armed_last.json.
 Exit codes: 0 ok / nothing to do, 1 the boot ended RED or a step failed, 2 disabled.
@@ -98,6 +104,109 @@ def save_json(p: Path, data) -> None:
         pass
 
 
+def load_state_strict(p: Path) -> tuple:
+    """(data, ok). A missing file is ok ({}); a file that exists but cannot be read / parsed / is not a
+    JSON object is NOT ok (locked, corrupt, a directory ...). The rate cap fails CLOSED on not-ok."""
+    try:
+        if not p.exists():
+            return {}, True
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return (d, True) if isinstance(d, dict) else ({}, False)
+    except Exception:
+        return {}, False
+
+
+def save_json_strict(p: Path, data) -> bool:
+    """Atomic write that REPORTS failure (save_json swallows it)."""
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, p)
+        return True
+    except Exception:
+        return False
+
+
+def _stamps(d) -> dict:
+    lf = d.get("last_forced_login") if isinstance(d, dict) else None
+    out = {}
+    if isinstance(lf, dict):
+        for k, v in lf.items():
+            try:
+                out[k] = float(v or 0)
+            except (TypeError, ValueError):
+                out[k] = 0.0
+    return out
+
+
+def persist_stamp(acct: str, ts: float) -> bool:
+    """Merge acct's stamp into the CURRENT state file (other keys / accounts, incl. another process's
+    stamps, are kept) and read it back. False = could not be persisted -> the caller must not log in."""
+    try:
+        cur, ok = load_state_strict(STATE)
+        if not ok:
+            return False
+        lf = cur.get("last_forced_login")
+        if not isinstance(lf, dict):
+            lf = {}
+        try:
+            old = float(lf.get(acct) or 0)
+        except (TypeError, ValueError):
+            old = 0.0
+        lf[acct] = max(old, ts)
+        cur["last_forced_login"] = lf
+        if not save_json_strict(STATE, cur):
+            return False
+        back, ok = load_state_strict(STATE)
+        return ok and abs(_stamps(back).get(acct, 0.0) - lf[acct]) < 1e-6
+    except Exception:
+        return False
+
+
+
+def external_login_ts(acct: str, now: float, gap_h: float, root: Path | None = None) -> float:
+    """Epoch of the newest "[ACCOUNT] <acct>: attempt 1/3" line in logs/relogin.log that lies inside the
+    gap window (a forced / typed login that happened outside ensure_armed: pre-drop, hand login ...),
+    else 0.0. Guarded: any read problem -> 0.0 (logged)."""
+    root = ROOT if root is None else root
+    try:
+        p = root / "logs" / "relogin.log"
+        if not p.exists():
+            return 0.0
+        rx = re.compile(rf"\[ACCOUNT\] {re.escape(acct)}: attempt 1/3")
+        best = 0.0
+        with open(p, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if "attempt 1/3" in ln and rx.search(ln):
+                    ts = _parse_ts(ln)
+                    if ts is not None and now - gap_h * 3600 <= ts <= now + 60.0:
+                        best = max(best, ts)
+        return best
+    except Exception as e:
+        log(f"[LOGIN] {acct}: relogin.log attempt scan failed: {e!r}")
+        return 0.0
+
+
+def effective_prev(acct: str, stamp_maps: list, now: float, gap_h: float) -> tuple:
+    """(epoch of the latest known forced login for acct, source). Sources: every stamp map given
+    (state file / in-memory) and an external relogin.log attempt inside the gap."""
+    best, src = 0.0, "none"
+    for m in stamp_maps:
+        try:
+            v = float((m or {}).get(acct) or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v > best:
+            best, src = v, "stamp"
+    ext = external_login_ts(acct, now, gap_h)
+    if ext > best:
+        best, src = ext, "relogin.log attempt"
+    return best, src
+
+
 # ── account state (zero browser; the same jar facts check_session_readiness reads) ──
 
 def accounts(root: Path | None = None) -> list:
@@ -154,6 +263,25 @@ def profile_signals_on() -> bool:
     return os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS", "0") == "1"
 
 
+_FLAGS_LOGGED = False
+
+
+def log_flags() -> None:
+    """One '[FLAGS] ...' line per process, first thing in every run (both modes), so the Task Scheduler
+    environment question (does a setx user variable reach the pythonw task?) is answered by the log.
+    Idempotent per process; never raises."""
+    global _FLAGS_LOGGED
+    if _FLAGS_LOGGED:
+        return
+    _FLAGS_LOGGED = True
+    try:
+        raw = os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS")
+        shown = "unset" if raw is None else (raw if raw != "" else "(empty)")
+        log(f"[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS={shown} -> profile_signals={'on' if profile_signals_on() else 'off'}")
+    except Exception:
+        pass
+
+
 def _parse_ts(text: str):
     """Leading ISO local timestamp of a log line -> epoch, or None."""
     m = re.match(r"\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})", text or "")
@@ -183,6 +311,24 @@ def newest_relogin_result(acct: str, root: Path | None = None):
     return _parse_ts(newest), newest
 
 
+def newest_success_ts(acct: str, root: Path | None = None):
+    """Largest timestamp (by the line's own time, not file order) of a '[RESULT] <acct>:' line that
+    reports a success WITHOUT the GUEST label ('LOGGED IN' / 'already logged in'), else None."""
+    root = ROOT if root is None else root
+    p = root / "logs" / "relogin.log"
+    if not p.exists():
+        return None
+    tag = f"[RESULT] {acct}:"
+    best = None
+    with open(p, encoding="utf-8", errors="replace") as f:
+        for ln in f:
+            if tag in ln and GUEST_LABEL not in ln and ("LOGGED IN" in ln or "already logged in" in ln):
+                ts = _parse_ts(ln)
+                if ts is not None and (best is None or ts > best):
+                    best = ts
+    return best
+
+
 def _recent(ts, now: float) -> bool:
     return ts is not None and -60.0 <= now - ts <= RECENT_MIN * 60.0
 
@@ -195,7 +341,11 @@ def _boot_probe_re(acct: str):
 
 
 def recent_boot_probe_fail(acct: str, now: float, runs: Path | None = None) -> bool:
-    """True when the newest logs/runs/run_YYYYMMDD_HHMMSS.log is within RECENT_MIN of `now` and
+    return boot_probe_fail_ts(acct, now, runs) is not None
+
+
+def boot_probe_fail_ts(acct: str, now: float, runs: Path | None = None):
+    """The run-log start time (epoch) when the newest logs/runs/run_YYYYMMDD_HHMMSS.log is within RECENT_MIN of `now` and
     holds a '[BOOT_SKIP] <acct> (Worker 1) recorded' or '<acct> failed the boot login probe' line."""
     runs = RUNS if runs is None else runs
     best = None
@@ -210,26 +360,43 @@ def recent_boot_probe_fail(acct: str, now: float, runs: Path | None = None) -> b
         if best is None or ts > best[0]:
             best = (ts, p)
     if best is None or not _recent(best[0], now):
-        return False
+        return None
     rx = _boot_probe_re(acct)
     with open(best[1], encoding="utf-8", errors="replace") as f:
-        return any(rx.search(ln) for ln in f)
+        return best[0] if any(rx.search(ln) for ln in f) else None
 
 
 def profile_guest_source(acct: str, now: float):
     """'relogin-label' / 'boot-probe' / None. Each read is guarded: a missing or garbled log can
-    never raise out of the decision (it just contributes no signal)."""
+    never raise out of the decision (it just contributes no signal). A signal is VOID when a NEWER
+    (by timestamp) relogin.log [RESULT] line for this exact account reports a success without the
+    GUEST label (C-1019 case C: a 15 min old boot-probe line outlived a later 'primary: LOGGED IN')."""
+    cands = []          # [(source, signal epoch)]
     try:
         r = newest_relogin_result(acct)
         if r and _recent(r[0], now) and GUEST_LABEL in r[1]:
-            return "relogin-label"
+            cands.append(("relogin-label", r[0]))
     except Exception as e:
         log(f"[LOGIN] profile-signal read failed: {e!r}")
     try:
-        if recent_boot_probe_fail(acct, now):
-            return "boot-probe"
+        bts = boot_probe_fail_ts(acct, now)
+        if bts is not None:
+            cands.append(("boot-probe", bts))
     except Exception as e:
         log(f"[LOGIN] profile-signal read failed: {e!r}")
+    if not cands:
+        return None
+    ok_ts = None
+    try:
+        ok_ts = newest_success_ts(acct)
+    except Exception as e:
+        log(f"[LOGIN] profile-signal read failed: {e!r}")
+    for src, ts in cands:
+        if ok_ts is not None and ok_ts > ts:
+            log(f"[LOGIN] {acct}: {src} signal void -- newer relogin.log success at "
+                f"{datetime.fromtimestamp(ok_ts).isoformat(timespec='seconds')}")
+            continue
+        return src
     return None
 
 
@@ -301,22 +468,38 @@ def boot_verdict(run, log_path, follow: bool = False, deadline: int = 720) -> st
 
 def force_logins(run, need: list, state: dict, gap_h: float, dry: bool, now: float) -> dict:
     """One scripted forced login per account that needs one, rate-limited. Returns
-    {acct: outcome}. Re-reads the jar after each login."""
+    {acct: outcome}. Re-reads the jar after each login.
+
+    The 6 h cap fails CLOSED (C-1019): the state file is RE-READ right before every decision (another
+    process -- the wrapper's exit-87 call, a second scheduled run -- may have stamped meanwhile; the
+    caller's in-memory copy is stale), a login outside ensure_armed (relogin.log 'attempt 1/3' inside
+    the gap) counts, an unreadable state file means NO login, and the stamp is written (merged, then read
+    back) BEFORE the login launches -- if it cannot be persisted, no login."""
     res = {}
     last = state.setdefault("last_forced_login", {})
     for acct, path, why in need:
-        prev = float(last.get(acct) or 0)
+        cur, ok = load_state_strict(STATE)
+        if not ok:
+            res[acct] = "skipped: state unreadable"
+            log(f"[LOGIN] {acct}: skipped, state unreadable ({why})")
+            continue
+        prev, src = effective_prev(acct, [last, _stamps(cur)], now, gap_h)
         if now - prev < gap_h * 3600:
             res[acct] = f"skipped: forced login {((now - prev) / 3600):.1f} h ago (< {gap_h:g} h)"
+            if src != "stamp":
+                res[acct] += f" ({src})"
             log(f"[LOGIN] {acct}: {why} -- {res[acct]}")
             continue
         if dry:
             res[acct] = "dry-run: would force-login"
             log(f"[LOGIN] {acct}: {why} -- dry run, not logging in")
             continue
-        log(f"[LOGIN] {acct}: {why} -- scripted forced login (home IP, engine UA)")
+        if not persist_stamp(acct, now):
+            res[acct] = "skipped: stamp not persisted"
+            log(f"[LOGIN] {acct}: skipped, stamp not persisted (state file unwritable) -- no forced login ({why})")
+            continue
         last[acct] = now
-        save_json(STATE, state)
+        log(f"[LOGIN] {acct}: {why} -- scripted forced login (home IP, engine UA)")
         rc, out = run([python_exe(), "relogin_one.py", acct, "--force"], env_extra=LOGIN_ENV, timeout=600)
         ok, after = jar_state(path)
         if why.startswith("profile guest per"):
@@ -333,14 +516,18 @@ def in_drop_band(now: float) -> bool:
 
 def evening(args, run=default_run, now=None) -> int:
     now = time.time() if now is None else now
-    state = load_json(STATE, {})
+    state, state_ok = load_state_strict(STATE)
+    if not state_ok:
+        log("[LOGIN] state/ensure_armed.json unreadable -- no forced login this run")
     result = {"mode": "evening", "at": datetime.fromtimestamp(now).isoformat(timespec="seconds")}
     st = bot_status(run)
     result["status_before"] = st
     need = needs_login(now)
     result["need_login"] = {a: why for a, _, why in need}
-    last = state.get("last_forced_login", {})
-    eligible = [n for n in need if now - float(last.get(n[0]) or 0) >= args.login_gap_h * 3600]
+    last = _stamps(state)
+    eligible = ([n for n in need
+                 if now - effective_prev(n[0], [last], now, args.login_gap_h)[0] >= args.login_gap_h * 3600]
+                if state_ok else [])
     band = in_drop_band(now)
     running = bool(st.get("running"))
     age = st.get("age_h")
@@ -382,7 +569,6 @@ def evening(args, run=default_run, now=None) -> int:
             return 1
     if need:
         result["logins"] = force_logins(run, need, state, args.login_gap_h, False, now)
-        save_json(STATE, state)
     t_start = time.time()
     rc, out = run([python_exe(), "tools/ops/bot_ctl.py", "start"], timeout=180)
     log(f"[START] bot_ctl start rc={rc}")
@@ -419,7 +605,6 @@ def exit87(args, run=default_run, now=None) -> int:
             "(the wrapper's relogin pass runs next)")
     else:
         result["logins"] = force_logins(run, need, state, args.login_gap_h, args.dry_run, now)
-        save_json(STATE, state)
     save_json(LAST, result)
     return 0
 
@@ -453,13 +638,14 @@ def disabled_now(now=None) -> tuple:
     return True, f"disabled until {m.group(1)} {m.group(2)}:{m.group(3)}"
 
 
-def main(argv=None) -> int:
+def main(argv=None, run=default_run) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--mode", choices=("evening", "exit87"), default="evening")
     ap.add_argument("--max-age-h", type=float, default=20.0)
     ap.add_argument("--login-gap-h", type=float, default=6.0)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    log_flags()
     _dis, _note = disabled_now()
     if _dis:
         log(f"[DISABLED] {DISABLE}: {_note} -- not touching the bot")
@@ -467,13 +653,14 @@ def main(argv=None) -> int:
     if _note:
         log(f"[ENABLED] {_note}")
     try:
-        return exit87(a) if a.mode == "exit87" else evening(a)
+        return exit87(a, run=run) if a.mode == "exit87" else evening(a, run=run)
     except Exception as e:   # a scheduled task must leave a trace, never a silent death
         log(f"[ERROR] {type(e).__name__}: {e}")
         return 1
 
 
 if __name__ == "__main__":
+    log_flags()      # first line of every scripted run, before the home-IP record (C-1019 D)
     # 2026-10-16 (C-1016-06): record the home public IP on every scheduled run (full IP only in
     # the gitignored state/home_ip_history.log; masked here). Script runs only - tests import main().
     try:
