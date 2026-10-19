@@ -318,6 +318,7 @@ def _main():
         check("ev_on_dry_run_touches_nothing", not f.has("start") and not f.has("relogin"), f.cmds)
 
     _hardening_1019(three)
+    _fix_round_1019(three)
 
     # ---- preflight: accounts.profile_guest is WARN only ----
     set_flag(None)
@@ -500,13 +501,18 @@ def _hardening_1019(three):
         f = T.Fake(t, running=True)
         EA.exit87(T.A(mode="exit87"), run=f, now=EVENING)
         check("B_external_attempt_other_shapes_do_not_count", bool(f.has("relogin_one.py business")), f.cmds)
-        # ... and a jar-guest account (flag-independent) is capped by it too
-        set_flag(None)
+        # ... and a jar-guest account with the flag ON is capped by it too
         T.setup(t, {"primary": GUEST, "business": MEMBER})
         raw_relogin(t, f"{iso(EVENING - 1800)} [ACCOUNT] primary: attempt 1/3")
         f = T.Fake(t, running=True)
         EA.exit87(T.A(mode="exit87"), run=f, now=EVENING)
-        check("B_external_attempt_caps_jar_guest_too_flag_off", not f.has("relogin_one.py"), f.cmds)
+        check("B_external_attempt_caps_jar_guest_flag_on", not f.has("relogin_one.py"), f.cmds)
+        # flag OFF keeps the pre-1019 decision (the hardening is flag-gated, not silently armed)
+        set_flag(None)
+        EA.save_json(EA.STATE, {})
+        f = T.Fake(t, running=True)
+        EA.exit87(T.A(mode="exit87"), run=f, now=EVENING)
+        check("B_external_attempt_ignored_flag_off_head_behaviour", bool(f.has("relogin_one.py primary --force")), f.cmds)
         set_flag("1")
 
     # ---- C: a signal does not outlive a LATER success for that exact account ----
@@ -571,6 +577,141 @@ def _hardening_1019(three):
         check("D_disabled_run_flags_first", rc == 2 and "[FLAGS]" in lines[0] and "[DISABLED]" in lines[1], lines)
     EA._FLAGS_LOGGED = False
     set_flag("1")
+
+
+def _fix_round_1019(three):
+    """Fix round: (1) non-dict stamps never stop a bot it cannot restart, (2) flag-off decisions equal the
+    pre-1019 ones, (3) persist_stamp refuses a younger stamp written between read and write, (4) evening
+    decides from fresh facts after the boot_check follow."""
+    jarg = {"primary": GUEST, "business": MEMBER, "alt-1": MEMBER}
+
+    # ---- 1: list-valued stamps, a running GREEN bot, a jar-guest account ----
+    for flag in (None, "1"):
+        for bad in ('{"last_forced_login": ["primary"]}', '{"last_forced_login": "x"}', '{"last_forced_login": 5}'):
+            with tempfile.TemporaryDirectory() as d:
+                t = Path(d); T.setup(t, jarg)
+                set_flag(flag)
+                EA.STATE.write_text(bad, encoding="utf-8")
+                f = T.Fake(t, running=True, age_h=3.0)
+                rc = EA.main(["--mode", "evening"], run=f)
+                stopped, started = bool(f.has("bot_ctl.py stop")), bool(f.has("bot_ctl.py start"))
+                check(f"F1_{flag!r}_{bad[:30]}_never_stop_without_start", (not stopped) or started, f.cmds)
+                if flag == "1":
+                    check(f"F1_on_{bad[:30]}_green_bot_left_alone_no_login",
+                          not stopped and not started and not f.has("relogin_one.py") and rc == 0, (rc, f.cmds))
+                    f = T.Fake(t, running=True)
+                    EA.main(["--mode", "exit87"], run=f)
+                    check(f"F1_on_{bad[:30]}_exit87_no_login", not f.has("relogin_one.py"), f.cmds)
+                    txt = EA.LOG.read_text(encoding="utf-8")
+                    check(f"F1_on_{bad[:30]}_corrupt_logged",
+                          "unreadable or corrupt" in txt and "skipped, state unreadable" in txt, txt)
+    set_flag("1")
+    check("F1_effective_prev_skips_non_dict",
+          EA.effective_prev("primary", [["x"], None, "s", {"primary": 5}], 1000.0, 6)[0] == 5.0)
+    with tempfile.TemporaryDirectory() as d:     # force_logins itself: a list `last` in the caller's state is replaced by {}
+        t = Path(d); T.setup(t, jarg)
+        calls = []
+        need = [("primary", t / "target-0.json", "signed out: x")]
+        res = EA.force_logins(lambda cmd, env_extra=None, timeout=0: calls.append(cmd) or (0, ""), need,
+                              {"last_forced_login": ["primary"]}, 6, False, EVENING)
+        check("F1_force_logins_list_last_no_crash", len(calls) == 1 and "primary" in res, (calls, res))
+
+    # ---- 2: flag OFF == pre-1019 decisions (the hardening is flag-gated) ----
+    set_flag(None)
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d); T.setup(t, jarg)
+        EA.STATE.write_text("{ not json", encoding="utf-8")
+        f = T.Fake(t, running=True)
+        EA.exit87(T.A(mode="exit87"), run=f, now=EVENING)
+        check("F2_off_corrupt_state_still_forces", bool(f.has("relogin_one.py primary --force")), f.cmds)
+        T.setup(t, jarg)
+        (t / "blocker").write_text("x", encoding="utf-8")
+        EA.STATE = t / "blocker" / "ea.json"
+        f = T.Fake(t, running=True)
+        EA.exit87(T.A(mode="exit87"), run=f, now=EVENING)
+        check("F2_off_unwritable_state_still_forces", bool(f.has("relogin_one.py primary --force")), f.cmds)
+        T.setup(t, jarg)
+        if EA.STATE.exists():
+            EA.STATE.unlink()       # the corrupt-state case above re-stamped (flag off): start clean
+        raw_relogin(t, f"{iso(EVENING - 7200)} [ACCOUNT] primary: attempt 1/3")
+        f = T.Fake(t, running=True)
+        EA.exit87(T.A(mode="exit87"), run=f, now=EVENING)
+        check("F2_off_external_attempt_not_counted", bool(f.has("relogin_one.py primary --force")), f.cmds)
+        # the own-stamp cap still works with the flag off
+        f = T.Fake(t, running=True)
+        EA.exit87(T.A(mode="exit87"), run=f, now=EVENING + 600)
+        check("F2_off_own_stamp_cap_still_works", not f.has("relogin_one.py"), f.cmds)
+        check("F2_off_no_lock_file_left", not Path(str(EA.STATE) + ".lock").exists())
+    set_flag("1")
+
+    # ---- 3: a stamp written between force_logins' strict read and persist_stamp blocks the login ----
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d); T.setup(t, jarg)
+        real = EA.persist_stamp
+
+        def stamp_then_persist(acct, ts, gap_h=None):
+            EA.save_json(EA.STATE, {"last_forced_login": {acct: ts - 1}})
+            return real(acct, ts, gap_h)
+        EA.persist_stamp = stamp_then_persist
+        try:
+            calls = []
+            need = [("primary", t / "target-0.json", "signed out: x")]
+            res = EA.force_logins(lambda cmd, env_extra=None, timeout=0: calls.append(cmd) or (0, ""), need, {}, 6, False, EVENING)
+        finally:
+            EA.persist_stamp = real
+        check("F3_stamp_between_read_and_persist_blocks_login", not calls and res["primary"].startswith("skipped"), (calls, res))
+        check("F3_blocking_stamp_not_overwritten", stamps() == {"primary": EVENING - 1}, stamps())
+        check("F3_persist_stamp_returns_blocked", real("primary", EVENING, 6) == "blocked")
+        check("F3_persist_stamp_ok_after_gap", real("primary", EVENING + 7 * 3600, 6) == "ok")
+        lock = Path(str(EA.STATE) + ".lock")
+        check("F3_persist_stamp_no_lock_left", not lock.exists())
+        # a lock held by another process -> fail closed; a stale lock is stolen
+        lock.write_text("x", encoding="utf-8")
+        orig = EA._StateLock.__init__.__defaults__
+        EA._StateLock.__init__.__defaults__ = (None, 0.2)
+        try:
+            check("F3_held_lock_fails_closed", real("alt-1", EVENING, 6) == "fail")
+            old = time.time() - 120
+            os.utime(lock, (old, old))
+            check("F3_stale_lock_is_stolen", real("alt-1", EVENING, 6) == "ok")
+        finally:
+            EA._StateLock.__init__.__defaults__ = orig
+
+    # ---- 4: evening re-decides after the boot_check follow ----
+    class FollowFake(T.Fake):
+        def __init__(self, *a, on_follow=None, **kw):
+            super().__init__(*a, **kw)
+            self.on_follow = on_follow
+
+        def __call__(self, cmd, env_extra=None, timeout=900):
+            r = super().__call__(cmd, env_extra, timeout)
+            if "--follow" in cmd and self.on_follow:
+                self.on_follow()
+            return r
+
+    with tempfile.TemporaryDirectory() as d:     # another process stamps the account during the follow
+        t = Path(d); T.setup(t, three)
+        relogin_log(t, (EVENING - 120, "business", GUEST_TAIL))
+        f = FollowFake(t, running=True, age_h=3.0, verdicts=("PENDING", "GREEN"),
+                       on_follow=lambda: EA.save_json(EA.STATE, {"last_forced_login": {"business": EVENING + 300}}))
+        rc = EA.evening(T.A(), run=f, now=EVENING)
+        check("F4_stamped_during_follow_green_bot_not_restarted",
+              rc == 0 and not f.has("bot_ctl.py stop") and not f.has("bot_ctl.py start") and not f.has("relogin_one.py"), f.cmds)
+        check("F4_result_records_no_action", json.loads(EA.LAST.read_text()).get("action") == "none")
+    with tempfile.TemporaryDirectory() as d:     # the account is fixed (jar member again) during the follow
+        t = Path(d); T.setup(t, {"primary": GUEST, "business": MEMBER, "alt-1": MEMBER})
+        f = FollowFake(t, running=True, age_h=3.0, verdicts=("PENDING", "GREEN"),
+                       on_follow=lambda: T.jar(t / "target-0.json", at="R", idt="R"))
+        EA.evening(T.A(), run=f, now=EVENING)
+        check("F4_fixed_during_follow_green_bot_not_restarted",
+              not f.has("bot_ctl.py stop") and not f.has("relogin_one.py"), f.cmds)
+    with tempfile.TemporaryDirectory() as d:     # control: nothing changes during the follow -> still restarts and logs in
+        t = Path(d); T.setup(t, three)
+        relogin_log(t, (EVENING - 120, "business", GUEST_TAIL))
+        f = FollowFake(t, running=True, age_h=3.0, verdicts=("PENDING", "GREEN"))
+        EA.evening(T.A(), run=f, now=EVENING)
+        check("F4_control_no_change_still_restarts_and_logs_in",
+              bool(f.has("bot_ctl.py stop")) and bool(f.has("relogin_one.py business")) and bool(f.has("bot_ctl.py start")), f.cmds)
 
 
 if __name__ == "__main__":

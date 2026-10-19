@@ -26,12 +26,25 @@ an account whose jar FILE reads member (TARGET_JAR_GUEST_GUARD keeps it so) but 
 PROFILE is guest also needs the forced login when, in the last 20 min, logs/relogin.log's newest
 "[RESULT] <acct>:" line says "GUEST (sut=G)" or the newest run log shows "[BOOT_SKIP] <acct> (Worker 1) recorded" /
 "<acct> failed the boot login probe". Same 6 h cap, same LOGIN_ENV, same force_logins() path.
-Hardening (C-1019, guestprof-v2): the 6 h cap re-reads state/ensure_armed.json right before every forced
-login and merges its stamp (never overwrites another process's), fails CLOSED when the stamp cannot be
-read / written / read back, and also counts a login that happened outside ensure_armed (the newest
-"[ACCOUNT] <acct>: attempt 1/3" line in logs/relogin.log inside the gap). Either profile signal is void
-when a NEWER relogin.log [RESULT] line for that account is a success without the GUEST label. Every run
-starts with one "[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS=<raw|unset> -> profile_signals=<on|off>" log line.
+Hardening (C-1019, guestprof-v2) -- ACTIVE ONLY WITH THE FLAG ON. Flag off keeps the pre-1019 (d937b524)
+decisions verbatim (lenient state read, in-memory cap, swallowed save, no relogin.log count, no void rule);
+the only flag-off change is the [FLAGS] log line. With the flag on:
+  - the 6 h cap re-reads state/ensure_armed.json right before every forced login and merges its stamp
+    under a lock (never overwrites another process's); a younger stamp already in the file at write time
+    blocks the login (persist_stamp 'blocked');
+  - it fails CLOSED when the state file cannot be read, is corrupt (incl. a non-dict last_forced_login),
+    cannot be locked / written / read back: no forced login, no stop of a running bot for a login;
+  - it also counts a login that happened outside ensure_armed: the newest "[ACCOUNT] <acct>: attempt 1/3"
+    line in logs/relogin.log inside the gap. Limits: that is the TYPED-login mode only -- a hand login
+    (relogin_one.py manual mode) logs [MANUAL]/[RESULT] and never "attempt 1/3", so it does NOT count;
+  - evening mode re-evaluates need / eligible from fresh state AFTER the boot_check follow (up to ~12 min);
+  - either profile signal is void when a NEWER relogin.log [RESULT] line for that account is a success
+    without the GUEST label. Caveat: relogin_one.py prints "already logged in" WITHOUT the GUEST label
+    whenever TARGET_JAR_GUEST_GUARD=1 is not set in its env (LOGIN_ENV and the bat set it; an ad-hoc run may
+    not), and such a line voids a real signal;
+  - the consequence of failing closed: a corrupt state file blocks every forced login (and the stop for
+    one) until it is repaired or deleted -- log line "[LOGIN] state/ensure_armed.json unreadable or corrupt".
+Every run starts with one "[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS=<raw|unset> -> profile_signals=<on|off>" line.
 Opt out for a night: create state/ensure_armed.disable (any content).
 Log: logs/ensure_armed.log; last result: state/ensure_armed_last.json.
 Exit codes: 0 ok / nothing to do, 1 the boot ended RED or a step failed, 2 disabled.
@@ -112,7 +125,11 @@ def load_state_strict(p: Path) -> tuple:
             return {}, True
         with open(p, encoding="utf-8") as f:
             d = json.load(f)
-        return (d, True) if isinstance(d, dict) else ({}, False)
+        if not isinstance(d, dict):
+            return {}, False
+        if "last_forced_login" in d and not isinstance(d["last_forced_login"], dict):
+            return {}, False        # a list / string where the stamps belong: corrupt -> fail closed (no stop, no login)
+        return d, True
     except Exception:
         return {}, False
 
@@ -142,29 +159,83 @@ def _stamps(d) -> dict:
     return out
 
 
-def persist_stamp(acct: str, ts: float) -> bool:
-    """Merge acct's stamp into the CURRENT state file (other keys / accounts, incl. another process's
-    stamps, are kept) and read it back. False = could not be persisted -> the caller must not log in."""
-    try:
-        cur, ok = load_state_strict(STATE)
-        if not ok:
-            return False
-        lf = cur.get("last_forced_login")
-        if not isinstance(lf, dict):
-            lf = {}
+class _StateLock:
+    """Cross-process lock for the read-modify-write of state/ensure_armed.json: an O_EXCL lock file,
+    stolen when older than STALE_S (a crashed holder). Not acquired within `wait_s` -> `.ok` is False and
+    the caller fails CLOSED (no login)."""
+    STALE_S = 30.0
+
+    def __init__(self, path: Path | None = None, wait_s: float = 5.0):
+        self.path = Path(str(STATE) + ".lock") if path is None else path
+        self.wait_s, self.ok, self._fd = wait_s, False, None
+
+    def __enter__(self):
+        end = time.time() + self.wait_s
         try:
-            old = float(lf.get(acct) or 0)
-        except (TypeError, ValueError):
-            old = 0.0
-        lf[acct] = max(old, ts)
-        cur["last_forced_login"] = lf
-        if not save_json_strict(STATE, cur):
-            return False
-        back, ok = load_state_strict(STATE)
-        return ok and abs(_stamps(back).get(acct, 0.0) - lf[acct]) < 1e-6
-    except Exception:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return self
+        while True:
+            try:
+                self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                self.ok = True
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.path.stat().st_mtime > self.STALE_S:
+                        self.path.unlink()
+                        continue
+                except Exception:
+                    pass
+            except Exception:
+                return self
+            if time.time() >= end:
+                return self
+            time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except Exception:
+                pass
+            try:
+                self.path.unlink()
+            except Exception:
+                pass
         return False
 
+
+def persist_stamp(acct: str, ts: float, gap_h: float | None = None) -> str:
+    """Merge acct's stamp into the CURRENT state file (other keys / accounts, incl. another process's
+    stamps, are kept), under a lock, and read it back. Returns 'ok' / 'blocked' / 'fail':
+      blocked = the file ALREADY holds a stamp for acct younger than gap_h (another process won the race
+                between the caller's read and this write) -> the caller must not log in;
+      fail    = lock not acquired / file unreadable / not writable / read-back mismatch -> must not log in."""
+    try:
+        with _StateLock() as lk:
+            if not lk.ok:
+                return "fail"
+            cur, ok = load_state_strict(STATE)
+            if not ok:
+                return "fail"
+            lf = cur.get("last_forced_login")
+            if not isinstance(lf, dict):
+                lf = {}
+            try:
+                old = float(lf.get(acct) or 0)
+            except (TypeError, ValueError):
+                old = 0.0
+            if gap_h is not None and old and ts - old < gap_h * 3600:
+                return "blocked"
+            lf[acct] = max(old, ts)
+            cur["last_forced_login"] = lf
+            if not save_json_strict(STATE, cur):
+                return "fail"
+            back, ok = load_state_strict(STATE)
+            return "ok" if ok and abs(_stamps(back).get(acct, 0.0) - lf[acct]) < 1e-6 else "fail"
+    except Exception:
+        return "fail"
 
 
 def external_login_ts(acct: str, now: float, gap_h: float, root: Path | None = None) -> float:
@@ -195,8 +266,10 @@ def effective_prev(acct: str, stamp_maps: list, now: float, gap_h: float) -> tup
     (state file / in-memory) and an external relogin.log attempt inside the gap."""
     best, src = 0.0, "none"
     for m in stamp_maps:
+        if not isinstance(m, dict):
+            continue
         try:
-            v = float((m or {}).get(acct) or 0)
+            v = float(m.get(acct) or 0)
         except (TypeError, ValueError):
             v = 0.0
         if v > best:
@@ -466,17 +539,49 @@ def boot_verdict(run, log_path, follow: bool = False, deadline: int = 720) -> st
     return {0: "GREEN", 1: "RED"}.get(rc, "PENDING")
 
 
+def _force_logins_legacy(run, need: list, state: dict, gap_h: float, dry: bool, now: float) -> dict:
+    """The pre-1019 cap, byte-for-byte (flag OFF): the caller's in-memory stamps, a swallowed save."""
+    res = {}
+    last = state.setdefault("last_forced_login", {})
+    for acct, path, why in need:
+        prev = float(last.get(acct) or 0)
+        if now - prev < gap_h * 3600:
+            res[acct] = f"skipped: forced login {((now - prev) / 3600):.1f} h ago (< {gap_h:g} h)"
+            log(f"[LOGIN] {acct}: {why} -- {res[acct]}")
+            continue
+        if dry:
+            res[acct] = "dry-run: would force-login"
+            log(f"[LOGIN] {acct}: {why} -- dry run, not logging in")
+            continue
+        log(f"[LOGIN] {acct}: {why} -- scripted forced login (home IP, engine UA)")
+        last[acct] = now
+        save_json(STATE, state)
+        rc, out = run([python_exe(), "relogin_one.py", acct, "--force"], env_extra=LOGIN_ENV, timeout=600)
+        ok, after = jar_state(path)
+        if why.startswith("profile guest per"):
+            ok = rc != 0    # the jar already read member; only the login's own exit code says if it worked
+        res[acct] = ("LOGGED IN" if not ok else "STILL NOT LOGGED IN") + f" (rc={rc}; jar: {after})"
+        log(f"[LOGIN] {acct}: {res[acct]}")
+    return res
+
+
 def force_logins(run, need: list, state: dict, gap_h: float, dry: bool, now: float) -> dict:
     """One scripted forced login per account that needs one, rate-limited. Returns
     {acct: outcome}. Re-reads the jar after each login.
 
-    The 6 h cap fails CLOSED (C-1019): the state file is RE-READ right before every decision (another
-    process -- the wrapper's exit-87 call, a second scheduled run -- may have stamped meanwhile; the
-    caller's in-memory copy is stale), a login outside ensure_armed (relogin.log 'attempt 1/3' inside
-    the gap) counts, an unreadable state file means NO login, and the stamp is written (merged, then read
-    back) BEFORE the login launches -- if it cannot be persisted, no login."""
+    Flag OFF (ENSURE_ARMED_PROFILE_SIGNALS unset / != "1"): the pre-1019 cap, unchanged.
+    Flag ON: the 6 h cap fails CLOSED (C-1019): the state file is RE-READ right before every decision
+    (another process -- the wrapper's exit-87 call, a second scheduled run -- may have stamped meanwhile;
+    the caller's in-memory copy is stale), a login outside ensure_armed (relogin.log 'attempt 1/3' inside
+    the gap) counts, an unreadable / corrupt state file means NO login, and the stamp is written (merged,
+    under a lock, refusing when a younger stamp for the account is already in the file, then read back)
+    BEFORE the login launches -- if it cannot be persisted, no login."""
+    if not profile_signals_on():
+        return _force_logins_legacy(run, need, state, gap_h, dry, now)
     res = {}
-    last = state.setdefault("last_forced_login", {})
+    last = state.get("last_forced_login") if isinstance(state, dict) else None
+    if not isinstance(last, dict):
+        last = {}
     for acct, path, why in need:
         cur, ok = load_state_strict(STATE)
         if not ok:
@@ -494,7 +599,12 @@ def force_logins(run, need: list, state: dict, gap_h: float, dry: bool, now: flo
             res[acct] = "dry-run: would force-login"
             log(f"[LOGIN] {acct}: {why} -- dry run, not logging in")
             continue
-        if not persist_stamp(acct, now):
+        pst = persist_stamp(acct, now, gap_h)
+        if pst == "blocked":
+            res[acct] = "skipped: forced login stamped by another process just now"
+            log(f"[LOGIN] {acct}: {why} -- {res[acct]}")
+            continue
+        if pst != "ok":
             res[acct] = "skipped: stamp not persisted"
             log(f"[LOGIN] {acct}: skipped, stamp not persisted (state file unwritable) -- no forced login ({why})")
             continue
@@ -516,18 +626,27 @@ def in_drop_band(now: float) -> bool:
 
 def evening(args, run=default_run, now=None) -> int:
     now = time.time() if now is None else now
-    state, state_ok = load_state_strict(STATE)
-    if not state_ok:
-        log("[LOGIN] state/ensure_armed.json unreadable -- no forced login this run")
+    t0 = time.time()
+    strict = profile_signals_on()
+    if strict:
+        state, state_ok = load_state_strict(STATE)
+        if not state_ok:
+            log("[LOGIN] state/ensure_armed.json unreadable or corrupt -- no forced login this run")
+    else:
+        state, state_ok = load_json(STATE, {}), True      # flag off: the pre-1019 lenient read
     result = {"mode": "evening", "at": datetime.fromtimestamp(now).isoformat(timespec="seconds")}
     st = bot_status(run)
     result["status_before"] = st
     need = needs_login(now)
     result["need_login"] = {a: why for a, _, why in need}
-    last = _stamps(state)
-    eligible = ([n for n in need
-                 if now - effective_prev(n[0], [last], now, args.login_gap_h)[0] >= args.login_gap_h * 3600]
-                if state_ok else [])
+    if strict:
+        last = _stamps(state)
+        eligible = ([n for n in need
+                     if now - effective_prev(n[0], [last], now, args.login_gap_h)[0] >= args.login_gap_h * 3600]
+                    if state_ok else [])
+    else:
+        last = state.get("last_forced_login", {})
+        eligible = [n for n in need if now - float(last.get(n[0]) or 0) >= args.login_gap_h * 3600]
     band = in_drop_band(now)
     running = bool(st.get("running"))
     age = st.get("age_h")
@@ -536,6 +655,19 @@ def evening(args, run=default_run, now=None) -> int:
         verdict = boot_verdict(run, lg) if lg else "PENDING"
         if verdict == "PENDING" and lg:      # a boot in progress: let it finish, never restart it
             verdict = boot_verdict(run, lg, follow=True)
+            if strict:
+                # The follow can take ~12 min: another process (the wrapper's exit-87 call) may have
+                # forced / fixed an account meanwhile. Decide from FRESH facts, never the pre-follow ones.
+                now2 = now + (time.time() - t0)
+                state, state_ok = load_state_strict(STATE)
+                if not state_ok:
+                    log("[LOGIN] state/ensure_armed.json unreadable or corrupt after the boot follow -- no forced login this run")
+                need = needs_login(now2)
+                result["need_login"] = {a: why for a, _, why in need}
+                last = _stamps(state)
+                eligible = ([n for n in need
+                             if now2 - effective_prev(n[0], [last], now2, args.login_gap_h)[0] >= args.login_gap_h * 3600]
+                            if state_ok else [])
         result["verdict_before"] = verdict
         reasons = []
         if verdict != "GREEN":
@@ -569,6 +701,8 @@ def evening(args, run=default_run, now=None) -> int:
             return 1
     if need:
         result["logins"] = force_logins(run, need, state, args.login_gap_h, False, now)
+        if not strict:
+            save_json(STATE, state)      # flag off: the pre-1019 whole-file save
     t_start = time.time()
     rc, out = run([python_exe(), "tools/ops/bot_ctl.py", "start"], timeout=180)
     log(f"[START] bot_ctl start rc={rc}")
