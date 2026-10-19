@@ -46,7 +46,18 @@ the only flag-off change is the [FLAGS] log line. With the flag on:
     not), and such a line voids a real signal;
   - the consequence of failing closed: a corrupt state file blocks every forced login (and the stop for
     one) until it is repaired or deleted -- log line "[LOGIN] state/ensure_armed.json unreadable or corrupt".
-Every run starts with one "[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS=<raw|unset> -> profile_signals=<on|off>" line.
+ENSURE_ARMED_STATUS_FAILCLOSED=1 (default off; anything but exactly "1" is off; M-1019-01, 2026-10-19): when
+"bot_ctl status --json" yields no usable answer (timeout rc 124, non-JSON, exception: "running" is None),
+evening() logs "[STATUS] bot_ctl status failed -- not touching the bot or any login this run: <tail>", records
+action "status-unknown" in state/ensure_armed_last.json and returns 1 BEFORE any forced login, stop or start.
+Flag off keeps today's behaviour (an unknown status reads as "not running" -> forced logins -> start).
+ENSURE_ARMED_ROWLOG=1 (default off; exactly "1"): when boot_verdict() maps a boot_check to a non-GREEN verdict it
+logs one "[BOOTROWS] <verdict> fails=[<row ids>] warns=<n> buy_markers=<k>/<total>" line parsed from
+"boot_check.py --json" (never changes the verdict). Both flags: the bat AND the user environment (setx) must carry
+the SAME value, and neither is armed anywhere yet. Kill: "=0" in the bat, then
+"reg delete HKCU\\Environment /v ENSURE_ARMED_STATUS_FAILCLOSED /f" (same for ENSURE_ARMED_ROWLOG).
+Every run starts with one "[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS=<raw|unset> -> profile_signals=<on|off>" line,
+followed by one "[FLAGS] ENSURE_ARMED_STATUS_FAILCLOSED=<raw|unset> -> status_failclosed=<on|off>" line.
 Opt out for a night: create state/ensure_armed.disable (any content).
 Log: logs/ensure_armed.log; last result: state/ensure_armed_last.json.
 Exit codes: 0 ok / nothing to do, 1 the boot ended RED or a step failed, 2 disabled.
@@ -355,6 +366,16 @@ def profile_signals_on() -> bool:
     return os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS", "0") == "1"
 
 
+def status_failclosed_on() -> bool:
+    """Exactly '1' turns it on; unset / '0' / ' 1' / 'true' / anything else is off."""
+    return os.environ.get("ENSURE_ARMED_STATUS_FAILCLOSED", "0") == "1"
+
+
+def rowlog_on() -> bool:
+    """Exactly '1' turns it on; unset / '0' / ' 1' / 'true' / anything else is off."""
+    return os.environ.get("ENSURE_ARMED_ROWLOG", "0") == "1"
+
+
 _FLAGS_LOGGED = False
 
 
@@ -370,6 +391,12 @@ def log_flags() -> None:
         raw = os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS")
         shown = "unset" if raw is None else (raw if raw != "" else "(empty)")
         log(f"[FLAGS] ENSURE_ARMED_PROFILE_SIGNALS={shown} -> profile_signals={'on' if profile_signals_on() else 'off'}")
+    except Exception:
+        pass
+    try:
+        raw = os.environ.get("ENSURE_ARMED_STATUS_FAILCLOSED")
+        shown = "unset" if raw is None else (raw if raw != "" else "(empty)")
+        log(f"[FLAGS] ENSURE_ARMED_STATUS_FAILCLOSED={shown} -> status_failclosed={'on' if status_failclosed_on() else 'off'}")
     except Exception:
         pass
 
@@ -555,7 +582,61 @@ def boot_verdict(run, log_path, follow: bool = False, deadline: int = 720) -> st
     if follow:
         cmd += ["--follow", "--deadline", str(deadline)]
     rc, out = run(cmd, timeout=deadline + 120 if follow else 120)
-    return {0: "GREEN", 1: "RED"}.get(rc, "PENDING")
+    verdict = {0: "GREEN", 1: "RED"}.get(rc, "PENDING")
+    if verdict != "GREEN" and rowlog_on():
+        _log_boot_rows(verdict, out)
+    return verdict
+
+
+def _log_boot_rows(verdict: str, out) -> None:
+    """ENSURE_ARMED_ROWLOG: one '[BOOTROWS]' line naming the boot_check rows behind a non-GREEN verdict.
+    Never raises, never changes anything the caller sees."""
+    try:
+        try:
+            res = _last_json_object(out)    # `--follow` prints one indented JSON object per poll: the last one is the verdict
+            rows = res["rows"]
+            if not isinstance(rows, list):
+                raise ValueError("rows")
+            fails = [str(r.get("id")) for r in rows if r.get("status") == "FAIL"]
+            warns = sum(1 for r in rows if r.get("status") == "WARN")
+            marker_ids = _boot_marker_ids()
+            seen = [r for r in rows if r.get("id") in marker_ids]
+            ok = sum(1 for r in seen if r.get("status") == "OK")
+            log(f"[BOOTROWS] {verdict} fails={fails} warns={warns} buy_markers={ok}/{len(marker_ids)}")
+        except Exception:
+            log(f"[BOOTROWS] {verdict} (boot_check output unparsable)")
+    except Exception:
+        pass
+
+
+def _last_json_object(out) -> dict:
+    """The last top-level JSON object in `out` (boot_check --json, possibly several back to back). Raises
+    ValueError when there is none."""
+    dec, i, last, text = json.JSONDecoder(), 0, None, str(out)
+    while True:
+        i = text.find("{", i)
+        if i < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except ValueError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            last = obj
+        i = end
+    if last is None:
+        raise ValueError("no JSON object")
+    return last
+
+
+def _boot_marker_ids() -> list:
+    """The ordered buy-path marker ids of tools/predrop/boot_check.py (MARKERS), read from the file."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_ea_boot_check", str(Path(__file__).resolve().parents[2] / "tools" / "predrop" / "boot_check.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return [m[0] for m in mod.MARKERS]
 
 
 def _force_logins_legacy(run, need: list, state: dict, gap_h: float, dry: bool, now: float) -> dict:
@@ -665,6 +746,15 @@ def evening(args, run=default_run, now=None) -> int:
     result = {"mode": "evening", "at": datetime.fromtimestamp(now).isoformat(timespec="seconds")}
     st = bot_status(run)
     result["status_before"] = st
+    if status_failclosed_on() and st.get("running") is None:
+        try:
+            tail = str(st.get("error") or "")[-200:].replace("\n", " ")
+        except Exception:
+            tail = ""
+        log(f"[STATUS] bot_ctl status failed -- not touching the bot or any login this run: {tail}")
+        result["action"] = "status-unknown"
+        save_json(LAST, result)
+        return 1
     need = needs_login(now)
     result["need_login"] = {a: why for a, _, why in need}
     if strict:
