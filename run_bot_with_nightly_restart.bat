@@ -1361,7 +1361,7 @@ set TARGET_STALL_WATCHDOG=1
 REM F1 TARGET_THREAD_START_GUARD (2026-10-19, guard v2 verified): monitoring_loop starts
 REM purchase_thread before stock_thread, each start() in its own try/except
 REM ([MONITORING_LOOP] [ERROR] ... start failed + traceback); a start that never became alive
-REM is retried on the SAME object (<=3), replacements are capped at 3. Kill: set it to 0.
+REM is retried on the SAME object (at most 3), replacements are capped at 3. Kill: set it to 0.
 set TARGET_THREAD_START_GUARD=1
 REM 2026-10-08 23:5x pre-drop (live fix): four boots in a row exited 87 on the
 REM homepage 'Hi,' greeting probe timing out at 10 s while every jar was a MEMBER
@@ -1755,6 +1755,13 @@ REM  Kill: edit the set line below to ENSURE_ARMED_EXIT87=0 (it overwrites any e
 REM  value on every pass, so setting the variable outside this file does nothing).
 REM ---------------------------------------------------------------------------
 set ENSURE_ARMED_EXIT87=1
+REM ENSURE_ARMED_PROFILE_SIGNALS (2026-10-19, C-1018-20/22, guestprof v2 verified): the exit-87
+REM branch below (and the scheduled ensure-armed tasks, via the USER environment set with setx)
+REM treat a fresh relogin 'GUEST (sut=G)' label or a boot-probe failure as 'this PROFILE needs its
+REM ONE scripted forced login' (at most 1 per account per 6 h, fail-closed stamp, voided by a newer
+REM success). Both the task and this wrapper must see the same value. Kill: set it to 0 here
+REM AND reg delete HKCU\Environment /v ENSURE_ARMED_PROFILE_SIGNALS /f.
+set ENSURE_ARMED_PROFILE_SIGNALS=1
 if "%EXITCODE%"=="87" (
     set /a RELOGIN_BURSTS+=1
     echo [!date! !time!] exit 87: not-logged-in ? relogin cycle !RELOGIN_BURSTS!/3 >> "%RUNLOG%"
