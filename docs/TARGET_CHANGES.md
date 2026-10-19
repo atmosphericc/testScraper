@@ -328,6 +328,14 @@ Entry format:
   p=0.67"; 10-09 "night x TCIN"; 10-16 first written up as "cadence NOT ESTABLISHED") because the post-run compared one
   night against a pooled baseline per shot. Fixed by the R-ERA volley query and post-run v3 (C-1016-10).
 
+## 2026-10-18 — nothing new observed on the opponent's side; context for the next band (live fetches + REPORTED, not bot-observed)
+
+- The bot has not run since 10-16 16:44 (host off 10-16 16:47 → 10-18 19:03), so there is no first-hand observation for 10-17 / 10-18.
+- Refract's published Target module (`help.refractbot.com/llms-full.txt`, "# Target", old lines 3106-4069: Setup Guide, Release Guide, In-Bot pages) is byte-identical between the 10-11 snapshot and a 10-18/19 fetch; the 23 diff hunks are elsewhere (one Pro sentence, Apple pages). No new vendor guidance to act on. [MEASURED fetch + diff; C-1018-10]
+- No Target Pokémon drop announced for 10-19..11-01 by Target or the trackers checked (Restockd, Swooper, TCG Drop Radar); the only published pattern is Fridays ~3-6 AM ET. Our own record: every covered Friday band since 09-11 had windows (6/6); Sat-Tue 0 of 9. [REPORTED + MEASURED; C-1018-08/10]
+- Nov 6 2026 street-date PDPs are live: 1012663804 30th Celebration Ditto Premium Collection $49.99, 1012793603 Figure Collection Mew $39.99, 1012850573 Figure Collection Mewtwo $39.99 (1012850569 is a 404). 1012663804 is not in `config/product_config.json` — the operator's list decision; agents never add. [MEASURED fetch; C-1018-10]
+- Still open from 10-16: the home line's first contact at the edge limiter (14/31 → 2/23 volleys after 10-01). New 10-18: the home line's public identity before 10-16 is unrecorded, 9 unclean host shutdowns clustered 09-27 → 10-04, and the local network identity did not change (C-1018-14). The Target-side vs network-side split stays NOT ESTABLISHED; the in-window guest follower (first scheduled run possible 10-18 23:40) is the next measurement.
+
 ## Known-unknowns about the opponent
 
 Things we would need to see their side to answer. Listed so they are not

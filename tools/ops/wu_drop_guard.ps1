@@ -6,6 +6,11 @@
 # Effect: pauses updates for -Days (max 35) and sets active hours 19:00-13:00 (the 18 h max),
 # so automatic restarts can only land 13:00-19:00. Undo: Settings > Windows Update > Resume,
 # and set active hours back (was 11-2). Writes logs\wu_drop_guard.log.
+# 2026-10-18 (readiness audit, C-1018-03): the ACTIVE-HOURS half is NOT durable. Windows Update
+# Orchestrator's automatic active-hours adjustment (MoUsoCoreWorker, auto-adjust on by default)
+# rewrote 19-13 to 9-3 on 2026-10-16 01:22:59 with no policy or user action, and nothing on this
+# host disables it. Only the PAUSE holds; re-run this script elevated (-Days N) before every drop
+# week and treat the active-hours write as best-effort.
 param([int]$Days = 7)
 $ErrorActionPreference = 'Stop'
 $log = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'logs\wu_drop_guard.log'
