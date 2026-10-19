@@ -426,6 +426,8 @@ REM  fired-but-no-response POST bails terminal (never retried); and the chain
 REM  refuses to fire the place-order POST at all unless the ATC returned 201,
 REM  pre_checkout returned 2xx, and every cart item is our TCIN. Skipped
 REM  entirely while the CVV latch is on (that shot is a guaranteed 400).
+REM  2026-10-19 note: with TARGET_HELD_LINE_FLIP_STRIKE=1 a held line also fires the chain on a
+REM  400 MAX_PURCHASE strike, see that flag's own block further down.
 REM  Validated: tests	est_fast_lane_checkout.py (37/37, incl. the chain's real
 REM  JS run under node with a stubbed fetch). Requires TARGET_API_PLACE_ORDER,
 REM  which app.py already defaults to true.
@@ -1750,7 +1752,8 @@ REM  2026-10-19 C-1018-20: this branch reads the jar FILE only. A GUEST PROFILE 
 REM  still reads member (TARGET_JAR_GUEST_GUARD keeps it so) is invisible to it, and the
 REM  validate-first relogin says 'already logged in' (C-1014-02), so the 87-loop cannot heal
 REM  itself (10-19 01:30: 3 launches in 4 min). ENSURE_ARMED_PROFILE_SIGNALS=1 (built 10-19,
-REM  UNARMED until verified) adds the relogin GUEST label + the boot-probe failure as signals.
+REM  ARMED 2026-10-19 09:44 after the guestprof-v2 verifier, C-1018-24) adds the relogin GUEST
+REM  label + the boot-probe failure as signals.
 REM  Kill: edit the set line below to ENSURE_ARMED_EXIT87=0 (it overwrites any environment
 REM  value on every pass, so setting the variable outside this file does nothing).
 REM ---------------------------------------------------------------------------
