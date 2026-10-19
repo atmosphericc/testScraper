@@ -1973,6 +1973,10 @@ class PurchaseExecutor:
         # write-auth (two consecutive 401 dummy POSTs) -- so it is INERT on the
         # 08-21 pattern (heartbeat 424 all night) and only fires on a real dead
         # token. It touches only the warmup tab (/account nav), never the purchase
+        # 2026-10-18 CORRECTION (C-1018-16): 'CONFIRMED dead' = three keyless 401s in a row, which the
+        # Shape verdict (keyless 401, x-ssx-hop=1) also produces at ~20 %/probe -> ~0.6 % DEAD per heartbeat;
+        # all 30 DEADs on 10-09/10-16 were that, not dead tokens. Harmless only because TARGET_TOKEN_KEEPFRESH=0
+        # makes the repair a no-op; never re-arm keep-fresh.
         # cart. Kill-switch: TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=0.
         self._atc_dead_token_midwindow_repair: bool = (
             os.environ.get('TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR', '1') != '0')
@@ -3926,7 +3930,8 @@ class PurchaseExecutor:
             # 2026-08-22: allow the confirmed-dead repair DURING a purchase window
             # too (07-07 dead-token safety net for the ladder-OFF path). Still
             # 300s-throttled and still gated on a CONFIRMED dead write-auth, so it
-            # is inert on the normal Shape-burn 401 (heartbeat 424). Kill-switch
+            # is inert on the normal Shape-burn 401 (heartbeat 424) -- REFUTED 10-18: the 3x re-probe
+            # confirms on keyless Shape 401s too (C-1018-16); only KEEPFRESH=0 keeps it inert. Kill-switch
             # TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=0 restores the old
             # purchase-in-progress suppression.
             _midwin_ok = getattr(self, '_atc_dead_token_midwindow_repair', True)
@@ -9226,7 +9231,8 @@ class PurchaseExecutor:
 
         All three requests run inside a single `tab.evaluate`, so there is no CDP
         round-trip between them: ~0.35s ATC + ~0.30s pre_checkout + ~0.20s
-        place-order ≈ 0.85s from trigger to committed order.
+        place-order ≈ 0.85s from trigger to committed order (design estimate; measured live 10-01
+        the whole chain took 2.06-3.62 s, n=8, C-1001-07).
 
         Returns {atc:{status,body,cart_items}, pre:{...}, po:{status,body,fired},
         skip:<str>} — the caller re-uses `atc` verbatim as the ATC result, so when

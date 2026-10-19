@@ -166,7 +166,7 @@ def _rebuy_on() -> bool:
     C-1014-14). The buyer itself sits it out ('bought_this_window') for the rest
     of that stock window (the _fx1006_recently_purchased rule; a real
     out-then-in flip opens a new window for everyone, as HEAD) -- the
-    same-account repeat is what drew cancels (qty-2 repeats). Buyers are kept
+    same-account repeat was SUSPECTED of drawing cancels (qty-2 repeats; unconfirmed, no cancel is recorded anywhere, C-1015-12 / C-1018-12). Buyers are kept
     per (worker label, TCIN) and persisted to TARGET_REBUY_FILE
     (state/rebuy_buyers.json); a record restored after a crash relaunch also
     holds for TARGET_REBUY_BUYER_HOLD_S (1800), since the window it belonged to
@@ -1805,7 +1805,7 @@ class BulletproofPurchaseManager:
                             cleaned_count += 1
                             print(f"[STARTUP_CLEANUP] Cleaned up stale ATTEMPTING state: {tcin} was attempting for {age_seconds:.1f}s (threshold: 60s)")
 
-                    # Always reset "interrupted" states — app was killed during a purchase, safe to retry
+                    # Always reset "interrupted" states — app was killed during a purchase. NOT provably safe to retry if a place-order was on the wire: no latch is persisted before the answer (C-1018-05, FX-PO-JOURNAL pending); behaviour unchanged
                     elif status == 'interrupted':
                         states[tcin] = {'status': 'ready'}
                         cleaned_count += 1
@@ -5100,7 +5100,7 @@ class BulletproofPurchaseManager:
         (window_start) after it -- so a bought TCIN is never
         hinted, counted as a contender or yielded to until a real out-then-in
         flip opens a new window -- the same rule the level re-arm keeps for a
-        'purchased' row (qty-2 repeats have drawn cancels). Without a window
+        'purchased' row (qty-2 repeats were suspected of drawing cancels; unconfirmed, C-1018-12). Without a window
         stamp: bought within TARGET_MULTI_SKU_MISS_REARM_PURCHASED_HOLD_S (1800).
         Never raises."""
         try:
@@ -6458,7 +6458,7 @@ class BulletproofPurchaseManager:
                         # The ceiling is LOAD-BEARING. stock_monitor's max_qty can be
                         # polluted by ATP (warehouse qty) when RedSky omits the
                         # per-customer limit, so the raw value can be large (the old
-                        # reverted path clamped to [1,10] and got orders auto-cancelled).
+                        # reverted path clamped to [1,10]; the 'auto-cancelled' outcome is unrecorded, C-1018-12).
                         # Capping at 2 prevents that over-order; the executor re-clamps
                         # to the same ceiling as a hard invariant. On a true limit-1 SKU
                         # the executor's 422/400 PURCHASE_LIMIT self-heal drops 2->1.
@@ -6505,7 +6505,7 @@ class BulletproofPurchaseManager:
                         else:
                             print(f"[PURCHASE_ERROR] Failed to start purchase for {tcin}: {result}")
                     elif current_status in ['purchased', 'failed', 'interrupted']:
-                        # 'interrupted' means the app was killed mid-purchase — always safe to retry.
+                        # 'interrupted' means the app was killed mid-purchase — a retry is NOT provably safe if a place-order was in flight (C-1018-05); see FX-PO-JOURNAL.
                         # 'failed'/'purchased' here means the reset cycle hasn't run yet.
                         _cat = 0.0
                         if _keep_live_failed_on():
@@ -6538,8 +6538,8 @@ class BulletproofPurchaseManager:
                         # prior state. get_all_states() now carries the hint, so
                         # the level re-arm genuinely sustains re-racing; a
                         # 'purchased' item flipped to bare 'ready' here must NOT
-                        # auto-re-buy every ~60s (qty2 repeats have triggered
-                        # Target cancels). Repeat buys keep requiring a real
+                        # auto-re-buy every ~60s (qty2 repeats were suspected of triggering
+                        # Target cancels; unconfirmed, C-1018-12). Repeat buys keep requiring a real
                         # OOS→IS flip, exactly _build_level_rearm_map's stated
                         # semantics. failed/interrupted still re-race.
                         # FX-1014-REBUY: a bought TCIN whose buyers are all named stays
