@@ -835,10 +835,45 @@ def check_accounts(R: Report, root: Path, run_readiness: bool, drop_ts):
         else:
             R.add(A, "ac1_latch", "OK", "no ambiguous-commit latch file")
 
+    def profile_guest():
+        # C-1018-20 (2026-10-19): TARGET_JAR_GUEST_GUARD keeps a jar FILE at member while the live
+        # Chrome PROFILE is guest; relogin_one.py's validate-first pass labels that "GUEST (sut=G)".
+        # WARN only: lists accounts whose newest relogin.log [RESULT] line says so while the jar reads member.
+        _ops = str(HERE.parent / "ops")
+        sys.path.insert(0, _ops)
+        try:
+            import ensure_armed as _ea
+        finally:
+            try:
+                sys.path.remove(_ops)
+            except ValueError:
+                pass
+        now = time.time()
+        hits, items = [], []
+        for a in accts or [x for x in _accounts(root) if x.get("enabled", True)]:
+            aid = a.get("account_id", "?")
+            r = _ea.newest_relogin_result(aid, root)
+            if not r or _ea.GUEST_LABEL not in r[1]:
+                continue
+            nl, note = _ea.jar_state(root / str(a.get("session_path", "")), now)
+            if nl:
+                continue          # the jar itself reads guest/missing: readiness already flags it
+            age = None if r[0] is None else (now - r[0]) / 3600.0
+            age_s = "age unknown" if age is None else f"{age:.1f} h ago"
+            hits.append(f"{aid} ({age_s})")
+            items.append({"account": aid, "age_h": None if age is None else round(age, 2), "jar": note})
+        if hits:
+            R.add(A, "profile_guest", "WARN",
+                  f"newest relogin.log [RESULT] says GUEST (sut=G) while the jar file reads member: {', '.join(hits)} -- the live Chrome profile is signed out; a jar-only check (ensure_armed, readiness) cannot see it",
+                  "a scripted forced login (ENSURE_ARMED_PROFILE_SIGNALS=1 lets ensure_armed do it) or hand login; confirm the profile with relogin_one.py's validate-first output", items=items)
+        else:
+            R.add(A, "profile_guest", "OK", "no account whose newest relogin.log [RESULT] says GUEST (sut=G) while its jar reads member")
+
     R.guarded(A, "cfg", cfg)
     if run_readiness:
         R.guarded(A, "readiness", readiness)
     R.guarded(A, "latches", latches)
+    R.guarded(A, "profile_guest", profile_guest)
 
 
 # ── config ────────────────────────────────────────────────────────────────────

@@ -21,6 +21,11 @@ exit87   (run_bot_with_nightly_restart.bat, exit 87 branch; app.py has exited, t
 
 Rate limit: one forced login per account per --login-gap-h (6 h) -- typed logins are
 Shape-scored and a storm burns the account (~0/25 historically; 2/2 on 10-14).
+ENSURE_ARMED_PROFILE_SIGNALS=1 (default off; anything but exactly "1" is off; C-1018-20, 2026-10-19):
+an account whose jar FILE reads member (TARGET_JAR_GUEST_GUARD keeps it so) but whose live Chrome
+PROFILE is guest also needs the forced login when, in the last 20 min, logs/relogin.log's newest
+"[RESULT] <acct>:" line says "GUEST (sut=G)" or the newest run log shows "[BOOT_SKIP] <acct> (Worker 1) recorded" /
+"<acct> failed the boot login probe". Same 6 h cap, same LOGIN_ENV, same force_logins() path.
 Opt out for a night: create state/ensure_armed.disable (any content).
 Log: logs/ensure_armed.log; last result: state/ensure_armed_last.json.
 Exit codes: 0 ok / nothing to do, 1 the boot ended RED or a step failed, 2 disabled.
@@ -49,6 +54,8 @@ RUNS = ROOT / "logs" / "runs"
 LOGIN_ENV = {"RELOGIN_SKIP_PROXY": "1", "TARGET_UA_MODE": "engine",
              "TARGET_FP_CHROMIUM": "0", "TARGET_JAR_GUEST_GUARD": "1"}
 MEMBER_SUT = ("R", "M", "MEMBER")
+RECENT_MIN = 20          # a profile-guest signal older than this is stale (ENSURE_ARMED_PROFILE_SIGNALS)
+GUEST_LABEL = "GUEST (sut=G)"
 
 
 def python_exe(root: Path | None = None) -> str:
@@ -138,6 +145,117 @@ def jar_state(path: Path, now: float | None = None) -> tuple:
     return False, f"no member/guest token saved (sut {at_sut or '-'}/{id_sut or '-'}) -- start pass re-mints"
 
 
+# -- profile-guest signals (C-1018-20): the jar FILE stays member under TARGET_JAR_GUEST_GUARD while
+# the live Chrome PROFILE is guest, so jar_state() alone sees "nothing to fix" and the exit-87 loop
+# never ends. Opt-in (ENSURE_ARMED_PROFILE_SIGNALS=1); every read is guarded.
+
+def profile_signals_on() -> bool:
+    """Exactly '1' turns it on; unset / '0' / ' 1' / 'true' / anything else is off."""
+    return os.environ.get("ENSURE_ARMED_PROFILE_SIGNALS", "0") == "1"
+
+
+def _parse_ts(text: str):
+    """Leading ISO local timestamp of a log line -> epoch, or None."""
+    m = re.match(r"\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})", text or "")
+    if not m:
+        return None
+    try:
+        return datetime.fromisoformat(m.group(1).replace(" ", "T")).timestamp()
+    except ValueError:
+        return None
+
+
+def newest_relogin_result(acct: str, root: Path | None = None):
+    """(epoch|None, line) of the newest '[RESULT] <acct>:' line in logs/relogin.log, or None when
+    the file is missing or has no such line. Raises only on a real read error (callers guard)."""
+    root = ROOT if root is None else root
+    p = root / "logs" / "relogin.log"
+    if not p.exists():
+        return None
+    tag = f"[RESULT] {acct}:"
+    newest = None
+    with open(p, encoding="utf-8", errors="replace") as f:
+        for ln in f:
+            if tag in ln:
+                newest = ln.rstrip()
+    if newest is None:
+        return None
+    return _parse_ts(newest), newest
+
+
+def _recent(ts, now: float) -> bool:
+    return ts is not None and -60.0 <= now - ts <= RECENT_MIN * 60.0
+
+
+def _boot_probe_re(acct: str):
+    a = re.escape(acct)
+    # Only the 'recorded' form: app.py also prints "[BOOT_SKIP] <acct> failed too while a skip was in
+    # force - not an account problem; skip list CLEARED", which says the failure is NOT the account's.
+    return re.compile(rf"\[BOOT_SKIP\] {a} \(Worker 1\) recorded|(?<![\w-]){a} failed the boot login probe")
+
+
+def recent_boot_probe_fail(acct: str, now: float, runs: Path | None = None) -> bool:
+    """True when the newest logs/runs/run_YYYYMMDD_HHMMSS.log is within RECENT_MIN of `now` and
+    holds a '[BOOT_SKIP] <acct> (Worker 1) recorded' or '<acct> failed the boot login probe' line."""
+    runs = RUNS if runs is None else runs
+    best = None
+    for p in runs.glob("run_*.log"):
+        m = re.fullmatch(r"run_(\d{8})_(\d{6})\.log", p.name)
+        if not m:
+            continue
+        try:
+            ts = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").timestamp()
+        except ValueError:
+            continue
+        if best is None or ts > best[0]:
+            best = (ts, p)
+    if best is None or not _recent(best[0], now):
+        return False
+    rx = _boot_probe_re(acct)
+    with open(best[1], encoding="utf-8", errors="replace") as f:
+        return any(rx.search(ln) for ln in f)
+
+
+def profile_guest_source(acct: str, now: float):
+    """'relogin-label' / 'boot-probe' / None. Each read is guarded: a missing or garbled log can
+    never raise out of the decision (it just contributes no signal)."""
+    try:
+        r = newest_relogin_result(acct)
+        if r and _recent(r[0], now) and GUEST_LABEL in r[1]:
+            return "relogin-label"
+    except Exception as e:
+        log(f"[LOGIN] profile-signal read failed: {e!r}")
+    try:
+        if recent_boot_probe_fail(acct, now):
+            return "boot-probe"
+    except Exception as e:
+        log(f"[LOGIN] profile-signal read failed: {e!r}")
+    return None
+
+
+def needs_login(now: float) -> list:
+    """[(acct, jar path, why)] of accounts that need the scripted forced login. Flag off = the jar
+    file alone, exactly as before; flag on = the jar OR a fresh profile-guest signal."""
+    out = []
+    for a, p in accounts():
+        nl, why = jar_state(p, now)
+        if nl:
+            out.append((a, p, why))
+            continue
+        if not profile_signals_on():
+            continue
+        try:
+            src = profile_guest_source(a, now)
+        except Exception as e:
+            log(f"[LOGIN] profile-signal read failed: {e!r}")
+            src = None
+        if src:
+            msg = f"profile guest per {src} (jar: {why})"
+            log(f"[LOGIN] {a}: {msg}")
+            out.append((a, p, msg))
+    return out
+
+
 # ── the steps; `run` is injectable so the offline test never launches anything ──
 
 def default_run(cmd: list, env_extra: dict | None = None, timeout: float = 900) -> tuple:
@@ -201,6 +319,8 @@ def force_logins(run, need: list, state: dict, gap_h: float, dry: bool, now: flo
         save_json(STATE, state)
         rc, out = run([python_exe(), "relogin_one.py", acct, "--force"], env_extra=LOGIN_ENV, timeout=600)
         ok, after = jar_state(path)
+        if why.startswith("profile guest per"):
+            ok = rc != 0    # the jar already read member; only the login's own exit code says if it worked
         res[acct] = ("LOGGED IN" if not ok else "STILL NOT LOGGED IN") + f" (rc={rc}; jar: {after})"
         log(f"[LOGIN] {acct}: {res[acct]}")
     return res
@@ -217,7 +337,7 @@ def evening(args, run=default_run, now=None) -> int:
     result = {"mode": "evening", "at": datetime.fromtimestamp(now).isoformat(timespec="seconds")}
     st = bot_status(run)
     result["status_before"] = st
-    need = [(a, p, why) for a, p in accounts() for nl, why in [jar_state(p, now)] if nl]
+    need = needs_login(now)
     result["need_login"] = {a: why for a, _, why in need}
     last = state.get("last_forced_login", {})
     eligible = [n for n in need if now - float(last.get(n[0]) or 0) >= args.login_gap_h * 3600]
@@ -291,7 +411,7 @@ def evening(args, run=default_run, now=None) -> int:
 def exit87(args, run=default_run, now=None) -> int:
     now = time.time() if now is None else now
     state = load_json(STATE, {})
-    need = [(a, p, why) for a, p in accounts() for nl, why in [jar_state(p, now)] if nl]
+    need = needs_login(now)
     result = {"mode": "exit87", "at": datetime.fromtimestamp(now).isoformat(timespec="seconds"),
               "need_login": {a: why for a, _, why in need}}
     if not need:
