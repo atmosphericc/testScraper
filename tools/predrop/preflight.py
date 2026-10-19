@@ -28,9 +28,10 @@ What it covers, and the night each check was learned the hard way:
   last_run  the newest run's boot (tools/predrop/boot_check.py), end, STATS, stalls, health,
             money markers                                                               10-07
   drop      hours to the drop, mode (FULL / SHORT / LAST-CALL), Windows Update overlap
-            2026-10-18: with --drop, host.wu_pause_vs_drop (the pause must end >= drop + 12 h), host.wu_active_hours (the
-            LIVE active hours vs the drop hour; Windows auto-adjusts them) and repo.state_bat_cites (a `bat:NNNN` cite in
-            the live sections of CURRENT_STATE.md that no longer lands on a `set` line of the wrapper)
+            2026-10-18: with --drop, host.wu_pause_vs_drop (the pause must end >= drop + 12 h) and host.wu_active_hours (the
+            LIVE active hours vs the drop SPAN, drop .. drop + WU_DROP_SPAN_H h; Windows auto-adjusts them); on every run
+            (no --drop needed) repo.state_bat_cites (a `bat:NNNN` cite in the live sections of CURRENT_STATE.md that no
+            longer lands on a `set` line of the wrapper, or on the flag the text names)
 """
 from __future__ import annotations
 
@@ -68,8 +69,11 @@ class Report:
     def __init__(self):
         self.rows = []
 
-    def add(self, area, cid, status, detail, fix=""):
-        self.rows.append({"id": f"{area}.{cid}", "area": area, "status": status, "detail": detail, "fix": fix})
+    def add(self, area, cid, status, detail, fix="", items=None):
+        row = {"id": f"{area}.{cid}", "area": area, "status": status, "detail": detail, "fix": fix}
+        if items is not None:
+            row["items"] = items          # the full machine-readable list (--json); the detail text is for people
+        self.rows.append(row)
 
     def guarded(self, area, cid, fn):
         try:
@@ -188,6 +192,24 @@ def _in_active_hours(hour, start, end):
     return hour >= start or hour < end
 
 
+WU_DROP_SPAN_H = 4                # the drop SPAN tested against the active hours: drop .. drop + 4 h (the 10-16 drop ran 02:25-03:39; the band ends ~05:30)
+
+
+def _drop_span_vs_active(drop_ts, start, end, span_h=WU_DROP_SPAN_H):
+    """Pure. Where does the drop SPAN (drop_ts .. drop_ts + span_h h, sampled every 15 min) sit against the Windows Update active
+    hours? -> None (hours unknown) | {"inside": True} (the whole span is active = no automatic restart) |
+    {"inside": False, "first_outside": epoch} (the span runs into the allowed-restart interval). Drops run past their first hour,
+    so the drop hour alone says nothing: 9-3 holds 02:30 but not 03:00."""
+    if drop_ts is None or start is None or end is None or start == end:
+        return None
+    t, stop = drop_ts, drop_ts + span_h * 3600
+    while t <= stop:
+        if not _in_active_hours(datetime.fromtimestamp(t).hour, start, end):
+            return {"inside": False, "first_outside": t}
+        t += 900
+    return {"inside": True}
+
+
 def wu_assess(reg, drop_ts=None, now=None):
     """Pure: the Windows Update facts from the UX\\Settings registry row (a dict; {} when the key is unreadable)."""
     now = time.time() if now is None else now
@@ -221,34 +243,36 @@ def wu_rows(R, info, drop_ts):
         else:
             R.add(A, "wu_pause_vs_drop", "OK",
                   f"the Windows Update pause ends {datetime.fromtimestamp(exp_ts):%Y-%m-%d %H:%M} = {d_h:.1f} h after the drop (>= 12 h)")
-    hour = datetime.fromtimestamp(drop_ts).hour
     s, e = info.get("ah_start"), info.get("ah_end")
     if s is None or e is None:
         R.add(A, "wu_active_hours", "WARN", "the live Windows Update active hours are not readable (ActiveHoursStart/End missing)",
               "check Settings -> Windows Update -> Advanced -> Active hours by hand")
         return
     ah = f"{s:02d}:00-{e:02d}:00"
-    active = _in_active_hours(hour, s, e)
+    span = _drop_span_vs_active(drop_ts, s, e)
     vals = info.get("ah_values_present") or {}
     if vals:
         auto = "; " + ", ".join(f"{k}={v}" for k, v in vals.items()) + " present in UX\\Settings (meaning not verified)"
     else:
         auto = ("; no SmartActiveHoursState / UserChoiceActiveHours value in UX\\Settings pins them, so Windows may auto-adjust them "
                 "(it rewrote 19-13 to 9-3 on 2026-10-16 01:22:59)")
+    win = f"{datetime.fromtimestamp(drop_ts):%H:%M}-{datetime.fromtimestamp(drop_ts + WU_DROP_SPAN_H * 3600):%H:%M}"
     covered = bool(info.get("covers_drop"))
-    if active is True:
-        where = "inside the active hours (no automatic restart)"
-    elif active is False:
-        where = "OUTSIDE the active hours = inside the allowed-restart interval"
+    if span is None:
+        where = f"the drop window {win} is of unknown position against the active hours"
+    elif span["inside"]:
+        where = f"the drop window {win} lies inside the active hours (no automatic restart)"
     else:
-        where = "of unknown position against the active hours"
+        where = (f"the drop window {win} runs past {datetime.fromtimestamp(span['first_outside']):%H:%M}, OUTSIDE the active hours "
+                 f"= inside the allowed-restart interval")
+    # the status follows position + pause cover; the pause shortfall itself is the host.wu_pause_vs_drop row
     if covered:
-        R.add(A, "wu_active_hours", "OK", f"live active hours {ah}; the drop hour {hour:02d}:00 is {where}; the pause covers the drop + 12 h, so no automatic restart is expected{auto}")
-    elif active is True and vals:
-        R.add(A, "wu_active_hours", "OK", f"live active hours {ah}; the drop hour {hour:02d}:00 is {where}{auto}")
+        R.add(A, "wu_active_hours", "OK", f"live active hours {ah}; {where}; the pause covers the drop + 12 h, so no automatic restart is expected{auto}")
+    elif span is not None and span["inside"]:
+        R.add(A, "wu_active_hours", "OK", f"live active hours {ah}; {where}{auto}")
     else:
         R.add(A, "wu_active_hours", "WARN",
-              f"live active hours {ah}; the drop hour {hour:02d}:00 is {where} and no pause covers the drop + 12 h{auto}",
+              f"live active hours {ah}; {where} and no pause covers the drop + 12 h{auto}",
               "extend the Windows Update pause past the drop + 12 h; re-pinning the active hours alone is not durable")
 
 
@@ -271,47 +295,79 @@ def _heading_date(h, year):
     return None
 
 
-def stale_bat_cites(state_text, bat_sets, bat_nlines, asof=None, live_days=STATE_LIVE_DAYS):
-    """Pure. Which `bat:NNNN[-MMMM][,PPP]` cites in the LIVE sections of CURRENT_STATE.md do not resolve to a `set` line?
+_LOOSE_SET = re.compile(r'^\s*set\s+(?:/[aApP]\s+)?"?([A-Za-z0-9_]+)=(.*?)"?\s*$', re.I)
+
+
+def _loose_bat_sets(bat_text):
+    """[(name, value, line_no)] for `set NAME=V`, `set "NAME=V"` and `set /a NAME=V` lines. Used by the F7 cite check ONLY:
+    _bat_sets (which _armed reads) stays strict."""
+    out = []
+    for i, raw in enumerate((bat_text or "").splitlines(), 1):
+        m = _LOOSE_SET.match(raw)
+        if m:
+            out.append((m.group(1), m.group(2), i))
+    return out
+
+
+def stale_bat_cites(state_text, bat_sets, bat_nlines, asof=None, live_days=STATE_LIVE_DAYS, bat_text=None):
+    """Pure. Which `bat:NNNN[-MMMM][,PPP]` cites in the LIVE sections of CURRENT_STATE.md do not hold up against the wrapper?
     Live = the preamble, every undated `## ` section, `## STATE CARD`, and each dated section within `live_days` of `asof`
-    (the file's As-of date); older dated sections are history and are only counted. A single cite N resolves when line N is a
-    `set` line; a range A-B when it lies inside the file and holds at least one `set` line. `moved` lists cites that resolve to
-    a set line but not to any flag NAMED in the text just before the cite (since the previous cite, at most 140 characters): the line numbers shifted."""
+    (the file's As-of date); older dated sections are history and are only counted. `bat_text` (the wrapper's text), when given,
+    adds the quoted `set "NAME=V"` and `set /a` lines to the strict `bat_sets`.
+      stale       a single cite N whose line N is not a `set` line; a range A-B past the file's end or holding no `set` line
+      moved       the cite resolves, but the wrapper flags NAMED in its own segment (before it back to the previous cite, at most
+                  140 chars, and after it up to the next cite or the line end) all sit OUTSIDE the cited lines: the numbers shifted
+      unverified  a RANGE that names no wrapper flag in its segment: a dense wrapper holds a `set` line in almost any range, so
+                  "holds a set line" proves nothing; it is counted, never reported as resolved"""
+    sets = list(bat_sets)
+    if bat_text:
+        have = {i for _n, _v, i in sets}
+        sets += [t for t in _loose_bat_sets(bat_text) if t[2] not in have]
     set_at = {}
     name_lines = {}
-    for n, _v, i in bat_sets:
+    for n, _v, i in sets:
         set_at[i] = n
         name_lines.setdefault(n, []).append(i)
     live_cites = hist_cites = 0
-    stale, moved = [], []
+    stale, moved, unverified = [], [], []
     live = True
     for ln_no, line in enumerate(state_text.splitlines(), 1):
         if line.startswith("## "):
             d = _heading_date(line, asof.year if asof else None)
             live = (d is None or asof is None or line.startswith("## STATE CARD") or (asof - d).days <= live_days)
-        prev_end = 0
-        for m in BAT_CITE.finditer(line):
-            seg_from, prev_end = max(prev_end, m.start() - 140), m.end()
+        ms = list(BAT_CITE.finditer(line))
+        for k, m in enumerate(ms):
             if not live:
                 hist_cites += 1
                 continue
             live_cites += 1
-            ok_all, lines_hit = True, []
+            before_from = max(ms[k - 1].end() if k else 0, m.start() - 140)
+            after_to = ms[k + 1].start() if k + 1 < len(ms) else len(line)
+            seg = line[before_from:m.start()] + " " + line[m.end():after_to]
+            names = []
+            for w in _FLAG_WORD.findall(seg):
+                if w in name_lines and w not in names:
+                    names.append(w)
+            ok_all, has_range, cited = True, False, []
             for part in m.group(1).split(","):
                 a, _, b = part.partition("-")
                 lo, hi = int(a), int(b or a)
+                cited.append((lo, hi))
+                has_range = has_range or bool(b)
                 hit = [i for i in range(lo, min(hi, bat_nlines) + 1) if i in set_at]
-                lines_hit += hit
                 if (not b and lo not in set_at) or (b and (hi > bat_nlines or not hit)):
                     ok_all = False
                     why = (f"beyond the wrapper's {bat_nlines} lines" if hi > bat_nlines else "no `set` line there")
                     stale.append({"state_line": ln_no, "cite": "bat:" + part, "why": why})
-            if ok_all:
-                names = [w for w in _FLAG_WORD.findall(line[seg_from:m.start()]) if w in name_lines]
-                if names and not any(set_at.get(i) in names for i in lines_hit):
+            if not ok_all:
+                continue
+            if names:
+                if not any(lo <= i <= hi for n in names for i in name_lines[n] for lo, hi in cited):
                     moved.append({"state_line": ln_no, "cite": m.group(0),
-                                  "now_at": {n: name_lines[n][:2] for n in names[-2:]}})
-    return {"live_cites": live_cites, "history_cites": hist_cites, "stale": stale, "moved": moved}
+                                  "now_at": {n: name_lines[n][:2] for n in names[:3]}})
+            elif has_range:
+                unverified.append({"state_line": ln_no, "cite": m.group(0)})
+    return {"live_cites": live_cites, "history_cites": hist_cites, "stale": stale, "moved": moved, "unverified": unverified}
 
 
 # ── repo ───────────────────────────────────────────────────────────────────────
@@ -361,17 +417,26 @@ def check_repo(R: Report, root: Path, git: bool, last_boot_ts):
         m = re.search(r"As of:\s*(\d{4})-(\d{2})-(\d{2})", txt[:4000])
         asof = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date() if m else None
         bat_nlines = len(_read(root / "run_bot_with_nightly_restart.bat").splitlines())
-        res = stale_bat_cites(txt, _bat_sets(root), bat_nlines, asof)
+        bat_txt = _read(root / "run_bot_with_nightly_restart.bat")
+        res = stale_bat_cites(txt, _bat_sets(root), bat_nlines, asof, bat_text=bat_txt)
         base = (f"{res['live_cites']} `bat:NNNN` cite(s) in the live sections of CURRENT_STATE.md "
                 f"({res['history_cites']} more in dated history sections not checked)")
+        items = ([dict(x, kind="stale") for x in res["stale"]] + [dict(x, kind="moved") for x in res["moved"]]
+                 + [dict(x, kind="unverified") for x in res["unverified"]])
         if res["stale"] or res["moved"]:
-            parts = [f"L{x['state_line']} {x['cite']} ({x['why']})" for x in res["stale"][:6]]
-            parts += [f"L{x['state_line']} {x['cite']} (resolves to another flag; the named flag is now at {x['now_at']})" for x in res["moved"][:4]]
+            parts = [f"L{x['state_line']} {x['cite']} ({x['why']})" for x in res["stale"]]
+            parts += [f"L{x['state_line']} {x['cite']} (resolves to another flag; the named flag is now at {x['now_at']})" for x in res["moved"]]
+            unv = (f"; {len(res['unverified'])} range cite(s) name no flag and cannot be verified" if res["unverified"] else "")
             R.add(A, "state_bat_cites", "WARN",
-                  f"{base}: {len(res['stale'])} do not resolve to a `set` line, {len(res['moved'])} point at a different flag than the one named: " + "; ".join(parts),
-                  "cite the flag NAME (grep the wrapper for it), not a line number; re-derive the armed flags from the wrapper itself")
+                  f"{base}: {len(res['stale'])} do not resolve to a `set` line, {len(res['moved'])} point away from the flag the text names{unv}: " + "; ".join(parts),
+                  "cite the flag NAME (grep the wrapper for it), not a line number; re-derive the armed flags from the wrapper itself", items=items)
+        elif res["unverified"]:
+            R.add(A, "state_bat_cites", "INFO",
+                  f"{base}: none stale or moved, but {len(res['unverified'])} range cite(s) name no wrapper flag, so they cannot be verified: "
+                  + "; ".join(f"L{x['state_line']} {x['cite']}" for x in res["unverified"]),
+                  "cite the flag NAME next to a line range", items=items)
         else:
-            R.add(A, "state_bat_cites", "OK", f"{base}: all resolve to a `set` line")
+            R.add(A, "state_bat_cites", "OK", f"{base}: all resolve to a `set` line (and to the flag the text names)", items=items)
 
     def bat_sanity():
         b = (root / "run_bot_with_nightly_restart.bat").read_bytes()
@@ -1026,11 +1091,12 @@ def check_drop(R: Report, drop_ts, wu_paused_ok: bool, wu=None):
           "" if hours > 1 else "nothing new gets armed inside the last hour")
     hour = datetime.fromtimestamp(drop_ts).hour
     s_, e_ = (wu or {}).get("ah_start"), (wu or {}).get("ah_end")
-    active = _in_active_hours(hour, s_, e_)
-    if not wu_paused_ok and (active is False if active is not None else 2 <= hour < 11):
-        live = (f"outside the live active hours {s_:02d}:00-{e_:02d}:00" if active is False
+    span = _drop_span_vs_active(drop_ts, s_, e_)
+    win = f"{datetime.fromtimestamp(drop_ts):%H:%M}-{datetime.fromtimestamp(drop_ts + WU_DROP_SPAN_H * 3600):%H:%M}"
+    if not wu_paused_ok and (span["inside"] is False if span is not None else 2 <= hour < 11):
+        live = (f"runs past {datetime.fromtimestamp(span['first_outside']):%H:%M}, outside the live active hours {s_:02d}:00-{e_:02d}:00" if span is not None
                 else "in 02:00-11:00 (the live active hours were not read)")
-        R.add(A, "wu_overlap", "WARN", f"the drop hour {hour:02d}:00 falls {live}, when Windows Update may restart the host", "pause Windows Update for the week")
+        R.add(A, "wu_overlap", "WARN", f"the drop window {win} (drop hour {hour:02d}:00 + {WU_DROP_SPAN_H} h) {live}, when Windows Update may restart the host", "pause Windows Update for the week")
     start = datetime.fromtimestamp(drop_ts - 20 * 60)
     R.add(A, "start_by", "INFO", f"start the bat by {start:%H:%M} (T-20 min): relogin pass ~45 s, boot GREEN at ~+4.5 min, then tools/predrop/boot_check.py --follow")
     return mode

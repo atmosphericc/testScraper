@@ -93,12 +93,33 @@ def test_pause_vs_drop():
 
 def test_active_hours_rows():
     pause_ok = DROP + 7 * 86400
-    # 9-3 (the live value after the 10-16 auto-adjust): the 02:30 drop is inside the ACTIVE hours
+    # 9-3 (the live value after the 10-16 auto-adjust): the 02:30 drop STARTS inside the active hours but the window (02:30-06:30)
+    # runs past 03:00 into the allowed-restart interval -> WARN for the WINDOW, not for the missing pin
     info, st = rows_for(reg(pause_until=L(2026, 10, 22, 0, 1), start=9, end=3))
     row = st["host.wu_active_hours"]
-    check("ah_live_values_in_text", "09:00-03:00" in row["detail"] and "02:00" in row["detail"], row)
-    check("ah_9_3_unpinned_warns", row["status"] == "WARN" and "auto-adjust" in row["detail"] and "no pause covers" in row["detail"], row)
-    # 19-13: the 02:30 drop is also inside active hours; the 14:00 drop is OUTSIDE (allowed restart) -> WARN without a pause
+    check("ah_live_values_in_text", "09:00-03:00" in row["detail"] and "02:30-06:30" in row["detail"], row)
+    check("ah_9_3_unpinned_warns", row["status"] == "WARN" and "runs past 03:00" in row["detail"] and "OUTSIDE" in row["detail"]
+          and "auto-adjust" in row["detail"] and "no pause covers" in row["detail"], row)
+    # 9-3 with the SAME missing pin but a pause that does not cover: still WARN because of the window, and the pin is irrelevant
+    info, st = rows_for(reg(pause_until=None, start=9, end=3, SmartActiveHoursState=1))
+    row = st["host.wu_active_hours"]
+    check("ah_9_3_pinned_still_warns", row["status"] == "WARN" and "runs past 03:00" in row["detail"] and "SmartActiveHoursState=1" in row["detail"], row)
+    # 19-13 at 02:30: the whole window 02:30-06:30 is inside the active hours -> OK even with no pause and no pin (the auto-adjust caveat stays in the text)
+    info, st = rows_for(reg(pause_until=None, start=19, end=13))
+    row = st["host.wu_active_hours"]
+    check("ah_19_13_0230_ok", row["status"] == "OK" and "lies inside the active hours" in row["detail"] and "auto-adjust" in row["detail"], row)
+    check("ah_19_13_0230_no_pause_row", "host.wu_pause_vs_drop" not in st)
+    # a pause that ends before the drop: the vs_drop row WARNs; the active-hours row stays OK for 19-13 (position decides, not a repeat of the pause row)
+    info, st = rows_for(reg(pause_until=L(2026, 10, 22, 0, 1), start=19, end=13))
+    check("ah_19_13_short_pause_split", st["host.wu_pause_vs_drop"]["status"] == "WARN" and st["host.wu_active_hours"]["status"] == "OK", (st["host.wu_pause_vs_drop"], st["host.wu_active_hours"]))
+    # a window that ends exactly at the end of the active hours is inside (end hour is exclusive: 22:00 drop, 9-... irrelevant); 05:00-09:00 span vs 9-3 starts outside
+    info, st = rows_for(reg(pause_until=None, start=9, end=3), drop_ts=L(2026, 10, 23, 10, 0))
+    check("ah_9_3_1000_drop_inside_ok", st["host.wu_active_hours"]["status"] == "OK", st["host.wu_active_hours"])
+    # the span helper itself
+    sp = PF._drop_span_vs_active
+    check("span_helper", sp(DROP, 9, 3)["inside"] is False and datetime.fromtimestamp(sp(DROP, 9, 3)["first_outside"]).strftime("%H:%M") == "03:00"
+          and sp(DROP, 19, 13) == {"inside": True} and sp(DROP, None, 3) is None and sp(None, 9, 3) is None and sp(DROP, 5, 5) is None, sp(DROP, 9, 3))
+    # 19-13: the 14:00 drop (14:00-18:00) is OUTSIDE (allowed restart) -> WARN without a pause
     info, st = rows_for(reg(pause_until=None, start=19, end=13), drop_ts=L(2026, 10, 23, 14, 0))
     row = st["host.wu_active_hours"]
     check("ah_19_13_outside_warn", row["status"] == "WARN" and "19:00-13:00" in row["detail"] and "OUTSIDE" in row["detail"], row)
@@ -109,8 +130,8 @@ def test_active_hours_rows():
     # 9-3 with a covering pause and the 02:30 drop
     info, st = rows_for(reg(pause_until=pause_ok, start=9, end=3))
     check("ah_9_3_paused_ok", st["host.wu_active_hours"]["status"] == "OK", st["host.wu_active_hours"])
-    # drop hour inside active hours AND something is present in the registry: OK (hours may still be auto-adjusted, noted)
-    info, st = rows_for(reg(pause_until=None, start=9, end=3, SmartActiveHoursState=1))
+    # window inside active hours AND something is present in the registry: OK (hours may still be auto-adjusted, noted)
+    info, st = rows_for(reg(pause_until=None, start=19, end=13, SmartActiveHoursState=1))
     row = st["host.wu_active_hours"]
     check("ah_pinned_value_reported", row["status"] == "OK" and "SmartActiveHoursState=1" in row["detail"], row)
     # active hours unreadable
@@ -138,8 +159,12 @@ def test_check_drop_overlap():
         return {x["id"]: x for x in R.rows}
     wu_9_3 = PF.wu_assess(reg(start=9, end=3), None, NOW)
     wu_19_13 = PF.wu_assess(reg(start=19, end=13), None, NOW)
-    # the old code warned for every 02:00-11:00 drop; with live 9-3 the 02:30 drop is inside active hours -> no overlap row
-    check("overlap_9_3_0230_quiet", "drop.wu_overlap" not in drop_rows(DROP, wu_9_3, False))
+    # a real drop runs past 03:00: with live 9-3 the 02:30 drop WINDOW (02:30-06:30) leaves the active hours -> WARN (the drop-hour-only test was quiet here)
+    st = drop_rows(DROP, wu_9_3, False)
+    check("overlap_9_3_0230_warns", st.get("drop.wu_overlap", {}).get("status") == "WARN" and "runs past 03:00" in st["drop.wu_overlap"]["detail"]
+          and "09:00-03:00" in st["drop.wu_overlap"]["detail"], st.get("drop.wu_overlap"))
+    # a 02:00 drop is 02:00-06:00: also runs past 03:00; a 10:00 drop (10:00-14:00) is inside 9-3 -> quiet
+    check("overlap_9_3_1000_quiet", "drop.wu_overlap" not in drop_rows(L(2026, 10, 23, 10, 0), wu_9_3, False))
     # 05:00 is outside 9-3 -> WARN naming the LIVE hours, not "end 02:00"
     st = drop_rows(L(2026, 10, 23, 5, 0), wu_9_3, False)
     check("overlap_9_3_0500_warn", st["drop.wu_overlap"]["status"] == "WARN" and "09:00-03:00" in st["drop.wu_overlap"]["detail"]
@@ -253,13 +278,97 @@ def test_stale_bat_cites_pure():
 
 def test_moved_cite_detected():
     # bat:12 sits on TARGET_B_FLAG; the sentence names TARGET_A_FLAG (which is at 10) -> resolves to a set line but the wrong flag
-    txt = "**As of: 2026-10-16**\n\nThe flag `set TARGET_A_FLAG=1` is armed, bat:12 and fine `set TARGET_B_FLAG=0` bat:12\n"
+    txt = "**As of: 2026-10-16**\n\nThe flag `set TARGET_A_FLAG=1` is armed, bat:12.\nand fine `set TARGET_B_FLAG=0` bat:12\n"
     r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, datetime(2026, 10, 16).date())
     check("f7_moved_flagged", len(r["moved"]) == 1 and r["moved"][0]["state_line"] == 3 and "TARGET_A_FLAG" in r["moved"][0]["now_at"] and not r["stale"], r)
     # a cite that lands on the named flag is not "moved"; a name that is not a wrapper variable is ignored
     txt2 = "As of: 2026-10-16\n`set TARGET_A_FLAG=1` bat:10 and NOT_IN_BAT_AT_ALL bat:12\n"
     r = PF.stale_bat_cites(txt2, BAT_SETS, BAT_N, datetime(2026, 10, 16).date())
     check("f7_no_false_moved", r["moved"] == [] and r["stale"] == [], r)
+
+
+def test_range_cites_need_a_named_flag():
+    """Fix round 1: a RANGE is not 'resolved' because it holds some set line; the flags NAMED around the cite (before AND after it,
+    up to the next cite / the line end) must sit inside the cited lines. A range that names no flag is `unverified`, never resolved."""
+    asof = datetime(2026, 10, 16).date()
+    # L246 style: the names come AFTER the range cite; the range 11-19 holds only TARGET_B_FLAG? no: BAT_SETS has B at 12, A at 10, C at 20
+    txt = "**As of: 2026-10-16**\nArmed at bat:11-19: TARGET_A_FLAG, TARGET_C_FLAG and the rest.\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_names_after_range_moved", len(r["moved"]) == 1 and r["moved"][0]["cite"] == "bat:11-19" and r["moved"][0]["state_line"] == 2
+          and set(r["moved"][0]["now_at"]) == {"TARGET_A_FLAG", "TARGET_C_FLAG"} and not r["stale"] and not r["unverified"], r)
+    # the same range with the names INSIDE it: resolved (not moved, not unverified)
+    txt = "**As of: 2026-10-16**\nArmed at bat:9-13: TARGET_A_FLAG, TARGET_B_FLAG and the rest.\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_names_after_range_inside_ok", not r["moved"] and not r["stale"] and not r["unverified"], r)
+    # one named flag inside the range is enough (the others may be listed for context)
+    txt = "**As of: 2026-10-16**\nbat:9-13 arms TARGET_A_FLAG and TARGET_D_FLAG\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_any_named_flag_inside_ok", not r["moved"] and not r["unverified"], r)
+    # a range with no flag name in its segment: counted as unverified, NOT resolved, NOT stale
+    txt = "**As of: 2026-10-16**\nthe block at bat:11-19 was armed that night.\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_nameless_range_unverified", r["unverified"] == [{"state_line": 2, "cite": "bat:11-19"}] and not r["stale"] and not r["moved"] and r["live_cites"] == 1, r)
+    # a nameless SINGLE cite that lands on a set line is still resolved (an exact claim, not a loose range)
+    txt = "**As of: 2026-10-16**\nthe line bat:12 was armed that night.\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_nameless_single_ok", not r["unverified"] and not r["moved"] and not r["stale"], r)
+    # names before the cite still count
+    txt = "**As of: 2026-10-16**\nTARGET_B_FLAG bat:12 and TARGET_C_FLAG bat:20\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_names_before_ok", not r["moved"] and not r["unverified"] and not r["stale"], r)
+    # unverified ranges in history sections are not counted
+    txt = "**As of: 2026-10-16**\n## OLD 2026-09-01\nthe block at bat:11-19\n"
+    r = PF.stale_bat_cites(txt, BAT_SETS, BAT_N, asof)
+    check("f7r_history_not_counted", r["unverified"] == [] and r["history_cites"] == 1, r)
+
+
+def test_quoted_set_lines():
+    """Fix round 5: `set "NAME=V"` and `set /a` lines resolve in the cite check; _bat_sets (read by _armed) stays strict."""
+    bat = ["@echo off", 'set "TEST_MODE=0"', "set TARGET_A_FLAG=1", "set /a COUNTER=5", "REM nothing", '  SET "UPPER_Q=1"']
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _tiny_root(root, "x\n", bat)
+        strict = PF._bat_sets(root)
+        check("quoted_strict_unchanged", [n for n, _, _ in strict] == ["TARGET_A_FLAG"], strict)
+    loose = PF._loose_bat_sets("\r\n".join(bat))
+    check("quoted_loose_parse", [(n, i) for n, _, i in loose] == [("TEST_MODE", 2), ("TARGET_A_FLAG", 3), ("COUNTER", 4), ("UPPER_Q", 6)], loose)
+    asof = datetime(2026, 10, 16).date()
+    txt = "**As of: 2026-10-16**\nTEST_MODE bat:2, counter bat:4, UPPER_Q bat:6 and TARGET_A_FLAG bat:3 and a REM line bat:5\n"
+    strict_sets = [("TARGET_A_FLAG", "1", 3)]
+    r = PF.stale_bat_cites(txt, strict_sets, len(bat), asof)
+    check("quoted_without_bat_text_stale", {x["cite"] for x in r["stale"]} == {"bat:2", "bat:4", "bat:6", "bat:5"}, r["stale"])
+    r = PF.stale_bat_cites(txt, strict_sets, len(bat), asof, bat_text="\r\n".join(bat))
+    check("quoted_with_bat_text_resolves", {x["cite"] for x in r["stale"]} == {"bat:5"}, r)
+
+
+def test_full_list_in_row_and_json():
+    """Fix round 4: every stale / moved / unverified cite is in the detail text AND in row['items'] (what --json shows)."""
+    # line 1 is @echo off; line k (k >= 2) is a set line when k is even, else a REM filler line
+    bat = ["@echo off"] + [f"set TARGET_V{k}_FLAG=1" if k % 2 == 0 else "REM filler" for k in range(2, 60)]
+    odd = list(range(3, 41, 2))                              # 19 odd lines = 19 stale singles
+    state = "**As of: 2026-10-16**\n" + "\n".join(f"line cite bat:{k}" for k in odd) + "\nTARGET_V2_FLAG named, bat:10\nthe block at bat:4-8\n"
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _tiny_root(root, state, bat)
+        R = PF.Report()
+        PF.check_repo(R, root, False, None)
+        row = {x["id"]: x for x in R.rows}["repo.state_bat_cites"]
+        det = row["detail"]
+        check("f7_all_stale_in_detail", row["status"] == "WARN" and all(f"bat:{k} (" in det for k in odd) and "19 do not resolve" in det, det[:300])
+        check("f7_moved_in_detail", "bat:10 (resolves to another flag" in det and "TARGET_V2_FLAG" in det, det[-400:])
+        check("f7_unverified_in_detail_count", "1 range cite(s) name no flag" in det, det[-300:])
+        items = row.get("items") or []
+        kinds = [i["kind"] for i in items]
+        check("f7_items_complete", kinds.count("stale") == 19 and kinds.count("moved") == 1 and kinds.count("unverified") == 1 and len(items) == 21, kinds)
+        import json as _j
+        back = _j.loads(_j.dumps(R.rows, default=str))
+        check("f7_items_json_serialisable", len(back[[x["id"] for x in R.rows].index("repo.state_bat_cites")]["items"]) == 21)
+        # only unverified ranges: an INFO row that does NOT claim "all resolve"
+        _tiny_root(root, "**As of: 2026-10-16**\nthe block at bat:4-8\n", bat)
+        R = PF.Report()
+        PF.check_repo(R, root, False, None)
+        row = {x["id"]: x for x in R.rows}["repo.state_bat_cites"]
+        check("f7_unverified_only_info", row["status"] == "INFO" and "cannot be verified" in row["detail"] and "all resolve" not in row["detail"] and "bat:4-8" in row["detail"], row)
 
 
 def _tiny_root(tmp: Path, state_text: str, bat_lines):
@@ -284,7 +393,7 @@ def test_repo_row():
         check("f7_row_warns_with_stale", row.get("status") == "WARN" and "2 do not resolve" in row.get("detail", "") and "bat:2" in row["detail"] and "bat:99" in row["detail"]
               and "bat:3" not in row["detail"].replace("bat:3)", ""), row)
         check("f7_row_fix_names_flag", "flag NAME" in row.get("fix", ""), row)
-        _tiny_root(root, "**As of: 2026-10-16**\n`TARGET_A_FLAG` bat:3, `TARGET_B_FLAG` bat:4, block bat:3-4.\n", bat)
+        _tiny_root(root, "**As of: 2026-10-16**\n`TARGET_A_FLAG` bat:3, `TARGET_B_FLAG` bat:4, block bat:3-4 sets TARGET_A_FLAG.\n", bat)
         R = PF.Report()
         PF.check_repo(R, root, False, None)
         row = {x["id"]: x for x in R.rows}["repo.state_bat_cites"]
@@ -318,7 +427,8 @@ def test_real_tree_smoke():
 def main() -> int:
     for t in (test_active_hours_math, test_pause_vs_drop, test_active_hours_rows, test_missing_registry_never_crashes,
               test_check_drop_overlap, test_check_host_with_fake_registry, test_stale_bat_cites_pure,
-              test_moved_cite_detected, test_repo_row, test_real_tree_smoke):
+              test_moved_cite_detected, test_range_cites_need_a_named_flag, test_quoted_set_lines, test_full_list_in_row_and_json,
+              test_repo_row, test_real_tree_smoke):
         try:
             t()
         except Exception as e:
