@@ -721,6 +721,11 @@ REM     confirmed-dead repair (dummy POST 401 -> re-probe 401 -> token re-mint o
 REM     the SEPARATE warmup tab) now runs during a window too, 300s-throttled and
 REM     CONFIRMED-dead-only, so it is inert on a normal Shape-burn 401 (heartbeat
 REM     424). Kill-switch: set TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=0
+REM     2026-10-18 CORRECTION (C-1018-16): 'confirmed dead' = three keyless 401s in a row, which
+REM     the Shape verdict ALSO produces (~20 %/probe -> ~0.6 % DEAD per heartbeat); all 30 DEADs on
+REM     10-09 / 10-16 were that, not dead tokens. The repair is inert ONLY because
+REM     TARGET_TOKEN_KEEPFRESH=0 makes it a no-op (ensure_fresh_access_token returns False).
+REM     Never re-arm keep-fresh: each false DEAD would then force a token refresh (09-28 class).
 set TARGET_ATC_DEAD_TOKEN_MIDWINDOW_REPAIR=1
 REM  9) 2026-08-21: the inter-retry re-warm no longer FORCES a /cart reload: with
 REM     force_fresh=True it bypassed the purchase-time /cart guard and fired a
@@ -1729,7 +1734,13 @@ REM  2026-10-14 C-1014-10: relogin_one.py all cannot see a GUEST jar - C-1014-02
 REM  10-14 looped 54 times on guest accounts. First give each GUEST / signed-out jar ONE
 REM  scripted forced login - the env that went 2/2 on 10-14 - at most once per account
 REM  per 6 h; member jars are never touched. grep [LOGIN] in logs\ensure_armed.log.
-REM  Kill: set ENSURE_ARMED_EXIT87=0
+REM  2026-10-19 C-1018-20: this branch reads the jar FILE only. A GUEST PROFILE whose jar file
+REM  still reads member (TARGET_JAR_GUEST_GUARD keeps it so) is invisible to it, and the
+REM  validate-first relogin says 'already logged in' (C-1014-02), so the 87-loop cannot heal
+REM  itself (10-19 01:30: 3 launches in 4 min). ENSURE_ARMED_PROFILE_SIGNALS=1 (built 10-19,
+REM  UNARMED until verified) adds the relogin GUEST label + the boot-probe failure as signals.
+REM  Kill: edit the set line below to ENSURE_ARMED_EXIT87=0 (it overwrites any environment
+REM  value on every pass, so setting the variable outside this file does nothing).
 REM ---------------------------------------------------------------------------
 set ENSURE_ARMED_EXIT87=1
 if "%EXITCODE%"=="87" (
