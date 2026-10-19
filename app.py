@@ -2151,6 +2151,91 @@ class PurchaseManagerThread:
             except Exception:
                 pass
 
+def _thread_start_guard_on():
+    """F1 (2026-10-18, TARGET_THREAD_START_GUARD, default 0): when on, monitoring_loop starts the
+    buy-path threads defensively so one raising start() cannot leave the process alive but unable
+    to buy (10-07: a diagnostic AttributeError in StockMonitorThread.start() skipped
+    purchase_thread.start())."""
+    return os.environ.get('TARGET_THREAD_START_GUARD', '0').strip().lower() in ('1', 'true', 'yes')
+
+
+def _start_buy_threads_guarded(stock_thread, purchase_thread):
+    """Flag-on start sequence: purchase_thread FIRST, each start() in its own try/except.
+    Never raises. Returns {'purchase': bool, 'stock': bool} (True = start() returned)."""
+    started = {'purchase': False, 'stock': False}
+    for _label, _thr in (('purchase_thread', purchase_thread), ('stock_thread', stock_thread)):
+        try:
+            print(f"[MONITORING_LOOP] Starting {_label}...")
+            _thr.start()
+            started['purchase' if _label == 'purchase_thread' else 'stock'] = True
+            _t = getattr(_thr, 'thread', None)
+            print(f"[MONITORING_LOOP] [OK] {_label} started (is_alive: {_t.is_alive() if _t else 'N/A'})")
+        except BaseException as _se:
+            if isinstance(_se, (KeyboardInterrupt, SystemExit)):
+                raise
+            try:
+                print(f"[MONITORING_LOOP] [ERROR] {_label} start failed: {_se!r}")
+            except Exception:
+                pass
+    return started
+
+
+def _health_check_guarded(stock_thread, purchase_thread, fails):
+    """Flag-on version of monitoring_loop's 10 s health check: a thread whose start() failed
+    (thread is None) or that died is replaced; a failing replacement is logged and retried next
+    cycle (stock gives up after 3 consecutive failures; purchase never does) instead of raising
+    out of monitoring_loop, whose finally would stop the OTHER thread. Never raises."""
+    try:
+        _st = getattr(stock_thread, 'thread', None)
+        if (_st is None or not _st.is_alive()) and fails.get('stock', 0) < 3:
+            print("[MONITOR] Stock thread died, restarting...")
+            try:
+                add_activity_log("Stock monitor thread crashed, restarting", "error", "system")
+            except Exception:
+                pass
+            try:
+                _new = StockMonitorThread(
+                    event_bus, shared_data,
+                    purchase_manager=global_purchase_manager,
+                    event_loop=global_event_loop
+                )
+                stock_thread = _new
+                _new.start()
+                fails['stock'] = 0
+            except Exception as _e:
+                fails['stock'] = fails.get('stock', 0) + 1
+                print(f"[MONITORING_LOOP] [ERROR] stock_thread restart failed ({fails['stock']}/3): {_e!r}")
+    except Exception as _e:
+        print(f"[MONITORING_LOOP] [ERROR] stock health check failed: {_e!r}")
+    try:
+        _pt = getattr(purchase_thread, 'thread', None)
+        if _pt is None or not _pt.is_alive():
+            print("[MONITOR] Purchase thread died, restarting...")
+            try:
+                add_activity_log("Purchase manager thread crashed, restarting", "error", "system")
+            except Exception:
+                pass
+            try:
+                _newp = PurchaseManagerThread(
+                    event_bus,
+                    shared_data,
+                    purchase_manager=global_purchase_manager,
+                    event_loop=global_event_loop
+                )
+                purchase_thread = _newp
+                try:
+                    if getattr(stock_thread, 'stock_monitor', None) is not None:
+                        _newp.set_stock_monitor(stock_thread.stock_monitor)
+                except Exception:
+                    pass
+                _newp.start()
+            except Exception as _e:
+                print(f"[MONITORING_LOOP] [ERROR] purchase_thread restart failed: {_e!r}")
+    except Exception as _e:
+        print(f"[MONITORING_LOOP] [ERROR] purchase health check failed: {_e!r}")
+    return stock_thread, purchase_thread
+
+
 def monitoring_loop():
     """Legacy monitoring loop - replaced by event-driven architecture"""
     print("[MONITORING_LOOP] ===============================================")
@@ -2213,13 +2298,19 @@ def monitoring_loop():
     print(f"[MONITORING_LOOP] [VERIFY] monitor_running: {shared_data.monitor_running}")
 
     # Start independent threads
-    print("[MONITORING_LOOP] Starting stock_thread...")
-    stock_thread.start()
-    print(f"[MONITORING_LOOP] [OK] stock_thread started (is_alive: {stock_thread.thread.is_alive() if stock_thread.thread else 'N/A'})")
+    # F1 (TARGET_THREAD_START_GUARD, default 0 = the sequential unguarded code below, unchanged).
+    _tsg = _thread_start_guard_on()
+    _tsg_fails = {'stock': 0}
+    if _tsg:
+        _start_buy_threads_guarded(stock_thread, purchase_thread)
+    else:
+        print("[MONITORING_LOOP] Starting stock_thread...")
+        stock_thread.start()
+        print(f"[MONITORING_LOOP] [OK] stock_thread started (is_alive: {stock_thread.thread.is_alive() if stock_thread.thread else 'N/A'})")
 
-    print("[MONITORING_LOOP] Starting purchase_thread...")
-    purchase_thread.start()
-    print(f"[MONITORING_LOOP] [OK] purchase_thread started (is_alive: {purchase_thread.thread.is_alive() if purchase_thread.thread else 'N/A'})")
+        print("[MONITORING_LOOP] Starting purchase_thread...")
+        purchase_thread.start()
+        print(f"[MONITORING_LOOP] [OK] purchase_thread started (is_alive: {purchase_thread.thread.is_alive() if purchase_thread.thread else 'N/A'})")
 
     print("[MONITORING_LOOP] ===============================================")
     print("[MONITORING_LOOP] ✅ All threads started successfully")
@@ -2237,6 +2328,11 @@ def monitoring_loop():
 
             # Monitor thread health every 10 seconds
             time.sleep(10)
+
+            if _tsg:
+                stock_thread, purchase_thread = _health_check_guarded(
+                    stock_thread, purchase_thread, _tsg_fails)
+                continue
 
             if not stock_thread.thread.is_alive():
                 print("[MONITOR] Stock thread died, restarting...")

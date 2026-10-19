@@ -151,6 +151,9 @@ OFFLINE = [
     # port helpers and the in-window follower's log parsing, log tailing, config read and
     # pre-registered readout (no Chrome, no network, no bot).
     "test_guest_follow_1016",
+    # 2026-10-18 F1 TARGET_THREAD_START_GUARD: the real monitoring_loop run against stub threads;
+    # flag on starts purchase_thread first and survives a raising stock start(), flag off = old order.
+    "test_thread_start_guard_1018",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
