@@ -118,6 +118,8 @@ OFFLINE = [
     # 2026-10-14: tools/ops/ensure_armed.py, the nightly auto-arm + the wrapper's exit-87
     # guest-login hook (every subprocess faked; nothing launched, nothing logged in).
     "test_ensure_armed_1014",
+    # 2026-10-19: ENSURE_ARMED_PROFILE_SIGNALS + preflight accounts.profile_guest (C-1018-20; fake runner, temp dirs).
+    "test_ensure_armed_profile_1019",
     # 2026-10-14: FAST_SELLING back-off per TCIN (C-1014-15; a bare executor, no browser).
     "test_fs_cooldown_per_tcin_1014",
     # 2026-10-14: FX-1014-JOIN, free accounts join a running race (real race loop, stub workers).
