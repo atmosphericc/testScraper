@@ -380,7 +380,7 @@ _FLAGS_LOGGED = False
 
 
 def log_flags() -> None:
-    """One '[FLAGS] ...' line per process, first thing in every run (both modes), so the Task Scheduler
+    """Two '[FLAGS] ...' lines per process (PROFILE_SIGNALS, then STATUS_FAILCLOSED), first thing in every run (both modes), so the Task Scheduler
     environment question (does a setx user variable reach the pythonw task?) is answered by the log.
     Idempotent per process; never raises."""
     global _FLAGS_LOGGED
@@ -582,10 +582,9 @@ def boot_verdict(run, log_path, follow: bool = False, deadline: int = 720) -> st
     if follow:
         cmd += ["--follow", "--deadline", str(deadline)]
     rc, out = run(cmd, timeout=deadline + 120 if follow else 120)
-    verdict = {0: "GREEN", 1: "RED"}.get(rc, "PENDING")
-    if verdict != "GREEN" and rowlog_on():
-        _log_boot_rows(verdict, out)
-    return verdict
+    if rc != 0 and rowlog_on():
+        _log_boot_rows({1: "RED"}.get(rc, "PENDING"), out)
+    return {0: "GREEN", 1: "RED"}.get(rc, "PENDING")
 
 
 def _log_boot_rows(verdict: str, out) -> None:

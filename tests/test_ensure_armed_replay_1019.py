@@ -10,12 +10,11 @@ signal silently dies and the 10-19 01:30 exit-87 loop comes back, so:
       skip was in force" line is NOT.
   (b) frozen replay -- the real logs/relogin.log lines 2026-10-19T01:30:00..01:35:00 and the BOOT_SKIP lines of
       logs/runs/run_20261019_013059.log (tests/fixtures/ensure_armed_1019/, e-mails masked) replayed at the
-      01:30:58 decision time: flag ON -> primary boot-probe, business relogin-label, alt-1 none; flag OFF -> no
-      profile-signal account.
+      01:31:40 decision time (the first real EXIT87 decision, logs/ensure_armed.log:26): flag ON -> primary
+      boot-probe, business relogin-label, alt-1 none; flag OFF -> no profile-signal account.
       The relogin.log is cut at the decision time (a replay must see only what existed then; the later pass
-      lines are used for the separate 01:33:40 check). The run log's file name is 01:30:59 -- one second AFTER
-      the decision -- and still counts through _recent()'s 60 s clock-skew allowance; that is the data as it
-      was, not a test convenience.
+      lines are used for the second real EXIT87 decision at 01:33:13, logs/ensure_armed.log:29). The run log
+      exists at 01:31:40 (its name is 01:30:59, its probe line is stamped 01:31:36).
   (c) mutation guard -- one altered character in either emitter string (or in the label) kills the match,
       proving the pins above bite.
 
@@ -40,8 +39,8 @@ import ensure_armed as EA            # noqa: E402
 
 FIX = ROOT / "tests" / "fixtures" / "ensure_armed_1019"
 RUN_FIX = FIX / "runs" / "run_20261019_013059.log"
-DECISION = datetime(2026, 10, 19, 1, 30, 58).timestamp()
-LATE = datetime(2026, 10, 19, 1, 33, 40).timestamp()
+DECISION = datetime(2026, 10, 19, 1, 31, 40).timestamp()   # logs/ensure_armed.log:26, the first real EXIT87 decision
+LATE = datetime(2026, 10, 19, 1, 33, 13).timestamp()   # logs/ensure_armed.log:29, the second real EXIT87 decision
 FLAG = "ENSURE_ARMED_PROFILE_SIGNALS"
 PASSED, FAILED = [], []
 
@@ -157,10 +156,10 @@ def _main():
           re.search(r"(?i)(password|passwd|cvv|secret)\s*[:=]|eyJ[\w-]{10,}|Bearer\s+\S{10,}", blob) is None)
     check("fixture_relogin_window", all(ln.startswith("2026-10-19T01:3") for ln in read(FIX / "relogin.log").splitlines()))
 
-    # ---- (b) frozen replay at 01:30:58 ----
+    # ---- (b) frozen replay at 01:31:40 ----
     rl_full = read(FIX / "relogin.log")
     rl_cut = cut_at(rl_full, DECISION)
-    check("replay_cut_keeps_decision_window", "01:30:54 [RESULT] alt-1" in rl_cut and "01:31:46" not in rl_cut)
+    check("replay_cut_keeps_decision_window", "01:30:54 [RESULT] alt-1" in rl_cut and "01:31:41" not in rl_cut)
     with tempfile.TemporaryDirectory() as d:
         t = Path(d)
         build_root(t, relogin_text=rl_cut)
@@ -192,7 +191,7 @@ def _main():
         finally:
             shutil.rmtree(t2, ignore_errors=True)
 
-    # the later passes of the same wrapper loop (01:33:40): both profiles still read guest
+    # the later passes of the same wrapper loop (01:33:13): both profiles still read guest
     with tempfile.TemporaryDirectory() as d:
         t = Path(d)
         build_root(t, relogin_text=cut_at(rl_full, LATE))

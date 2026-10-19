@@ -350,6 +350,7 @@ def _point(mod, tmp):
 
 def _differential():
     head = _load_head()
+    saved = {k: getattr(EA, k) for k in ("ROOT", "STATE", "LAST", "DISABLE", "LOG", "RUNS")}
     if head is None:
         return
     check("head_module_lacks_new_flags", not hasattr(head, "status_failclosed_on") and not hasattr(head, "rowlog_on"))
@@ -403,9 +404,9 @@ def _differential():
                 rc = mod.exit87(T.A(mode="exit87"), run=f, now=EVENING)
                 results.append((rc, [RUN_N.sub("run_N.log", c.replace(mod.python_exe(), "PY").replace(str(t), "TMP")) for c, _ in f.cmds]))
         check(f"differential_exit87_need_{need}", results[0] == results[1], results)
-    # restore EA's own paths for anything running after us in the same process
-    _point(EA, ROOT)
-    EA.LOG, EA.RUNS = ROOT / "logs" / "ensure_armed.log", ROOT / "logs" / "runs"
+    # restore EA's own module attributes (saved before the first _point) for anything running after us
+    for k, v in saved.items():
+        setattr(EA, k, v)
 
 
 if __name__ == "__main__":
