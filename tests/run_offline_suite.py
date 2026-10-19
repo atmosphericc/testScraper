@@ -159,6 +159,8 @@ OFFLINE = [
     "test_forwarder_upstream_path_1018",
     "test_wall3_chain_1018",
     "test_held_release_429_1018",
+    "test_preflight_wu_1018",
+    "test_band_coverage_1018",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
