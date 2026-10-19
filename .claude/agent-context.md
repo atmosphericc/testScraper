@@ -23,13 +23,21 @@ credit card**. It is not a simulation.
   (`check_single_instance.py`, exit 9): replace a bot with `restart`, run a second one only
   when the task means it. After any boot, `python tools/predrop/boot_check.py --follow`
   must reach GREEN before the bot is reported up.
+- **Audit / review requests (operator 2026-10-19 11:24, after a daytime restart during an audit):**
+  when the task is an audit or a review, build / verify / merge / push freely, but ASK before any daytime
+  `bot_ctl start` / `restart` or forced login. The nightly auto-arm (`ensure_armed`) and stopping a looping
+  wrapper are exempt.
+- **The Windows Security event log is unreadable to agent tokens** (`wevtutil` Access is denied, the token is not
+  elevated), and `Get-WinEvent -FilterHashtable` prints "No events were found" for an access denial. Never write
+  "no logon / lock / unlock event" from it (ops.C2 CONFIRMED 2026-10-19); an absent event there is NOT ESTABLISHED.
 - **Named live tests: main session only, when the task calls for one** (operator
-  2026-10-14). Every `tests/` file outside the OFFLINE list launches Chrome against Target
-  on the bot's accounts and can place a real order. **NEVER blanket-run `tests/`**: no
+  2026-10-14). Every `tests/` file outside the OFFLINE list may launch Chrome or hit the
+  network against Target on the bot's accounts and can place a real order (at least 7 say "No browser, no network" in
+  their docstrings, but none is vetted: tests.T3). **NEVER blanket-run `tests/`**: no
   glob, no `pytest tests/`, no `pytest -k` over a directory, no loop over `ls tests` — the
   hook blocks those (the 09-14 incident). The gate stays:
   ```
-  python tests/run_offline_suite.py      # its OFFLINE list (53 files 2026-10-18; trust the count the runner prints), ~8 min — this is THE gate
+  python tests/run_offline_suite.py      # its OFFLINE list (62 files 2026-10-19; trust the count the runner prints), ~8 min — this is THE gate
   ```
 - **NEVER run anything in `tools/analysis/` without being explicitly told to.**
   Those scripts are read-only readouts, but they are slow and they are
@@ -38,8 +46,9 @@ credit card**. It is not a simulation.
 - **Default to read-only.** Unless your task explicitly says "edit" or "write",
   you are reading and reporting. Do not "helpfully" fix something you noticed.
 - **Log in only an account the readiness check shows ❌** (dead/expired login-session
-  or a guest jar). A typed-credential scripted login is Shape-burned (~0/25), and a
-  login of a live member session wastes it. Never start a harvester.
+  or a guest jar). A typed-credential scripted login in the default env was Shape-burned
+  (~0/25 before 10-14); the forced scripted login in the hand-login env has been 4/4 first try since 10-14 (C-1018-21).
+  A login of a live member session still wastes it. Never start a harvester.
 - **Session jars** (`target.json`, `target-2.json`, `target-3.json` in the repo root,
   `state/session_profiles/`): overwriting or restoring one is allowed when needed to
   recover a login (operator 2026-10-14). Make a dated backup copy first. Never commit
@@ -219,24 +228,24 @@ if you find a Walmart reference, it is stale — say so, do not follow it.
 
 **Entry points**
 ```
-app.py                            Target prod entry (203 KB — GREP IT, never read whole)
-run_bot_with_nightly_restart.bat  production wrapper — ARMS ALL ENV FLAGS (93 KB)
+app.py                            Target prod entry (~232 KB — GREP IT, never read whole)
+run_bot_with_nightly_restart.bat  production wrapper — ARMS ALL ENV FLAGS (~125 KB)
 test_app.py                       test env, stops before the real purchase
 test_resilient_stack.py           stock-check smoke test
 ```
 
-**Source — note the sizes, these are grep targets not read targets**
+**Source — note the sizes (wc -l / stat 2026-10-19; they drift, re-measure), these are grep targets not read targets**
 ```
-src/session/purchase_executor.py           ~11,600 lines  Target ATC, Shape headers
-src/purchasing/bulletproof_purchase_manager.py  ~5,300  Target checkout
-src/session/session_manager.py              2,679
-src/monitoring/stock_check_resilient.py     1,389       current stock pipeline
-src/session/multi_session_pool.py             787
-src/session/shape_harvest.py                  712       Shape credential minting
-src/monitoring/tab_dispatcher.py              428       browser-native dispatch
+src/session/purchase_executor.py           ~12,260 lines  Target ATC, Shape headers
+src/purchasing/bulletproof_purchase_manager.py  ~6,620  Target checkout
+src/session/session_manager.py              2,756
+src/monitoring/stock_check_resilient.py     1,742       current stock pipeline
+src/session/multi_session_pool.py             800
+src/session/shape_harvest.py                  730       Shape credential minting
+src/monitoring/tab_dispatcher.py              515       browser-native dispatch
 src/purchasing/identity_rest.py               406
 src/session/account_identity.py               397
-src/proxy/local_forwarder.py                  380
+src/proxy/local_forwarder.py                  626
 src/session/cookie_harvester.py                         DEPRECATED (Round 1 curl_cffi)
 ```
 
