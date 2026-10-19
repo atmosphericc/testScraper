@@ -165,6 +165,7 @@ OFFLINE = [
     "test_band_coverage_1018",
     "test_thread_start_guard_1018",
     "test_start_validate_1018",
+    "test_sigint_attrib_1019",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
