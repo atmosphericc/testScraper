@@ -56,8 +56,12 @@ class _Lock:
 class _Base:
     """Stub of StockMonitorThread / PurchaseManagerThread."""
     log = None
-    fail_start = False
+    fail_start = False      # True / "early": raise before self.thread exists
+    fail_mode = None        # "late": raise AFTER the worker thread started (the real 10-07 shape)
+    fail_times = None       # None = always fail; N = fail the first N start() calls then succeed
+    short_lived = False     # worker thread exits at once (a started thread that has since died)
     made = None
+    starts = None
 
     def __init__(self, *a, **kw):
         self.thread = None
@@ -66,11 +70,18 @@ class _Base:
         type(self).made.append(self)
 
     def start(self):
+        cls = type(self)
         self.log.append(self.NAME)
-        if type(self).fail_start:
+        cls.starts += 1
+        failing = (cls.fail_start or cls.fail_mode) and (cls.fail_times is None or cls.starts <= cls.fail_times)
+        if failing and not cls.fail_mode:
             raise AttributeError(f"{self.NAME} diag boom")
-        self.thread = threading.Thread(target=time.sleep, args=(30,), daemon=True)
+        self.running = True
+        self.thread = threading.Thread(target=(lambda: None) if cls.short_lived else time.sleep,
+                                       args=() if cls.short_lived else (30,), daemon=True)
         self.thread.start()
+        if failing and cls.fail_mode == "late":
+            raise AttributeError(f"{self.NAME} diag boom")
 
     def set_stock_monitor(self, sm):
         pass
@@ -79,7 +90,8 @@ class _Base:
         self.stopped = True
 
 
-def _run_loop(flag, stock_fails=False, purchase_fails=False):
+def _run_loop(flag, stock_fails=False, purchase_fails=False, cycles=2, stock_fail_times=None,
+              stock_short_lived=False):
     """Execute the real monitoring_loop with stubs."""
     log = []
 
@@ -91,15 +103,21 @@ def _run_loop(flag, stock_fails=False, purchase_fails=False):
 
     for cls, fails in ((Stock, stock_fails), (Purchase, purchase_fails)):
         cls.log = log
-        cls.fail_start = fails
+        cls.fail_mode = "late" if fails == "late" else None
+        cls.fail_start = bool(fails) and fails != "late"
+        cls.fail_times = None
+        cls.short_lived = False
         cls.made = []
+        cls.starts = 0
+    Stock.fail_times = stock_fail_times
+    Stock.short_lived = stock_short_lived
 
     shared = SimpleNamespace(lock=_Lock(), monitor_running=False)
     sleeps = {"n": 0}
 
     def fake_sleep(s):
         sleeps["n"] += 1
-        if sleeps["n"] >= 2:  # let two health cycles run, then stop the loop
+        if sleeps["n"] >= cycles:  # let `cycles` health cycles run, then stop the loop
             shared.monitor_running = False
 
     ns = {
@@ -181,8 +199,46 @@ def main():
           str(len(P.made)))
     check("ON + stock raises: purchase thread stopped only by the normal shutdown finally",
           P.made[0].stopped is True)  # stopped only by the normal finally at shutdown
-    check("ON + stock raises: health check retried stock, capped (original + <=3)",
-          1 < len(S.made) <= 4, str(len(S.made)))
+    check("ON + stock raises (early): NO new StockMonitorThread built (retry on the same object)",
+          len(S.made) == 1, str(len(S.made)))
+    check("ON + stock raises (early): purchase thread never rebuilt", len(P.made) == 1, str(len(P.made)))
+
+    # ---- ON, stock start raises BEFORE its thread exists, 6 health cycles: exact cap ----------
+    log, out, err, S, P = _run_loop("1", stock_fails=True, cycles=6)
+    check("ON + stock early raise x6 cycles: loop did not raise", err is None, repr(err))
+    check("ON + stock early raise x6 cycles: still exactly one StockMonitorThread",
+          len(S.made) == 1, str(len(S.made)))
+    check("ON + stock early raise x6 cycles: start() called exactly 1 + 3 (cap) times",
+          S.starts == 4, str(S.starts))
+    check("ON + stock early raise x6 cycles: capped restart lines 1/3 2/3 3/3, no 4th",
+          all(f"stock_thread restart failed ({i}/3)" in out for i in (1, 2, 3))
+          and "(4/3)" not in out, out[-600:])
+    check("ON + stock early raise x6 cycles: purchase alive and untouched",
+          len(P.made) == 1 and P.starts == 1 and P.made[0].thread.is_alive(), f"{len(P.made)}/{P.starts}")
+
+    # ---- ON, stock start raises once then recovers: same object, fails reset ------------------
+    log, out, err, S, P = _run_loop("1", stock_fails=True, cycles=4, stock_fail_times=2)
+    check("ON + stock recovers on retry: no error", err is None, repr(err))
+    check("ON + stock recovers on retry: same object, 3 start() calls, thread alive",
+          len(S.made) == 1 and S.starts == 3 and S.made[0].thread is not None
+          and S.made[0].thread.is_alive(), f"{len(S.made)}/{S.starts}")
+
+    # ---- ON, the real 10-07 shape: start() raises AFTER self.thread.start() -------------------
+    log, out, err, S, P = _run_loop("1", stock_fails="late", cycles=4)
+    check("ON + stock late raise: loop did not raise", err is None, repr(err))
+    check("ON + stock late raise: purchase started first and alive",
+          log[0] == "purchase" and P.made[0].thread.is_alive() and "[OK] purchase_thread started" in out)
+    check("ON + stock late raise: [ERROR] line printed",
+          "[MONITORING_LOOP] [ERROR] stock_thread start failed: AttributeError('stock diag boom')" in out,
+          out[-400:])
+    check("ON + stock late raise: NO reconstruction, start() called once",
+          len(S.made) == 1 and S.starts == 1 and len(P.made) == 1, f"{len(S.made)}/{S.starts}/{len(P.made)}")
+
+    # ---- ON, a started stock thread that later died: rebuilt (the flag-off behaviour) ----------
+    log, out, err, S, P = _run_loop("1", cycles=2, stock_short_lived=True)
+    check("ON + started stock thread died: rebuilt via the dead-thread path",
+          err is None and len(S.made) >= 2 and "Stock thread died, restarting" in out,
+          f"{err!r} {len(S.made)}")
 
     # ---- ON, purchase start raises: stock still started, error line --------------
     log, out, err, S, P = _run_loop("1", purchase_fails=True)

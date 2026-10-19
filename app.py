@@ -2156,7 +2156,10 @@ def _thread_start_guard_on():
     buy-path threads defensively so one raising start() cannot leave the process alive but unable
     to buy (10-07: a diagnostic AttributeError in StockMonitorThread.start() skipped
     purchase_thread.start())."""
-    return os.environ.get('TARGET_THREAD_START_GUARD', '0').strip().lower() in ('1', 'true', 'yes')
+    try:
+        return os.environ.get('TARGET_THREAD_START_GUARD', '0').strip().lower() in ('1', 'true', 'yes')
+    except Exception:
+        return False
 
 
 def _start_buy_threads_guarded(stock_thread, purchase_thread):
@@ -2182,25 +2185,32 @@ def _start_buy_threads_guarded(stock_thread, purchase_thread):
 
 def _health_check_guarded(stock_thread, purchase_thread, fails):
     """Flag-on version of monitoring_loop's 10 s health check: a thread whose start() failed
-    (thread is None) or that died is replaced; a failing replacement is logged and retried next
+    (thread is None) is retried on the same object (stock) or replaced (purchase), a dead one is replaced; a failing replacement is logged and retried next
     cycle (stock gives up after 3 consecutive failures; purchase never does) instead of raising
     out of monitoring_loop, whose finally would stop the OTHER thread. Never raises."""
     try:
         _st = getattr(stock_thread, 'thread', None)
         if (_st is None or not _st.is_alive()) and fails.get('stock', 0) < 3:
-            print("[MONITOR] Stock thread died, restarting...")
             try:
-                add_activity_log("Stock monitor thread crashed, restarting", "error", "system")
-            except Exception:
-                pass
-            try:
-                _new = StockMonitorThread(
-                    event_bus, shared_data,
-                    purchase_manager=global_purchase_manager,
-                    event_loop=global_event_loop
-                )
-                stock_thread = _new
-                _new.start()
+                if _st is None:
+                    # start() never created the thread: retry on the SAME object. Building a new
+                    # StockMonitorThread launches another resilient stack (no singleton guard) and
+                    # leaves the abandoned one publishing stock_updated (running=True is set first).
+                    print("[MONITOR] Stock thread never started, retrying start()...")
+                    stock_thread.start()
+                else:
+                    print("[MONITOR] Stock thread died, restarting...")
+                    try:
+                        add_activity_log("Stock monitor thread crashed, restarting", "error", "system")
+                    except Exception:
+                        pass
+                    _new = StockMonitorThread(
+                        event_bus, shared_data,
+                        purchase_manager=global_purchase_manager,
+                        event_loop=global_event_loop
+                    )
+                    stock_thread = _new
+                    _new.start()
                 fails['stock'] = 0
             except Exception as _e:
                 fails['stock'] = fails.get('stock', 0) + 1
