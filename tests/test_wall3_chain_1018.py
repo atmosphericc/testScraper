@@ -51,6 +51,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_identity_rest as H  # noqa: E402
 import test_mass_restock_1006 as M  # noqa: E402
+import test_fast_cadence_1011 as FC  # noqa: E402  (_bat_env: the production wrapper's plain `set` lines)
 import test_won_cart_direct_smoke as S  # noqa: E402  (import only; its main() does not run)
 import src.purchasing.bulletproof_purchase_manager as bpm_mod  # noqa: E402
 
@@ -84,13 +85,62 @@ EXEC_ENV = dict(
 MGR_ENV = dict(
     TARGET_REBUY_NONBUYERS="1", TARGET_MULTI_SKU_MISS_REARM="1", TARGET_MULTI_SKU_FAIR_SHARE="1",
     TARGET_ATC_RETRY_DELAY_MIN="0", TARGET_ATC_RETRY_DELAY_MAX="0",
-    TARGET_ATC_EDGE429_RETRY_DELAY_MIN="1.0", TARGET_ATC_EDGE429_RETRY_DELAY_MAX="1.0",
-    TARGET_RETRY_WARM="0", TARGET_WAVE_FIRST_ONLY="0", TARGET_SHOT_BANK_GATE="0",
-    TARGET_401_PULSE="0", TARGET_RACE_ALL_WORKERS="1", TARGET_RETRY_WHILE_IN_STOCK="1",
-    TARGET_RETRY_WHILE_IN_STOCK_MAX="6", TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S="110",
-    TARGET_ATC_DCO_BURST="0", TARGET_RETRY_STOP_WHEN_OOS="0", TARGET_FAST_CADENCE_IDENTS=None,
+    TARGET_ATC_EDGE429_RETRY_DELAY_MIN="2.0", TARGET_ATC_EDGE429_RETRY_DELAY_MAX="3.0",
+    TARGET_RETRY_WARM="0", TARGET_WAVE_FIRST_ONLY="1", TARGET_SHOT_BANK_GATE="1",
+    TARGET_401_PULSE="1", TARGET_RACE_ALL_WORKERS="1", TARGET_RETRY_WHILE_IN_STOCK="1",
+    TARGET_RETRY_WHILE_IN_STOCK_MAX="40", TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S="110",
+    TARGET_ATC_DCO_BURST="1", TARGET_RETRY_STOP_WHEN_OOS="1", TARGET_FAST_CADENCE_IDENTS="all",
     TARGET_RACE_JOIN_FREE=None, TARGET_FAIR_FRESH_FIX=None, TARGET_PARK_ACCOUNT_TCINS=None,
 )
+
+
+# 1019b (pins lane, T2): the EXEC_ENV / MGR_ENV literals above are tied to the production wrapper.
+# Before 1019b nine MGR_ENV literals diverged from the bat (EDGE429 retry delay 1.0/1.0 vs 2.0/3.0,
+# WAVE_FIRST_ONLY 0 vs 1, SHOT_BANK_GATE 0 vs 1, 401_PULSE 0 vs 1, RETRY_WHILE_IN_STOCK_MAX 6 vs 40,
+# ATC_DCO_BURST 0 vs 1, RETRY_STOP_WHEN_OOS 0 vs 1, FAST_CADENCE_IDENTS unset vs all) and the three
+# scenarios below still passed with the bat's values. Names the bat does not set are left to code
+# defaults / app.py (`os.environ.setdefault('TARGET_API_PLACE_ORDER', 'true')`); exactly these three are
+# allow-listed. The other bat-absent MGR_ENV names (ATC_RETRY_DELAY_MIN/MAX = 0 vs the code default
+# 2.5/3.5, RACE_ALL_WORKERS, RETRY_WHILE_IN_STOCK, RETRY_WHILE_IN_STOCK_BUDGET_S, and the None literals)
+# are not compared (the spec ties only names the bat also sets) and are printed as [NOTE] lines.
+BAT_ABSENT_ALLOWED = ("TARGET_API_PLACE_ORDER", "TARGET_FASTLANE_QTY_GUARD", "TARGET_QTY_CEILING")
+
+
+def env_tie_problems(bat, exec_env, mgr_env):
+    """(mismatches, allowlist_now_set_by_bat, notes) for the two literal dicts vs a bat `set` map."""
+    bad, stale, notes = [], [], []
+    for nm, d in (("EXEC_ENV", exec_env), ("MGR_ENV", mgr_env)):
+        for k, v in d.items():
+            if k in bat:
+                if v != bat[k]:
+                    bad.append((nm, k, v, bat[k]))
+            elif k not in BAT_ABSENT_ALLOWED and v is not None:
+                notes.append((nm, k, v))
+    for k in BAT_ABSENT_ALLOWED:
+        if k in bat:
+            stale.append(k)
+    return bad, stale, notes
+
+
+def test_env_tied_to_bat():
+    bat = FC._bat_env()
+    check("t2_bat_env_parsed", len(bat) > 100 and bat.get("TARGET_HELD_LINE_FLIP_STRIKE") == "1", len(bat))
+    bad, stale, notes = env_tie_problems(bat, EXEC_ENV, MGR_ENV)
+    check("t2_every_bat_set_literal_equals_the_bat", not bad, bad)
+    check("t2_allowlist_names_are_absent_from_the_bat", not stale, stale)
+    check("t2_allowlist_is_exactly_three", BAT_ABSENT_ALLOWED == (
+        "TARGET_API_PLACE_ORDER", "TARGET_FASTLANE_QTY_GUARD", "TARGET_QTY_CEILING"))
+    for nm, k, v in notes:
+        print(f"[NOTE] {nm}.{k}={v!r} is not set by the bat (code default applies in production)")
+    # the pin bites: a drifted literal, a bat that starts setting an allow-listed name, a flipped bat value
+    b, _, _ = env_tie_problems(bat, dict(EXEC_ENV, TARGET_WONCART_YIELD_FLEET="1"), MGR_ENV)
+    check("t2_mutation_exec_literal_drift_caught", [x[1] for x in b] == ["TARGET_WONCART_YIELD_FLEET"], b)
+    b, _, _ = env_tie_problems(bat, EXEC_ENV, dict(MGR_ENV, TARGET_ATC_DCO_BURST="0"))
+    check("t2_mutation_mgr_literal_drift_caught", [x[1] for x in b] == ["TARGET_ATC_DCO_BURST"], b)
+    _, st, _ = env_tie_problems(dict(bat, TARGET_QTY_CEILING="2"), EXEC_ENV, MGR_ENV)
+    check("t2_mutation_allowlist_goes_stale_caught", st == ["TARGET_QTY_CEILING"], st)
+    b, _, _ = env_tie_problems(dict(bat, TARGET_RETRY_STOP_WHEN_OOS="0"), EXEC_ENV, MGR_ENV)
+    check("t2_mutation_bat_value_flip_caught", [x[1] for x in b] == ["TARGET_RETRY_STOP_WHEN_OOS"], b)
 
 
 def _all_env(extra=None):
@@ -683,7 +733,7 @@ def test_scenario_c_restart_with_buyers_file():
 # ─────────────────────────────────── main ───────────────────────────────────────
 
 def main():
-    for fn in (test_scenario_a_strike_and_tickets, test_scenario_b_unresolved_po_mid_ride,
+    for fn in (test_env_tied_to_bat, test_scenario_a_strike_and_tickets, test_scenario_b_unresolved_po_mid_ride,
                test_scenario_c_restart_with_buyers_file):
         try:
             fn()

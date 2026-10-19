@@ -1562,6 +1562,75 @@ def test_v6_cvv_ledger_on_cancel():
           f"marker cvv={h.get('cvv_put')} first_cvv={first_cvv} tickets={len(tab.tickets)}")
 
 
+def test_1019b_no_line_strike_enters_ticket_loop():
+    """1019b (pins lane, gap1.1 F5): a strike whose ATC answered 400 MAX_PURCHASE but whose
+    chain then stopped at pre_checkout (skip pre_400 / pre_429) while NO line of ours is in
+    the cart. OBSERVED behaviour of the real _execute_purchase_impl + real ticket loop
+    (stub tab, fake clock, cart model with an empty cart):
+      * woncart_eligible() admits the stop, so the chain enters the ticket loop (entry 'first'),
+        it does not fall to the legacy ATC / checkout;
+      * pre_400 (keyless, the emptied-cart answer) + the eviction read finds the cart empty ->
+        the loop ends won_cart_exit=cart_evicted, the result reason is the transient
+        checkout_busy_retryable (no BPM terminal token), no held marker, no dirty flag;
+      * pre_429 (the FAST_SELLING gate answers before the cart is looked at) tells the loop
+        nothing about the cart, so it keeps ticking until its own deadline (budget_spent /
+        call_cap) and leaves a won_cart_held marker for a line nobody proved exists; with the
+        bat's ride-to-OOS values it is still bounded by the ride deadline and by the hard
+        ticket ceiling (the next held entry re-reads the cart before any po_only ticket);
+      * the quantity is never lowered: the single fast-lane call and every ticket carry Q=2."""
+    import re as _re
+    toks = ('oos', 'out_of_stock', 'sold_out', 'reservation', 'unavailable')
+    pre400 = {"atc": {"status": 400, "body": MAXP_BODY, "cart_items": [], "strike": True},
+              "pre": {"status": 400, "body": ""},
+              "po": {"status": 0, "body": "", "fired": False}, "skip": "pre_400"}
+    pre429 = {"atc": {"status": 400, "body": MAXP_BODY, "cart_items": [], "strike": True},
+              "pre": {"status": 429, "body": S.FS_BODY},
+              "po": {"status": 0, "body": "", "fired": False}, "skip": "pre_429"}
+    check("1019b_nl_chain_stop_is_won_cart_eligible",
+          pe.woncart_eligible(pre400) and pe.woncart_eligible(pre429))
+
+    def _qs(tab):
+        return [m.group(1) for _, _, js in tab.tickets for m in [_re.search(r"const Q = (\d+);", js)] if m]
+
+    # pre_400, empty cart: evicted, transient, nothing tracked, qty untouched.
+    c, ex, tab = _world_ex(pre400, [S.t_pre(400, "")], [])
+    tab.throttled = False
+    with S.in_tmp_cwd(), S.env(**ENV5), S.fake_time(c, stop_after=400):
+        r = S.run(ex._execute_purchase_impl(ST, quantity=2))
+    check("1019b_nl_pre400_enters_ticket_loop", len(tab.tickets) == 1 and r.get("won_cart_exit") == "cart_evicted",
+          f"r={r} tickets={len(tab.tickets)}")
+    check("1019b_nl_pre400_transient_reason", r.get("success") is False
+          and r.get("reason") == "checkout_busy_retryable"
+          and not any(t in str(r.get("reason", "")).lower() + str(r.get("error", "")).lower() for t in toks), str(r))
+    check("1019b_nl_pre400_nothing_tracked_no_checkout", ex._held_cart is None
+          and getattr(ex, "_woncart_dirty", None) is None and "checking_out" not in ex.statuses
+          and not ex.deletes, f"held={ex._held_cart} dirty={getattr(ex, '_woncart_dirty', None)}")
+    check("1019b_nl_pre400_qty_never_downgraded", ex.fl_calls == [2] and _qs(tab) == ["2"],
+          f"fl={ex.fl_calls} qs={_qs(tab)}")
+
+    # pre_429, empty cart: nothing proves the cart empty; the loop is bounded by its deadline.
+    rto = dict(ENV5, TARGET_WONCART_RIDE_TO_OOS="1", TARGET_WONCART_LIVE_CAP_EXEMPT="1",
+               TARGET_WONCART_YIELD_FLEET="0", TARGET_WONCART_HARD_MAX_TICKETS="1200",
+               TARGET_WON_CART_RIDE_MAX_S="300", TARGET_HELD_CART_TTL_S="3600")
+    for label, env in (("plain", ENV5), ("ride_to_oos", rto)):
+        c, ex, tab = _world_ex(pre429, [S.t_pre(429, S.FS_BODY)] * 400, [])
+        tab.throttled = False
+        t0 = c.t
+        with S.in_tmp_cwd(), S.env(**env), S.fake_time(c, stop_after=400):
+            r = S.run(ex._execute_purchase_impl(ST, quantity=2))
+        n = len(tab.tickets)
+        check(f"1019b_nl_pre429_{label}_bounded_by_deadline", 2 <= n < 40 and (c.t - t0) <= 330.0
+              and r.get("won_cart_exit") in ("budget_spent", "call_cap"), f"r={r} n={n} dt={c.t - t0:.0f}")
+        check(f"1019b_nl_pre429_{label}_no_legacy_checkout_no_clear", "checking_out" not in ex.statuses
+              and not ex.deletes, f"statuses={ex.statuses} deletes={ex.deletes}")
+        check(f"1019b_nl_pre429_{label}_qty_never_downgraded", ex.fl_calls == [2]
+              and set(_qs(tab)) == {"2"}, f"fl={ex.fl_calls} qs={set(_qs(tab))}")
+        h = ex._held_cart
+        check(f"1019b_nl_pre429_{label}_leaves_unproven_held_marker", isinstance(h, dict)
+              and h.get("tcin") == ST and h.get("verified") is False and r.get("reason") == "won_cart_held",
+              f"held={h} r={r}")
+
+
 def main():
     for fn in (test_flag_parsing, test_window_fresh, test_legacy_reason, test_eligible,
                test_kept_line_predicate, test_js_strict_qty,
@@ -1588,7 +1657,8 @@ def main():
                test_v8_guard_proves_removal,
                test_v9_no_array_reads_keep_strike_line_flagged,
                test_v10_strike_requires_reentry,
-               test_v11_atc_stage_timeout_flags_strike_line):
+               test_v11_atc_stage_timeout_flags_strike_line,
+               test_1019b_no_line_strike_enters_ticket_loop):
         try:
             fn()
         except Exception as e:  # noqa: BLE001

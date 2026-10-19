@@ -54,6 +54,17 @@ MANIFEST_ARMED = {
     # read by the audit at bat:1228 / :1350 (lane note); pinned as they are today
     "TARGET_WONCART_LIVE_CAP_EXEMPT": "1",
     "TARGET_FAST_CADENCE_IDENTS": "all",
+    # 1019b (pins lane, r1:arming F1): armed flags the manifest did not pin; line numbers at 3278ce7f
+    "TARGET_MULTI_SKU_FAIR_SHARE": "1",  # bat:1314
+    "TARGET_STOCK_RESET_KEEP_LIVE_FAILED": "1",  # bat:1323
+    "TARGET_WAVE_FIRST_YIELD_MISSED": "1",  # bat:1340
+    "TARGET_SHARED_LOCK_ORDER_FIX": "1",  # bat:1344
+    "TARGET_ATC_DCO_BURST_STUCK_NOWAIT": "1",  # bat:981
+    "ENSURE_ARMED_EXIT87": "1",  # bat:1757 (wrapper exit-87 branch -> ensure_armed --mode exit87)
+    "TARGET_SENTINEL_MEMBER_CHECK": "1",  # bat:1387
+    # deliberate "=0" pins (a missing line is NOT the same as 0: the code default differs)
+    "TARGET_ATC_DCO_BURST_REQUIRE_BANK": "0",  # bat:969
+    "TARGET_WONCART_YIELD_FLEET": "0",  # bat:1222 (code default is 1; RIDE_MAX 300 would lock out siblings)
 }
 MANIFEST_OFF = (
     "TARGET_WARMUP_PROBE_TCINS",
