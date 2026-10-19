@@ -58,6 +58,24 @@ class _RiderExec(H._Exec):
         return dict(HELD, tcin=tcin)
 
 
+class _JoinGateExec(H._Exec):
+    """Answers the FIRST call from its script at once (the original racer finishes), then
+    HOLDS every later call (a joiner) on `gate` so the joiner stays in-flight for as long as
+    the test reads the race state (S1, 2026-10-18: removes the finish-vs-read race)."""
+    def __init__(self, script):
+        super().__init__(script)
+        self.gate = threading.Event()
+
+    async def execute_purchase(self, tcin, quantity=1):
+        n = self.calls + 1
+        if n > 1:
+            self.calls += 1
+            while not self.gate.is_set():
+                await asyncio.sleep(0.01)
+            return dict(self.script[0], tcin=tcin)
+        return await super().execute_purchase(tcin, quantity)
+
+
 def _fleet():
     ws = [H._Worker(1, "primary", [HELD]), H._Worker(2, "business", [EDGE]), H._Worker(3, "alt-1", [EDGE])]
     ws[0].purchase_executor = _RiderExec([HELD])
@@ -195,8 +213,17 @@ def test_exclusions():
 def test_race_start_window():
     """Pre-arming verifier D1: between _start_real_purchase registering the race and the
     racer threads registering in _active_purchases (they block on _state_lock), the tick
-    must NOT join the accounts whose original racers are about to fire."""
+    must NOT join the accounts whose original racers are about to fire.
+
+    Deterministic since 2026-10-18 (S1): the W2/W3 executors hold their SECOND call (the
+    joiner) on a gate, so d1_joiners_inflight reads a held state instead of racing the
+    joiner's own finish; and the finished-leave-inflight wait polls the inflight predicate
+    itself (m.recorded is appended BEFORE the inflight discard)."""
     ws, m = _setup()
+    gates = []
+    for w in ws[1:]:
+        w.purchase_executor = _JoinGateExec([EDGE])
+        gates.append(w.purchase_executor)
     saved = bpm.time
     bpm.time = _NoSleep()
     try:
@@ -209,12 +236,15 @@ def test_race_start_window():
             check("d1_no_join_before_racers_register", joined == [], joined)
             check("d1_inflight_recorded_at_start",
                   infl == {"W1/primary", "W2/business", "W3/alt-1"}, infl)
-            _wait(lambda: len(m.recorded) >= 2)
-            check("d1_finished_leave_inflight", set(ag["inflight"]) == {"W1/primary"}, ag["inflight"])
+            ok = _wait(lambda: set(ag["inflight"]) == {"W1/primary"})
+            check("d1_finished_leave_inflight", ok and set(ag["inflight"]) == {"W1/primary"}, ag["inflight"])
             joined = quiet(m.race_join_tick)[0]
             check("d1_then_free_accounts_join", sorted(l for _, l in joined) == ["W2/business", "W3/alt-1"], joined)
-            check("d1_joiners_inflight", {"W2/business", "W3/alt-1"} <= set(ag["inflight"]), ag["inflight"])
+            ok = _wait(lambda: {"W2/business", "W3/alt-1"} <= set(ag["inflight"]))
+            check("d1_joiners_inflight", ok and {"W2/business", "W3/alt-1"} <= set(ag["inflight"]), ag["inflight"])
     finally:
+        for g in gates:
+            g.gate.set()
         ws[0].purchase_executor.release.set()
         bpm.time = saved
 

@@ -122,6 +122,8 @@ OFFLINE = [
     "test_fs_cooldown_per_tcin_1014",
     # 2026-10-14: FX-1014-JOIN, free accounts join a running race (real race loop, stub workers).
     "test_race_join_1014",
+    # 2026-10-18: armed-flag manifest pin (S4) - the bat arms exactly the pinned flags (text only).
+    "test_armed_manifest_1018",
     # 2026-10-14: FX-1014-REBUY, non-buyers keep racing a bought TCIN (real dispatch, stub workers).
     "test_rebuy_nonbuyers_1014",
     # 2026-10-14: FX-1014-EGRESS, one account exits a second adapter (loopback sockets only).
