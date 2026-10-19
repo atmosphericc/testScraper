@@ -90,15 +90,64 @@ async def _fill_verified(tab, css_selector, value) -> bool:
     return False
 
 
-async def _on_account_page_loggedin(tab) -> bool:
-    """True iff /account loads without redirecting to login (authoritative)."""
+def _start_validate_retries() -> int:
+    """FX-1018-STARTVALIDATE: TARGET_START_VALIDATE_RETRIES (default 0 = one attempt, as
+    before). Only an EXCEPTION during the /account check is retried. Non-int -> 0."""
     try:
-        await tab.get("https://www.target.com/account")
-        await asyncio.sleep(3)
-        url = (getattr(tab, 'url', '') or '').lower()
-        return ('login' not in url and 'signin' not in url and '/account' in url)
+        return max(0, int(str(os.environ.get("TARGET_START_VALIDATE_RETRIES", "0")).strip() or "0"))
     except Exception:
-        return False
+        return 0
+
+
+def _safe_log(step, msg) -> None:
+    """log() that can never raise (a logging failure must not change a validation result)."""
+    try:
+        log(step, msg)
+    except Exception:
+        pass
+
+
+async def _on_account_page_loggedin(tab) -> bool:
+    """True iff /account loads without redirecting to login (authoritative).
+
+    2026-10-18 FX-1018-STARTVALIDATE: an exception (timeout / CDP / websocket / navigation
+    error) used to return False exactly like a login redirect, so the start pass
+    (force=False) fell into full_signout + typed logins on a healthy MEMBER account, and
+    nothing logged which case happened. Now every False says why ([ACCOUNT] lines, path
+    only -- never cookies / tokens / query strings), and TARGET_START_VALIDATE_RETRIES=N
+    (default 0) retries ONLY the exception case, N more times, 2 s apart. A redirect to
+    login stays False at once."""
+    retries = _start_validate_retries()
+    attempt = 0
+    while True:
+        try:
+            await tab.get("https://www.target.com/account")
+            await asyncio.sleep(3)
+            url = (getattr(tab, 'url', '') or '').lower()
+            ok = ('login' not in url and 'signin' not in url and '/account' in url)
+            if not ok:
+                try:
+                    from urllib.parse import urlsplit
+                    _path = urlsplit(url).path[:80]
+                except Exception:
+                    _path = "?"
+                _safe_log("ACCOUNT", f"validation: not logged in (url path only, no query string) path={_path}")
+            return ok
+        except Exception as e:
+            try:
+                _etype = type(e).__name__
+                _msg = repr(e)[:160]
+            except Exception:
+                _etype, _msg = "Exception", "?"
+            _safe_log("ACCOUNT", f"validation error {_etype}: {_msg} -> treated as not logged in")
+            if attempt >= retries:
+                return False
+            attempt += 1
+            _safe_log("ACCOUNT", f"validation retry {attempt}/{retries} after {_etype}")
+            try:
+                await asyncio.sleep(2)
+            except Exception:
+                return False
 
 
 async def full_signout(tab) -> bool:

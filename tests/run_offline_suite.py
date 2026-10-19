@@ -151,6 +151,8 @@ OFFLINE = [
     # port helpers and the in-window follower's log parsing, log tailing, config read and
     # pre-registered readout (no Chrome, no network, no bot).
     "test_guest_follow_1016",
+    # 2026-10-18 FX-1018-STARTVALIDATE: relogin_one start-pass /account check reason log + retry.
+    "test_start_validate_1018",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
