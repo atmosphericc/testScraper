@@ -4735,7 +4735,9 @@ def _sigint_attrib_line(signum=None):
     try:
         # a fresh stamp only counts when the stamped pid (the wrapper bot_ctl signalled) is OUR ancestor:
         # a later restart / forced login inside the 30 s window must not inherit the label
-        anc = bool(spid is not None and _sa_pid_is_ancestor(spid))
+        # the (~50 ms) psutil probe runs only for a FRESH stamp: a stale stamp file is never deleted, so
+        # every later Ctrl+C would otherwise pay for it
+        anc = bool(spid is not None and age is not None and -5.0 <= age < 30.0 and _sa_pid_is_ancestor(spid))
     except Exception:
         anc = False
     try:

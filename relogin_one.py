@@ -735,7 +735,9 @@ def _sigint_attrib_line(signum=None):
     try:
         # a fresh stamp only counts when the stamped pid (the wrapper bot_ctl signalled) is OUR ancestor
         import psutil
-        anc = bool(spid is not None and spid in [p.pid for p in psutil.Process().parents()[:5]])
+        # probe only when the stamp is fresh (a stale stamp file is never deleted; psutil costs ~50 ms)
+        anc = bool(spid is not None and age is not None and -5.0 <= age < 30.0
+                   and spid in [p.pid for p in psutil.Process().parents()[:5]])
     except Exception:
         anc = False
     try:

@@ -169,6 +169,32 @@ def test_helper_format():
     line = _line_with(idle=5, age=400.0, spid=4242, anc=True)
     m = LINE_RE.match(line)
     check("helper_stale_stamp_ancestor_pid_unattributed", bool(m) and m["who"] == "UNATTRIBUTED", line)
+    # 10-19 fix round: the ~50 ms psutil probe must not run at all for a stale / missing / far-future stamp
+    # (the stamp file is never deleted, so every later Ctrl+C would pay for it). The stub raises
+    # AssertionError if called; an AssertionError swallowed by the helper's except would still hide, so the
+    # stub also records the call.
+    for name, age in (("stale", 400.0), ("boundary_30", 30.0), ("missing", FileNotFoundError("x")),
+                      ("future_skew", -600.0)):
+        probed = []
+
+        def _no_probe(pid, _p=probed):
+            _p.append(pid)
+            raise AssertionError("ancestor probe ran for a non-fresh stamp")
+
+        ns = _helper_ns(_sa_idle_ms=lambda: 5, _sa_fg_title=lambda: "t",
+                        _sa_stamp_age_s=(lambda a=age: (_ for _ in ()).throw(a)) if isinstance(age, Exception)
+                        else (lambda a=age: a),
+                        _sa_stamp_pid=lambda: 4242, _sa_pid_is_ancestor=_no_probe)
+        line = ns["_sigint_attrib_line"](2)
+        m = LINE_RE.match(line)
+        check(f"helper_{name}_stamp_skips_ancestor_probe", bool(m) and m["who"] == "UNATTRIBUTED"
+              and not probed, (line, probed))
+    probed = []
+    ns = _helper_ns(_sa_idle_ms=lambda: 5, _sa_fg_title=lambda: "t", _sa_stamp_age_s=lambda: 3.0,
+                    _sa_stamp_pid=lambda: 4242, _sa_pid_is_ancestor=lambda pid: (probed.append(pid), True)[1])
+    m = LINE_RE.match(ns["_sigint_attrib_line"](2))
+    check("helper_fresh_stamp_runs_ancestor_probe_once", bool(m) and m["who"] == "bot_ctl stop"
+          and probed == [4242], (m and m["who"], probed))
 
 
 def test_helper_never_raises():
@@ -252,8 +278,9 @@ class _Exit(BaseException):
     pass
 
 
-def _run_handler(flag, emit=None, calls=1):
-    """Run the REAL shutdown_handler source against stubs; returns (stdout, exit_codes)."""
+def _run_handler(flag, emit=None, calls=1, order=None):
+    """Run the REAL shutdown_handler source against stubs; returns (stdout, exit_codes).
+    `order` (a list) records 'deadman' when the deadman thread starts and 'emit' when the emit stub runs."""
     tree = ast.parse(APP)
     fn = _find_func(_main_if(tree), "shutdown_handler")
     codes = []
@@ -266,13 +293,20 @@ def _run_handler(flag, emit=None, calls=1):
                               write=lambda *a: 0)
     sd = {"flag": False}
     worker = SimpleNamespace(stop=lambda timeout=0: None)
-    fake_threading = SimpleNamespace(Thread=lambda **kw: SimpleNamespace(start=lambda: None))
+    fake_threading = SimpleNamespace(Thread=lambda **kw: SimpleNamespace(
+        start=lambda: order.append("deadman") if order is not None else None))
+    base_emit = emit or (lambda signum=None: print(f"[SYSTEM] [SIGINT_ATTRIB] signum={signum} STUB"))
+
+    def _emit(signum=None):
+        if order is not None:
+            order.append("emit")
+        return base_emit(signum)
     ns = {"os": fake_os, "time": SimpleNamespace(time=time.time, sleep=lambda s: None),
           "threading": fake_threading, "asyncio": SimpleNamespace(),
           "_shutdown_started": sd, "add_activity_log": lambda *a, **k: None,
           "global_purchase_manager": None, "global_event_loop": None, "_kill_browser_now": lambda: None,
           "activity_log_persistence_worker": worker,
-          "_sigint_attrib_emit": emit or (lambda signum=None: print(f"[SYSTEM] [SIGINT_ATTRIB] signum={signum} STUB"))}
+          "_sigint_attrib_emit": _emit}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), "app.py", "exec"), ns)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -296,6 +330,14 @@ def test_shutdown_handler():
     check("handler_flag_on_line_before_shutdown_print", 0 <= i < j and out.count("[SIGINT_ATTRIB]") == 1, out)
     check("handler_flag_on_signum_passed", "signum=2" in out, out)
     check("handler_flag_on_exit0", codes == [0], codes)
+    # the deadman (hard-exit timer) must be armed BEFORE the attribution emit, so a hung emit cannot
+    # leave a Ctrl+C unable to exit
+    order = []
+    _run_handler("1", order=order)
+    check("handler_flag_on_deadman_starts_before_emit", order == ["deadman", "emit"], order)
+    order = []
+    _run_handler(None, order=order)
+    check("handler_flag_off_deadman_only_no_emit", order == ["deadman"], order)
 
     def _bad(signum=None):
         raise RuntimeError("emit exploded")
@@ -487,8 +529,11 @@ runpy.run_path(sys.argv[1], run_name="__main__")
 '''
 
 
-def _run_relogin(td, src_text, flag):
+def _run_relogin(td, src_text, flag, stamp=None):
     d = Path(td)
+    if stamp is not None:
+        (d / "state").mkdir(parents=True, exist_ok=True)
+        (d / "state" / "last_bot_ctl_stop.json").write_text(json.dumps(stamp), encoding="utf-8")
     script = d / "relogin_one.py"
     script.write_text(src_text, encoding="utf-8")
     drv = d / "_driver.py"
@@ -516,6 +561,18 @@ def test_relogin_entry():
         n_off = _run_relogin(t2, new_src, None)
         n_zero = _run_relogin(t3, new_src, "0")
         n_on = _run_relogin(t4, new_src, "1")
+    # relogin_one carries its own inline copy of the attribution logic: exercise its attributed branch.
+    # This process is the driver's parent, hence an ancestor of the runpy'd relogin code.
+    with tempfile.TemporaryDirectory() as t5, tempfile.TemporaryDirectory() as t6,             tempfile.TemporaryDirectory() as t7:
+        n_anc = _run_relogin(t5, new_src, "1", stamp={"ts": time.time(), "pid": os.getpid()})
+        n_bad = _run_relogin(t6, new_src, "1", stamp={"ts": time.time(), "pid": 4000000001})
+        n_old = _run_relogin(t7, new_src, "1", stamp={"ts": time.time() - 400, "pid": os.getpid()})
+    for tag, res, who in (("ancestor_fresh", n_anc, "bot_ctl stop"), ("foreign_pid", n_bad, "UNATTRIBUTED"),
+                          ("stale_stamp", n_old, "UNATTRIBUTED")):
+        ls = [ln for ln in res[2].splitlines() if "SIGINT_ATTRIB" in ln]
+        mm = LINE_RE.match(ls[0]) if len(ls) == 1 else None
+        check(f"relogin_flag_on_{tag}_{who.split()[0].lower()}", bool(mm) and mm["who"] == who
+              and ls[0].endswith(f"-> {who}"), (ls, res[2][-300:]))
     check("relogin_head_interrupt_is_nonzero", h[0] != 0 and "KeyboardInterrupt" in h[2], (h[0], h[2][-300:]))
     check("relogin_exit_code_flag_unset_same_as_head", n_off[0] == h[0], (n_off[0], h[0]))
     check("relogin_exit_code_flag_0_same_as_head", n_zero[0] == h[0], (n_zero[0], h[0]))
