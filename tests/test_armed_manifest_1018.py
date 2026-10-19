@@ -39,6 +39,8 @@ def check(name, cond, detail=""):
 
 # name -> pinned value. Names are the full variable names exactly as the bat spells them.
 MANIFEST_ARMED = {
+    "TARGET_START_VALIDATE_RETRIES": "2",  # armed 2026-10-19 after an Opus pre-arming verifier
+    "TARGET_THREAD_START_GUARD": "1",  # armed 2026-10-19 after an Opus pre-arming verifier
     "TARGET_HELD_LINE_FLIP_STRIKE": "1",
     "TARGET_REBUY_NONBUYERS": "1",
     "TARGET_JAR_GUEST_GUARD": "1",

@@ -1358,6 +1358,11 @@ REM watchdog dumps every thread's Python stack into the run log when a core lock
 REM stays held 45 s or the stock sweep stops 90 s, and prints [HEALTH] (memory,
 REM threads, handles, Chrome count, disk) every 5 min. Kill: TARGET_STALL_WATCHDOG=0.
 set TARGET_STALL_WATCHDOG=1
+REM F1 TARGET_THREAD_START_GUARD (2026-10-19, guard v2 verified): monitoring_loop starts
+REM purchase_thread before stock_thread, each start() in its own try/except
+REM ([MONITORING_LOOP] [ERROR] ... start failed + traceback); a start that never became alive
+REM is retried on the SAME object (<=3), replacements are capped at 3. Kill: set it to 0.
+set TARGET_THREAD_START_GUARD=1
 REM 2026-10-08 23:5x pre-drop (live fix): four boots in a row exited 87 on the
 REM homepage 'Hi,' greeting probe timing out at 10 s while every jar was a MEMBER
 REM and the relogin pass said already logged in. Give the greeting 30 s, and when
@@ -1593,6 +1598,13 @@ REM where the /account load landed (a login redirect = dead login-session;
 REM /account with no token = the mint itself). LOG ONLY. grep mint rung.
 REM Kill: set it to 0.
 set TARGET_TOKEN_MINT_LOG=1
+REM FX-1018-STARTVALIDATE (2026-10-19, C-1018-17, verifier PARTIALLY CONFIRMED -> armable): the
+REM start pass's /account validation retries ONLY when the page load RAISES (CDP / websocket
+REM error), 2 extra tries 2 s apart, never on a login redirect or a guest page, so a transient
+REM exception no longer signs a MEMBER profile out into typed logins. The reason log lines
+REM ([ACCOUNT] validation error / validation: not logged in) are always on. Needs
+REM TARGET_RELOGIN_MAX_PER_6H=0 kept. Kill: set it to 0.
+set TARGET_START_VALIDATE_RETRIES=2
 
 if not exist "%PYTHON%" (
     echo [ERROR] venv python not found ? checked .venv\Scripts and venv\Scripts
