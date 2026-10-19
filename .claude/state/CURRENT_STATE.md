@@ -691,7 +691,7 @@ first analysis session; the workflow was resumed from its journal.
   - WORKED = ≥1 `[HELD_LINE_STRIKE] order placed` or an order with `first_201_src=strike_400`.
   - FAILED = any `[LEGACY_CART_GUARD]` line reaching a checkout with a non-raced TCIN in the cart, or a strike place-order on a cart the guard would refuse. Kill-switch: `=0`.
   - INCONCLUSIVE = no MAX_PURCHASE 400 on a flip (expect several restock nights).
-- **Stale comments, not yet edited:** `session_manager.py:2337-2339` and `run_bot_with_nightly_restart.bat:1263-1264` say the home-IP Chrome "never wedges". That holds only for the age-driven wedge; a host GPU episode freezes the on-screen buyers.
+- **Stale comments, not yet edited:** `session_manager.py:2337-2339` and `run_bot_with_nightly_restart.the bat's home-IP Chrome REM lines (as of 10-08)` say the home-IP Chrome "never wedges". That holds only for the age-driven wedge; a host GPU episode freezes the on-screen buyers.
 
 ## POST-RUN 2026-10-01 — overnight restock, 8 carts, 1 ORDER (the first hot-SKU order ever) (claims C-1001-01..14, `docs/CLAIMS.md`)
 
