@@ -700,7 +700,8 @@ def evening(args, run=default_run, now=None) -> int:
             save_json(LAST, result)
             return 1
     if need:
-        result["logins"] = force_logins(run, need, state, args.login_gap_h, False, now)
+        result["logins"] = force_logins(run, need, state, args.login_gap_h, False,
+                                       (now + max(0.0, time.time() - t0)) if strict else now)
         if not strict:
             save_json(STATE, state)      # flag off: the pre-1019 whole-file save
     t_start = time.time()

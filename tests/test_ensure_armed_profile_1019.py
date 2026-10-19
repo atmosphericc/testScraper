@@ -713,6 +713,43 @@ def _fix_round_1019(three):
         check("F4_control_no_change_still_restarts_and_logs_in",
               bool(f.has("bot_ctl.py stop")) and bool(f.has("relogin_one.py business")) and bool(f.has("bot_ctl.py start")), f.cmds)
 
+    # ---- 4b: the forced login in evening uses a FRESH clock, not the start-of-run `now` ----
+    # A boot-probe signal makes business need a login. During a followed boot (PENDING -> RED) the wrapper's
+    # exit-87 branch runs relogin_one.py (an 'attempt 1/3' line written ~5 min into the follow). The restart must
+    # count that attempt toward the 6 h cap: with the stale start-of-run `now` the line lies in the "future"
+    # (> now + 60 s) of external_login_ts and a second typed login on the same account would be forced.
+    from types import SimpleNamespace
+    real_time, offset = EA.time, [0.0]
+    EA.time = SimpleNamespace(time=lambda: real_time.time() + offset[0], sleep=lambda s: None)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            t = Path(d); T.setup(t, three)
+            run_log(t, EVENING - 120, "[SYSTEM] [BOOT_SKIP] business (Worker 1) recorded")
+
+            def during_follow():
+                with open(t / "logs" / "relogin.log", "a", encoding="utf-8") as fh:
+                    fh.write(f"{iso(EVENING + 300)} [ACCOUNT] business: attempt 1/3\n")
+                    fh.write(f"{iso(EVENING + 330)} [RESULT] business: NOT logged in (after 3 attempts)\n")
+                offset[0] = 360.0
+
+            class ClockFake(FollowFake):
+                def __call__(self, cmd, env_extra=None, timeout=900):
+                    r = super().__call__(cmd, env_extra, timeout)
+                    if "bot_ctl.py start" in " ".join(map(str, cmd)):    # the restart's run log lives on the module clock
+                        lg = max((t / "logs" / "runs").glob("run_*.log"), key=lambda q: q.stat().st_mtime)
+                        os.utime(lg, (real_time.time() + offset[0], real_time.time() + offset[0]))
+                    return r
+            set_flag("1")
+            f = ClockFake(t, running=True, age_h=3.0, verdicts=("PENDING", "RED"), on_follow=during_follow)
+            rc = EA.evening(T.A(), run=f, now=EVENING)
+            check("F4b_restarted_after_red_follow", bool(f.has("bot_ctl.py stop")) and bool(f.has("bot_ctl.py start")), f.cmds)
+            check("F4b_attempt_during_follow_counts_no_second_login", not f.has("relogin_one.py"), f.cmds)
+            check("F4b_login_logged_as_skipped", "skipped: forced login" in EA.LOG.read_text(encoding="utf-8")
+                  and "relogin.log attempt" in EA.LOG.read_text(encoding="utf-8"),
+                  EA.LOG.read_text(encoding="utf-8")[-600:])
+    finally:
+        EA.time = real_time
+
 
 if __name__ == "__main__":
     sys.exit(main())
