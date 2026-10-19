@@ -960,8 +960,13 @@ LEGACY_SEQ = [
     {"res": _R(424, "http_424"), "stash": None},              # stale stash from shot 1 must not count
     {"res": _R(200, "ok", True, "OID-L"), "stash": {"status": 200, "key": "", "envoy": "13"}},
 ]
+# S2 (2026-10-18): a 429 FAST_SELLING step makes the real executor HOLD the cart for the
+# cooldown (min(cooldown 45 s, TARGET_FAST_SELLING_HOLD_MAX_S 75 s)) -- two 45 s real sleeps
+# made this file ~95 s. The hold length is the executor's own env knob, so cap it at 50 ms:
+# same code path, same [FS_TICKET] lines, no real wait.
 LEGACY_ENV = {"TARGET_API_PLACE_ORDER": "true", "TARGET_CHECKOUT_INPLACE_RETRY_N": "4",
-              "TARGET_CHECKOUT_INPLACE_DELAY_MIN": "0.2", "TARGET_CHECKOUT_INPLACE_DELAY_MAX": "0.2"}
+              "TARGET_CHECKOUT_INPLACE_DELAY_MIN": "0.2", "TARGET_CHECKOUT_INPLACE_DELAY_MAX": "0.2",
+              "TARGET_FAST_SELLING_HOLD_MAX_S": "0.05"}
 
 
 def _legacy_run(flags, ctx):
