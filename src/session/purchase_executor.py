@@ -592,7 +592,10 @@ def pre_retry_cfg(env=None) -> Dict[str, int]:
     attempts (default 4) inside BUDGET_MS (default 1500), and fires the
     place-order in the SAME chain on the first 2xx — target ~1.5 s from cart to
     order. Only a 429 is retried (the demand throttle is the transient one); a
-    401/424/400 hands back to the legacy path exactly as before.
+    401/424/400 ends the chain with no place-order fired. With
+    TARGET_WONCART_DIRECT=1 (armed) every such pre_* stop goes to the won-cart
+    loop (woncart_eligible); only when that loop is off or declines does it hand
+    back to the legacy path exactly as before.
 
     pre_checkout buys nothing, carries no Shape headers, and the throttle
     answers it in 5-14 ms, so a retry is cheap. Default OFF = the JS is
@@ -9421,6 +9424,11 @@ class PurchaseExecutor:
                 }}
             }}"""
 
+        # Comment-only note (10-19): the JS comment below, "Hand back to the nav path", is pinned
+        # byte-for-byte by tests/fixtures/fast_lane_js_golden.txt, so it stays as is. With
+        # TARGET_WONCART_DIRECT=1 a pre_* stop (out.skip = 'pre_<status>', no place-order fired)
+        # goes to the won-cart loop (woncart_eligible), not to the legacy nav path; the nav path
+        # runs only when the won-cart loop is off or declines.
         js = f"""(async () => {{{_stf['open']}
             const H = {extra_headers_js};
             const mk = (ref) => Object.assign({{}}, H, {{

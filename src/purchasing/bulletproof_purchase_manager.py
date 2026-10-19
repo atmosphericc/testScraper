@@ -4481,8 +4481,10 @@ class BulletproofPurchaseManager:
         Optimistic-2 (2026-06-22): the bulk RedSky feed usually OMITS the per-
         customer limit, so the hint defaults to 1 even on limit-2 TCG SKUs — which
         clamped min(2,1)=1 and shipped qty=1 every drop (744/744). When the limit
-        is unreported (<=1) we target the ceiling; the executor self-heals a TRUE
-        limit-1 via its 422/409 PURCHASE_LIMIT retry (qty 2->1, keeps the unit).
+        is unreported (<=1) we target the ceiling; the executor has a 422/409
+        PURCHASE_LIMIT retry (qty 2->1) for a TRUE limit-1, but it has never fired (0 of
+        18,785 shots, 10-19); the only form observed is 400 MAX_PURCHASE_LIMIT_EXCEEDED
+        (4x, all cumulative re-adds, C-1018-27).
         A genuinely-reported limit is always respected (min with ceiling).
         """
         if os.environ.get('TARGET_FORCE_QTY_1', 'false').lower() == 'true':
@@ -6461,7 +6463,9 @@ class BulletproofPurchaseManager:
                         # reverted path clamped to [1,10]; the 'auto-cancelled' outcome is unrecorded, C-1018-12).
                         # Capping at 2 prevents that over-order; the executor re-clamps
                         # to the same ceiling as a hard invariant. On a true limit-1 SKU
-                        # the executor's 422/400 PURCHASE_LIMIT self-heal drops 2->1.
+                        # the executor's 422/400 PURCHASE_LIMIT self-heal would drop 2->1 (the 422/409
+                        # form was never observed, 0 of 18,785 shots; the 400 MAX_PURCHASE_LIMIT_EXCEEDED
+                        # form was seen 4x, all cumulative re-adds, C-1018-27).
                         # Rollback: set TARGET_FORCE_QTY_1=true to restore qty=1.
                         # Known residual: a limit-1 SKU whose ATC permissively accepts 2
                         # can be cancelled post-checkout to 0 (rare; bounded by the cap).
