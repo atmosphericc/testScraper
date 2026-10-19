@@ -159,6 +159,8 @@ def _main():
         run_log(t, EVENING - 60, "primary failed the boot login probe (no greeting)")
         check("on_failed_probe_phrase", ids(EA.needs_login(EVENING)) == ["primary"])
         run_log(t, EVENING - 30, "[SYSTEM] [BOOT_SKIP] business failed too while a skip was in force")
+        check("off_skip_cleared_line_not_account", EA.needs_login(EVENING) == [])   # app.py: "not an account problem"
+        run_log(t, EVENING - 25, "[SYSTEM] [BOOT_SKIP] business (Worker 1) recorded")
         check("on_other_account_in_run_log", ids(EA.needs_login(EVENING)) == ["business"])
         run_log(t, EVENING - 20, "[BOOT_SKIP] alt-10 recorded", "xalt-1 failed the boot login probe")
         check("on_run_log_name_boundaries", EA.needs_login(EVENING) == [])
@@ -167,10 +169,10 @@ def _main():
         t = Path(d); T.setup(t, three)
         run_log(t, EVENING - 25 * 60, "[SYSTEM] [BOOT_SKIP] primary (Worker 1) recorded")
         check("on_stale_run_log_no", EA.needs_login(EVENING) == [])
-        (t / "logs" / "runs" / "run_garbage.log").write_text("[BOOT_SKIP] primary", encoding="utf-8")
+        (t / "logs" / "runs" / "run_garbage.log").write_text("[BOOT_SKIP] primary (Worker 1) recorded", encoding="utf-8")
         check("on_unparseable_run_name_ignored", EA.needs_login(EVENING) == [])
         # only the newest run log is read: a fresh boot without the line clears an older fresh one
-        run_log(t, EVENING - 300, "[BOOT_SKIP] primary x")
+        run_log(t, EVENING - 300, "[BOOT_SKIP] primary (Worker 1) recorded x")
         run_log(t, EVENING - 30, "[SYSTEM] boot fine")
         check("on_newest_run_log_only", EA.needs_login(EVENING) == [])
 
@@ -196,7 +198,7 @@ def _main():
         except Exception as e:
             check("on_unreadable_relogin_falls_back", False, repr(e))
         # the other source still works when one read fails
-        run_log(t, EVENING - 60, "[BOOT_SKIP] business recorded")
+        run_log(t, EVENING - 60, "[BOOT_SKIP] business (Worker 1) recorded")
         try:
             r = EA.needs_login(EVENING)
             check("on_one_source_fails_other_works", ids(r) == ["business"], r)
@@ -217,6 +219,15 @@ def _main():
         relogin_log(t, (EVENING - 60, "primary", GUEST_TAIL))
         need = EA.needs_login(EVENING)
         check("on_jar_guest_and_label_single_entry", ids(need) == ["primary"] and need[0][2].startswith("signed out"), need)
+
+    with tempfile.TemporaryDirectory() as d:     # outcome label of a profile-signal login follows rc, not the member jar
+        t = Path(d); T.setup(t, three)
+        relogin_log(t, (EVENING - 60, "business", GUEST_TAIL))
+        need = EA.needs_login(EVENING)
+        res_bad = EA.force_logins(lambda cmd, env_extra=None, timeout=0: (1, ""), need, {}, 6, False, EVENING)
+        check("label_profile_login_rc1_not_logged_in", res_bad["business"].startswith("STILL NOT LOGGED IN"), res_bad)
+        res_ok = EA.force_logins(lambda cmd, env_extra=None, timeout=0: (0, ""), need, {}, 6, False, EVENING)
+        check("label_profile_login_rc0_logged_in", res_ok["business"].startswith("LOGGED IN"), res_ok)
 
     # ---- evening + exit87 end to end through force_logins() ----
     with tempfile.TemporaryDirectory() as d:

@@ -24,7 +24,7 @@ Shape-scored and a storm burns the account (~0/25 historically; 2/2 on 10-14).
 ENSURE_ARMED_PROFILE_SIGNALS=1 (default off; anything but exactly "1" is off; C-1018-20, 2026-10-19):
 an account whose jar FILE reads member (TARGET_JAR_GUEST_GUARD keeps it so) but whose live Chrome
 PROFILE is guest also needs the forced login when, in the last 20 min, logs/relogin.log's newest
-"[RESULT] <acct>:" line says "GUEST (sut=G)" or the newest run log shows "[BOOT_SKIP] <acct>" /
+"[RESULT] <acct>:" line says "GUEST (sut=G)" or the newest run log shows "[BOOT_SKIP] <acct> (Worker 1) recorded" /
 "<acct> failed the boot login probe". Same 6 h cap, same LOGIN_ENV, same force_logins() path.
 Opt out for a night: create state/ensure_armed.disable (any content).
 Log: logs/ensure_armed.log; last result: state/ensure_armed_last.json.
@@ -189,12 +189,14 @@ def _recent(ts, now: float) -> bool:
 
 def _boot_probe_re(acct: str):
     a = re.escape(acct)
-    return re.compile(rf"\[BOOT_SKIP\] {a}(?![\w-])|(?<![\w-]){a} failed the boot login probe")
+    # Only the 'recorded' form: app.py also prints "[BOOT_SKIP] <acct> failed too while a skip was in
+    # force - not an account problem; skip list CLEARED", which says the failure is NOT the account's.
+    return re.compile(rf"\[BOOT_SKIP\] {a} \(Worker 1\) recorded|(?<![\w-]){a} failed the boot login probe")
 
 
 def recent_boot_probe_fail(acct: str, now: float, runs: Path | None = None) -> bool:
     """True when the newest logs/runs/run_YYYYMMDD_HHMMSS.log is within RECENT_MIN of `now` and
-    holds a '[BOOT_SKIP] <acct>' or '<acct> failed the boot login probe' line."""
+    holds a '[BOOT_SKIP] <acct> (Worker 1) recorded' or '<acct> failed the boot login probe' line."""
     runs = RUNS if runs is None else runs
     best = None
     for p in runs.glob("run_*.log"):
@@ -317,6 +319,8 @@ def force_logins(run, need: list, state: dict, gap_h: float, dry: bool, now: flo
         save_json(STATE, state)
         rc, out = run([python_exe(), "relogin_one.py", acct, "--force"], env_extra=LOGIN_ENV, timeout=600)
         ok, after = jar_state(path)
+        if why.startswith("profile guest per"):
+            ok = rc != 0    # the jar already read member; only the login's own exit code says if it worked
         res[acct] = ("LOGGED IN" if not ok else "STILL NOT LOGGED IN") + f" (rc={rc}; jar: {after})"
         log(f"[LOGIN] {acct}: {res[acct]}")
     return res
