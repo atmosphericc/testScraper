@@ -1530,7 +1530,7 @@ history plus actual publish dates, not from a set literal. — [VERIFIED 09-21]
 - Bank is a per-account in-memory deque. `TARGET_HARVEST_BANK=6` armed (code
   default 3); 3 accounts → ≤18 system-wide. Refill ~1 per 40 s per account.
   TTL 300 s; replay-age cap armed at 300 s (code default 100). —
-  [MEASURED 09-21] `shape_harvest.py:131-132,328`, `bat:833-835,885`
+  [MEASURED 09-21] `shape_harvest.py:131-132,328`, the bat harvest lines (positions as of 09-21)
 - Selection is newest-first (LIFO), with `TARGET_HARVEST_PREFER_NO_A0=1` armed, so
   the real comparator is "freshest without an `-a0` chunk, else newest". —
   [MEASURED 09-21] `shape_harvest.py:339-359`
