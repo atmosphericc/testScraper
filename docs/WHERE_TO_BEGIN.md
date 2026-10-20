@@ -11,12 +11,10 @@ Written 2026-10-19 ~23:35 by the readiness-audit session (head `f9f04e55` + this
   (10-09: 686/690 shots 429, 10-16: 1,208/1,208, 0 carts both nights; `docs/CLAIMS.md` C-1015-01, C-0930-03/04).
 - Built, verified (Opus evaluator), **UNARMED**: `ENSURE_ARMED_STATUS_FAILCLOSED`, `ENSURE_ARMED_ROWLOG`
   (user env via `setx` + the bat) and `TARGET_SIGINT_ATTRIB` (bat line + a GREEN boot). Claims C-1018-31/37.
-- **Open incident — console Ctrl+C kills of the wrapper: 4 since 10-18** (10-18 19:05, 10-18 23:15:37,
-  10-19 08:02:11, 10-19 23:20:14). Sender NOT ESTABLISHED (C-1018-38). Ruled out on 10-19 night: `bot_ctl stop`
-  (no stamp, no `logs/bot_ctl.log` stop line), scheduler time limit (PT72H), Claude Code hooks (SessionStart +
-  PreToolUse only), session crons (none), Parsec (no client connected at 23:20), compaction times. Keyboard/mouse
-  input existed on the desktop at the time (idle 34 s at 23:31). The wrapper is a normal conhost window opened
-  through explorer.exe, so it takes focus when it appears, and a Ctrl+C typed into it is a graceful shutdown.
+- **Console Ctrl+C kills of the wrapper (4 since 10-18): RESOLVED** — the operator confirmed 23:4x that the
+  23:20:14 one was their manual stop (C-1018-38); the earlier three (10-18 19:05, 10-18 23:15:37, 10-19 08:02:11)
+  are presumed the same. Rule: a console Ctrl+C on the wrapper is an operator stop until shown otherwise — ask
+  before investigating. `python tools/ops/bot_ctl.py stop` is the attributable way (stamp + `logs/bot_ctl.log`).
 
 ## Step 0 — read first (15 min)
 
@@ -24,15 +22,13 @@ Written 2026-10-19 ~23:35 by the readiness-audit session (head `f9f04e55` + this
 2. `python tools/ops/bot_ctl.py status --json`; `python tools/predrop/boot_check.py --log <newest run>`.
 3. `python tools/predrop/preflight.py --drop "<next drop>" --tcins ...` (read-only).
 4. `docs/CLAIMS.md` C-1018-30..38, `docs/TARGET_CHANGES.md` 10-19, the parked list in CURRENT_STATE.
+5. Start the real work at Step 2 (arm the two auto-arm flags) and Step 3 (second network line).
 
-## Step 1 — the Ctrl+C kills (reliability, ours to fix)
+## Step 1 — (resolved) the console Ctrl+C kills were the operator's own stops
 
-- Arm `TARGET_SIGINT_ATTRIB=1` (bat line, Opus verifier, GREEN boot): the next kill then prints `idle_ms`, the
-  foreground window title and the bot_ctl stamp state — a person at the keyboard vs a programmatic sender.
-- Build the launch fix behind a flag: start the wrapper so keyboard input cannot reach it (a minimized / no-focus
-  launch from `tools/ops/bot_ctl.py`, or app.py ignoring keyboard Ctrl+C while `bot_ctl stop` signals CTRL_BREAK).
-  Prove it with the dummy-console experiment (operator decision 9) before it touches the real wrapper.
-- Until then: never type, click or press Ctrl+C with the black wrapper window focused.
+Nothing to build. `TARGET_SIGINT_ATTRIB` stays built and optional (it would label a hand stop UNATTRIBUTED with a
+small `idle_ms`); the no-focus launch idea and the dummy-console experiment (decision 9) are dropped. If a kill
+ever happens with the operator asleep or away, that is the moment to arm the flag.
 
 ## Step 2 — arm the two ensure_armed flags (Tue daytime, one verifier each)
 
