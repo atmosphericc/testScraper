@@ -66,6 +66,47 @@ PRE-REGISTERED READOUT (written 2026-10-16 before any in-window data):
     python tools/experiments/limkey_guest_follow.py --simulate 1010892076 --sim-s 30   # off-window path test
     python tools/experiments/limkey_guest_follow.py --readout logs/experiments/guest_follow_<stamp>.json
 
+EXP-LINE (2026-10-20): a SECOND follower on a different network line in the same drop window.
+The home-line guest alone cannot separate "the edge limiter keys on the network line" from "the
+limiter is a TCIN-global demand state" (its readout says so). Options, all default-off (no option =
+today's behaviour, byte-for-byte in the output files):
+  --proxy SPEC      proxies:<i> / reserve:<i> (index into config/proxyIps.json, so no secret is ever on a
+                    command line or in a scheduled task) or a literal http://user:pass@host:port / host:port.
+                    A URL with credentials is routed like the bot does it: ForwarderPool (src/proxy/
+                    local_forwarder.py) on a free local port -> Chrome --proxy-server=127.0.0.1:<port>; the
+                    forwarder is stopped on exit. FAIL CLOSED: before any shot one GET to api.ipify.org through
+                    the browser; if the egress equals the home IP (tools/ops/home_ip.py) or the proof fails it
+                    logs "[GUEST_FOLLOW] egress FAILED ..." and exits 1 without shooting. One line
+                    "[GUEST_FOLLOW] egress tag= ip= home= proxy=" (IPs masked to two octets, host:port only).
+  --tag NAME        [a-z0-9_-]{1,16}, default home. Non-home tags go into the file names
+                    (guest_follow_<tag>_<stamp>.{log,json}), the JSON ("tag"), every [GUEST_FOLLOW] line
+                    (tag=<tag>), the readout rows and the Chrome profile prefix.
+  --lock-name NAME  state/<name>.lock + state/<name>_night.json (default guest_follow), so a "bd" instance
+                    runs beside the "home" one. state/guest_follow.enable stays shared: deleting it stops all.
+                    A lock file whose pid is dead or foreign is logged ("stale lock ... taking over") and
+                    overwritten; a live follower's lock still refuses.
+Second scheduled task: venv/Scripts/pythonw.exe tools/experiments/limkey_guest_follow.py --scheduled
+--tag bd --lock-name guest_follow_bd --proxy reserve:1
+
+PRE-REGISTERED CROSS-LINE READOUT (written 2026-10-20 before any two-line data; --readout with files of
+>= 2 tags from the same night; the per-file rows and verdict above are kept, computed over the home-tag
+files when present):
+  cross-window = windows of different tags with the same tcin and start_ms within 5 s (one per tag), each
+                 with >= 3 answered guest shots; M (members past the limiter, event store, start - 2 s ..
+                 end + 10 s) must be scoreable. Reference line = home (else the first tag); X = another tag.
+  X_pass         = X's guest had >= 1 passed shot (no ERR_A2C_TCIN_RATE_LIMITED) in the window
+  bd_only_pass   = X_pass and not home_pass and not M
+  reverse        = (home_pass or M) and not X_pass;   home_only_pass = home_pass and not X_pass
+  same           = home_pass == X_pass == M
+    LINE-DIFFERS         bd_only_pass >= 3 AND bd_only_pass >= 2 x reverse
+                         -> the limiter keys on the network line (the home line is limited, X's is not)
+    SAME-FATE-ALL-LINES  windows >= 5 AND same >= 80% of windows
+                         -> the lines share a fate: a TCIN-global demand state (zero everywhere:
+                            "concordant zero"), not the line
+    INCONCLUSIVE         anything else
+  Also per tag, wall 2 of the shots that got past wall 1: keyless 401 (the Shape verdict) vs 424/201
+  with x-ssx-hop (past Shape).
+
 Started by its own scheduled tasks ("TargetBot/guest-follow 2340" / "0135" in Task Scheduler, venv pythonw, no
 console) with --scheduled: it exits at once unless state/guest_follow.enable exists and no
 other follower holds state/guest_follow.lock; deleting the enable file also stops a running
@@ -94,9 +135,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import limkey_guest_probe as P                      # noqa: E402  (the verified guest session parts)
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools" / "ops"))
+import home_ip as H                                 # noqa: E402  (public_ip / mask)
+from src.proxy.local_forwarder import ForwarderPool  # noqa: E402  (the bot's own Bright Data forwarder)
 RUNS = ROOT / "logs" / "runs"
 OUT_DIR = ROOT / "logs" / "experiments"
-LOCK = ROOT / "state" / "guest_follow.lock"
+STATE = ROOT / "state"
+LOCK = STATE / "guest_follow.lock"
+PROXY_CFG = ROOT / "config" / "proxyIps.json"
+TAG_RE = re.compile(r"[a-z0-9_-]{1,16}")
+LOCK_RE = re.compile(r"[a-z0-9_-]{1,32}")
 CONFIG = ROOT / "config" / "product_config.json"
 EVENTS = ROOT / "logs" / "events" / "events.sqlite"
 FLIP_RE = re.compile(r"\[STOCK\]\[FLIP\] tcin=(\d{6,13})")
@@ -105,6 +154,111 @@ STATUS_RE = re.compile(r"\[STOCK STATUS\] tcin=(\d{6,13}) .*?in_stock=([01])")
 WATCH_RE = re.compile(r"\[STOCK WATCH\] (\d{6,13}): in_stock=(True|False)")      # every 30 s per TCIN
 TRUTH_RE = re.compile(r"\[GROUND-TRUTH\][^\n]*?in_stock=\[([^\]]*)\]")           # every ~30 s, offset 15 s
 MAX_RELAUNCH = 6
+
+
+class EgressFailed(RuntimeError):
+    """The proxy egress could not be proven different from the home IP: nothing may be shot."""
+
+
+def set_lock_name(name: str) -> None:
+    """Point LOCK / NIGHT at state/<name>.lock and state/<name>_night.json."""
+    global LOCK, NIGHT
+    LOCK = STATE / f"{name}.lock"
+    NIGHT = STATE / f"{name}_night.json"
+
+
+def resolve_proxy(spec: str, cfg_path: Path = None) -> dict:
+    """{'url': 'http://u:p@h:p' or '', 'server': 'h:p' for a credential-less proxy, 'display': 'h:p'}.
+    Errors never carry the secret."""
+    cfg_path = cfg_path or PROXY_CFG
+    spec = (spec or "").strip()
+    m = re.fullmatch(r"(proxies|reserve):(\d{1,3})", spec)
+    if m:
+        key = "proxies" if m.group(1) == "proxies" else "reserve_proxies"
+        try:
+            lst = json.loads(Path(cfg_path).read_text(encoding="utf-8")).get(key) or []
+        except Exception as e:
+            raise ValueError(f"cannot read {Path(cfg_path).name} ({type(e).__name__})")
+        i = int(m.group(2))
+        if i >= len(lst) or not isinstance(lst[i], str) or not lst[i].strip():
+            raise ValueError(f"{m.group(1)}:{i} not available ({len(lst)} entries in {key})")
+        spec = lst[i].strip()
+    if "@" in spec:
+        no_scheme = re.sub(r"^https?://", "", spec)
+        creds, hp = no_scheme.rsplit("@", 1)
+        if ":" not in creds or not re.fullmatch(r"[A-Za-z0-9._-]+:\d{2,5}", hp):
+            raise ValueError("bad --proxy URL (want http://user:pass@host:port)")
+        return {"url": "http://" + no_scheme, "server": "", "display": hp}
+    hp = re.sub(r"^https?://", "", spec).rstrip("/")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+:\d{2,5}", hp):
+        raise ValueError("bad --proxy (want proxies:<i>, reserve:<i>, http://user:pass@host:port or host:port)")
+    return {"url": "", "server": hp, "display": hp}
+
+
+def pick_forwarder_port() -> int:
+    """A free local port in 22900-22999 (the bot's forwarders use 22000+i)."""
+    import random
+    import socket
+    for _ in range(100):
+        p = random.randrange(22900, 23000)
+        sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sk.bind(("127.0.0.1", p))
+            return p
+        except OSError:
+            continue
+        finally:
+            sk.close()
+    raise RuntimeError("no free local forwarder port")
+
+
+class ProxyRoute:
+    """The Chrome --proxy-server for one --proxy: a local ForwarderPool port for a credentialed URL
+    (exactly the bot's pattern), the host:port itself otherwise. stop() ends the forwarder."""
+
+    def __init__(self, info: dict):
+        self.info, self.pool, self.chrome_server = info, None, info.get("server", "")
+
+    async def start(self) -> None:
+        if self.info.get("url"):
+            port = pick_forwarder_port()
+            self.pool = ForwarderPool()
+            self.pool.add_upstream(self.info["url"], port)
+            await self.pool.start_all()
+            self.chrome_server = f"127.0.0.1:{port}"
+
+    async def stop(self) -> None:
+        if self.pool is not None:
+            try:
+                await self.pool.stop_all()
+            except Exception:
+                pass
+            self.pool = None
+
+
+def _valid_ip(ip: str) -> bool:
+    p = str(ip).split(".")
+    return len(p) == 4 and all(x.isdigit() and 0 <= int(x) <= 255 for x in p)
+
+
+async def egress_gate(out, tag: str, display: str, fetch_ip) -> str:
+    """Fail-closed egress proof: the proxy's public IP (fetch_ip, a coroutine fn) must be a real IP
+    and differ from the home IP. Returns the masked egress IP or raises EgressFailed."""
+    try:
+        ip = str(await fetch_ip()).strip()
+    except Exception as e:
+        ip = f"ERR {type(e).__name__}"
+    home = await asyncio.to_thread(H.public_ip)
+    if not _valid_ip(ip) or not _valid_ip(home):
+        out(f"[GUEST_FOLLOW] egress FAILED tag={tag} proxy={display} reason=proof_failed "
+            f"egress={'ok' if _valid_ip(ip) else 'unreadable'} home={'ok' if _valid_ip(home) else 'unreadable'} - nothing sent")
+        raise EgressFailed("proof failed")
+    if ip == home:
+        out(f"[GUEST_FOLLOW] egress FAILED tag={tag} ip={H.mask(ip)} home={H.mask(home)} proxy={display} "
+            f"reason=same_as_home - nothing sent")
+        raise EgressFailed("egress equals home")
+    out(f"[GUEST_FOLLOW] egress tag={tag} ip={H.mask(ip)} home={H.mask(home)} proxy={display}")
+    return H.mask(ip)
 
 
 def hot_from_config(path: Path = CONFIG) -> list[str]:
@@ -207,8 +361,9 @@ class Live:
 class Guest:
     """One fresh guest Chrome (the probe's verified launch + attach check + capture)."""
 
-    def __init__(self, out, settle_s: float, first_pdp: str):
+    def __init__(self, out, settle_s: float, first_pdp: str, tag: str = "home", route=None):
         self.out, self.settle_s, self.first_pdp = out, settle_s, first_pdp
+        self.tag, self.route, self.egress_masked = tag, route, ""
         self.page_ok = False                     # False while the PDP shows a HUMAN/PX wall (or was unreadable)
         self.browser = self.tab = self.profile = None
         self.hdrs: dict = {}
@@ -219,11 +374,14 @@ class Guest:
         from zendriver import cdp
         import zendriver.core.util as _zutil
         _zutil.free_port = P.probe_free_port     # this process only (no attach race with bot Chromes)
-        self.profile = Path(tempfile.mkdtemp(prefix="limkey_guest_"))
+        self.profile = Path(tempfile.mkdtemp(prefix="limkey_guest_" if self.tag == "home" else f"limkey_guest_{self.tag}_"))
+        bargs = ["--window-size=1100,800", "--no-first-run",
+                 "--no-default-browser-check", "--disable-extensions",
+                 "--disable-sync", "--window-position=-32000,-32000"]
+        if self.route is not None and self.route.chrome_server:
+            bargs.insert(0, f"--proxy-server={self.route.chrome_server}")
         cfg = uc.Config(user_data_dir=str(self.profile), headless=False, sandbox=True,
-                        browser_args=["--window-size=1100,800", "--no-first-run",
-                                      "--no-default-browser-check", "--disable-extensions",
-                                      "--disable-sync", "--window-position=-32000,-32000"],
+                        browser_args=bargs,
                         browser_connection_timeout=1.0, browser_connection_max_tries=30)
         from zendriver.core.browser import Browser
         self.browser = Browser(cfg)              # hold the handle first: a timed-out start() is still killable
@@ -240,6 +398,8 @@ class Guest:
                 pass
             os._exit(4)                          # skip the library's exit hooks
         self.out(f"[GUEST_FOLLOW] attach check OK (port {self.browser.config.port})")
+        if self.route is not None:               # fail closed: prove the egress before any navigation to Target
+            self.egress_masked = await egress_gate(self.out, self.tag, self.route.info["display"], self._browser_ip)
         self.tab = await asyncio.wait_for(self.browser.get(self.first_pdp), timeout=30)
         await asyncio.sleep(self.settle_s)
 
@@ -262,6 +422,11 @@ class Guest:
         self.tab.add_handler(cdp.network.ResponseReceivedExtraInfo, on_extra)
         await asyncio.wait_for(self.tab.send(cdp.network.enable()), timeout=10)
         self.page_ok = await self.page_state("start")
+
+    async def _browser_ip(self) -> str:
+        t = await asyncio.wait_for(self.browser.get("https://api.ipify.org"), timeout=40)
+        await asyncio.sleep(1.0)
+        return str(await asyncio.wait_for(t.evaluate("document.body ? document.body.innerText : ''"), timeout=10) or "").strip()[:45]
 
     async def page_state(self, why: str) -> bool:
         try:
@@ -336,20 +501,23 @@ def lock_held() -> bool:
         return False
 
 
-ENABLE = ROOT / "state" / "guest_follow.enable"
-NIGHT = ROOT / "state" / "guest_follow_night.json"     # the night cap survives a restarted follower
+ENABLE = STATE / "guest_follow.enable"                  # shared by every instance
+NIGHT = STATE / "guest_follow_night.json"     # the night cap survives a restarted follower
 
 
-async def start_guest(out, a, pdp: str, until: float):
+async def start_guest(out, a, pdp: str, until: float, route=None):
     """A started Guest, or raise after 3 tries (each failure cleans up what it can) or at until."""
     last = None
     for i in range(3):
         if time.time() >= until:
             break
-        g = Guest(out, a.settle_s, pdp)
+        g = Guest(out, a.settle_s, pdp, getattr(a, "tag", "home"), route)
         try:
             await g.start()
             return g
+        except EgressFailed:
+            await g.close()
+            raise
         except Exception as e:
             last = e
             out(f"[GUEST_FOLLOW] guest start failed {type(e).__name__} (try {i + 1}/3)")
@@ -362,6 +530,15 @@ async def follow(a) -> int:
     if a.scheduled and not ENABLE.exists():
         print("scheduled start: state/guest_follow.enable absent - not running")
         return 0
+    tag = getattr(a, "tag", "home")
+    set_lock_name(getattr(a, "lock_name", "guest_follow"))
+    route = None
+    if getattr(a, "proxy", ""):
+        try:
+            route = ProxyRoute(resolve_proxy(a.proxy))
+        except ValueError as e:
+            print(f"refused: {e}")
+            return 2
     why_range = P.dynamic_range_clear()
     if why_range:
         print(f"refused: {why_range}")
@@ -380,18 +557,28 @@ async def follow(a) -> int:
     until = now + a.sim_s + 60 if a.simulate else next_until(a.until, now)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     LOCK.parent.mkdir(parents=True, exist_ok=True)
+    stale = ""
+    try:
+        stale = LOCK.read_text().strip() if LOCK.exists() else ""      # lock_held() was False: dead / foreign pid
+    except Exception:
+        pass
     LOCK.write_text(str(os.getpid()))
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    log_path = OUT_DIR / f"guest_follow_{stamp}.log"
-    sum_path = OUT_DIR / f"guest_follow_{stamp}.json"
+    ftag = "" if tag == "home" else f"{tag}_"
+    log_path = OUT_DIR / f"guest_follow_{ftag}{stamp}.log"
+    sum_path = OUT_DIR / f"guest_follow_{ftag}{stamp}.json"
     logf = log_path.open("a", encoding="utf-8")
 
     def out(line: str) -> None:
+        if tag != "home" and line.startswith("[GUEST_FOLLOW] ") and not line.startswith("[GUEST_FOLLOW] egress"):
+            line = f"[GUEST_FOLLOW] tag={tag} " + line[len("[GUEST_FOLLOW] "):]
         s = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}"
         print(s, flush=True)
         logf.write(s + "\n")
         logf.flush()
 
+    if stale:
+        out(f"[GUEST_FOLLOW] stale lock {LOCK} pid={stale} -- taking over")
     out(f"[GUEST_FOLLOW] start hot={len(hot)} TCINs cadence_s={a.cadence_s} grace_s={a.stock_grace_s} "
         f"until={time.strftime('%Y-%m-%d %H:%M', time.localtime(until))} simulate={a.simulate or '-'}")
     follower, live = LogFollower(), Live(hot)
@@ -413,6 +600,8 @@ async def follow(a) -> int:
     next_ctrl = next_refresh = next_alive = 0.0
     sim_end = now + a.sim_s if a.simulate else 0.0
     reason = "until"
+    rc = 0
+    egress = ""
 
     def dump(end_reason: str) -> None:
         try:
@@ -422,14 +611,21 @@ async def follow(a) -> int:
             pass
         try:
             ws = windows + [dict(w, end_ms=None) for w in open_w.values()]
-            sum_path.write_text(json.dumps({"experiment": "EXP-LIMKEY-INWINDOW", "started": stamp, "end": end_reason,
-                                            "hot_n": len(hot), "windows": ws, "shots": recs, "night_total": night,
-                                            "log": str(log_path)}, indent=1), encoding="utf-8")
+            doc = {"experiment": "EXP-LIMKEY-INWINDOW", "started": stamp, "end": end_reason,
+                   "hot_n": len(hot), "windows": ws, "shots": recs, "night_total": night,
+                   "log": str(log_path)}
+            if tag != "home":
+                doc.update({"tag": tag, "proxy": route.info["display"] if route else "",
+                            "egress": getattr(guest, "egress_masked", "") or egress})
+            sum_path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
         except Exception as e:
             out(f"[GUEST_FOLLOW] summary write failed {type(e).__name__}")
 
     try:
-        guest = await start_guest(out, a, pdp, until)
+        if route is not None:
+            await route.start()
+        guest = await start_guest(out, a, pdp, until, route)
+        egress = getattr(guest, "egress_masked", "")
         next_refresh = time.time() + a.refresh_s
         while True:
             now = time.time()
@@ -519,7 +715,7 @@ async def follow(a) -> int:
                         if relaunch > MAX_RELAUNCH:
                             reason = "too many relaunches"
                             break
-                        guest = await start_guest(out, a, pdp, until)
+                        guest = await start_guest(out, a, pdp, until, route)
                         next_refresh = time.time() + a.refresh_s
                         continue
                 if (not cur or not guest.page_ok) and now >= next_refresh:
@@ -529,11 +725,16 @@ async def follow(a) -> int:
                     except Exception as e:
                         out(f"[GUEST_FOLLOW] refresh failed {type(e).__name__}")
             await asyncio.sleep(0.25)
+    except EgressFailed as e:
+        reason = f"egress failed: {e}"
+        rc = 1
     except Exception as e:
         reason = f"error {type(e).__name__}: {str(e)[:120]}"
     finally:
         if guest is not None:
             await guest.close()
+        if route is not None:
+            await route.stop()
         try:
             LOCK.unlink()
         except Exception:
@@ -548,40 +749,140 @@ async def follow(a) -> int:
         by[r["role"]][r["cls"]] += 1
     out(f"[GUEST_FOLLOW] END reason={reason!r} windows={len(windows)} shots={night} by_class={ {k: dict(v) for k, v in by.items()} }")
     logf.close()
-    return 0
+    return rc
 
 
 PAST_GATES = ("wall2_denied", "cart", "admitted_fs", "inventory", "cart_limit")
 
 
+def _tag_of(x: dict) -> str:
+    return str(x.get("tag") or "home")
+
+
+def _pool(files) -> dict:
+    d = {"windows": [], "shots": []}
+    for x in files:
+        d["windows"] += x.get("windows", [])
+        d["shots"] += x.get("shots", [])
+    return d
+
+
 def readout(paths, db: Path = EVENTS) -> dict:
     """The pre-registered in-window readout: guest vs members per window, pooled over one or
     more follow JSON files (members from the event store `shots`; build it for each run
-    first: tools/events/build.py --only <run>)."""
+    first: tools/events/build.py --only <run>). With files of >= 2 tags (EXP-LINE) the legacy
+    rows / verdict are those of the reference (home, else first) tag's files, and by_tag, wall2 and
+    cross_line are added."""
     if isinstance(paths, (str, Path)):
         paths = [paths]
-    d = {"windows": [], "shots": []}
-    for pth in paths:
-        x = json.loads(Path(pth).read_text(encoding="utf-8"))
-        d["windows"] += x.get("windows", [])
-        d["shots"] += x.get("shots", [])
+    files = [json.loads(Path(pth).read_text(encoding="utf-8")) for pth in paths]
+    tags = sorted({_tag_of(x) for x in files})
     con = sqlite3.connect(str(db))
     try:
-        return _readout_rows(d, con)
+        if len(tags) < 2:
+            return _readout_rows(_pool(files), con, tags[0] if tags else "home")
+        ref = "home" if "home" in tags else tags[0]
+        res = _readout_rows(_pool([x for x in files if _tag_of(x) == ref]), con, ref)
+        res["tags"] = tags
+        res["by_tag"] = {t: _readout_rows(_pool([x for x in files if _tag_of(x) == t]), con, t) for t in tags}
+        res["wall2"] = {t: _wall2(_pool([x for x in files if _tag_of(x) == t])["shots"]) for t in tags}
+        res["cross_line"] = _cross_line(files, tags, ref, con)
+        return res
     finally:
         con.close()
 
 
-def _readout_rows(d: dict, con) -> dict:
-    rows, no_member = [], 0
-    merged: list[dict] = []                  # one window per live period: flicker splits <= 60 s apart are merged
-    unclosed = sum(1 for w in d.get("windows", []) if not w.get("end_ms"))
+def _merge(d: dict) -> list:
+    """One window per live period: flicker splits <= 60 s apart are merged."""
+    merged: list[dict] = []
     for w in sorted((w for w in d.get("windows", []) if w.get("end_ms")), key=lambda x: (x["tcin"], x["start_ms"])):
         if merged and merged[-1]["tcin"] == w["tcin"] and w["start_ms"] - (merged[-1]["end_ms"] or 0) <= 60000:
             merged[-1]["end_ms"] = max(merged[-1]["end_ms"] or 0, w["end_ms"] or 0)
             merged[-1]["starts"].add(w["start_ms"])
         else:
             merged.append(dict(w, starts={w["start_ms"]}))
+    return merged
+
+
+def _member_counts(con, tcin: str, lo: int, hi: int):
+    q = ("select count(*), sum(case when gate in (%s) then 1 else 0 end), "
+         "sum(case when gate in ('unknown','other') or gate is null then 1 else 0 end) "
+         "from shots where tcin=? and ts_ms between ? and ?") % ",".join("?" * len(PAST_GATES))
+    m = con.execute(q, (*PAST_GATES, tcin, lo, hi)).fetchone()
+    return int(m[0] or 0), int(m[1] or 0), int(m[2] or 0)
+
+
+def _guest_windows(d: dict) -> list:
+    """Merged windows with >= 3 answered guest shots: tcin, start_ms, end_ms, answered, passed."""
+    out = []
+    for w in _merge(d):
+        gs = [r for r in d.get("shots", []) if r.get("tcin") == w["tcin"] and r.get("window_start_ms") in w["starts"]]
+        ans = [r for r in gs if r.get("cls") in ("limited", "passed")]
+        if len(ans) >= 3:
+            out.append({"tcin": w["tcin"], "start_ms": w["start_ms"], "end_ms": w["end_ms"], "answered": len(ans),
+                        "passed": sum(1 for r in ans if r["cls"] == "passed")})
+    return out
+
+
+def _wall2(shots: list) -> dict:
+    """Wall 2 of the shots that got past wall 1 (cls passed, hot role): the Shape verdict of the line."""
+    k = h = o = 0
+    for r in shots:
+        if r.get("cls") != "passed" or r.get("role") == "control":
+            continue
+        st, hop = int(r.get("status") or 0), bool(r.get("hop"))
+        if st == 401 and not hop:
+            k += 1
+        elif hop and st in (424, 201):
+            h += 1
+        else:
+            o += 1
+    return {"past_wall1": k + h + o, "keyless_401": k, "hop_424_201": h, "other_passed": o}
+
+
+def _cross_line(files, tags, ref, con) -> dict:
+    per = {t: _guest_windows(_pool([x for x in files if _tag_of(x) == t])) for t in tags}
+    res = {"ref": ref}
+    for x in tags:
+        if x == ref:
+            continue
+        rows, no_member, used = [], 0, set()
+        for wr in per[ref]:
+            j = next((i for i, wx in enumerate(per[x]) if i not in used and wx["tcin"] == wr["tcin"]
+                      and abs(wx["start_ms"] - wr["start_ms"]) <= 5000), None)
+            if j is None:
+                continue
+            used.add(j)
+            wx = per[x][j]
+            lo = min(wr["start_ms"], wx["start_ms"]) - 2000
+            hi = max(wr["end_ms"] or 0, wx["end_ms"] or 0) + 10000
+            m_n, m_pass, m_unsc = _member_counts(con, wr["tcin"], lo, hi)
+            if m_n - m_unsc == 0:
+                no_member += 1
+                continue
+            rows.append({"tcin": wr["tcin"], "start_ms": wr["start_ms"], "ref_pass": wr["passed"] > 0,
+                         "tag_pass": wx["passed"] > 0, "M": m_pass > 0, "tag": x})
+        bd = sum(1 for r in rows if r["tag_pass"] and not r["ref_pass"] and not r["M"])
+        rev = sum(1 for r in rows if (r["ref_pass"] or r["M"]) and not r["tag_pass"])
+        ref_only = sum(1 for r in rows if r["ref_pass"] and not r["tag_pass"])
+        same = sum(1 for r in rows if r["ref_pass"] == r["tag_pass"] == r["M"])
+        any_pass = sum(1 for r in rows if r["ref_pass"] or r["tag_pass"] or r["M"])
+        n = len(rows)
+        if bd >= 3 and bd >= 2 * rev:
+            v = "LINE-DIFFERS"
+        elif n >= 5 and same >= 0.8 * n:
+            v = "SAME-FATE-ALL-LINES" + (" (concordant zero: consistent with a TCIN-global demand state)" if any_pass == 0 else "")
+        else:
+            v = "INCONCLUSIVE"
+        res[x] = {"verdict": v, "windows": n, "no_member_data": no_member, "bd_only_pass": bd,
+                  "home_only_pass": ref_only, "reverse": rev, "same": same, "any_pass": any_pass, "rows": rows}
+    return res
+
+
+def _readout_rows(d: dict, con, tag=None) -> dict:
+    rows, no_member = [], 0
+    unclosed = sum(1 for w in d.get("windows", []) if not w.get("end_ms"))
+    merged = _merge(d)
     for w in merged:
         gs = [r for r in d.get("shots", []) if r.get("tcin") == w["tcin"] and r.get("window_start_ms") in w["starts"]]
         ans = [r for r in gs if r.get("cls") in ("limited", "passed")]
@@ -589,17 +890,16 @@ def _readout_rows(d: dict, con) -> dict:
             continue
         g_pass = sum(1 for r in ans if r["cls"] == "passed")
         lo, hi = w["start_ms"] - 2000, (w["end_ms"] or w["start_ms"]) + 10000
-        q = ("select count(*), sum(case when gate in (%s) then 1 else 0 end), "
-             "sum(case when gate in ('unknown','other') or gate is null then 1 else 0 end) "
-             "from shots where tcin=? and ts_ms between ? and ?") % ",".join("?" * len(PAST_GATES))
-        m = con.execute(q, (*PAST_GATES, w["tcin"], lo, hi)).fetchone()
-        m_n, m_pass, m_unscored = int(m[0] or 0), int(m[1] or 0), int(m[2] or 0)
+        m_n, m_pass, m_unscored = _member_counts(con, w["tcin"], lo, hi)
         if m_n - m_unscored == 0:            # no member row that can be scored (none, or all unknown / other)
             no_member += 1
             continue
-        rows.append({"tcin": w["tcin"], "start_ms": w["start_ms"], "guest_answered": len(ans), "guest_passed": g_pass,
-                     "members_shots": m_n, "members_passed": m_pass, "members_unscored": m_unscored,
-                     "G": g_pass > 0, "M": m_pass > 0})
+        row = {"tcin": w["tcin"], "start_ms": w["start_ms"], "guest_answered": len(ans), "guest_passed": g_pass,
+               "members_shots": m_n, "members_passed": m_pass, "members_unscored": m_unscored,
+               "G": g_pass > 0, "M": m_pass > 0}
+        if tag not in (None, "home"):
+            row["tag"] = tag
+        rows.append(row)
     gm = sum(1 for r in rows if r["G"] and not r["M"])
     mg = sum(1 for r in rows if r["M"] and not r["G"])
     same = sum(1 for r in rows if r["G"] == r["M"])
@@ -622,7 +922,7 @@ def _readout_rows(d: dict, con) -> dict:
             "both_zero": both_zero, "any_pass": any_pass, "rows": rows}
 
 
-def main(argv=None) -> int:
+def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--until", default="06:30", help="local HH:MM to stop (default the next 06:30; at most 9 h)")
     ap.add_argument("--cadence-s", type=float, default=5.0, help="seconds between guest shots per live TCIN (3-60)")
@@ -636,11 +936,24 @@ def main(argv=None) -> int:
     ap.add_argument("--qty", type=int, default=2)
     ap.add_argument("--simulate", default="", help="off-window path test: treat this TCIN as in stock for --sim-s")
     ap.add_argument("--sim-s", type=float, default=30.0)
+    ap.add_argument("--proxy", default="", help="second network line: proxies:<i> | reserve:<i> (config/proxyIps.json) | http://user:pass@host:port | host:port")
+    ap.add_argument("--tag", default="home", help="line tag [a-z0-9_-]{1,16}; non-home tags go into file names, JSON, log lines")
+    ap.add_argument("--lock-name", default="guest_follow", help="state/<name>.lock and state/<name>_night.json")
     ap.add_argument("--readout", nargs="+", default=None, help="print the pre-registered readout for follow JSON file(s) and exit")
-    a = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    a = build_parser().parse_args(argv)
     if a.readout:
         print(json.dumps(readout(a.readout), indent=1))
         return 0
+    if not TAG_RE.fullmatch(a.tag):
+        print("bad --tag (want [a-z0-9_-]{1,16})")
+        return 2
+    if not LOCK_RE.fullmatch(a.lock_name):
+        print("bad --lock-name (want [a-z0-9_-]{1,32})")
+        return 2
     if a.simulate and not re.fullmatch(r"\d{6,13}", a.simulate):
         print("bad --simulate TCIN")
         return 2
