@@ -30,10 +30,12 @@ Nothing to build. `TARGET_SIGINT_ATTRIB` stays built and optional (it would labe
 small `idle_ms`); the no-focus launch idea and the dummy-console experiment (decision 9) are dropped. If a kill
 ever happens with the operator asleep or away, that is the moment to arm the flag.
 
-## Step 2 — arm the two ensure_armed flags (Tue daytime, one verifier each)
+## Step 2 — (done 2026-10-20 23:4x) the three flags are ARMED
 
-`ENSURE_ARMED_STATUS_FAILCLOSED=1` and `ENSURE_ARMED_ROWLOG=1`: `setx` (the tasks read the USER env, not the bat
-env) + the bat line; prove with a task run behind a timed `state/ensure_armed.disable` exactly like 10-19 09:43.
+`ENSURE_ARMED_STATUS_FAILCLOSED=1`, `ENSURE_ARMED_ROWLOG=1` (setx + bat) and `TARGET_SIGINT_ATTRIB=1` (bat) were
+armed after two Opus pre-arming verifiers (both PARTIALLY CONFIRMED, no blocker), commit `001ddff0`, first boot
+`run_20261020_234434` GREEN. Proof still owed: the next task run must log `[FLAGS] ENSURE_ARMED_STATUS_FAILCLOSED=1 ->
+status_failclosed=on` (ROWLOG prints no FLAGS line; it shows only as `[BOOTROWS]` on a non-GREEN verdict).
 
 ## Step 3 — the only lever with data behind it: a second clean network line
 
@@ -42,6 +44,16 @@ experiment is already armed: guest follower `tools/experiments/limkey_guest_foll
 0135). Run it on a phone hotspot (second network) Wed and Fri, read with `--readout`. If the second line passes the
 limiter in-window, that is where the next buyer account goes (EXP-1002-NET). Off-window the limiter lets everything
 through (C-1016-17), so only a real drop measures it.
+
+**EXP-LINE (built + merged 2026-10-20, `637e0a54`):** the follower now takes `--proxy proxies:<i>|reserve:<i>|url`,
+`--tag <name>` and `--lock-name <name>`, proves its egress differs from home before any shot (fail-closed), and
+`--readout` over mixed-tag files prints the cross-line verdict LINE-DIFFERS / SAME-FATE-ALL-LINES / INCONCLUSIVE
+plus per-line wall-2 (Shape) outcomes. Before Friday: a daytime smoke on the Bright Data reserve exit
+(`--simulate <tcin> --sim-s 30 --tag bd --lock-name guest_follow_bd --proxy reserve:1`, allowed 06:00-23:05), then
+register the second task `guest-follow-bd 2340` / `0135` with `--scheduled --tag bd --lock-name guest_follow_bd
+--proxy reserve:1`. The hotspot arm (`--tag hotspot`, no proxy, after `hotspot_egress_setup.ps1` + `egress_check.py`)
+and a Bright Data RESIDENTIAL zone arm (`--tag resi --proxy <url>`) are the operator's to provide; the readout
+decides between "residential-trust lines are the lever" and "TCIN-global state, only timing can matter".
 
 ## Step 4 — operator decisions still open (details in CURRENT_STATE "Operator decisions")
 

@@ -375,6 +375,17 @@ Entry format:
   `purchase_limit: 1` in the item data (an UNSAVED capture, n=3). [MEASURED fetch] TrackaLacker's Oct 8 prices ($39.99
   Ditto, $29.99 Mewtwo figure) conflict with the live PDP ($49.99 / $39.99). [REPORTED vs MEASURED fetch]
 
+## 2026-10-20 — the HUMAN/PX harvest wall was ABSENT at the 23:44 boot (one observation) [MEASURED, run log]
+
+`run_20261020_234434`: harvest SELFTEST accepted=[424, 424] on primary (+48.7 s), business (+50.7 s) and alt-1
+(+47.9 s); 0 `[PX-CHALLENGE/harvest]` lines in the first 5 min; the 23:40 guest follower's PDP load on the same
+home line read `px_wall=0`. Every 10-19 boot (06:39, 08:07, 09:44, 23:16) had hit the Press & hold wall on all
+three decoy-PDP harvest tabs within ~30 s. Between the two: ~24 h with no bot and a host power-off (10-19 23:46 →
+10-20 07:59), no code change on the harvest path, no forced login before the boot. One night; consistent with the
+10-14 "clears on its own within ~1 h" episode and with C-1018-32 (plain boots do not earn the wall); whether the idle
+day or something on Target's side cleared it is NOT ESTABLISHED. Readout for the next boots: harvest:* rows GREEN or
+WARN at boot_check, and the follower's `px_wall` field.
+
 ## Known-unknowns about the opponent
 
 Things we would need to see their side to answer. Listed so they are not
