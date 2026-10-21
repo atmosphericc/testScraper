@@ -157,6 +157,9 @@ OFFLINE = [
     # port helpers and the in-window follower's log parsing, log tailing, config read and
     # pre-registered readout (no Chrome, no network, no bot).
     "test_guest_follow_1016",
+    # 2026-10-20 EXP-LINE: the guest follower's --proxy / --tag / --lock-name (fake forwarder, guest and
+    # egress lookup; fail-closed egress, stale lock, lock isolation) and the pre-registered cross-line readout.
+    "test_limkey_guest_follow_lines",
     # 2026-10-18 S3: the NON-DIRECT forwarder path (Bright Data upstream) on a loopback fake
     # upstream: CONNECT/HTTP auth injection, 502 + stats.errors on a refusing upstream, and a
     # byte differential against `git show 73425568:src/proxy/local_forwarder.py` (loopback only).
