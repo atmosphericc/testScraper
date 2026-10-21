@@ -1607,6 +1607,12 @@ REM exception no longer signs a MEMBER profile out into typed logins. The reason
 REM ([ACCOUNT] validation error / validation: not logged in) are always on. Needs
 REM TARGET_RELOGIN_MAX_PER_6H=0 kept. Kill: set it to 0.
 set TARGET_START_VALIDATE_RETRIES=2
+REM TARGET_SIGINT_ATTRIB (2026-10-19 build C-1018-37, ARMED 2026-10-20 after an Opus pre-arming
+REM verifier): on a console Ctrl+C / SIGTERM / KeyboardInterrupt, app.py and relogin_one.py print ONE
+REM [SYSTEM] [SIGINT_ATTRIB] line (idle_ms, foreground window, bot_ctl stamp age) so a kill can be told
+REM apart: bot_ctl stop vs UNATTRIBUTED (a person or macro at the console). Log only; exit paths,
+REM deadman and the second-Ctrl+C hard exit are unchanged. Kill: set it to 0.
+set TARGET_SIGINT_ATTRIB=1
 
 if not exist "%PYTHON%" (
     echo [ERROR] venv python not found ? checked .venv\Scripts and venv\Scripts
@@ -1765,6 +1771,19 @@ REM ONE scripted forced login' (at most 1 per account per 6 h, fail-closed stamp
 REM success). Both the task and this wrapper must see the same value. Kill: set it to 0 here
 REM AND reg delete HKCU\Environment /v ENSURE_ARMED_PROFILE_SIGNALS /f.
 set ENSURE_ARMED_PROFILE_SIGNALS=1
+REM ENSURE_ARMED_ROWLOG (2026-10-19 build C-1018-31, ARMED 2026-10-20 after an Opus pre-arming
+REM verifier): when ensure_armed maps a boot_check to a non-GREEN verdict it logs ONE [BOOTROWS]
+REM line naming the failing rows (log only, never changes the verdict). The scheduled tasks read
+REM the USER environment (setx), this line keeps the wrapper's exit-87 branch in agreement.
+REM Kill: set it to 0 here AND reg delete HKCU\Environment /v ENSURE_ARMED_ROWLOG /f.
+set ENSURE_ARMED_ROWLOG=1
+REM ENSURE_ARMED_STATUS_FAILCLOSED (2026-10-19 build C-1018-31 / M-1019-01, ARMED 2026-10-20 after
+REM an Opus pre-arming verifier): a FAILED bot_ctl status read (timeout, non-JSON, exception) used
+REM to count as 'not running' and could force-login over a LIVE bot; with 1 ensure_armed logs
+REM [STATUS] ... failed and touches nothing that run. Cost: a flaky read while the bot is down
+REM leaves it down until the next task. The scheduled tasks read the USER environment (setx).
+REM Kill: set it to 0 here AND reg delete HKCU\Environment /v ENSURE_ARMED_STATUS_FAILCLOSED /f.
+set ENSURE_ARMED_STATUS_FAILCLOSED=1
 if "%EXITCODE%"=="87" (
     set /a RELOGIN_BURSTS+=1
     echo [!date! !time!] exit 87: not-logged-in ? relogin cycle !RELOGIN_BURSTS!/3 >> "%RUNLOG%"
