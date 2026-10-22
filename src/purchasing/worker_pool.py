@@ -66,6 +66,9 @@ ACCOUNTS_CONFIG = _ROOT / "config" / "target_accounts.json"
 PROXY_CFG = _ROOT / "config" / "proxyIps.json"
 
 
+_REF_RE = __import__("re").compile(r"(proxies|reserve|resi):(\d{1,3})")
+
+
 def _resolve_proxy_ref(ref: str, cfg_path=None) -> str:
     """2026-10-22 (EXP-LINE / E3): turn "resi:<i>" | "reserve:<i>" | "proxies:<i>" (0-based index into
     config/proxyIps.json: residential_proxies / reserve_proxies / proxies) into that list's URL, so an
@@ -73,7 +76,7 @@ def _resolve_proxy_ref(ref: str, cfg_path=None) -> str:
     Mirrors tools/experiments/limkey_guest_follow.py resolve_proxy. Raises ValueError on a bad ref;
     the message never carries a secret."""
     import re as _re
-    m = _re.fullmatch(r"(proxies|reserve|resi):(\d{1,3})", (ref or "").strip())
+    m = _REF_RE.fullmatch((ref or "").strip())
     if not m:
         raise ValueError("bad proxy_ref (want proxies:<i>, reserve:<i> or resi:<i>)")
     key = {"proxies": "proxies", "reserve": "reserve_proxies", "resi": "residential_proxies"}[m.group(1)]
@@ -86,10 +89,22 @@ def _resolve_proxy_ref(ref: str, cfg_path=None) -> str:
     if i >= len(lst) or not isinstance(lst[i], str) or not lst[i].strip():
         raise ValueError(f"{m.group(1)}:{i} not available ({len(lst)} entries in {key})")
     url = lst[i].strip()
-    # shape check (same as the follower): http://user:pass@host:port or a bare host:port; never echo the value
-    hp = _re.sub(r"^https?://", "", url).rsplit("@", 1)[-1]
-    if not _re.fullmatch(r"[A-Za-z0-9._-]+:\d{2,5}", hp) or ("@" in url and ":" not in url.rsplit("@", 1)[0]):
-        raise ValueError(f"{m.group(1)}:{i} is not a proxy URL (want http://user:pass@host:port or host:port)")
+    # shape check (verifier PR-1022, 2026-10-22): the bot's forwarder (parse_bd_proxy_url) splits on the FIRST ':'
+    # and the LAST '@' and does not decode %-escapes, so only http://user:pass@host:port with a plain user and
+    # password is routable. A bare host:port would bypass the forwarder (Chrome gets it directly) and an https://
+    # scheme would be parsed as user 'https' -- both refused here, loudly, before any Chrome launches. Never echo
+    # the value.
+    want = "want http://user:pass@host:port, plain user and password (no '@', '%' or ':' in them)"
+    if url.lower().startswith("https://"):
+        raise ValueError(f"{m.group(1)}:{i} uses https:// ({want})")
+    body = _re.sub(r"^http://", "", url)
+    if "@" not in body:
+        raise ValueError(f"{m.group(1)}:{i} carries no credentials ({want})")
+    creds, hp = body.rsplit("@", 1)
+    if not _re.fullmatch(r"[A-Za-z0-9._-]+:\d{2,5}", hp):
+        raise ValueError(f"{m.group(1)}:{i} has a bad host:port ({want})")
+    if creds.count(":") != 1 or "@" in creds or "%" in creds or not all(creds.split(":", 1)):
+        raise ValueError(f"{m.group(1)}:{i} has credentials the forwarder cannot parse ({want})")
     return url
 
 
@@ -290,15 +305,25 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
         # A bad ref is LOUD but does not collapse the fleet: the account boots on the home IP and the
         # [PROXY_REF] [ERROR] line is what the daytime boot proof (E3 prep) must not show.
         proxy_ref = (str(acc.get("proxy_ref") or "").strip() or None)
+        # the field is echoed only when it LOOKS like a ref (a URL mis-pasted into it must never be printed)
+        _ref_shown = proxy_ref if (proxy_ref and _REF_RE.fullmatch(proxy_ref)) else "<not a ref>"
+        _from_ref = False
         if proxy_ref and not proxy_url:
             try:
                 proxy_url = _resolve_proxy_ref(proxy_ref)
-                print(f"[WORKER_POOL] [PROXY_REF] {acc_id}: {proxy_ref} -> {_proxy_display(proxy_url)}")
+                _from_ref = True
+                print(f"[WORKER_POOL] [PROXY_REF] {acc_id}: {_ref_shown} -> {_proxy_display(proxy_url)}")
             except Exception as _e:  # noqa: BLE001
-                print(f"[WORKER_POOL] [PROXY_REF] [ERROR] {acc_id}: {proxy_ref} unresolvable "
+                print(f"[WORKER_POOL] [PROXY_REF] [ERROR] {acc_id}: {_ref_shown} unresolvable "
                       f"({_e}) -- this account boots on the HOME IP")
         elif proxy_ref and proxy_url:
-            print(f"[WORKER_POOL] [PROXY_REF] {acc_id}: explicit proxy_url wins over {proxy_ref}")
+            print(f"[WORKER_POOL] [PROXY_REF] {acc_id}: explicit proxy_url wins over {_ref_shown}")
+        if _from_ref and proxy_url in seen_proxies:
+            # two accounts on one ref: a raise here would make auto() fall back to the legacy env pool (one
+            # worker, verifier PR-1022) -- keep the fleet, boot THIS account on the home IP, say so loudly.
+            print(f"[WORKER_POOL] [PROXY_REF] [ERROR] {acc_id}: {_ref_shown} is already used by another "
+                  f"account -- this account boots on the HOME IP")
+            proxy_url = None
 
         # Uniqueness guards (2026-08-11 review): a duplicate account_id yields two
         # workers with the SAME fingerprint seed / fp-chromium device / credential+CVV

@@ -4171,9 +4171,11 @@ class BulletproofPurchaseManager:
                 print(f"[FORWARDER] {w.label()} → 127.0.0.1:{port} (exit via account proxy)")
                 _flog(f"  bind OK: {w.label()} → 127.0.0.1:{port} (exit via BD:{_exit_ip(bd_url)})")
             except Exception as e:
-                print(f"[FORWARDER] [WARN] {w.label()} proxy unparseable ({e}); "
+                # 2026-10-22: a parse error on a credentialed URL can carry password fragments in its
+                # text (verifier PR-1022) -- log the exception TYPE only, never its message.
+                print(f"[FORWARDER] [WARN] {w.label()} proxy unparseable ({type(e).__name__}); "
                       f"falling back to HOME IP.")
-                _flog(f"  [WARN] {w.label()} proxy unparseable ({e}) → HOME IP")
+                _flog(f"  [WARN] {w.label()} proxy unparseable ({type(e).__name__}) → HOME IP")
                 w.cfg.proxy_url = None
 
         # FX-1014-EGRESS: a direct listener bound to the second adapter per named

@@ -533,6 +533,21 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
     if proxies_loaded is not None:
         add("proxies", "INFO", f"[PROXY] Loaded {proxies_loaded} proxies")
 
+    # 2026-10-22 proxy_ref / purchase forwarder (verifier PR-1022): an account meant for its own line that
+    # silently booted on the HOME IP, or a fleet that collapsed to the legacy env pool, is a RED boot.
+    _bad_ref = [l for l in lines if "[PROXY_REF] [ERROR]" in l]
+    _ok_ref = [l for l in lines if "[WORKER_POOL] [PROXY_REF]" in l and "[ERROR]" not in l and "->" in l]
+    _fwd_warn = [l for l in lines if "[FORWARDER] [WARN]" in l]
+    _pool_fb = [l for l in lines if "[WORKER_POOL] [WARN]" in l and "falling back" in l]
+    if _bad_ref:
+        add("proxy_ref", "FAIL", f"{len(_bad_ref)} [PROXY_REF] [ERROR] line(s): an account meant for its own exit line booted on the HOME IP -- " + _bad_ref[0].strip()[:160])
+    elif _ok_ref:
+        add("proxy_ref", "OK", "; ".join(l.strip()[:120] for l in _ok_ref[:3]))
+    if _fwd_warn:
+        add("purchase_forwarder", "FAIL", f"{len(_fwd_warn)} [FORWARDER] [WARN] line(s) (an account proxy fell back to the HOME IP) -- " + _fwd_warn[0].strip()[:160])
+    if _pool_fb:
+        add("worker_pool_fallback", "FAIL", "the accounts file was rejected and the fleet fell back to the legacy env pool -- " + _pool_fb[0].strip()[:160])
+
     # tracebacks
     other = tracebacks["other"]
     if other:
