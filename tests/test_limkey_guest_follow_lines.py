@@ -45,13 +45,15 @@ with tempfile.TemporaryDirectory() as td:
     td = Path(td)
     # ── proxy resolution against a temp proxyIps.json ────────────────────────
     cfg = td / "proxyIps.json"
-    cfg.write_text(json.dumps({"proxies": [URL0], "reserve_proxies": ["x", URL1]}), encoding="utf-8")
+    cfg.write_text(json.dumps({"proxies": [URL0], "reserve_proxies": ["x", URL1], "residential_proxies": [URL1]}), encoding="utf-8")
     r0 = F.resolve_proxy("proxies:0", cfg)
     r1 = F.resolve_proxy("reserve:1", cfg)
+    rr = F.resolve_proxy("resi:0", cfg)
+    check("resolve_resi_0", rr["url"] == URL1 and rr["display"] == "brd.superproxy.io:33335")
     check("resolve_proxies_0", r0["url"] == URL0 and r0["display"] == "brd.superproxy.io:33335")
     check("resolve_reserve_1", r1["url"] == URL1 and r1["display"] == "brd.superproxy.io:33335")
     errs = []
-    for spec in ("reserve:5", "proxies:1", "junk", "http://u@h"):
+    for spec in ("reserve:5", "proxies:1", "resi:1", "junk", "http://u@h"):
         try:
             F.resolve_proxy(spec, cfg)
             errs.append(None)

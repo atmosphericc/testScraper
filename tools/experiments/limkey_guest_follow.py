@@ -70,7 +70,8 @@ EXP-LINE (2026-10-20): a SECOND follower on a different network line in the same
 The home-line guest alone cannot separate "the edge limiter keys on the network line" from "the
 limiter is a TCIN-global demand state" (its readout says so). Options, all default-off (no option =
 today's behaviour, byte-for-byte in the output files):
-  --proxy SPEC      proxies:<i> / reserve:<i> (index into config/proxyIps.json, so no secret is ever on a
+  --proxy SPEC      proxies:<i> / reserve:<i> / resi:<i> (index into config/proxyIps.json: proxies, reserve_proxies,
+                    residential_proxies - the last added 2026-10-21 for a Bright Data RESIDENTIAL zone; so no secret is ever on a
                     command line or in a scheduled task) or a literal http://user:pass@host:port / host:port.
                     A URL with credentials is routed like the bot does it: ForwarderPool (src/proxy/
                     local_forwarder.py) on a free local port -> Chrome --proxy-server=127.0.0.1:<port>; the
@@ -172,9 +173,9 @@ def resolve_proxy(spec: str, cfg_path: Path = None) -> dict:
     Errors never carry the secret."""
     cfg_path = cfg_path or PROXY_CFG
     spec = (spec or "").strip()
-    m = re.fullmatch(r"(proxies|reserve):(\d{1,3})", spec)
+    m = re.fullmatch(r"(proxies|reserve|resi):(\d{1,3})", spec)
     if m:
-        key = "proxies" if m.group(1) == "proxies" else "reserve_proxies"
+        key = {"proxies": "proxies", "reserve": "reserve_proxies", "resi": "residential_proxies"}[m.group(1)]
         try:
             lst = json.loads(Path(cfg_path).read_text(encoding="utf-8")).get(key) or []
         except Exception as e:
@@ -191,7 +192,7 @@ def resolve_proxy(spec: str, cfg_path: Path = None) -> dict:
         return {"url": "http://" + no_scheme, "server": "", "display": hp}
     hp = re.sub(r"^https?://", "", spec).rstrip("/")
     if not re.fullmatch(r"[A-Za-z0-9._-]+:\d{2,5}", hp):
-        raise ValueError("bad --proxy (want proxies:<i>, reserve:<i>, http://user:pass@host:port or host:port)")
+        raise ValueError("bad --proxy (want proxies:<i>, reserve:<i>, resi:<i>, http://user:pass@host:port or host:port)")
     return {"url": "", "server": hp, "display": hp}
 
 
@@ -936,7 +937,7 @@ def build_parser():
     ap.add_argument("--qty", type=int, default=2)
     ap.add_argument("--simulate", default="", help="off-window path test: treat this TCIN as in stock for --sim-s")
     ap.add_argument("--sim-s", type=float, default=30.0)
-    ap.add_argument("--proxy", default="", help="second network line: proxies:<i> | reserve:<i> (config/proxyIps.json) | http://user:pass@host:port | host:port")
+    ap.add_argument("--proxy", default="", help="second network line: proxies:<i> | reserve:<i> | resi:<i> (config/proxyIps.json; resi = the residential_proxies list) | http://user:pass@host:port | host:port")
     ap.add_argument("--tag", default="home", help="line tag [a-z0-9_-]{1,16}; non-home tags go into file names, JSON, log lines")
     ap.add_argument("--lock-name", default="guest_follow", help="state/<name>.lock and state/<name>_night.json")
     ap.add_argument("--readout", nargs="+", default=None, help="print the pre-registered readout for follow JSON file(s) and exit")
