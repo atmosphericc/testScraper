@@ -249,7 +249,7 @@ def _run_a(kind, extra=None):
 
 def test_a_in_chain_429_enters_the_loop():
     check("a_bat_arms_what_the_scenario_needs", bat_has(TARGET_WONCART_DIRECT="1", TARGET_WONCART_RF_ENTRY="1",
-                                                        TARGET_FAST_CADENCE_IDENTS="all", TARGET_WAVE_FIRST_ONLY="1",
+                                                        TARGET_FAST_CADENCE_IDENTS="0", TARGET_WAVE_FIRST_ONLY="1",  # 10-22: reverted (C-1022-01)
                                                         TARGET_SHOT_BANK_GATE="1", TARGET_ATC_DCO_BURST="1",
                                                         TARGET_RETRY_STOP_WHEN_OOS="1", TARGET_401_PULSE="1",
                                                         TARGET_RETRY_WHILE_IN_STOCK_MAX="40",

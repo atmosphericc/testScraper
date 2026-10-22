@@ -89,7 +89,7 @@ MGR_ENV = dict(
     TARGET_RETRY_WARM="0", TARGET_WAVE_FIRST_ONLY="1", TARGET_SHOT_BANK_GATE="1",
     TARGET_401_PULSE="1", TARGET_RACE_ALL_WORKERS="1", TARGET_RETRY_WHILE_IN_STOCK="1",
     TARGET_RETRY_WHILE_IN_STOCK_MAX="40", TARGET_RETRY_WHILE_IN_STOCK_BUDGET_S="110",
-    TARGET_ATC_DCO_BURST="1", TARGET_RETRY_STOP_WHEN_OOS="1", TARGET_FAST_CADENCE_IDENTS="all",
+    TARGET_ATC_DCO_BURST="1", TARGET_RETRY_STOP_WHEN_OOS="1", TARGET_FAST_CADENCE_IDENTS="0",  # 10-22: reverted (C-1022-01)
     TARGET_RACE_JOIN_FREE=None, TARGET_FAIR_FRESH_FIX=None, TARGET_PARK_ACCOUNT_TCINS=None,
 )
 
@@ -145,6 +145,10 @@ def test_env_tied_to_bat():
 
 def _all_env(extra=None):
     e = {**M.FLAGS, **M.MSKU, **EXEC_ENV, **MGR_ENV}
+    # 10-22: the wrapper carries TARGET_FAST_CADENCE_IDENTS=0 (C-1022-01); the MGR_ENV literal mirrors it for the
+    # drift checks, but these virtual-time chain scenarios were written for the fast-cadence race (slow re-entry
+    # leaves the third racer asleep), so the scenario env forces the fast path explicitly.
+    e["TARGET_FAST_CADENCE_IDENTS"] = "all"
     e.update(extra or {})
     return e
 
