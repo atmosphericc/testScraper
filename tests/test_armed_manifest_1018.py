@@ -56,7 +56,7 @@ MANIFEST_ARMED = {
     "TARGET_RELOGIN_MAX_PER_6H": "0",
     # read by the audit at bat:1228 / :1350 (lane note); pinned as they are today
     "TARGET_WONCART_LIVE_CAP_EXEMPT": "1",
-    "TARGET_FAST_CADENCE_IDENTS": "all",
+    "TARGET_FAST_CADENCE_IDENTS": "0",  # 2026-10-22: reverted (alternating-night arm, C-1021-06 / C-1022-01); re-arm value "all"
     # 1019b (pins lane, r1:arming F1): armed flags the manifest did not pin; line numbers at 3278ce7f
     "TARGET_MULTI_SKU_FAIR_SHARE": "1",  # bat:1314
     "TARGET_STOCK_RESET_KEEP_LIVE_FAILED": "1",  # bat:1323

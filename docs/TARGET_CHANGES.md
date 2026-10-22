@@ -396,6 +396,18 @@ difference (home first contact 2/23 volleys since 10-02; BD member shots 514/518
 only be measured during a drop. Friday's cross-line readout (home guest vs BD guest, plus a residential / hotspot guest if
 provided) is the pre-registered test; nothing here changes a baseline.
 
+## 2026-10-22 (daytime, off-window) — Shape flips a hot product to keyless 401 after ~6 admitted POSTs from this machine, for 20-50 min, across fresh profiles and (unbaselined) across lines [MEASURED, E2, C-1022-01 PARTIALLY CONFIRMED]
+
+Six guest arms 09:44-10:03 CT on two disabled hot TCINs: a product admits its first 5-6 protected POSTs (424 INVENTORY_UNAVAILABLE
+with x-ssx-hop) and answers every later one keyless 401, at 5 s or 60 s cadence alike (cumulative count, not rate); the state
+is product-specific at onset (another hot TCIN on the same line stays admitted), survives a brand-new Chrome profile on the
+same line 12 min later, and the same TCIN was 401 from shot 1 on two Bright Data ISP lines (no baseline on that TCIN for
+those lines, so line independence is NOT ESTABLISHED; global vs per-device NOT ESTABLISHED on one PC). It matches Refract's
+"Each product has its own security level based on how much traffic it is getting" (N3684) and our 10-01 member switch (6
+admits then 70/70 401 across all three home accounts, C-1001-12). Consequence: per product this machine has a budget of
+about 6 Shape admits per 20-50 min; fast re-shots spend it in seconds. The 10-16 decoy-control 401 background is ~13%
+(7/54 guest controls), and the decoy's 424 lacks x-ssx-hop, so it is not a matched control for the SSX verdict.
+
 ## Known-unknowns about the opponent
 
 Things we would need to see their side to answer. Listed so they are not

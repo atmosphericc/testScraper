@@ -835,7 +835,10 @@ def _wall2(shots: list) -> dict:
         if r.get("cls") != "passed" or r.get("role") == "control":
             continue
         st, hop = int(r.get("status") or 0), bool(r.get("hop"))
-        if st == 401 and not hop:
+        keyless = not str(r.get("key") or "").strip()
+        # 2026-10-22 (verifier of E2): every keyless 401 seen so far carries x-ssx-hop=1, so the Shape verdict is
+        # "401 with no tgt-cart-error-key" regardless of the hop flag; the old `not hop` test counted them as other.
+        if st == 401 and keyless:
             k += 1
         elif hop and st in (424, 201):
             h += 1

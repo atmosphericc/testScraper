@@ -714,7 +714,9 @@ def test_armed_combination_with_probe():
     budget) with P=0.5 and P=1: a full stub race, no exception, the burst cap respected, the probe
     on the FS racer only, in-band."""
     benv = FC._bat_env()
-    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") == "all" and benv.get("TARGET_ATC_DCO_BURST") == "1"
+    # 2026-10-22: the bat carries IDENTS=0 (fast cadence reverted, C-1022-01); the combination below still runs with
+    # IDENTS=all passed explicitly so the probe x fast-cadence code path stays covered.
+    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") in ("all", "0") and benv.get("TARGET_ATC_DCO_BURST") == "1"
           and benv.get("TARGET_ATC_DCO_BURST_REQUIRE_BANK") == "0" and benv.get("TARGET_ATC_DCO_BURST_BANK_WAIT_S") == "2"
           and benv.get("TARGET_ATC_DCO_BURST_STUCK_NOWAIT") == "1" and benv.get("TARGET_RETRY_WHILE_IN_STOCK_MAX") == "40",
           {k: benv.get(k) for k in ("TARGET_FAST_CADENCE_IDENTS", "TARGET_ATC_DCO_BURST_REQUIRE_BANK",
@@ -722,7 +724,7 @@ def test_armed_combination_with_probe():
     cap = int(benv.get("TARGET_ATC_DCO_BURST_MAX", "2"))
     for p in ("1", "0.5"):
         ws = FC._fleet(alt_script=[DCO])
-        ok, out, shots, gaps = _armed(ws, {"TARGET_DCO_PROBE_P": p})
+        ok, out, shots, gaps = _armed(ws, {"TARGET_DCO_PROBE_P": p, "TARGET_FAST_CADENCE_IDENTS": "all"})
         pl = _probe_lines(out)
         bursts = [l for l in out.splitlines() if l.startswith("[DCO_BURST] ATC-level FAST_SELLING") and "alt-1" in l]
         check(f"armed_p{p}_finished_no_exception", ok and "Traceback" not in out and "[ERROR]" not in out, out[-500:])
@@ -745,7 +747,7 @@ def test_armed_combination_with_probe():
               and "cold re-entry in" not in out, {a: len(v) for a, v in shots.items()})
     # P off in the same combination: no line, the burst as before
     ws = FC._fleet(alt_script=[DCO])
-    ok, out, shots, gaps = _armed(ws, {"TARGET_DCO_PROBE_P": "0"})
+    ok, out, shots, gaps = _armed(ws, {"TARGET_DCO_PROBE_P": "0", "TARGET_FAST_CADENCE_IDENTS": "all"})
     check("armed_off_no_probe_line", ok and not _probe_lines(out) and gaps["alt-1"] and all(g >= 0.9 for g in gaps["alt-1"][:2]),
           (gaps["alt-1"][:3], out[-300:]))
 

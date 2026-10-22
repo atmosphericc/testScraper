@@ -1354,7 +1354,15 @@ REM race budget (~22 shots per race); 401s, bank gate, RETRY_OOS, the live-racer
 REM the FX-1006 yield are unchanged. grep FAST_CADENCE / RETRY_CADENCE. Operator 10-11:
 REM "this should be fixed, no need for a flag" = on for every account. Readout R-FAST.
 REM Kill: TARGET_FAST_CADENCE_IDENTS=0 (or =alt-1 for a one-account A/B).
-set TARGET_FAST_CADENCE_IDENTS=all
+REM 2026-10-22 REVERTED to 0 (post-run wf_442ea88e-7cc retire candidate, C-1021-06; E2 guest test C-1022-01):
+REM on its only armed night (10-16) 0/19 races passed wall 1 vs 4/136 before (p=1.0, no benefit) and it drained
+REM the bank (869/1,151 re-shots page-signed). E2 (verifier PARTIALLY CONFIRMED): Shape admits about the first 6
+REM protected POSTs on a product from this machine, then answers keyless 401 for 20-50 min, at ANY cadence; fast
+REM re-shots spend that budget within seconds of the first pass-through (10-01: 6 admits then 70/70 401), slow
+REM re-shots spread it over minutes. Alternating-night arm. Readout R-CAD-1022: q.py first_shot_era (home volleys
+REM past wall 1, vs 10-16 0/7) + keyless-401 share of past-limiter shots (q.py walls) + grep FAST_CADENCE = 0.
+REM Re-arm: TARGET_FAST_CADENCE_IDENTS=all.
+set TARGET_FAST_CADENCE_IDENTS=0
 REM 2026-10-06 run diagnostics, all log-only (no behaviour change). The stall
 REM watchdog dumps every thread's Python stack into the run log when a core lock
 REM stays held 45 s or the stock sweep stops 90 s, and prints [HEALTH] (memory,

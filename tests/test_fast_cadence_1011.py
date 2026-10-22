@@ -277,6 +277,10 @@ def _armed_race(ws, tcin=A):
     # Single-TCIN race harness; the stub stock status is stamped once in real time, so
     # [RETRY_OOS] (armed, tested in test_retry_oos_stop) would read it stale on virtual time.
     benv.update(TARGET_MULTI_SKU_DISPATCH=None, TARGET_RETRY_STOP_WHEN_OOS="0")
+    # 2026-10-22: the wrapper carries TARGET_FAST_CADENCE_IDENTS=0 (fast cadence reverted, C-1021-06 / C-1022-01).
+    # These "armed" races test the fast-cadence code path under the wrapper's OTHER values, so force it on here;
+    # the bat value itself is pinned by test_armed_manifest_1018.
+    benv.update(TARGET_FAST_CADENCE_IDENTS="all")
     vt = _VirtTime()
     shots = {w.cfg.account_id: [] for w in ws}
     for w in ws:
@@ -303,7 +307,7 @@ def test_armed_combination_from_bat():
     an ATC-level FAST_SELLING first takes the <=2-shot burst (~1.0-1.5 s), then the fast band;
     a 401 keeps the 55-70 s cold re-entry."""
     benv = _bat_env()
-    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") == "all"
+    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") in ("all", "0")  # 10-22: reverted to 0 (C-1022-01); fast path forced in _armed_race
           and benv.get("TARGET_ATC_DCO_BURST") == "1" and benv.get("TARGET_RETRY_WHILE_IN_STOCK_MAX") == "40"
           and benv.get("TARGET_ATC_DCO_BURST_REQUIRE_BANK") == "0",
           {k: benv.get(k) for k in ("TARGET_FAST_CADENCE_IDENTS", "TARGET_ATC_DCO_BURST",
