@@ -346,8 +346,12 @@ readout_next_drop.py    the next-drop readout
 - **RedSky** — Target's product/stock API, used by the monitor.
 - **Edge limiter** — Target's front-door, per-TCIN rate limiter: 429
   `ERR_A2C_TCIN_RATE_LIMITED`, empty body, `retry-after: 0`, p50 ~150 ms, no `x-ssx-hop`.
-  It answers BEFORE Shape and behaves per network location (IP or CDN POP), not per
-  trust (C-0930-03/04). `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` (DCO) is a different
+  It answers BEFORE Shape and is not explained by Shape/HUMAN trust (C-0930-03).
+  Whether it keys on the NETWORK LINE is UNTESTED: the "per network location" half of
+  C-0930-04 was WEAKENED (C-1016-08, 2026-10-16) and narrowed again on 2026-10-21 - the
+  one excess was ONE account on ONE Bright Data exit in ONE TCIN streak (09-15); the
+  other BD account passed together with home. The in-window cross-line guest test is
+  the pre-registered measurement. `FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION` (DCO) is a different
   layer: the cart service's throttle on a shot that got PAST the limiter (it carries
   `x-envoy-upstream-service-time`).
 - **ATC 401** — two kinds. `401 ERR_UNAUTHORIZED` (key present) = a missing or deleted

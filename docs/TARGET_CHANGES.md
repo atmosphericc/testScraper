@@ -386,6 +386,16 @@ three decoy-PDP harvest tabs within ~30 s. Between the two: ~24 h with no bot an
 day or something on Target's side cleared it is NOT ESTABLISHED. Readout for the next boots: harvest:* rows GREEN or
 WARN at boot_check, and the follower's `px_wall` field.
 
+## 2026-10-21 (evening, off-window) — a guest on a Bright Data ISP exit passes both walls like the home guest (one smoke) [MEASURED, EXP-LINE, C-1021-01]
+
+21:21-21:23 CT, no drop in progress: a fresh guest Chrome through the reserve ISP exit 168.158.x.x fired 11 add-to-carts at
+1010892076 (out of stock): 6 x 424 INVENTORY_UNAVAILABLE with x-ssx-hop=1, then 5 x keyless 401 as the guest page aged -
+the same shape the home-line guest produced on 10-16 (C-1016-17). The PDP loaded with no HUMAN/PX wall on the BD prefix.
+So off-window the opponent treats a BD ISP guest and the home guest alike at the limiter and at Shape; the in-window
+difference (home first contact 2/23 volleys since 10-02; BD member shots 514/518 keyless 401 in-window, C-0930-05) can
+only be measured during a drop. Friday's cross-line readout (home guest vs BD guest, plus a residential / hotspot guest if
+provided) is the pre-registered test; nothing here changes a baseline.
+
 ## Known-unknowns about the opponent
 
 Things we would need to see their side to answer. Listed so they are not

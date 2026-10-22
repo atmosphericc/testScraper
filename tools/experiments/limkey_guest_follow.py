@@ -102,8 +102,9 @@ files when present):
     LINE-DIFFERS         bd_only_pass >= 3 AND bd_only_pass >= 2 x reverse
                          -> the limiter keys on the network line (the home line is limited, X's is not)
     SAME-FATE-ALL-LINES  windows >= 5 AND same >= 80% of windows
-                         -> the lines share a fate: a TCIN-global demand state (zero everywhere:
-                            "concordant zero"), not the line
+                         -> the lines share a fate. A concordant ZERO ("concordant zero") is only
+                            "every line limited in every matched window": at 5 s cadence with caps it
+                            is underpowered and does NOT establish a TCIN-global state (10-21 critic)
     INCONCLUSIVE         anything else
   Also per tag, wall 2 of the shots that got past wall 1: keyless 401 (the Shape verdict) vs 424/201
   with x-ssx-hop (past Shape).
@@ -872,7 +873,7 @@ def _cross_line(files, tags, ref, con) -> dict:
         if bd >= 3 and bd >= 2 * rev:
             v = "LINE-DIFFERS"
         elif n >= 5 and same >= 0.8 * n:
-            v = "SAME-FATE-ALL-LINES" + (" (concordant zero: consistent with a TCIN-global demand state)" if any_pass == 0 else "")
+            v = "SAME-FATE-ALL-LINES" + (" (concordant zero: every line limited in every matched window - at a 5 s cadence with per-period caps this is UNDERPOWERED and does NOT establish a TCIN-global state; post-run 2026-10-21 critic)" if any_pass == 0 else "")
         else:
             v = "INCONCLUSIVE"
         res[x] = {"verdict": v, "windows": n, "no_member_data": no_member, "bd_only_pass": bd,
