@@ -63,6 +63,42 @@ from pathlib import Path as _Path
 
 _ROOT = _Path(__file__).resolve().parents[2]
 ACCOUNTS_CONFIG = _ROOT / "config" / "target_accounts.json"
+PROXY_CFG = _ROOT / "config" / "proxyIps.json"
+
+
+def _resolve_proxy_ref(ref: str, cfg_path=None) -> str:
+    """2026-10-22 (EXP-LINE / E3): turn "resi:<i>" | "reserve:<i>" | "proxies:<i>" (0-based index into
+    config/proxyIps.json: residential_proxies / reserve_proxies / proxies) into that list's URL, so an
+    account can name its exit line without a credential ever being copied into target_accounts.json.
+    Mirrors tools/experiments/limkey_guest_follow.py resolve_proxy. Raises ValueError on a bad ref;
+    the message never carries a secret."""
+    import re as _re
+    m = _re.fullmatch(r"(proxies|reserve|resi):(\d{1,3})", (ref or "").strip())
+    if not m:
+        raise ValueError("bad proxy_ref (want proxies:<i>, reserve:<i> or resi:<i>)")
+    key = {"proxies": "proxies", "reserve": "reserve_proxies", "resi": "residential_proxies"}[m.group(1)]
+    path = _Path(cfg_path) if cfg_path else PROXY_CFG
+    try:
+        lst = _json.loads(path.read_text(encoding="utf-8")).get(key) or []
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"cannot read {path.name} ({type(e).__name__})")
+    i = int(m.group(2))
+    if i >= len(lst) or not isinstance(lst[i], str) or not lst[i].strip():
+        raise ValueError(f"{m.group(1)}:{i} not available ({len(lst)} entries in {key})")
+    url = lst[i].strip()
+    # shape check (same as the follower): http://user:pass@host:port or a bare host:port; never echo the value
+    hp = _re.sub(r"^https?://", "", url).rsplit("@", 1)[-1]
+    if not _re.fullmatch(r"[A-Za-z0-9._-]+:\d{2,5}", hp) or ("@" in url and ":" not in url.rsplit("@", 1)[0]):
+        raise ValueError(f"{m.group(1)}:{i} is not a proxy URL (want http://user:pass@host:port or host:port)")
+    return url
+
+
+def _proxy_display(url: str) -> str:
+    """host:port only (never the credential)."""
+    try:
+        return url.rsplit("@", 1)[-1]
+    except Exception:  # noqa: BLE001
+        return "?"
 
 # ── 2026-10-05 FX-1005-BOOTSKIP: a failed boot login probe on Worker 1 ──────
 # app.py probes ONLY Worker 1 ('Hi,' greeting) and exits 87 on a miss; the
@@ -249,6 +285,20 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
         profile_dir = str(acc.get("profile_dir") or (
             "nodriver-profile" if enabled_idx == 0 else f"nodriver-profile-{enabled_idx + 1}"))
         proxy_url = (str(acc.get("proxy_url") or "").strip() or None)
+        # 2026-10-22 proxy_ref: "resi:<i>" / "reserve:<i>" / "proxies:<i>" names the exit by index into
+        # config/proxyIps.json (see _resolve_proxy_ref). Inert when absent; an explicit proxy_url wins.
+        # A bad ref is LOUD but does not collapse the fleet: the account boots on the home IP and the
+        # [PROXY_REF] [ERROR] line is what the daytime boot proof (E3 prep) must not show.
+        proxy_ref = (str(acc.get("proxy_ref") or "").strip() or None)
+        if proxy_ref and not proxy_url:
+            try:
+                proxy_url = _resolve_proxy_ref(proxy_ref)
+                print(f"[WORKER_POOL] [PROXY_REF] {acc_id}: {proxy_ref} -> {_proxy_display(proxy_url)}")
+            except Exception as _e:  # noqa: BLE001
+                print(f"[WORKER_POOL] [PROXY_REF] [ERROR] {acc_id}: {proxy_ref} unresolvable "
+                      f"({_e}) -- this account boots on the HOME IP")
+        elif proxy_ref and proxy_url:
+            print(f"[WORKER_POOL] [PROXY_REF] {acc_id}: explicit proxy_url wins over {proxy_ref}")
 
         # Uniqueness guards (2026-08-11 review): a duplicate account_id yields two
         # workers with the SAME fingerprint seed / fp-chromium device / credential+CVV
@@ -264,8 +314,11 @@ def _build_worker_configs_from_accounts(config_path: _Path) -> List[WorkerConfig
             if label == "proxy_url" and not key:
                 continue
             if key in bag:
+                # 2026-10-22: never echo a proxy URL (it carries the zone password; auto() prints this
+                # message into the run log) -- show host:port only.
+                shown = _proxy_display(key) if label == "proxy_url" else key
                 raise ValueError(
-                    f"Duplicate {label} '{key}' in {config_path.name} — each account must be unique.")
+                    f"Duplicate {label} '{shown}' in {config_path.name} — each account must be unique.")
             bag.add(key)
 
         configs.append(WorkerConfig(

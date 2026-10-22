@@ -89,7 +89,7 @@ SELECT g.nn AS nights,
        printf('%.4f', (SELECT SUM(p) FROM terms)) AS fisher_p_lower,
        CASE
          WHEN g.nn < 4 THEN 'NO DATA (< 4 nights with >= 3 classified volleys)'
-         WHEN (SELECT SUM(p) FROM terms) < 0.01 THEN 'REGIME BREAK (newest 3 nights pooled below the earlier nights, p < 0.01)'
+         WHEN (SELECT SUM(p) FROM terms) < 0.01 THEN 'REGIME BREAK by the pooled R-ERA (p < 0.01) - pooled only: C-1021-03 (10-21) found the within-TCIN stratified test borderline (p=0.032, leave-one-night-out 0.009-0.22) and downgraded the 10-16 reading to WATCH; cite both'
          WHEN (SELECT SUM(p) FROM terms) < 0.05 THEN 'WATCH (p < 0.05)'
          ELSE 'no break by R-ERA'
        END AS r_era

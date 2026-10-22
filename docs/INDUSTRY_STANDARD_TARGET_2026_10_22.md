@@ -170,8 +170,12 @@ suite, manifest; when the residential URL is in `config/proxyIps.json` `resident
 **Friday 02:00 CT (E1):** home guest + bd0 + bd1 (+ resi) followers in-window; members on the home line with the slow
 cadence. Readout per tag: LINE-DIFFERS → lines are the lever; wall 2 per tag: which line class Shape admits in-window.
 
-**After Friday:** if any non-home line passed wall 1 where home did not, move alt-1 onto that line class (E3: `proxy_url`
-= the sticky residential URL, daytime boot proof, primary + business as controls) for the next drop; add one more
+**After Friday:** if any non-home line passed wall 1 where home did not, move alt-1 onto that line class (E3: set
+`"proxy_ref": "resi:0"` on the account in `config/target_accounts.json` (built 10-22: the bot resolves it from
+`residential_proxies[0]` in `config/proxyIps.json`, so no credential is copied; a bad ref is loud and leaves the account
+on the home IP), daytime boot proof = `[WORKER_POOL] [PROXY_REF] alt-1: resi:0 -> host:port` and a `[FORWARDER]` bind line
+with no `[PROXY_REF] [ERROR]`, primary + business as controls) for the next drop; the post-drop readout is one command:
+`python tools/experiments/e1_readout.py` (E1 cross-line verdicts, wall 2 per tag, R-CAD-1022, money greps); add one more
 residential line per existing account after that. If every line failed wall 1 together, the key is TCIN-global or per
 device: run E2 from a second device before any further network spend.
 
