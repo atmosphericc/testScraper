@@ -226,7 +226,10 @@ with tempfile.TemporaryDirectory() as td:
           and r["wall2"]["home"]["past_wall1"] == 0, json.dumps(r["wall2"]))
     r = F.readout([home, mkfile("bd_same.json", "bd", 2000, L6)], db)
     cl = r["cross_line"]["bd"]
-    check("cross_line_same_fate", cl["verdict"].startswith("SAME-FATE-ALL-LINES") and "concordant zero" in cl["verdict"] and cl["same"] == 6, cl["verdict"])
+    check("cross_line_concordant_zero_is_inconclusive", cl["verdict"].startswith("INCONCLUSIVE (concordant zero") and cl["same"] == 6 and cl["any_pass"] == 0, cl["verdict"])
+    r = F.readout([home, mkfile("bd_one.json", "bd", 2000, ["passed"] + ["limited"] * 5, {"status": 424, "hop": True})], db)
+    cl = r["cross_line"]["bd"]
+    check("cross_line_near_zero_is_inconclusive", cl["verdict"].startswith("INCONCLUSIVE (concordant near-zero") and cl["any_pass"] == 1 and cl["same"] == 5, cl["verdict"])
     r = F.readout([home, mkfile("bd_mix.json", "bd", 2000, ["passed", "passed", "limited", "limited", "limited", "limited"])], db)
     cl = r["cross_line"]["bd"]
     check("cross_line_inconclusive", cl["verdict"] == "INCONCLUSIVE" and cl["bd_only_pass"] == 2, json.dumps({k: cl[k] for k in cl if k != "rows"}))

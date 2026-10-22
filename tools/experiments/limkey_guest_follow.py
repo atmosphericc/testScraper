@@ -101,10 +101,12 @@ files when present):
   same           = home_pass == X_pass == M
     LINE-DIFFERS         bd_only_pass >= 3 AND bd_only_pass >= 2 x reverse
                          -> the limiter keys on the network line (the home line is limited, X's is not)
-    SAME-FATE-ALL-LINES  windows >= 5 AND same >= 80% of windows
-                         -> the lines share a fate. A concordant ZERO ("concordant zero") is only
-                            "every line limited in every matched window": at 5 s cadence with caps it
-                            is underpowered and does NOT establish a TCIN-global state (10-21 critic)
+    SAME-FATE-ALL-LINES  windows >= 5 AND same >= 80% of windows AND any_pass >= 3
+                         -> the lines share a fate (a concordance needs passes to be concordant about).
+                            With any_pass < 3 the label is INCONCLUSIVE (concordant zero / near-zero):
+                            at 5 s cadence with caps a shared zero cannot separate a TCIN-global state
+                            from a rarely-passing line (2026-10-21 post-run gap1.1.C2 refuted the bare
+                            label; C-1021-05). Rule tightened BEFORE any in-window two-line data exists.
     INCONCLUSIVE         anything else
   Also per tag, wall 2 of the shots that got past wall 1: keyless 401 (the Shape verdict) vs 424/201
   with x-ssx-hop (past Shape).
@@ -872,8 +874,15 @@ def _cross_line(files, tags, ref, con) -> dict:
         n = len(rows)
         if bd >= 3 and bd >= 2 * rev:
             v = "LINE-DIFFERS"
+        elif n >= 5 and same >= 0.8 * n and any_pass >= 3:
+            v = "SAME-FATE-ALL-LINES"
         elif n >= 5 and same >= 0.8 * n:
-            v = "SAME-FATE-ALL-LINES" + (" (concordant zero: every line limited in every matched window - at a 5 s cadence with per-period caps this is UNDERPOWERED and does NOT establish a TCIN-global state; post-run 2026-10-21 critic)" if any_pass == 0 else "")
+            # 2026-10-21 post-run (gap1.1.C2 REFUTED the bare label): a shared zero / near-zero cannot separate a
+            # TCIN-global state from a rarely-passing line at a 5 s cadence with per-period caps -> never SAME-FATE.
+            kind = "zero" if any_pass == 0 else "near-zero"
+            v = (f"INCONCLUSIVE (concordant {kind}: any_pass={any_pass} < 3 - every line limited in (nearly) every "
+                 "matched window; UNDERPOWERED, cannot separate a TCIN-global state from a rarely-passing line; "
+                 "C-1021-05)")
         else:
             v = "INCONCLUSIVE"
         res[x] = {"verdict": v, "windows": n, "no_member_data": no_member, "bd_only_pass": bd,
