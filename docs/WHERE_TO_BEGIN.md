@@ -3,6 +3,16 @@
 Written 2026-10-19 ~23:35 by the readiness-audit session (head `f9f04e55` + this record). Read this, then
 `.claude/state/CURRENT_STATE.md` (as-of line + the "RE-AUDIT 2026-10-19" section). Live facts live there, not here.
 
+## 2026-10-21 update (read first)
+
+The post-run audit session of 10-21 (CURRENT_STATE section "POST-RUN AUDIT + EXP-LINE 2026-10-21", claims C-1021-01..11)
+supersedes parts of this file: the post-10-01 "regime break" is WATCH, not a break; `reserve:1` was never a purchase exit
+(the exit with evidence, 168.158.32.64, is only in `config/target_accounts.json.bak_20260920_233158`); the cross-line
+readout now needs any_pass >= 3 for SAME-FATE. The next session starts with: (1) the operator's three steps (register the
+`guest-follow-bd0` / `bd1` tasks, restore the exit as `reserve:2`, elevated WU pause), (2) E2 Thursday daytime (main session,
+guests on DISABLED TCINs 1012055696 / 1011209279 - never a Friday TCIN), (3) `/post-run` after Friday. Full experiment text:
+`logs/analysis_2026_10_21/postrun/EXPERIMENTS_1021.md`.
+
 ## State at hand-off
 
 - Branch `feat_refract_arch_v1`; offline suite 69/69 (`python tests/run_offline_suite.py`, ~8 min; never blanket-run `tests/`).

@@ -79,7 +79,7 @@ const FACTS_SCHEMA = {
     tables_md: { type: 'string' },
     gaps: { type: 'array', items: { type: 'string' } },
   },
-  required: ['run_id', 'restock', 'shots', 'carts', 'orders', 'regime_flags', 'tables_md'],
+  required: ['run_id', 'restock', 'shots', 'carts', 'orders', 'regime_flags', 'tables_md', 'home_ip', 'experiment_readouts'],   // v3.2: both were left empty on wf_442ea88e-7cc when optional
 }
 
 const CLAIM_ITEM = {
