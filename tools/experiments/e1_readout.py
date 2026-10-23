@@ -61,12 +61,30 @@ def run_span(run_log: Path) -> tuple[str, str]:
     return first or "", last or ""
 
 
-def follower_files(first: str, last: str) -> list[Path]:
-    """Every guest_follow*_<stamp>.json whose stamp lies in [first, last] (all tags; file name carries the tag)."""
+FOLLOWER_LOOKBACK_H = 4.0   # a follower launched up to this long BEFORE the run's first line still belongs to its night
+
+
+def _stamp_minus_hours(stamp: str, hours: float) -> str:
+    """'YYYYMMDD_HHMMSS' minus `hours`; a malformed stamp comes back unchanged."""
+    try:
+        import datetime as _dt
+        t = _dt.datetime.strptime(stamp, "%Y%m%d_%H%M%S") - _dt.timedelta(hours=hours)
+        return t.strftime("%Y%m%d_%H%M%S")
+    except Exception:  # noqa: BLE001
+        return stamp
+
+
+def follower_files(first: str, last: str, lookback_h: float = FOLLOWER_LOOKBACK_H) -> list[Path]:
+    """Every guest_follow*_<stamp>.json whose START stamp lies in [first - lookback_h, last] (all tags; the file
+    name carries the tag). The look-back exists because the followers start BEFORE the bot of their night as a
+    rule (the 23:40 task, bd0/bd1/resi at 23:49) while the run log that carries the drop often opens later (a
+    23:15 boot that died, a 00:09 relaunch -- 10-23: the four followers of the night were skipped by the
+    stamp-inside-the-span rule). A daytime arm the same morning (e.g. the 09:44 E2 files) stays outside."""
+    lo = _stamp_minus_hours(first, lookback_h) if first else first
     out = []
     for p in sorted(EXPS.glob("guest_follow*_????????_??????.json")):
         m = re.search(r"_(\d{8}_\d{6})\.json$", p.name)
-        if m and first <= m.group(1) <= last:
+        if m and lo <= m.group(1) <= last:
             out.append(p)
     return out
 
@@ -94,6 +112,28 @@ def grep_counts(run_log: Path) -> dict:
     return counts
 
 
+def follower_text_sources(fp: Path) -> list[Path]:
+    """Where a follower's [GUEST_FOLLOW] egress / traffic lines live: the .log beside its .json readout (the json
+    holds counts only -- 10-23 the usage section read the json files and reported 'no egress/traffic line' for
+    all four followers). Order: the json's own 'log' path, the same stem with .log, the file itself."""
+    cands: list[Path] = []
+    if fp.suffix.lower() == ".json":
+        try:
+            lg = json.loads(fp.read_text(encoding="utf-8", errors="replace")).get("log")
+            if lg:
+                cands.append(Path(lg))
+        except Exception:
+            pass
+        cands.append(fp.with_suffix(".log"))
+    cands.append(fp)
+    seen, out = set(), []
+    for c in cands:
+        k = str(c).lower()
+        if k not in seen and c.exists():
+            seen.add(k); out.append(c)
+    return out
+
+
 def residential_usage(run_log: Path, follower_files, probe_logs) -> list[str]:
     """Lines for the readout: the last [HEALTH] fwd_mb= (per-port MB through the purchase forwarders = the proxy
     vendor's billable traffic per proxied account, with error counts), every follower's [GUEST_FOLLOW] traffic line,
@@ -110,11 +150,20 @@ def residential_usage(run_log: Path, follower_files, probe_logs) -> list[str]:
         out.append(f"  run log unreadable ({type(e).__name__})")
     out.append("  last fwd_mb: " + (last_fwd[last_fwd.index("fwd_mb="):] if last_fwd else "NONE (no proxied account, or no [HEALTH] line yet)"))
     for fp in follower_files:
-        try:
-            lines = [l.strip() for l in Path(fp).read_text(encoding="utf-8", errors="replace").splitlines()
-                     if "[GUEST_FOLLOW] traffic" in l or "[GUEST_FOLLOW] egress" in l]
-        except Exception:
-            lines = []
+        lines = []
+        for src in follower_text_sources(Path(fp)):
+            try:
+                # tagged followers print "[GUEST_FOLLOW] tag=bd0 traffic ..." / "[GUEST_FOLLOW] egress tag=bd0 ..."; the
+                # untagged home follower "[GUEST_FOLLOW] traffic ..." -- match the word, not its position
+                lines = [l.strip() for l in src.read_text(encoding="utf-8", errors="replace").splitlines()
+                         if "[GUEST_FOLLOW]" in l and (" traffic " in l or " egress " in l)]
+            except Exception:
+                lines = []
+            if lines:
+                break
+        # every relaunch logs an egress line: keep the LAST one and every traffic line (the billable total)
+        egress = [x for x in lines if " egress " in x]
+        lines = egress[-1:] + [x for x in lines if " traffic " in x]
         out.append(f"  {Path(fp).name}: " + (" | ".join(x.split('[GUEST_FOLLOW] ', 1)[-1] for x in lines) if lines else "no egress/traffic line"))
     for pl in probe_logs:
         try:
@@ -207,6 +256,9 @@ def main(argv=None) -> int:
     if isinstance(e1, dict):
         print(f"home verdict: {e1.get('verdict')}  windows={e1.get('windows')} any_pass={e1.get('any_pass')}")
         for tag, cl in (e1.get("cross_line") or {}).items():
+            if not isinstance(cl, dict):      # 'ref' (the home tag name) or a tag with no windows (a string verdict)
+                print(f"  cross_line[{tag}]: {cl}")
+                continue
             print(f"  cross_line[{tag}]: {cl.get('verdict')}  windows={cl.get('windows')} bd_only_pass={cl.get('bd_only_pass')} "
                   f"home_only_pass={cl.get('home_only_pass')} reverse={cl.get('reverse')} same={cl.get('same')} any_pass={cl.get('any_pass')}")
         for tag, w2 in (e1.get("wall2") or {}).items():

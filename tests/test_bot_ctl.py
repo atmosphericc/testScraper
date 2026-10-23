@@ -4,7 +4,10 @@
 Pins:
   - classify: the wrapper cmd.exe (any spelling of the .bat path), app.py pythons (venv launcher and
     interpreter), bot-profile Chromes; NOT relogin_one.py, a personal Chrome, a grep that mentions app.py
-  - start: refuses (3) while a bot runs and never calls explorer; launches through explorer.exe and
+  - start: refuses (3) while a bot runs and never launches; launches `cmd.exe /c <bat>` in a NEW console
+    (10-23: the explorer.exe open vanished three times, C-1022-08), without CREATE_NEW_PROCESS_GROUP (stop's
+    Ctrl+C must still reach the wrapper), console output to a log file, retrying without
+    CREATE_BREAKAWAY_FROM_JOB when the job refuses it; and
     returns 0 once a wrapper appears; returns 1 when none appears
   - stop: nothing running -> 0, no Ctrl+C; Ctrl+C goes to the WRAPPER pid, app.py gets the grace
     wait, then wrapper / app / bot Chrome trees are killed; 1 when something survives; a bot without a
@@ -88,12 +91,20 @@ bc.STAMP = _tmp_ops / "last_bot_ctl_stop.json"
 
 class FakePopen:
     def __init__(self, args, **kw):
-        calls.append(("popen", args))
+        calls.append(("popen", args, kw))
+        if state.get("_refuse_breakaway") and (kw.get("creationflags", 0) & _BREAKAWAY):
+            raise OSError(5, "Access is denied")     # a job that forbids breakaway
         if state.get("_appear_on_start"):
             state["wrapper"].append(P(900))
 
 
+_NEW_CONSOLE = getattr(bc.subprocess, "CREATE_NEW_CONSOLE", 0x10)
+_NEW_GROUP = getattr(bc.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+_BREAKAWAY = getattr(bc.subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+
+
 bc.subprocess.Popen = FakePopen
+bc._enable_ctrl_c = lambda: calls.append(("enable_ctrl_c",))      # the real one clears CONSOLE_IGNORE_CTRL_C (kernel32)
 
 # ── start ───────────────────────────────────────────────────────────────────────
 state.clear(); state.update(wrapper=[P(10)], app=[P(11), P(12)], chrome=[]); calls.clear()
@@ -103,9 +114,38 @@ check("start_refuses_no_popen", not any(c[0] == "popen" for c in calls), calls)
 state.clear(); state.update(wrapper=[], app=[], chrome=[], _appear_on_start=True); calls.clear()
 rc = bc.start(wait_s=5)
 check("start_ok", rc == 0, rc)
-check("start_via_explorer", calls and calls[0][0] == "popen" and calls[0][1][0] == "explorer.exe"
-      and calls[0][1][1].endswith("run_bot_with_nightly_restart.bat"), calls)
+_pop = next((c for c in calls if c[0] == "popen"), None)
+check("start_via_cmd_new_console", _pop is not None and _pop[1][:2] == ["cmd.exe", "/c"]
+      and _pop[1][2].endswith("run_bot_with_nightly_restart.bat") and len(_pop[1]) == 3, calls)
+check("start_ctrl_c_enabled_before_launch", [c[0] for c in calls][:2] == ["enable_ctrl_c", "popen"], [c[0] for c in calls])
+_kw = _pop[2] if _pop else {}
+_flags = _kw.get("creationflags", 0)
+check("start_new_console_flag", bool(_flags & _NEW_CONSOLE), hex(_flags))
+check("start_breakaway_first", bool(_flags & _BREAKAWAY), hex(_flags))
+check("start_no_new_process_group", not (_flags & _NEW_GROUP), hex(_flags))   # Ctrl+C from `stop` must still land
+check("start_console_minimized", getattr(_kw.get("startupinfo"), "wShowWindow", None) == bc.SW_SHOWMINNOACTIVE, _kw.get("startupinfo"))
+check("start_console_log_captured", _kw.get("stdout") is not None and _kw.get("stderr") == bc.subprocess.STDOUT
+      and getattr(_kw.get("stdout"), "closed", False), (_kw.get("stdout"), _kw.get("stderr")))
+check("start_cwd_repo_root", _kw.get("cwd") == str(bc.BAT.parent), _kw.get("cwd"))
+_path = next((v for k, v in (_kw.get("env") or {}).items() if k.upper() == "PATH"), "")
+check("start_env_system32_first", _path.lower().split(bc.os.pathsep)[0].endswith("system32"), _path[:120])
+_sep = bc.os.pathsep
+_sys32 = bc.os.path.join("C:/Win", "System32")
+_e = bc.wrapper_env({"SystemRoot": "C:/Win", "Path": _sep.join(["C:/Git/usr/bin", _sys32, "C:/tools"])})
+check("wrapper_env_reorders_path", _e["Path"].split(_sep)[0] == _sys32 and _e["Path"].endswith(_sep.join(["C:/Git/usr/bin", "C:/tools"]))
+      and _e["Path"].lower().count(_sys32.lower() + _sep) == 1, _e["Path"])
+check("wrapper_env_sets_pythonioencoding", _e.get("PYTHONIOENCODING") == "utf-8"
+      and bc.wrapper_env({"PYTHONIOENCODING": "latin-1", "Path": ""})["PYTHONIOENCODING"] == "latin-1", _e.get("PYTHONIOENCODING"))
+check("start_only_one_launch", sum(1 for c in calls if c[0] == "popen") == 1, calls)
 state.pop("_appear_on_start")
+
+# a job that forbids breakaway: the first Popen raises, the retry drops the flag and keeps the new console
+state.clear(); state.update(wrapper=[], app=[], chrome=[], _appear_on_start=True, _refuse_breakaway=True); calls.clear()
+rc = bc.start(wait_s=5)
+_pops = [c for c in calls if c[0] == "popen"]
+check("start_retry_without_breakaway", rc == 0 and len(_pops) == 2 and (_pops[0][2]["creationflags"] & _BREAKAWAY)
+      and not (_pops[1][2]["creationflags"] & _BREAKAWAY) and (_pops[1][2]["creationflags"] & _NEW_CONSOLE), (rc, [hex(c[2].get("creationflags", 0)) for c in _pops]))
+state.pop("_appear_on_start"); state.pop("_refuse_breakaway")
 
 state.clear(); state.update(wrapper=[], app=[], chrome=[]); calls.clear()
 check("start_no_wrapper_fails", bc.start(wait_s=0.01) == 1)

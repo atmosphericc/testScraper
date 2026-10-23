@@ -549,7 +549,7 @@ def default_run(cmd: list, env_extra: dict | None = None, timeout: float = 900) 
     env.update(env_extra or {})
     env.setdefault("PYTHONIOENCODING", "utf-8")
     # The scheduled task runs under pythonw: give each helper a hidden console instead of
-    # flashing a window (bot_ctl start still opens the wrapper's own console via explorer).
+    # flashing a window (bot_ctl start gives the wrapper its own new console; since 10-23 a direct cmd.exe launch).
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         p = subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True,

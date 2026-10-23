@@ -264,6 +264,12 @@ Entry format:
 
 ---
 
+### 2026-10-23 — empty-body HTTP 429 on cart_items through a residential exit (new shape, n=8)
+- **What:** 8 of alt-1's 40 add-to-cart POSTs (02:06-03:01, `run_20261023_001005`, the first residential-line night) answered HTTP 429 with content-length 0, `retry-after: 0`, no `tgt-cart-error-key`, no `x-request-id`, no `x-ssx-hop` (ttfb 276-300 ms). The other 111 429s that night (home line, same races) carried the usual `ERR_A2C_TCIN_RATE_LIMITED` JSON body and the error-key header. Not in any other October run log.
+- **Where:** only through the IPRoyal residential exit (local forwarder port 23003; the CONNECT succeeded, so the reply came through the TLS tunnel from Target's edge, not from the proxy).
+- **Reading:** an edge-level reply that never reached the cart service's limiter body — a different rule (per-IP / ASN at the CDN?) or the same limiter with the body stripped; NOT ESTABLISHED. The event store files it as gate `unknown` (status 429, empty err_key); `python tools/events/q.py walls --run <run>` shows it in the `unknown` column. Watch for it on any proxied line.
+- **Claim:** C-1023-04.
+
 ## 2026-10-08 — rumours and competitor guidance (REPORTED, not observed by the bot)
 
 - **Rumoured, unconfirmed by Target:** a one-entry-per-account "drawing" for the hardest

@@ -7,13 +7,18 @@ boot it (/pre-drop Step 9 at T-20; operator 2026-10-14: make /pre-drop boot the 
     python tools/ops/bot_ctl.py start
     python tools/ops/bot_ctl.py restart [--grace 30]
 
-start    opens run_bot_with_nightly_restart.bat through explorer.exe -- what a double-click
-         does: its own console window, the desktop's environment (not this shell's) and a
-         process outside this shell, so it outlives the Claude session. It waits until the
-         wrapper's cmd.exe appears and prints its PID. It does not wait for GREEN: that is
-         `python tools/predrop/boot_check.py --follow`. A running bot makes start exit 3 (use
-         restart); there is no second launch path, because two wrappers inside the ~45 s
-         relogin pass would both get past the wrapper's single-instance guard.
+start    launches run_bot_with_nightly_restart.bat as `cmd.exe /c "<bat>"` in its OWN new
+         console (minimized, never activated; stop's Ctrl+C needs a console), console output
+         captured to logs/wrapper_console_<stamp>.log, breaking away from this process's job
+         when the job allows it so the wrapper outlives the Claude session / the scheduled
+         task. Until 2026-10-23 it opened the bat through explorer.exe (the double-click
+         association); that launch VANISHED three times (10-20 23:15, 10-22 23:15, 10-22
+         23:23: rc=0, no wrapper, no run log -- C-1022-08) and nothing can see it fail, so
+         it is gone. The direct shape is the 10-23 00:09 boot (GREEN, ran the drop). It
+         waits until the wrapper's cmd.exe appears and prints its PID. It does not wait for
+         GREEN: that is `python tools/predrop/boot_check.py --follow`. A running bot makes
+         start exit 3 (use restart); there is no second launch path, because two wrappers
+         inside the ~45 s relogin pass would both get past the wrapper's single-instance guard.
 stop     sends Ctrl+C to the wrapper's console (app.py's shutdown handler saves the session
          and closes Chrome; its deadman force-exits after 15 s), waits --grace seconds for
          app.py to go, then kills what is left: the wrapper, app.py and every Chrome on a bot
@@ -194,6 +199,89 @@ def stop(grace: float = 30.0) -> int:
     return 0
 
 
+SW_SHOWMINNOACTIVE = 7   # the new console starts minimized and does not steal focus
+
+
+def _enable_ctrl_c() -> None:
+    """Clear this process's CONSOLE_IGNORE_CTRL_C flag before launching the wrapper (verifier, 10-23): a bot_ctl run
+    from the Claude Bash tool's chain carries ConsoleFlags=1 (Ctrl+C ignored), the flag is inherited at CreateProcess
+    through cmd.exe into app.py, and then `stop`'s Ctrl+C is delivered and IGNORED -- app.py's graceful shutdown
+    (session save, Chrome close) never runs and stop falls through to kill_tree after --grace. The PowerShell-launched
+    10-23 00:09 bot had the flag clear (stop worked on that shape); the explorer path was immune by being another
+    tree. Clearing it here is enough: the children inherit the cleared state. Never raises."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+    except Exception:
+        pass
+
+
+def wrapper_env(base: dict | None = None) -> dict:
+    """The environment the wrapper gets: this process's, with the Windows system directories FIRST on PATH.
+    The explorer.exe launch used the desktop's environment; a direct launch inherits the launcher's, and from a
+    Git-Bash tool call that PATH puts Git's usr/bin ahead of System32, so a bat's `timeout /t` resolves to GNU
+    coreutils timeout ("invalid time interval '/t'", the 10-23 dummy proof). Windows built-ins must win."""
+    env = dict(os.environ if base is None else base)
+    root = env.get("SystemRoot") or env.get("SYSTEMROOT") or "C:/Windows"
+    sysdirs = [os.path.join(root, "System32"), root, os.path.join(root, "System32", "Wbem"),
+               os.path.join(root, "System32", "WindowsPowerShell", "v1.0")]
+    key = next((k for k in env if k.upper() == "PATH"), "PATH")
+    low = {x.lower() for x in sysdirs}
+    rest = [d for d in (env.get(key) or "").split(os.pathsep) if d and d.lower() not in low]
+    env[key] = os.pathsep.join(sysdirs + rest)
+    # stdout is a file now, so a child Python without this would print in cp1252 and relogin_one.py's unguarded
+    # emoji prints would raise UnicodeEncodeError in the start pass (verifier, 10-23); ensure_armed sets it too
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
+
+
+def launch_wrapper(bat: Path, console_log: Path | None = None):
+    """Start `cmd.exe /c "<bat>"` in a NEW console of its own (2026-10-23, replaces the explorer.exe open
+    that vanished three times -- C-1022-08). Why this shape: bot_ctl stop sends Ctrl+C to the wrapper's
+    console, so the wrapper must own one; CREATE_NEW_PROCESS_GROUP is deliberately NOT set (it would
+    start the tree with Ctrl+C disabled and break that graceful stop); the console is minimized and not
+    activated; its stdout/stderr go to logs/wrapper_console_<stamp>.log (forensics when a boot dies
+    before app.py opens its run log). CREATE_BREAKAWAY_FROM_JOB is tried first so the wrapper survives
+    the end of the launching job (a scheduled task's helper, the Claude tool call); a job that forbids
+    breakaway refuses the flag, and the launch is retried without it. Returns the Popen."""
+    _enable_ctrl_c()
+    console_log = console_log or (CMD_LOG.parent / f"wrapper_console_{datetime.now():%Y%m%d_%H%M%S}.log")
+    cmd = ["cmd.exe", "/c", str(bat)]
+    kw: dict = {"cwd": str(bat.parent), "close_fds": True, "env": wrapper_env()}
+    fh = None
+    try:
+        console_log.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(console_log, "ab")
+        kw.update(stdout=fh, stderr=subprocess.STDOUT)
+    except Exception:
+        fh = None            # no console log is not a reason not to boot
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = SW_SHOWMINNOACTIVE
+        kw["startupinfo"] = si
+        base = subprocess.CREATE_NEW_CONSOLE
+        flag_sets = [base | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0), base]
+    else:  # pragma: no cover - the bot is Windows-only
+        flag_sets = [0]
+    try:
+        last = None
+        for flags in flag_sets:
+            try:
+                return subprocess.Popen(cmd, creationflags=flags, **kw)
+            except OSError as e:
+                last = e            # e.g. the job forbids breakaway -> retry without the flag
+        raise last if last else RuntimeError("no launch attempted")
+    finally:
+        if fh is not None:
+            try:
+                fh.close()      # the child holds its own handle
+            except Exception:
+                pass
+
+
 def start(wait_s: float = 30.0) -> int:
     s = status()
     if s["running"]:
@@ -203,7 +291,11 @@ def start(wait_s: float = 30.0) -> int:
     if not BAT.exists():
         log(f"missing {BAT}")
         return 1
-    subprocess.Popen(["explorer.exe", str(BAT)], close_fds=True)   # explorer exits 1 on success
+    try:
+        launch_wrapper(BAT)
+    except Exception as e:  # noqa: BLE001
+        log(f"launch failed: {type(e).__name__}: {e}")
+        return 1
     deadline = time.time() + wait_s
     while time.time() < deadline:
         w = find()["wrapper"]

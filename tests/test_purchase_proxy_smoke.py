@@ -24,6 +24,24 @@ sys.path.insert(0, str(ROOT))
 from src.purchasing.bulletproof_purchase_manager import BulletproofPurchaseManager as B  # noqa: E402
 
 
+def _free_port_band() -> None:
+    """2026-10-23: with the production bot UP its purchase forwarders hold 23001-23003 (alt-1 on 23003), and the
+    three-account case failed to bind ("[Errno 10048] only one usage of each socket address"). Move this test's
+    band when any of the default ports is busy; the class attribute is read at setup time by every manager."""
+    import socket
+    for port in range(B.PURCHASE_FORWARDER_PORT_BASE, B.PURCHASE_FORWARDER_PORT_BASE + 4):
+        try:
+            with socket.socket() as sk:
+                sk.bind(("127.0.0.1", port))
+        except OSError:
+            B.PURCHASE_FORWARDER_PORT_BASE = 23900
+            print(f"  (port {port} busy -- a bot is running; this test uses the 23900 band)")
+            return
+
+
+_free_port_band()
+
+
 class _Cfg:
     def __init__(self, wid, proxy):
         self.worker_id = wid
