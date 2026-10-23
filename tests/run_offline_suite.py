@@ -182,6 +182,8 @@ OFFLINE = [
     "test_proxy_conn_cap_probe_1023",
     # 2026-10-23: FWD_TUNNEL_IDLE_S in src/proxy/local_forwarder.py (loopback fake upstream; flag off by default)
     "test_forwarder_tunnel_idle_1023",
+    # 2026-10-23: tools/experiments/shape_replay_probe.py (E-SHOOTER: harvested Shape request replayed by curl_cffi; parser + header order only)
+    "test_shape_replay_probe_1023",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that
