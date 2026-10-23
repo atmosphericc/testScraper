@@ -122,12 +122,15 @@ def window_end_ts(now: float) -> float:
     return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, ALLOW_TO_MIN // 60, ALLOW_TO_MIN % 60, 0, 0, 0, -1))
 
 
-def atc_js(tcin: str, qty: int) -> str:
+def atc_js(tcin: str, qty: int, buynow: bool = False) -> str:
     """The fast lane's add-to-cart (TARGET_ATC_BYTEMATCH=1 URL + body, base headers, PDP
-    referrer) as one page fetch; returns a JSON string {s, n, b, ms}."""
+    referrer) as one page fetch; returns a JSON string {s, n, b, ms}. buynow=True adds
+    cart_subchannel:'BUYNOW' (the Buy-Now-from-PDP path, ktorng capture) to test whether that
+    subchannel shares the add-to-cart limiter (2026-10-23 /goal); money path is unchanged."""
     if not re.fullmatch(r"\d{6,13}", tcin):
         raise ValueError(f"bad tcin {tcin!r}")
     q = int(qty)
+    sub = ", cart_subchannel: 'BUYNOW'" if buynow else ""
     ref = f"https://www.target.com/p/-/A-{tcin}"
     return f"""(async () => {{
     const t0 = performance.now();
@@ -139,7 +142,7 @@ def atc_js(tcin: str, qty: int) -> str:
                        'Origin': 'https://www.target.com', 'Referer': '{ref}',
                        'x-application-name': 'web'}},
             body: JSON.stringify({{cart_item: {{item_channel_id: '10', tcin: '{tcin}', quantity: {q}}},
-                                   cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'}})
+                                   cart_type: 'REGULAR', channel_id: '10', shopping_context: 'DIGITAL'{sub}}})
         }});
         let b = ''; try {{ b = await r.text(); }} catch (e) {{}}
         return JSON.stringify({{s: r.status, n: b.length, b: b.slice(0, 160), ms: Math.round(performance.now() - t0)}});

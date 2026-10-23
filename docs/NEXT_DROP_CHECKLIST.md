@@ -18,20 +18,26 @@ global and no line/account/volume change helps.
 -   python tools/experiments/limkey_guest_follow.py --proxy reserve:1 --tag bd1   --lock-name guest_follow_bd1   --proactive-relaunch-s 720
 -   python tools/experiments/limkey_guest_follow.py --proxy resi:2    --tag resiC --lock-name guest_follow_resiC --proactive-relaunch-s 720
 -   python tools/experiments/limkey_guest_follow.py --proxy resi:3    --tag resiD --lock-name guest_follow_resiD --proactive-relaunch-s 720
+- LIMITER-BYPASS ARM (BUY NOW subchannel vs plain, home line, same windows): launch alongside the above:
+-   python tools/experiments/limkey_guest_follow.py --buynow --tag buynow --lock-name guest_follow_buynow
 - DO NOT create accounts for the limiter (one-IP accounts share its fate, C-1015-01). Add accounts only if the line measurement shows a residential line admits while home does not.
 - After the drop, run the readout:
 -   python tools/events/build.py --only <run_id>
 -   python tools/events/q.py walls --run <run_id>     (per-ident wall-1 pass: fast alt-1 vs slow home)
 -   python tools/events/q.py admits --run <run_id>    (per-window admits, first-admit timing, cadence)
+-   BUYNOW vs plain: limkey --readout the buynow + home follower JSONs, compare limited% per window
 -   python tools/experiments/limkey_guest_follow.py --readout logs/experiments/guest_follow_*_<stamp>.json
 -   python tools/experiments/e1_readout.py --run <run_id>
 - Then set STATUS: DONE here.
 
 ## LIMITER-BYPASS EXPERIMENTS TO TRY (money-free, before building anything)
 The research into getting through the limiter writes its findings here and into docs/PLAN_FIRST_PURCHASE_2026_10_23.md.
-The leading candidates to test against the control TCIN (81926151) with tools/experiments/shape_replay_probe.py or a
-new money-free probe: the mobile-app add-to-cart endpoint (may not share the web limiter), store-pickup vs ship
-channel, and alternate cart paths. Each is TODO until the research lands; see the plan doc.
+TESTABLE NOW (money-free, armed): the BUY NOW subchannel (cart_subchannel BUYNOW) — a `--buynow` guest-follower arm
+(above) fires it on the hot TCINs alongside the plain home follower; compare their edge-429 rate in the same windows.
+BUYNOW confirmed mechanically valid 2026-10-23 (returns 424 on the control, like plain). Lower 429 on BUYNOW at a
+hot window = a real bypass -> build it into the buy path. Weaker/phone-only: the native-app cart (no public capture,
+needs an operator phone + the mobile Shape SDK). Passive: watch Target's web bundle for the 'drawing' strings.
+Full research + ranking: docs/PLAN_FIRST_PURCHASE_2026_10_23.md section 9, claim C-1023-27.
 
 ## WHY (one line)
 We cannot open Target's gate; this positions us to cart when it opens and tells us whether a residential line ever

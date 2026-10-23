@@ -253,6 +253,12 @@ check("relaunch_budget_prunes_in_place", _pruned == [5000.0], _pruned)
 _a = F.build_parser().parse_args(["--proxy", "resi:1", "--tag", "resi", "--proactive-relaunch-s", "780"])
 check("proactive_relaunch_arg", _a.proactive_relaunch_s == 780.0 and F.build_parser().parse_args([]).proactive_relaunch_s == 0.0)
 
+# 2026-10-23 BUY NOW subchannel arm (limiter-bypass test): atc_js adds cart_subchannel BUYNOW; --buynow parses
+check("atc_js_buynow_adds_subchannel", "BUYNOW" in P.atc_js("81926151", 2, True)
+      and "BUYNOW" not in P.atc_js("81926151", 2, False) and "BUYNOW" not in P.atc_js("81926151", 2))
+check("buynow_flag_parses", F.build_parser().parse_args(["--buynow"]).buynow is True
+      and F.build_parser().parse_args([]).buynow is False)
+
 print(f"\n=== {len(PASSED)}/{len(PASSED) + len(FAILED)} passed ===")
 if FAILED:
     print("FAILED: " + ", ".join(FAILED))

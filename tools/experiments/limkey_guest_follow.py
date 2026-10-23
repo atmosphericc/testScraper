@@ -479,7 +479,7 @@ class Guest:
 
     async def fire(self, tcin: str, qty: int) -> dict:
         n_before = len(self.reqs)
-        raw = await asyncio.wait_for(self.tab.evaluate(P.atc_js(tcin, qty), await_promise=True), timeout=25)
+        raw = await asyncio.wait_for(self.tab.evaluate(P.atc_js(tcin, qty, getattr(self, 'buynow', False)), await_promise=True), timeout=25)
         try:
             j = json.loads(raw) if isinstance(raw, str) else {}
         except Exception:
@@ -496,7 +496,7 @@ class Guest:
                "role": "control" if tcin == P.DECOY else "hot", "post_seen": bool(post_ids), "status": status,
                "key": str(hx.get("tgt-cart-error-key", "") or ""), "hop": "x-ssx-hop" in hx,
                "n": j.get("n", -1), "ms": j.get("ms"), "cdp": int(bool(hx)), "body": body[:160],
-               "opt_status": int(ox.get("status") or 0)}
+               "opt_status": int(ox.get("status") or 0), "buynow": int(bool(getattr(self, "buynow", False)))}
         rec["cls"] = P.classify(rec)
         return rec
 
@@ -538,6 +538,7 @@ async def start_guest(out, a, pdp: str, until: float, route=None):
         if time.time() >= until:
             break
         g = Guest(out, a.settle_s, pdp, getattr(a, "tag", "home"), route)
+        g.buynow = bool(getattr(a, "buynow", False))
         try:
             await g.start()
             return g
@@ -993,6 +994,9 @@ def build_parser():
                          "(10-23: IPRoyal ~17-21 min, Bright Data ~50 min); 0 = off (current behaviour)")
     ap.add_argument("--settle-s", type=float, default=8.0)
     ap.add_argument("--qty", type=int, default=2)
+    ap.add_argument("--buynow", action="store_true",
+                    help="fire the Buy-Now subchannel add (cart_subchannel BUYNOW) instead of the plain add, to test "
+                         "whether it shares the limiter (2026-10-23 /goal); money-free, still never checks out")
     ap.add_argument("--simulate", default="", help="off-window path test: treat this TCIN as in stock for --sim-s")
     ap.add_argument("--sim-s", type=float, default=30.0)
     ap.add_argument("--proxy", default="", help="second network line: proxies:<i> | reserve:<i> | resi:<i> (config/proxyIps.json; resi = the residential_proxies list) | http://user:pass@host:port | host:port")
