@@ -240,6 +240,148 @@ async def run(a) -> int:
     return rc
 
 
+async def run_direct(a) -> int:
+    """FS-W-B arm D (post-run 10-23): the SAME proxy session, but Chrome talks to the vendor gateway directly
+    (--proxy-server=host:port) and answers the proxy-auth challenge through CDP Fetch.authRequired, so the
+    credential is never on a command line or in a log, and the bot's ForwarderPool is out of the path. If this arm
+    does not stall where the forwarder arm does, the stall is in our forwarder; if both stall, it is the Chrome +
+    provider path. Same log lines as run() minus the forwarder counters."""
+    import hashlib
+    import re as _re
+    import shutil
+    import tempfile
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    log = ROOT / "logs" / "experiments" / f"cdp_probe_{a.tag}_{stamp}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+
+    def out(m: str) -> None:
+        line = f"{dt.datetime.now():%Y-%m-%d %H:%M:%S} {m}"
+        lines.append(line)
+        print(line, flush=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    info = F.resolve_proxy(a.proxy)
+    if not info.get("url"):
+        out(f"[CDP_PROBE] tag={a.tag} ABORT --no-forwarder needs a credentialed proxy entry")
+        return 2
+    m = _re.match(r"^http://([^:@/]+):([^@/]+)@([A-Za-z0-9._-]+:\d{2,5})$", info["url"])
+    if not m:
+        out(f"[CDP_PROBE] tag={a.tag} ABORT unexpected proxy URL shape")
+        return 2
+    user, pw, hostport = m.group(1), m.group(2), m.group(3)
+    pdp = f"https://www.target.com/p/-/A-{a.pdp}"
+    out(f"[CDP_PROBE] tag={a.tag} DIRECT arm: Chrome --proxy-server={hostport}, auth via CDP Fetch.authRequired (no forwarder)")
+    out(f"[CDP_PROBE] tag={a.tag} start minutes={a.minutes} every_s={a.every_s} nav_every_s={a.nav_every_s} pdp={a.pdp}")
+    import zendriver as uc
+    from zendriver import cdp
+    import zendriver.core.util as _zutil
+    from zendriver.core.browser import Browser
+    _zutil.free_port = P.probe_free_port
+    profile = Path(tempfile.mkdtemp(prefix=f"limkey_guest_{a.tag}_"))
+    bargs = [f"--proxy-server={hostport}", "--window-size=1100,800", "--no-first-run", "--no-default-browser-check",
+             "--disable-extensions", "--disable-sync", "--window-position=-32000,-32000"]
+    cfg = uc.Config(user_data_dir=str(profile), headless=False, sandbox=True, browser_args=bargs,
+                    browser_connection_timeout=1.0, browser_connection_max_tries=30)
+    browser = Browser(cfg)
+    rc = 0
+    try:
+        await asyncio.wait_for(browser.start(), timeout=90)
+        why = await P.attach_check(browser, cdp, profile)
+        if why:
+            out(f"[CDP_PROBE] tag={a.tag} ABORT attach check: {why}")
+            P._kill_own(browser)
+            return 4
+        out(f"[CDP_PROBE] tag={a.tag} attach check OK (port {browser.config.port})")
+        tab = await asyncio.wait_for(browser.get("about:blank"), timeout=30)
+        auth_n = {"n": 0}
+
+        async def on_auth(ev):
+            try:
+                auth_n["n"] += 1
+                await tab.send(cdp.fetch.continue_with_auth(
+                    ev.request_id, cdp.fetch.AuthChallengeResponse(response="ProvideCredentials", username=user, password=pw)))
+            except Exception:
+                pass
+
+        async def on_paused(ev):
+            try:
+                await tab.send(cdp.fetch.continue_request(ev.request_id))
+            except Exception:
+                pass
+
+        tab.add_handler(cdp.fetch.AuthRequired, on_auth)
+        tab.add_handler(cdp.fetch.RequestPaused, on_paused)
+        await asyncio.wait_for(tab.send(cdp.fetch.enable(handle_auth_requests=True)), timeout=10)
+        await asyncio.wait_for(tab.get("https://api.ipify.org"), timeout=40)
+        await asyncio.sleep(1.0)
+        ip = str(await asyncio.wait_for(tab.evaluate("document.body ? document.body.innerText : ''"), timeout=10) or "").strip()[:45]
+        parts = ip.split(".")
+        masked = (parts[0] + "." + parts[1] + ".x.x#" + hashlib.sha1(ip.encode()).hexdigest()[:4]) if len(parts) == 4 else "?"
+        out(f"[CDP_PROBE] tag={a.tag} egress={masked} auth_challenges={auth_n['n']}")
+        if masked == "?":
+            out(f"[CDP_PROBE] tag={a.tag} ABORT egress unreadable through the direct proxy")
+            return 3
+        t1 = time.perf_counter()
+        await asyncio.wait_for(tab.get(pdp), timeout=a.nav_timeout)
+        await asyncio.sleep(a.settle_s)
+        title = str(await asyncio.wait_for(tab.evaluate("document.title"), timeout=10) or "")[:60]
+        out(f"[CDP_PROBE] tag={a.tag} guest up; first PDP in {int((time.perf_counter() - t1) * 1000)} ms title={title!r}")
+        px_js = "!!document.querySelector('#px-captcha') || /press\\s*&\\s*hold|access denied/i.test(document.body ? document.body.innerText.slice(0, 4000) : '')"
+        start = time.time()
+        until = start + a.minutes * 60.0
+        next_eval, next_nav = start, start + a.nav_every_s
+        while time.time() < until:
+            now = time.time()
+            if now >= next_nav:
+                next_nav = now + a.nav_every_s
+                t1 = time.perf_counter()
+                try:
+                    await asyncio.wait_for(tab.get(pdp), timeout=a.nav_timeout)
+                    ms = f"{int((time.perf_counter() - t1) * 1000)}"
+                except asyncio.TimeoutError:
+                    ms = "TIMEOUT"
+                except Exception as e:  # noqa: BLE001
+                    ms = f"ERR_{type(e).__name__}"
+                await asyncio.sleep(a.settle_s)
+                try:
+                    title = str(await asyncio.wait_for(tab.evaluate("document.title"), timeout=10) or "")[:60]
+                    px = int(bool(await asyncio.wait_for(tab.evaluate(px_js), timeout=10)))
+                except Exception as e:  # noqa: BLE001
+                    title, px = f"ERR_{type(e).__name__}", -1
+                out(f"[CDP_PROBE] tag={a.tag} NAV ms={ms} px_wall={px} title={title!r}")
+                continue
+            if now >= next_eval:
+                next_eval = now + a.every_s
+                t1 = time.perf_counter()
+                try:
+                    v = await asyncio.wait_for(tab.evaluate("1+1"), timeout=a.eval_timeout)
+                    out(f"[CDP_PROBE] tag={a.tag} t=+{int(now - start)}s eval_ms={int((time.perf_counter() - t1) * 1000)} ok={int(v == 2)} "
+                        f"events=0 fwd_out_kb=0 fwd_in_kb=0 fwd_err=0 fwd_last=direct auth_challenges={auth_n['n']}")
+                except asyncio.TimeoutError:
+                    rc = 1
+                    out(f"[CDP_PROBE] tag={a.tag} t=+{int(now - start)}s eval TIMEOUT (>{a.eval_timeout:.0f}s) fwd_err=0 fwd_last=direct auth_challenges={auth_n['n']}")
+                except Exception as e:  # noqa: BLE001
+                    rc = 1
+                    out(f"[CDP_PROBE] tag={a.tag} t=+{int(now - start)}s eval ERR_{type(e).__name__}")
+                continue
+            await asyncio.sleep(min(0.5, max(0.05, min(next_eval, next_nav) - time.time())))
+    except Exception as e:  # noqa: BLE001
+        out(f"[CDP_PROBE] tag={a.tag} ABORT {type(e).__name__}: {str(e)[:120]}")
+        rc = 2
+    finally:
+        try:
+            await asyncio.wait_for(browser.stop(), timeout=10)
+        except Exception:
+            pass
+        P._kill_own(browser)
+        shutil.rmtree(profile, ignore_errors=True)
+    s = summarize(lines)
+    out(f"[CDP_PROBE] tag={a.tag} SUMMARY " + " ".join(f"{k}={v}" for k, v in s.items()))
+    return rc
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--proxy", default="home", help="home | proxies:<i> | reserve:<i> | resi:<i> | host:port")
@@ -251,12 +393,15 @@ def build_parser():
     ap.add_argument("--nav-timeout", type=float, default=60.0)
     ap.add_argument("--settle-s", type=float, default=3.0)
     ap.add_argument("--pdp", default=P.DECOY, help="TCIN of the page to load (default: the probe's decoy product)")
+    ap.add_argument("--no-forwarder", action="store_true",
+                    help="FS-W-B arm D: Chrome --proxy-server to the vendor directly, proxy auth via CDP Fetch.authRequired "
+                         "(credential never logged); default = through the bot's ForwarderPool")
     return ap
 
 
 def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
-    return asyncio.run(run(a))
+    return asyncio.run(run_direct(a) if a.no_forwarder else run(a))
 
 
 if __name__ == "__main__":
