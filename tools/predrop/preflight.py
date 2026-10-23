@@ -1182,7 +1182,7 @@ def render(res: dict) -> str:
     by_area = {}
     for r in res["rows"]:
         by_area.setdefault(r["area"], []).append(r)
-    for area in ("drop", "accounts", "config", "repo", "process", "host", "monitor", "last_run"):
+    for area in ("next-drop", "drop", "accounts", "config", "repo", "process", "host", "monitor", "last_run"):
         rows = by_area.get(area)
         if not rows:
             continue
@@ -1204,6 +1204,39 @@ def render(res: dict) -> str:
     return "\n".join(out)
 
 
+def check_next_drop_actions(R: Report, root: Path):
+    """Surface docs/NEXT_DROP_CHECKLIST.md so the operator sees the pending drop actions when they run /pre-drop
+    (added 2026-10-23: the limiter-lottery findings + the follower launches are easy to forget). WARN while the
+    file says STATUS: PENDING, OK once it says DONE, nothing if the file is absent."""
+    A = "next-drop"
+
+    def actions():
+        f = root / "docs" / "NEXT_DROP_CHECKLIST.md"
+        if not f.exists():
+            return
+        txt = _read(f)
+        m = re.search(r"STATUS:\s*(\w+)", txt)
+        status = (m.group(1).upper() if m else "PENDING")
+        acts, grab = [], False
+        for ln in txt.splitlines():
+            if ln.strip().startswith("## ACTIONS"):
+                grab = True
+                continue
+            if grab and ln.startswith("## "):
+                break
+            if grab and ln.strip():
+                acts.append(ln.rstrip())
+        st = "OK" if status == "DONE" else "WARN"
+        R.add(A, "next_drop_checklist", st,
+              f"docs/NEXT_DROP_CHECKLIST.md is STATUS={status}: {len(acts)} action line(s) for the next drop -- OPEN that file",
+              fix=("at ~01:35 CT launch the 4 guest-follower lines (bd0 reserve:0, bd1 reserve:1, resiC resi:2, "
+                   "resiD resi:3, each --proactive-relaunch-s 720); fast-cadence alt-1 A/B is already armed; do NOT "
+                   "create accounts; after the drop read q.py walls+admits --run <id>, then set STATUS: DONE"),
+              items=acts[:24])
+
+    R.guarded(A, "next_drop_checklist", actions)
+
+
 def run(root: Path, drop: str = "", tcins=None, host=True, readiness=True, git=True) -> dict:
     R = Report()
     drop_ts = _parse_drop(drop) if drop else None
@@ -1211,6 +1244,7 @@ def run(root: Path, drop: str = "", tcins=None, host=True, readiness=True, git=T
         R.add("drop", "parse", "WARN", f"could not parse --drop {drop!r} (use \"YYYY-MM-DD HH:MM\" local)")
     last_boot_ts = check_last_run(R, root)
     check_repo(R, root, git, last_boot_ts)
+    check_next_drop_actions(R, root)
     pinfo = {"bot_running": False}
     if host and WIN:
         pinfo = check_process(R, root)

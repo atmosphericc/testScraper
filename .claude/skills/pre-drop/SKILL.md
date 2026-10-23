@@ -12,6 +12,8 @@ both (the drop moment in local time, and the TCINs wanted tonight), then do not 
 A time alone is enough to start: the config's enabled list is the target list until the
 operator names changes.
 
+**First surface `docs/NEXT_DROP_CHECKLIST.md`** (the preflight prints it as a `next-drop` WARN while STATUS: PENDING): it holds the armed fast-cadence A/B, the 4 guest-follower launches, the readout, and the don't-create-accounts rule for this drop.
+
 **Read `.claude/agent-context.md` before anything else.** Its safety rules bind this whole
 procedure, and §2B (the four lever checks) is what stops this skill from shipping a
 confident mistake under time pressure.
