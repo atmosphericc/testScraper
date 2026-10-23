@@ -231,6 +231,18 @@ class ProxyRoute:
             await self.pool.start_all()
             self.chrome_server = f"127.0.0.1:{port}"
 
+    def traffic(self) -> tuple[int, int]:
+        """(bytes_out, bytes_in) through the local forwarder so far = the proxy vendor's billable traffic for this
+        run (2026-10-22, operator: "keep track of how much we use"). Zero when the route is a bare host:port."""
+        bo = bi = 0
+        try:
+            for up in (self.pool.upstreams.values() if self.pool is not None else ()):
+                bo += int(getattr(up.stats, "bytes_out", 0) or 0)
+                bi += int(getattr(up.stats, "bytes_in", 0) or 0)
+        except Exception:
+            pass
+        return bo, bi
+
     async def stop(self) -> None:
         if self.pool is not None:
             try:
@@ -738,6 +750,12 @@ async def follow(a) -> int:
         if guest is not None:
             await guest.close()
         if route is not None:
+            try:
+                bo, bi = route.traffic()
+                out(f"[GUEST_FOLLOW] traffic tag={a.tag} proxy={route.info.get('display', '')} "
+                    f"out_mb={bo / 1e6:.2f} in_mb={bi / 1e6:.2f} total_mb={(bo + bi) / 1e6:.2f}")
+            except Exception as e:
+                out(f"[GUEST_FOLLOW] traffic unavailable {type(e).__name__}")
             await route.stop()
         try:
             LOCK.unlink()
