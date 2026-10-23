@@ -506,9 +506,24 @@ def _health_line(pm=None):
         cpu = psutil.cpu_percent(interval=None)
         ap = len(getattr(pm, '_active_purchases', {}) or {}) if pm is not None else -1
         res = len(getattr(pm, '_worker_reservations', {}) or {}) if pm is not None else -1
+        # 2026-10-22 (operator: "keep track of how much we use"): per-port bytes through the purchase forwarder
+        # pool = the proxy vendor's billable traffic per account (Chrome + purchase requests). Port and MB only.
+        fwd_s = ""
+        try:
+            pool = getattr(pm, '_forwarder_pool', None) if pm is not None else None
+            ups = getattr(pool, 'upstreams', None) or {}
+            parts = []
+            for port, up in sorted(ups.items()):
+                st = getattr(up, 'stats', None)
+                mb = (int(getattr(st, 'bytes_in', 0) or 0) + int(getattr(st, 'bytes_out', 0) or 0)) / 1e6
+                parts.append(f"{port}:{mb:.1f}")
+            if parts:
+                fwd_s = " fwd_mb=" + ",".join(parts)
+        except Exception:
+            fwd_s = ""
         return (f"[HEALTH] rss={rss:.0f}MB os_threads={p.num_threads()} py_threads={threading.active_count()} "
                 f"handles={handles} chrome_procs_all={chrome} sys_cpu={cpu:.0f}% sys_mem={vm:.0f}% "
-                f"disk_free={disk:.0f}GB active_purchases={ap} reservations={res}")
+                f"disk_free={disk:.0f}GB active_purchases={ap} reservations={res}{fwd_s}")
     except Exception as e:
         return f"[HEALTH] unavailable ({type(e).__name__}: {e})"
 
