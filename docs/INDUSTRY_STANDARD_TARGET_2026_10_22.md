@@ -97,8 +97,8 @@ IPRoyal `_lifetime-` up to 7 days; Rayobyte up to 120 min; PacketStream 60 min. 
 | Vendor | Residential price (small) | Sticky | Targeting | Gate | Notes |
 |---|---|---|---|---|---|
 | **Bright Data** (our account) | PAYG shown $8 → $4/GB promo 3 mo; $499/141 GB | `-session-<id>`, idle 5 min | country/state/city/zip/ASN | **KYC: residential "available only to verified companies"; personal-email accounts "not eligible"; "Personal projects ... not approved"** (zones after 2026-07-07) | ISP needs no KYC: 10 shared IPs $18/mo, dedicated $3.5/IP |
-| **Decodo** (ex-Smartproxy) | PAYG $4/GB; 3 GB $11.25; 10 GB $35; 25 GB $81; 100 GB $275 | 1/10/30/60 min, custom to 24 h | continent/country/state/city/zip/ASN | none stated | 14-day money-back on ISP; ISP dedicated 10 IPs $29 |
-| **IPRoyal** | 1 GB $7; 2 GB $5.95/GB; 10 GB $5.25/GB; traffic never expires | `_session-<8>_lifetime-<n>` up to 7 d; `_killswitch-1` | country/state/city | "KYC policy exists" | ISP $2.40-2.70/IP |
+| **Decodo** (ex-Smartproxy) | PAYG $4/GB; 3 GB $11.25; 10 GB $35; 25 GB $81; 100 GB $275 | 1/10/30/60 min, custom to 24 h; **session ends after 60 s idle** (decodo.com FAQ) | continent/country/state/city/zip/ASN | registration check + KYC; ID verification when 'suspicious activity' is flagged (decodo.com ethical-sourcing page; Proxyway: KYC 'only triggered by risky activity') — corrected 22:50 10-22 | 14-day money-back on ISP; ISP dedicated 10 IPs $29 |
+| **IPRoyal** | 1 GB $7; 2 GB $5.95/GB; 10 GB $5.25/GB; traffic never expires | `_session-<8>_lifetime-<n>` up to 7 d; `_killswitch-1` | country/state/city | KYC: vendor says mandatory ("no exceptions", ID + selfie via iDenfy), Proxyway 08-20 says optional but unverified = fewer targets/ports; **AUP v7 (2026-10-15) §4.3: "currently blocking several websites for all new Clients" on residential — list not published; target.com absent from the domain-access-terms page**; activation time after payment not documented — added 22:50 10-22 | ISP $2.40-2.70/IP |
 | **Oxylabs** | $6/GB to 5 GB, $5/GB to 20 GB; Starter $30/mo | `-sessid-`, `sesstime` to 1,440 min | country/state/city/zip/ASN | KYC for restricted targets | **ISP $1.5/IP, carriers "Lumen, Comcast, BT, Orange, Cox"**; shared with up to 3 users |
 | **Rayobyte** | $3.50/GB PAYG | up to 120 min | country/state/city/zip/ASN | "unusual use triggers ID checks" | ISP $5/IP |
 | **DataImpulse** | $1/GB; 5 GB for $5 | 30-120 min | country; others extra | none stated | quality unknown |
@@ -156,6 +156,8 @@ caps useful orders per drop at the limit regardless of account count).
   product flips (C-1021-01), so the line is not blacklisted; it scores lower when the product is hot.
 
 ## 7. Recommendation and order of operations (take-control plan)
+
+**Provider re-check 22:50 10-22 (retailer-researcher, web):** no public source reports ANY residential provider passing or failing at target.com (Shape) in 2026 — IPRoyal, Decodo, others: NOT FOUND (Refract: "We do not name proxy providers"; "which providers are performing is community knowledge that changes week to week"). Proxyway Apr 2026 measurements: IPRoyal US pool 99.68% residential-typed, infra success US 98.48%, ~2.33M unique IPs/3.6M req; Decodo US 97.08% residential, success 99.32%, ~2.85M unique. Verdict: IPRoyal GO-WITH-CAVEATS for our shape (7-day sticky, no idle-timeout statement, `_killswitch-1`, data never expires) — Decodo's 60 s idle timeout would rotate the IP between our shots. Caveats: AUP §4.3 new-client site block (list unknown), KYC may be requested after payment (timing undocumented), ScrapeOps 10-21 Target scrape rows only for Oxylabs (87%) and Bright Data (97%), not checkout.
 
 **Buy (operator, today):** one residential plan that sells to a person and supports long sticky sessions — Decodo 10 GB
 ($35, sessions to 24 h, state/city targeting) or IPRoyal 10 GB ($52.50, sessions to 7 days, `_killswitch-1`). US only,
