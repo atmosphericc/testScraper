@@ -93,3 +93,28 @@ Rule (pre-registered): a line passes the limiter more than home in the same wind
 
 ### D. When the lanes module is unblocked (operator adds an Edit allow-rule AND the content clears)
 Build `src/lanes/` per section 2, gated behind `TARGET_LANES=0`, offline-tested, money-safety verified (a lane never checks out), then Validation B (a cheap real item to pre_checkout only) and the Mon-Tue rehearsal before arming. Not before.
+
+## 8. Data-driven revision (2026-10-23 pm, two analyses + log-miner over all 38 runs)
+
+The 10-23 post-run plan (sections 1-7) assumed the lever was volume: more shots, lines, accounts. The full-history analysis corrects that. Read this section first.
+
+**The limiter admit is a per-request lottery whose win-probability p is set SITE-WIDE by Target per window/night, and is not a function of our volume, accounts, or lines.** [MEASURED, event store, all 38 runs]
+- p over the drop nights: 08-06 66%, 08-27 16%, 09-15 14%, 09-25 0.6%, **10-01 30% (8 carts, 1 order)**, 10-02 0.8%, 10-09 0.6%, **10-16 0% (1,208 shots, fast cadence, the most/window ever)**, 10-23 0%.
+- Shots do not predict admits; p does. Same product (1010892076), same accounts: 10-01 76/268 admits (28%), 10-09 1/192, 10-16 0/466. More shots over time → fewer admits, because p fell.
+- When p>0 the bot already carts with no change: 10-01 got 8 carts and 1 order on the current home fleet at the SLOW 55-70 s cadence. Admits that night were spread across the window (0-5 s 54%, but 80 of 95 after 60 s), and the carts landed 0.1 s to 690 s in — so being present and firing throughout an open window captures the bulk, which the won-cart ride already does.
+
+**Lever ranking at the next drop [MEASURED/INFERRED]:**
+1. Nothing we fire changes the outcome while p≈0 (2,031 shots over 10-09/16/23 → 4 admits).
+2. Faster cadence (`TARGET_FAST_CADENCE_IDENTS`): 0 in its one live test (10-16), free linear upside only if p reopens, mainly on a SHORT open window where 55-70 s re-entry under-fires.
+3. More residential lines: the only branch never tested at a live OPEN window — unresolved.
+4. **More accounts on home: ~0 marginal. One-IP accounts share the limiter's fate (C-1015-01); 10-01's three accounts already admitted at one shared rate. DO NOT create accounts for the limiter.**
+
+**The one unresolved question that decides whether residential is worth building:** is a 0-admit night closed for EVERYONE (global p=0) or only throttling our home IP/fleet? Our logs cannot tell these apart. The retailer-researcher found public reports of online carting success on 10-09..10-20 (REPORTED, not drop-named), so the gate may be fleet- or line-specific. If residential sees an open gate when home does not, residential shooting lanes matter; if the gate is global, no line/account/volume change helps. **This is measured by the multi-line guest follower at the next drop (section 7B), not by building anything.**
+
+**Therefore, ready-for-next-drop = catch an open window, measure the line question, build nothing speculative:**
+- Current bot as-is catches an open window (home fleet, fast detection ahead of the trackers, won-cart ride on). alt-1 on home.
+- Arm fast cadence as an A/B on alt-1 only (`TARGET_FAST_CADENCE_IDENTS=alt-1`): alt-1 fast, primary/business slow, same races = a clean control that finally measures lever (2) with a p>0 control if the window opens, and catches a short open window on one account. Money-safe (cadence only; verified). Readout: `q.py walls` split by ident.
+- Run the 5-line guest follower (section 7B) to answer global-vs-us. If residential p > home p on a live open window, THEN the lanes build (section 2, still safety-classifier-blocked) is worth pursuing; until then it is speculative.
+- Do NOT add accounts; do NOT spend on more residential data beyond the 4 sessions for the measurement.
+
+**Honest bottom line:** we cannot manufacture a purchase. When Target's gate opens, the current bot carts (proven 10-01). When it is near-zero (last 3 drops), nothing we fire gets through. The highest-value work is the line-question measurement, because it is the only thing that could show a controllable edge (a residential gate open when home is shut). Everything else is being positioned and healthy for the next open window.
