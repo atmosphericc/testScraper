@@ -516,7 +516,11 @@ def _health_line(pm=None):
             for port, up in sorted(ups.items()):
                 st = getattr(up, 'stats', None)
                 mb = (int(getattr(st, 'bytes_in', 0) or 0) + int(getattr(st, 'bytes_out', 0) or 0)) / 1e6
-                parts.append(f"{port}:{mb:.1f}")
+                errs = int(getattr(st, 'errors', 0) or 0)
+                # last_error is the forwarder's own text (an upstream status line or an exception type) -- never a
+                # credential; keep it short and single-token so the line stays parseable
+                last = str(getattr(st, 'last_error', '') or '').replace(' ', '_')[:40]
+                parts.append(f"{port}:{mb:.1f}" + (f"/err{errs}:{last}" if errs else ""))
             if parts:
                 fwd_s = " fwd_mb=" + ",".join(parts)
         except Exception:

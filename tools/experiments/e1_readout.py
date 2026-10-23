@@ -81,7 +81,10 @@ def sh(args: list[str], timeout: int = 900) -> tuple[int, str]:
 
 def grep_counts(run_log: Path) -> dict:
     keys = {"fast_cadence": "[FAST_CADENCE]", "cold_reentry": "cold re-entry", "ambiguous_commit": "[AMBIGUOUS_COMMIT]",
-            "order_placed": "ORDER PLACED", "rebuy": "[REBUY]", "wave_first": "[WAVE_FIRST]"}
+            "order_placed": "ORDER PLACED", "rebuy": "[REBUY]", "wave_first": "[WAVE_FIRST]",
+            # 2026-10-22 residential-line night: the proxied account's boot + route health
+            "proxy_ref_ok": "[WORKER_POOL] [PROXY_REF]", "proxy_ref_error": "[PROXY_REF] [ERROR]",
+            "forwarder_warn": "[FORWARDER] [WARN]", "forwarder_error": "[FORWARDER] [ERROR]"}
     counts = {k: 0 for k in keys}
     with run_log.open("r", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -89,6 +92,46 @@ def grep_counts(run_log: Path) -> dict:
                 if needle in line:
                     counts[k] += 1
     return counts
+
+
+def residential_usage(run_log: Path, follower_files, probe_logs) -> list[str]:
+    """Lines for the readout: the last [HEALTH] fwd_mb= (per-port MB through the purchase forwarders = the proxy
+    vendor's billable traffic per proxied account, with error counts), every follower's [GUEST_FOLLOW] traffic line,
+    and the egress-probe log (exit IP per forwarder port: same_as_home flags and distinct IP tags = did the sticky
+    session hold). Never prints a credential (none of these lines carry one)."""
+    out = []
+    last_fwd = ""
+    try:
+        with run_log.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if "[HEALTH]" in line and "fwd_mb=" in line:
+                    last_fwd = line.strip()
+    except Exception as e:  # noqa: BLE001
+        out.append(f"  run log unreadable ({type(e).__name__})")
+    out.append("  last fwd_mb: " + (last_fwd[last_fwd.index("fwd_mb="):] if last_fwd else "NONE (no proxied account, or no [HEALTH] line yet)"))
+    for fp in follower_files:
+        try:
+            lines = [l.strip() for l in Path(fp).read_text(encoding="utf-8", errors="replace").splitlines()
+                     if "[GUEST_FOLLOW] traffic" in l or "[GUEST_FOLLOW] egress" in l]
+        except Exception:
+            lines = []
+        out.append(f"  {Path(fp).name}: " + (" | ".join(x.split('[GUEST_FOLLOW] ', 1)[-1] for x in lines) if lines else "no egress/traffic line"))
+    for pl in probe_logs:
+        try:
+            rows = [l for l in Path(pl).read_text(encoding="utf-8", errors="replace").splitlines() if " port=" in l]
+        except Exception:
+            rows = []
+        per_port: dict[str, set] = {}
+        same = 0
+        for r in rows:
+            port = r.split(" port=", 1)[1].split()[0]
+            tag = r.split(" ip=", 1)[1].split()[0] if " ip=" in r else "?"
+            if tag != "?":
+                per_port.setdefault(port, set()).add(tag)
+            same += int("same_as_home=1" in r)
+        summ = ", ".join(f"{p}: {len(t)} distinct exit(s)" for p, t in sorted(per_port.items())) or "no open port probed"
+        out.append(f"  {Path(pl).name}: {len(rows)} probes, same_as_home={same}; {summ}")
+    return out
 
 
 def cadence_rule(first_shot_era_text: str, run_id: str, counts: dict) -> dict:
@@ -150,11 +193,16 @@ def main(argv=None) -> int:
     counts = grep_counts(run_log)
     out["greps"] = counts
     out["r_cad_1022"] = cadence_rule(era, run_id, counts)
+    probe_logs = sorted((ROOT / "logs" / "experiments").glob("egress_probe_*.log"))[-2:]
+    out["residential"] = residential_usage(run_log, files, probe_logs)
 
     if a.json:
         print(json.dumps(out, indent=1, ensure_ascii=False)); return 0
     print(f"=== E1 / R-CAD-1022 readout: {run_id}  span {first} .. {last} ===")
     print(f"follower files ({len(files)}): {', '.join(p.name for p in files) or '-'}")
+    print("residential line / usage:")
+    for line in out["residential"]:
+        print(line)
     e1 = out["e1"]
     if isinstance(e1, dict):
         print(f"home verdict: {e1.get('verdict')}  windows={e1.get('windows')} any_pass={e1.get('any_pass')}")
