@@ -714,9 +714,9 @@ def test_armed_combination_with_probe():
     budget) with P=0.5 and P=1: a full stub race, no exception, the burst cap respected, the probe
     on the FS racer only, in-band."""
     benv = FC._bat_env()
-    # 2026-10-22: the bat carries IDENTS=0 (fast cadence reverted, C-1022-01); the combination below still runs with
+    # 2026-10-23: the bat carries IDENTS=alt-1 (re-armed as an A/B, C-1023-26); the combination below still runs with
     # IDENTS=all passed explicitly so the probe x fast-cadence code path stays covered.
-    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") in ("all", "0") and benv.get("TARGET_ATC_DCO_BURST") == "1"
+    check("armed_bat_values", benv.get("TARGET_FAST_CADENCE_IDENTS") in ("all", "0", "alt-1") and benv.get("TARGET_ATC_DCO_BURST") == "1"
           and benv.get("TARGET_ATC_DCO_BURST_REQUIRE_BANK") == "0" and benv.get("TARGET_ATC_DCO_BURST_BANK_WAIT_S") == "2"
           and benv.get("TARGET_ATC_DCO_BURST_STUCK_NOWAIT") == "1" and benv.get("TARGET_RETRY_WHILE_IN_STOCK_MAX") == "40",
           {k: benv.get(k) for k in ("TARGET_FAST_CADENCE_IDENTS", "TARGET_ATC_DCO_BURST_REQUIRE_BANK",

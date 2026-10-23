@@ -1362,7 +1362,13 @@ REM re-shots spend that budget within seconds of the first pass-through (10-01: 
 REM re-shots spread it over minutes. Alternating-night arm. Readout R-CAD-1022: q.py first_shot_era (home volleys
 REM past wall 1, vs 10-16 0/7) + keyless-401 share of past-limiter shots (q.py walls) + grep FAST_CADENCE = 0.
 REM Re-arm: TARGET_FAST_CADENCE_IDENTS=all.
-set TARGET_FAST_CADENCE_IDENTS=0
+REM 2026-10-23 RE-ARM as an alt-1-only A/B (R-FAST-1023): the full-history analysis (C-1023-26) shows the
+REM limiter admit is a site-wide lottery with probability p; fast cadence is free upside only when p is
+REM nonzero, which 10-16 (its one armed night, 0 benefit) was not. alt-1 fast (3-4.5 s re-entry), while
+REM primary and business stay slow (55-70 s) in the same races as a control. Money-safe (verifier CONFIRMED:
+REM cadence only, no checkout, qty or cap effect). Readout: q.py walls plus admits split by ident.
+REM NO-DATA when the next window is closed. Kill or revert: set it to 0. Fleet A/B: set it to all.
+set TARGET_FAST_CADENCE_IDENTS=alt-1
 REM 2026-10-06 run diagnostics, all log-only (no behaviour change). The stall
 REM watchdog dumps every thread's Python stack into the run log when a core lock
 REM stays held 45 s or the stock sweep stops 90 s, and prints [HEALTH] (memory,
