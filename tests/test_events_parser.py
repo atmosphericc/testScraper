@@ -280,6 +280,12 @@ def test_gates():
              ((503, '-'), 'other'), ((431, '-'), 'other'), ((0, None), 'other'), ((None, None), 'unknown')]
     for (st, key), want in cases:
         check(f'gate {st} {key}', ev.gate_of(st, key) == want, ev.gate_of(st, key))
+    # 10-23 FS-2: a 429 whose response line was seen and carried no key is its own class; without that evidence
+    # (no line / ambiguous) it stays unknown; a seen key we do not recognise stays unknown too
+    check('gate_keyless_seen_header', ev.gate_of(429, '-', 'header') == 'wall1_keyless' and ev.gate_of(429, '', 'header') == 'wall1_keyless',
+          (ev.gate_of(429, '-', 'header'), ev.gate_of(429, '', 'header')))
+    check('gate_keyless_needs_header', ev.gate_of(429, '-', 'ambiguous') == 'unknown' and ev.gate_of(429, None, None) == 'unknown'
+          and ev.gate_of(429, 'SOME_NEW_KEY', 'header') == 'unknown' and ev.gate_of(429, 'ERR_A2C_TCIN_RATE_LIMITED', 'header') == 'wall1_limited')
     # a pre-08-27 429 (no [ATC_RESP] at all) is unknown, its body class kept
     res = parse([POOL, race(TC, ['primary']), fire(TC), chain('primary', 429), pf429('primary')])
     s0 = res['shots'][0]

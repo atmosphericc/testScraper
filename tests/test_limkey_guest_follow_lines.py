@@ -241,6 +241,18 @@ with tempfile.TemporaryDirectory() as td:
     cl = r["cross_line"]["bd"]
     check("cross_line_reverse", cl["home_only_pass"] == 6 and cl["reverse"] == 6 and cl["verdict"] == "INCONCLUSIVE", cl["verdict"])
 
+# 10-23 FS-W-D: the reactive relaunch budget is a rolling hour, not the whole night; proactive relaunch is an arg
+_t = [0.0, 600.0, 1200.0, 1800.0, 2400.0, 3000.0]
+check("relaunch_budget_6_in_hour_ok", F.relaunch_budget_exceeded(list(_t), 3100.0) is False)
+check("relaunch_budget_7_in_hour_exceeded", F.relaunch_budget_exceeded(_t + [3050.0], 3100.0) is True)
+_old = [0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0]
+check("relaunch_budget_old_ones_expire", F.relaunch_budget_exceeded(_old + [5000.0], 5000.0) is False)
+_pruned = _old + [5000.0]
+F.relaunch_budget_exceeded(_pruned, 5000.0)
+check("relaunch_budget_prunes_in_place", _pruned == [5000.0], _pruned)
+_a = F.build_parser().parse_args(["--proxy", "resi:1", "--tag", "resi", "--proactive-relaunch-s", "780"])
+check("proactive_relaunch_arg", _a.proactive_relaunch_s == 780.0 and F.build_parser().parse_args([]).proactive_relaunch_s == 0.0)
+
 print(f"\n=== {len(PASSED)}/{len(PASSED) + len(FAILED)} passed ===")
 if FAILED:
     print("FAILED: " + ", ".join(FAILED))

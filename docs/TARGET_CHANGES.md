@@ -264,11 +264,11 @@ Entry format:
 
 ---
 
-### 2026-10-23 — empty-body HTTP 429 on cart_items through a residential exit (new shape, n=8)
-- **What:** 8 of alt-1's 40 add-to-cart POSTs (02:06-03:01, `run_20261023_001005`, the first residential-line night) answered HTTP 429 with content-length 0, `retry-after: 0`, no `tgt-cart-error-key`, no `x-request-id`, no `x-ssx-hop` (ttfb 276-300 ms). The other 111 429s that night (home line, same races) carried the usual `ERR_A2C_TCIN_RATE_LIMITED` JSON body and the error-key header. Not in any other October run log.
-- **Where:** only through the IPRoyal residential exit (local forwarder port 23003; the CONNECT succeeded, so the reply came through the TLS tunnel from Target's edge, not from the proxy).
-- **Reading:** an edge-level reply that never reached the cart service's limiter body — a different rule (per-IP / ASN at the CDN?) or the same limiter with the body stripped; NOT ESTABLISHED. The event store files it as gate `unknown` (status 429, empty err_key); `python tools/events/q.py walls --run <run>` shows it in the `unknown` column. Watch for it on any proxied line.
-- **Claim:** C-1023-04.
+### 2026-10-23 — keyless HTTP 429 on cart_items through a residential exit (no `tgt-cart-error-key`; n=8, plus 2 on 10-01)
+- **What:** 8 of alt-1's 40 add-to-cart POSTs (02:06-03:01, `run_20261023_001005`, the first residential-line night) answered HTTP 429 with NO `tgt-cart-error-key` header, no `x-request-id`, no `x-ssx-hop`, `retry-after: 0` (ttfb 276-300 ms). Every 429 that night had content-length 0, so the body is not the distinction — the header is: the other 111 (home and alt-1) carried `tgt-cart-error-key: ERR_A2C_TCIN_RATE_LIMITED`. Two identical replies exist on 10-01 (`run_20260930_233818`, business, home line); none on 10-09 / 10-16.
+- **Where:** on 10-23 only through the IPRoyal residential exit (local forwarder port 23003; the CONNECT succeeded, so the reply came through the TLS tunnel from Target's edge, not from the proxy).
+- **Reading:** an edge-level refusal that never reached the cart service's keyed body — a different rule (per-IP / ASN at the CDN?) or the same limiter without the key; NOT ESTABLISHED. Since PARSER_VERSION 8 the event store files it as gate `wall1_keyless` (counted as limited in `walls`, shown separately). Watch for it on any proxied line.
+- **Claim:** C-1023-04 (corrected 10-23 10:30 by the post-run).
 
 ## 2026-10-08 — rumours and competitor guidance (REPORTED, not observed by the bot)
 

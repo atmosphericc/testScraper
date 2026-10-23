@@ -158,6 +158,15 @@ STATUS_RE = re.compile(r"\[STOCK STATUS\] tcin=(\d{6,13}) .*?in_stock=([01])")
 WATCH_RE = re.compile(r"\[STOCK WATCH\] (\d{6,13}): in_stock=(True|False)")      # every 30 s per TCIN
 TRUTH_RE = re.compile(r"\[GROUND-TRUTH\][^\n]*?in_stock=\[([^\]]*)\]")           # every ~30 s, offset 15 s
 MAX_RELAUNCH = 6
+RELAUNCH_WINDOW_S = 3600.0     # 10-23: reactive relaunches are budgeted over a rolling hour, not the whole night
+
+
+def relaunch_budget_exceeded(times: list, now: float, max_n: int = MAX_RELAUNCH, window_s: float = RELAUNCH_WINDOW_S) -> bool:
+    """True when more than max_n REACTIVE relaunches fall inside the trailing window_s. `times` is pruned in place.
+    (10-23: the resi follower died at 01:26 after 7 'not answering' relaunches spread over 97 min -- a whole-night
+    cap -- before any window opened; proxied lines stall every ~15-50 min by Chrome age, so the cap must be a rate.)"""
+    times[:] = [t for t in times if now - t < window_s]
+    return len(times) > max_n
 
 
 class EgressFailed(RuntimeError):
@@ -414,6 +423,7 @@ class Guest:
                 pass
             os._exit(4)                          # skip the library's exit hooks
         self.out(f"[GUEST_FOLLOW] attach check OK (port {self.browser.config.port})")
+        self.started_at = time.time()
         if self.route is not None:               # fail closed: prove the egress before any navigation to Target
             self.egress_masked = await egress_gate(self.out, self.tag, self.route.info["display"], self._browser_ip)
         self.tab = await asyncio.wait_for(self.browser.get(self.first_pdp), timeout=30)
@@ -606,6 +616,7 @@ async def follow(a) -> int:
     period: dict[str, dict] = {}            # per TCIN: shots / landed / last_end across flicker re-opens
     next_shot: dict[str, float] = {}
     night = relaunch = errs = 0
+    relaunch_times: list = []          # reactive relaunch stamps (rolling-hour budget, 10-23)
     night_key = time.strftime("%Y-%m-%d", time.localtime(now - 12 * 3600))   # a "night" runs noon to noon
     try:
         nf = json.loads(NIGHT.read_text(encoding="utf-8"))
@@ -723,12 +734,25 @@ async def follow(a) -> int:
                 # idle (or stuck / capped): keep the guest healthy and its page fresh
                 if now >= next_alive:
                     next_alive = now + 60
+                    age = now - getattr(guest, "started_at", now)
+                    if (a.proactive_relaunch_s > 0 and route is not None and not cur and age >= a.proactive_relaunch_s
+                            and time.time() < until):
+                        # 10-23: a guest Chrome through IPRoyal stops answering CDP at age ~17-21 min (Bright Data
+                        # ~50 min) and never recovers; relaunch it BEFORE that, while idle, without spending the
+                        # reactive budget. Never inside a live window (a relaunch there would cost shots).
+                        out(f"[GUEST_FOLLOW] proactive relaunch at age {int(age)}s (proxied line, --proactive-relaunch-s {a.proactive_relaunch_s:.0f})")
+                        await guest.close()
+                        guest = await start_guest(out, a, pdp, until, route)
+                        next_refresh = time.time() + a.refresh_s
+                        continue
                     if errs >= 3 or not await guest.alive():
                         relaunch += 1
                         errs = 0
-                        out(f"[GUEST_FOLLOW] guest Chrome not answering - relaunch {relaunch}/{MAX_RELAUNCH}")
+                        relaunch_times.append(now)
+                        out(f"[GUEST_FOLLOW] guest Chrome not answering - relaunch {relaunch} "
+                            f"({len([t for t in relaunch_times if now - t < RELAUNCH_WINDOW_S])}/{MAX_RELAUNCH} in the last hour)")
                         await guest.close()
-                        if relaunch > MAX_RELAUNCH:
+                        if relaunch_budget_exceeded(relaunch_times, now):
                             reason = "too many relaunches"
                             break
                         guest = await start_guest(out, a, pdp, until, route)
@@ -964,6 +988,9 @@ def build_parser():
     ap.add_argument("--scheduled", action="store_true",
                     help="scheduled-task start: run only if state/guest_follow.enable exists")
     ap.add_argument("--refresh-s", type=float, default=240.0, help="idle PDP reload interval")
+    ap.add_argument("--proactive-relaunch-s", type=float, default=0.0,
+                    help="proxied tags only: relaunch the idle guest Chrome at this age (s) before the line's CDP stall "
+                         "(10-23: IPRoyal ~17-21 min, Bright Data ~50 min); 0 = off (current behaviour)")
     ap.add_argument("--settle-s", type=float, default=8.0)
     ap.add_argument("--qty", type=int, default=2)
     ap.add_argument("--simulate", default="", help="off-window path test: treat this TCIN as in stock for --sim-s")

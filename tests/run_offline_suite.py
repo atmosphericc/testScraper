@@ -177,6 +177,9 @@ OFFLINE = [
     "test_preorder_chain_1019",
     "test_wall3_chain_gaps_1019",
     "test_sigint_attrib_1019",
+    # 2026-10-23: tools/experiments/line_cdp_probe.py (CDP responsiveness per network line; parser + summary only)
+    "test_line_cdp_probe_1023",
+    "test_proxy_conn_cap_probe_1023",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

@@ -14,7 +14,7 @@ SELECT s.run_id AS run,
        CASE s.proxied WHEN 1 THEN 'proxied' WHEN 0 THEN 'home' ELSE '?' END AS line,
        CASE s.is_first WHEN 1 THEN 'first' WHEN 0 THEN 'later' ELSE '?' END AS shot,
        COUNT(*) AS n,
-       SUM(s.gate = 'wall1_limited') AS w1_limited,
+       SUM(s.gate IN ('wall1_limited', 'wall1_keyless')) AS w1_limited,
        SUM(s.gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit')) AS w1_pass,
        ROUND(100.0 * SUM(s.gate IN ('wall2_denied', 'admitted_fs', 'cart', 'inventory', 'cart_limit'))
              / NULLIF(SUM(s.gate NOT IN ('other', 'unknown')), 0), 1) AS w1_pass_pct,

@@ -79,6 +79,7 @@ SHOTS (one row per main-tab add-to-cart request)
 GATE (never guessed; 'unknown' is counted, not folded into a bucket)
   cart          200/201
   wall1_limited 429 + tgt-cart-error-key ERR_A2C_TCIN_RATE_LIMITED (the limiter)
+  wall1_keyless 429 with NO tgt-cart-error-key (edge refusal before the cart service; 10-23 FS-2) -- limited by position
   admitted_fs   429 + FAST_SELLING / DCO_RATE_LIMITED (past both walls, cart throttle)
   wall2_denied  401 (past the limiter, denied at the SSX hop)
   inventory     424
@@ -251,7 +252,7 @@ import time
 from collections import Counter, defaultdict, deque
 from pathlib import Path
 
-PARSER_VERSION = 7       # 2026-10-16 v7: limkey + warm_dummy tables ([LIMKEY_PROBE] lines, heartbeat dummy POST status lines, INS-LIMKEY-1016)
+PARSER_VERSION = 8       # 2026-10-23 v8: gate 'wall1_keyless' (a seen 429 with no tgt-cart-error-key; post-run FS-2); v7 2026-10-16: limkey + warm_dummy tables
 #                          (2026-10-15 v6: lock_events table ([PURCHASE_LOCK] start / complete, INS-LAG-1015))
 #                          (2026-10-15 v5: harvest table -- [HARVEST] CAPTURED / pre-shot / REPLAY / EMPTY / STALE bank lines)
 #                          (2026-10-06 v4: gate_events also carry the FX-1006 dispatch markers + run diagnostics)
@@ -598,8 +599,10 @@ def _bool(v):
     return {'True': 1, 'False': 0, 'true': 1, 'false': 0, 'yes': 1, 'no': 0}.get(str(v))
 
 
-def gate_of(status, key):
-    """The wall a main-tab add-to-cart stopped at. Never guesses: see module doc."""
+def gate_of(status, key, key_src=None):
+    """The wall a main-tab add-to-cart stopped at. Never guesses: see module doc. key_src tells a 429 whose
+    [ATC_RESP] line was seen and carried NO tgt-cart-error-key ('header') from a 429 whose key is simply unknown
+    to us (no response line, or an ambiguous pairing)."""
     if status is None:
         return 'unknown'
     if status in (200, 201):
@@ -611,8 +614,13 @@ def gate_of(status, key):
     if status == 400 and key and 'MAX_PURCHASE_LIMIT_EXCEEDED' in key.upper():
         return 'cart_limit'                              # v2: a cart-service answer (x-ssx-hop=1)
     if status == 429:
-        if key is None:
-            return 'unknown'
+        if key is None or key.strip() in ('', '-'):
+            # 2026-10-23 (post-run FS-2): a 429 whose [ATC_RESP] line was SEEN and carried NO tgt-cart-error-key
+            # (content-length 0, no x-ssx-hop) -- 8 on run_20261023_001005 (alt-1 through the residential forwarder),
+            # 2 on 10-01 (home) -- is an edge refusal before the cart service, i.e. wall 1 by position; it gets its
+            # own class so the walls query counts it as limited while keeping it visible. A 429 with no response
+            # line at all, or an ambiguous pairing, stays unknown (the 09-15 case).
+            return 'wall1_keyless' if key_src == 'header' else 'unknown'
         k = key.upper()
         if 'ERR_A2C_TCIN_RATE_LIMITED' in k:
             return 'wall1_limited'
@@ -2556,7 +2564,7 @@ class RunParser:
             tcin=tcin, tcin_src=tcin_src,
             race_seq=(ri + 1) if ri is not None else None, race_src=a.get('race_src'),
             shot_idx=None, is_first=None, flip_opened_race=None, window_id=None, window_age_ms=None,
-            status=status, err_key=key, err_key_src=key_src, gate=gate_of(status, key),
+            status=status, err_key=key, err_key_src=key_src, gate=gate_of(status, key, key_src),
             ep_window_id=None, ep_age_ms=None, ep_src=None,
             has_ssx_hop=(1 if 'x-ssx-hop' in hdr else 0) if hdr is not None else None,
             has_restarts=(1 if 'fastly-restarts' in hdr else 0) if hdr is not None else None,

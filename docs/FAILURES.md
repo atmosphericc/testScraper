@@ -31,6 +31,13 @@ at `src/session/purchase_executor.py:1217-1239`; manager consumes them at
 
 ## Entries
 
+### [2026-10-23] - Drop (02:05-03:16 CT, 4 TCINs, 21 races): 0 carts, every shot refused by the edge limiter on every line; first residential-line night - Target
+**Symptom**: 119 add-to-cart POSTs (primary 40 / business 39 on home, alt-1 40 through an IPRoyal residential sticky session) → 119 × HTTP 429 before the cart service (111 `ERR_A2C_TCIN_RATE_LIMITED`, 8 keyless); 0 past wall 1; the home guest follower 0/134, the two Bright Data guest followers 3/268 single admits (each keyless 401 next), the residential guest follower dead at 01:26 before any window. Detection was complete and 0.6-6.9 s ahead of Restockd's own detections.
+**Root Cause**: Target's edge limiter admitted ~nothing on any line we own; the data fit one shared admit rate per window (not a line or account key); expected orders per raced night 0-0.07 since 10-02 (post-run wf_f218214e-e9b, canaries 4/4 refuted). Side failures of the residential line, all ours to fix: Chrome through IPRoyal stops answering CDP at age 17-21 min (19 restarts; reproduced on a plain guest 3/3); kill-switch sessions died (410); alt-1's profile got the PX wall on the new exit (0 harvest captures, page-signed shots).
+**Fix Applied**: tooling only — event-store gate `wall1_keyless`, guest-follower proactive relaunch + rolling relaunch budget, two line probes; no bot flag armed (`stop_fixing`). Operator decisions: alt-1 back on home vs stay on IPRoyal with `TARGET_CHROME_MAX_AGE_S=780`; retire two inert flags.
+**Confidence**: high on the wall-1 reading (119/119, verified blind); medium on the stall mechanism (NOT ESTABLISHED; FS-W-B / FS-W-A next).
+**Outcome**: 0 units. Claims C-1023-01..16.
+
 ### [2026-10-14] - Drop window (00:00-03:00 CT, rumoured) lost before boot: no MEMBER session on any account; 68 exit-87 launches overnight, 0 minutes of monitoring in the window - OURS (sessions + tooling) / HOST
 **Symptom**:
 - 69 launches (`run_20261014_001059` … `run_20261014_070319`): 68 exited 87 on the 30 s 'Hi,' probe timeout before any stock read; the only GREEN boot was 07:03 (after a scripted login succeeded at 07:02:36), stopped by a double Ctrl-C at 07:44:35. 0 minutes of monitoring 00:00-07:07; 07:07-07:44 all 25 TCINs OUT_OF_STOCK. Units lost: not determinable.
