@@ -180,6 +180,8 @@ OFFLINE = [
     # 2026-10-23: tools/experiments/line_cdp_probe.py (CDP responsiveness per network line; parser + summary only)
     "test_line_cdp_probe_1023",
     "test_proxy_conn_cap_probe_1023",
+    # 2026-10-23: FWD_TUNNEL_IDLE_S in src/proxy/local_forwarder.py (loopback fake upstream; flag off by default)
+    "test_forwarder_tunnel_idle_1023",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

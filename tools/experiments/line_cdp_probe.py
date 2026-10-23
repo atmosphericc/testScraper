@@ -103,7 +103,7 @@ async def run(a) -> int:
         with log.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    pdp = f"https://www.target.com/p/-/A-{a.pdp}"
+    pdp = a.url or f"https://www.target.com/p/-/A-{a.pdp}"
     route = None
     if a.proxy and a.proxy.lower() != "home":
         info = F.resolve_proxy(a.proxy)
@@ -131,13 +131,14 @@ async def run(a) -> int:
             if route is None or route.pool is None:
                 return 0, 0, 0, "-"
             bo, bi = route.traffic()
-            errs, last, active, total = 0, "-", 0, 0
+            errs, last, active, total, idle = 0, "-", 0, 0, 0
             for up in route.pool.upstreams.values():
                 errs += int(getattr(up.stats, "errors", 0) or 0)
                 last = str(getattr(up.stats, "last_error", "") or "-").replace(" ", "_")[:40]
                 active += int(getattr(up.stats, "connections_active", 0) or 0)
                 total += int(getattr(up.stats, "connections_total", 0) or 0)
-            return bo // 1024, bi // 1024, errs, f"{last} conns={active}/{total}"
+                idle += int(getattr(up.stats, "idle_closes", 0) or 0)
+            return bo // 1024, bi // 1024, errs, f"{last} conns={active}/{total} idle_closes={idle}"
 
         async def stall_diag(label: str) -> None:
             """At a stall: is the proxy path itself alive (raw GET through the same forwarder port), is Chrome's HTTP
@@ -271,7 +272,7 @@ async def run_direct(a) -> int:
         out(f"[CDP_PROBE] tag={a.tag} ABORT unexpected proxy URL shape")
         return 2
     user, pw, hostport = m.group(1), m.group(2), m.group(3)
-    pdp = f"https://www.target.com/p/-/A-{a.pdp}"
+    pdp = a.url or f"https://www.target.com/p/-/A-{a.pdp}"
     out(f"[CDP_PROBE] tag={a.tag} DIRECT arm: Chrome --proxy-server={hostport}, auth via CDP Fetch.authRequired (no forwarder)")
     out(f"[CDP_PROBE] tag={a.tag} start minutes={a.minutes} every_s={a.every_s} nav_every_s={a.nav_every_s} pdp={a.pdp}")
     import zendriver as uc
@@ -393,6 +394,7 @@ def build_parser():
     ap.add_argument("--nav-timeout", type=float, default=60.0)
     ap.add_argument("--settle-s", type=float, default=3.0)
     ap.add_argument("--pdp", default=P.DECOY, help="TCIN of the page to load (default: the probe's decoy product)")
+    ap.add_argument("--url", default="", help="full URL to load instead of a Target PDP (e.g. https://example.com/ to test the proxy path without Target's page scripts)")
     ap.add_argument("--no-forwarder", action="store_true",
                     help="FS-W-B arm D: Chrome --proxy-server to the vendor directly, proxy auth via CDP Fetch.authRequired "
                          "(credential never logged); default = through the bot's ForwarderPool")

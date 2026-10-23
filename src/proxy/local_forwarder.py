@@ -29,6 +29,7 @@ Usage as a library:
 """
 
 import asyncio
+import os
 import base64
 import logging
 import re
@@ -43,6 +44,15 @@ UPSTREAM_PORT_DEFAULT = 33335
 BUFFER_SIZE = 65536
 
 
+def _tunnel_idle_s() -> float:
+    """FWD_TUNNEL_IDLE_S seconds (0 / unset / bad = off, the pre-10-23 behaviour)."""
+    try:
+        v = float(os.environ.get("FWD_TUNNEL_IDLE_S", "0") or 0)
+        return v if v > 0 else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
 @dataclass
 class UpstreamStats:
     """Per-upstream connection stats for diagnostics."""
@@ -55,6 +65,7 @@ class UpstreamStats:
     errors: int = 0
     last_error: Optional[str] = None
     last_activity: float = 0.0
+    idle_closes: int = 0     # 2026-10-23: tunnels closed by FWD_TUNNEL_IDLE_S (a silently dropped upstream)
 
 
 @dataclass
@@ -555,12 +566,33 @@ class ForwarderPool:
                 pass
 
     async def _pipe_both(self, up: Upstream, c_reader, c_writer, u_reader, u_writer):
-        """Bidirectional byte pipe with stats updates."""
+        """Bidirectional byte pipe with stats updates.
+
+        2026-10-23 FWD_TUNNEL_IDLE_S (default 0 = unchanged): on the IPRoyal residential line every tunnel of a
+        session goes silent at once ~17-21 min in (both a Chrome through this forwarder and a Chrome talking to the
+        vendor directly stalled in the same second, FS-W-B), and Chrome then hangs on its dead sockets and stops
+        answering CDP. With the flag > 0, a tunnel that carries NO byte in EITHER direction for that many seconds
+        is closed on both sides, so Chrome sees a closed socket and reconnects instead of waiting on a dead one.
+        An idle keep-alive connection closed this way is harmless (Chrome opens a new one on the next request)."""
+        idle_s = _tunnel_idle_s()
+        last = [time.time()]            # shared by both directions: the tunnel's last byte in any direction
+        counted = [False]               # idle_closes is counted once per tunnel, not once per direction
 
         async def pipe(src, dst, counter_attr):
             try:
                 while True:
-                    chunk = await src.read(BUFFER_SIZE)
+                    if idle_s > 0:
+                        try:
+                            chunk = await asyncio.wait_for(src.read(BUFFER_SIZE), timeout=idle_s)
+                        except asyncio.TimeoutError:
+                            if time.time() - last[0] >= idle_s:
+                                if not counted[0]:
+                                    counted[0] = True
+                                    up.stats.idle_closes += 1
+                                break               # the finally closes dst; the other direction sees EOF
+                            continue                # the other direction moved recently: keep waiting
+                    else:
+                        chunk = await src.read(BUFFER_SIZE)
                     if not chunk:
                         break
                     dst.write(chunk)
@@ -568,11 +600,17 @@ class ForwarderPool:
                     setattr(up.stats, counter_attr,
                             getattr(up.stats, counter_attr) + len(chunk))
                     up.stats.last_activity = time.time()
+                    last[0] = up.stats.last_activity
             except Exception:
                 pass
             finally:
                 try:
                     dst.close()
+                except Exception:
+                    pass
+                try:
+                    src_w = u_writer if dst is c_writer else c_writer
+                    src_w.close()                   # close our own side too, so the peer coroutine ends now
                 except Exception:
                     pass
 
