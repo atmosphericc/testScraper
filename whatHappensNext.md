@@ -22,7 +22,7 @@ different ASNs** → BD is the *cleaner* test of "does a different ASN beat home
 line admits while home gets 0, BD is the likely one — which would point to **BD shooting, not
 residential**. Residential's proven value is Shape (wall 2), reachable only after wall 1 opens.
 
-**Landed tonight (all flag-gated, verified, nothing armed; bot stayed DOWN):**
+**Landed tonight (all flag-gated, verified; bot later started GREEN at operator request — lanes still OFF):**
 - **Freeze fix VALIDATED** — 25-min IPRoyal soak: 335 tokens, **0 failures**, 2 proactive relaunches
   at 721/722s, no CDP freeze. The 720s clamp keeps the resi/BD follower arms alive across a full
   drop window (the exact thing that killed the 10-23 measurement). [MEASURED 2026-10-27]
@@ -35,7 +35,14 @@ residential**. Residential's proven value is Shape (wall 2), reachable only afte
 - **`docs/REFRACT_PARITY.md`**: full rewrite — Refract's architecture, the complete wall-by-wall
   **security model** (§9), the sticky-vs-rotate verdict, and every stale 09-20 claim corrected
   (lock already armed, bank already deep, profile-write moot for our members).
-- **`CURRENT_STATE.md`** restored (was deleted) + header refreshed.
+- **`CURRENT_STATE.md`** restored (was deleted) + header refreshed with tonight's state.
+- **Line-health battery (money-free, post-boot):** ALL 6 proxy lines validated alive + Shape-passing —
+  reserve:0/1 (BD) 3/3 & 3/3 → 424; resi:0 (freeze soak) 335 tok/0 fail; resi:1/2/3 all PASS (resi:1
+  had one slow 9s shot, still passed). No dead sessions — the 10-23 silent-death failure is pre-empted.
+  Logs: `logs/experiments/lane_linehealth_*`.
+- **Pre-drop readiness (post-boot):** 3/3 accounts healthy MEMBER (start hot, tokens re-mint); 25/25
+  TCINs visible to RedSky (no bad/invalid SKUs). Some SKUs are pre-orders (binder 1010892074 ~12-04;
+  Delta Reign likely) — valid but won't drop imminently. `python check_session_readiness.py` = ✅ 3/3.
 
 **Investigations this session confirmed (so we stop re-deriving):** the per-(account×TCIN) purchase
 lock is ALREADY built+armed; the production Shape bank is ALREADY depth-6 (>Refract's 3); the
@@ -68,6 +75,21 @@ then `TARGET_LANE_MODE=1` + `TARGET_LANE_BANK_NEWEST_FIRST=1`, and watch `/api/l
 lane-shot parsing into the event store (failure-forensics Rank 1–5) — the event store cannot yet
 split admits by ASN; the follower (the drop instrument) can, so this is belt-and-suspenders for the
 money path, not on the critical path for the measurement.
+
+**NEXT FOCUSED TASK (operator awake, ~30-60 min) — finish lane arm-readiness:** validate the checkout
+handoff (201 cart → account Chrome → pre_checkout → CVV → place_order) AND the main-vs-lane
+coordination (both `app.py` paths fan each in-stock TCIN to the main purchase manager AND the lane
+pool on the SAME account×TCIN; their locks are separate and don't coordinate → **double-fire risk,
+UNVALIDATED**). Money-safe via `test_app.py`; needs the live bot briefly DOWN (it owns the account
+Chromes). Then `claims-verifier` on the premise, then arm as a labelled A/B with a kill switch. ONLY
+then is `TARGET_LANE_MODE=1` safe. This is the honest path to putting the lanes we built into the fight.
+
+**TO FIX / loose ends (none block the proven bot):**
+- Refresh `.claude/state/CURRENT_STATE.md` body beyond the header (10-23 detail persists in places).
+- Cosmetic: benign `WinError 10054` forwarder tunnel-close tracebacks in the run log (suppress later).
+- For arming shooting later: production per-shot egress-IP+ASN logging + lane-shot event-store parsing
+  (failure-forensics Rank 1-5) — the event store can't yet split admits by ASN; the follower can.
+- resi:1 showed one 9s shot (residential latency variance) — watch, not yet a fix.
 
 ---
 
