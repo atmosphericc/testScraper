@@ -1569,6 +1569,73 @@ REM only while TARGET_PDP_QTY_LOOKUP stays off (the default). grep QTY.
 REM Kill: TARGET_QTY_PER_TCIN=0 (the "qty" keys are then ignored).
 set TARGET_QTY_PER_TCIN=1
 REM ===========================================================================
+REM  INDEPENDENT LANE FIRING (2026-10-24, pen-test / limiter stress-test).
+REM  src/lanes/ gives each account its own autonomous ATC firing lane. Each lane
+REM  has its own proxy IP, its own Shape harvest bank, and its own cadence policy.
+REM  From the edge limiter and Shape, N lanes = N independent shoppers.
+REM
+REM  The core change: wave-first's 55-70s fleet-wide sleep is replaced by per-lane
+REM  fast retry (3-4.5s) on each lane's OWN IP bucket. A 401 on lane A says nothing
+REM  about lane B's Shape budget. The edge limiter is still per-TCIN and site-wide,
+REM  but Shape is per-session -- so N independent sessions = N independent Shape chances.
+REM
+REM  TARGET_LANE_MODE=1 enables the lane pool alongside (not replacing) the existing
+REM  purchase manager. The pool reads config/target_accounts.json and builds one lane
+REM  per (account x IP) combination.  TARGET_LANE_IPS selects which proxies the lanes
+REM  use; each unique IP gets a Shape harvester Chrome and each account x IP gets a
+REM  curl_cffi shooter.  201 carts hand off to the account's existing Chrome for checkout.
+REM
+REM  Cadence knobs (per-lane, independent of the fleet wave-first settings):
+REM    LANE_FAST_MIN/MAX_S  = retry delay after an edge 429 (each lane's own bucket)
+REM    LANE_COOL_401_S      = cool-off after COOL_401_STREAK consecutive Shape 401s
+REM    LANE_RACE_BUDGET_S   = max time one lane spends on one TCIN (default 110s)
+REM
+REM  Diagnostics: grep [LANE_EXEC] and [LANE_POOL]. Each lane prints its own shot log
+REM  with per-shot status, response time, and race age. pool.print_status() gives a
+REM  per-lane summary table (shots, edge_pass_rate, shape_pass_rate, orders).
+REM
+REM  Kill: TARGET_LANE_MODE=0 (exact prior fleet behaviour unchanged).
+set TARGET_LANE_MODE=0
+set TARGET_LANE_FAST_MIN_S=3.0
+set TARGET_LANE_FAST_MAX_S=4.5
+set TARGET_LANE_COOL_401_S=25.0
+set TARGET_LANE_COOL_401_STREAK=3
+set TARGET_LANE_RACE_BUDGET_S=110
+REM  Lane v2 (2026-10-25): Shape-harvester + curl_cffi shooter architecture.
+REM  Each unique exit IP gets a guest Chrome harvester that continuously produces
+REM  Shape tokens. Shooters (one per account x IP) fire ATC via curl_cffi using
+REM  those tokens.  201 carts hand off to the account's existing Chrome for checkout.
+REM  TARGET_LANE_IPS: comma-separated list of proxy specs to use for lanes.
+REM    reserve:0,reserve:1      = BD reserve pool indices
+REM    resi:0,resi:1,...        = IPRoyal residential pool indices
+REM    sweep:8,sweep:9          = BD sweep pool indices (careful: shared with monitor)
+REM    all_reserve / all_resi   = entire pool
+REM    Full URLs also accepted.
+REM  Empty = all reserve + all residential (default).
+REM  2026-10-26: SWITCHED to residential-only harvesters (all_resi) per the Refract
+REM  split -- residential for SHOOTING, ISP for MONITORING. The stock monitor already
+REM  runs on the BD ISP sweep pool (config/proxyIps.json "proxies"); it is untouched by
+REM  this key. NOTE: still inert while TARGET_LANE_MODE=0, and NOT yet drop-validated --
+REM  the 10-23 drop refused 119/119 shots on BOTH home and resi (C-1023-10), so the
+REM  resi>home limiter edge is UNPROVEN; measure it at a live drop before MODE=1.
+set TARGET_LANE_IPS=all_resi
+REM  Harvester knobs:
+set TARGET_LANE_HARVEST_INTERVAL_S=4.0
+set TARGET_LANE_TOKEN_TTL_S=300
+REM  CHROME_MAX_AGE_S: proactive relaunch age. Residential is clamped in code to
+REM  720s regardless (C-1023-12: IPRoyal CDP freeze onset 17-21 min; stay under it).
+set TARGET_LANE_CHROME_MAX_AGE_S=780
+REM  STALL_FAILS: consecutive failed harvests that trigger a reactive relaunch (a
+REM  frozen Chrome before max-age); reactive relaunches are rate-capped at 6/hour.
+set TARGET_LANE_STALL_FAILS=3
+REM  PX_PROBE=1 (default): read-only PX/HUMAN wall check on the harvester PDP; on a
+REM  wall, relaunch a fresh guest profile (C-1023-14: the wall is profile-bound).
+set TARGET_LANE_PX_PROBE=1
+set TARGET_LANE_COOKIE_REFRESH_S=60
+REM  Warmup: harvesters must produce N tokens before the first race.
+set TARGET_LANE_WARMUP_TOKENS=5
+set TARGET_LANE_WARMUP_TIMEOUT_S=120
+REM ===========================================================================
 REM  7) Non-destructive relogin: the 20:24 sentinel escalation signed primary
 REM     OUT before the Shape-burned login failed, leaving a GUEST token for the
 REM     next drop. Now the jar is snapshotted pre-signout and restored when the

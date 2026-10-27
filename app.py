@@ -588,6 +588,7 @@ event_bus = EventBus()
 global_purchase_manager = None
 global_event_loop = None
 global_event_loop_thread = None
+global_lane_manager = None
 
 # Core monitoring using purchase manager only
 realtime_validator = None
@@ -970,6 +971,40 @@ def initialize_global_purchase_manager():
         add_activity_log(f"Browser initialization error: {str(e)}", "error", "system")
 
     print("[SYSTEM] ===============================================")
+
+    # ── Lane mode (TARGET_LANE_MODE=1) ─────────────────────────────────
+    # Independent-lane firing: N accounts x M IPs, each with its own
+    # curl_cffi shooter + Shape token harvester. Runs alongside the
+    # existing purchase path, not replacing it.
+    global global_lane_manager
+    global_lane_manager = None
+    if os.environ.get('TARGET_LANE_MODE', '0').strip() == '1':
+        try:
+            from src.lanes.lane_manager import LaneManager
+            worker_map = {}
+            if (global_purchase_manager
+                    and hasattr(global_purchase_manager, 'worker_pool')
+                    and global_purchase_manager.worker_pool):
+                for w in global_purchase_manager.worker_pool.workers:
+                    worker_map[w.config.account_id] = w
+            global_lane_manager = LaneManager.create(worker_map=worker_map)
+            if global_lane_manager.pool.lanes:
+                warmup_ok = global_lane_manager.start(block_for_warmup=True)
+                if warmup_ok:
+                    print("[SYSTEM] ✅ Lane mode active")
+                    add_activity_log(
+                        f"Lane mode: {len(global_lane_manager.pool)} lanes, "
+                        f"{len(global_lane_manager.pool.harvesters)} harvesters",
+                        "success", "system")
+                else:
+                    print("[SYSTEM] ⚠️  Lane mode: warmup incomplete")
+            else:
+                print("[SYSTEM] Lane mode enabled but no lanes configured")
+        except Exception as e:
+            print(f"[SYSTEM] ❌ Lane mode init failed: {e}")
+            import traceback
+            traceback.print_exc()
+            global_lane_manager = None
 
 def purchase_status_callback(tcin, status, state):
     """Callback for real-time purchase status updates"""
@@ -2061,6 +2096,12 @@ class PurchaseManagerThread:
             # OUT OF STOCK -> stay in "ready" status
             purchase_actions = self.purchase_manager.process_stock_data(stock_data)
 
+            # Lane mode: fan in-stock TCINs to the lane pool (parallel curl_cffi shooters)
+            if in_stock_tcins and global_lane_manager and global_lane_manager.is_ready:
+                for tcin in in_stock_tcins:
+                    qty = stock_data.get(tcin, {}).get('quantity', 2)
+                    global_lane_manager.on_stock_flip(tcin, qty)
+
             # STEP 3: Prepare atomic purchase changes data
             purchase_changes = {
                 'resets': reset_tcins,
@@ -2976,6 +3017,13 @@ def api_purchase_states():
     with shared_data.lock:
         purchase_states = shared_data.purchase_states.copy()
     return jsonify(purchase_states)
+
+@app.route('/api/lane-status')
+def api_lane_status():
+    """Lane mode diagnostics: harvesters, lanes, and checkout stats."""
+    if global_lane_manager and global_lane_manager.is_ready:
+        return jsonify(global_lane_manager.health())
+    return jsonify({'mode': 'off', 'started': False, 'ready': False})
 
 @app.route('/api/validate-sync')
 def api_validate_sync():
