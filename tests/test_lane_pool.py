@@ -239,7 +239,7 @@ def test_lane_summary():
     assert s['shots'] == 4
     assert s['edge_pass'] == 2  # 401 + 201 both passed edge
     assert s['shape_pass'] == 1  # only 201 passed shape
-    assert s['orders'] == 1
+    assert s['carts'] == 1  # ATC carts (relabelled from 'orders', M-1 2026-10-27)
 
 
 # ── ShapeTokenBank tests ─────────────────────────────────────────────────

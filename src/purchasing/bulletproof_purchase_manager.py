@@ -3004,6 +3004,27 @@ class BulletproofPurchaseManager:
                 if worker is not None:
                     _reg = getattr(self, '_xpath_claim', None)
                     if _reg is not None:
+                        # Durable double-order guard (fresh dispatch; lanes armed
+                        # only). The registry above only prevents CONCURRENT
+                        # double-fire — it is released when a lane's race ends. The
+                        # SEQUENTIAL direction (a lane placed/ambiguously-placed an
+                        # order for this TCIN, released its claim, then a later flip
+                        # freshly dispatches this account) is closed here: refuse to
+                        # place a second order on an (account, TCIN) already in the
+                        # executor's _ordered_tcins (written by either path; the
+                        # main path's join-tick reads the same set). Gated on
+                        # _reg is not None, so MODE=0 fresh dispatch is unchanged.
+                        _pe_chk = getattr(worker, 'purchase_executor', None)
+                        _ord = getattr(_pe_chk, '_ordered_tcins', None) if _pe_chk is not None else None
+                        if _ord and str(tcin) in _ord:
+                            print(f"[XPATH] {tcin}: {worker.label()} already ordered — "
+                                  f"skipping fresh dispatch (durable guard)")
+                            self._update_purchase_result(
+                                tcin,
+                                {'success': False, 'tcin': tcin,
+                                 'reason': 'already_ordered', 'status': 'ready'},
+                                race_agg=race_agg, worker_label=_race_wlbl)
+                            return
                         _h = worker.label()
                         _acct = _h.split('/', 1)[1] if '/' in _h else _h
                         if _reg.try_claim(_acct, tcin, _h):

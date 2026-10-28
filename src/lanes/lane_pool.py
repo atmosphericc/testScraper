@@ -158,7 +158,7 @@ class LanePool:
         """
         if not ACCOUNTS_CFG.exists():
             print("[LANE_POOL] No accounts config — empty pool")
-            return cls([])
+            return cls([], claim_registry=claim_registry)
 
         with open(ACCOUNTS_CFG) as f:
             acct_cfg = json.load(f)
@@ -168,7 +168,7 @@ class LanePool:
 
         if not accounts:
             print("[LANE_POOL] No enabled accounts — empty pool")
-            return cls([])
+            return cls([], claim_registry=claim_registry)
 
         # Resolve which IPs to use for lanes
         lane_ips_env = os.environ.get('TARGET_LANE_IPS', '').strip()
@@ -182,7 +182,7 @@ class LanePool:
         if not lane_ips:
             print("[LANE_POOL] No lane IPs configured — "
                   "set TARGET_LANE_IPS or add reserve/residential proxies")
-            return cls([])
+            return cls([], claim_registry=claim_registry)
 
         # Read cadence config from env
         fast_min = float(os.environ.get('TARGET_LANE_FAST_MIN_S', '3.0'))
@@ -194,15 +194,38 @@ class LanePool:
         chrome_max_age = float(os.environ.get('TARGET_LANE_CHROME_MAX_AGE_S', '780.0'))
         cookie_refresh = float(os.environ.get('TARGET_LANE_COOKIE_REFRESH_S', '60.0'))
 
-        # Deduplicate IPs and build one harvester per unique IP
+        # Deduplicate IPs (insertion order preserved)
         seen_ips: Dict[str, str] = {}  # ip_label -> proxy_url
         for url in lane_ips:
             label = _ip_label(url)
             if label not in seen_ips:
                 seen_ips[label] = url
+        ip_list = list(seen_ips.items())  # [(label, url), ...]
 
+        # Stable account id per enabled account (M-3: .get + fallback, parity
+        # with worker_pool — a config account missing account_id must not KeyError
+        # into the blanket lane-init except and silently disable lanes).
+        acct_ids = [a.get('account_id') or f"account-{i}" for i, a in enumerate(accounts)]
+
+        # S1 (2026-10-27): assign each account ONE dedicated exit IP, round-robin.
+        # The old account x IP cross-product + the (account, TCIN) claim meant only
+        # the FIRST IP-lane of each account ever fired, so every account converged
+        # on IP #0 (3 of 4 harvesters idle, the 4th overloaded 3:1 until its bank
+        # drained). One lane per account on a distinct IP spreads accounts across
+        # IPs (independent ASNs for the measurement) and keeps the verified
+        # double-fire model intact. If accounts > IPs, round-robin reuses an IP —
+        # distinct accounts, no double-fire, they just share that IP's Shape fate.
+        assignments = []  # (idx, aid, label, url)
+        for i in range(len(accounts)):
+            label, url = ip_list[i % len(ip_list)]
+            assignments.append((i, acct_ids[i], label, url))
+
+        # Build a harvester only for the IPs actually assigned to a lane.
+        used_labels = {label for (_i, _aid, label, _u) in assignments}
         harvesters: Dict[str, ShapeHarvester] = {}
-        for label, url in seen_ips.items():
+        for label, url in ip_list:
+            if label not in used_labels:
+                continue
             harvesters[label] = ShapeHarvester(
                 proxy_url=url,
                 ip_label=label,
@@ -211,56 +234,45 @@ class LanePool:
                 chrome_max_age_s=chrome_max_age,
             )
 
-        # Build one LaneCheckout per account
+        # One LaneCheckout per account
         checkouts: Dict[str, LaneCheckout] = {}
-        for acct in accounts:
-            aid = acct['account_id']
-            cvv = acct.get('cvv', '')
-            checkouts[aid] = LaneCheckout(account_id=aid, cvv=cvv)
+        for i, aid in enumerate(acct_ids):
+            checkouts[aid] = LaneCheckout(account_id=aid, cvv=accounts[i].get('cvv', ''))
 
-        # Build lanes: one per (account x IP)
+        # One lane per account, each bound to its dedicated IP.
         lanes: List[Lane] = []
-        for acct in accounts:
-            aid = acct['account_id']
-            session_path = acct.get('session_path', '')
+        for i, aid, label, url in assignments:
+            session_path = accounts[i].get('session_path', '')
+            harvester = harvesters[label]
+            shooter = LaneShooter(
+                bank=harvester.bank,
+                proxy_url=url,
+                session_path=session_path,
+                account_id=aid,
+                ip_label=label,
+                cookie_refresh_s=cookie_refresh,
+            )
+            cadence = LaneCadence(
+                fast_retry_min_s=fast_min,
+                fast_retry_max_s=fast_max,
+                cool_401_s=cool_401,
+                cool_401_streak=cool_streak,
+            )
+            lanes.append(Lane(
+                lane_id=f"{aid}@{label}",
+                account_id=aid,
+                proxy_url=url,
+                ip_label=label,
+                worker=worker_map.get(aid) if worker_map else None,
+                shooter=shooter,
+                checkout=checkouts.get(aid),
+                cadence=cadence,
+            ))
 
-            for label, url in seen_ips.items():
-                harvester = harvesters[label]
-                shooter = LaneShooter(
-                    bank=harvester.bank,
-                    proxy_url=url,
-                    session_path=session_path,
-                    account_id=aid,
-                    ip_label=label,
-                    cookie_refresh_s=cookie_refresh,
-                )
-
-                cadence = LaneCadence(
-                    fast_retry_min_s=fast_min,
-                    fast_retry_max_s=fast_max,
-                    cool_401_s=cool_401,
-                    cool_401_streak=cool_streak,
-                )
-
-                lane = Lane(
-                    lane_id=f"{aid}@{label}",
-                    account_id=aid,
-                    proxy_url=url,
-                    ip_label=label,
-                    worker=worker_map.get(aid) if worker_map else None,
-                    shooter=shooter,
-                    checkout=checkouts.get(aid),
-                    cadence=cadence,
-                )
-                lanes.append(lane)
-
-        print(f"[LANE_POOL] Built {len(lanes)} lanes "
-              f"({len(accounts)} accounts x {len(seen_ips)} IPs), "
-              f"{len(harvesters)} harvesters")
-        for label in sorted(seen_ips):
-            print(f"  IP {label}: "
-                  f"{', '.join(a['account_id'] for a in accounts)} "
-                  f"(harvester interval={harvest_interval}s)")
+        print(f"[LANE_POOL] Built {len(lanes)} lanes (one per account on a "
+              f"dedicated IP), {len(harvesters)} harvesters")
+        for _i, aid, label, _u in assignments:
+            print(f"  {aid} -> IP {label} (harvester interval={harvest_interval}s)")
 
         return cls(lanes, harvesters, checkouts, claim_registry=claim_registry)
 
@@ -300,6 +312,14 @@ class LanePool:
             if lane.racing:
                 print(f"[LANE_POOL] {lane.label()} already racing "
                       f"{lane._active_tcin} — skipping {tcin}")
+                continue
+
+            # Durable double-order guard (across flips AND across paths): if this
+            # account already placed — or AMBIGUOUSLY placed — an order for this
+            # TCIN, never fire it again. Reads the SAME per-account
+            # PurchaseExecutor._ordered_tcins the main path's re-buy guard uses.
+            if _account_already_ordered(lane, tcin):
+                print(f"[LANE_POOL] {lane.label()} already ordered {tcin} — skipping")
                 continue
 
             # Check if the lane's harvester has tokens
@@ -374,7 +394,7 @@ class LanePool:
             edge_pct = f"{s['edge_pass_rate']:.1f}%"
             print(f"  {s['lane']:<28} shots={s['shots']:<5} "
                   f"edge_pass={s['edge_pass']:<4} ({edge_pct:>5}) "
-                  f"orders={s['orders']} "
+                  f"carts={s['carts']} "
                   f"no_token={s['no_token']}")
 
     def __len__(self) -> int:
@@ -382,6 +402,35 @@ class LanePool:
 
     def __iter__(self):
         return iter(self.lanes)
+
+
+def _account_already_ordered(lane: Lane, tcin: str) -> bool:
+    """True if this lane's account has already placed (or AMBIGUOUSLY placed) an
+    order for `tcin`. Read from the account's PurchaseExecutor._ordered_tcins —
+    the SAME set the main path's re-buy guard consults — so a lane-won TCIN is
+    never re-fired by a later flip nor re-selected by the main path. Never raises."""
+    try:
+        w = getattr(lane, 'worker', None)
+        pe = getattr(w, 'purchase_executor', None) if w is not None else None
+        s = getattr(pe, '_ordered_tcins', None) if pe is not None else None
+        return bool(s) and str(tcin) in s
+    except Exception:
+        return False
+
+
+def _note_account_ordered(lane: Lane, tcin: str) -> None:
+    """Record that this lane's account placed (or MAY have placed) an order for
+    `tcin`, into the account's PurchaseExecutor._ordered_tcins — the set both the
+    lane's own pre-fire guard (_account_already_ordered) and the main path's
+    re-buy guard read. No-op when the executor is absent. Never raises."""
+    try:
+        w = getattr(lane, 'worker', None)
+        pe = getattr(w, 'purchase_executor', None) if w is not None else None
+        fn = getattr(pe, '_note_ordered_tcin', None) if pe is not None else None
+        if callable(fn):
+            fn(tcin)
+    except Exception:
+        pass
 
 
 def _shooter_fire_fn(lane: Lane, tcin: str, quantity: int) -> Dict[str, Any]:
@@ -404,8 +453,15 @@ def _shooter_fire_fn(lane: Lane, tcin: str, quantity: int) -> Dict[str, Any]:
                 lane.worker, tcin, quantity, cart_id)
             result['checkout'] = checkout_result
             po_status = checkout_result.get('po', {}).get('status', 0)
+            _ambiguous = bool(checkout_result.get('ambiguous'))
             if po_status in (200, 201):
                 result['order_placed'] = True
+            # Durable double-order guard: record a confirmed OR ambiguous order so
+            # neither a later flip nor the main path re-fires this account x TCIN.
+            # Ambiguous = the place-order left but we got no definitive answer
+            # (no idempotency key) → fail closed, treat as ordered.
+            if po_status in (200, 201) or _ambiguous:
+                _note_account_ordered(lane, tcin)
         except Exception as e:
             print(f"[LANE] {lane.label()} checkout handoff failed: {e}")
             result['checkout_error'] = str(e)

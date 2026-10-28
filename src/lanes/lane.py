@@ -175,7 +175,12 @@ class Lane:
             'shots': c.total_shots,
             'edge_pass': c.total_edge_pass,
             'shape_pass': c.total_shape_pass,
-            'orders': c.total_orders,
+            # NOTE: cadence.total_orders is incremented on an ATC 200/201 — i.e.
+            # it counts CARTS created by this lane, not placed orders. The real
+            # placed-order count per account is LaneCheckout.total_orders
+            # (health()['checkouts']). Labelled 'carts' here so a readout can't
+            # mistake carts for orders (M-1, 2026-10-27).
+            'carts': c.total_orders,
             'edge_pass_rate': (c.total_edge_pass / c.total_shots * 100
                                if c.total_shots else 0),
             'shape_pass_rate': (c.total_shape_pass / c.total_edge_pass * 100

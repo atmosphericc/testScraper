@@ -16,6 +16,7 @@ import asyncio
 import json
 import os
 import time
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, Optional
 
 
@@ -94,12 +95,24 @@ def _checkout_js(tcin: str, quantity: int, cvv_digits: str) -> str:
             out.skip = 'pre_' + out.pre.status; return out;
         }}
 
-        // Foreign-item guard
-        if (out.pre.tcins.some(t => t && t !== '{tcin}')) {{
+        // Foreign-item guard (stringify both sides — pre_checkout may return a
+        // numeric tcin; a strict !== against the injected string would reject
+        // EVERY legit cart. Matches the qty guard above and the proven path.)
+        if (out.pre.tcins.some(t => t && String(t) !== '{tcin}')) {{
             out.skip = 'foreign_cart_item'; return out;
         }}
 
-        // Quantity guard
+        // Lower-bound gate: our line must actually be present (matches the proven
+        // path's cart_empty / cart_qty_unknown — never place-order a cart we
+        // can't confirm holds our item).
+        if (!(out.pre.n >= 1)) {{
+            out.skip = 'cart_empty'; return out;
+        }}
+        if (out.pre.qty === null || out.pre.qty === undefined || !(out.pre.qty >= 1)) {{
+            out.skip = 'cart_qty_unknown'; return out;
+        }}
+
+        // Quantity guard (upper bound)
         if (out.pre.qty !== null && out.pre.qty !== undefined && out.pre.qty > {int(quantity)}) {{
             out.skip = 'cart_qty_over'; return out;
         }}
@@ -198,6 +211,7 @@ class LaneCheckout:
         tcin: str,
         quantity: int,
         cart_id: str = '',
+        pe: Any = None,
     ) -> Dict[str, Any]:
         """Run pre_checkout -> place_order on the account's Chrome tab.
 
@@ -224,9 +238,22 @@ class LaneCheckout:
 
         try:
             js = _checkout_js(tcin, quantity, self.cvv)
-            raw = await asyncio.wait_for(
-                tab.evaluate(js, await_promise=True),
-                timeout=15.0)
+            # Hold the account's page lock (the main path's PurchaseExecutor
+            # _page_lock, wired onto the SessionManager as _drop_guard_lock) so a
+            # lane checkout and a main-path checkout/ATC never drive the SAME
+            # account's one Chrome tab concurrently — interleaved Runtime.evaluate
+            # chains on one CDP session can cross responses. The claim keys on
+            # (account, TCIN), so two DIFFERENT TCINs on one account can still
+            # reach this tab at once without this lock. Runs on the worker's loop
+            # (same loop that owns the tab and the lock), so acquisition is valid.
+            _lk = getattr(pe, '_page_lock', None)
+            if _lk is not None:
+                async with _lk:
+                    raw = await asyncio.wait_for(
+                        tab.evaluate(js, await_promise=True), timeout=15.0)
+            else:
+                raw = await asyncio.wait_for(
+                    tab.evaluate(js, await_promise=True), timeout=15.0)
 
             if isinstance(raw, str):
                 result = json.loads(raw)
@@ -238,11 +265,24 @@ class LaneCheckout:
             elapsed = time.time() - t0
             po_status = result.get('po', {}).get('status', 0)
             po_fired = result.get('po', {}).get('fired', False)
+            # Ambiguous-commit (matches the proven path's _po_ambiguous): the
+            # place-order POST LEFT but we got no definitive answer (status 0 =
+            # fetch threw / timed out, 408, or 5xx). Target's checkout has no
+            # idempotency key, so it MAY have committed. Treat as terminal and
+            # possibly-ordered — NOT a retriable failure — so the caller never
+            # re-fires this account x TCIN (prevents a double charge).
+            ambiguous = bool(po_fired) and (
+                po_status == 0 or po_status == 408 or (500 <= po_status <= 599))
+            result['ambiguous'] = ambiguous
 
             if po_status in (200, 201) and po_fired:
                 self.total_orders += 1
                 print(f"[LANE_CHECKOUT] {self.account_id} ORDER PLACED! "
                       f"status={po_status} tcin={tcin} elapsed={elapsed:.2f}s")
+            elif ambiguous:
+                print(f"[LANE_CHECKOUT] {self.account_id} AMBIGUOUS place-order "
+                      f"(fired, status={po_status}) tcin={tcin} elapsed={elapsed:.2f}s "
+                      f"— treating as possibly-ordered, NO retry")
             elif result.get('skip'):
                 print(f"[LANE_CHECKOUT] {self.account_id} skipped: "
                       f"{result['skip']} tcin={tcin} elapsed={elapsed:.2f}s")
@@ -258,13 +298,15 @@ class LaneCheckout:
             return result
 
         except asyncio.TimeoutError:
-            self.total_failures += 1
             elapsed = time.time() - t0
             print(f"[LANE_CHECKOUT] {self.account_id} TIMEOUT "
-                  f"tcin={tcin} elapsed={elapsed:.2f}s")
+                  f"tcin={tcin} elapsed={elapsed:.2f}s — AMBIGUOUS, no retry")
+            # The JS chain timed out; the place-order POST may have fired and
+            # committed. Treat as ambiguous (possibly-ordered), NOT a retriable
+            # failure, so the caller does not re-fire this account x TCIN.
             return {
                 'pre': {'status': 0}, 'po': {'status': 0, 'body': 'timeout', 'fired': True},
-                'skip': '', 'checkout_elapsed_s': round(elapsed, 3),
+                'ambiguous': True, 'skip': '', 'checkout_elapsed_s': round(elapsed, 3),
                 'account': self.account_id,
             }
         except Exception as e:
@@ -297,11 +339,25 @@ class LaneCheckout:
                 'skip': 'no_tab', 'account': self.account_id,
             }
 
-        coro = self.checkout_async(tab, tcin, quantity, cart_id)
+        pe = getattr(worker, 'purchase_executor', None)
+        coro = self.checkout_async(tab, tcin, quantity, cart_id, pe=pe)
 
         if hasattr(worker, 'run_async'):
             future = worker.run_async(coro)
-            return future.result(timeout=20.0)
+            try:
+                return future.result(timeout=20.0)
+            except FuturesTimeoutError:
+                # The worker loop did not return in time, and future.result does
+                # NOT cancel the coroutine — the place-order POST can still fire
+                # on the worker loop AFTER we give up here. Treat as ambiguous
+                # (possibly-ordered), never a retriable failure.
+                print(f"[LANE_CHECKOUT] {self.account_id} run_async TIMEOUT "
+                      f"tcin={tcin} — AMBIGUOUS, no retry")
+                return {
+                    'pre': {'status': 0},
+                    'po': {'status': 0, 'body': 'future_timeout', 'fired': True},
+                    'ambiguous': True, 'skip': '', 'account': self.account_id,
+                }
         else:
             loop = asyncio.new_event_loop()
             try:

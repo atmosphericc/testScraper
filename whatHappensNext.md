@@ -2,6 +2,59 @@
 
 ## ★ 2026-10-27 overnight session — READ THIS FIRST ★
 
+### 2026-10-27 (later) UPDATE — lane double-fire guard BUILT + VERIFIED, and a lane-arming crash fixed (commit c731f81b)
+- **Cross-path double-fire risk is now CLOSED (was UNVALIDATED).** Under `TARGET_LANE_MODE=1` the
+  same in-stock TCIN was handed to BOTH the main purchase manager AND the lane pool, on the same
+  member account + saved card, with no shared lock → two real orders / two charges possible. New
+  `src/purchasing/purchase_claim.py` `PurchaseClaimRegistry`: a strictly-exclusive per-(account_id,
+  TCIN) claim both paths consult. Lane claims in `on_stock_flip`; main path claims in
+  `execute_real_purchase` (every attempt — covers the legacy single-worker branch) + synchronously
+  via the worker reservation on the racing branch (same key+holder = idempotent, proven path wins
+  accounts ahead of the lanes). Closes the intra-lane (all-lanes-of-one-account) collision too.
+- **FOUND + FIXED a latent crash: lanes never actually armed via the app.** `app.py` built the lane
+  worker_map with `w.config.account_id`, but `Worker` has no `.config` (it's `.cfg`, worker.py:87) →
+  flipping `TARGET_LANE_MODE=1` raised AttributeError and aborted lane init *before* anything wired,
+  silently falling back to main-path-only. **The off-window "live-validated" lane work built `LanePool`
+  directly and bypassed this path, so the app's own MODE=1 arming was never exercised.** Fixed to
+  `w.cfg.account_id`.
+- **Fully gated:** `_xpath_claim` is None when lanes are off → `TARGET_LANE_MODE=0` is a byte-for-byte
+  no-op; the PROVEN production path is untouched.
+- **Verified:** offline suite **78/78** (new `tests/test_purchase_claim.py` 23/23 incl. real-dispatch
+  legacy-branch + racing-fleet-with-registry + app.py wiring guards). `claims-verifier` **CONFIRMED**
+  after TWO refuted passes (caught the legacy-branch gap, then the w.config crash). Not pushed.
+- **Still gated on data, not code:** arming lanes STILL waits on the live-drop cross-ASN measurement.
+  This change makes them *safe to arm*; it does not arm them. `TARGET_LANE_MODE=0` unchanged.
+- **Residual (minor, non-blocking):** the legacy in-thread claim is freed only in the `finally`, not
+  stale-swept, so a hard process-kill mid-attempt leaks it (fail-closed → no double-fire, just a
+  wedged slot); `PurchaseClaimRegistry.release_all_for_holder` exists but is not yet wired to lane
+  retirement.
+
+### 2026-10-27 (audit round 2) — full 3-agent audit of the never-run-live lane path, then hardened (2nd commit)
+A 3-agent audit (checkout / boot-wiring / shooter-harvester) + 2 more claims-verifier passes found and
+closed a cluster of bugs the off-window dead-TCIN control structurally could not expose. No new CRASH
+after w.cfg; the ATC body/URL is byte-identical to the proven path and the IP-binding invariant holds.
+Fixes landed (all behind MODE=0; offline suite 78/78; claims-verifier A–F CONFIRMED after refuting the
+first two attempts):
+- **C1 sequential/cross-path double-order** — the registry is CONCURRENT-only (released at race end), so
+  a lane order → later main flip could place a 2nd order. Now the lane records confirmed/ambiguous orders
+  into the account's `_ordered_tcins` and BOTH the lane AND the main path's FRESH dispatch
+  (`execute_real_purchase`, lanes-armed-gated) yield on it. [the headline fix; verifier refuted two
+  earlier incomplete versions — the legacy branch, then the fresh-dispatch read site]
+- **C2 ambiguous-commit** — a fired-but-no-answer place-order (status 0/408/5xx or a wait/future timeout)
+  is tagged ambiguous, never re-fired, recorded as ordered (fail-closed).
+- **C3** foreign-item guard stringifies the TCIN (a numeric cart tcin would otherwise reject EVERY cart);
+  **C4** empty/qty lower-bound gate. **C5** lane checkout holds the account's `_page_lock` around tab.evaluate.
+- **S1** one lane per account on a DISTINCT IP (operator chose this over full multi-IP racing) — fixes the
+  convergence where all accounts piled on IP#0 and 3 of 4 harvesters sat idle.
+- **S2** freshest-first draw + a usable-age cap (bat `TARGET_LANE_BANK_NEWEST_FIRST=1` +
+  `TARGET_LANE_TOKEN_MAX_USE_AGE_S=90`) so a stalled harvester reports no-token vs firing wire-stale Shape.
+- **S3** referer rewritten to the hot TCIN PDP (was the dead control PDP). **S4** cookies split by role
+  (Shape from the harvester/lane-IP, auth from the account — account's home-IP `_abck` never overrides).
+- **SM-1** blanket-except now prints `[LANE] INIT FAILED` + boot_check turns the boot RED (the belt that
+  would have caught w.config). **SM-2** empty-worker_map warning. Minors: carts-vs-orders relabel, port-race lock.
+- Tests: `tests/test_purchase_claim.py` 23 → **32** (fresh-dispatch yield on both legacy AND racing branches,
+  ambiguous+lock matrix, cookie split, bank cap, one-lane-per-account). Committed, not pushed.
+
 **Operator /goal:** "be 100% ready for the next drop, comfortable all logs are in place (new
 architecture), stress-test as hard as possible, big improvements not minor tweaks, succeed next
 drop leveraging all we have." Proxies: **use BD ISP + IPRoyal resi only, no new procurement**;
@@ -76,15 +129,21 @@ lane-shot parsing into the event store (failure-forensics Rank 1–5) — the ev
 split admits by ASN; the follower (the drop instrument) can, so this is belt-and-suspenders for the
 money path, not on the critical path for the measurement.
 
-**NEXT FOCUSED TASK (operator awake, ~30-60 min) — finish lane arm-readiness:** validate the checkout
-handoff (201 cart → account Chrome → pre_checkout → CVV → place_order) AND the main-vs-lane
-coordination (both `app.py` paths fan each in-stock TCIN to the main purchase manager AND the lane
-pool on the SAME account×TCIN; their locks are separate and don't coordinate → **double-fire risk,
-UNVALIDATED**). Money-safe via `test_app.py`; needs the live bot briefly DOWN (it owns the account
-Chromes). Then `claims-verifier` on the premise, then arm as a labelled A/B with a kill switch. ONLY
-then is `TARGET_LANE_MODE=1` safe. This is the honest path to putting the lanes we built into the fight.
+**NEXT FOCUSED TASK — lane arm-readiness:** main-vs-lane coordination is now **DONE + verified +
+committed (c731f81b)** — see the 2026-10-27 (later) UPDATE at the top. The remaining arm-readiness
+gaps: (1) the lane **checkout handoff** (201 cart → account Chrome → pre_checkout → CVV →
+place_order) is still only money-free/off-window validated, never a real place-order; (2) the app's
+own MODE=1 lane boot path (now that the w.config crash is fixed) has still never run live — a brief
+money-safe boot with `TARGET_LANE_MODE=1` against `test_app.py` would confirm lanes actually start,
+warm up, and wire the registry end-to-end. Then arm as a labelled A/B with a kill switch. ONLY after
+the live-drop cross-ASN measurement says a non-home ASN beats home is `TARGET_LANE_MODE=1` worth
+flipping for real.
 
 **TO FIX / loose ends (none block the proven bot):**
+- Lane claim robustness (only matters once lanes arm): the legacy in-thread claim is freed only in
+  `execute_real_purchase`'s `finally`, not stale-swept — a hard process-kill mid-attempt leaks it
+  (fail-closed, wedges that account×TCIN slot). Wire `PurchaseClaimRegistry.release_all_for_holder`
+  to lane/racer retirement, or add a TTL sweep for in-thread claims. [from claims-verifier, c731f81b]
 - Refresh `.claude/state/CURRENT_STATE.md` body beyond the header (10-23 detail persists in places).
 - Cosmetic: benign `WinError 10054` forwarder tunnel-close tracebacks in the run log (suppress later).
 - For arming shooting later: production per-shot egress-IP+ASN logging + lane-shot event-store parsing

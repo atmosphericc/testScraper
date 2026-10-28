@@ -991,6 +991,19 @@ def initialize_global_purchase_manager():
                     # .config does not exist and raised AttributeError here, aborting
                     # lane init before the registry was ever injected (C-1027 fix).
                     worker_map[w.cfg.account_id] = w
+            # SM-2 (C-1027): a worker_pool present but an empty worker_map means
+            # every lane is built with worker=None → lanes will CART but never
+            # CHECK OUT (a degraded boot that reached here before the pool built).
+            if (global_purchase_manager is not None
+                    and getattr(global_purchase_manager, 'worker_pool', None)
+                    and not worker_map):
+                print("[SYSTEM] ⚠️  LANE WARN: worker_pool present but worker_map "
+                      "empty — lanes will cart but NOT check out")
+                try:
+                    add_activity_log("Lane mode: empty worker_map — lanes cart but "
+                                     "cannot check out", "warning", "system")
+                except Exception:
+                    pass
             # Cross-path double-fire guard: ONE shared claim registry that the
             # main purchase manager AND the lane pool both consult, so at most
             # one place-order is live per (account_id, TCIN) across both paths.
@@ -1028,9 +1041,20 @@ def initialize_global_purchase_manager():
             else:
                 print("[SYSTEM] Lane mode enabled but no lanes configured")
         except Exception as e:
+            # LOUD + scannable (C-1027 SM-1): the original w.config crash was
+            # SWALLOWED here, silently disabling lanes while the boot showed
+            # GREEN. This marker lets boot_check turn the boot RED instead of
+            # green-with-lanes-silently-dead, and records the failure on the
+            # dashboard.
+            print(f"[LANE] INIT FAILED: {type(e).__name__}: {e}")
             print(f"[SYSTEM] ❌ Lane mode init failed: {e}")
             import traceback
             traceback.print_exc()
+            try:
+                add_activity_log(f"Lane mode INIT FAILED: {type(e).__name__}: {e}",
+                                 "error", "system")
+            except Exception:
+                pass
             global_lane_manager = None
 
 def purchase_status_callback(tcin, status, state):

@@ -47,21 +47,40 @@ AUTH_COOKIES = frozenset({
 })
 
 
-def _merge_cookies(harvested: str, account: str) -> str:
-    """Merge harvested (Shape) cookies with account auth cookies.
+def _parse_cookie_header(raw: str) -> Dict[str, str]:
+    d: Dict[str, str] = {}
+    for pair in (raw or '').split(';'):
+        pair = pair.strip()
+        if '=' in pair:
+            n, _, v = pair.partition('=')
+            d[n.strip()] = v.strip()
+    return d
 
-    Shape cookies (_abck, bm_sv etc) come from the harvester Chrome and are
-    part of the Shape signature.  Auth cookies (accessToken, login-session etc)
-    come from the account's session file and identify the buyer.  Both must be
-    present: Shape validates its own cookies, Target validates the auth ones.
+
+def _merge_cookies(harvested: str, account: str) -> str:
+    """Merge harvested (Shape) cookies with account auth cookies, by ROLE.
+
+    Shape cookies (_abck, bm_* …) MUST come from the harvester Chrome — they are
+    minted on the lane's exit IP and are part of the Shape signature for THAT
+    connection. Auth cookies (accessToken, login-session …) MUST come from the
+    account's session file — they identify the buyer. The previous version
+    merged (harvested, account) into one dict so the ACCOUNT's home-IP _abck won
+    on collision — i.e. it presented a different-IP Shape sensor than the
+    connection, exactly what E-SHOOTER warns against (C-1023-22..24). The
+    SHAPE_COOKIES / AUTH_COOKIES frozensets existed for this split but were dead
+    code; this uses them.
     """
-    combined = {}
-    for raw in (harvested, account):
-        for pair in (raw or '').split(';'):
-            pair = pair.strip()
-            if '=' in pair:
-                n, _, v = pair.partition('=')
-                combined[n.strip()] = v.strip()
+    h = _parse_cookie_header(harvested)
+    a = _parse_cookie_header(account)
+    combined: Dict[str, str] = dict(a)          # account carries auth + its own
+    for name, val in h.items():                 # harvester overrides Shape cookies
+        if name in SHAPE_COOKIES:
+            combined[name] = val
+        elif name not in combined:              # keep harvester-only extras
+            combined[name] = val
+    for name in AUTH_COOKIES:                    # force auth from the account jar
+        if name in a:
+            combined[name] = a[name]
     return '; '.join(f'{n}={v}' for n, v in combined.items())
 
 
@@ -229,6 +248,18 @@ class LaneShooter:
 
         # 3. Build headers: merge Shape cookies with account auth cookies
         headers = dict(token.headers)
+        # Referer coherence (S3): the harvester always sits on the dead control
+        # PDP, so every captured token bakes in Referer=.../A-81926151. Rewrite it
+        # to the hot TCIN's PDP so the shot doesn't carry a referer pointing at a
+        # DIFFERENT product than it's carting (the proven path sends the hot PDP;
+        # Referer is not body-signed, so overwriting the value is safe).
+        _new_ref = f"https://www.target.com/p/-/A-{tcin}"
+        _ref_keys = [k for k in headers if k.lower() == 'referer']
+        if _ref_keys:
+            for k in _ref_keys:
+                headers[k] = _new_ref
+        else:
+            headers['referer'] = _new_ref
         harvested_cookie = ''
         for k in list(headers.keys()):
             if k.lower() == 'cookie':

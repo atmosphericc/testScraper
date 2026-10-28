@@ -139,7 +139,7 @@ class LaneManager:
                 'lane': s['lane'],
                 'shots': s['shots'],
                 'edge_pass': s['edge_pass'],
-                'orders': s['orders'],
+                'carts': s['carts'],  # ATC carts, not placed orders (see Lane.summary)
                 'racing': s['racing'],
             })
 

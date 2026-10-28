@@ -169,10 +169,27 @@ class ShapeTokenBank:
     """Thread-safe FIFO bank of ShapeTokens for one exit IP."""
 
     def __init__(self, ttl_s: float = 300.0, max_size: int = 200,
-                 newest_first: Optional[bool] = None):
+                 newest_first: Optional[bool] = None,
+                 max_use_age_s: Optional[float] = None):
         self._bank: Deque[ShapeToken] = deque(maxlen=max_size)
         self._lock = threading.Lock()
         self._ttl_s = ttl_s
+        # Usable-freshness cap (S2). The TTL above is BANK RETENTION; this is the
+        # max age at which a token may still be FIRED. The proven path refuses its
+        # own cached Shape once age >= 90 s (purchase_executor use_cached age<90),
+        # so a 300 s-retained token drawn oldest-first could be replayed 3x older
+        # than production will touch. When set, withdraw() skips (and available
+        # excludes) tokens older than this, so a STALLED harvester reports
+        # no-token instead of firing wire-stale Shape. Default OFF in code; the
+        # bat sets TARGET_LANE_TOKEN_MAX_USE_AGE_S=90 when lanes arm (with
+        # TARGET_LANE_BANK_NEWEST_FIRST=1, the freshest token is seconds old
+        # during active harvesting, so this only bites on a stall). Arg wins.
+        if max_use_age_s is None:
+            try:
+                max_use_age_s = float(os.environ.get('TARGET_LANE_TOKEN_MAX_USE_AGE_S', '0'))
+            except Exception:
+                max_use_age_s = 0.0
+        self._max_use_age_s = max_use_age_s if (max_use_age_s and max_use_age_s > 0) else None
         # Draw order. Default FIFO (oldest-first) = current behavior. Set
         # TARGET_LANE_BANK_NEWEST_FIRST=1 to draw freshest-first, matching the
         # proven production bank (shape_harvest.pop_fresh) — a hot burst then
@@ -185,6 +202,7 @@ class ShapeTokenBank:
         self.total_produced = 0
         self.total_consumed = 0
         self.total_expired = 0
+        self.total_too_stale = 0
 
     def deposit(self, headers: Dict[str, str], body: str, user_agent: str) -> None:
         token = ShapeToken(
@@ -199,22 +217,44 @@ class ShapeTokenBank:
             self.total_produced += 1
 
     def withdraw(self) -> Optional[ShapeToken]:
-        """Take one unexpired token from the bank. Oldest-first by default, or
-        freshest-first when newest_first is set. Returns None if empty."""
+        """Take one usable token from the bank. Oldest-first by default, or
+        freshest-first when newest_first is set. Skips TTL-expired tokens, and
+        (when max_use_age_s is set) tokens too stale to FIRE. Returns None if
+        nothing usable."""
+        now = time.time()
         with self._lock:
             while self._bank:
-                token = self._bank.pop() if self._newest_first else self._bank.popleft()
-                if not token.expired:
-                    self.total_consumed += 1
-                    return token
-                self.total_expired += 1
+                token = self._bank[-1] if self._newest_first else self._bank[0]
+                age = now - token.harvested_at
+                if age > token.ttl_s:
+                    # TTL-expired: drop and keep looking.
+                    self._bank.pop() if self._newest_first else self._bank.popleft()
+                    self.total_expired += 1
+                    continue
+                if self._max_use_age_s is not None and age > self._max_use_age_s:
+                    # Not TTL-expired, but too stale to fire. Freshest-first: the
+                    # candidate is the youngest, so every other token is staler →
+                    # nothing usable. Oldest-first: drop the stale head, keep looking.
+                    if self._newest_first:
+                        return None
+                    self._bank.popleft()
+                    self.total_too_stale += 1
+                    continue
+                self._bank.pop() if self._newest_first else self._bank.popleft()
+                self.total_consumed += 1
+                return token
         return None
 
     @property
     def available(self) -> int:
         with self._lock:
             now = time.time()
-            return sum(1 for t in self._bank if (now - t.harvested_at) <= t.ttl_s)
+            cap = self._max_use_age_s
+            return sum(
+                1 for t in self._bank
+                if (now - t.harvested_at) <= t.ttl_s
+                and (cap is None or (now - t.harvested_at) <= cap)
+            )
 
     @property
     def size(self) -> int:
@@ -228,7 +268,9 @@ class ShapeTokenBank:
             'produced': self.total_produced,
             'consumed': self.total_consumed,
             'expired': self.total_expired,
+            'too_stale': self.total_too_stale,
             'ttl_s': self._ttl_s,
+            'max_use_age_s': self._max_use_age_s,
         }
 
 
@@ -251,6 +293,7 @@ class ShapeHarvester:
     """
 
     _next_fwd_port = 18100
+    _fwd_port_lock = threading.Lock()
 
     def __init__(
         self,
@@ -412,8 +455,13 @@ class ShapeHarvester:
             return self._fwd_port
 
         from src.proxy.local_forwarder import ForwarderPool
-        port = ShapeHarvester._next_fwd_port
-        ShapeHarvester._next_fwd_port += 1
+        # Allocate a distinct forwarder port atomically — harvester threads create
+        # their forwarders concurrently, and an unlocked class-var increment could
+        # hand two harvesters the same port (one bind fails → that Chrome gets no
+        # proxy). (minor, 2026-10-27)
+        with ShapeHarvester._fwd_port_lock:
+            port = ShapeHarvester._next_fwd_port
+            ShapeHarvester._next_fwd_port += 1
 
         pool = ForwarderPool()
         pool.add_upstream(self.proxy_url, port=port)

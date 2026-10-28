@@ -1622,6 +1622,13 @@ set TARGET_LANE_IPS=all_resi
 REM  Harvester knobs:
 set TARGET_LANE_HARVEST_INTERVAL_S=4.0
 set TARGET_LANE_TOKEN_TTL_S=300
+REM  Shape freshness (C-1027, inert while MODE=0; armed for when lanes go live):
+REM  NEWEST_FIRST=1 draws the freshest token (matches the proven pop_fresh); with
+REM  active harvesting the drawn token is seconds old. MAX_USE_AGE_S=90 refuses to
+REM  FIRE a token older than the proven path's own 90s Shape-staleness bound, so a
+REM  STALLED harvester reports no-token instead of replaying wire-stale Shape.
+set TARGET_LANE_BANK_NEWEST_FIRST=1
+set TARGET_LANE_TOKEN_MAX_USE_AGE_S=90
 REM  CHROME_MAX_AGE_S: proactive relaunch age. Residential is clamped in code to
 REM  720s regardless (C-1023-12: IPRoyal CDP freeze onset 17-21 min; stay under it).
 set TARGET_LANE_CHROME_MAX_AGE_S=780

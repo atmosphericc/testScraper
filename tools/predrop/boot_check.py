@@ -548,6 +548,15 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
     if _pool_fb:
         add("worker_pool_fallback", "FAIL", "the accounts file was rejected and the fleet fell back to the legacy env pool -- " + _pool_fb[0].strip()[:160])
 
+    # 2026-10-27 (C-1027 SM-1): lane bring-up is wrapped in a blanket try/except
+    # that silently disabled lanes on any error (how the w.config crash hid).
+    # app.py now prints a scannable [LANE] INIT FAILED marker; a swallowed
+    # lane-init crash is a RED boot, not green-with-lanes-silently-dead. Inert
+    # when lanes are off (marker absent).
+    _lane_fail = [l for l in lines if "[LANE] INIT FAILED" in l]
+    if _lane_fail:
+        add("lane_init", "FAIL", "lane mode init crashed (lanes silently disabled) -- " + _lane_fail[0].strip()[:160])
+
     # tracebacks
     other = tracebacks["other"]
     if other:
