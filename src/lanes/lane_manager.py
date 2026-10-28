@@ -34,8 +34,10 @@ class LaneManager:
         self._warmup_timeout_s = float(os.environ.get('TARGET_LANE_WARMUP_TIMEOUT_S', '120'))
 
     @classmethod
-    def create(cls, worker_map: Optional[Dict[str, Any]] = None) -> 'LaneManager':
-        pool = LanePool.from_config(worker_map=worker_map)
+    def create(cls, worker_map: Optional[Dict[str, Any]] = None,
+               claim_registry: Optional[Any] = None) -> 'LaneManager':
+        pool = LanePool.from_config(worker_map=worker_map,
+                                    claim_registry=claim_registry)
         return cls(pool)
 
     def start(self, block_for_warmup: bool = True) -> bool:

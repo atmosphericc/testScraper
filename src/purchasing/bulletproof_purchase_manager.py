@@ -1701,6 +1701,12 @@ class BulletproofPurchaseManager:
         # TARGET_MULTI_SKU_DISPATCH=1; see _multi_sku_cfg().
         self._worker_reservations: Dict[str, tuple] = {}
         self._reserve_lock = threading.Lock()
+        # Cross-path double-fire guard. Set by app.py ONLY under
+        # TARGET_LANE_MODE=1 to a PurchaseClaimRegistry shared with the lane
+        # pool, so at most one place-order is live per (account_id, TCIN)
+        # across both paths. None here (lanes off) => the reserve / release /
+        # stale-sweep methods below no-op on it and this path is unchanged.
+        self._xpath_claim = None
         # 2026-09-16 AC-1: (worker label, tcin) -> epoch latched. Read/written
         # only under TARGET_AMBIGUOUS_COMMIT_LATCH=1 (see _ac_latch_on).
         self._ac_latch: Dict[tuple, float] = {}
@@ -2617,6 +2623,8 @@ class BulletproofPurchaseManager:
         worker on exit; this is the safety net for a thread that died without
         getting there, so a crash can never wedge the fleet permanently."""
         now = time.time()
+        reg = getattr(self, '_xpath_claim', None)
+        swept = []
         with self._reserve_state():
             for lbl, (tcin, ts) in list(self._worker_reservations.items()):
                 if now - ts > ttl_s:
@@ -2628,8 +2636,16 @@ class BulletproofPurchaseManager:
                     if _stuck_reset_live_guard_on() and self._reservation_has_live_racer(lbl, tcin):
                         continue
                     del self._worker_reservations[lbl]
+                    swept.append((lbl, tcin))
                     print(f"[MULTI_SKU_DISPATCH] released stale reservation "
                           f"{lbl} -> {tcin} (held {now - ts:.0f}s > {ttl_s}s TTL)")
+        # A racer that died without releasing also leaked its cross-path claim
+        # (lanes armed only); free it here so a dead racer can never permanently
+        # block the (account_id, TCIN) slot for the lane path.
+        if reg is not None:
+            for lbl, tcin in swept:
+                acct = lbl.split('/', 1)[1] if '/' in lbl else lbl
+                reg.release(acct, tcin, lbl)
 
     def _free_workers(self, candidates: List) -> List:
         """Ready workers not currently reserved by another TCIN. Under
@@ -2703,6 +2719,7 @@ class BulletproofPurchaseManager:
         # is racing a DIFFERENT TCIN right now to this one, reserved or not (a
         # legacy single-worker dispatch holds no reservation).
         busy = self._busy_worker_tcins() if _stuck_reset_live_guard_on() else {}
+        reg = getattr(self, '_xpath_claim', None)
         with self._reserve_state():
             for w in candidates:
                 if len(taken) >= limit:
@@ -2712,14 +2729,31 @@ class BulletproofPurchaseManager:
                     continue
                 holder = self._worker_reservations.get(lbl)
                 if holder is None or holder[0] == tcin:
+                    # Cross-path double-fire guard (lanes armed only): do not
+                    # take a worker whose account x TCIN a lane already owns.
+                    # try_claim is idempotent for OUR own re-reservation of the
+                    # same (worker, TCIN) -- holder is the worker label -- so
+                    # this never blocks the main path re-taking its own worker.
+                    if reg is not None:
+                        acct = lbl.split('/', 1)[1] if '/' in lbl else lbl
+                        if not reg.try_claim(acct, tcin, lbl):
+                            continue
                     self._worker_reservations[lbl] = (tcin, now)
                     taken.append(w)
         return taken
 
     def _release_worker_reservation(self, worker_label: str) -> None:
         """Release one worker. Called by each racer as it exits."""
+        reg = getattr(self, '_xpath_claim', None)
         with self._reserve_state():
-            self._worker_reservations.pop(worker_label, None)
+            holder = self._worker_reservations.pop(worker_label, None)
+        # Release the matching cross-path claim (lanes armed only) so the
+        # (account_id, TCIN) slot frees for the next flip. Done outside the
+        # reserve lock; the registry lock is a leaf (consistent ordering).
+        if reg is not None and holder is not None:
+            tcin = holder[0]
+            acct = worker_label.split('/', 1)[1] if '/' in worker_label else worker_label
+            reg.release(acct, tcin, worker_label)
 
     def rearm_kick_event(self):
         """FX-1014-KICK: the Event app.py's level re-arm loop waits on (created
@@ -2866,6 +2900,11 @@ class BulletproofPurchaseManager:
             state_key = state_key or tcin
             _race_wlbl = pinned_worker.label() if pinned_worker is not None else None
             _REBUY_TLS.label = ''   # FX-1014-REBUY: set once this thread's worker is known
+            # Cross-path double-fire guard (lanes armed only): (account_id, tcin,
+            # holder) once THIS thread takes the claim on the legacy single-worker
+            # path below. None on the racing path (the reservation holds it) and
+            # until the buyer is resolved; the finally releases it iff set.
+            _xclaim = None
             try:
                 _wlbl = _race_wlbl or 'auto'
                 print(f"[REAL_PURCHASE_THREAD] [INIT] Starting async purchase execution for {tcin} ({_wlbl})")
@@ -2946,6 +2985,39 @@ class BulletproofPurchaseManager:
                                 worker = _alt
                     except Exception:
                         pass
+                # Cross-path double-fire guard (lanes armed only). This is the
+                # UNIVERSAL claim site -- every main-path attempt claims its
+                # (account_id x TCIN) here, once the buyer is finally resolved
+                # (after sticky-acquire / primary-fallback / REBUY swap), and
+                # holds it across the place-order (released in the finally). It
+                # covers the legacy single-worker branch (which takes NO worker
+                # reservation) AND any racing branch that didn't reserve
+                # (TARGET_MULTI_SKU_DISPATCH=0). For the production racing branch
+                # the synchronous reservation already claimed this same slot with
+                # the SAME holder (worker.label()), so try_claim here is idempotent
+                # -- it re-affirms, never conflicts, and the reservation release at
+                # the finally frees it (this _xclaim release then no-ops). The
+                # reservation's EARLIER (synchronous, pre-lane-fan-out) claim is
+                # what lets the proven path win its accounts ahead of the lanes.
+                # If a lane already owns this account x TCIN, yield: skip the buy
+                # and leave the TCIN 'ready' for the next cycle.
+                if worker is not None:
+                    _reg = getattr(self, '_xpath_claim', None)
+                    if _reg is not None:
+                        _h = worker.label()
+                        _acct = _h.split('/', 1)[1] if '/' in _h else _h
+                        if _reg.try_claim(_acct, tcin, _h):
+                            _xclaim = (_acct, tcin, _h)
+                        else:
+                            print(f"[XPATH] {tcin}: single-worker path yielding "
+                                  f"{_h} — account x TCIN already claimed "
+                                  f"(owner={_reg.owner(_acct, tcin)})")
+                            self._update_purchase_result(
+                                tcin,
+                                {'success': False, 'tcin': tcin,
+                                 'reason': 'xpath_claimed', 'status': 'ready'},
+                                race_agg=race_agg, worker_label=_race_wlbl)
+                            return
                 # FX-1014-REBUY: this thread's buyer identity (no-op unless a purchase
                 # succeeds with the flag on; same key as the in-thread skip below).
                 try:
@@ -3799,6 +3871,13 @@ class BulletproofPurchaseManager:
                 # No-op when the flag is off (nothing was ever reserved).
                 if pinned_worker is not None:
                     self._release_worker_reservation(pinned_worker.label())
+                # Cross-path claim release (lanes armed only); see the acquire
+                # site above. No-op when lanes are off or the slot was already
+                # freed (reserved racing path frees it via the reservation).
+                if _xclaim is not None:
+                    _reg_rel = getattr(self, '_xpath_claim', None)
+                    if _reg_rel is not None:
+                        _reg_rel.release(*_xclaim)
                 # FX-1014-KICK: this account is free now (out of _active_purchases,
                 # reservation released) -- wake the level re-arm (flag only).
                 self._rearm_kick_set()

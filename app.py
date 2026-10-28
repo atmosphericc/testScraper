@@ -981,13 +981,40 @@ def initialize_global_purchase_manager():
     if os.environ.get('TARGET_LANE_MODE', '0').strip() == '1':
         try:
             from src.lanes.lane_manager import LaneManager
+            from src.purchasing.purchase_claim import PurchaseClaimRegistry
             worker_map = {}
             if (global_purchase_manager
                     and hasattr(global_purchase_manager, 'worker_pool')
                     and global_purchase_manager.worker_pool):
                 for w in global_purchase_manager.worker_pool.workers:
-                    worker_map[w.config.account_id] = w
-            global_lane_manager = LaneManager.create(worker_map=worker_map)
+                    # Worker stores its config as .cfg (src/purchasing/worker.py:87);
+                    # .config does not exist and raised AttributeError here, aborting
+                    # lane init before the registry was ever injected (C-1027 fix).
+                    worker_map[w.cfg.account_id] = w
+            # Cross-path double-fire guard: ONE shared claim registry that the
+            # main purchase manager AND the lane pool both consult, so at most
+            # one place-order is live per (account_id, TCIN) across both paths.
+            # Built only here (MODE=1); when lanes are off the manager's
+            # _xpath_claim stays None and the main path behaves exactly as before.
+            _xpath_claim = PurchaseClaimRegistry()
+            if global_purchase_manager is not None:
+                global_purchase_manager._xpath_claim = _xpath_claim
+            # Note: the double-fire guard itself holds in every config (the claim
+            # is taken inside execute_real_purchase for every attempt). But the
+            # PROVEN path only wins its accounts AHEAD of the lanes when the racing
+            # branch reserves synchronously, i.e. TARGET_MULTI_SKU_DISPATCH=1
+            # (production default). Without it the main path still claims, just
+            # later (in-thread), so a lane can win a contested account — safe, but
+            # hands the buy to the unproven path. Surface it; don't block.
+            if os.environ.get('TARGET_MULTI_SKU_DISPATCH', '0').strip() != '1':
+                print("[SYSTEM] ⚠️  LANE NOTE: TARGET_MULTI_SKU_DISPATCH != 1 — main path "
+                      "claims in-thread, not synchronously, so a lane may win a contested "
+                      "account (no double-fire; just not the proven path). Set it to 1.")
+                add_activity_log(
+                    "Lane mode: TARGET_MULTI_SKU_DISPATCH!=1 — main path lacks synchronous "
+                    "pre-lane claim priority (safe, but may yield contested accounts)", "warning", "system")
+            global_lane_manager = LaneManager.create(
+                worker_map=worker_map, claim_registry=_xpath_claim)
             if global_lane_manager.pool.lanes:
                 warmup_ok = global_lane_manager.start(block_for_warmup=True)
                 if warmup_ok:

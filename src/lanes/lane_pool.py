@@ -131,16 +131,22 @@ class LanePool:
         lanes: List[Lane],
         harvesters: Optional[Dict[str, ShapeHarvester]] = None,
         checkouts: Optional[Dict[str, LaneCheckout]] = None,
+        claim_registry: Optional[Any] = None,
     ):
         self.lanes = lanes
         self.harvesters = harvesters or {}
         self.checkouts = checkouts or {}
+        # Cross-path double-fire guard (PurchaseClaimRegistry), shared with the
+        # main purchase manager. None => no coordination (fine in isolated
+        # tests / fire-only mode). app.py injects a live one under MODE=1.
+        self.claim_registry = claim_registry
         self._lock = threading.Lock()
 
     @classmethod
     def from_config(
         cls,
         worker_map: Optional[Dict[str, Any]] = None,
+        claim_registry: Optional[Any] = None,
     ) -> 'LanePool':
         """Build lanes from config + env.
 
@@ -256,7 +262,7 @@ class LanePool:
                   f"{', '.join(a['account_id'] for a in accounts)} "
                   f"(harvester interval={harvest_interval}s)")
 
-        return cls(lanes, harvesters, checkouts)
+        return cls(lanes, harvesters, checkouts, claim_registry=claim_registry)
 
     def start_harvesters(self) -> None:
         """Start all Shape harvesters (each in its own thread)."""
@@ -288,6 +294,7 @@ class LanePool:
         If fire_fn is None, each lane uses its built-in shooter.
         """
         threads: List[threading.Thread] = []
+        reg = self.claim_registry
 
         for lane in self.lanes:
             if lane.racing:
@@ -302,9 +309,20 @@ class LanePool:
                     print(f"[LANE_POOL] {lane.label()} no Shape tokens — skipping")
                     continue
 
+            # Cross-path double-fire guard: claim this account x TCIN before
+            # firing. If another lane of the SAME account, or the main purchase
+            # path, already holds it, yield — one place-order per account x TCIN
+            # across both paths (prevents a double order / double charge on one
+            # member account + saved card). Released in the runner's finally.
+            if reg is not None and not reg.try_claim(lane.account_id, tcin, lane.lane_id):
+                print(f"[LANE_POOL] {lane.label()} yielding {tcin} — "
+                      f"account x TCIN already claimed "
+                      f"(owner={reg.owner(lane.account_id, tcin)})")
+                continue
+
             lane.start_race(tcin)
 
-            def _lane_runner(_lane=lane, _tcin=tcin, _qty=quantity, _fn=fire_fn):
+            def _lane_runner(_lane=lane, _tcin=tcin, _qty=quantity, _fn=fire_fn, _reg=reg):
                 try:
                     print(f"[LANE] {_lane.label()} entering race for {_tcin}")
                     if _fn is not None:
@@ -322,6 +340,8 @@ class LanePool:
                     print(f"[LANE] {_lane.label()} error: {e}")
                 finally:
                     _lane.end_race()
+                    if _reg is not None:
+                        _reg.release(_lane.account_id, _tcin, _lane.lane_id)
 
             t = threading.Thread(
                 target=_lane_runner, daemon=True,

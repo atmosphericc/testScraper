@@ -186,6 +186,11 @@ OFFLINE = [
     "test_shape_replay_probe_1023",
     # 2026-10-25: src/lanes/ independent-lane module (lane, pool, executor, shooter, harvester bank, IP resolution)
     "test_lane_pool",
+    # 2026-10-27: cross-path double-fire guard (src/purchasing/purchase_claim.py) -- the shared
+    # per-(account_id, TCIN) claim the main manager + lane pool both consult so at most one
+    # place-order is live per account x TCIN; reserve/release/yield/stale-sweep + MODE=0 no-op
+    # (real manager via __new__, real LanePool with a blocking fire_fn; no browser, no network).
+    "test_purchase_claim",
 ]
 
 # Hard markers of a test that starts a real browser / hits Target. A listed file that

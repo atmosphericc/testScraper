@@ -59,7 +59,11 @@ def test_kick_event():
     i = src.index("self._release_worker_reservation(pinned_worker.label())")
     j = src.index("self._rearm_kick_set()", i)
     k = src.index("del self._active_purchases[state_key]")
-    check("kick_after_release_and_removal", k < i < j and j - i < 400)
+    # Order invariant (removal -> reservation release -> kick) is the point.
+    # 2026-10-27 (C-1027): the cross-path claim release was inserted between the
+    # reservation release and the kick, widening i->j; the proximity bound keeps
+    # the kick in the same cleanup block without pinning the exact byte count.
+    check("kick_after_release_and_removal", k < i < j and j - i < 900)
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     check("app_loop_waits_on_kick", "_kick.wait(max(0.0, _next_full - time.time()))" in app
           and "_kick.clear()" in app and "time.sleep(interval_s)" in app)
