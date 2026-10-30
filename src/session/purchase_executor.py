@@ -834,7 +834,9 @@ def atc_net_send_wall_ms(will_wall_s, will_mono_s, req_time_s, send_start_ms):
 def atc_net_line(ident, d) -> str:
     """Pure: the [ATC_NET] line for one cart_items response dict `d`
     (keys: method, status, conn, reused, ip, port, proto, send_ms, ttfb_ms,
-    connect_ms, ssl_ms, rid). Missing values print '-'. Never raises."""
+    connect_ms, ssl_ms, rid, served_by, xcache). Missing values print '-'.
+    sby/xc appended 2026-10-29 (INS-ATC-NET-POP); older parsers ignore the tail.
+    Never raises."""
     def _v(k):
         x = d.get(k) if isinstance(d, dict) else None
         if x is None or x == '':
@@ -844,11 +846,18 @@ def atc_net_line(ident, d) -> str:
         if isinstance(x, float):
             return str(int(round(x)))
         return str(x)[:64]
+
+    def _vh(k):   # header value: one whitespace-free token, up to 120 chars (two Fastly hops)
+        x = d.get(k) if isinstance(d, dict) else None
+        if x is None or x == '':
+            return '-'
+        return (''.join(str(x).split())[:120]) or '-'
     try:
         return (f"[ATC_NET] ident={ident} m={_v('method')} st={_v('status')} "
                 f"conn={_v('conn')} reused={_v('reused')} ip={_v('ip')}:{_v('port')} "
                 f"proto={_v('proto')} send_ms={_v('send_ms')} ttfb_ms={_v('ttfb_ms')} "
-                f"connect_ms={_v('connect_ms')} ssl_ms={_v('ssl_ms')} rid={_v('rid')}")
+                f"connect_ms={_v('connect_ms')} ssl_ms={_v('ssl_ms')} rid={_v('rid')} "
+                f"sby={_vh('served_by')} xc={_vh('xcache')}")
     except Exception:
         return '[ATC_NET] ident=? (format error)'
 
@@ -3600,6 +3609,23 @@ class PurchaseExecutor:
                     def _span(a, b):
                         x, y = g(a), g(b)
                         return (y - x) if (x is not None and y is not None and x >= 0 and y >= 0) else None
+                    # INS-ATC-NET-POP (2026-10-29): the Fastly POP that served this shot.
+                    # x-served-by encodes the POP code (e.g. cache-dfw-...-DFW); x-cache is
+                    # HIT/MISS. This is a RESPONSE header, so it survives the proxy and is
+                    # visible on home AND proxied lines — the only POP signal we can get when
+                    # the forwarder hides the socket behind 127.0.0.1 (remote_ip_address).
+                    # Whitespace-stripped so a shielded two-hop value stays one log token.
+                    sby = xc = None
+                    try:
+                        _hd = getattr(r, 'headers', None)
+                        _items = _hd.items() if hasattr(_hd, 'items') else None
+                        if _items is not None:
+                            _low = {str(k).lower(): v for k, v in _items}
+                            _s, _c = _low.get('x-served-by'), _low.get('x-cache')
+                            sby = ''.join(str(_s).split()) if _s else None
+                            xc = ''.join(str(_c).split()) if _c else None
+                    except Exception:
+                        pass
                     d = {'method': meth, 'status': getattr(r, 'status', None),
                          'conn': getattr(r, 'connection_id', None),
                          'reused': getattr(r, 'connection_reused', None),
@@ -3610,7 +3636,7 @@ class PurchaseExecutor:
                          'ttfb_ms': _span('send_end', 'receive_headers_end'),
                          'connect_ms': _span('connect_start', 'connect_end'),
                          'ssl_ms': _span('ssl_start', 'ssl_end'),
-                         'rid': str(ev.request_id)}
+                         'rid': str(ev.request_id), 'served_by': sby, 'xcache': xc}
                     print(atc_net_line(self._ident_tag(), d))
                     if chain_on and meth == 'POST' and d['status'] in (200, 201):
                         chain_cnt.clear()      # CHK-1: a new cart -- its first tickets are logged afresh

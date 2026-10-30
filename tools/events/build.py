@@ -138,8 +138,10 @@ PLACE_ORDERS (v2, one row per main-tab "[INTERCEPTOR:main] [CHECKOUT_POST]")
 
 ATC_NET (v3, 2026-10-05; TARGET_ATC_NET_META=1, purchase_executor.py atc_net_line) one row per
   print-only "[ATC_NET] ident= m= st= conn= reused= ip=<ip>:<port> proto= send_ms= ttfb_ms=
-  connect_ms= ssl_ms= rid=" line (one per MAIN-tab cart_items response: the POST, its OPTIONS
-  preflight, any other method). '-' -> NULL. port = the text after the LAST ':' of ip= (an IPv6
+  connect_ms= ssl_ms= rid= [sby= xc=]" line (one per MAIN-tab cart_items response: the POST, its
+  OPTIONS preflight, any other method). sby/xc (served_by = Fastly x-served-by POP code, xcache =
+  x-cache) appended 2026-10-29 (INS-ATC-NET-POP); OPTIONAL in the regex so pre-10-29 logs still
+  parse. '-' -> NULL. port = the text after the LAST ':' of ip= (an IPv6
   address keeps its brackets as printed). send_ms is the line's own clock: Chrome's wall-clock ms
   when the request left (it is NOT the print time). The install / enable lines go to `checks`;
   "ident=? (format error)" is unparseable (counted under ATC_NET).
@@ -439,7 +441,8 @@ _NV = r'(?:-?\d+|-)'
 ATC_NET = re.compile(r'\[ATC_NET\] ident=' + IDENT + r' m=(?P<m>[A-Za-z]+|\?|-) st=(?P<st>\d{1,3}|-) '
                      r'conn=(?P<conn>' + _NV + r') reused=(?P<reused>[01]|-) ip=(?P<ipport>\S+?:(?:\d+|-)) '
                      r'proto=(?P<proto>[^\s\[]+) send_ms=(?P<send>\d+|-) ttfb_ms=(?P<ttfb>' + _NV + r') '
-                     r'connect_ms=(?P<cms>' + _NV + r') ssl_ms=(?P<ssl>' + _NV + r') rid=(?P<rid>[\w.\-]+)')
+                     r'connect_ms=(?P<cms>' + _NV + r') ssl_ms=(?P<ssl>' + _NV + r') rid=(?P<rid>[\w.\-]+)'
+                     r'(?:\s+sby=(?P<sby>[^\s\[]+))?(?:\s+xc=(?P<xc>[^\s\[]+))?')
 ATC_NET_AUX = re.compile(r'\[ATC_NET\] (?:(?P<inst>Network meta instrument installed on the main tab)'
                          r'(?: ident=' + IDENT + r')?|(?P<enf>network\.enable failed)|(?P<insf>install failed))')
 # v3: the 10-05 gate markers (all print-only). FX-1005-BOOTSKIP (worker_pool.py / app.py /
@@ -1203,7 +1206,7 @@ class RunParser:
                       status=_int(dash(g['st'])), conn=_int(dash(g['conn'])), reused=_int(dash(g['reused'])),
                       ip=dash(ip), port=_int(dash(port)), proto=dash(g['proto']), send_ms=_int(dash(g['send'])),
                       ttfb_ms=_int(dash(g['ttfb'])), connect_ms=_int(dash(g['cms'])), ssl_ms=_int(dash(g['ssl'])),
-                      rid=dash(g['rid']))
+                      rid=dash(g['rid']), served_by=dash(g.get('sby')), xcache=dash(g.get('xc')))
             return True
         m = ATC_NET_AUX.match(t, p)
         if m:
@@ -2502,6 +2505,7 @@ class RunParser:
                 line=e['line'], ident=e['ident'], method=e['method'], status=e['status'], conn=e['conn'],
                 reused=e['reused'], ip=e['ip'], port=e['port'], proto=e['proto'], send_ms=e['send_ms'],
                 ttfb_ms=e['ttfb_ms'], connect_ms=e['connect_ms'], ssl_ms=e['ssl_ms'], rid=e['rid'],
+                served_by=e.get('served_by'), xcache=e.get('xcache'),
                 join_q=e['q'], join_dt_ms=e['dt'],
                 shot_line=sh['line'] if sh else None, shot_ts_ms=sh['ts_ms'] if sh else None,
                 shot_gate=sh['gate'] if sh else None, race_seq=sh['race_seq'] if sh else None,
@@ -2659,7 +2663,8 @@ SCHEMA = {
     # v3 (2026-10-05)
     'atc_net': ['run_id TEXT', 'line INTEGER', 'ident TEXT', 'method TEXT', 'status INTEGER', 'conn INTEGER',
                 'reused INTEGER', 'ip TEXT', 'port INTEGER', 'proto TEXT', 'send_ms INTEGER', 'ttfb_ms INTEGER',
-                'connect_ms INTEGER', 'ssl_ms INTEGER', 'rid TEXT', 'join_q TEXT', 'join_dt_ms INTEGER',
+                'connect_ms INTEGER', 'ssl_ms INTEGER', 'rid TEXT', 'served_by TEXT', 'xcache TEXT',
+                'join_q TEXT', 'join_dt_ms INTEGER',
                 'shot_line INTEGER', 'shot_ts_ms INTEGER', 'shot_gate TEXT', 'race_seq INTEGER', 'tcin TEXT',
                 'shot_idx INTEGER', 'is_first INTEGER', 'flip_opened_race INTEGER'],
     'gate_events': ['run_id TEXT', 'line INTEGER', 'ts_ms INTEGER', 'ts_src TEXT', 'kind TEXT',

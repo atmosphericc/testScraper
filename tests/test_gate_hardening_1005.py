@@ -529,7 +529,12 @@ def test_atc_net_pure():
                                        "send_ms": 1759650000123, "ttfb_ms": 141.6, "rid": "1234.56"})
     check("net_line_format", line == ("[ATC_NET] ident=primary m=POST st=429 conn=37 reused=1 "
                                       "ip=151.101.2.187:443 proto=h2 send_ms=1759650000123 ttfb_ms=142 "
-                                      "connect_ms=- ssl_ms=- rid=1234.56"), line)
+                                      "connect_ms=- ssl_ms=- rid=1234.56 sby=- xc=-"), line)
+    # INS-ATC-NET-POP (2026-10-29): served_by (Fastly x-served-by POP) + xcache appended;
+    # '-' when absent, full value (incl. a shielded two-hop list) when present.
+    line_pop = pe.atc_net_line("primary", {"method": "POST", "status": 201, "rid": "r9",
+                                           "served_by": "cache-bma1-BMA,cache-dfw2-DFW", "xcache": "MISS"})
+    check("net_line_pop_fields", line_pop.endswith(" sby=cache-bma1-BMA,cache-dfw2-DFW xc=MISS"), line_pop)
     check("net_line_bad_input", pe.atc_net_line("x", None).startswith("[ATC_NET] ident=x m=-"))
     with _Env():
         check("net_flag_default_off", pe.atc_net_meta_on() is False)

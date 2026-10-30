@@ -265,9 +265,11 @@ def test_handlers():
     atc_on = lines_of(out_on, "[ATC_NET]")
     atc_off = lines_of(out_off, "[ATC_NET]")
     check("atc_net_lines_unchanged_by_flag", atc_on == atc_off and len(atc_on) == 2, (atc_on, atc_off))
-    check("atc_net_line_still_the_old_format", any(l == (
+    # 2026-10-29: format now carries the appended sby/xc POP fields ('-' here, no x-served-by
+    # on this synthetic response); CHAIN_NET still must not otherwise alter the ATC_NET line.
+    check("atc_net_line_format_with_pop_tail", any(l == (
         "[ATC_NET] ident=primary m=POST st=429 conn=37 reused=1 ip=151.101.2.187:443 proto=h2 send_ms=1000015 "
-        "ttfb_ms=140 connect_ms=- ssl_ms=- rid=A1") for l in atc_on), atc_on)
+        "ttfb_ms=140 connect_ms=- ssl_ms=- rid=A1 sby=- xc=-") for l in atc_on), atc_on)
     check("off_prints_no_chain_net", "[CHAIN_NET]" not in out_off, out_off)
     check("off_chain_traffic_prints_nothing", out_off == out_off_free, (out_off, out_off_free))
     for junk in ("0", "true", ""):
