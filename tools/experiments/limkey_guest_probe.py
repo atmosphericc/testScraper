@@ -254,11 +254,23 @@ def dynamic_range_clear() -> str:
 
 
 def listener_pid(port: int):
-    """PID of the process LISTENing on TCP port `port`, or None."""
+    """PID of the process LISTENing on TCP port `port`, or None.
+
+    FS1 (2026-11-06): on this Windows / psutil 7.2.2 a freshly-bound 127.0.0.1 listener is reported
+    with status CONN_NONE (not CONN_LISTEN) even though its owning pid IS attributed, so the old
+    `status == CONN_LISTEN` filter skipped the match and returned None -> attach_check aborted every
+    guest launch ("port held by pid None"). Match a local socket on `port` that has NO remote peer
+    (raddr empty => not an established connection) and accept LISTEN or NONE, taking only a row that
+    carries a pid. attach_check still requires lp == own, so the ownership guarantee is unchanged.
+    Verified 2026-11-06: a listener row has raddr=() and pid=own; an ESTABLISHED row on the same
+    local port carries a truthy raddr and is excluded.
+    """
     import psutil
     for c in psutil.net_connections(kind="tcp"):
         try:
-            if c.status == psutil.CONN_LISTEN and c.laddr and int(c.laddr.port) == int(port):
+            if (c.laddr and int(c.laddr.port) == int(port) and not c.raddr
+                    and c.status in (psutil.CONN_LISTEN, psutil.CONN_NONE)
+                    and c.pid is not None):
                 return c.pid
         except Exception:
             continue

@@ -167,6 +167,12 @@ OFFLINE = [
     # 2026-10-20 EXP-LINE: the guest follower's --proxy / --tag / --lock-name (fake forwarder, guest and
     # egress lookup; fail-closed egress, stale lock, lock isolation) and the pre-registered cross-line readout.
     "test_limkey_guest_follow_lines",
+    # 2026-11-06 FS1: listener_pid accepts a CONN_NONE loopback listener (Windows/psutil quirk) so
+    # the guest attach check stops aborting "port held by pid None". Loopback sockets only.
+    "test_listener_pid_fs1",
+    # 2026-11-06 EXP-HARVEST-OFFLINE: money-safety (no cart/login/account-file/fetch in the probe's
+    # code) + validate_tcins + the pre-registered summarize() verdict. No browser, no network.
+    "test_harvest_px_probe_safety",
     "test_e1_readout_1022",
     "test_proxy_ref_1022",
     # 2026-10-18 S3: the NON-DIRECT forwarder path (Bright Data upstream) on a loopback fake

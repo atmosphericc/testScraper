@@ -1501,7 +1501,11 @@ REM challenged document (PX_PARK_S .. PX_PARK_MAX_S=3600); at most
 REM PX_RENAV_MAX_PER_H=3 such loads an hour; never while a purchase is live or a
 REM won-cart loop runs. grep 'loading the next decoy', 'PX re-nav'.
 REM Kill: TARGET_HARVEST_PX_RENAV=0.
-set TARGET_HARVEST_PX_RENAV=1
+REM RETIRED 2026-11-06 (post-run wf_1656c678-6c2): 0 captures recovered during the PX park
+REM across 3 walled nights (10-22, 10-23, 11-06: 66 re-navs in 05h-08h, 0 captures). The re-nav
+REM churns the already-walled profile for no measured benefit. Re-arm only if a walled night shows
+REM RENAV capturing any creds during a park. Evidence: logs/analysis_2026_11_06/.
+set TARGET_HARVEST_PX_RENAV=0
 REM INF-1: print the sentinel ticks skipped while a purchase is in flight.
 REM Kill: TARGET_SENTINEL_LOG_SKIPS=0.
 set TARGET_SENTINEL_LOG_SKIPS=1

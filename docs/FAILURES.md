@@ -1908,3 +1908,22 @@ re-mints guest while a full-login one re-mints member (session-robustness / TTL 
 mint capability). Until (1) lands, the guarantee rests on fresh full logins at boot — which
 the nightly wrapper's `relogin_one.py all` provides (dead/guest accounts get a full login;
 member accounts get re-harvested).
+
+
+---
+
+## 2026-11-05/06 drop (run_20261106_001109) — 0 carts / 0 orders on 774 shots: the bank was empty when the limiter opened
+
+Verified by post-run `wf_1656c678-6c2` (2 rounds; blind-replicator + refuter + neutral-judge on every load-bearing claim). Facts from the event store (`tools/events/build.py`).
+
+**The funnel:** 774 shots → 501 blocked at wall-1 (edge demand limiter, 429 `ERR_A2C_TCIN_RATE_LIMITED`) → 273 passed to wall-2 → 273 (100%) denied the Shape keyless-401 → 0 reached the cart service → 0 orders. 20 stock windows, 192 flips, so stock DID appear. The operator-added SKU 1012850572 barely released (1 window, 5 shots, all wall-1).
+
+**Why the raw "100% Shape-denied" is a trap (CONFIRMED):** it was NOT Shape hardening. For the first time in the zero-night era the limiter OPENED at volume (273 past wall-1; TCIN 1013166573 90.2% first-shot pass), but a HUMAN/PX wall hit the harvest tabs at ~04:34 and drained the credential bank (captures 04h=107 → 0 across 05h-08h → resumed 09h; 66 re-navs recovered 0). So ALL 273 admitted shots used the `page_signed` fallback, which Shape rejects ~99% of the time. `q.py cred_wall2`: page_signed 0.3% reach-cart / 0 carts lifetime vs banked_replay 29.7% / 17 carts; gap persists home-only (banked 65/151 vs page 1/284). The limiter's one volume-admit window coincided exactly with the bank outage — we fired our best shots with the weakest credential.
+
+**Binding constraint, going forward:** the harvest/PX layer, not wall-1 or wall-2 features (wall-1 features 0/6 lifetime; wall-2 is credential-bound).
+
+**Fixed / landed (offline suite GREEN):**
+- `tools/events/queries/cred_wall2.sql` — the regime-vs-degradation discriminator (splits admitted shots by cred_source; pre-registered CONFOUNDED/REGIME-HARDENING/INCONCLUSIVE rule). Prevents re-misreading an empty-bank night as Shape hardening.
+- RETIRED `TARGET_HARVEST_PX_RENAV` (=0, bat + manifest pin) — 0 captures recovered during the PX park across 3 walled nights (10-22/10-23/11-06). Inert churn on the already-walled profile.
+
+**Not fixed (needs operator / off-window):** FS1 (repair `tools/experiments/limkey_guest_follow.py` attach — aborts "port held by pid None"); E-HARVEST-OFFLINE (profile-vs-line of the PX wall, daytime bot-down); E2 (harvest PX-survival mitigation, one account). Open frame-question: is the page_signed keyless-401 a Shape detection verdict or a missing-credential rejection (→ wall-2 un-movable, all work harvest-layer)? Full readout: `logs/analysis_2026_11_06/postrun/READOUT.md`.

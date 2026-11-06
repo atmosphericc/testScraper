@@ -48,7 +48,7 @@ MANIFEST_ARMED = {
     "TARGET_HELD_LINE_FLIP_STRIKE": "1",
     "TARGET_REBUY_NONBUYERS": "1",
     "TARGET_JAR_GUEST_GUARD": "1",
-    "TARGET_HARVEST_PX_RENAV": "1",
+    "TARGET_HARVEST_PX_RENAV": "0",  # RETIRED 2026-11-06 (post-run wf_1656c678-6c2): 0 captures recovered during the PX park across 3 walled nights (10-22/10-23/11-06). Re-arm only on a walled night that shows RENAV capturing >0.
     "TARGET_PO_2XX_AMBIGUOUS": "1",
     "TARGET_FOREIGN_KEEP_WON": "1",
     "TARGET_BOOT_SKIP_FAILED_W1": "1",
