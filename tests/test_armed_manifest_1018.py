@@ -56,7 +56,7 @@ MANIFEST_ARMED = {
     "TARGET_RELOGIN_MAX_PER_6H": "0",
     # read by the audit at bat:1228 / :1350 (lane note); pinned as they are today
     "TARGET_WONCART_LIVE_CAP_EXEMPT": "1",
-    "TARGET_FAST_CADENCE_IDENTS": "alt-1",  # 2026-10-23 R-FAST-1023: re-armed as an alt-1-only A/B (C-1023-26 site-wide-p; money-safe, verified). Kill: "0"; fleet: "all"
+    "TARGET_FAST_CADENCE_IDENTS": "0",  # 2026-11-05: fast-cadence A/B RETIRED (wf_01563dbe-d1b P4; re-shooting buys ~0 carts and drains the Shape bank to page_signed). 0 = wave-first for all. Re-arm: "alt-1" (A/B) or "all" (fleet)
     # 1019b (pins lane, r1:arming F1): armed flags the manifest did not pin; line numbers at 3278ce7f
     "TARGET_MULTI_SKU_FAIR_SHARE": "1",  # bat:1314
     "TARGET_STOCK_RESET_KEEP_LIVE_FAILED": "1",  # bat:1323

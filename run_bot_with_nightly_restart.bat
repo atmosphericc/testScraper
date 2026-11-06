@@ -1382,7 +1382,13 @@ REM nonzero, which 10-16 (its one armed night, 0 benefit) was not. alt-1 fast (3
 REM primary and business stay slow (55-70 s) in the same races as a control. Money-safe (verifier CONFIRMED:
 REM cadence only, no checkout, qty or cap effect). Readout: q.py walls plus admits split by ident.
 REM NO-DATA when the next window is closed. Kill or revert: set it to 0. Fleet A/B: set it to all.
-set TARGET_FAST_CADENCE_IDENTS=alt-1
+REM 2026-11-05 KILL (operator 'take full control'; wf_01563dbe-d1b P4). 0 = wave-first for
+REM all accounts. The alt-1 fast-cadence A/B is retired: the 11-04 throughput verification
+REM found re-shooting ATC does not buy carts and may cost them (10-29 alt-1 fast 158 shots =
+REM 1 cart vs primary slow 16 shots = 2 carts), and fast re-shots DRAIN the Shape bank to
+REM page-signed (10-16: 869/1151), the authentic-sensor path we are trying to protect.
+REM Reversible: one-account A/B =alt-1; fleet =all. See memory project_detection_vs_demand.
+set TARGET_FAST_CADENCE_IDENTS=0
 REM 2026-10-06 run diagnostics, all log-only (no behaviour change). The stall
 REM watchdog dumps every thread's Python stack into the run log when a core lock
 REM stays held 45 s or the stock sweep stops 90 s, and prints [HEALTH] (memory,

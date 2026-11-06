@@ -109,6 +109,10 @@ OFFLINE = [
     # 2026-10-08 pre-drop tooling: tools/predrop/boot_check.py + preflight.py on synthetic
     # logs and a temp repo root (host / readiness / git skipped; no browser, no network, no bot).
     "test_predrop_tools",
+    # 2026-11-05 (P3): boot_check fleet-wide harvest rollup -- armed + zero authentic Shape
+    # sensors past the deadline is RED (flag TARGET_BOOTCHECK_HARVEST_RED; reuses the
+    # test_predrop_tools synthetic-log harness; no browser, no network, no bot).
+    "test_boot_check_harvest_1105",
     # 2026-10-14 post-run: FX-1014-JARGUARD, never write a guest jar over a member's (temp
     # files, a stub tab under SessionManager.save_session_state; no browser, no network).
     "test_jar_guard_1014",

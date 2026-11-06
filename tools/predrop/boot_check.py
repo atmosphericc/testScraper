@@ -250,6 +250,8 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
     thread_start_exc = None
     write_auth = {}
     selftest = {}
+    harvest_armed = set()   # accounts with a [HARVEST/<acct>] loop started: line
+    harvest_px_walls = 0    # count of MISS-PROBE px=yes ... hits=px_container lines
     sentinel = {}
     first_sight = {}
     vpc = []
@@ -321,6 +323,12 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
         m = re.search(r"\[HARVEST/([^\]]+)\] SELFTEST verdict: probes=(\d+) replayed=(\d+) accepted=\[([^\]]*)\] rejected=\[([^\]]*)\]", raw)
         if m and m.group(1) not in selftest:
             selftest[m.group(1)] = (m.group(4), m.group(5), no, t)
+        # P3 (11-05): harvest ARMED per account, and HUMAN/PX walls on the harvest PDPs
+        m = re.search(r"\[HARVEST/([^\]]+)\] loop started:", raw)
+        if m:
+            harvest_armed.add(m.group(1))
+        if re.search(r"\[HARVEST/[^\]]+\] MISS-PROBE px=yes\b.*hits=px_container", raw):
+            harvest_px_walls += 1
         for m in re.finditer(r"\[STOCK STATUS\] tcin=(\d+) #1 old=\(first\) new=([^ ]+)", raw):
             first_sight.setdefault(m.group(1), (m.group(2), no, t))
             if "VPC" in m.group(2):
@@ -465,6 +473,44 @@ def analyze_log(text: str, boot_ts: float, now: float, tcins, accounts, armed: d
         if jar_guest and a in jar_guest:
             add(f"jar:{a}", "WARN", f"{a}: saved login on disk is a GUEST token ({jar_guest[a]}) -- "
                 f"the next boot starts this account signed out")
+
+    # 2026-11-05 (P3): fleet-wide harvest rollup. On run_20261104_063459 harvest was ARMED on
+    # every account but each harvest tab was HUMAN/PX-walled on the decoy PDPs, so ZERO authentic
+    # Shape sensors were banked and ZERO SELFTEST verdicts emitted -- every shot silently fell back
+    # to the never-carted page_signed path, yet the boot read GREEN-with-WARN. A degraded fleet
+    # (armed, past the deadline, 0 authentic sensors) is now RED. Flag-gated: set
+    # TARGET_BOOTCHECK_HARVEST_RED=0 to downgrade to WARN. Additive: the per-account harvest:{a}
+    # rows above are unchanged, and the block is inert when harvest never armed.
+    n = len(accounts or [])
+    if n:
+        red_on = os.environ.get("TARGET_BOOTCHECK_HARVEST_RED", "1").strip() != "0"
+        try:
+            deadline = int(os.environ.get("TARGET_BOOTCHECK_HARVEST_DEADLINE_S", "360") or 360)
+        except (TypeError, ValueError):
+            deadline = 360
+        # NB: local name differs from the `armed` parameter (the bat-flags dict the fx1006
+        # block reads below); do not rebind it.
+        harvest_is_armed = bool(set(harvest_armed) & set(accounts or [])) or bool(harvest_armed)
+        good_count = 0
+        for a in (accounts or []):
+            if a in selftest:
+                codes = [c.strip() for c in selftest[a][0].split(",") if c.strip()]
+                if codes and all(c == "424" for c in codes):
+                    good_count += 1
+        if harvest_is_armed and age >= deadline and good_count == 0:
+            detail = (f"HARVEST DEGRADED: 0/{n} accounts banked an authentic Shape sensor by "
+                      f"+{age:.0f} s -- every shot falls back to the never-carted page_signed path")
+            if harvest_px_walls > 0:
+                detail += (f" ; cause looks like a HUMAN/PX wall on the harvest PDPs "
+                           f"({harvest_px_walls} px_container MISS-PROBE hits)")
+            detail += " ; kill: TARGET_BOOTCHECK_HARVEST_RED=0"
+            add("harvest_fleet", "FAIL" if red_on else "WARN", detail)
+        elif harvest_is_armed and age >= deadline and 0 < good_count < n:
+            add("harvest_fleet", "WARN",
+                f"only {good_count}/{n} accounts banked an authentic Shape sensor; the rest shoot page_signed")
+        elif harvest_is_armed and age < deadline and good_count == 0:
+            add("harvest_fleet", "PENDING",
+                f"harvest banked 0 authentic sensors so far (RED due by +{deadline} s)")
 
     # purchasing really on; boot cart audit; restored latches
     if init_flags.get("test_mode") is not None:
