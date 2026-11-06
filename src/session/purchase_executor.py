@@ -885,7 +885,9 @@ def chain_net_meta_on() -> bool:
     Log-only: no new handler, never awaits, never in the Fetch path, every branch
     inside the handlers' own try/except; lines are capped per cart (first 20 per
     (u, method), then every 10th, reset by the next successful ATC) and per
-    process. Default '0' (unset / junk = off). Kill-switch: =0."""
+    tab install -- NOT per process: the 3000 cap and the n ordinals are created per
+    interceptor install, so they reset on every buyer-Chrome relaunch (claims-verifier
+    2026-11-04). Default '0' (unset / junk = off). Kill-switch: =0."""
     return os.environ.get('TARGET_CHAIN_NET_META', '0').strip() == '1'
 
 
@@ -3614,6 +3616,8 @@ class PurchaseExecutor:
                     # HIT/MISS. This is a RESPONSE header, so it survives the proxy and is
                     # visible on home AND proxied lines — the only POP signal we can get when
                     # the forwarder hides the socket behind 127.0.0.1 (remote_ip_address).
+                    # 2026-11-04: NOT yet a working signal -- 0/198 [ATC_NET] lines on 10-29
+                    # carried either header (sby=- xc=-), docs/CLAIMS.md C-1104-08.
                     # Whitespace-stripped so a shielded two-hop value stays one log token.
                     sby = xc = None
                     try:

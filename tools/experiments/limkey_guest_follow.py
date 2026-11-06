@@ -111,6 +111,12 @@ files when present):
   Also per tag, wall 2 of the shots that got past wall 1: keyless 401 (the Shape verdict) vs 424/201
   with x-ssx-hop (past Shape).
 
+EXP-LINE-SYNC (2026-11-04), all default-off: --slot-grid-s G --slot-offset-ms O fire every shot at the next wall-clock
+instant t with (t mod G) == O so several processes with the same G and different O land in one ~250 ms slot;
+--per-window-cap / --nightly-cap override the 40 / 1,500 caps; the egress ASN (ip-api.com, through the same proxy) and
+the /24 are recorded (never the full IP); every shot row carries tag + asn; --readout also prints per (window, tcin,
+30 s block, tag) counts, pairwise co-movement (Pearson + seeded permutation p) and a pooled Wilson level test.
+
 Started by its own scheduled tasks ("TargetBot/guest-follow 2340" / "0135" in Task Scheduler, venv pythonw, no
 console) with --scheduled: it exits at once unless state/guest_follow.enable exists and no
 other follower holds state/guest_follow.lock; deleting the enable file also stops a running
@@ -125,8 +131,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
+import random
 import shutil
 import sqlite3
 import sys
@@ -266,7 +274,58 @@ def _valid_ip(ip: str) -> bool:
     return len(p) == 4 and all(x.isdigit() and 0 <= int(x) <= 255 for x in p)
 
 
-async def egress_gate(out, tag: str, display: str, fetch_ip) -> str:
+def mask24(ip: str) -> str:
+    """'a.b.c.d' -> 'a.b.c.0/24' (the only form of the egress besides the 2-octet mask that may be written); '' if not an IP."""
+    return ".".join(str(ip).strip().split(".")[:3]) + ".0/24" if _valid_ip(str(ip).strip()) else ""
+
+
+def parse_asn(text: str) -> dict:
+    """ip-api.com ?fields=as,asname,isp JSON -> {'asn': 'AS<n>' | 'unknown', 'asname': str}. Never raises, never carries an IP."""
+    try:
+        j = json.loads(text)
+        raw = str(j.get("as") or "").split()
+        asn = raw[0] if raw and re.fullmatch(r"AS\d{1,10}", raw[0]) else "unknown"
+        name = str(j.get("asname") or j.get("isp") or "")
+        name = re.sub(r"[^A-Za-z0-9 ._,&-]", "", name)[:48]
+        return {"asn": asn, "asname": name if asn != "unknown" else ""}
+    except Exception:
+        return {"asn": "unknown", "asname": ""}
+
+
+ASN_URL = "http://ip-api.com/json/{ip}?fields=as,asname,isp"
+
+
+async def lookup_asn(ip: str, fetch_text, timeout: float = 5.0) -> dict:
+    """Resolve the egress ASN once (fetch_text: coroutine fn url -> str, routed like the shots). Non-fatal: any failure -> unknown."""
+    if not _valid_ip(str(ip)):
+        return {"asn": "unknown", "asname": ""}
+    try:
+        return parse_asn(await asyncio.wait_for(fetch_text(ASN_URL.format(ip=ip)), timeout=timeout))
+    except Exception:
+        return {"asn": "unknown", "asname": ""}
+
+
+def _direct_fetch_sync(url: str) -> str:
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=5) as r:
+        return r.read(4096).decode("utf-8", "replace")
+
+
+def next_slot(now: float, grid_s: float, offset_ms: int, inclusive: bool = False) -> float:
+    """The next wall-clock instant t >= now (> now unless inclusive) with (t mod grid_s) == offset_ms/1000. grid_s <= 0 -> now."""
+    if grid_s <= 0:
+        return now
+    off = (int(offset_ms) % int(round(grid_s * 1000))) / 1000.0
+    k = math.ceil((now - off) / grid_s - 1e-9) if inclusive else math.floor((now - off) / grid_s + 1e-9) + 1
+    return k * grid_s + off
+
+
+def next_shot_time(now: float, cadence_s: float, grid_s: float = 0.0, offset_ms: int = 0) -> float:
+    """When the next shot of a TCIN may fire after one at `now`: legacy now + cadence_s when the grid is off."""
+    return now + cadence_s if grid_s <= 0 else next_slot(now, grid_s, offset_ms)
+
+
+async def egress_gate(out, tag: str, display: str, fetch_ip, info: dict = None) -> str:
     """Fail-closed egress proof: the proxy's public IP (fetch_ip, a coroutine fn) must be a real IP
     and differ from the home IP. Returns the masked egress IP or raises EgressFailed."""
     try:
@@ -283,6 +342,8 @@ async def egress_gate(out, tag: str, display: str, fetch_ip) -> str:
             f"reason=same_as_home - nothing sent")
         raise EgressFailed("egress equals home")
     out(f"[GUEST_FOLLOW] egress tag={tag} ip={H.mask(ip)} home={H.mask(home)} proxy={display}")
+    if info is not None:
+        info["ip"] = ip                      # in memory only, for the one ASN lookup; never logged
     return H.mask(ip)
 
 
@@ -389,6 +450,7 @@ class Guest:
     def __init__(self, out, settle_s: float, first_pdp: str, tag: str = "home", route=None):
         self.out, self.settle_s, self.first_pdp = out, settle_s, first_pdp
         self.tag, self.route, self.egress_masked = tag, route, ""
+        self.asn, self.asname, self.egress24 = "unknown", "", ""
         self.page_ok = False                     # False while the PDP shows a HUMAN/PX wall (or was unreadable)
         self.browser = self.tab = self.profile = None
         self.hdrs: dict = {}
@@ -425,7 +487,14 @@ class Guest:
         self.out(f"[GUEST_FOLLOW] attach check OK (port {self.browser.config.port})")
         self.started_at = time.time()
         if self.route is not None:               # fail closed: prove the egress before any navigation to Target
-            self.egress_masked = await egress_gate(self.out, self.tag, self.route.info["display"], self._browser_ip)
+            info: dict = {}
+            self.egress_masked = await egress_gate(self.out, self.tag, self.route.info["display"], self._browser_ip, info)
+            await self._identify(info.get("ip", ""))
+        else:                                    # home line: no ipify gate exists; one direct look, non-fatal
+            try:
+                await self._identify(await asyncio.to_thread(H.public_ip))
+            except Exception:
+                await self._identify("")
         self.tab = await asyncio.wait_for(self.browser.get(self.first_pdp), timeout=30)
         await asyncio.sleep(self.settle_s)
 
@@ -448,6 +517,22 @@ class Guest:
         self.tab.add_handler(cdp.network.ResponseReceivedExtraInfo, on_extra)
         await asyncio.wait_for(self.tab.send(cdp.network.enable()), timeout=10)
         self.page_ok = await self.page_state("start")
+
+    async def _identify(self, ip: str) -> None:
+        """Egress /24 + ASN (once per Chrome start). Non-fatal; the full IP is never stored or logged."""
+        async def via_browser(url: str) -> str:
+            t = await self.browser.get(url)
+            await asyncio.sleep(0.5)
+            return str(await t.evaluate("document.body ? document.body.innerText : ''") or "")
+
+        async def direct(url: str) -> str:
+            return await asyncio.to_thread(_direct_fetch_sync, url)
+
+        self.egress24 = mask24(ip)
+        r = await lookup_asn(ip, via_browser if self.route is not None else direct)
+        self.asn, self.asname = r["asn"], r["asname"]
+        self.out(f"[GUEST_FOLLOW] start_egress tag={self.tag} net24={self.egress24 or 'unknown'} "
+                 f"asn={self.asn} asname={self.asname or '-'}")
 
     async def _browser_ip(self) -> str:
         t = await asyncio.wait_for(self.browser.get("https://api.ipify.org"), timeout=40)
@@ -496,7 +581,8 @@ class Guest:
                "role": "control" if tcin == P.DECOY else "hot", "post_seen": bool(post_ids), "status": status,
                "key": str(hx.get("tgt-cart-error-key", "") or ""), "hop": "x-ssx-hop" in hx,
                "n": j.get("n", -1), "ms": j.get("ms"), "cdp": int(bool(hx)), "body": body[:160],
-               "opt_status": int(ox.get("status") or 0), "buynow": int(bool(getattr(self, "buynow", False)))}
+               "opt_status": int(ox.get("status") or 0), "buynow": int(bool(getattr(self, "buynow", False))),
+               "tag": self.tag, "asn": self.asn}
         rec["cls"] = P.classify(rec)
         return rec
 
@@ -558,6 +644,7 @@ async def follow(a) -> int:
         print("scheduled start: state/guest_follow.enable absent - not running")
         return 0
     tag = getattr(a, "tag", "home")
+    grid_s, off_ms = float(getattr(a, "slot_grid_s", 0.0) or 0.0), int(getattr(a, "slot_offset_ms", 0) or 0)
     set_lock_name(getattr(a, "lock_name", "guest_follow"))
     route = None
     if getattr(a, "proxy", ""):
@@ -607,7 +694,9 @@ async def follow(a) -> int:
     if stale:
         out(f"[GUEST_FOLLOW] stale lock {LOCK} pid={stale} -- taking over")
     out(f"[GUEST_FOLLOW] start hot={len(hot)} TCINs cadence_s={a.cadence_s} grace_s={a.stock_grace_s} "
-        f"until={time.strftime('%Y-%m-%d %H:%M', time.localtime(until))} simulate={a.simulate or '-'}")
+        f"until={time.strftime('%Y-%m-%d %H:%M', time.localtime(until))} simulate={a.simulate or '-'}"
+        + (f" slot_grid_s={grid_s} slot_offset_ms={off_ms}" if grid_s > 0 else "")
+        + (f" window_cap={a.max_per_window} night_cap={a.max_per_night}" if (a.per_window_cap or a.nightly_cap) else ""))
     follower, live = LogFollower(), Live(hot)
     pdp = f"https://www.target.com/p/-/A-{hot[0]}"
     guest = None
@@ -642,6 +731,9 @@ async def follow(a) -> int:
             doc = {"experiment": "EXP-LIMKEY-INWINDOW", "started": stamp, "end": end_reason,
                    "hot_n": len(hot), "windows": ws, "shots": recs, "night_total": night,
                    "log": str(log_path)}
+            doc.update({"asn": getattr(guest, "asn", "unknown"), "asname": getattr(guest, "asname", ""),
+                        "egress24": getattr(guest, "egress24", ""), "slot_grid_s": grid_s, "slot_offset_ms": off_ms,
+                        "window_cap": a.max_per_window, "night_cap": a.max_per_night})
             if tag != "home":
                 doc.update({"tag": tag, "proxy": route.info["display"] if route else "",
                             "egress": getattr(guest, "egress_masked", "") or egress})
@@ -685,6 +777,8 @@ async def follow(a) -> int:
                     open_w[t] = {"tcin": t, "start_ms": int(now * 1000), "end_ms": None, "shots": 0,
                                  "log": follower.path.name if follower.path else "-"}
                     next_shot[t] = max(now, next_shot.get(t, 0.0))
+                    if grid_s > 0:
+                        next_shot[t] = next_slot(next_shot[t], grid_s, off_ms, inclusive=True)
                     out(f"[GUEST_FOLLOW] window start tcin={t} run_log={open_w[t]['log']} period_shots={period[t]['shots']}")
             shootable = [t for t in cur if not period[t]["landed"] and not period[t].get("wall")
                          and period[t]["shots"] < a.max_per_window]
@@ -694,7 +788,8 @@ async def follow(a) -> int:
                 for t in shootable:
                     if time.time() < next_shot.get(t, 0) or night >= a.max_per_night or time.time() >= until:
                         continue
-                    next_shot[t] = time.time() + a.cadence_s
+                    planned = next_shot.get(t, 0.0)
+                    next_shot[t] = next_shot_time(time.time(), a.cadence_s, grid_s, off_ms)
                     night += 1                         # a failed shot counts toward the caps too
                     period[t]["shots"] += 1
                     w = open_w[t]
@@ -710,6 +805,8 @@ async def follow(a) -> int:
                             break
                         continue
                     rec["window_start_ms"] = w["start_ms"]
+                    if grid_s > 0:
+                        rec["slot_ms"] = int(planned * 1000)
                     recs.append(rec)
                     out(f"[GUEST_FOLLOW] shot tcin={t} cls={rec['cls']} status={rec['status']} key={rec['key'] or '-'} "
                         f"hop={int(rec['hop'])} n={rec['n']} ms={rec['ms']} cdp={rec['cdp']} body={rec['body'][:80]!r}")
@@ -765,7 +862,7 @@ async def follow(a) -> int:
                         await guest.refresh()
                     except Exception as e:
                         out(f"[GUEST_FOLLOW] refresh failed {type(e).__name__}")
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.05 if grid_s > 0 else 0.25)
     except EgressFailed as e:
         reason = f"egress failed: {e}"
         rc = 1
@@ -979,6 +1076,133 @@ def _readout_rows(d: dict, con, tag=None) -> dict:
             "both_zero": both_zero, "any_pass": any_pass, "rows": rows}
 
 
+BLOCK_S = 30
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple:
+    """95% Wilson interval for k/n -> (lo, hi); (None, None) when n == 0."""
+    if n <= 0:
+        return (None, None)
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, c - h), min(1.0, c + h))
+
+
+def pearson(x: list, y: list):
+    n = len(x)
+    if n < 3:
+        return None
+    mx, my = sum(x) / n, sum(y) / n
+    sxx = sum((a - mx) ** 2 for a in x)
+    syy = sum((b - my) ** 2 for b in y)
+    if sxx <= 1e-12 or syy <= 1e-12:
+        return None
+    return sum((a - mx) * (b - my) for a, b in zip(x, y)) / math.sqrt(sxx * syy)
+
+
+def perm_pvalue(groups: list, perms: int = 1000, seed: int = 20261104):
+    """groups = [(xs, ys), ...] one per window. One-sided p for positive co-movement: ys are shuffled WITHIN each window,
+    p = (1 + #{r_perm >= r_obs}) / (1 + perms). Returns (r_obs, p); (None, None) when r is undefined."""
+    xs = [v for g in groups for v in g[0]]
+    ys = [v for g in groups for v in g[1]]
+    r = pearson(xs, ys)
+    if r is None:
+        return (None, None)
+    rng = random.Random(seed)
+    ge = 0
+    for _ in range(perms):
+        py = []
+        for _gx, gy in groups:
+            c = list(gy)
+            rng.shuffle(c)
+            py += c
+        rp = pearson(xs, py)
+        if rp is not None and rp >= r - 1e-12:
+            ge += 1
+    return (r, (1 + ge) / (1 + perms))
+
+
+def analyze_blocks(files: list, perms: int = 1000, seed: int = 20261104) -> dict:
+    """Several follow JSONs of one night -> counts per (window, tcin, 30 s block, tag), pair co-movement, level test, remainder.
+    Window = shots of one tcin whose window starts are within 5 s of the cluster's first start (all tags share it); block =
+    (ts_ms - cluster start) // 30 s. Control (decoy) rows are excluded and counted apart."""
+    rows = []
+    for f in files:
+        ftag = _tag_of(f)
+        for r in f.get("shots", []):
+            rows.append(dict(r, tag=r.get("tag") or ftag, asn=r.get("asn") or f.get("asn") or "unknown"))
+    hot = [r for r in rows if r.get("role") != "control"]
+    controls = len(rows) - len(hot)
+    starts: dict = defaultdict(set)
+    for r in hot:
+        ws = r.get("window_id") or r.get("window_start_ms")
+        if ws:
+            starts[r["tcin"]].add(int(ws))
+    cluster: dict = {}
+    for t, ss in starts.items():
+        first = None
+        for s0 in sorted(ss):
+            if first is None or s0 - first > 5000:
+                first = s0
+            cluster[(t, s0)] = first
+    cells: dict = defaultdict(lambda: {"n": 0, "passed": 0, "limited": 0})
+    remainder: dict = defaultdict(int)
+    for r in hot:
+        c = r.get("cls")
+        if c not in ("passed", "limited"):
+            remainder[str(c)] += 1
+            continue
+        ws = r.get("window_id") or r.get("window_start_ms")
+        if not ws or not r.get("ts_ms"):
+            remainder["no_window_or_ts"] += 1
+            continue
+        w0 = cluster[(r["tcin"], int(ws))]
+        key = (w0, r["tcin"], max(0, (int(r["ts_ms"]) - w0) // (BLOCK_S * 1000)), r["tag"])
+        cell = cells[key]
+        cell["n"] += 1
+        cell[c] += 1
+    table = [dict(window=k[0], tcin=k[1], block=k[2], tag=k[3], **v) for k, v in sorted(cells.items())]
+    tags = sorted({k[3] for k in cells})
+    pairs = {}
+    for i, ta in enumerate(tags):
+        for tb in tags[i + 1:]:
+            by_w: dict = defaultdict(lambda: ([], []))
+            for (w0, t, b, tg), v in sorted(cells.items()):
+                if tg != ta or v["n"] == 0:
+                    continue
+                o = cells.get((w0, t, b, tb))
+                if o and o["n"]:
+                    by_w[(w0, t)][0].append(v["passed"] / v["n"])
+                    by_w[(w0, t)][1].append(o["passed"] / o["n"])
+            groups = [g for _k, g in sorted(by_w.items())]
+            r, p = perm_pvalue(groups, perms, seed)
+            pairs[f"{ta}|{tb}"] = {"blocks": sum(len(g[0]) for g in groups), "pearson": r, "perm_p": p}
+    level = {}
+    for tg in tags:
+        k = sum(v["passed"] for kk, v in cells.items() if kk[3] == tg)
+        n = sum(v["n"] for kk, v in cells.items() if kk[3] == tg)
+        lo, hi = wilson(k, n)
+        level[tg] = {"n": n, "passed": k, "rate": (k / n if n else None), "wilson_lo": lo, "wilson_hi": hi}
+    return {"table": table, "pairs": pairs, "level": level, "remainder": dict(remainder), "controls_excluded": controls}
+
+
+def format_block_report(res: dict) -> str:
+    f = lambda x: "n/a" if x is None else f"{x:.3f}"
+    L = ["== per (window, tcin, 30 s block, tag): n passed limited =="]
+    for r in res["table"]:
+        L.append(f"w={r['window']} tcin={r['tcin']} blk={r['block']} tag={r['tag']} n={r['n']} passed={r['passed']} limited={r['limited']}")
+    L.append("== co-movement of per-block pass rates (blocks where both tags fired; one-sided permutation p, 1,000 shuffles within windows) ==")
+    for k, v in res["pairs"].items():
+        L.append(f"{k}: blocks={v['blocks']} pearson={f(v['pearson'])} perm_p={f(v['perm_p'])}")
+    L.append("== level: pooled pass rate, 95% Wilson ==")
+    for tg, v in res["level"].items():
+        L.append(f"{tg}: {v['passed']}/{v['n']} rate={f(v['rate'])} ci=[{f(v['wilson_lo'])}, {f(v['wilson_hi'])}]")
+    L.append(f"== remainder (cls not passed/limited, hot rows): {res['remainder'] or 'none'}; controls excluded: {res['controls_excluded']} ==")
+    return "\n".join(L)
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--until", default="06:30", help="local HH:MM to stop (default the next 06:30; at most 9 h)")
@@ -1002,6 +1226,12 @@ def build_parser():
     ap.add_argument("--proxy", default="", help="second network line: proxies:<i> | reserve:<i> | resi:<i> (config/proxyIps.json; resi = the residential_proxies list) | http://user:pass@host:port | host:port")
     ap.add_argument("--tag", default="home", help="line tag [a-z0-9_-]{1,16}; non-home tags go into file names, JSON, log lines")
     ap.add_argument("--lock-name", default="guest_follow", help="state/<name>.lock and state/<name>_night.json")
+    ap.add_argument("--slot-grid-s", type=float, default=0.0,
+                    help="0 = off. Else fire each shot at the next wall-clock t with (t mod grid) == --slot-offset-ms (3-60 s); "
+                         "processes sharing a grid and using different offsets fire inside one slot")
+    ap.add_argument("--slot-offset-ms", type=int, default=0, help="offset inside the grid, 0 <= ms < grid")
+    ap.add_argument("--per-window-cap", type=int, default=None, help="override --max-per-window (clamped 1..1000)")
+    ap.add_argument("--nightly-cap", type=int, default=None, help="override --max-per-night (clamped 1..20000)")
     ap.add_argument("--readout", nargs="+", default=None, help="print the pre-registered readout for follow JSON file(s) and exit")
     return ap
 
@@ -1009,7 +1239,11 @@ def build_parser():
 def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
     if a.readout:
-        print(json.dumps(readout(a.readout), indent=1))
+        try:
+            print(json.dumps(readout(a.readout), indent=1))
+        except Exception as e:                      # no event store / shots table: the block report needs neither
+            print(f"member-comparison readout unavailable ({type(e).__name__})")
+        print(format_block_report(analyze_blocks([json.loads(Path(p).read_text(encoding="utf-8")) for p in a.readout])))
         return 0
     if not TAG_RE.fullmatch(a.tag):
         print("bad --tag (want [a-z0-9_-]{1,16})")
@@ -1024,6 +1258,16 @@ def main(argv=None) -> int:
     a.stock_grace_s = max(3.0, min(60.0, a.stock_grace_s))
     a.max_per_window = max(1, min(200, a.max_per_window))
     a.max_per_night = max(1, min(1500, a.max_per_night))
+    if a.per_window_cap is not None:
+        a.max_per_window = max(1, min(1000, a.per_window_cap))
+    if a.nightly_cap is not None:
+        a.max_per_night = max(1, min(20000, a.nightly_cap))
+    if a.slot_grid_s != 0 and not (3.0 <= a.slot_grid_s <= 60.0):
+        print("bad --slot-grid-s (want 0 or 3..60)")
+        return 2
+    if a.slot_grid_s and not (0 <= a.slot_offset_ms < int(round(a.slot_grid_s * 1000))):
+        print("bad --slot-offset-ms (want 0 <= ms < grid)")
+        return 2
     a.refresh_s = max(60.0, min(1800.0, a.refresh_s))
     a.sim_s = max(5.0, min(300.0, a.sim_s))
     a.qty = max(1, min(2, a.qty))

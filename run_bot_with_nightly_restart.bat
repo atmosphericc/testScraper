@@ -301,6 +301,13 @@ REM  not the attempt count. Pre-ATC 429s are provably pre-submit ? cannot double
 REM  Wall A (checkout "busy" / RESERVATION_FAILURE) is handled by the new
 REM  checkout_busy_retryable path; kill-switch: set TARGET_RETRY_CHECKOUT_BUSY=0.
 set TARGET_RETRY_WHILE_IN_STOCK_MAX=40
+REM  2026-11-05 STALE DOCTRINE NOTE (era-bound to ~Aug 2026; adversarially verified in
+REM  wf_01563dbe-d1b, claims C2/C3; see memory project_detection_vs_demand). The
+REM  '0-for-1,865 lottery all-time', 'every order from a 401-dominated window' and
+REM  'SHOT COUNT is the only lever' claims below NO LONGER HOLD: over 5 shot-bearing
+REM  nights 10-02..10-29 (n=2,355 shots) 98.8 percent died at the per-TCIN empty-body
+REM  edge demand limiter and only 0.30 percent at the Shape identity wall; 10-01 and
+REM  10-29 carted THROUGH the same lottery. Do NOT re-introduce volume spray off this.
 REM  2026-08-26 adaptive edge-lottery cadence (08-26 post-mortem: 1011960739 restock
 REM  02:51, ~60-75s window, 85 shots/0x2xx at ~4s cadence). Cross-log census verdict:
 REM  lottery (empty-429) windows are 0-for-1,865 tickets ALL-TIME; every order ever came
@@ -359,6 +366,8 @@ REM  pre-breaker win did a full storm. The forensic reframe (see FAILURES.md
 REM  08-18 + docs/RETAILERS/target.md "Hot-SKU ATC Wall"): the 85% dominant wall
 REM  is a GLOBAL edge demand-lottery that hits humans too -- against it, SHOT
 REM  COUNT is the only lever; the breaker was sacrificing tickets to protect the
+REM  2026-11-05: 'SHOT COUNT is the only lever' is STALE here -- see the staleness note
+REM  at the TARGET_ATC_EDGE429 block above and memory project_detection_vs_demand.
 REM  minority 15% hard-401 identity-hardening. Decisive datum: our ONLY 3
 REM  non-first-shot wins (07-14/07-21/07-31) needed 21/21/24 consecutive ATC
 REM  attempts before the 201 -- the streak-8 cutoff structurally PREVENTS that
@@ -386,6 +395,9 @@ REM  53/62 EMPTY-body 429s (the edge demand lottery that hits humans too), cut
 REM  the only 12.7-min window from ~27 shots/min to ~3, and every probe after
 REM  03:19 was a 401 anyway. Winning nights were 63-76% hard-401 and converted
 REM  INSIDE those walls (10/11 winners = shot #1 of a fresh race). So only
+REM  2026-11-05: the 'winning nights were hard-401-dominated' era-framing is STALE;
+REM  recent windows are 98.8 percent edge-429 with r401 at or under 2 percent. See
+REM  memory project_detection_vs_demand and the staleness note above.
 REM  carts-service denials (401 / DCO-body 429) count now; an empty-body 429 is
 REM  neutral. The streak also decays after STREAK_TTL_S so a same-SKU restock
 REM  hours later is not one-denial-then-armed. Rollback to 08-09..08-20 counting:
@@ -867,7 +879,9 @@ REM service's demand throttle rejected the add. Wave-first treated it like an
 REM edge 429 and slept 55-70 s -- walking away from the only moment the edge
 REM is open. Every run log: the next ATC by the same identity on the same
 REM TCIN within 5 s of a DCO 429 got past the edge again 15/48 times (3 x
-REM 201); after 45-90 s, 0/7. On 09-11 primary was admitted at 4 flips, got
+REM 201); after 45-90 s, 0/7. 2026-11-04: those counts are pre-09-17 data. In
+REM the flip era 09-30..10-29 the same re-POST got past the edge 1/19 - see
+REM docs/CLAIMS.md C-1104-04. On 09-11 primary was admitted at 4 flips, got
 REM DCO each time, slept ~60 s and got edge-429 on all 4 re-entries; same at
 REM the 09-16 Tin flip. So: after a DCO 429 re-POST every 1.0-1.5 s, up to 2
 REM times per race thread (since 09-18 only with a banked Shape set, see
@@ -967,7 +981,7 @@ REM Kill: TARGET_ATC_DCO_BURST_REQUIRE_BANK=0 (the 09-17 behaviour).
 REM 2026-10-11: =0 - a shot that passed the edge and drew FAST_SELLING re-POSTs within
 REM 1.0-1.5 s even when the Shape bank is empty (10-09 04:32:35: the night's only admitted
 REM shot got no burst because the HUMAN wall had emptied every bank). Burst evidence:
-REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1.
+REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1. (2026-11-04: does not reproduce on ident-tagged data, 3/33 vs 0/8; C-1104-04.)
 set TARGET_ATC_DCO_BURST_REQUIRE_BANK=0
 REM 2026-10-14 (audit A1 #9): with REQUIRE_BANK=0 a burst still waited up to this long
 REM for a banked set before firing page-signed, landing the re-POST ~7.5 s after the
@@ -1406,6 +1420,20 @@ REM ~2 s; all three accounts were checked within 3 ms, so a flip landing in that
 REM waited on EVERY account. Account i is now checked i x 30 s after the first, so a
 REM normal check holds one account at a time (opus verifier K3). Kill: set it to 0.
 set TARGET_SENTINEL_STAGGER_S=30
+REM 2026-11-04 FX-1104-SENTINEL-DEFER (orchestration mandate; C-1104-09). The sentinel's 300-s /account
+REM navigation holds the account page lock and collided with the window open in 3 of 5 windows on
+REM 10-30 (first-shot delays 2,182 / 7,996 / 621 / 1,927 ms vs 28-47 ms unaffected); hot orders only
+REM ever come from a cart won inside the first ~2 s (0/574 later place-orders got 200, C-1104-03).
+REM =1: skip the navigation (and the page lock) while any TCIN is live, a window started under 180 s ago,
+REM or local time is 01:30-04:30 -- ONLY when the member token is known healthy (TTL at least 900 s); an
+REM unknown / guest / expired token always runs the check. Byte-identical when =0. Verified by two
+REM claims-verifier passes (V8 + re-verify, all parts CONFIRMED), offline gate 80/80.
+REM Readout (pre-registered): python tools/events/q.py first_shot_delay --run ID + the [SENTINEL]
+REM greps in its header. PASS = every ident at most 150 ms in at least 90 percent of windows, no ERR_UNAUTHORIZED / guest
+REM increase vs run_20261029_231605. Kill: TARGET_SENTINEL_DEFER=0. Knobs (defaults):
+REM TARGET_SENTINEL_DEFER_RECENT_S=180, TARGET_SENTINEL_QUIET_LOCAL=01:30-04:30,
+REM TARGET_SENTINEL_DEFER_MIN_TOKEN_S=900.
+set TARGET_SENTINEL_DEFER=1
 REM FX-1014-KICK (TARGET_REARM_KICK) is built but NOT ARMED: two opus rounds refuted it
 REM (yields come in bursts -- all 3 accounts within ~0.1 s on 10-09 -- and a kick hands
 REM the fresh flip to the first exiter alone; kicked publishes also starve full ticks).

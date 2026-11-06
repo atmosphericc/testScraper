@@ -1036,6 +1036,34 @@ def _sentinel_log_skips_on() -> bool:
     return os.environ.get('TARGET_SENTINEL_LOG_SKIPS', '0').strip() == '1'
 
 
+def _sentinel_defer_on() -> bool:
+    """TARGET_SENTINEL_DEFER=1 (2026-11-04; default '0' = exact prior behaviour,
+    junk = off). See BulletproofPurchaseManager._sentinel_defer_reason."""
+    return os.environ.get('TARGET_SENTINEL_DEFER', '0').strip() == '1'
+
+
+def _sentinel_quiet_active(now_local=None) -> bool:
+    """True when local wall-clock time is inside TARGET_SENTINEL_QUIET_LOCAL
+    ("HH:MM-HH:MM", may wrap midnight, default "01:30-04:30"; empty = never).
+    Unparseable value = never (fail toward the prior behaviour)."""
+    try:
+        raw = os.environ.get('TARGET_SENTINEL_QUIET_LOCAL', '01:30-04:30').strip()
+        if not raw:
+            return False
+        lo_s, hi_s = raw.split('-', 1)
+        lo_h, lo_m = lo_s.strip().split(':', 1)
+        hi_h, hi_m = hi_s.strip().split(':', 1)
+        lo = int(lo_h) * 60 + int(lo_m)
+        hi = int(hi_h) * 60 + int(hi_m)
+        if not (0 <= lo < 1440 and 0 <= hi < 1440) or lo == hi:
+            return False
+        n = datetime.now() if now_local is None else now_local
+        cur = n.hour * 60 + n.minute
+        return (lo <= cur < hi) if lo < hi else (cur >= lo or cur < hi)
+    except Exception:
+        return False
+
+
 # ── 2026-09-16 hot-sku plan P5 option (c) (U1=c): per-account hot-TCIN park ──
 # On 09-16 alt-1 (BD 168.158.x) drew 61/181 carts-401s and 0/120 limiter passes
 # on the hot TCINs, while its shots added own-volume to Target's per-TCIN
@@ -4455,6 +4483,75 @@ class BulletproofPurchaseManager:
             _workers = _workers[:1]
         self._run_session_sentinel_for(_workers)
 
+    def _sentinel_defer_candidate(self, now=None):
+        """Cheap, browser-free half of TARGET_SENTINEL_DEFER: the reason a check
+        WOULD be deferred (live / recent_flip / quiet_window), else None. Never raises."""
+        try:
+            if not _sentinel_defer_on():
+                return None
+            now = time.time() if now is None else float(now)
+            checker = getattr(getattr(self, 'stock_monitor', None), '_resilient_checker', None)
+            statuses = getattr(checker, '_tcin_status', None) if checker is not None else None
+            if statuses is not None and _stock_probe_on():
+                items = None
+                for _ in range(2):
+                    try:
+                        items = list(statuses.items())
+                        break
+                    except RuntimeError:
+                        continue
+                recent_s = _env_float_clamped('TARGET_SENTINEL_DEFER_RECENT_S', 180.0, 0.0, 3600.0)
+                flip_t = None
+                for t, st in (items or ()):
+                    snap = _stock_status_snapshot(st, now)
+                    if snap['live'] is True:
+                        return f"live tcin={t}"
+                    ws = snap['window_start']
+                    if ws > 0.0 and snap['last_true'] > 0.0 and 0.0 <= now - ws <= recent_s:
+                        flip_t = (t, now - ws)
+                if flip_t is not None:
+                    return f"recent_flip tcin={flip_t[0]} age={flip_t[1]:.0f}s"
+            if _sentinel_quiet_active():
+                return "quiet_window"
+            return None
+        except Exception:
+            return None
+
+    def _sentinel_defer_reason(self, ident, token_ttl_s=None, now=None):
+        """TARGET_SENTINEL_DEFER=1 (2026-11-04, default off; revised 2026-11-04 per
+        verifier V8): return why this account's NAVIGATING sentinel check should be
+        skipped this cycle, else None.
+        Motivation: with TARGET_TOKEN_KEEPFRESH=0 each check navigates the buyer tab
+        to /account under the executor's _page_lock; on run_20261029_231605 it
+        collided with the stock window in 3 of 5 windows and delayed an account's
+        first add-to-cart shot by 0.6/1.9/2.2/8.0 s (claims-verifier 2026-11-04).
+        Reasons (see _sentinel_defer_candidate), in order:
+          live          any armed TCIN reads in stock now (stock_snapshot()['live'],
+                        the probe the race dispatch uses; TARGET_STOCK_PROBE=0 -> none)
+          recent_flip   a TCIN's current in-stock window opened within
+                        TARGET_SENTINEL_DEFER_RECENT_S (180) s (snapshot window_start).
+                        NOTE: a window that has already closed keeps deferring until
+                        180 s after its START (accepted).
+          quiet_window  local time inside TARGET_SENTINEL_QUIET_LOCAL
+        UNIFORM TOKEN RULE: EVERY reason defers only when this account's member token
+        is known healthy: token_ttl_s (sm.get_access_token_status()['ttl_s'], a
+        non-navigating cookie read done by the caller ONLY once a candidate exists)
+        must be known and >= TARGET_SENTINEL_DEFER_MIN_TOKEN_S (900). Unknown /
+        guest / expired / read error -> None (run the check as before): with
+        TARGET_TOKEN_KEEPFRESH=0 the sentinel's /account reload is the only in-bot
+        member-token refresh, and live stretches last up to 86-202 min.
+        Never raises (any error -> None)."""
+        try:
+            cand = self._sentinel_defer_candidate(now=now)
+            if not cand or token_ttl_s is None:
+                return None
+            ttl = float(token_ttl_s)
+            if ttl >= _env_float_clamped('TARGET_SENTINEL_DEFER_MIN_TOKEN_S', 900.0, 0.0, 86400.0):
+                return f"{cand} ttl_s={ttl:.0f}"
+            return None
+        except Exception:
+            return None
+
     def _run_session_sentinel_for(self, workers) -> None:
         """One sentinel check per worker in `workers` (see _run_session_sentinel_once).
         A staggered call that fires after shutdown set _sentinel_stop does nothing."""
@@ -4481,6 +4578,8 @@ class BulletproofPurchaseManager:
                 err = None
                 try:
                     _res = fut.result()
+                    if _res == 'defer':
+                        return  # TARGET_SENTINEL_DEFER: not a check -- health untouched
                     if _res == 'skip':
                         # Purchase was using the tab — keep the previous
                         # verdict rather than recording a phantom failure.
@@ -4534,9 +4633,26 @@ class BulletproofPurchaseManager:
                 # arriving DURING a check simply waits on the lock (~5-10s
                 # healthy path; and if the ladder is mid-restart, waiting for
                 # a live browser is exactly what the purchase needs).
-                async def _bounded_check(_sm=sm, _pe=getattr(w, 'purchase_executor', None)):
+                async def _bounded_check(_sm=sm, _pe=getattr(w, 'purchase_executor', None), _lbl=label):
                     if getattr(_sm, 'purchase_in_progress', False):
                         return 'skip'
+                    if _sentinel_defer_on() and self._sentinel_defer_candidate():
+                        # TARGET_SENTINEL_DEFER (2026-11-04): before ANY navigation or
+                        # page-lock acquisition. Cheap checks first; the (browser-touching,
+                        # 10 s capped) token read only when a defer reason applies.
+                        # A deferred check records no verdict.
+                        _ttl = None
+                        try:
+                            _st = await asyncio.wait_for(_sm.get_access_token_status(), timeout=10.0)
+                            if isinstance(_st, dict) and _st.get('present') and _st.get('member') \
+                                    and float(_st.get('ttl_s', -1.0)) > 0.0:
+                                _ttl = float(_st['ttl_s'])
+                        except Exception:
+                            _ttl = None
+                        _why = self._sentinel_defer_reason(_lbl, token_ttl_s=_ttl)
+                        if _why:
+                            print(f"[SENTINEL] defer ident={_lbl} reason={_why}")
+                            return 'defer'
                     _lock = getattr(_pe, '_page_lock', None) if _pe is not None else None
                     if _lock is None:
                         _ok = await asyncio.wait_for(_sm.ensure_logged_in(), timeout=240.0)

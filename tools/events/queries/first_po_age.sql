@@ -3,7 +3,9 @@
 -- Usage:  python tools/events/q.py first_po_age [--run 20261016]
 -- Runs on the CURRENT event store (place_orders only). The wire-send half of the pre-registered rule (a win's
 --   [CHAIN_NET] po send_ms minus the window open) needs the [CHAIN_NET] rows and lives in chain_net.sql, result 5.
--- Why this query exists (2026-10-15, CHK-1 proposal + evaluator; [MEASURED] 78 first POs over 17 nights):
+-- Why this query exists (2026-10-15, CHK-1 proposal + evaluator; [MEASURED] 78 first POs over 17 nights;
+--   store recount 2026-11-04: 81 first POs over 19 runs, wins still 18, every win still ts_src='logger_prior';
+--   only 1 of the 18 is a hot SKU, 17 are unclassified June-August SKUs -- docs/CLAIMS.md C-1104-03):
 --   every WINNING first place-order carries ts_src='logger_prior' (the last logger stamp before the POST, a LOWER
 --   bound; mean bracket ~2.4 s, n=18) and every NON-winning one carries ts_src='resp_date' (the response Date
 --   header, +-1 s; n=60). A win therefore reads YOUNG in any single-clock age table (po_by_age.sql). The upper

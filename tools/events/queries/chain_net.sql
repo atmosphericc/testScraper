@@ -12,7 +12,8 @@
 --   ONE print-only line per MAIN-tab pre_checkout / place-order / CVV PUT request, POST|PUT and its OPTIONS preflight:
 --   [CHAIN_NET] ident=<a> u=pre|po|cvv m=POST|PUT|OPTIONS st=<http> pause_ms= send_ms= ttfb_ms= conn= reused=
 --               proto= connect_ms= n=<ordinal> rid=<requestId>      ('-' = not reported -> NULL; ident=? = format error)
---   plus an install line "[CHAIN_NET] chain wire stamps on (...) ident=<a>" and, at most once per process, a
+--   plus an install line "[CHAIN_NET] chain wire stamps on (...) ident=<a>" and, at most once per tab install (it
+--   resets on every buyer-Chrome relaunch -- claims-verifier 2026-11-04; NOT once per process), a
 --   "[CHAIN_NET] ident=<a> cap=3000 reached - ..." line (neither is a request row; count them under checks).
 -- Table the parser must build, one row per request line (line = physical line number):
 --   chain_net(run_id, line, ident, u, method, status, pause_ms, send_ms, ttfb_ms, conn, reused, proto, connect_ms, n, rid)
@@ -21,7 +22,8 @@
 --     also dns / connect / tls -- so the rules below use queue_ms = pause_ms - COALESCE(connect_ms, 0).
 --   ttfb_ms = response headers minus send_end. n = the request's ordinal within its (u, method) since the last
 --     successful ATC of that account: the first 20 are ALL logged, then every 10th, so n is the sampling ruler --
---     a gap in n is thinning, not a lost event. Cap per process = 3000 logged requests.
+--     a gap in n is thinning, not a lost event. Cap per TAB INSTALL = 3000 logged requests (the cap and the n
+--     ordinals reset on every buyer-Chrome relaunch; not per process -- claims-verifier 2026-11-04).
 -- Validation of the clock before trusting pause_ms (CHK-1 evaluator): the same send_ms derivation on 690 joined ATC POSTs
 --   of run_20261009_000934 gives atc_t0 -> wire median 86 ms (p10 72, p90 118), all 690 on a reused connection
 --   ([MEASURED] atc_net, join_dt_ms) -- the order of magnitude pause_ms must reproduce on a reused pre/po request.
