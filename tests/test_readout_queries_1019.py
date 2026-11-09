@@ -241,8 +241,49 @@ def test_real_store():
             print(f"[INFO] real-store cart_limit_empty summary: {out[0]}")
 
 
+def _q_args(db: Path, name: str, *extra: str):
+    """q() with extra CLI args (e.g. -p acct=primary). Returns (parsed_json, stderr) or (None, err)."""
+    r = subprocess.run([sys.executable, str(Q), name, "--db", str(db), "--json", *extra], capture_output=True,
+                       text=True, timeout=120, cwd=str(ROOT), encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        return None, r.stderr[-600:]
+    return json.loads(r.stdout), r.stderr
+
+
+def test_cred_wall2_acct():
+    """cred_wall2_acct.sql: the per-account cred split, for the one-account harvest-survival arms. Pins that
+    the :acct bind restricts to exactly one ident (controls stay separate), and the gate math matches cred_wall2."""
+    with tempfile.TemporaryDirectory() as d:
+        db = Path(d) / "events.sqlite"
+        build_store(db)
+        before = db.stat().st_mtime_ns
+        f = ROOT / "tools" / "events" / "queries" / "cred_wall2_acct.sql"
+        check("rq_cwa_file_exists", f.is_file())
+        head = f.read_text(encoding="utf-8")
+        check("rq_cwa_rule_header", all(s in head for s in ("READOUT RULE", "WORKED", "FAILED", ":acct")))
+        # unfiltered (scoped to RUN_A): every account's cred split is present
+        out, err = _q_args(db, "cred_wall2_acct", "--run", "run_20261001")
+        check("rq_cwa_rc0", out is not None, err)
+        if out is None:
+            return
+        idents = {r["ident"] for r in out}
+        check("rq_cwa_multi_account", {"primary", "alt-1"} <= idents, idents)
+        pb = next((r for r in out if r["ident"] == "primary" and r["cred_source"] == "banked_replay"), None)
+        check("rq_cwa_primary_banked",
+              pb is not None and (pb["past_limiter"], pb["w2_denied"], pb["reached_cart"], pb["carts"],
+                                  pb["wall1_blocked"], pb["reached_pct"]) == (4, 1, 3, 1, 3, 75.0), pb)
+        # -p acct=primary restricts to exactly that ident (the one-account readout)
+        fout, ferr = _q_args(db, "cred_wall2_acct", "--run", "run_20261001", "-p", "acct=primary")
+        check("rq_cwa_filter_rc0", fout is not None, ferr)
+        if fout is not None:
+            check("rq_cwa_filter_one_ident", len(fout) >= 1 and all(r["ident"] == "primary" for r in fout),
+                  [r["ident"] for r in fout])
+        check("rq_cwa_read_only", db.stat().st_mtime_ns == before)
+
+
 def main() -> int:
-    for t in (test_files_exist, test_cred_source, test_cart_limit_empty, test_clamped_201_other_ident_same_run, test_real_store):
+    for t in (test_files_exist, test_cred_source, test_cart_limit_empty, test_clamped_201_other_ident_same_run,
+              test_cred_wall2_acct, test_real_store):
         try:
             t()
         except Exception as e:

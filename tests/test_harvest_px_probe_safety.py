@@ -158,6 +158,25 @@ def test_summarize_verdicts():
     check("summarize_errors_inconclusive", summarize_v(decoys, errs) == "INCONCLUSIVE", summarize_v(decoys, errs))
 
 
+def test_during_drop_relaxes_only_clock():
+    # --during-drop lets the probe run in the 00-06 drop band beside the live bot. It must relax
+    # ONLY the clock window -- never a money-safety primitive. Default OFF == exact prior behaviour.
+    import re as _re
+    ns = HP.build_parser().parse_args([])
+    check("during_drop_default_off", ns.during_drop is False, f"default was {ns.during_drop!r}")
+    ns2 = HP.build_parser().parse_args(["--during-drop"])
+    check("during_drop_flag_parses", ns2.during_drop is True)
+    # the ONLY guard --during-drop bypasses is the in_allowed_window clock check
+    check("during_drop_guards_only_clock",
+          bool(_re.search(r"not\s+a\.during_drop\s+and\s+not\s+P\.in_allowed_window", SRC)),
+          "the --during-drop bypass must wrap in_allowed_window and nothing else")
+    # it must never share a line with a money-safety primitive (i.e. cannot gate one off)
+    for prim, label in (("attach_check", "attach_check"), ("_kill_own", "kill_own"),
+                        ("dynamic_range_clear", "dynamic_range_clear"), ("os._exit", "os_exit")):
+        bad = [ln.strip() for ln in SRC.splitlines() if "during_drop" in ln and prim in ln]
+        check(f"during_drop_not_coupled_to_{label}", not bad, f"{bad}")
+
+
 def summarize_v(decoys, recs):
     return HP.summarize(decoys, recs)["verdict"]
 
@@ -165,7 +184,8 @@ def summarize_v(decoys, recs):
 def main() -> int:
     for t in (test_no_transaction_fingerprints_in_code, test_required_primitives_present,
               test_only_the_readonly_detector_js, test_imports_are_whitelisted,
-              test_attach_failure_aborts_before_nav, test_validate_tcins, test_summarize_verdicts):
+              test_attach_failure_aborts_before_nav, test_validate_tcins, test_summarize_verdicts,
+              test_during_drop_relaxes_only_clock):
         try:
             t()
         except Exception as ex:

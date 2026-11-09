@@ -179,8 +179,9 @@ async def run(a) -> int:
     if why:
         print(f"refused: {why}")
         return 5
-    if not P.in_allowed_window(time.time()):
-        print("refused: runs only 06:00-23:05 local (off-window harvest probe)")
+    if not a.during_drop and not P.in_allowed_window(time.time()):
+        print("refused: runs only 06:00-23:05 local; pass --during-drop to run in the 00-06 drop "
+              "band beside the live bot (money-safe guards intact; relaxes ONLY the clock window)")
         return 3
     try:
         decoys = validate_tcins(a.tcins)
@@ -202,8 +203,13 @@ async def run(a) -> int:
         logf.write(s + "\n")
         logf.flush()
 
+    if a.during_drop:
+        out("[HARVEST_PX] DURING-DROP mode: running in the drop band beside the live bot. Money-safe "
+            "guards intact (fresh guest profile; NO login; NO add-to-cart / cart / checkout; attach-check "
+            "before any nav). Relaxes ONLY the 06:00-23:05 clock window. Read the verdict against the bot's "
+            "MISS-PROBE wall presence for this window -- see docs/experiments/HARVEST_PX_DURING_DROP_READOUT.md.")
     out(f"[HARVEST_PX] start decoys={decoys} loads={a.loads} cadence_s={a.cadence_s} "
-        f"settle_s={a.settle_s} max_min={a.max_min}")
+        f"settle_s={a.settle_s} max_min={a.max_min} during_drop={a.during_drop}")
     probe = Probe(out, a.settle_s)
     recs: list = []
     deadline = time.time() + a.max_min * 60
@@ -211,7 +217,8 @@ async def run(a) -> int:
     try:
         await probe.start()
         stop = False
-        for li in range(a.loads):
+        eff_loads = a.loads if not a.during_drop else 10 ** 9   # during-drop: run until the --max-min deadline
+        for li in range(eff_loads):
             if stop:
                 break
             for tcin in decoys:
@@ -246,8 +253,8 @@ async def run(a) -> int:
         await probe.close()
     summary = summarize(decoys, recs)
     doc = {"experiment": "EXP-HARVEST-OFFLINE", "started": stamp, "decoys": decoys, "loads": a.loads,
-           "cadence_s": a.cadence_s, "settle_s": a.settle_s, "shots": recs, "summary": summary,
-           "log": str(log_path)}
+           "cadence_s": a.cadence_s, "settle_s": a.settle_s, "during_drop": bool(a.during_drop),
+           "shots": recs, "summary": summary, "log": str(log_path)}
     try:
         json_path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     except Exception as e:
@@ -265,6 +272,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cadence-s", type=float, default=20.0, dest="cadence_s", help="seconds between loads")
     ap.add_argument("--settle-s", type=float, default=3.0, dest="settle_s", help="settle after each nav before reading")
     ap.add_argument("--max-min", type=float, default=20.0, dest="max_min", help="hard wall-clock cap (minutes)")
+    ap.add_argument("--during-drop", action="store_true", dest="during_drop",
+                    help="allow running in the 00-06 drop band beside the live bot to settle profile-bound vs "
+                         "line-bound (money-safe guards intact; relaxes ONLY the clock window)")
     return ap
 
 
