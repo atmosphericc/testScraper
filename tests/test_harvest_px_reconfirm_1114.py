@@ -105,10 +105,19 @@ def test_container_first_read_reread_error_fail_open():
     check('container first + re-read ERROR -> NOT parked (fail-open)', ex._parked == [])
     check('container first + re-read ERROR -> logged fail-open', any('fail-open' in m for m in ex._logs))
 
-def test_reread_nondict_fail_open():
+def test_strong_first_read_nondict_reread_parks():
+    # A non-dict re-read is inconclusive (like an error): a confirmed STRONG first read must
+    # NOT be discarded -- fall back to it and park (matches the error-path contract).
     ex, tab, out = _run([REAL, 'not-a-dict'])
-    check('re-read non-dict -> NOT parked', ex._parked == [])
-    check('re-read non-dict -> logged inconclusive', any('inconclusive' in m for m in ex._logs))
+    check('strong first + non-dict re-read -> PARKED (fallback)', len(ex._parked) == 1)
+    check('strong first + non-dict re-read -> returns True', out is True)
+    check('strong first + non-dict re-read -> logged parking', any('keeping the' in m for m in ex._logs))
+    check('strong first + non-dict re-read -> logged inconclusive', any('inconclusive' in m for m in ex._logs))
+
+def test_container_first_read_nondict_reread_fail_open():
+    ex, tab, out = _run([FLASH, 'not-a-dict'])
+    check('container first + non-dict re-read -> NOT parked (fail-open)', ex._parked == [])
+    check('container first + non-dict re-read -> logged fail-open', any('fail-open' in m for m in ex._logs))
 
 def test_disabled_parks_immediately():
     ex, tab, out = _run([FLASH], cfg={'px_reconfirm': False, 'px_reconfirm_delay_s': 0.0})
@@ -119,7 +128,9 @@ def main():
     for t in (test_config_flags, test_px_verdict_is_strong, test_container_flash_rotates,
               test_container_stuck_placeholder_rotates, test_container_becomes_strong_parks,
               test_strong_persists_parks, test_iframe_persists_parks, test_strong_flash_rotates,
-              test_strong_first_read_reread_error_parks, test_container_first_read_reread_error_fail_open, test_reread_nondict_fail_open, test_disabled_parks_immediately):
+              test_strong_first_read_reread_error_parks, test_container_first_read_reread_error_fail_open,
+              test_strong_first_read_nondict_reread_parks, test_container_first_read_nondict_reread_fail_open,
+              test_disabled_parks_immediately):
         t()
     print(f'\n{PASS} passed, {FAIL} failed')
     sys.exit(1 if FAIL else 0)

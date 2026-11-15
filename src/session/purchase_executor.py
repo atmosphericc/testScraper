@@ -4983,7 +4983,7 @@ class PurchaseExecutor:
         #     bad bank entry re-checked next click (low cost).
         # ACCEPTED residual: a genuine wall that renders ONLY #px-captcha and never a strong marker is
         # not parked (unobserved; a real profile wall walls the buyer account regardless).
-        # (2026-11-14 code review, 6 cycles.)
+        # (2026-11-14 code review, 7 cycles; 2026-11-15 non-dict re-read fixed to honor the fall-back contract.)
         if px and self._harvest_cfg.get('px_reconfirm', False):
             _m2 = None
             _reread_ok = False
@@ -4991,23 +4991,25 @@ class PurchaseExecutor:
             try:
                 await asyncio.sleep(float(self._harvest_cfg.get('px_reconfirm_delay_s', 2.5) or 0.0))
                 _m2 = await asyncio.wait_for(tab.evaluate(PX_MARKERS_JS), timeout=3.0)
-                _reread_ok = True
+                if isinstance(_m2, dict):
+                    _reread_ok = True
+                else:
+                    _reread_err = f"non-dict re-read ({type(_m2).__name__})"
             except Exception as _e:
                 _reread_err = f"{type(_e).__name__}: {_e}"
-            # Decide from the re-read; on an inconclusive re-read fall back to the FIRST read so a
-            # confirmed STRONG wall is not discarded (strong markers are reliable), while a
-            # container-only first read still never parks (no drain).
+            # Decide from the re-read; on an inconclusive re-read (error OR non-dict) fall back to the
+            # FIRST read so a confirmed STRONG wall is not discarded (strong markers are reliable),
+            # while a container-only first read still never parks (no drain).
             _still = bool(px_verdict_is_strong(_m2 if _reread_ok else info))
             if not _still:
                 if not _reread_ok:
-                    self._harvest_log(f"MISS-PROBE px re-confirm read failed ({_reread_err}); first "
+                    self._harvest_log(f"MISS-PROBE px re-confirm inconclusive ({_reread_err}); first "
                                       f"read not strong ({desc}) -- fail-open, not parking")
                 else:
-                    _how = ("inconclusive non-dict re-read" if not isinstance(_m2, dict)
-                            else "no strong challenge on re-read")
-                    self._harvest_log(f"MISS-PROBE px re-confirm: {_how} (first={desc}) -- not parking")
+                    self._harvest_log(f"MISS-PROBE px re-confirm: no strong challenge on re-read "
+                                      f"(first={desc}) -- not parking")
             elif not _reread_ok:
-                self._harvest_log(f"MISS-PROBE px re-confirm read failed ({_reread_err}); keeping the "
+                self._harvest_log(f"MISS-PROBE px re-confirm inconclusive ({_reread_err}); keeping the "
                                   f"strong first-read verdict ({desc}) -- parking")
             if isinstance(_m2, dict):
                 desc = describe(_m2)
