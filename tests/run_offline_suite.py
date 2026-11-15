@@ -25,6 +25,7 @@ ROOT = os.path.dirname(HERE)
 # engine UA), then the 09-11 fixes, then the long-standing smoke set.
 OFFLINE = [
     "test_shape_harvest",
+    "test_harvest_px_reconfirm_1114",
     "test_ua_engine_mode",
     "test_won_cart_ride_smoke",
     "test_level_rearm_smoke",

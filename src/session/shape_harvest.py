@@ -191,6 +191,15 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "px_renav": str(e.get("TARGET_HARVEST_PX_RENAV", "0")).strip() == "1",
         "px_park_max_s": _float(e, "TARGET_HARVEST_PX_PARK_MAX_S", 3600.0, 30.0, 14400.0),
         "px_renav_max_per_h": _int(e, "TARGET_HARVEST_PX_RENAV_MAX_PER_H", 3, 1, 20),
+        # 2026-11-14 FX-1114-PXRECONFIRM (default OFF in code; ARMED =1 in the bat; kill =0).
+        # A px-captcha placeholder flashes during load on a transient "Product not found"
+        # decoy PDP and is NOT a real HUMAN challenge (CONFIRMED 11-06 run_20261106_001109:
+        # 78 harvest parks, all title='Product not found', px_container-only; the park
+        # escalated to 3600s and drained the bank the whole drop -> page-signed -> 0 carts).
+        # Re-read the DOM after px_reconfirm_delay_s before parking: a real challenge persists,
+        # a flash clears. Ported from the lane harvester (shape_harvester.py:534-543).
+        "px_reconfirm": str(e.get("TARGET_HARVEST_PX_RECONFIRM", "0")).strip() == "1",
+        "px_reconfirm_delay_s": _float(e, "TARGET_HARVEST_PX_RECONFIRM_DELAY_S", 2.5, 0.5, 10.0),
     }
 
 

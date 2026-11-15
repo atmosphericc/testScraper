@@ -1887,12 +1887,19 @@ class PurchaseExecutor:
         # purchase deletes that line before any ATC (see _woncart_dirty_release).
         # Only the flag-gated loop sets it.
         self._woncart_dirty: Optional[Dict[str, Any]] = None
-        # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a rolling per-account
-        # limiter on the checkout POST, and the 07-21 log is unambiguous about how
-        # it behaves: it never once appeared on the FIRST shot of a wave, and once
-        # tripped it answered every one of the next 5-6 shots (0-for-~20 across the
-        # night). The in-place re-shoot loop was feeding the very limiter that was
-        # blocking it. Back off for a cooldown instead.
+        # Target's FAST_SELLING_ITEM_RATE_LIMIT_EXCEPTION is a cart-service demand
+        # throttle keyed PER-TCIN on the item's window-age, NOT per-account/per-IP
+        # (CORRECTED 2026-11-14, C-1114: on 10-01 TCIN 1011960739, three accounts on
+        # one home IP -- primary's first POST at window_age 2.2s got 200 while a
+        # fresh account's OWN first POST (po_idx=1) drew FS 60s into the window;
+        # same IP/tier, differing only in arrival time -> not per-account, and a
+        # first POST drawing FS -> not a reputation read). It saturates ~2-3s into a
+        # hot window and stays saturated until OOS; the ONLY converting shot is an
+        # early (<~3s) FIRST place-order -- riding an aged window converts 0 (10-29:
+        # 305 FS, 0 orders). The 'per-account, never on the first shot' reading below
+        # was the 07-21 ORDINARY-SKU era, refuted on hot SKUs; do not let it justify
+        # the re-shoot/ride. 07-21 history: once tripped it answered the next 5-6
+        # shots (0-for-~20); backing off for a cooldown still beats feeding it.
         self._fast_selling_until: float = 0.0
         # 2026-10-14 (C-1014-15): the same back-off per TCIN; read only with
         # TARGET_FAST_SELLING_COOLDOWN_PER_TCIN=1 (_fs_cooldown_left).
@@ -4929,7 +4936,8 @@ class PurchaseExecutor:
 
     async def _harvest_miss_probe(self, tab) -> bool:
         """TARGET_HARVEST_MISS_PROBE=1 (2026-09-16 HV-1): one read-only snapshot
-        of a buttonless harvest page (bounded 3 s), logged as MISS-PROBE and
+        of a buttonless harvest page (bounded 3 s; a px verdict adds the px_reconfirm
+        re-read: +px_reconfirm_delay_s + one 3 s evaluate before parking), logged as MISS-PROBE and
         classified with px_challenge.is_px_challenge. A PX verdict parks the
         harvest tab and returns True; that navigation stays un-probed, so the
         page is checked again after the park. Anything else (incl. a failed
@@ -4938,9 +4946,9 @@ class PurchaseExecutor:
         nav_ts = self._harvest_tab_nav_ts
         try:
             try:
-                from .px_challenge import is_px_challenge, describe
+                from .px_challenge import is_px_challenge, describe, px_verdict_is_strong, PX_MARKERS_JS
             except ImportError:
-                from src.session.px_challenge import is_px_challenge, describe  # type: ignore
+                from src.session.px_challenge import is_px_challenge, describe, px_verdict_is_strong, PX_MARKERS_JS  # type: ignore
         except Exception as e:
             self._harvest_probe_nav_ts = nav_ts
             self._harvest_log(f"MISS-PROBE unavailable ({type(e).__name__}: {e})")
@@ -4959,6 +4967,51 @@ class PurchaseExecutor:
             desc = describe(info)
         except Exception:
             px, desc = False, 'describe-failed'
+        # FX-1114-PXRECONFIRM (armed =1 in the bat; kill TARGET_HARVEST_PX_RECONFIRM=0). The harvest
+        # park escalates to 3600s and drains the bank (CONFIRMED 11-06 run_20261106_001109: 78 parks,
+        # all px_container-only on 'Product not found' decoys -> page-signed -> 0 carts). The bare
+        # #px-captcha placeholder is an UNRELIABLE signal: it flashes on a dead decoy during load and
+        # can linger on a slow/stuck one. Only the STRONG markers (press_hold/denied/px_iframe/a
+        # captcha-or-blocked URL) reliably mean a real HUMAN wall. So re-read the LIGHTWEIGHT PX
+        # markers after a short delay and PARK ONLY IF A STRONG MARKER IS PRESENT ON THE RE-READ:
+        #   - container-only (flash OR stuck placeholder) -> never park -> the harvest rotates to the
+        #     next decoy (the definitive fix for the 11-06 drain, no title heuristics).
+        #   - a real wall whose strong markers have rendered by the re-read -> park.
+        #   - inconclusive re-read (timeout/error/non-dict, mid-load) -> fall back to the FIRST read:
+        #     a STRONG first read parks (strong markers are reliable), a container-only first read
+        #     does not (no drain). A false park drains the bank (high cost); a missed park is one
+        #     bad bank entry re-checked next click (low cost).
+        # ACCEPTED residual: a genuine wall that renders ONLY #px-captcha and never a strong marker is
+        # not parked (unobserved; a real profile wall walls the buyer account regardless).
+        # (2026-11-14 code review, 6 cycles.)
+        if px and self._harvest_cfg.get('px_reconfirm', False):
+            _m2 = None
+            _reread_ok = False
+            _reread_err = ""
+            try:
+                await asyncio.sleep(float(self._harvest_cfg.get('px_reconfirm_delay_s', 2.5) or 0.0))
+                _m2 = await asyncio.wait_for(tab.evaluate(PX_MARKERS_JS), timeout=3.0)
+                _reread_ok = True
+            except Exception as _e:
+                _reread_err = f"{type(_e).__name__}: {_e}"
+            # Decide from the re-read; on an inconclusive re-read fall back to the FIRST read so a
+            # confirmed STRONG wall is not discarded (strong markers are reliable), while a
+            # container-only first read still never parks (no drain).
+            _still = bool(px_verdict_is_strong(_m2 if _reread_ok else info))
+            if not _still:
+                if not _reread_ok:
+                    self._harvest_log(f"MISS-PROBE px re-confirm read failed ({_reread_err}); first "
+                                      f"read not strong ({desc}) -- fail-open, not parking")
+                else:
+                    _how = ("inconclusive non-dict re-read" if not isinstance(_m2, dict)
+                            else "no strong challenge on re-read")
+                    self._harvest_log(f"MISS-PROBE px re-confirm: {_how} (first={desc}) -- not parking")
+            elif not _reread_ok:
+                self._harvest_log(f"MISS-PROBE px re-confirm read failed ({_reread_err}); keeping the "
+                                  f"strong first-read verdict ({desc}) -- parking")
+            if isinstance(_m2, dict):
+                desc = describe(_m2)
+            px = _still
         self._harvest_log(f"MISS-PROBE px={'yes' if px else 'no'} tcin={self._harvest_tcin} {desc} "
                           f"{_shape_harvest.miss_probe_fields(info)}")
         await self._harvest_miss_screenshot(tab, info, px)

@@ -67,8 +67,8 @@ REM  so the wall was never IP-only. The captcha is HUMAN Security's (PerimeterX)
 REM  "Press & Hold" layer, which Target now runs on top of Shape -- all three
 REM  account jars carry _px2/_px3/_pxhd/_pxvid/pxcts on .target.com. Verify the
 REM  pool BEFORE a drop with probe_sweep_pool.bat (read-only, real Chrome + BD
-REM  IP): want OK-DATA. Home-IP sweep again: =1 (+ 2 entries in proxyIps).
-set RESILIENT_HARVEST_VIA_LOCAL_IP=0
+REM  IP): want OK-DATA. --- 2026-11-14 BD CANCELLED (all BD IPs dead, closed for cost): the sweep is now on the HOME IP via apps_raw (=1 below). Raw apps_raw read probed 24/24 clean @0.5/s on the home IP this date; the 0/11,050 home failure was the pre-apps_raw WEB channel. proxyIps 'proxies' = EXACTLY 1 entry -> rate cap min(3.0,1*0.5)=0.5/s on the one home IP (2 entries=1.0/s, untested vs the 404 wall). CAVEAT: the pool still gates reads behind a scratch-Chrome homepage cookie-harvest on home (UNPROVEN; 09-04 fresh profiles were 403-walled on home) -- if the pool stays blind the armed trusted-reader (FORCE_TAB_FETCH=auto) takes over on the account browser, which IS proven 200 on home. Keep FRESH_PROFILES=0 (fresh->403 on home, see lines 151/160). Re-arming =0 REQUIRES a live non-home pool first or the sweep goes blind.
+set RESILIENT_HARVEST_VIA_LOCAL_IP=1
 set RESILIENT_CAPTCHA_BACKOFF=1
 REM  2026-09-07 23:05 PROBE VERDICT (probe_sweep_pool.bat, same fresh profile, same
 REM  machine): 31.105.228.245 / 31.105.93.225 / 168.158.143.27 -> CAPTCHA;
@@ -1506,6 +1506,13 @@ REM across 3 walled nights (10-22, 10-23, 11-06: 66 re-navs in 05h-08h, 0 captur
 REM churns the already-walled profile for no measured benefit. Re-arm only if a walled night shows
 REM RENAV capturing any creds during a park. Evidence: logs/analysis_2026_11_06/.
 set TARGET_HARVEST_PX_RENAV=0
+REM 2026-11-14 FX-1114-PXRECONFIRM: the harvest miss-probe PX detector false-positives on a
+REM transient "Product not found" decoy PDP (px-captcha placeholder flashes during load) and
+REM parks the bank up to 3600s with NO re-confirm, so the bank drains and shots go page-signed, carting 0
+REM (CONFIRMED 11-06 run_20261106_001109: 78 parks, all 'Product not found', px_container-only;
+REM claims-verifier CONFIRMED 2026-11-14). =1 re-reads the DOM after ~2.5s before parking: a real
+REM HUMAN challenge persists, a flash clears (ported from the lane harvester). Kill: =0 (exact prior).
+set TARGET_HARVEST_PX_RECONFIRM=1
 REM INF-1: print the sentinel ticks skipped while a purchase is in flight.
 REM Kill: TARGET_SENTINEL_LOG_SKIPS=0.
 set TARGET_SENTINEL_LOG_SKIPS=1

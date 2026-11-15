@@ -73,6 +73,19 @@ def is_px_challenge(markers: Any) -> bool:
     return any(h in url for h in _URL_HINTS)
 
 
+def px_verdict_is_strong(markers: Any) -> bool:
+    """is_px_challenge MINUS the flash-prone #px-captcha placeholder, DERIVED from
+    is_px_challenge (no duplicated marker list -> cannot drift): True iff the verdict rests
+    on a persistent/unambiguous marker (Press & Hold, access-denied, a real captcha iframe,
+    or a captcha/blocked URL) rather than the bare placeholder, which flashes on a delisted
+    decoy PDP (src/lanes/shape_harvester.py:537-539). 2026-11-14 code review."""
+    if not is_px_challenge(markers):
+        return False
+    m2 = dict(markers)
+    m2['px_container'] = False
+    return is_px_challenge(m2)
+
+
 def describe(markers: Any) -> str:
     """One-line human summary for logs."""
     if not isinstance(markers, Mapping):
