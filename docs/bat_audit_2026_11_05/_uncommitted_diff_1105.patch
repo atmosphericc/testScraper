@@ -1,0 +1,45 @@
+diff --git a/run_bot_with_nightly_restart.bat b/run_bot_with_nightly_restart.bat
+index 60bf2530..43fd421c 100644
+--- a/run_bot_with_nightly_restart.bat
++++ b/run_bot_with_nightly_restart.bat
+@@ -867,7 +867,9 @@ REM service's demand throttle rejected the add. Wave-first treated it like an
+ REM edge 429 and slept 55-70 s -- walking away from the only moment the edge
+ REM is open. Every run log: the next ATC by the same identity on the same
+ REM TCIN within 5 s of a DCO 429 got past the edge again 15/48 times (3 x
+-REM 201); after 45-90 s, 0/7. On 09-11 primary was admitted at 4 flips, got
++REM 201); after 45-90 s, 0/7. 2026-11-04: those counts are pre-09-17 data. In
++REM the flip era 09-30..10-29 the same re-POST got past the edge 1/19 - see
++REM docs/CLAIMS.md C-1104-04. On 09-11 primary was admitted at 4 flips, got
+ REM DCO each time, slept ~60 s and got edge-429 on all 4 re-entries; same at
+ REM the 09-16 Tin flip. So: after a DCO 429 re-POST every 1.0-1.5 s, up to 2
+ REM times per race thread (since 09-18 only with a banked Shape set, see
+@@ -967,7 +969,7 @@ REM Kill: TARGET_ATC_DCO_BURST_REQUIRE_BANK=0 (the 09-17 behaviour).
+ REM 2026-10-11: =0 - a shot that passed the edge and drew FAST_SELLING re-POSTs within
+ REM 1.0-1.5 s even when the Shape bank is empty (10-09 04:32:35: the night's only admitted
+ REM shot got no burst because the HUMAN wall had emptied every bank). Burst evidence:
+-REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1.
++REM 15/48 past the edge within 5 s of a DCO vs 0/7 at 45-90 s. Kill: =1. (2026-11-04: does not reproduce on ident-tagged data, 3/33 vs 0/8; C-1104-04.)
+ set TARGET_ATC_DCO_BURST_REQUIRE_BANK=0
+ REM 2026-10-14 (audit A1 #9): with REQUIRE_BANK=0 a burst still waited up to this long
+ REM for a banked set before firing page-signed, landing the re-POST ~7.5 s after the
+@@ -1406,6 +1408,20 @@ REM ~2 s; all three accounts were checked within 3 ms, so a flip landing in that
+ REM waited on EVERY account. Account i is now checked i x 30 s after the first, so a
+ REM normal check holds one account at a time (opus verifier K3). Kill: set it to 0.
+ set TARGET_SENTINEL_STAGGER_S=30
++REM 2026-11-04 FX-1104-SENTINEL-DEFER (orchestration mandate; C-1104-09). The sentinel's 300-s /account
++REM navigation holds the account page lock and collided with the window open in 3 of 5 windows on
++REM 10-30 (first-shot delays 2,182 / 7,996 / 621 / 1,927 ms vs 28-47 ms unaffected); hot orders only
++REM ever come from a cart won inside the first ~2 s (0/574 later place-orders got 200, C-1104-03).
++REM =1: skip the navigation (and the page lock) while any TCIN is live, a window started under 180 s ago,
++REM or local time is 01:30-04:30 -- ONLY when the member token is known healthy (TTL at least 900 s); an
++REM unknown / guest / expired token always runs the check. Byte-identical when =0. Verified by two
++REM claims-verifier passes (V8 + re-verify, all parts CONFIRMED), offline gate 80/80.
++REM Readout (pre-registered): python tools/events/q.py first_shot_delay --run ID + the [SENTINEL]
++REM greps in its header. PASS = every ident at most 150 ms in at least 90 percent of windows, no ERR_UNAUTHORIZED / guest
++REM increase vs run_20261029_231605. Kill: TARGET_SENTINEL_DEFER=0. Knobs (defaults):
++REM TARGET_SENTINEL_DEFER_RECENT_S=180, TARGET_SENTINEL_QUIET_LOCAL=01:30-04:30,
++REM TARGET_SENTINEL_DEFER_MIN_TOKEN_S=900.
++set TARGET_SENTINEL_DEFER=1
+ REM FX-1014-KICK (TARGET_REARM_KICK) is built but NOT ARMED: two opus rounds refuted it
+ REM (yields come in bursts -- all 3 accounts within ~0.1 s on 10-09 -- and a kick hands
+ REM the fresh flip to the first exiter alone; kicked publishes also starve full ticks).
