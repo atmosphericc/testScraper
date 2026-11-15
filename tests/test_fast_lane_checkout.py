@@ -1230,6 +1230,26 @@ def test_pre_retry_recovers_and_places_in_the_same_chain():
     check("pre_retry_counts_attempts", out["pre"].get("tries") == 3, str(out["pre"].get("tries")))
 
 
+def test_pre_retry_recovers_but_po_fast_selling_fires_once():
+    """Real-world hot-window branch (measured 09-30/10-29): pre_checkout recovers
+    to 2xx after a FAST_SELLING retry, but the place-order ITSELF then hits
+    FAST_SELLING 429 -- clearing the pre gate only exposes the po gate. The chain
+    must fire the place-order EXACTLY ONCE (a 429 is a definitive reject, no order
+    committed -> no re-POST -> no double-buy) and hand back the normal skip.
+    Money-safety regression guard for the branch pre_retry makes reachable."""
+    r = run_js([_atc_ok(),
+                {"match": PRE, "seq": [{"status": 429, "body": _FS_BODY},
+                                       {"status": 200, "body": _ok_pre_body()}]},
+                {"match": PO, "status": 429, "body": _FS_BODY}], env=PRE_RETRY_ON)
+    out = r["out"]
+    u = urls(r)
+    check("pre_recovers_two_pres_then_one_checkout",
+          u == ["cart_items", "pre_checkout", "pre_checkout", "checkout"], str(u))
+    check("po_fast_selling_fired_once_no_double_buy", u.count("checkout") == 1, str(u))
+    check("po_fast_selling_status_recorded",
+          out["po"]["status"] == 429 and out["po"]["fired"] is True, str(out["po"]))
+
+
 def test_pre_retry_gives_up_after_max_and_never_places():
     """Every attempt rejected: exactly MAX pre_checkouts, no place-order, and the
     same skip the caller already handles."""
@@ -1308,6 +1328,7 @@ def main():
         test_js_po_429_does_not_trigger_cvv_put()
         # 2026-09-20 in-chain pre_checkout retry
         test_pre_retry_recovers_and_places_in_the_same_chain()
+        test_pre_retry_recovers_but_po_fast_selling_fires_once()
         test_pre_retry_gives_up_after_max_and_never_places()
         test_pre_retry_only_retries_429()
         test_pre_retry_budget_stops_early()
