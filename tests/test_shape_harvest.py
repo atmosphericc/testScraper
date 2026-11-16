@@ -904,7 +904,7 @@ def test_hv1_probe_fields():
     check("hv1_fields_shape", s.startswith('ready=complete vis=visible buttons=40 buttons_vis=12 fulfil=0 ')
           and "hint=no_fulfillment_block text='Pokemon card'" in s)
     check("hv1_fields_garbage", h.miss_probe_fields({'buttons': 'x', 'fulfil': None}).startswith(
-        'ready=? vis=? buttons=? buttons_vis=? fulfil=? hint=- '))
+        'ready=? vis=? buttons=? buttons_vis=? fulfil=? pxfilled=no hint=- '))
     check("hv1_fields_non_dict", h.miss_probe_fields(None) == 'probe_result=NoneType')
     check("hv1_fields_text_capped", len(h.miss_probe_fields({'text': 'y' * 999})) < 260)
 
@@ -1010,7 +1010,7 @@ def test_hv1_miss_probe_and_park():
     ex2._harvest_tab = tab2
     _, out1 = _captured(ex2._harvest_handle_miss(tab2, dict(MISS)))
     check("hv1_nonpx_no_park", ex2._harvest_hold_reason() == '' and 'MISS-PROBE px=no' in out1
-          and 'buttons=40 buttons_vis=12 fulfil=0 hint=no_fulfillment_block' in out1
+          and 'buttons=40 buttons_vis=12 fulfil=0 pxfilled=no hint=no_fulfillment_block' in out1
           and 'miss #1) — will retry' in out1 and ex2._harvest_probe_nav_ts == ex2._harvest_tab_nav_ts)
     check("hv1_nonpx_screenshot_plain", len(ex2._shots) == 1 and not ex2._shots[0].endswith('_px.png')
           and _err_lines(ex2) == [])

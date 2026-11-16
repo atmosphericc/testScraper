@@ -200,6 +200,11 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         # a flash clears. Ported from the lane harvester (shape_harvester.py:534-543).
         "px_reconfirm": str(e.get("TARGET_HARVEST_PX_RECONFIRM", "0")).strip() == "1",
         "px_reconfirm_delay_s": _float(e, "TARGET_HARVEST_PX_RECONFIRM_DELAY_S", 2.5, 0.5, 10.0),
+        # 2026-11-16 (C-1116-01): treat a POPULATED #px-captcha (child iframe / full-viewport
+        # card) as a STRONG wall, distinguishing the real 11-16 Press & Hold from the 11-06
+        # flash. OFF by default -- the signal is logged first; arm only after a live boot shows
+        # px_container_filled fires on a real wall and not on a flash.
+        "px_filled_strong": str(e.get("TARGET_PX_FILLED_STRONG", "0")).strip() == "1",
     }
 
 
@@ -648,6 +653,15 @@ HARVEST_MISS_PROBE_JS = r"""(() => {
   } catch (e) { visBtn = -1; }
   const fulfil = cnt('[data-test*="fulfillment" i], [data-testid*="fulfillment" i]');
   const pxContainer = q('#px-captcha, [id^="px-captcha"], [class*="px-captcha"]');
+  const pxFilled = (() => {
+    try {
+      const el = document.querySelector('#px-captcha, [id^="px-captcha"], [class*="px-captcha"]');
+      if (!el) return false;
+      if (el.querySelector && el.querySelector('iframe')) return true;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      return !!(r && r.width >= 200 && r.height >= 150);
+    } catch (e) { return false; }
+  })();
   const pxIframe = q('iframe[src*="px-cdn.net"], iframe[src*="px-cloud.net"], iframe[src*="/captcha/"]');
   const pressHold = /press\s*(&|&amp;|and)\s*hold/i.test(txt);
   const denied = /access to this page has been denied|verify (that )?you are (a )?human|are you a human\??/i.test(txt);
@@ -662,6 +676,7 @@ HARVEST_MISS_PROBE_JS = r"""(() => {
     url: String(location.href || ''),
     title: String(document.title || ''),
     px_container: pxContainer,
+    px_container_filled: pxFilled,
     px_iframe: pxIframe,
     press_hold: pressHold,
     denied: denied,
@@ -691,6 +706,7 @@ def miss_probe_fields(info: Any) -> str:
     text = str(info.get('text') or '')[:160]
     return (f"ready={info.get('ready') or '?'} vis={info.get('vis') or '?'} "
             f"buttons={_n('buttons')} buttons_vis={_n('buttons_vis')} fulfil={_n('fulfil')} "
+            f"pxfilled={'yes' if info.get('px_container_filled') else 'no'} "
             f"hint={info.get('hint') or '-'} text={text!r}")
 
 

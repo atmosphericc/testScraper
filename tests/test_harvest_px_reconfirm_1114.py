@@ -24,7 +24,12 @@ FLASH  = {'px_container': True, 'px_iframe': False, 'press_hold': False, 'denied
 REAL   = {'px_container': True, 'px_iframe': False, 'press_hold': True, 'denied': False, 'title': '', 'url': 'https://www.target.com/blocked'}
 IFRAME = {'px_container': True, 'px_iframe': True, 'press_hold': False, 'denied': False, 'title': '', 'url': PDP}
 CLEAR  = {'px_container': False, 'px_iframe': False, 'press_hold': False, 'denied': False, 'title': '', 'url': PDP}
+# 2026-11-16 (C-1116-01): the real 11-16 Press & Hold -- container present AND populated, but the
+# challenge renders in a cross-origin overlay so press_hold/denied/px_iframe all stay False and the
+# top-doc title is still the product. ONLY px_container_filled separates it from the FLASH placeholder.
+FILLED = {'px_container': True, 'px_container_filled': True, 'px_iframe': False, 'press_hold': False, 'denied': False, 'title': 'Tide Pods HE Compatible', 'url': PDP}
 ON = {'px_reconfirm': True, 'px_reconfirm_delay_s': 0.0}
+ON_FILLED = {'px_reconfirm': True, 'px_reconfirm_delay_s': 0.0, 'px_filled_strong': True}
 
 def test_config_flags():
     c = shape_harvest.config({})
@@ -33,6 +38,8 @@ def test_config_flags():
     check('px_reconfirm =1 ON', shape_harvest.config({'TARGET_HARVEST_PX_RECONFIRM': '1'})['px_reconfirm'] is True)
     check('delay floored at 0.5 (0 -> 0.5)', abs(shape_harvest.config({'TARGET_HARVEST_PX_RECONFIRM_DELAY_S': '0'})['px_reconfirm_delay_s'] - 0.5) < 1e-9)
     check('delay clamped <=10', shape_harvest.config({'TARGET_HARVEST_PX_RECONFIRM_DELAY_S': '999'})['px_reconfirm_delay_s'] <= 10.0)
+    check('px_filled_strong default OFF', c['px_filled_strong'] is False)
+    check('px_filled_strong =1 ON', shape_harvest.config({'TARGET_PX_FILLED_STRONG': '1'})['px_filled_strong'] is True)
 
 def test_px_verdict_is_strong():
     check('strong: REAL True', pxc.px_verdict_is_strong(REAL) is True)
@@ -40,6 +47,12 @@ def test_px_verdict_is_strong():
     check('strong: FLASH (container-only) False', pxc.px_verdict_is_strong(FLASH) is False)
     check('strong: CLEAR False', pxc.px_verdict_is_strong(CLEAR) is False)
     check('strong: non-dict False', pxc.px_verdict_is_strong('x') is False)
+    # C-1116-01: filled-container discriminator -- flag-gated, and never downgrades a verdict
+    check('strong: FILLED default(OFF) False', pxc.px_verdict_is_strong(FILLED) is False)
+    check('strong: FILLED filled_counts=True True', pxc.px_verdict_is_strong(FILLED, filled_counts=True) is True)
+    check('strong: FLASH filled_counts=True still False (no 11-06 regression)', pxc.px_verdict_is_strong(FLASH, filled_counts=True) is False)
+    check('strong: REAL filled_counts=True still True', pxc.px_verdict_is_strong(REAL, filled_counts=True) is True)
+    check('strong: CLEAR filled_counts=True False', pxc.px_verdict_is_strong(CLEAR, filled_counts=True) is False)
 
 class FakeTab:
     def __init__(self, snaps, raise_on=None):
@@ -124,13 +137,24 @@ def test_disabled_parks_immediately():
     check('disabled -> parked immediately', len(ex._parked) == 1)
     check('disabled -> 1 eval', tab.evals == 1)
 
+def test_filled_container_parks_only_when_flag_on():
+    # C-1116-01 end-to-end through _harvest_miss_probe: a POPULATED container re-read parks ONLY
+    # when px_filled_strong is set; with the flag off it stays fail-open (container-only), so the
+    # staged rollout cannot re-introduce the 11-06 drain by default.
+    ex, tab, out = _run([FILLED, FILLED], cfg=ON_FILLED)
+    check('filled + flag ON -> parked', len(ex._parked) == 1)
+    check('filled + flag ON -> returns True', out is True)
+    ex2, tab2, out2 = _run([FILLED, FILLED], cfg=ON)
+    check('filled + flag OFF -> NOT parked (fail-open)', ex2._parked == [])
+    check('filled + flag OFF -> returns False', out2 is False)
+
 def main():
     for t in (test_config_flags, test_px_verdict_is_strong, test_container_flash_rotates,
               test_container_stuck_placeholder_rotates, test_container_becomes_strong_parks,
               test_strong_persists_parks, test_iframe_persists_parks, test_strong_flash_rotates,
               test_strong_first_read_reread_error_parks, test_container_first_read_reread_error_fail_open,
               test_strong_first_read_nondict_reread_parks, test_container_first_read_nondict_reread_fail_open,
-              test_disabled_parks_immediately):
+              test_disabled_parks_immediately, test_filled_container_parks_only_when_flag_on):
         t()
     print(f'\n{PASS} passed, {FAIL} failed')
     sys.exit(1 if FAIL else 0)

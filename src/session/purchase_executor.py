@@ -5000,7 +5000,8 @@ class PurchaseExecutor:
             # Decide from the re-read; on an inconclusive re-read (error OR non-dict) fall back to the
             # FIRST read so a confirmed STRONG wall is not discarded (strong markers are reliable),
             # while a container-only first read still never parks (no drain).
-            _still = bool(px_verdict_is_strong(_m2 if _reread_ok else info))
+            _still = bool(px_verdict_is_strong(_m2 if _reread_ok else info,
+                                               filled_counts=self._harvest_cfg.get('px_filled_strong', False)))
             if not _still:
                 if not _reread_ok:
                     self._harvest_log(f"MISS-PROBE px re-confirm inconclusive ({_reread_err}); first "

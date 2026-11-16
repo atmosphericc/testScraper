@@ -44,10 +44,24 @@ def park_seconds() -> float:
 PX_MARKERS_JS = r"""(() => {
   const q = (s) => { try { return !!document.querySelector(s); } catch (e) { return false; } };
   const txt = ((document.body && document.body.innerText) || '').slice(0, 20000);
+  // 2026-11-16 (C-1116-01): a POPULATED #px-captcha (holds a child iframe OR renders a
+  // full-viewport card) is a REAL "Press & Hold" wall whose challenge lives in a cross-origin
+  // overlay the top-doc text probe cannot read; a bare 0-size placeholder is the delisted-decoy
+  // flash. Read-only + guarded; consumed only when px_verdict_is_strong(filled_counts=True).
+  const filled = (() => {
+    try {
+      const el = document.querySelector('#px-captcha, [id^="px-captcha"], [class*="px-captcha"]');
+      if (!el) return false;
+      if (el.querySelector && el.querySelector('iframe')) return true;
+      const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      return !!(r && r.width >= 200 && r.height >= 150);
+    } catch (e) { return false; }
+  })();
   return {
     url: String(location.href || ''),
     title: String(document.title || ''),
     px_container: q('#px-captcha, [id^="px-captcha"], [class*="px-captcha"]'),
+    px_container_filled: filled,
     px_iframe: q('iframe[src*="px-cdn.net"], iframe[src*="px-cloud.net"], iframe[src*="/captcha/"]'),
     press_hold: /press\s*(&|&amp;|and)\s*hold/i.test(txt),
     denied: /access to this page has been denied|verify (that )?you are (a )?human|are you a human\??/i.test(txt),
@@ -73,14 +87,24 @@ def is_px_challenge(markers: Any) -> bool:
     return any(h in url for h in _URL_HINTS)
 
 
-def px_verdict_is_strong(markers: Any) -> bool:
+def px_verdict_is_strong(markers: Any, filled_counts: bool = False) -> bool:
     """is_px_challenge MINUS the flash-prone #px-captcha placeholder, DERIVED from
     is_px_challenge (no duplicated marker list -> cannot drift): True iff the verdict rests
     on a persistent/unambiguous marker (Press & Hold, access-denied, a real captcha iframe,
     or a captcha/blocked URL) rather than the bare placeholder, which flashes on a delisted
-    decoy PDP (src/lanes/shape_harvester.py:537-539). 2026-11-14 code review."""
+    decoy PDP (src/lanes/shape_harvester.py:537-539). 2026-11-14 code review.
+
+    2026-11-16 (C-1116-01): with ``filled_counts=True`` (flag TARGET_PX_FILLED_STRONG, OFF by
+    default) a POPULATED container (``px_container_filled``: a child iframe or a full-viewport
+    rendered card) ALSO counts as strong. The real 11-16 Press & Hold wall rendered in a
+    cross-origin overlay, so press_hold/denied/px_iframe all stayed False and only px_container
+    hit -> this was the ONE discriminator between that real wall and the 11-06 flash. Default
+    False keeps the pre-11-16 verdict byte-identical: a bare placeholder still never parks (the
+    11-06 drain stays fixed), and ``filled_counts`` never downgrades a verdict."""
     if not is_px_challenge(markers):
         return False
+    if filled_counts and isinstance(markers, Mapping) and markers.get('px_container_filled'):
+        return True
     m2 = dict(markers)
     m2['px_container'] = False
     return is_px_challenge(m2)
@@ -90,7 +114,8 @@ def describe(markers: Any) -> str:
     """One-line human summary for logs."""
     if not isinstance(markers, Mapping):
         return 'no-markers'
-    hits = [k for k in ('px_container', 'px_iframe', 'press_hold', 'denied') if markers.get(k)]
+    hits = [k for k in ('px_container', 'px_container_filled', 'px_iframe', 'press_hold', 'denied')
+            if markers.get(k)]
     url = str(markers.get('url') or '')[:120]
     title = str(markers.get('title') or '')[:60]
     return f"hits={','.join(hits) or 'url-only'} url={url!r} title={title!r}"
