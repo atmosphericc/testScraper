@@ -1,40 +1,54 @@
-# Boot readiness — 2026-11-15 (post Wall-A fix + gate sweep)
+# Boot readiness — 2026-11-15 (post Wall-A fix + gate sweep; auto-arm re-enabled)
 
 Read this before the next drop. It is the single operator checklist: what is DONE
-(code), what is YOURS to do (host/human — I cannot do these), and how the drop
-PROVES each gate. Preflight verdict right now: **NO-GO**, for two reasons, one of
-which is just the old data and one of which needs your hand.
+(code + automation), what still needs YOU (host/human), and how the drop PROVES each gate.
+
+**AUTO-ARM IS LIVE (re-enabled 2026-11-15 23:27 CT).** The `state/ensure_armed.disable`
+opt-out was removed, so the bot self-arms every 23:15 / 01:30 CT with NO hand steps: it
+starts the bot when it is down / RED / stale, force-logs-in any guest or expired account
+(alt-1 included), and follows boot_check to GREEN. Next engagement after a down bot is the
+upcoming 01:30 run; the nightly login-repair pass is 23:15. Opt back out only by recreating
+`state/ensure_armed.disable`.
 
 Re-run the read-only preflight any time: `python tools/predrop/preflight.py`
 (add `--drop "YYYY-MM-DD HH:MM"` once you know the window).
 
 ---
 
-## What is DONE (code, committed + pushed on `audit_1106_harvest_probe_fs1`)
+## What is DONE (code + automation, committed + pushed on `audit_1106_harvest_probe_fs1`)
 
-- **Wall A (the 11-06 bank drain): FIXED + 7-cycle reviewed + re-audited.** Harvest
-  parks only on a persistent STRONG PX marker; a container-only flash rotates. This
-  is the thing that starved the bank to 0 on 11-06 and 11-12.
+- **Auto-arm re-enabled** — the hands-free overnight drop system (boot + login + follow) is
+  back on; see the header.
+- **Wall A (the 11-06 bank drain): FIXED + 7-cycle reviewed + re-audited.** Harvest parks
+  only on a persistent STRONG PX marker; a container-only flash rotates. This is the thing
+  that starved the bank to 0 on 11-06 and 11-12.
 - **Detection: repointed to the home IP** (`apps_raw`, ≤0.5/s) after BD was cancelled.
-- **Gate sweep done, nothing left to fix in code:** dispatch "BUILD C2" was a
-  multi-TCIN artifact (irrelevant to single-SKU); the FS levers are built, correct,
-  and measured to convert 0 — no code trick beats FAST_SELLING.
+- **Gate sweep done, nothing left to fix in code:** dispatch "BUILD C2" was a multi-TCIN
+  artifact (irrelevant to single-SKU); the FS levers are built, correct, and measured to
+  convert 0 — no code trick beats FAST_SELLING.
 - **Proof instrument: `tools/analysis/gate_scorecard.py`** — see the readout section.
 - Offline suite **86/86**.
 
-## YOUR pre-boot actions (I cannot do these — host/human)
+## What still needs YOU (everything else is now automated)
 
-The preflight's two blockers plus the host hygiene it flags:
+The auto-arm covers boot + login (incl. alt-1). Two things remain host/human:
 
-1. **Hand-login alt-1 — REQUIRED.** alt-1's login session is EXPIRED; without it only
-   primary starts hot (half your early shots). Run `hand_login_alt1_force.bat`, then
-   re-run the preflight to confirm it goes green.
-2. **Pause Windows Update** (Settings → Windows Update → Pause updates, 1 week). It is
-   NOT paused; a forced restart mid-window loses the edge.
-3. **Close Parsec / any remote session** on the host before the window (20/27 GPU-crash
-   wakes carried a remote-wake code).
-4. *(optional, if you have GB to spare)* re-prove the proxy pool — the exact command is
-   in the preflight output (`monitor.last_proof`). The pool is 1 home exit by design now.
+1. **Pause Windows Update — REQUIRED, needs admin (I am not elevated, so I cannot do it).**
+   Active hours are 8–2, so a reboot can land 2–8 AM (the drop band), and updates are NOT
+   paused. A WU reboot killed the 10-14 window. Run ELEVATED (Run as Administrator):
+   `powershell -ExecutionPolicy Bypass -File tools\ops\wu_drop_guard.ps1 -Days 7`
+   Pauses updates 7 days; re-run each drop week — the active-hours half is not durable.
+2. **Close Parsec / any remote session** before the window (20/27 GPU-crash wakes carried a
+   remote-wake code). Your call — it is your own remote access to this host.
+
+**alt-1 is no longer a required pre-step.** Its login-session is expired, which the auto-arm
+treats as needs-login and repairs via the nightly 23:15 force-login pass (the 01:30 run
+defers it inside the 00–06 band to avoid burning the account mid-window). A typed login is
+Shape-scored (2/2 on 10-14, weaker before), so if alt-1 still reads guest after a boot, the
+reliable backstop is a hand-login: `hand_login_alt1_force.bat`. Not a blocker to arming.
+
+*(optional, GB permitting)* re-prove the proxy pool — command in the preflight output
+(`monitor.last_proof`); the pool is 1 home exit by design now.
 
 ## Armed flags that are UNPROVEN LIVE (watch them at boot)
 
@@ -66,8 +80,7 @@ Each gate PASSES when:
 
 ## Honest read
 
-The one FAIL you can ignore for now is `last_run.boot` — it reports the **11-12 run**,
-which ran *before* the Wall A fix and couldn't buy for exactly the reason now fixed. It
-clears at the next boot **if** the fix holds live — which is what G2/Wall A on the
-scorecard will tell you. Everything that can be proven offline is proven; the rest is
-this one boot.
+The one FAIL you can ignore for now is `last_run.boot` — it reports the **11-12 run**, which
+ran *before* the Wall A fix and couldn't buy for exactly the reason now fixed. It clears at
+the next boot **if** the fix holds live — which is what G2/Wall A on the scorecard will tell
+you. Everything that can be proven offline is proven; the rest is this one boot.
