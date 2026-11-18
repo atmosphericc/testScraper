@@ -93,7 +93,11 @@ def test_imports_are_whitelisted():
         elif isinstance(node, ast.Import):
             for n in node.names:
                 plain.add(n.name)
-    allowed_src = {"src.session", "src.session.shape_harvest", "src.session.px_challenge"}
+    # EXP-LINE (2026-11-18): second-line routing uses the proxy-pool loader + the auth-fronting
+    # CONNECT forwarder. Both are network-routing only (no transaction/credential/account code);
+    # the explicit forbid-list below still bars purchase_executor / purchasing / config / relogin.
+    allowed_src = {"src.session", "src.session.shape_harvest", "src.session.px_challenge",
+                   "src.lanes", "src.lanes.lane_pool", "src.proxy", "src.proxy.local_forwarder"}
     bad_src = {m for m in srcmods if m not in allowed_src}
     check("only_whitelisted_src_imports", not bad_src, f"unexpected src imports: {bad_src}")
     # explicitly forbid the heavy transaction modules and the account config

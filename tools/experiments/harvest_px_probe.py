@@ -74,6 +74,16 @@ DEFAULT_DECOYS = ["21516452", "50225561", "53274278"]
 MIN_ANSWERED = 6
 
 
+def _free_local_port() -> int:
+    """A free loopback TCP port for the local forwarder listener."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
 def validate_tcins(raw: str) -> list:
     """Decoy TCINs to probe: digits only, never the ATC control decoy. Raises on anything else."""
     out = []
@@ -121,8 +131,9 @@ def summarize(decoys: list, recs: list) -> dict:
 class Probe:
     """One fresh guest Chrome (the verified money-safe launch + attach check), read-only navigation."""
 
-    def __init__(self, out, settle_s: float):
+    def __init__(self, out, settle_s: float, proxy: str = ""):
         self.out, self.settle_s = out, settle_s
+        self.proxy = proxy or ""          # "host:port" of a local forwarder; "" = home line
         self.browser = self.tab = self.profile = None
 
     async def start(self) -> None:
@@ -134,6 +145,9 @@ class Probe:
         self.profile = Path(tempfile.mkdtemp(prefix="harvest_px_probe_"))
         bargs = ["--window-size=1100,800", "--no-first-run", "--no-default-browser-check",
                  "--disable-extensions", "--disable-sync", "--window-position=-32000,-32000"]
+        if self.proxy:                                 # route page traffic through a local forwarder;
+            bargs.append(f"--proxy-server={self.proxy}")   # DevTools stays on the direct loopback socket,
+            bargs.append("--proxy-bypass-list=localhost;127.0.0.1")  # and loopback bypasses the proxy
         cfg = uc.Config(user_data_dir=str(self.profile), headless=False, sandbox=True,
                         browser_args=bargs, browser_connection_timeout=1.0, browser_connection_max_tries=30)
         from zendriver.core.browser import Browser
@@ -147,6 +161,22 @@ class Probe:
             shutil.rmtree(self.profile, ignore_errors=True)
             os._exit(4)                               # skip the library's exit hooks
         self.out(f"[HARVEST_PX] attach check OK (port {self.browser.config.port})")
+
+    async def exit_ip(self) -> str:
+        """One nav to a plain IP-echo (NOT target.com) to confirm the egress IP.
+        Lets us prove the resi route is actually carrying traffic (not a silent
+        home read) before we trust the wall rate. Best-effort; returns '' on error."""
+        try:
+            if self.tab is None:
+                self.tab = await asyncio.wait_for(self.browser.get("https://api.ipify.org/?format=text"), timeout=30)
+            else:
+                await asyncio.wait_for(self.tab.get("https://api.ipify.org/?format=text"), timeout=30)
+            await asyncio.sleep(1.0)
+            txt = await asyncio.wait_for(
+                self.tab.evaluate("document.body ? document.body.innerText.trim() : ''"), timeout=5.0)
+            return str(txt or "")[:60]
+        except Exception as e:
+            return f"<err {type(e).__name__}>"
 
     async def load(self, url: str) -> dict:
         """Navigate to url (a validated PDP), settle, and return the bot's HARVEST_MISS_PROBE_JS dict."""
@@ -208,14 +238,39 @@ async def run(a) -> int:
             "guards intact (fresh guest profile; NO login; NO add-to-cart / cart / checkout; attach-check "
             "before any nav). Relaxes ONLY the 06:00-23:05 clock window. Read the verdict against the bot's "
             "MISS-PROBE wall presence for this window -- see docs/experiments/HARVEST_PX_DURING_DROP_READOUT.md.")
+    # --- optional SECOND-LINE routing (EXP-LINE): fresh guest over an IPRoyal resi exit ---
+    # Answers: does a DIFFERENT exit escape the Press & Hold wall that is up on the home
+    # line right now? resi walls too (LINE-BOUND) => Target-global; resi clean
+    # (PROFILE-CLEAN) => the wall keys on the home LINE/IP and resi is the automation path.
+    pool = None
+    proxy = a.proxy or ""
+    if a.resi_index is not None:
+        from src.lanes import lane_pool            # proxy-pool loader (reads proxyIps.json; no transaction code)
+        from src.proxy import local_forwarder      # auth-fronting CONNECT forwarder (network routing only)
+        resi = lane_pool._load_proxy_config().get("residential", [])
+        if not resi or a.resi_index >= len(resi):
+            print(f"refused: --resi-index {a.resi_index} but only {len(resi)} residential proxies configured")
+            return 2
+        fport = _free_local_port()
+        pool = local_forwarder.ForwarderPool()
+        pool.add_upstream(resi[a.resi_index], port=fport)          # credential never printed
+        await pool.start_all()
+        proxy = f"127.0.0.1:{fport}"
+        out(f"[HARVEST_PX] SECOND-LINE: routing fresh-guest Chrome through IPRoyal resi "
+            f"index={a.resi_index} via local forwarder 127.0.0.1:{fport} (metered; short run)")
+
     out(f"[HARVEST_PX] start decoys={decoys} loads={a.loads} cadence_s={a.cadence_s} "
-        f"settle_s={a.settle_s} max_min={a.max_min} during_drop={a.during_drop}")
-    probe = Probe(out, a.settle_s)
+        f"settle_s={a.settle_s} max_min={a.max_min} during_drop={a.during_drop} "
+        f"line={'resi:'+str(a.resi_index) if a.resi_index is not None else ('proxy:'+proxy if proxy else 'home')}")
+    probe = Probe(out, a.settle_s, proxy=proxy)
     recs: list = []
     deadline = time.time() + a.max_min * 60
     rc = 0
     try:
         await probe.start()
+        if proxy:
+            ip = await probe.exit_ip()
+            out(f"[HARVEST_PX] exit_ip={ip} (confirm this is NOT the home IP before trusting the wall rate)")
         stop = False
         eff_loads = a.loads if not a.during_drop else 10 ** 9   # during-drop: run until the --max-min deadline
         for li in range(eff_loads):
@@ -251,6 +306,11 @@ async def run(a) -> int:
         rc = 1
     finally:
         await probe.close()
+        if pool is not None:
+            try:
+                await pool.stop_all()
+            except Exception:
+                pass
     summary = summarize(decoys, recs)
     doc = {"experiment": "EXP-HARVEST-OFFLINE", "started": stamp, "decoys": decoys, "loads": a.loads,
            "cadence_s": a.cadence_s, "settle_s": a.settle_s, "during_drop": bool(a.during_drop),
@@ -275,6 +335,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--during-drop", action="store_true", dest="during_drop",
                     help="allow running in the 00-06 drop band beside the live bot to settle profile-bound vs "
                          "line-bound (money-safe guards intact; relaxes ONLY the clock window)")
+    ap.add_argument("--resi-index", type=int, default=None, dest="resi_index",
+                    help="EXP-LINE: route the fresh-guest Chrome through residential_proxies[N] (IPRoyal) via a "
+                         "local forwarder, to test whether a SECOND line escapes the home-line wall (metered data)")
+    ap.add_argument("--proxy", default="", help="route Chrome through an existing local forwarder host:port")
     return ap
 
 
