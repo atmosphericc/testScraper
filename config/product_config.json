@@ -21,7 +21,7 @@
     {
       "tcin": "1010892078",
       "name": "Pokémon Trading Card Game: 30th Celebration Tech Sticker Collection (Lucario or Alolan Exeggutor)- Styles May Vary",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
@@ -33,38 +33,38 @@
     {
       "tcin": "1011960739",
       "name": "Pokémon Trading Card Game: First Partner Illustration Collection—Series 3",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "95120834",
       "name": "Pokémon Trading Card Game: Mega Evolution Ascended Heroes Booster Bundle",
-      "enabled": true,
+      "enabled": false,
       "url": "https://www.target.com/p/-/A-95120834",
       "qty": 2
     },
     {
       "tcin": "1012644667",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Tin- Mega Emboar ex",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "1012644666",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Tin- Mega Fraligatr ex",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "1012644665",
       "name": "Pokémon Trading Card Game: Mega Evolution—Ascended Heroes Tin- Mega Meganium ex",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "95082118",
       "name": "Pokémon Trading Card Game: Mega Evolution— Ascended Heroes Elite Trainer Box",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
@@ -142,13 +142,13 @@
     {
       "tcin": "1010892075",
       "name": "30th Celebration Espeon ex Battle Deck",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "1010892071",
       "name": "30th Celebration Umbreon ex Battle Deck",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
@@ -166,25 +166,25 @@
     {
       "tcin": "1012793604",
       "name": "Pokémon TCG: Mega Evolution—Delta Reign Elite Trainer Box (pre-order; operator 10-09)",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "1013166576",
       "name": "Pokémon TCG: Mega Evolution—Delta Reign Booster Box (pre-order; operator 10-09)",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "1013166578",
       "name": "Pokémon TCG: Mega Evolution—Delta Reign Booster Bundle (pre-order; operator 10-09)",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
       "tcin": "1013166573",
       "name": "Pokémon TCG: Mega Evolution—Delta Reign 3-Pack Blister (pre-order; operator 10-09)",
-      "enabled": true,
+      "enabled": false,
       "qty": 2
     },
     {
@@ -208,6 +208,12 @@
     {
       "tcin": "1012850573",
       "name": "Pokemon TCG 30th Celebration Figure Collection- Mewtwo (operator 10-09; street date 2026-11-06)",
+      "enabled": true,
+      "qty": 2
+    },
+    {
+      "tcin": "1012663804",
+      "name": "Pokémon TCG: 30th Celebration Ditto Premium Collection (operator 2026-11-17; street date 2026-11-06; A-1012663804)",
       "enabled": true,
       "qty": 2
     }
