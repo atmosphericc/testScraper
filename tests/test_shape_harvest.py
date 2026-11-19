@@ -1605,6 +1605,16 @@ def test_fx1118_browse_mix():
     check("fx1118b_nav_pure",
           "async def _harvest_browse_nav" in EXE_SRC
           and "land back on a decoy PDP" in EXE_SRC)
+    # mechanics (stub tab): browse_nav navigates a browse URL THEN returns to the next decoy PDP,
+    # and records NO cart/checkout nav -- pure diversification that leaves the tab PDP-ready to mint.
+    exb, _ = _hv1_stub({"TARGET_HARVEST_BROWSE_MIX": "1",
+                        "TARGET_HARVEST_BROWSE_URLS": "https://www.target.com/,https://www.target.com/s?searchTerm=x"},
+                       tcins="111,222")
+    btab = ProbeTab(dict(MISS))
+    exb._harvest_tab = btab
+    exb._harvest_browse_idx = -1
+    asyncio.run(exb._harvest_browse_nav(exb._harvest_cfg))
+    check("fx1118b_nav_sequence", btab.gets == ["https://www.target.com/", h.pdp_url("222")])
 
 
 if __name__ == '__main__':
