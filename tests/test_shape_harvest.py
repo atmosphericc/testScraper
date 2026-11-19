@@ -1547,6 +1547,66 @@ def test_fx1014_px_renav():
     check("fx1014_streak_reset_at_capture", 0 < i_push < i_rst < i_capt)
 
 
+def test_fx1118_quiet_window():
+    """FX-1118-QUIET: in_harvest_window gates harvest to a daily active window (may wrap midnight),
+    fails OPEN on empty/garbage, and config exposes active_window. Drops are 02:00-07:14 so an
+    active window of 1800-1000 keeps them covered and quiets only the dead 10:00-18:00 midday band."""
+    def st(hh, mm=0):
+        return time.struct_time((2026, 11, 18, hh, mm, 0, 0, 0, -1))
+    w = "1800-1000"  # active 18:00..10:00 (wraps midnight) -> quiet 10:00-18:00
+    check("fx1118_active_0300", h.in_harvest_window(w, st(3)) is True)
+    check("fx1118_active_0700", h.in_harvest_window(w, st(7)) is True)
+    check("fx1118_active_0959", h.in_harvest_window(w, st(9, 59)) is True)
+    check("fx1118_quiet_1000", h.in_harvest_window(w, st(10)) is False)
+    check("fx1118_quiet_1200", h.in_harvest_window(w, st(12)) is False)
+    check("fx1118_quiet_1759", h.in_harvest_window(w, st(17, 59)) is False)
+    check("fx1118_active_1800", h.in_harvest_window(w, st(18)) is True)
+    check("fx1118_active_2300", h.in_harvest_window(w, st(23)) is True)
+    check("fx1118_nonwrap_in", h.in_harvest_window("0200-0600", st(3)) is True)
+    check("fx1118_nonwrap_out", h.in_harvest_window("0200-0600", st(7)) is False)
+    for bad in ("", "   ", "garbage", "1800", "2500-1000", "1000-1000"):
+        check(f"fx1118_failopen[{bad.strip() or 'empty'}]", h.in_harvest_window(bad, st(12)) is True)
+    check("fx1118_cfg_default_empty", h.config({}).get("active_window") == "")
+    check("fx1118_cfg_parsed",
+          h.config({"TARGET_HARVEST_ACTIVE_WINDOW": "1800-1000"}).get("active_window") == "1800-1000")
+    # source pin: the loop gate exists, is guarded by `not live`, and calls the helper
+    check("fx1118_loop_gate_present",
+          "in_harvest_window(cfg['active_window'])" in EXE_SRC
+          and "not live and cfg.get('active_window')" in EXE_SRC)
+
+
+def test_fx1118_browse_mix():
+    """FX-1118-BROWSE: config exposes browse_mix / browse_every / browse_urls (default OFF), and the
+    harvest loop interleaves pure browse navs (homepage/search) to diversify the IP's navigation away
+    from only-deep-PDP hits, then lands back on a decoy PDP. OFF by default = prior behaviour."""
+    c = h.config({})
+    check("fx1118b_default_off", c["browse_mix"] is False)
+    check("fx1118b_default_every", c["browse_every"] == 4)
+    check("fx1118b_default_urls",
+          len(c["browse_urls"]) == 3 and all(u.startswith("https://www.target.com") for u in c["browse_urls"]))
+    c2 = h.config({"TARGET_HARVEST_BROWSE_MIX": "1", "TARGET_HARVEST_BROWSE_EVERY": "3",
+                   "TARGET_HARVEST_BROWSE_URLS": "https://www.target.com/,https://www.target.com/s?searchTerm=x"})
+    check("fx1118b_armed", c2["browse_mix"] is True and c2["browse_every"] == 3 and len(c2["browse_urls"]) == 2)
+    check("fx1118b_every_bounds",
+          h.config({"TARGET_HARVEST_BROWSE_EVERY": "0"})["browse_every"] == 1
+          and h.config({"TARGET_HARVEST_BROWSE_EVERY": "999"})["browse_every"] == 50)
+    # browse_due fires once every `browse_every` cycles
+    class _S:
+        _harvest_browse_tick = 0
+    from src.session.purchase_executor import PurchaseExecutor as _PE
+    due = _PE._harvest_browse_due.__get__(_S())
+    hits = [i for i in range(1, 13) if due({"browse_every": 4})]
+    check("fx1118b_due_cadence", hits == [4, 8, 12])
+    # source pins: loop hook guarded by not-live + not-parked + browse_due; browse_nav is pure nav
+    check("fx1118b_loop_gate",
+          "cfg.get('browse_mix') and not self._harvest_hold_reason()" in EXE_SRC
+          and "self._harvest_browse_due(cfg)" in EXE_SRC
+          and "await self._harvest_browse_nav(cfg)" in EXE_SRC)
+    check("fx1118b_nav_pure",
+          "async def _harvest_browse_nav" in EXE_SRC
+          and "land back on a decoy PDP" in EXE_SRC)
+
+
 if __name__ == '__main__':
     for fn in (test_prefix_and_tokens, test_merge, test_bank, test_bezier_and_click_point, test_config_and_js,
                test_header_bytes,
@@ -1561,7 +1621,9 @@ if __name__ == '__main__':
                test_hv1_harvest_stuck, test_hv1_flush_on_relaunch, test_hv1_bank_gate_adaptive,
                test_hv1_wiring,
                # 2026-10-14 FX-1014-PXRENAV
-               test_fx1014_px_renav):
+               test_fx1014_px_renav,
+               # 2026-11-18 FX-1118-QUIET + FX-1118-BROWSE
+               test_fx1118_quiet_window, test_fx1118_browse_mix):
         try:
             fn()
         except Exception as e:

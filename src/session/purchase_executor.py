@@ -4860,6 +4860,35 @@ class PurchaseExecutor:
                 pass
             return None
 
+    def _harvest_browse_due(self, cfg) -> bool:
+        """FX-1118-BROWSE: True once every `browse_every` harvest cycles (increments a tick each
+        call). Only called when browse_mix is on and the harvest is not live / not parked."""
+        self._harvest_browse_tick = int(getattr(self, '_harvest_browse_tick', 0)) + 1
+        every = max(1, int(cfg.get('browse_every', 4) or 4))
+        return self._harvest_browse_tick % every == 0
+
+    async def _harvest_browse_nav(self, cfg) -> None:
+        """FX-1118-BROWSE: load a normal site page (homepage / search) from a rotating pool to
+        diversify our IP's navigation graph away from only-deep-PDP hits, then return to a decoy PDP
+        so the next cycle can mint. Pure navigation -- NO login / cart / click. Never raises fatally."""
+        urls = cfg.get('browse_urls') or []
+        tab = self._harvest_tab
+        if not urls or tab is None:
+            return
+        self._harvest_browse_idx = (int(getattr(self, '_harvest_browse_idx', -1)) + 1) % len(urls)
+        burl = urls[self._harvest_browse_idx]
+        try:
+            self._harvest_log(f"browse-mix: diversifying via {burl}")
+            await asyncio.wait_for(tab.get(burl), timeout=25.0)
+            self._harvest_tab_nav_ts = time.time()
+            await asyncio.sleep(random.uniform(1.5, 3.5))
+        except Exception as e:
+            self._harvest_log(f"browse-mix nav failed ({type(e).__name__}: {str(e)[:80]}) — continuing")
+        try:
+            await self._harvest_rotate(same=False)   # land back on a decoy PDP for the next mint
+        except Exception:
+            pass
+
     async def _harvest_rotate(self, same: bool = False, allow_live: bool = False) -> None:
         """Re-navigate the harvest tab to the (next) candidate PDP. Skipped
         while a purchase is live (a full PDP nav is the CDP-flood pattern
@@ -5366,6 +5395,19 @@ class PurchaseExecutor:
                                       f"stale={w['stale']} | {self._shape_bank.summary()}")
                     self._harvest_win = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
                 self._harvest_prev_live = live
+                # FX-1118-QUIET: outside the daily harvest active window (and no purchase live), idle
+                # with NO nav/click so 24/7 PDP traffic does not burn the home IP's PX reputation. A
+                # live purchase always harvests (an unexpected off-window drop is never starved).
+                if not live and cfg.get('active_window') and not _shape_harvest.in_harvest_window(cfg['active_window']):
+                    if not getattr(self, '_harvest_quiet_logged', False):
+                        self._harvest_log(f"QUIET: outside harvest active window {cfg['active_window']} "
+                                          f"— idling (no nav/click) to protect the home IP PX reputation")
+                        self._harvest_quiet_logged = True
+                    await asyncio.sleep(min(float(cfg.get('interval_s', 40.0) or 40.0), 60.0))
+                    continue
+                if getattr(self, '_harvest_quiet_logged', False):
+                    self._harvest_log(f"ACTIVE: inside harvest window {cfg['active_window']} — resuming harvest")
+                    self._harvest_quiet_logged = False
                 if live and not cfg['in_window']:
                     await asyncio.sleep(2.0)
                     continue
@@ -5376,6 +5418,15 @@ class PurchaseExecutor:
                     continue
                 if self._harvest_landed_suspect and not live:
                     await self._harvest_clear_suspect_cart()
+                # FX-1118-BROWSE: every Nth cycle, diversify navigation through normal site pages
+                # (homepage/search) then land back on a decoy PDP, so our IP looks like a shopper
+                # moving around the site rather than a scraper hitting only deep PDPs. Never while a
+                # purchase is live, and not while PX-parked (no point adding load on a walled state).
+                if (not live and cfg.get('browse_mix') and not self._harvest_hold_reason()
+                        and self._harvest_browse_due(cfg)):
+                    await self._harvest_browse_nav(cfg)
+                    await asyncio.sleep(random.uniform(3.0, 6.0))
+                    continue
                 need = self._shape_bank.need()
                 # 2026-09-09 audit #1: also click when the freshest set is past half the
                 # replay cap -- a full bank of unreplayable sets used to freeze the loop.

@@ -80,6 +80,15 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 # --------------------------------------------------------------------------- #
 _ENV_MASTER = "TARGET_SHAPE_HARVEST"
 
+# FX-1118-BROWSE: default "browse" pages the harvest cycles through (homepage + two generic
+# searches) to diversify our IP's navigation graph away from only-deep-PDP hits. Generic, no
+# TCIN/category-code needed. Override with TARGET_HARVEST_BROWSE_URLS (comma-separated).
+DEFAULT_BROWSE_URLS = [
+    "https://www.target.com/",
+    "https://www.target.com/s?searchTerm=paper+towels",
+    "https://www.target.com/s?searchTerm=snacks",
+]
+
 
 def is_enabled(env: Optional[Dict[str, str]] = None) -> bool:
     e = os.environ if env is None else env
@@ -139,6 +148,24 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "bank": _int(e, "TARGET_HARVEST_BANK", 3, 1, 10),
         "ttl_s": _float(e, "TARGET_HARVEST_TTL_S", 300.0, 30.0, 900.0),
         "interval_s": _float(e, "TARGET_HARVEST_INTERVAL_S", 40.0, 10.0, 600.0),
+        # 2026-11-18 FX-1118-QUIET: restrict harvest to a daily ACTIVE window (local "HHMM-HHMM",
+        # may wrap midnight) so it does NOT maintain a hot bank 24/7 -- the 24/7 PDP traffic is what
+        # burned the home IP's PX reputation (6944 wall-retries on 11-18). Outside the window the loop
+        # idles: no nav, no click (but NEVER while a purchase is live -- an unexpected drop still
+        # harvests). Empty = always active (exact prior behaviour). All observed drops are 02:00-07:14,
+        # so quieting the dead midday hours (e.g. active "1800-1000" -> quiet 10:00-18:00) cuts the
+        # baseline footprint with no drop-coverage cost.
+        "active_window": str(e.get("TARGET_HARVEST_ACTIVE_WINDOW", "")).strip(),
+        # 2026-11-18 FX-1118-BROWSE: the harvest otherwise DIRECT-loads only the same few decoy PDPs
+        # (target.com/p/-/A-<tcin>) forever, with no homepage/search/category -- an unnatural navigation
+        # graph that PX behavioral scoring flags, distinct from raw volume. With browse_mix on, every
+        # Nth (browse_every) harvest cycle instead does a "browse" nav through a rotating pool of normal
+        # site pages (homepage / search), then lands back on a decoy PDP, so our IP's request stream looks
+        # like a shopper moving around the site rather than a scraper hitting 3 deep URLs. OFF by default
+        # (arm + MEASURE post-recovery; it adds page loads, so it only helps a CLEAN IP stay clean).
+        "browse_mix": str(e.get("TARGET_HARVEST_BROWSE_MIX", "0")).strip() == "1",
+        "browse_every": _int(e, "TARGET_HARVEST_BROWSE_EVERY", 4, 1, 50),
+        "browse_urls": [u.strip() for u in str(e.get("TARGET_HARVEST_BROWSE_URLS", ",".join(DEFAULT_BROWSE_URLS))).split(",") if u.strip()],
         "replay": str(e.get("TARGET_HARVEST_REPLAY", "1")).strip() != "0",
         "selftest": str(e.get("TARGET_HARVEST_SELFTEST", "1")).strip() != "0",
         "in_window": str(e.get("TARGET_HARVEST_IN_WINDOW", "1")).strip() != "0",
@@ -206,6 +233,29 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         # px_container_filled fires on a real wall and not on a flash.
         "px_filled_strong": str(e.get("TARGET_PX_FILLED_STRONG", "0")).strip() == "1",
     }
+
+
+def in_harvest_window(active_window: str, now_local: Optional[time.struct_time] = None) -> bool:
+    """True if the harvest should be ACTIVE now (FX-1118-QUIET). `active_window` is a local
+    "HHMM-HHMM" range that may wrap midnight (e.g. "1800-1000" = active 18:00 through 10:00).
+    Empty / malformed / start==end => always active (fail-open: a parse slip never silences
+    harvest). Pure and testable; pass `now_local` (a time.struct_time) to test a fixed clock."""
+    aw = (active_window or "").strip()
+    if not aw or "-" not in aw:
+        return True
+    try:
+        a, b = aw.split("-", 1)
+        start = int(a[:2]) * 60 + int(a[2:4])
+        end = int(b[:2]) * 60 + int(b[2:4])
+    except (ValueError, IndexError):
+        return True
+    if not (0 <= start < 1440 and 0 <= end < 1440) or start == end:
+        return True
+    lt = now_local or time.localtime()
+    cur = lt.tm_hour * 60 + lt.tm_min
+    if start < end:
+        return start <= cur < end
+    return cur >= start or cur < end          # wraps midnight
 
 
 # --------------------------------------------------------------------------- #

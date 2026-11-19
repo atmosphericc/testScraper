@@ -73,6 +73,18 @@ OUT_DIR = ROOT / "logs" / "experiments"
 DEFAULT_DECOYS = ["21516452", "50225561", "53274278"]
 MIN_ANSWERED = 6
 
+# EXP-SURFACE (2026-11-18): NON-product-page surfaces, to test whether the Press & Hold wall is
+# PDP-specific or site-wide. Pure DOM-read targets run through the SAME is_px_challenge detector as the
+# decoy PDPs, interleaved on the same line/time. NO login, NO cart, NO checkout, NO click -- just nav+read.
+# If a surface here is CLEAN while the decoy PDPs wall, it is a candidate place to mint a Shape sensor
+# off the Press & Hold (the a0 token is not PDP-URL-bound -- banked_replay already swaps decoy sensors
+# onto hot-SKU cart POSTs). target.com/s is search results; the homepage; a public category browse page.
+DEFAULT_SURFACES = [
+    "https://www.target.com/",
+    "https://www.target.com/s?searchTerm=pokemon+trading+cards",
+    "https://www.target.com/s?searchTerm=paper+towels",
+]
+
 
 def _free_local_port() -> int:
     """A free loopback TCP port for the local forwarder listener."""
@@ -126,6 +138,18 @@ def summarize(decoys: list, recs: list) -> dict:
             f"per_decoy={ {t: per[t]['wall_rate'] for t in decoys} }")
     return {"verdict": verdict, "answered": n, "walled": len(walled),
             "overall_wall_rate": rate, "per_decoy": per, "line": line}
+
+
+def _surface_label(url: str) -> str:
+    """A short stable label for a non-PDP surface URL, for per-surface wall-rate rows."""
+    u = str(url or "")
+    if "searchTerm=" in u:
+        term = u.split("searchTerm=", 1)[1].split("&", 1)[0]
+        return "search:" + term.replace("+", " ").replace("%20", " ")[:24]
+    if u.rstrip("/").endswith("target.com"):
+        return "home"
+    tail = u.rstrip("/").rsplit("/", 1)[-1]
+    return (tail or "surface")[:24]
 
 
 class Probe:
@@ -271,29 +295,37 @@ async def run(a) -> int:
         if proxy:
             ip = await probe.exit_ip()
             out(f"[HARVEST_PX] exit_ip={ip} (confirm this is NOT the home IP before trusting the wall rate)")
+        surfaces = [u.strip() for u in (a.urls or "").split(",") if u.strip()]
+        # targets: (kind, ident, url). PDP decoys are the control; non-PDP surfaces are interleaved on the
+        # SAME line/time so the wall-rate comparison is apples-to-apples (EXP-SURFACE, 2026-11-18).
+        targets = [("pdp", t, SH.pdp_url(t)) for t in decoys] + \
+                  [("surface", _surface_label(u), u) for u in surfaces]
+        if surfaces:
+            out(f"[HARVEST_PX] EXP-SURFACE: comparing {len(decoys)} decoy PDPs vs {len(surfaces)} non-PDP "
+                f"surfaces={[_surface_label(u) for u in surfaces]} (nav+read only; NO click/login/cart)")
         stop = False
         eff_loads = a.loads if not a.during_drop else 10 ** 9   # during-drop: run until the --max-min deadline
         for li in range(eff_loads):
             if stop:
                 break
-            for tcin in decoys:
+            for kind, ident, url in targets:
                 if time.time() >= deadline:
                     out("[HARVEST_PX] max_min reached; stopping")
                     stop = True
                     break
-                url = SH.pdp_url(tcin)
                 info = await probe.load(url)
                 now_iso, now_ms = time.strftime("%Y-%m-%dT%H:%M:%S"), int(time.time() * 1000)
                 if "_probe_error" in info:
-                    out(f"[HARVEST_PX] load tcin={tcin} i={li} PROBE_ERROR {info['_probe_error']}")
-                    recs.append({"ts": now_iso, "ts_ms": now_ms, "tcin": tcin, "i": li,
-                                 "error": info["_probe_error"]})
+                    out(f"[HARVEST_PX] load {kind}={ident} i={li} PROBE_ERROR {info['_probe_error']}")
+                    recs.append({"ts": now_iso, "ts_ms": now_ms, "kind": kind, "ident": ident,
+                                 "tcin": ident if kind == "pdp" else None, "i": li, "error": info["_probe_error"]})
                     continue
                 px = bool(PX.is_px_challenge(info))
                 desc = PX.describe(info)
-                out(f"[HARVEST_PX] MISS-PROBE px={'yes' if px else 'no'} tcin={tcin} i={li} {desc} "
+                out(f"[HARVEST_PX] MISS-PROBE px={'yes' if px else 'no'} {kind}={ident} i={li} {desc} "
                     f"{SH.miss_probe_fields(info)}")
-                recs.append({"ts": now_iso, "ts_ms": now_ms, "tcin": tcin, "i": li, "px": px,
+                recs.append({"ts": now_iso, "ts_ms": now_ms, "kind": kind, "ident": ident,
+                             "tcin": ident if kind == "pdp" else None, "i": li, "px": px,
                              "hint": info.get("hint"), "px_container": bool(info.get("px_container")),
                              "px_iframe": bool(info.get("px_iframe")), "press_hold": bool(info.get("press_hold")),
                              "denied": bool(info.get("denied")), "url": str(info.get("url") or ""),
@@ -311,10 +343,37 @@ async def run(a) -> int:
                 await pool.stop_all()
             except Exception:
                 pass
-    summary = summarize(decoys, recs)
+    # PDP decoys are the control -- summarize() keeps its original PDP-only semantics (the safety test pins it).
+    pdp_recs = [r for r in recs if r.get("kind", "pdp") == "pdp"]
+    summary = summarize(decoys, pdp_recs)
+    # EXP-SURFACE: the decisive comparison -- is the wall PDP-specific (non-PDP clean) or site-wide?
+    surf_ans = [r for r in recs if r.get("kind") == "surface" and "error" not in r]
+    surface_summary = None
+    if surf_ans:
+        s_walled = [r for r in surf_ans if r.get("px")]
+        s_rate = round(len(s_walled) / len(surf_ans), 3) if surf_ans else None
+        per_surf = {}
+        for u in [u.strip() for u in (a.urls or "").split(",") if u.strip()]:
+            lab = _surface_label(u)
+            a_ = [r for r in surf_ans if r.get("ident") == lab]
+            w_ = [r for r in a_ if r.get("px")]
+            per_surf[lab] = {"answered": len(a_), "walled": len(w_),
+                             "wall_rate": round(len(w_) / len(a_), 3) if a_ else None}
+        surface_summary = {"non_pdp_wall_rate": s_rate, "answered": len(surf_ans), "per_surface": per_surf}
+        out(f"[HARVEST_PX] SURFACE-BREAKDOWN non_pdp_wall_rate={s_rate} answered={len(surf_ans)} "
+            f"per_surface={ {k: per_surf[k]['wall_rate'] for k in per_surf} }  "
+            f"(PDP wall_rate={summary['overall_wall_rate']})")
+        if s_rate is not None and s_rate <= 0.10 and summary["overall_wall_rate"] and summary["overall_wall_rate"] >= 0.50:
+            out("[HARVEST_PX] => NON-PDP CLEAN while PDP WALLS: a non-PDP surface is a CANDIDATE to mint a "
+                "Shape sensor off the Press & Hold (free/automated). Next: a sensor-mint capture test on it.")
+        elif s_rate is not None and s_rate >= 0.50:
+            out("[HARVEST_PX] => NON-PDP ALSO WALLS: the 'mint on a non-PDP surface' bypass is DEAD "
+                "(the wall is not PDP-specific on this line).")
+        else:
+            out("[HARVEST_PX] => inconclusive surface read (need more loads or the PDP control did not wall).")
     doc = {"experiment": "EXP-HARVEST-OFFLINE", "started": stamp, "decoys": decoys, "loads": a.loads,
            "cadence_s": a.cadence_s, "settle_s": a.settle_s, "during_drop": bool(a.during_drop),
-           "shots": recs, "summary": summary, "log": str(log_path)}
+           "shots": recs, "summary": summary, "surface_summary": surface_summary, "log": str(log_path)}
     try:
         json_path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     except Exception as e:
@@ -339,6 +398,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="EXP-LINE: route the fresh-guest Chrome through residential_proxies[N] (IPRoyal) via a "
                          "local forwarder, to test whether a SECOND line escapes the home-line wall (metered data)")
     ap.add_argument("--proxy", default="", help="route Chrome through an existing local forwarder host:port")
+    ap.add_argument("--urls", default=",".join(DEFAULT_SURFACES),
+                    help="EXP-SURFACE: comma-separated NON-PDP target.com URLs to test for the Press & Hold "
+                         "wall alongside the decoy PDPs (nav+read only; default: homepage + two search pages). "
+                         "Pass --urls '' to test PDPs only.")
     return ap
 
 

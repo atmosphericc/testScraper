@@ -1039,6 +1039,14 @@ REM at shot time' should nearly vanish. Rollback: =3
 set TARGET_HARVEST_BANK=6
 set TARGET_HARVEST_TTL_S=300
 set TARGET_HARVEST_INTERVAL_S=40
+REM 2026-11-18 FX-1118-QUIET: restrict harvest to a daily ACTIVE window (local HHMM-HHMM, wraps
+REM midnight) so it does NOT keep a hot bank 24/7 -- round-the-clock PDP traffic is what burned the
+REM home IP PX reputation (6944 wall-retries on 11-18, fresh-guest home 89-100 pct filled vs 33 pct on
+REM a different resi IP). Outside the window the harvest loop idles: no nav, no click (a LIVE purchase
+REM still harvests, so an unexpected off-window drop is never starved). Empty = always active (prior
+REM behaviour). All observed drops are 02:00 to 07:14, so 1800-1000 keeps full drop coverage and
+REM quiets only the dead 10:00 to 18:00 midday band (~33 pct baseline cut). Kill: blank the value.
+set TARGET_HARVEST_ACTIVE_WINDOW=1800-1000
 set TARGET_HARVEST_REPLAY=1
 set TARGET_HARVEST_SELFTEST=1
 set TARGET_HARVEST_IN_WINDOW=1
@@ -1513,6 +1521,18 @@ REM (CONFIRMED 11-06 run_20261106_001109: 78 parks, all 'Product not found', px_
 REM claims-verifier CONFIRMED 2026-11-14). =1 re-reads the DOM after ~2.5s before parking: a real
 REM HUMAN challenge persists, a flash clears (ported from the lane harvester). Kill: =0 (exact prior).
 set TARGET_HARVEST_PX_RECONFIRM=1
+REM 2026-11-18 FX-1118-PXFILLED: the REAL home-IP / drop-band Press and Hold renders in a CROSS-ORIGIN
+REM overlay, so press_hold/denied/px_iframe all read False and ONLY px_container_filled fires. With this
+REM flag OFF the PX_RECONFIRM block discards the container marker as "not strong" and the harvest does NOT
+REM park -- it kept rotating INTO the wall ~6944x on 11-18 (run_20261118_002152), hammering the home IP's
+REM PX reputation ~385 PDP loads/hr, 24/7. MEASURED self-inflicted: fresh-guest home PDPs then walled
+REM 89-100 pct (filled) vs 33 pct on a different resi IP (same decoys/time) = our IP ~2.7x over baseline.
+REM =1 promotes a FILLED container to a 300s park (doubling to PX_PARK_MAX 3600s) so the harvest STOPS
+REM hammering a wall it cannot clear, letting the IP recover. Requires PX_RECONFIRM=1 (on, above).
+REM claims-verifier CONFIRMED-with-caveats 2026-11-18 (contingent on PX_RECONFIRM=1, which is on; the
+REM filled verdict is measured to fire on the real wall -- 6944x on the bot tab 11-18, + home/resi probes).
+REM Kill: =0 (exact prior behaviour -- back to hammering the wall).
+set TARGET_PX_FILLED_STRONG=1
 REM INF-1: print the sentinel ticks skipped while a purchase is in flight.
 REM Kill: TARGET_SENTINEL_LOG_SKIPS=0.
 set TARGET_SENTINEL_LOG_SKIPS=1
