@@ -96,7 +96,13 @@ def parse_shots(path: str) -> List[Shot]:
             atc = d.group(2)
             im = IDENT.search(line)
             idn = im.group(1) if im else "?"
-            cls = {"201": "201", "401": "401"}.get(atc, "429" if atc == "429" else "other")
+            # 2026-11-19 (claims-verifier): atc=0 is a fetch that never got a status --
+            # on 09-30b all 13 were `TypeError: Failed to fetch` after the CORS OPTIONS
+            # preflight got HTTP 429, i.e. an EDGE REFUSAL. It used to fall into "other"
+            # and count as a limiter PASS (inflating own 5-8 / 9+ cells to 6/6, 4/4).
+            # Its own class so is_pass() can exclude it without asserting it is a 429.
+            cls = {"201": "201", "401": "401"}.get(
+                atc, "429" if atc == "429" else ("status0" if atc == "0" else "other"))
             shot = Shot(ts or 0.0, idn, last_tcin or "?", atc, cls, float(d.group(1)), n)
             shots.append(shot)
             if cls != "201":             # a 201's detail line carries no ident tag
@@ -136,6 +142,9 @@ def hhmmss(t: float) -> str:
 
 
 def is_pass(s: Shot) -> bool:
-    """'Passed the edge limiter' = any outcome but an empty-body edge 429.
-    401s are excluded from denominators by the callers."""
-    return s.cls not in ("edge429", "401")
+    """'Passed the edge limiter' = any outcome but an empty-body edge 429 or a
+    status-0 fetch failure (preflight-429 refusal, 2026-11-19 -- see parse()).
+    401s are excluded from denominators by the callers. NOTE (C-0930-03): a
+    keyless 401 IS past the limiter; callers that want 'edge pass' in the gate
+    model's sense should count 401s as passes rather than drop them."""
+    return s.cls not in ("edge429", "401", "status0")

@@ -18,9 +18,25 @@ empty-body edge 429 (401s excluded from every denominator: different gate).
   If `other` suppresses it too -> the bucket is SHARED, and adding accounts on
   one connection buys much less than the vendor's task count implies.
 
-Note the identities do NOT share an exit: in the September logs primary runs on
-the home IP while alt-1/business run on Bright Data exits. So `other`
-suppression here means the bucket is TCIN-global rather than per-IP.
+Exit sharing (corrected 2026-11-19, claims-verifier): the identities DID share an
+exit on most tagged nights -- from 2026-09-25 on, primary, alt-1 and business all
+fired from the HOME line ([EXPOSURE] proxied=no; no --proxy-server on the buyer
+Chromes). Only pre-09-25 logs put alt-1/business on Bright Data exits. So on the
+shared-home nights `other` suppression cannot separate a per-IP bucket from a
+TCIN-global one.
+
+CAVEAT on the `own=0 / other>=1` cell (2026-11-19): most of those "prior other"
+shots are the other accounts' shots in the SAME simultaneous wave (0-3 s earlier),
+and every wave's outcome is decided together (all-pass or all-fail). That cell
+therefore shows only that the bucket admits >=3 simultaneous requests at a
+window's edge -- it does NOT test a bucket that fills over time, and a per-IP
+bucket of capacity >=3 predicts the same numbers. The valid per-account test is a
+fresh account firing after another account's EARLIER wave on the same IP; on
+2026-09-30b that is 0/4, and 0/13 over 8 home multi-account nights (tiny n,
+confounded with window age). Verdict 2026-11-19: per-account keying NOT
+ESTABLISHED, leans against. Also: `pass` here excludes 401s, but under C-0930-03
+a keyless 401 is PAST the limiter; counting them as passes changes the
+`own 1-2` cell on 09-30b from 7/132 to 55/181.
 
 Usage: python tools/analysis/limiter_key.py [--window 120] [logs ...]
 Read-only.

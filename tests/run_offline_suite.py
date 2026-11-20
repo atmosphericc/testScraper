@@ -26,6 +26,7 @@ ROOT = os.path.dirname(HERE)
 OFFLINE = [
     "test_shape_harvest",
     "test_harvest_px_reconfirm_1114",
+    "test_harvest_reserve_1119",
     "test_gate_scorecard",
     "test_ua_engine_mode",
     "test_won_cart_ride_smoke",

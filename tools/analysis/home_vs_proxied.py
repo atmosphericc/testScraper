@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 """Is the home IP still productive, and is Bright Data dead?
 
-Splits every add-to-cart shot by identity (primary = home IP from 2026-09-11 on,
-business/alt-1 = Bright Data throughout), by SKU class, and by how long after the
+Splits every add-to-cart shot by identity, by SKU class, and by how long after the
 stock edge it fired. The 0-5 s bucket is the one that produced 12 of 14 fast-lane
 orders, so "does primary still convert in the first 5 seconds" is the decisive
 number for whether the current setup can win at all.
+
+!! STALE LABELS -- 2026-11-19 (claims-verifier, Claim 3) !!
+The home/proxied split below is HARD-CODED by identity + log date (see the loop in
+main) and is only right through ~2026-09-24. From late September on, alt-1 and
+business ALSO ran on the HOME line ([EXPOSURE] proxied=no; no --proxy-server on
+their Chromes), and October/November primary is home too. Run over those logs this
+script files 3,210 home shots -- and all 8 of its "proxied(BD)" carts -- under BD,
+and its 2 "proxied(primary)" carts (10-29) are home as well. Corrected split from
+the event store (shots.proxied, sourced from [EXPOSURE]/[FORWARDER]): home 17 carts
+/ 4,857 non-401 shots, BD 0 / 2,730. For any run after 09-24 use
+`python tools/events/q.py "<SQL>"` on `shots` (proxied=0 home, 1 proxied) instead
+of this script's buckets; the per-edge-age split here is still fine, the line
+label is not.
 
 Usage:  python tools/analysis/home_vs_proxied.py logs/runs/run_2026*.log
 Read-only. Identity tags exist only from the 2026-08-25 logs on.
@@ -62,7 +74,10 @@ def main(paths) -> None:
         for s in shots:
             if s.ident == "?":
                 continue                # untagged era: identity unknowable
-            # primary ran through a Bright Data forwarder until 2026-09-04
+            # primary ran through a Bright Data forwarder until 2026-09-04.
+            # STALE (2026-11-19): this rule mislabels every post-09-24 log --
+            # alt-1/business were home from late Sep, and Oct/Nov primary is home.
+            # See the docstring; prefer events.sqlite shots.proxied.
             home = (s.ident == "primary" and "202609" in path
                     and int(path.split("run_2026")[1][:4]) >= 911)
             ic = "home(primary)" if home else ("proxied(primary)" if s.ident == "primary" else "proxied(BD)")

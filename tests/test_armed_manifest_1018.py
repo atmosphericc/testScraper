@@ -49,6 +49,14 @@ MANIFEST_ARMED = {
     "TARGET_REBUY_NONBUYERS": "1",
     "TARGET_JAR_GUEST_GUARD": "1",
     "TARGET_HARVEST_PX_RENAV": "0",  # RETIRED 2026-11-06 (post-run wf_1656c678-6c2): 0 captures recovered during the PX park across 3 walled nights (10-22/10-23/11-06). Re-arm only on a walled night that shows RENAV capturing >0.
+    # ARMED 2026-11-19 (FX-1119-RESERVE): a second, never-reloaded PDP document per identity that
+    # mints banked sets while the primary harvest is PX-parked / backed off / buttonless, so an
+    # open edge cell is never met with an empty bank again (11-06: 273 admitted, all page-signed, 0 carts).
+    "TARGET_HARVEST_RESERVE": "1",
+    "TARGET_HARVEST_RESERVE_REFRESH_S": "1800",
+    "TARGET_HARVEST_RESERVE_CLEAN_S": "600",
+    "TARGET_HARVEST_RESERVE_RETRY_S": "600",
+    "TARGET_HARVEST_RESERVE_MAX_HDR_BYTES": "15500",
     "TARGET_PX_FILLED_STRONG": "1",  # ARMED 2026-11-18 (FX-1118-PXFILLED, claims-verifier CONFIRMED-w-caveats): the real cross-origin Press&Hold fires ONLY px_container_filled; without this the harvest did not park and hammered the wall ~6944x/night, burning the home IP's PX reputation (fresh-guest home 89-100% filled vs 33% on a diff resi IP). =1 parks a FILLED container. Requires TARGET_HARVEST_PX_RECONFIRM=1. Kill: 0.
     "TARGET_HARVEST_ACTIVE_WINDOW": "1800-1000",  # ARMED 2026-11-18 (FX-1118-QUIET): gate harvest to a daily active window (quiet 10:00-18:00 midday, where no drop has been observed) so it does not keep a hot bank 24/7 -- the round-the-clock PDP traffic is what burned the home IP's PX reputation. A live purchase still harvests. Kill: blank it.
     "TARGET_PO_2XX_AMBIGUOUS": "1",

@@ -300,6 +300,17 @@ itself wrong — RE-CORRECTED 2026-09-30, C-0930-03, the limiter answers first):
 home-IP primary). Sets WITHOUT `-a0`: 1/2 — the 201 at 05:19:54 (age 2 s, tokens=6) and one 67-s-old
 business set (401). Every order in the repo's history (07-14 … 08-04) was signed by a set without
 `-a0` (the main-tab ATC carried it 0/53,950 times).
+**CORRECTION 2026-11-19 (claims-verifier, raw-log recount of run_20260911_010759):** the "a0=yes 0/14
+(12×401 on BD, 431 + 503 on home primary)" tally above is miscounted. a0=yes sets that got past the
+edge that night = 17: **10×401 (all on the two Bright Data accounts), 4×FAST_SELLING admits on home
+primary (past BOTH walls under the C-0930-03 gate model), 2×431 (one alt-1's, one primary's), 1×503**.
+Two of the "12" 401s were page-signed STALE fallbacks on alt-1, not a0 sets. So on the 401 metric a0=yes
+is NOT worse than a0=no within either exit (home a0=yes 0/4 401 vs later home a0=no 84/141), and the
+09-11 401 split is entirely BY EXIT (every 401 on BD; home primary drew none). The only measured
+counter-case for aged/bloated sets is the two 431s (the only main-tab 431s in history; both predate
+the hdr_bytes instrument, so their size is unknown). Verdict on "a0 sets are worse": PARTIALLY
+CONFIRMED only on size (431), REFUTED on Shape (401). The fresh_page fix stands on its own merits
+(small sets, fewer 431s), not on a Shape-score penalty for a0.
 **Root Cause**: `a0` tracks the harvest tab's PAGE AGE exactly. After every PDP (re)load the first
 capture is a0=no (a_len ≈ 7,700), then every capture for the next ~13 min is a0=yes — Shape chunks
 its sensor at 7,900 chars and the overflow is the accumulated SYNTHETIC telemetry of 9-move bezier

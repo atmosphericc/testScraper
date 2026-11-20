@@ -1514,12 +1514,15 @@ REM across 3 walled nights (10-22, 10-23, 11-06: 66 re-navs in 05h-08h, 0 captur
 REM churns the already-walled profile for no measured benefit. Re-arm only if a walled night shows
 REM RENAV capturing any creds during a park. Evidence: logs/analysis_2026_11_06/.
 set TARGET_HARVEST_PX_RENAV=0
-REM 2026-11-14 FX-1114-PXRECONFIRM: the harvest miss-probe PX detector false-positives on a
-REM transient "Product not found" decoy PDP (px-captcha placeholder flashes during load) and
-REM parks the bank up to 3600s with NO re-confirm, so the bank drains and shots go page-signed, carting 0
-REM (CONFIRMED 11-06 run_20261106_001109: 78 parks, all 'Product not found', px_container-only;
-REM claims-verifier CONFIRMED 2026-11-14). =1 re-reads the DOM after ~2.5s before parking: a real
-REM HUMAN challenge persists, a flash clears (ported from the lane harvester). Kill: =0 (exact prior).
+REM 2026-11-14 FX-1114-PXRECONFIRM: =1 re-reads the DOM after ~2.5s before parking on a
+REM container-only PX verdict: a persistent strong marker parks, a placeholder that clears does
+REM not (ported from the lane harvester). Kill: =0 (exact prior).
+REM CORRECTION 2026-11-19 (claims-verifier, 11-06 MISS-PROBE screenshots): the 11-14 premise that
+REM the 11-06 parks were a "Product not found" placeholder flash is WRONG -- they were a REAL
+REM Quick verification / Press and hold wall (same PX reference id on 10 identical shots; the
+REM title was the PDP shell under the block page). 11-06 drained the bank because nothing could
+REM mint behind a real wall for ~5 h, which FX-1119-RESERVE below addresses. A real wall whose
+REM container reads un-filled would not park under this flag -- unobserved so far, open risk.
 set TARGET_HARVEST_PX_RECONFIRM=1
 REM 2026-11-18 FX-1118-PXFILLED: the REAL home-IP / drop-band Press and Hold renders in a CROSS-ORIGIN
 REM overlay, so press_hold/denied/px_iframe all read False and ONLY px_container_filled fires. With this
@@ -1533,6 +1536,27 @@ REM claims-verifier CONFIRMED-with-caveats 2026-11-18 (contingent on PX_RECONFIR
 REM filled verdict is measured to fire on the real wall -- 6944x on the bot tab 11-18, + home/resi probes).
 REM Kill: =0 (exact prior behaviour -- back to hammering the wall).
 set TARGET_PX_FILLED_STRONG=1
+REM 2026-11-19 FX-1119-RESERVE: bank survival under a PX wall. On 11-06 the edge limiter OPENED and
+REM admitted 273 shots -- every one page-signed (0 carts) because the harvest had been walled for
+REM ~5 h and the bank was empty (page-signed shots reach the cart 0 of 282 lifetime past the edge;
+REM banked sets 13 of 116). The wall is applied when a PDP DOCUMENT is loaded (11-18 probes: PDP fully
+REM rendered, challenge as a filled overlay); the Shape sensor is minted client-side and the harvest
+REM interceptor fails the add before it leaves Chrome; on every walled night the already-loaded
+REM warmup tab in the SAME Chrome kept getting 424 on its dummy cart POST for hours. So: a second
+REM RESERVE PDP document per identity, loaded only in CLEAN time (primary captured within CLEAN_S,
+REM not parked, no purchase live; re-loaded every REFRESH_S) and NEVER re-navigated otherwise, mints
+REM banked sets while the primary is PX-parked, backed off, or buttonless twice in a row. It marks
+REM itself dead (no nav) on a PX overlay, a missing button, or two clicks without a cart_items POST;
+REM sets over MAX_HDR_BYTES are not banked (09-11 bloated -a0 sets drew the edge 431 header cap).
+REM Cost: one extra PDP load per identity per REFRESH_S in clean time; zero during a wall.
+REM grep "RESERVE " under [HARVEST/: "document ready", "wall-mode", "click to capture", "dead:",
+REM "oversized", and CAPTURED lines ending in src=reserve; window census gains "reserve opens=".
+REM Kill: TARGET_HARVEST_RESERVE=0 (exact prior behaviour: no second tab, no extra load, no line).
+set TARGET_HARVEST_RESERVE=1
+set TARGET_HARVEST_RESERVE_REFRESH_S=1800
+set TARGET_HARVEST_RESERVE_CLEAN_S=600
+set TARGET_HARVEST_RESERVE_RETRY_S=600
+set TARGET_HARVEST_RESERVE_MAX_HDR_BYTES=15500
 REM INF-1: print the sentinel ticks skipped while a purchase is in flight.
 REM Kill: TARGET_SENTINEL_LOG_SKIPS=0.
 set TARGET_SENTINEL_LOG_SKIPS=1

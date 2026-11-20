@@ -2103,6 +2103,24 @@ class PurchaseExecutor:
         self._harvest_px_streak: int = 0            # challenged documents since the last banked capture
         self._harvest_px_renav_due: bool = False    # a 2nd verdict on the same document: load the next decoy
         self._harvest_px_renav_ts: list = []        # PX re-navigations (rolling hour cap)
+        # 2026-11-19 FX-1119-RESERVE (TARGET_HARVEST_RESERVE=1 only; shape_harvest.config 'reserve').
+        # A second PDP document, loaded in clean time and NEVER reloaded, that mints banked sets
+        # while the primary harvest is PX-parked / backed off. Every field is inert with the flag off.
+        self._harvest_reserve_tab = None
+        self._harvest_reserve_tcin: str = ''
+        self._harvest_reserve_nav_ts: float = 0.0       # when the reserve document was loaded (0 = none)
+        self._harvest_reserve_dead_reason: str = ''     # '' = usable; else why it cannot mint until a refresh
+        self._harvest_reserve_last_try_ts: float = 0.0  # last (re)load attempt
+        self._harvest_reserve_last_click_ts: float = 0.0
+        self._harvest_reserve_last_xy = None
+        self._harvest_reserve_clicks: int = 0           # clicks on the current reserve document
+        self._harvest_reserve_nocap: int = 0            # consecutive clicks without a cart_items POST
+        self._harvest_reserve_wall_logged: str = ''     # hold reason already announced as wall-mode
+        self._harvest_reserve_fail_streak: int = 0      # consecutive wall-mode attempts without a banked set
+        self._harvest_reserve_browser_ref = None        # the Chrome the reserve tab belongs to
+        self._harvest_reserve_stats: Dict[str, int] = {'opens': 0, 'captured': 0, 'oversized': 0,
+                                                       'dead': 0, 'clicks': 0}
+        self._harvest_last_capture_ts: float = 0.0      # last PRIMARY capture = the clean-time signal
 
     # -------------------------------------------------------------------------
     # nodriver helper methods (replace patchright page/element API)
@@ -4409,6 +4427,10 @@ class PurchaseExecutor:
                 post_data = str(post_data or '')
         except Exception:
             post_data = str(post_data or '')
+        # FX-1119-RESERVE: which document fired this add (the reserve shares the 'harvest' label).
+        _is_reserve = (getattr(self, '_harvest_reserve_tab', None) is not None
+                       and tab is getattr(self, '_harvest_reserve_tab', None))
+        _src_tcin = self._harvest_reserve_tcin if _is_reserve else self._harvest_tcin
         blocked = False
         try:
             await tab.send(cdp.fetch.fail_request(
@@ -4421,10 +4443,10 @@ class PurchaseExecutor:
             # loop clears the cart on its next tick, and the operator sees it.
             self._harvest_landed_suspect = True
             self._harvest_landed_suspect_ts = time.time()   # R1-QTY-1 (won-cart po_only fallback)
-            self._harvest_log(f"[DANGER] fail_request FAILED ({e}) — harvest add may have LANDED; cart clear scheduled")
+            self._harvest_log(f"[DANGER] fail_request FAILED ({e}) — {'RESERVE ' if _is_reserve else ''}harvest add may have LANDED; cart clear scheduled")
             try:
                 self.session_manager._alert_critical(
-                    f"{self._harvest_acct()}: HARVEST fail_request failed — cheap item {self._harvest_tcin} may be in the cart; auto-clear scheduled")
+                    f"{self._harvest_acct()}: HARVEST fail_request failed — cheap item {_src_tcin} may be in the cart; auto-clear scheduled")
             except Exception:
                 pass
         _method = str(getattr(event.request, 'method', 'POST') or 'POST').upper()
@@ -4432,20 +4454,45 @@ class PurchaseExecutor:
             self._harvest_log(f"blocked a harvest-tab {_method} to cart_items (not banked) url={url[:120]}")
         if blocked and _method == 'POST':
             toks = _shape_harvest.shape_tokens(headers)
-            ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin, 'url': url[:160], 'body': post_data[:300]})
-            self._harvest_stats['captured' if ok else 'no_tokens'] += 1
-            if ok:
+            # FX-1119-RESERVE: a set minted on the RESERVE document is banked into the same bank
+            # (meta src=reserve) unless it is over the header-byte cap; it never resets the
+            # PRIMARY's miss / PX streaks (a reserve capture says nothing about the primary's wall).
+            _hb = _shape_harvest.header_bytes(headers)
+            _oversized = False
+            if _is_reserve:
+                _cap = int(self._harvest_cfg.get('reserve_max_hdr_bytes', 0) or 0)
+                _oversized = not _shape_harvest.reserve_set_ok(_hb['total'], _cap)
+            if _oversized:
+                ok = False
+                self._harvest_reserve_stats['oversized'] += 1
+                self._harvest_log(f"RESERVE set oversized (hdr_bytes={_hb['total']} > cap {_cap}) — not banked "
+                                  f"| {self._shape_bank.summary()}")
+            elif _is_reserve:
+                ok = self._shape_bank.push(headers, {'tcin': self._harvest_reserve_tcin, 'url': url[:160],
+                                                     'body': post_data[:300], 'src': 'reserve'})
+            else:
+                ok = self._shape_bank.push(headers, {'tcin': self._harvest_tcin, 'url': url[:160], 'body': post_data[:300]})
+            if not _oversized:
+                self._harvest_stats['captured' if ok else 'no_tokens'] += 1   # an oversized reserve set is its own stat
+            if ok and _is_reserve:
+                self._harvest_reserve_stats['captured'] += 1
+                self._harvest_reserve_nocap = 0
+                self._harvest_reserve_fail_streak = 0
+            elif ok:
+                self._harvest_last_capture_ts = time.time()   # FX-1119-RESERVE clean-time signal
                 self._harvest_miss_streak = 0       # 2026-09-16 HV-1: harvest_stuck() streak
                 self._harvest_px_streak = 0         # FX-1014-PXRENAV: parks restart at PX_PARK_S
                 self._harvest_px_park_nav_ts = -1.0
             a0 = any(str(k).lower().endswith('-a0') for k in toks)
-            _hb = _shape_harvest.header_bytes(headers)
-            self._harvest_log(f"CAPTURED{'' if ok else ' (NO Shape tokens — not banked)'} tokens={len(toks)} "
+            _csn = (getattr(self, '_harvest_reserve_clicks', 0) if _is_reserve
+                    else getattr(self, '_harvest_clicks_since_nav', 0))
+            self._harvest_log(f"CAPTURED{'' if ok else (' (oversized — not banked)' if _oversized else ' (NO Shape tokens — not banked)')} tokens={len(toks)} "
                               f"a0={'yes' if a0 else 'no'} a_len={_shape_harvest.sensor_a_len(headers)} "
                               f"a0_len={_hb['a0']} hdr_bytes={_hb['total']} cookie={_hb['cookie']} "
-                              f"clicks_since_nav={getattr(self, '_harvest_clicks_since_nav', 0)} "
+                              f"clicks_since_nav={_csn} "
                               f"hdrs={len(headers)} url={url[:120]} "
-                              f"body={post_data[:200]!r} | {self._shape_bank.summary()}")
+                              f"body={post_data[:200]!r} | {self._shape_bank.summary()}"
+                              f"{' src=reserve' if _is_reserve else ''}")
             if ok and not self._harvest_first_capture_logged:
                 self._harvest_first_capture_logged = True
                 # Once per run: the byte shape of a GENUINE page-driven ATC (first
@@ -4507,18 +4554,383 @@ class PurchaseExecutor:
         manager's adaptive bank gate (TARGET_BANK_GATE_ADAPTIVE=1) from its own
         thread: scalar reads only. Never raises."""
         try:
+            # FX-1119-RESERVE: while the reserve document can mint, a held / buttonless PRIMARY
+            # does not make the harvest stuck -- the gate may wait for a reserve set.
+            _reserve_ok = self._harvest_reserve_alive()
             why = self._harvest_hold_reason()
-            if why:
+            if why and not _reserve_ok:
                 return why
             dis = str(getattr(self, '_harvest_disabled_reason', '') or '')
             if dis:
                 return f"disabled ({dis})"
             streak = int(getattr(self, '_harvest_miss_streak', 0) or 0)
-            if streak >= 2:
+            if streak >= 2 and not _reserve_ok:
                 return f"{streak} buttonless loads since the last capture"
         except Exception:
             pass
         return ''
+
+    # ── 2026-11-19 FX-1119-RESERVE: a second PDP document that mints through a PX wall ──────
+    def _harvest_reserve_alive(self) -> bool:
+        """True when the flag is on, a reserve document is loaded and not marked dead. Scalar
+        reads only (the manager's bank gate calls this from its own thread). Never raises."""
+        try:
+            if not self._harvest_cfg.get('reserve'):
+                return False
+            return (getattr(self, '_harvest_reserve_tab', None) is not None
+                    and float(getattr(self, '_harvest_reserve_nav_ts', 0.0) or 0.0) > 0
+                    and not str(getattr(self, '_harvest_reserve_dead_reason', '') or '')
+                    # its Chrome must still be the live one (a stale reserve must not hold the gate)
+                    and getattr(self.session_manager, 'browser', None) is getattr(self, '_harvest_reserve_browser_ref', None))
+        except Exception:
+            return False
+
+    def _harvest_reserve_mark_dead(self, reason: str) -> None:
+        """The reserve document can no longer mint. It is NOT re-navigated here (a load is what
+        the wall catches); a clean-time refresh brings it back. Never raises."""
+        try:
+            if not self._harvest_reserve_dead_reason:
+                self._harvest_reserve_stats['dead'] += 1
+            self._harvest_reserve_dead_reason = reason
+            self._harvest_log(f"RESERVE dead: {reason} — no reserve minting until the next clean-time refresh "
+                              f"(doc age {time.time() - self._harvest_reserve_nav_ts:.0f}s "
+                              f"clicks={self._harvest_reserve_clicks})")
+        except Exception:
+            pass
+
+    def _harvest_reserve_drop(self, reason: str) -> None:
+        """Forget the reserve handle (the Chrome that owned it is gone or being torn down).
+        Sync; if the tab's Chrome is still the live browser the caller should have closed the
+        tab first via _harvest_reserve_close_tab (re-verifier D3: a dropped-but-open reserve
+        would live on as a stray PDP tab)."""
+        try:
+            if self._harvest_reserve_tab is not None:
+                self._harvest_log(f"RESERVE dropping reserve document handle ({reason})")
+        except Exception:
+            pass
+        self._harvest_reserve_tab = None
+        self._harvest_reserve_browser_ref = None
+        self._harvest_reserve_nav_ts = 0.0
+        self._harvest_reserve_dead_reason = ''
+        self._harvest_reserve_last_xy = None
+        self._harvest_reserve_clicks = 0
+        self._harvest_reserve_nocap = 0
+        self._harvest_reserve_fail_streak = 0
+
+    async def _harvest_reserve_close_tab(self, reason: str) -> None:
+        """Close the reserve tab on its own (still live) Chrome, then drop the handle. Bounded;
+        never raises."""
+        tab = self._harvest_reserve_tab
+        if tab is None:
+            return
+        try:
+            browser = getattr(self, '_harvest_reserve_browser_ref', None)
+            conn = getattr(browser, 'connection', None) if browser else None
+            if conn is not None:
+                await asyncio.wait_for(conn.send(cdp.target.close_target(target_id=tab.target.target_id)), timeout=5.0)
+                self._harvest_log(f"RESERVE closed the reserve tab ({reason})")
+        except Exception as e:
+            self._harvest_log(f"RESERVE tab close failed (non-fatal: {type(e).__name__}: {e})")
+        self._harvest_reserve_drop(reason)
+
+    async def _harvest_reserve_refresh(self) -> bool:
+        """(Re)load the reserve document on a decoy PDP (the one the primary is NOT on) and
+        verify it shows a usable Add-to-cart button. The ONLY navigation the reserve ever makes;
+        the caller has already established clean time. True = usable. Never raises."""
+        cfg = self._harvest_cfg
+        now = time.time()
+        self._harvest_reserve_last_try_ts = now
+        browser = self.session_manager.browser
+        if not browser:
+            return False
+        tcins = [t for t in (cfg.get('tcins') or []) if t != self._harvest_tcin] or list(cfg.get('tcins') or [])
+        if not tcins:
+            return False
+        tcin = tcins[int(self._harvest_reserve_stats['opens']) % len(tcins)]
+        self._harvest_reserve_stats['opens'] += 1
+        try:
+            _open_budget = max(10.0, float(os.environ.get('TARGET_HARVEST_TAB_OPEN_TIMEOUT_S', '45')))
+        except (TypeError, ValueError):
+            _open_budget = 45.0
+        try:
+            if self._harvest_reserve_tab is None:
+                self._harvest_log(f"RESERVE opening reserve document on PDP {tcin} (refresh every "
+                                  f"{cfg.get('reserve_refresh_s', 0):.0f}s in clean time; mints only while the "
+                                  f"primary is PX-parked / backed off)")
+                tab = await asyncio.wait_for(browser.get(_shape_harvest.pdp_url(tcin), new_tab=True),
+                                             timeout=_open_budget)
+                await asyncio.wait_for(
+                    self._setup_cdp_fetch_interceptor(tab, persistent=True, label='harvest'), timeout=20.0)
+                # Money safety: a reserve document whose capture-and-block handler did not install
+                # must never be clicked (its add would go out uncaught). Close it instead.
+                _n_handlers = len((getattr(tab, 'handlers', {}) or {}).get(cdp.fetch.RequestPaused, []) or [])
+                if _n_handlers <= 0:
+                    self._harvest_log("RESERVE interceptor NOT installed on the reserve document — closing it, not using it")
+                    try:
+                        await asyncio.wait_for(browser.connection.send(
+                            cdp.target.close_target(target_id=tab.target.target_id)), timeout=5.0)
+                    except Exception:
+                        pass
+                    self._harvest_reserve_mark_dead("interceptor not installed")
+                    return False
+                self._harvest_reserve_tab = tab
+            else:
+                tab = self._harvest_reserve_tab
+                self._harvest_log(f"RESERVE refreshing reserve document -> PDP {tcin} "
+                                  f"(old doc age {now - self._harvest_reserve_nav_ts:.0f}s clicks={self._harvest_reserve_clicks})")
+                _nav_budget = min(25.0, _open_budget)
+                await asyncio.wait_for(tab.get(_shape_harvest.pdp_url(tcin)), timeout=_nav_budget)
+        except Exception as e:
+            self._harvest_log(f"RESERVE load FAILED on {tcin}: {type(e).__name__}: {e}")
+            if self._harvest_reserve_tab is None:
+                try:
+                    _rid = self._harvest_tab.target.target_id if self._harvest_tab is not None else None
+                    n = await self._harvest_close_orphans(browser, f"/A-{tcin}", _rid)
+                    if n:
+                        self._harvest_log(f"RESERVE closed {n} orphaned PDP tab(s) left by the timed-out open")
+                except Exception:
+                    pass
+                self._harvest_reserve_mark_dead('load failed')
+            else:
+                # An existing reserve tab that cannot navigate is not kept (re-verifier D8): close
+                # it so the next clean-time refresh opens a fresh one instead of retrying a dead target.
+                self._harvest_reserve_mark_dead('load failed (existing tab closed)')
+                await self._harvest_reserve_close_tab("load failed")
+                self._harvest_reserve_last_try_ts = now
+                self._harvest_reserve_dead_reason = 'load failed (existing tab closed)'
+            return False
+        self._harvest_reserve_browser_ref = browser
+        self._harvest_reserve_tcin = tcin
+        self._harvest_reserve_nav_ts = time.time()
+        self._harvest_reserve_last_xy = None
+        self._harvest_reserve_clicks = 0
+        self._harvest_reserve_nocap = 0
+        self._harvest_reserve_fail_streak = 0           # a fresh document starts clean (re-verifier D1)
+        self._harvest_reserve_dead_reason = ''
+        # Verify the document is usable NOW (button present + enabled + complete); a walled or
+        # delisted load is marked dead so wall-mode never clicks into it.
+        info: Dict[str, Any] = {}
+        _deadline = time.time() + 9.0
+        while time.time() < _deadline:
+            try:
+                info = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
+            except Exception as e:
+                self._harvest_reserve_mark_dead(f"button lookup failed after load ({type(e).__name__})")
+                return False
+            if not isinstance(info, dict):
+                info = {}
+            if info.get('found') and not info.get('disabled') and info.get('ready') == 'complete':
+                break
+            await asyncio.sleep(0.5)
+        if not info.get('found') or info.get('disabled'):
+            self._harvest_reserve_mark_dead(f"no usable Add-to-cart button after load "
+                                            f"(found={bool(info.get('found'))} disabled={bool(info.get('disabled'))} "
+                                            f"ready={info.get('ready')} oos={info.get('oos')})")
+            return False
+        # Same SHIPPING fulfilment selection the primary makes once per document (2026-09-09
+        # audit #10), so reserve sets are shipping adds like the shot they ride (re-verifier D9).
+        if self._harvest_cfg.get('prefer_shipping', True):
+            try:
+                _sel = await asyncio.wait_for(tab.evaluate(_shape_harvest.SELECT_SHIPPING_JS), timeout=4.0)
+                self._harvest_log(f"RESERVE fulfillment cell: {_sel}")
+            except Exception as _se:
+                self._harvest_log(f"RESERVE shipping-cell select skipped ({type(_se).__name__}: {_se})")
+        self._harvest_log(f"RESERVE document ready on {tcin} (button via {info.get('via')}; will mint only in wall-mode)")
+        return True
+
+    async def _harvest_reserve_once(self) -> bool:
+        """Wall-mode: ONE real click on the RESERVE document's Add-to-cart -> one banked set.
+        No navigation of any kind. A PX overlay on the document, a missing/disabled button or
+        two clicks without a cart_items POST mark the reserve dead. Bounded; never raises."""
+        tab = self._harvest_reserve_tab
+        if tab is None or not self._harvest_reserve_alive():
+            return False
+        if self._woncart_quiet():
+            return False
+        # Every attempt that does not END with a banked set counts against the reserve
+        # (probe/lookup errors, hidden tab, click failure, no POST, oversized / token-less
+        # capture); RESERVE_FAIL_MAX such attempts in a row mark it dead so an "alive but not
+        # minting" reserve can never hold the bank gate open for the rest of the run.
+        _banked_before = int(self._harvest_reserve_stats.get('captured', 0) or 0)
+        try:
+            ok = await self._harvest_reserve_attempt(tab)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._harvest_log(f"RESERVE once errored ({type(e).__name__}: {e})")
+            ok = False
+        banked = int(self._harvest_reserve_stats.get('captured', 0) or 0) > _banked_before
+        if banked:
+            self._harvest_reserve_fail_streak = 0
+            return True
+        if ok is None:
+            return False            # stood down (won-cart quiet began): not a failure (re-verifier D4)
+        if not self._harvest_reserve_dead_reason:
+            self._harvest_reserve_fail_streak += 1
+            if self._harvest_reserve_fail_streak >= self._harvest_reserve_fail_max():
+                self._harvest_reserve_mark_dead(f"{self._harvest_reserve_fail_streak} consecutive attempts without a banked set")
+        return False
+
+    @staticmethod
+    def _harvest_reserve_fail_max() -> int:
+        try:
+            return max(2, int(os.environ.get('TARGET_HARVEST_RESERVE_FAIL_MAX', '4')))
+        except (TypeError, ValueError):
+            return 4
+
+    async def _harvest_reserve_attempt(self, tab) -> bool:
+        """The body of one wall-mode click. True only when the click produced a cart_items POST
+        (banking is judged by the caller from the reserve capture counter). Never navigates."""
+        try:
+            from .px_challenge import px_verdict_is_strong, describe, PX_MARKERS_JS
+        except ImportError:
+            from src.session.px_challenge import px_verdict_is_strong, describe, PX_MARKERS_JS  # type: ignore
+        try:
+            _m = await asyncio.wait_for(tab.evaluate(PX_MARKERS_JS), timeout=3.0)
+        except Exception as e:
+            self._harvest_log(f"RESERVE px probe failed ({type(e).__name__}: {e}) — attempt counted")
+            return False
+        if px_verdict_is_strong(_m, filled_counts=self._harvest_cfg.get('px_filled_strong', False)):
+            self._harvest_reserve_mark_dead(f"PX overlay on the reserve document ({describe(_m)})")
+            return False
+        try:
+            info = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
+        except Exception as e:
+            self._harvest_log(f"RESERVE button lookup failed ({type(e).__name__}: {e}) — attempt counted")
+            return False
+        if not isinstance(info, dict) or not info.get('found') or info.get('disabled'):
+            self._harvest_reserve_mark_dead(
+                f"Add-to-cart button {'DISABLED' if isinstance(info, dict) and info.get('found') else 'absent'} "
+                f"on the reserve document")
+            return False
+        if self._harvest_cfg.get('vis_guard', True):
+            try:
+                _vis = await self._harvest_ensure_visible(tab)
+            except Exception:
+                _vis = 'ok'
+            if _vis == 'skip':
+                return None         # account parked for a person: not a strike (same rule as the primary)
+            if _vis != 'ok':
+                self._harvest_log(f"RESERVE tab not painting ({_vis}) — attempt counted")
+                return False
+        # Fresh coordinates right before the click (lazy content shifts the button), and the
+        # won-cart quiet re-check immediately before the click, exactly like the primary path.
+        try:
+            _fresh = await asyncio.wait_for(tab.evaluate(_shape_harvest.FIND_ATC_BUTTON_JS), timeout=5.0)
+            if isinstance(_fresh, dict) and _fresh.get('found') and not _fresh.get('disabled'):
+                info = _fresh
+        except Exception:
+            pass
+        if self._harvest_quiet_now('reserve Add-to-cart click') or self._woncart_quiet():
+            return None             # stand-down, not a failed attempt
+        x, y = _shape_harvest.click_point(info)
+        try:
+            _click_budget = max(3.0, float(os.environ.get('TARGET_HARVEST_CLICK_TIMEOUT_S', '12')))
+        except (TypeError, ValueError):
+            _click_budget = 12.0
+        self._harvest_capture_evt.clear()
+        t0 = time.time()
+        _stats: Dict[str, Any] = {}
+        try:
+            self._harvest_reserve_last_xy = await asyncio.wait_for(
+                _shape_harvest.human_click(tab, x, y, self._harvest_reserve_last_xy, stats=_stats,
+                                           move_abort_ms=self._harvest_cfg.get('move_abort_ms', 2500)),
+                timeout=_click_budget)
+        except Exception as e:
+            self._harvest_log(f"RESERVE click dispatch failed ({type(e).__name__}: {e}) | "
+                              f"{_shape_harvest.click_stats_summary(_stats)}")
+            return False
+        self._harvest_reserve_clicks += 1
+        self._harvest_reserve_stats['clicks'] += 1
+        try:
+            await asyncio.wait_for(self._harvest_capture_evt.wait(), timeout=4.0)
+            self._harvest_log(f"RESERVE click -> capture in {time.time() - t0:.2f}s via {info.get('via')} "
+                              f"(doc age {time.time() - self._harvest_reserve_nav_ts:.0f}s "
+                              f"clicks={self._harvest_reserve_clicks}) | {_shape_harvest.click_stats_summary(_stats)}")
+            return True
+        except asyncio.TimeoutError:
+            self._harvest_reserve_nocap += 1
+            self._harvest_log(f"RESERVE click produced NO cart_items POST within 4s "
+                              f"(#{self._harvest_reserve_nocap}) | {_shape_harvest.click_stats_summary(_stats)}")
+            if self._harvest_reserve_nocap >= 2:
+                self._harvest_reserve_mark_dead("two consecutive clicks produced no cart_items POST")
+            return False
+
+    async def _harvest_reserve_tick(self, live: bool) -> bool:
+        """One loop pass of the reserve logic. Returns True when it did something the loop should
+        sleep on (a refresh or a wall-mode click attempt), False to fall through to the primary
+        path. Flag off -> always False (exact prior behaviour). Never raises."""
+        cfg = self._harvest_cfg
+        try:
+            if not cfg.get('reserve'):
+                return False
+            if self._woncart_quiet():
+                return False
+            # A relaunched Chrome: the reserve handle points at a dead tab. Drop it here (the
+            # primary's own browser-changed branch runs only from _harvest_once, which a held
+            # primary never reaches) so the gate never waits on a reserve that cannot mint.
+            # Compared against the RESERVE's own Chrome (not the primary's ref, which can lag
+            # a relaunch and would drop -- without closing -- a reserve just opened on the new
+            # Chrome; re-verifier D3).
+            if (self._harvest_reserve_tab is not None
+                    and getattr(self.session_manager, 'browser', None) is not self._harvest_reserve_browser_ref):
+                self._harvest_reserve_drop("browser changed")
+                return False
+            now = time.time()
+            real_hold = self._harvest_hold_reason(now)
+            hold = real_hold
+            if not hold:
+                # The primary need not be PARKED to be blocked: a primary that keeps loading
+                # buttonless decoys (an un-parked wall, delisted decoys) banks nothing either.
+                # Two buttonless loads since the last primary capture count as blocked for
+                # wall-mode -- but ONLY as a reason to mint from the reserve, never as a reason
+                # to pre-empt the primary: the primary must keep reloading so a capture can clear
+                # the streak (and let the reserve refresh again). See the fall-through below.
+                _streak = int(getattr(self, '_harvest_miss_streak', 0) or 0)
+                if _streak >= 2:
+                    hold = f"{_streak} buttonless loads since the last capture"
+            due, why = _shape_harvest.reserve_refresh_due(
+                now, float(self._harvest_reserve_nav_ts or 0.0), bool(self._harvest_reserve_dead_reason),
+                float(self._harvest_reserve_last_try_ts or 0.0), float(self._harvest_last_capture_ts or 0.0),
+                hold, live, float(cfg.get('reserve_refresh_s', 1800.0)), float(cfg.get('reserve_clean_s', 600.0)),
+                float(cfg.get('reserve_retry_s', 600.0)))
+            if due:
+                self._harvest_log(f"RESERVE refresh due: {why}")
+                await self._harvest_reserve_refresh()
+                await asyncio.sleep(random.uniform(2.0, 4.0))
+                return True
+            if not hold:
+                self._harvest_reserve_wall_logged = ''
+                return False
+            alive = self._harvest_reserve_alive()
+            want = self._shape_bank.need() > 0 or self._shape_bank.refill_wanted()
+            if not _shape_harvest.reserve_mint_wanted(hold, alive, want):
+                return False
+            if self._harvest_reserve_wall_logged != hold:
+                self._harvest_reserve_wall_logged = hold
+                self._harvest_log(f"RESERVE wall-mode: primary is held ({hold}) — minting from the reserve document "
+                                  f"on {self._harvest_reserve_tcin} (doc age {now - self._harvest_reserve_nav_ts:.0f}s "
+                                  f"clicks={self._harvest_reserve_clicks}) | {self._shape_bank.summary()}")
+            min_gap = 6.0 if live else 3.0
+            if (now - self._harvest_reserve_last_click_ts) < min_gap:
+                return False
+            self._harvest_reserve_last_click_ts = now
+            await self._harvest_reserve_once()
+            if not real_hold:
+                # Streak-only blockage: do NOT pre-empt. The loop falls through to the primary
+                # path in this same pass, so the primary keeps probing / rotating exactly as
+                # before and can capture its way out of the streak.
+                return False
+            await asyncio.sleep(random.uniform(4.0, 7.0) if live else random.uniform(6.0, 10.0))
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            try:
+                self._harvest_log(f"RESERVE tick errored ({type(e).__name__}: {e})")
+            except Exception:
+                pass
+            return False
 
     def harvest_stuck(self) -> bool:
         return bool(self.harvest_stuck_reason())
@@ -4717,12 +5129,20 @@ class PurchaseExecutor:
             targets = list(getattr(browser, 'targets', []) or [])
         except Exception:
             return 0
+        # FX-1119-RESERVE: the reserve document sits on a decoy PDP too -- never close it here.
+        _keep = {keep_id} if keep_id else set()
+        try:
+            _rt = getattr(self, '_harvest_reserve_tab', None)
+            if _rt is not None:
+                _keep.add(_rt.target.target_id)
+        except Exception:
+            pass
         for t in targets:
             try:
                 if getattr(t, 'type_', '') != 'page':
                     continue
                 tid = t.target.target_id
-                if keep_id and tid == keep_id:
+                if tid in _keep:
                     continue
                 # substring match: Target's router rewrites /p/-/A-<tcin> to /p/<slug>/-/A-<tcin>
                 if url_marker not in str(getattr(t.target, 'url', '') or ''):
@@ -4810,6 +5230,9 @@ class PurchaseExecutor:
                 if self._harvest_cfg.get('flush_on_relaunch'):
                     self._harvest_flush_if_relaunched('browser changed')   # 2026-09-16 HV-1
                 await self._harvest_drop_tab("browser changed", close=False)
+                if (getattr(self, '_harvest_reserve_tab', None) is not None
+                        and getattr(self, '_harvest_reserve_browser_ref', None) is not browser):
+                    self._harvest_reserve_drop("browser changed")       # FX-1119-RESERVE (its Chrome is gone)
             self._harvest_tab = None
             self._harvest_browser_ref = browser
         if self._harvest_tab is not None:
@@ -4997,12 +5420,16 @@ class PurchaseExecutor:
         except Exception:
             px, desc = False, 'describe-failed'
         # FX-1114-PXRECONFIRM (armed =1 in the bat; kill TARGET_HARVEST_PX_RECONFIRM=0). The harvest
-        # park escalates to 3600s and drains the bank (CONFIRMED 11-06 run_20261106_001109: 78 parks,
-        # all px_container-only on 'Product not found' decoys -> page-signed -> 0 carts). The bare
-        # #px-captcha placeholder is an UNRELIABLE signal: it flashes on a dead decoy during load and
-        # can linger on a slow/stuck one. Only the STRONG markers (press_hold/denied/px_iframe/a
-        # captcha-or-blocked URL) reliably mean a real HUMAN wall. So re-read the LIGHTWEIGHT PX
-        # markers after a short delay and PARK ONLY IF A STRONG MARKER IS PRESENT ON THE RE-READ:
+        # park escalates to 3600s and drains the bank (11-06 run_20261106_001109: 78 parks ->
+        # page-signed -> 0 carts). CORRECTION 2026-11-19: those 78 parks were on a REAL "Quick
+        # verification / Press & hold" wall (the MISS-PROBE screenshots, same PX reference id), NOT
+        # a placeholder flash on a 'Product not found' decoy as the 11-14 review assumed -- the title
+        # was the PDP shell under the block page. The bank drained because nothing could mint behind
+        # a real wall (FX-1119-RESERVE addresses that), not because of a false park. The placeholder
+        # flash itself (lane harvester note) has no observed case on an account harvest tab. Only the
+        # STRONG markers (press_hold/denied/px_iframe/a captcha-or-blocked URL, plus a FILLED
+        # container under TARGET_PX_FILLED_STRONG) are treated as a real HUMAN wall. So re-read the
+        # LIGHTWEIGHT PX markers after a short delay and PARK ONLY IF A STRONG MARKER IS PRESENT ON THE RE-READ:
         #   - container-only (flash OR stuck placeholder) -> never park -> the harvest rotates to the
         #     next decoy (the definitive fix for the 11-06 drain, no title heuristics).
         #   - a real wall whose strong markers have rendered by the re-read -> park.
@@ -5301,8 +5728,14 @@ class PurchaseExecutor:
         """Danger path: a blocked harvest add may have gone through. Clear the
         cart (bounded) so no foreign item can poison a real checkout."""
         self._harvest_landed_suspect = False
-        tab = self._harvest_tab
+        # FX-1119-RESERVE: any tab in this Chrome can clear the cart -- fall back to the reserve
+        # document when the primary handle is None (a dropped primary must not skip the clear).
+        tab = self._harvest_tab if self._harvest_tab is not None else getattr(self, '_harvest_reserve_tab', None)
         if tab is None:
+            self._harvest_landed_suspect = True       # keep the flag until a tab exists to clear with
+            if time.time() - float(getattr(self, '_harvest_suspect_nolog_ts', 0.0) or 0.0) >= 60.0:
+                self._harvest_suspect_nolog_ts = time.time()
+                self._harvest_log("suspected landed harvest add — no tab to clear with yet; will retry")
             return
         try:
             _held = getattr(self, '_held_cart', None)
@@ -5321,7 +5754,10 @@ class PurchaseExecutor:
                 self._harvest_log(f"cart clear {'OK' if ok else 'reported failure'} — dropping harvest tab (re-opens on the PDP)")
         except Exception as e:
             self._harvest_log(f"cart clear errored ({type(e).__name__}: {e})")
-        await self._harvest_drop_tab("after suspect-cart clear")
+        if tab is self._harvest_tab:
+            await self._harvest_drop_tab("after suspect-cart clear")
+        else:
+            self._harvest_reserve_mark_dead("used for the suspect-cart clear (its document is no longer a clean PDP)")
 
     async def _harvest_selftest(self) -> None:
         """Boot replay validation on the WARMUP tab (a different page instance
@@ -5391,8 +5827,12 @@ class PurchaseExecutor:
                     # 2026-09-09 audit #2: one line per window so the post-drop audit can
                     # tell "replayed and lost" from "never replayed".
                     w = self._harvest_win
+                    _rs = self._harvest_reserve_stats if cfg.get('reserve') else None
                     self._harvest_log(f"window census: shots={w['shots']} replayed={w['replayed']} a0={w['a0']} "
-                                      f"stale={w['stale']} | {self._shape_bank.summary()}")
+                                      f"stale={w['stale']} | {self._shape_bank.summary()}"
+                                      + (f" | reserve opens={_rs['opens']} captured={_rs['captured']} "
+                                         f"oversized={_rs['oversized']} dead={_rs['dead']} clicks={_rs['clicks']}"
+                                         if _rs else ''))
                     self._harvest_win = {'shots': 0, 'replayed': 0, 'a0': 0, 'stale': 0}
                 self._harvest_prev_live = live
                 # FX-1118-QUIET: outside the daily harvest active window (and no purchase live), idle
@@ -5427,10 +5867,17 @@ class PurchaseExecutor:
                     await self._harvest_browse_nav(cfg)
                     await asyncio.sleep(random.uniform(3.0, 6.0))
                     continue
+                # 2026-11-19 FX-1119-RESERVE (TARGET_HARVEST_RESERVE=1 only): refresh the reserve
+                # document in clean time; mint from it while the primary is PX-parked / backed off.
                 need = self._shape_bank.need()
                 # 2026-09-09 audit #1: also click when the freshest set is past half the
                 # replay cap -- a full bank of unreplayable sets used to freeze the loop.
                 want = need > 0 or self._shape_bank.refill_wanted()
+                # The primary's decision is taken on the bank state BEFORE the reserve acts, so a
+                # reserve set that fills the bank can never starve the primary of its own turn
+                # (re-verifier D2): in streak-only mode both run in the same pass.
+                if cfg.get('reserve') and await self._harvest_reserve_tick(live):
+                    continue
                 min_gap = 6.0 if live else 3.0
                 if want and (time.time() - self._harvest_last_click_ts) >= min_gap:
                     self._harvest_last_click_ts = time.time()

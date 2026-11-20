@@ -48,7 +48,17 @@ HOT_EXACT = {"1012055696", "1011209279", "1011960739", "95274164", "95274160",
              "1012422107", "1011407490",
              # added 2026-09-22 -- hyped by the project's own 09-20 judgment and
              # previously mis-bucketed as ordinary (CURRENT_STATE.md).
-             "1012644665", "1012644666", "1012644667", "95290385"}
+             "1012644665", "1012644666", "1012644667", "95290385",
+             # added 2026-11-19 -- the 11-06 Mega Evolution "Delta Reign" hype
+             # restock (CURRENT_STATE.md 2026-11-18 post-run block). Until now the
+             # whole 11-06 night (774 shots) sat in `unknown`, so every caller of
+             # this list (limiter_key, shot_index_yield) silently dropped it.
+             "1012793604", "1013166573", "1013166578"}
+# TODO (operator judgment, 2026-11-19): still UNKNOWN and reported as such --
+# 1012850570 / 1012850572 / 1012850573 (shot on 11-06, same family?) and the
+# win-era TCINs 1011209273, 1011483406, 1011483414, 95267143, 95298172,
+# 95120832/4/6 (they produced the Jul/Aug orders; hype status not recorded).
+# Do NOT classify them by guess -- that is exactly the 09-22 mistake.
 
 # TCINs positively judged ORDINARY. Membership here is a claim with a source,
 # not an absence of evidence -- that is the whole point of the three-way split.

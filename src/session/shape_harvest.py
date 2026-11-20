@@ -219,12 +219,15 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "px_park_max_s": _float(e, "TARGET_HARVEST_PX_PARK_MAX_S", 3600.0, 30.0, 14400.0),
         "px_renav_max_per_h": _int(e, "TARGET_HARVEST_PX_RENAV_MAX_PER_H", 3, 1, 20),
         # 2026-11-14 FX-1114-PXRECONFIRM (default OFF in code; ARMED =1 in the bat; kill =0).
-        # A px-captcha placeholder flashes during load on a transient "Product not found"
-        # decoy PDP and is NOT a real HUMAN challenge (CONFIRMED 11-06 run_20261106_001109:
-        # 78 harvest parks, all title='Product not found', px_container-only; the park
-        # escalated to 3600s and drained the bank the whole drop -> page-signed -> 0 carts).
-        # Re-read the DOM after px_reconfirm_delay_s before parking: a real challenge persists,
-        # a flash clears. Ported from the lane harvester (shape_harvester.py:534-543).
+        # Re-read the DOM after px_reconfirm_delay_s before parking on a container-only
+        # verdict: a persistent strong marker parks, a placeholder that clears does not.
+        # Ported from the lane harvester (shape_harvester.py:534-543).
+        # CORRECTION 2026-11-19: the 11-14 premise "11-06 was a placeholder flash on a
+        # 'Product not found' decoy" is WRONG -- the 11-06 MISS-PROBE screenshots show a real
+        # "Quick verification / Press & hold" card (same PX reference id on 10 identical shots);
+        # the title was the PDP shell under the block page. 11-06 drained the bank because a
+        # REAL wall parked the harvest for ~5 h (escalating to 3600 s) with nothing minting,
+        # not because of a false park. See px_challenge.px_verdict_is_strong and FX-1119-RESERVE.
         "px_reconfirm": str(e.get("TARGET_HARVEST_PX_RECONFIRM", "0")).strip() == "1",
         "px_reconfirm_delay_s": _float(e, "TARGET_HARVEST_PX_RECONFIRM_DELAY_S", 2.5, 0.5, 10.0),
         # 2026-11-16 (C-1116-01): treat a POPULATED #px-captcha (child iframe / full-viewport
@@ -232,7 +235,79 @@ def config(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         # flash. OFF by default -- the signal is logged first; arm only after a live boot shows
         # px_container_filled fires on a real wall and not on a flash.
         "px_filled_strong": str(e.get("TARGET_PX_FILLED_STRONG", "0")).strip() == "1",
+        # 2026-11-19 FX-1119-RESERVE (default OFF = exact prior behaviour). WHY: on 11-06 the edge
+        # limiter opened and admitted 273 shots, every one page-signed (0 carts), because the harvest
+        # had been PX-parked for ~4.5 h and the bank was empty. The wall is applied when a PDP
+        # DOCUMENT is loaded (11-18 probes: the PDP rendered fully -- title, 29 visible buttons,
+        # fulfilment block -- with the challenge as a filled overlay), while the Shape sensor is
+        # minted CLIENT-SIDE and the harvest interceptor fails the add before it leaves Chrome. So a
+        # second, RESERVE PDP document loaded in clean time and never reloaded keeps minting banked
+        # sets through a wall that only the primary's reloads keep hitting. HYPOTHESIS, not yet
+        # measured (claims-verifier 2026-11-19): no walled night has a PDP document loaded before
+        # the wall and clicked during it; what IS measured is that the warmup tab's freshly loaded
+        # /cart documents kept firing cart POSTs through every wall, and that pre-fresh-page
+        # documents (09-10/11) kept capturing across ~20+ clicks between reloads (reconstructed
+        # ~423 captures at >=21 clicks; the logged clicks_since_nav field never exceeds 2). The
+        # night's RESERVE log lines are the measurement. The reserve mints ONLY while
+        # the primary is held (PX park / bad-load back-off), is refreshed (one PDP load) only in
+        # clean time, and is marked dead -- never re-navigated -- when it shows a PX overlay, loses
+        # its button, or two clicks produce no cart_items POST. Kill: TARGET_HARVEST_RESERVE=0.
+        "reserve": str(e.get("TARGET_HARVEST_RESERVE", "0")).strip() == "1",
+        # Re-load the reserve document this often (clean time only) so its sensor telemetry stays
+        # small; one PDP load per identity per period.
+        "reserve_refresh_s": _float(e, "TARGET_HARVEST_RESERVE_REFRESH_S", 1800.0, 300.0, 14400.0),
+        # "Clean time" = the PRIMARY harvest captured within this many seconds and is not held.
+        "reserve_clean_s": _float(e, "TARGET_HARVEST_RESERVE_CLEAN_S", 600.0, 60.0, 7200.0),
+        # A dead reserve (walled / buttonless after its load) is retried no sooner than this.
+        "reserve_retry_s": _float(e, "TARGET_HARVEST_RESERVE_RETRY_S", 600.0, 60.0, 7200.0),
+        # A reserve set whose wire header total exceeds this is NOT banked (09-11: bloated -a0
+        # sets drew the edge's 431 header cap; accepted replays since run 13,278-14,054 bytes,
+        # a0=yes captures up to 15,016). 0 = no cap.
+        "reserve_max_hdr_bytes": _int(e, "TARGET_HARVEST_RESERVE_MAX_HDR_BYTES", 15500, 0, 200000),
     }
+
+
+# --------------------------------------------------------------------------- #
+# FX-1119-RESERVE pure decisions (unit-tested; the executor only wires them)
+# --------------------------------------------------------------------------- #
+def reserve_refresh_due(now: float, reserve_nav_ts: float, reserve_dead: bool, last_try_ts: float,
+                        last_primary_capture_ts: float, hold_reason: str, live: bool,
+                        refresh_s: float, clean_s: float, retry_s: float) -> Tuple[bool, str]:
+    """(due, why) -- may the reserve document be (re)loaded now? A load is the ONE thing that can
+    put the reserve behind the wall, so it runs only in CLEAN time: the primary is not held, no
+    purchase is live, and the primary harvest banked a set within `clean_s` (proof the IP is
+    not walled right now). Then: no document yet -> due; a dead document -> due once `retry_s`
+    has passed since the last attempt; a live document -> due once it is older than `refresh_s`.
+    Pure; never raises."""
+    if hold_reason:
+        return False, f"held ({hold_reason})"
+    if live:
+        return False, "purchase live"
+    if last_primary_capture_ts <= 0 or (now - last_primary_capture_ts) > clean_s:
+        return False, "primary has not captured recently (not clean time)"
+    if (now - last_try_ts) < retry_s and last_try_ts > 0 and (reserve_dead or reserve_nav_ts <= 0):
+        return False, "retry gap"
+    if reserve_nav_ts <= 0:
+        return True, "no reserve document yet"
+    if reserve_dead:
+        return True, "reserve document dead -- retrying in clean time"
+    if (now - reserve_nav_ts) >= refresh_s:
+        return True, f"reserve document {now - reserve_nav_ts:.0f}s old (>= {refresh_s:.0f}s)"
+    return False, "reserve document fresh"
+
+
+def reserve_mint_wanted(hold_reason: str, reserve_alive: bool, bank_wants: bool) -> bool:
+    """Wall-mode: click the reserve document iff the primary is held, the reserve is usable and
+    the bank wants a set. Never while the primary is free (it mints fresh first-click sets)."""
+    return bool(hold_reason) and bool(reserve_alive) and bool(bank_wants)
+
+
+def reserve_set_ok(hdr_total_bytes: int, cap: int) -> bool:
+    """False when a reserve-minted set is over the header-byte cap (0 = no cap)."""
+    try:
+        return int(cap) <= 0 or int(hdr_total_bytes) <= int(cap)
+    except (TypeError, ValueError):
+        return True
 
 
 def in_harvest_window(active_window: str, now_local: Optional[time.struct_time] = None) -> bool:

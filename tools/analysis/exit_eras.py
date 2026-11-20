@@ -75,7 +75,9 @@ def main() -> None:
                 c["401"] += 1
                 continue
             c["non401"] += 1
-            if s.cls != "edge429":
+            # 2026-11-19: a status-0 fetch failure (preflight-429 refusal) is not
+            # past the limiter either -- see shots.py is_pass().
+            if s.cls not in ("edge429", "status0"):
                 c["past_G1"] += 1
             if s.cls == "201":
                 c["carts"] += 1

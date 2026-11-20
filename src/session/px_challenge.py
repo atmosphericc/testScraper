@@ -88,19 +88,26 @@ def is_px_challenge(markers: Any) -> bool:
 
 
 def px_verdict_is_strong(markers: Any, filled_counts: bool = False) -> bool:
-    """is_px_challenge MINUS the flash-prone #px-captcha placeholder, DERIVED from
+    """is_px_challenge MINUS the bare #px-captcha placeholder, DERIVED from
     is_px_challenge (no duplicated marker list -> cannot drift): True iff the verdict rests
     on a persistent/unambiguous marker (Press & Hold, access-denied, a real captcha iframe,
-    or a captcha/blocked URL) rather than the bare placeholder, which flashes on a delisted
-    decoy PDP (src/lanes/shape_harvester.py:537-539). 2026-11-14 code review.
+    or a captcha/blocked URL) rather than the bare placeholder, which the lane harvester saw
+    flash on a delisted decoy PDP (src/lanes/shape_harvester.py:537-539). 2026-11-14 code review.
 
     2026-11-16 (C-1116-01): with ``filled_counts=True`` (flag TARGET_PX_FILLED_STRONG, OFF by
     default) a POPULATED container (``px_container_filled``: a child iframe or a full-viewport
     rendered card) ALSO counts as strong. The real 11-16 Press & Hold wall rendered in a
     cross-origin overlay, so press_hold/denied/px_iframe all stayed False and only px_container
-    hit -> this was the ONE discriminator between that real wall and the 11-06 flash. Default
-    False keeps the pre-11-16 verdict byte-identical: a bare placeholder still never parks (the
-    11-06 drain stays fixed), and ``filled_counts`` never downgrades a verdict."""
+    hit. Default False keeps the pre-11-16 verdict byte-identical, and ``filled_counts`` never
+    downgrades a verdict.
+
+    CORRECTION 2026-11-19 (claims-verifier, from the 11-06 MISS-PROBE screenshots
+    logs/screenshots/harvest_miss_*_20261106_04*_px.png): the 11-06 harvest wall was a REAL
+    "Quick verification / Press & hold" card (same PX reference id on 10 byte-identical shots),
+    NOT a placeholder flash -- its title='Product not found' was the PDP shell under the block
+    page. So "container-only = flash" has NO observed case on an account harvest tab; the only
+    support is the lane harvester's note above. A real wall whose container reads un-filled
+    would NOT be parked under TARGET_HARVEST_PX_RECONFIRM=1 -- an open risk, not yet observed."""
     if not is_px_challenge(markers):
         return False
     if filled_counts and isinstance(markers, Mapping) and markers.get('px_container_filled'):
